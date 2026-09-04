@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 from collections.abc import Sequence
@@ -10,8 +11,8 @@ from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.engine import make_url
+from sqlalchemy import event, text
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.services.freq import FrequencyLimits
@@ -20,6 +21,7 @@ from app.services.usage_ledger import (
     _ACTIVE_RESERVATION_STATES,
     APPLY_PROJECTION_LUA,
     APPLY_PROJECTIONS_LUA,
+    FREQUENCY_DECISION_CHUNK,
     FREQUENCY_MERGE_FUTURE_DAY_SKEW,
     FREQUENCY_MERGE_FUTURE_MINUTE_SKEW,
     FrequencyDecisionItem,
@@ -2605,6 +2607,132 @@ async def test_expired_source_merge_and_release_are_safe_under_concurrency() -> 
         assert int(canonical_value or 0) == 0
         assert await service.apply_release(reservation_id) == 1
         assert await service.apply_release(reservation_id) == 0
+    finally:
+        await cleanup()
+        await engine.dispose()
+
+
+def _count_statements(statements: list[str]) -> Any:
+    def before_cursor_execute(
+        _conn: Any,
+        _cursor: Any,
+        statement: str,
+        _parameters: Any,
+        _context: Any,
+        _executemany: bool,
+    ) -> None:
+        statements.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", before_cursor_execute)
+    return before_cursor_execute
+
+
+@pytest.mark.asyncio
+async def test_frequency_many_sql_is_chunk_bounded_for_new_and_existing_subjects() -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    settings = cast(Any, SimpleNamespace(database_url=database_url))
+    redis = ProjectionRedis()
+    now = datetime.now(UTC).replace(second=10, microsecond=0)
+    nonce = uuid4().hex
+    app_id: int | None = None
+    reservation_ids: list[UUID] = []
+
+    def items_for(count: int, prefix: str) -> list[FrequencyDecisionItem]:
+        payload: list[FrequencyDecisionItem] = []
+        for index in range(count):
+            digest = hashlib.sha256(f"{prefix}-{nonce}-{index}".encode()).hexdigest()
+            payload.append(FrequencyDecisionItem(digest, {1: digest}))
+        return payload
+
+    async def cleanup() -> None:
+        async with engine.begin() as connection:
+            if reservation_ids:
+                await connection.execute(
+                    text("DELETE FROM usage_frequency_entry WHERE reservation_id=ANY(:ids)"),
+                    {"ids": reservation_ids},
+                )
+                await connection.execute(
+                    text("DELETE FROM usage_reservation WHERE id=ANY(:ids)"),
+                    {"ids": reservation_ids},
+                )
+            if app_id is not None:
+                await connection.execute(
+                    text("DELETE FROM app WHERE id=:app_id"),
+                    {"app_id": app_id},
+                )
+
+    try:
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    INSERT INTO app(
+                      name,dept,api_key_hash,api_key_prefix,daily_quota,created_by
+                    ) VALUES(
+                      :name,'账本测试部',:api_key_hash,:api_key_prefix,10,'integration'
+                    ) RETURNING id
+                    """
+                ),
+                {
+                    "name": f"usage-freq-batch-{nonce}",
+                    "api_key_hash": "d" * 64,
+                    "api_key_prefix": nonce[:8],
+                },
+            )
+            app_id = int(result.scalar_one())
+        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        first = await service.start_reservation(
+            request_key=f"acceptance:{uuid4()}",
+            app_id=app_id,
+            dept="账本测试部",
+            category="verify",
+            now=now,
+        )
+        second = await service.start_reservation(
+            request_key=f"acceptance:{uuid4()}",
+            app_id=app_id,
+            dept="账本测试部",
+            category="verify",
+            now=now,
+        )
+        reservation_ids.extend((first.reservation_id, second.reservation_id))
+        limits = FrequencyLimits(10, 100, 1)
+        small_items = items_for(20, "small")
+        large_items = items_for(80, "large")
+        assert FREQUENCY_DECISION_CHUNK > 80
+
+        small_sql: list[str] = []
+        listener = _count_statements(small_sql)
+        try:
+            small_allowed = await service.allow_frequency_many(
+                first.reservation_id,
+                "verify",
+                app_id=app_id,
+                items=small_items,
+                limits=limits,
+                now=now,
+            )
+        finally:
+            event.remove(Engine, "before_cursor_execute", listener)
+        large_sql: list[str] = []
+        listener = _count_statements(large_sql)
+        try:
+            large_allowed = await service.allow_frequency_many(
+                second.reservation_id,
+                "verify",
+                app_id=app_id,
+                items=large_items,
+                limits=limits,
+                now=now,
+            )
+        finally:
+            event.remove(Engine, "before_cursor_execute", listener)
+
+        assert small_allowed == [True] * 20
+        assert large_allowed == [True] * 80
+        assert len(small_sql) == len(large_sql)
+        assert len(small_sql) <= 40
     finally:
         await cleanup()
         await engine.dispose()

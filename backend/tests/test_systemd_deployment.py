@@ -28,6 +28,7 @@ SECRET_NAMES = {
     "vendor_secret_key",
     "data_aes_key",
     "data_hmac_key",
+    "api_key_pepper_key",
     "jwt_secret",
     "ldap_bind_password",
     "metrics_scrape_token",

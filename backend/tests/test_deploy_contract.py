@@ -257,6 +257,7 @@ def test_backend_services_mount_only_role_required_secrets() -> None:
     assert targets("api") == {
         "data_aes_key",
         "data_hmac_key",
+        "api_key_pepper_key",
         "audit_context_key",
         "audit_system_api_context_key",
         "alert_credential_public_key",
@@ -410,6 +411,17 @@ def test_nginx_bounds_pre_authentication_body_storage() -> None:
     assert "client_max_body_size 1k;" in config
     assert "location = /api/v1/web/messages/import" in config
     assert "client_max_body_size 12m;" in config
+    from app.core.request_limits import (
+        API_JSON_BODY_LIMIT,
+        HEALTH_BODY_LIMIT,
+        IMPORT_BODY_LIMIT,
+        IMPORT_PATH,
+    )
+
+    assert API_JSON_BODY_LIMIT == 1 * 1024 * 1024
+    assert IMPORT_BODY_LIMIT == 12 * 1024 * 1024
+    assert HEALTH_BODY_LIMIT == 1024
+    assert IMPORT_PATH == "/api/v1/web/messages/import"
     assert "limit_conn_zone $server_addr zone=sms_api_concurrency:1m;" in config
     assert "limit_conn_zone $server_addr zone=sms_import_concurrency:1m;" in config
     assert (

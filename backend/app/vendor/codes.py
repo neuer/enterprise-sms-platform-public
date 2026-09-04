@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 BACKOFF_DELAYS_S = (1, 2, 4, 8, 16)
 
@@ -21,6 +21,7 @@ class VendorErrorPolicy:
     sync_resource: str | None = None
     not_applicable: bool = False
     return_to_caller: bool = False
+    safe_to_failover: bool = False
 
 
 def _policy(description: str, **overrides: object) -> VendorErrorPolicy:
@@ -73,8 +74,36 @@ ERROR_POLICIES: dict[int, VendorErrorPolicy] = {
 
 UNKNOWN_ERROR_POLICY = VendorErrorPolicy("未知厂商错误")
 
+# 协议明确拒绝且合同保证未受理；超时/未知/退避类不得进入此集合。
+SAFE_TO_FAILOVER_CODES = frozenset(
+    {
+        999,
+        1000,
+        1001,
+        1002,
+        1003,
+        1005,
+        1008,
+        1009,
+        1010,
+        1012,
+        5000,
+        10000,
+        10001,
+        10002,
+        10003,
+        10004,
+        10005,
+        10007,
+        10008,
+    }
+)
+
 
 def policy_for(code: int) -> VendorErrorPolicy:
     """返回已知错误策略；未知错误安全地按失败且不重试处理。"""
 
-    return ERROR_POLICIES.get(code, UNKNOWN_ERROR_POLICY)
+    policy = ERROR_POLICIES.get(code, UNKNOWN_ERROR_POLICY)
+    if code in SAFE_TO_FAILOVER_CODES:
+        return replace(policy, safe_to_failover=True)
+    return policy

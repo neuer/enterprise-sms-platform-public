@@ -31,6 +31,20 @@ describe("共享语义展示组件", () => {
     expect(uncertain.getComponent({ name: "ElTag" }).props("effect")).toBe("dark")
     expect(uncertain.getComponent({ name: "ElTag" }).props("type")).toBe("danger")
 
+    const terminal = mount(StatusTag, {
+      props: { status: "unknown_terminal" },
+      global: { plugins: [ElementPlus] },
+    })
+    expect(terminal.text()).toBe("未知终态")
+    expect(terminal.getComponent({ name: "ElTag" }).props("effect")).toBe("dark")
+
+    const completedUnknown = mount(StatusTag, {
+      props: { status: "completed_unknown" },
+      global: { plugins: [ElementPlus] },
+    })
+    expect(completedUnknown.text()).toBe("完成(含未知)")
+    expect(completedUnknown.getComponent({ name: "ElTag" }).props("effect")).toBe("dark")
+
     const unknown = mount(StatusTag, {
       props: { status: "unknown" },
       global: { plugins: [ElementPlus] },

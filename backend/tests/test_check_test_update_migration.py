@@ -97,6 +97,12 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0082_outbox_realtime_report_queue",
         "0083_password_change_token_lease",
         "0084_auth_security_and_ad_freshness",
+        "0085_api_key_pepper_versions",
+        "0086_chunk_ready_outbox",
+        "0087_uncertain_conservative_terminal",
+        "0088_app_admission_defaults",
+        "0089_send_admission_metrics_grant",
+        "0090_vendor_routing",
     ]
 
 

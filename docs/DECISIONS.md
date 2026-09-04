@@ -1311,3 +1311,18 @@
 - 影响：认证用途路由、有界执行池、登录 guard Lua、定向单元/真实 Redis 合同测试、PRD、
   OpenAPI 与人工 UAT。每个 Argon2 任务仍为 64 MiB；API 现有 768 MiB 容器和两个 Uvicorn
   worker 下最坏密码工作内存预算由专项资源验证确认，日常 CI 不以压测冒充容量证据。
+
+## D100 多供应商安全路由与分层性能门禁
+
+- 决策：在 #572 的 uncertain 保守终态稳定后，增加供应商注册表、chunk/batch 路由字段和
+  `sms_vendor_attempt` 账本。自动切换只允许：调用前确定性不可用，或协议明确拒绝且
+  `safe_to_failover=true`。`uncertain`/`submitted` 禁止自动换供应商；人工换供应商只能走
+  双人处置后的新批次。Celery `process_batch` 返回 `planned_chunks`，`submit()` 用枚举区分
+  submitted/paused/stale/failed/uncertain；权威发送量仍从 PostgreSQL 聚合。
+  性能上，日常 CI 只跑确定性 SQL/复杂度与故障不变量；万级容量与真实故障矩阵留在候选门禁
+  `scripts/perf_capacity.py` / `scripts/perf_fault_matrix.py`，不推翻 D097。
+- 原因：单一供应商是外发单点，但“失败后立刻换供应商”会把超时误判成可重发。任务返回值若
+  把任意处理计成 submitted，会污染排障和容量结论。
+- 影响：schema v1.6.76/0090、`vendor/routing.py`、发送 worker、metrics family
+  `sms_send_submit_outcome`、威胁模型、failover 手册、PERFORMANCE.md 与 OpenAPI 发送说明。
+  第二生产 adapter 仍未接入，不得把当前合同写成已具备多账户高可用。

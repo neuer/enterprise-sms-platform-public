@@ -83,7 +83,8 @@ def test_vendor_test_budget_schema_preserves_evidence_permissions() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
 
     assert "vendor_test_daily_usage, vendor_test_send_attempt" in schema
-    assert "vendor_test_send_attempt, vendor_test_operation\nTO sms_send" in schema
+    assert "vendor_test_send_attempt, vendor_test_operation," in schema
+    assert "sms_vendor_attempt\nTO sms_send" in schema
     assert "vendor_test_send_attempt_id_seq," in schema
     assert "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sms_app" in schema
 

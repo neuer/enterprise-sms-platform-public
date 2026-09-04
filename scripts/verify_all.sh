@@ -137,10 +137,12 @@ metrics_gate(){
   metrics_token="$(tr -d '\r\n' < deploy/secrets/metrics_scrape_token)"
   metrics_body="$(curl -sf -H "Authorization: Bearer ${metrics_token}" \
     "http://localhost:${api_port}/metrics")"
-  for family in sms_queue_depth sms_send_rate_per_second sms_vendor_error_chunks \
-    sms_uncertain_chunks sms_callback_failures sms_frequency_filtered_messages \
+    for family in sms_queue_depth sms_send_rate_per_second sms_vendor_error_chunks \
+    sms_uncertain_chunks sms_uncertain_lifecycle_chunks sms_callback_failures \
+    sms_frequency_filtered_messages \
     sms_poll_lag_seconds sms_usage_projection_drift_dimensions \
-    sms_usage_projection_drift_absolute_delta sms_metrics_snapshot_age_seconds; do
+    sms_usage_projection_drift_absolute_delta sms_metrics_snapshot_age_seconds \
+    sms_send_admission sms_outbox_oldest_age_seconds sms_send_submit_outcome; do
     printf '%s\n' "$metrics_body" | grep -q "^# TYPE ${family} gauge$" || {
       echo "Prometheus 指标缺失: ${family}" >&2
       exit 1

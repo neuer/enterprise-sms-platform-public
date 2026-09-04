@@ -857,11 +857,14 @@ async def test_successful_vendor_call_with_writeback_failure_is_never_retried() 
     gateway = FakeGateway(["task-ok", "must-not-retry"])
     store = WritebackFailureStore()
 
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        await SendWorker(gateway, store, FakeBucket()).submit(chunk(), lane="realtime")
+    outcome = await SendWorker(gateway, store, FakeBucket()).submit(
+        chunk(),
+        lane="realtime",
+    )
 
+    assert outcome.value == "uncertain"
     assert gateway.calls == 1
-    assert store.events == [("submitting", 3)]
+    assert store.events == [("submitting", 3), ("uncertain", 3)]
 
 
 @pytest.mark.asyncio

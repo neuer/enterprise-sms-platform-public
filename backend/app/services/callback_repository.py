@@ -90,7 +90,9 @@ async def enqueue_batch_finished(
               SELECT b.id batch_id,b.app_id,a.callback_url,a.callback_secret_enc
               FROM sms_batch b JOIN app a ON a.id=b.app_id
               WHERE b.id=CAST(:batch_id AS bigint)
-                AND b.status IN ('completed','cancelled','expired','rejected')
+                AND b.status IN (
+                  'completed','completed_unknown','cancelled','expired','rejected'
+                )
                 AND a.status=1 AND a.callback_url IS NOT NULL
                 AND a.callback_secret_enc IS NOT NULL
             )
@@ -870,7 +872,24 @@ class SqlCallbackRepository:
                         {"batch_id": task.batch_id},
                     )
                     batch_row = batch_result.mappings().one()
-                    return CallbackMaterial(task, batch=BatchFinishedData(**dict(batch_row)))
+                    unknown = int(batch_row["unknown"])
+                    return CallbackMaterial(
+                        task,
+                        batch=BatchFinishedData(
+                            batch_no=str(batch_row["batch_no"]),
+                            biz_id=batch_row["biz_id"],
+                            category=str(batch_row["category"]),
+                            status=str(batch_row["status"]),
+                            total=int(batch_row["total"]),
+                            delivered=int(batch_row["delivered"]),
+                            failed=int(batch_row["failed"]),
+                            unknown=unknown,
+                            finished_at=batch_row["finished_at"],
+                            unknown_count=unknown,
+                            manual_resolution_required=str(batch_row["status"])
+                            == "completed_unknown",
+                        ),
+                    )
                 if task.event == "message.report":
                     messages_result = await connection.execute(
                         text(

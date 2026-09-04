@@ -21,7 +21,10 @@ from app.services.export_file import ExportFileCodec
 from app.services.housekeeping_repository import SqlHousekeepingRepository
 from app.services.idempotency import IdempotencyScope
 from app.services.pipeline import PipelineConfig, SendPipeline, SendRequest
-from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRenderer
+from app.services.pipeline_repository import (
+    IDEMPOTENCY_LIVE_SQL,
+    SqlTemplateRenderer,
+)
 from app.services.resend import EncryptedFailedPhone, ResendService, ResendSource
 from app.services.scheduling_repository import SqlSchedulingRepository
 
@@ -170,7 +173,7 @@ async def test_resend_uses_stable_cross_actor_action_scope() -> None:
 
 
 def test_live_sms_keeps_idempotency_fact_past_nominal_expiry() -> None:
-    pipeline_source = inspect.getsource(SqlPipelineStore)
+    pipeline_source = IDEMPOTENCY_LIVE_SQL
     housekeeping_source = inspect.getsource(SqlHousekeepingRepository.cleanup)
     scheduling_source = inspect.getsource(SqlSchedulingRepository.reschedule)
 

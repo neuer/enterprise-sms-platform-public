@@ -69,13 +69,15 @@ const statusGroups = [
   { key: "scheduled", label: "已排期", statuses: ["scheduled"] },
   { key: "balance_blocked", label: "余额阻断", statuses: ["balance_blocked"] },
   { key: "completed", label: "已完成", statuses: ["completed"] },
+  { key: "completed_unknown", label: "完成(含未知)", statuses: ["completed_unknown"] },
   { key: "closed", label: "其他终态", statuses: ["cancelled", "rejected", "expired"] },
 ]
 
 const channelLabel: Record<string, string> = { api: "API", web: "Web" }
 const statusLabel: Record<string, string> = {
   pending_approval: "待审批", rejected: "已驳回", scheduled: "已排期", queued: "排队中",
-  sending: "发送中", completed: "已完成", cancelled: "已取消", balance_blocked: "余额阻断",
+  sending: "发送中", completed: "已完成", completed_unknown: "完成(含未知)",
+  cancelled: "已取消", balance_blocked: "余额阻断",
   expired: "已过期", delivered: "已送达", failed: "失败", unknown: "未知", pending: "待处理",
   sent: "已提交", other: "其他",
 }

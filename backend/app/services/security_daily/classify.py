@@ -84,6 +84,12 @@ AUDIT_CLASSIFICATION_BY_ACTION: dict[str, AuditClassification] = {
     "batch_resend_failed": AuditClassification(
         assessment="发送操作", category="发送操作", tone="neutral"
     ),
+    "uncertain_resolve_propose": AuditClassification(
+        assessment="发送操作", category="发送操作", tone="warn"
+    ),
+    "uncertain_resolve_confirm": AuditClassification(
+        assessment="发送操作", category="发送操作", tone="warn"
+    ),
     "blacklist_add": AuditClassification(
         assessment="管控操作", category="管控操作", tone="neutral"
     ),

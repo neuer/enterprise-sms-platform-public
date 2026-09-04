@@ -901,7 +901,13 @@ class SqlOpsRepository:
         try:
             async with engine.connect() as connection:
                 count = await connection.execute(
-                    text("SELECT count(*) FROM sms_chunk WHERE status='uncertain'"), params
+                    text(
+                        """
+                        SELECT count(*) FROM sms_chunk
+                        WHERE status IN ('uncertain','unknown_terminal')
+                        """
+                    ),
+                    params,
                 )
                 result = await connection.execute(
                     text(
@@ -911,9 +917,12 @@ class SqlOpsRepository:
                           COALESCE(c.uncertain_since,b.created_at) uncertain_since,
                           GREATEST(0,EXTRACT(EPOCH FROM (
                             now()-COALESCE(c.uncertain_since,b.created_at)
-                          ))::bigint) age_seconds
+                          ))::bigint) age_seconds,
+                          c.status,r.id resolution_id,r.action resolution_action,
+                          r.state resolution_state,r.proposer_account_id
                         FROM sms_chunk c JOIN sms_batch b ON b.id=c.batch_id
-                        WHERE c.status='uncertain'
+                        LEFT JOIN sms_uncertain_resolution r ON r.chunk_id=c.id
+                        WHERE c.status IN ('uncertain','unknown_terminal')
                         ORDER BY COALESCE(c.uncertain_since,b.created_at),c.id
                         LIMIT :limit OFFSET :offset
                         """
@@ -929,6 +938,19 @@ class SqlOpsRepository:
                         int(row["vendor_code"]) if row["vendor_code"] is not None else None,
                         row["uncertain_since"],
                         int(row["age_seconds"]),
+                        str(row["status"]),
+                        int(row["resolution_id"])
+                        if row.get("resolution_id") is not None
+                        else None,
+                        str(row["resolution_action"])
+                        if row.get("resolution_action") is not None
+                        else None,
+                        str(row["resolution_state"])
+                        if row.get("resolution_state") is not None
+                        else None,
+                        int(row["proposer_account_id"])
+                        if row.get("proposer_account_id") is not None
+                        else None,
                     )
                     for row in result.mappings()
                 )

@@ -45,6 +45,7 @@ from app.core.errors import (
 )
 from app.core.health import create_readiness_probe
 from app.core.jobtrack import create_default_heartbeat_service
+from app.core.request_limits import RequestBodyLimitMiddleware
 from app.core.runtime_resources import (
     close_runtime_resources,
     configure_runtime_resources,
@@ -137,6 +138,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         startup_check=startup_gate.ensure,
     )
     application.add_middleware(CorrelationIdMiddleware)
+    application.add_middleware(RequestBodyLimitMiddleware)
     hosts = selected_settings.trusted_host_list
     if hosts != ["*"]:
         application.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)

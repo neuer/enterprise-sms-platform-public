@@ -183,6 +183,7 @@ async def test_create_returns_secrets_once_but_repository_only_gets_hash_and_cip
     assert operation == "create"
     assert stored["api_key_prefix"] == "api-key-"
     assert len(stored["api_key_hash"]) == 64
+    assert "api_key_hash_version" in stored
     assert b"callback-secret-plain-once" not in stored["callback_secret_enc"]
     assert int.from_bytes(stored["callback_secret_enc"][:2], "big") == 1
     assert "api-key-plain-once" not in str(stored)
@@ -206,6 +207,7 @@ async def test_rotate_key_sets_previous_expiry_and_revoke_is_explicit() -> None:
     assert result["api_key"] == "new-api-key-plain-value"
     assert result["old_key_expires_at"] == now + timedelta(hours=72)
     assert repo.calls[0][1]["old_key_expires_at"] == now + timedelta(hours=72)
+    assert "api_key_hash_version" in repo.calls[0][1]
     assert "new-api-key-plain-value" not in str(repo.calls[0][1])
 
     await service.revoke_old_key(9, actor="admin01", ip="10.0.0.8")
@@ -243,6 +245,61 @@ async def test_callback_secret_rotation_only_persists_packed_ciphertext() -> Non
     assert result == {"callback_secret": "rotated-callback-secret"}
     stored = repo.calls[0][1]
     assert b"rotated-callback-secret" not in stored["callback_secret_enc"]
+
+
+def test_app_create_defaults_to_notice_only() -> None:
+    created = AppCreate(name="app-default", dept="研发部")
+    assert created.allowed_categories == frozenset({"notice"})
+    assert created.allow_market_api_bulk is False
+    assert created.recipient_limit_per_min == 10_000
+
+
+@pytest.mark.asyncio
+async def test_production_rejects_unlimited_quota_and_empty_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ProductionSettings:
+        environment = "production"
+
+    monkeypatch.setattr("app.settings.get_settings", lambda: ProductionSettings())
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
+    repo = FakeRepository()
+    service = AppManagementService(
+        repo,
+        crypto(),
+        validator("10.1.1.1"),
+        secret_generator=lambda: "api-key-plain-once",
+        clock=lambda: now,
+    )
+    with pytest.raises(InvalidAppConfig, match="非零日配额"):
+        await service.create(
+            AppCreate(name="prod-open", dept="研发部", allowed_ips=("10.0.0.0/8",)),
+            actor="admin01",
+            ip="10.0.0.8",
+        )
+    with pytest.raises(InvalidAppConfig, match="来源 IP"):
+        await service.create(
+            AppCreate(name="prod-open", dept="研发部", daily_quota=1000),
+            actor="admin01",
+            ip="10.0.0.8",
+        )
+    result = await service.create(
+        AppCreate(
+            name="prod-exempt",
+            dept="研发部",
+            daily_quota=0,
+            allowed_ips=(),
+            unlimited_quota_exempt_until=now + timedelta(days=7),
+            ip_allowlist_exempt_until=now + timedelta(days=7),
+            admission_exempt_note="联调窗口",
+        ),
+        actor="admin01",
+        ip="10.0.0.8",
+    )
+    assert result["id"] == 17
+    stored = repo.calls[0][1]
+    assert stored["admission_exempt_note"] == "联调窗口"
+    assert stored["allow_market_api_bulk"] is False
 
 
 @pytest.mark.asyncio

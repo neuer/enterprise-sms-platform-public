@@ -72,7 +72,7 @@ flowchart LR
 | Deployment | Docker Compose, Nginx, non-root containers, file-backed secrets, cold-standby runbooks |
 | Verification | pytest, pytest-asyncio, Hypothesis, coverage gates, Vitest, mypy, Pyright, Ruff, Bandit, Trivy |
 
-The current release integrates one SMS provider behind a single adapter boundary. Multi-vendor routing is intentionally a roadmap item rather than a current capability.
+The current release integrates one SMS provider behind a single adapter boundary. A safe routing contract now persists vendor identity and attempts, and forbids automatic failover after `uncertain` or `submitted`. A second production provider is still not onboarded.
 
 ## Roadmap
 
@@ -81,7 +81,7 @@ The roadmap distinguishes existing foundations from the next engineering milesto
 | Milestone | Current baseline | Planned outcome |
 | --- | --- | --- |
 | **Asynchronous message queues integration.** | Baseline implemented with PostgreSQL Outbox, Redis broker, Celery workers, queue isolation, retries, leases, and fencing. | Continue failure-recovery validation, back-pressure controls, observability, and high-availability deployment guidance. |
-| **Multi-vendor failover routing.** | A single-provider adapter boundary exists; automatic cross-provider routing is not implemented. | Add policy-driven provider selection, health-aware failover, provider-specific circuit breakers, idempotency-safe reconciliation, and auditable operator controls. |
+| **Multi-vendor failover routing.** | Routing decisions and vendor attempts are persisted; failover is allowed only before invoke or after a contractually rejected request. `uncertain` never switches providers. | Onboard a second production adapter with isolated credentials, QPS, balance and receipt domains; keep dual-control resend as the only manual vendor change after unknown results. |
 | **Automated vulnerability reviews & comprehensive unit testing.** | CI already runs risk-based tests, coverage checks, SAST, dependency, secret, license, and configuration scans. | Expand recurring vulnerability review, adversarial test coverage, property/concurrency/fault-injection suites, and regression evidence for security-critical paths. |
 | **Infrastructure-as-code (IaC) deployment documentation.** | Docker Compose contracts, controlled update tooling, backup/restore guidance, and cold-standby runbooks are available. | Document reproducible host provisioning, secret bootstrap, network policy, external TLS, monitoring, backup verification, and disaster-recovery workflows as auditable IaC. |
 

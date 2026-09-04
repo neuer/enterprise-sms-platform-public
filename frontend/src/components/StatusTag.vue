@@ -14,6 +14,7 @@ const labels: Record<string, string> = {
   sending: "发送中",
   submitted: "已提交",
   completed: "已完成",
+  completed_unknown: "完成(含未知)",
   delivered: "已送达",
   approved: "已通过",
   failed: "失败",
@@ -21,6 +22,7 @@ const labels: Record<string, string> = {
   cancelled: "已取消",
   expired: "已过期",
   uncertain: "结果未知",
+  unknown_terminal: "未知终态",
   balance_blocked: "余额阻断",
   unknown: "未知",
   dead: "终止重试",
@@ -30,7 +32,12 @@ const infoStates = new Set(["queued", "sending"])
 const dangerStates = new Set(["failed", "rejected", "cancelled", "expired", "dead", "unknown"])
 const warningStates = new Set(["pending", "pending_approval", "scheduled"])
 const successStates = new Set(["completed", "delivered", "approved"])
-const interventionStates = new Set(["uncertain", "balance_blocked"])
+const interventionStates = new Set([
+  "uncertain",
+  "unknown_terminal",
+  "completed_unknown",
+  "balance_blocked",
+])
 
 const presentation = computed<{ type: TagType; effect: TagEffect }>(() => {
   if (interventionStates.has(props.status)) return { type: "danger", effect: "dark" }

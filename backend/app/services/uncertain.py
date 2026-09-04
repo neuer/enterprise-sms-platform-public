@@ -38,6 +38,8 @@ class UncertainRepository(Protocol):
 
     async def alert_overdue(self, chunk: UncertainChunk) -> None: ...
 
+    async def terminalize_unknown(self, chunk: UncertainChunk) -> None: ...
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -53,11 +55,13 @@ class UncertainReconciler:
         *,
         clock: Callable[[], datetime] = utc_now,
         alert_after: timedelta = timedelta(hours=24),
+        max_lifetime: timedelta = timedelta(hours=72),
     ) -> None:
         self.repository = repository
         self.crypto = crypto
         self.clock = clock
         self.alert_after = alert_after
+        self.max_lifetime = max_lifetime
 
     @classmethod
     def from_policy(
@@ -73,6 +77,7 @@ class UncertainReconciler:
             crypto,
             clock=clock,
             alert_after=timedelta(hours=policy.uncertain_alert_hours),
+            max_lifetime=timedelta(hours=policy.uncertain_max_lifetime_hours),
         )
 
     def _task_id(self, candidate: RawCandidate, custom_id: str) -> str | None:
@@ -130,6 +135,10 @@ class UncertainReconciler:
                     task_pseudonym,
                 )
                 resolved += 1
-            elif now - chunk.uncertain_since >= self.alert_after:
+                continue
+            age = now - chunk.uncertain_since
+            if age >= self.max_lifetime:
+                await self.repository.terminalize_unknown(chunk)
+            elif age >= self.alert_after:
                 await self.repository.alert_overdue(chunk)
         return resolved

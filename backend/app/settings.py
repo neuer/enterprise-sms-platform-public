@@ -172,6 +172,7 @@ class Settings(BaseSettings):
     vendor_secret_key_file: Path = Path("/run/secrets/vendor_secret_key")
     data_aes_key_file: Path = Path("/run/secrets/data_aes_key")
     data_hmac_key_file: Path = Path("/run/secrets/data_hmac_key")
+    api_key_pepper_key_file: Path = Path("/run/secrets/api_key_pepper_key")
     audit_context_key_file: Path = Path("/run/secrets/audit_context_key")
     audit_system_api_context_key_file: Path = Path(
         "/run/secrets/audit_system_api_context_key"
@@ -625,6 +626,7 @@ class Settings(BaseSettings):
             "vendor_secret_key": self.vendor_secret_key_file,
             "data_aes_key": self.data_aes_key_file,
             "data_hmac_key": self.data_hmac_key_file,
+            "api_key_pepper_key": self.api_key_pepper_key_file,
             "audit_context_key": self.audit_context_key_file,
             "audit_system_api_context_key": self.audit_system_api_context_key_file,
             "audit_system_realtime_context_key": self.audit_system_realtime_context_key_file,

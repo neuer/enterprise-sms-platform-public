@@ -26,6 +26,7 @@ CANONICAL_SECRET_NAMES = frozenset(
         "vendor_secret_key",
         "data_aes_key",
         "data_hmac_key",
+        "api_key_pepper_key",
         "audit_context_key",
         "audit_system_api_context_key",
         "audit_system_realtime_context_key",

@@ -36,5 +36,8 @@ def test_performance_runbook_marks_full_day_execution_as_handover() -> None:
         "P95<2000ms",
         "P95<2s",
         "480s",
+        "perf_capacity.py",
+        "perf_fault_matrix.py",
+        "recipients_10000",
     ):
         assert token in document

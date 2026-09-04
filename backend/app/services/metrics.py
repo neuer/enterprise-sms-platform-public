@@ -19,6 +19,25 @@ from app.vendor.codes import ERROR_POLICIES
 CATEGORIES = ("verify", "notice", "market")
 QUEUES = ("realtime", "bulk")
 RAW_REPLAY_ELIGIBILITIES = ("automatic", "manual", "never")
+UNCERTAIN_LIFECYCLE_STATES = (
+    "active",
+    "overdue",
+    "unknown_terminal",
+    "manual_resolved",
+    "late_evidence",
+)
+SEND_ADMISSION_STATES = ("open", "degraded", "closed")
+SEND_SUBMIT_OUTCOMES = (
+    "submitted",
+    "retry_scheduled",
+    "delayed",
+    "paused",
+    "rejected",
+    "stale",
+    "failed",
+    "uncertain",
+    "split",
+)
 VENDOR_ERROR_LABELS = frozenset(str(code) for code in ERROR_POLICIES)
 LEASE_EVENT_LABELS = frozenset(
     {
@@ -42,6 +61,7 @@ class MetricsFacts:
     callback_failures: tuple[tuple[str, int], ...]
     frequency_filtered: tuple[tuple[str, int], ...]
     poll_lags: tuple[tuple[str, float], ...]
+    uncertain_lifecycle: tuple[tuple[str, int], ...] = ()
     usage_projection_mismatches: tuple[tuple[str, int], ...] = ()
     usage_projection_absolute_delta: tuple[tuple[str, int], ...] = ()
     worker_stalled_leases: tuple[tuple[str, int], ...] = ()
@@ -49,6 +69,9 @@ class MetricsFacts:
     queue_depths: tuple[tuple[str, int], ...] = ()
     raw_replay_eligibility: tuple[tuple[str, int], ...] = ()
     system_replay_audit_pending: int = 0
+    send_admission_state: str = "open"
+    outbox_oldest_age_seconds: float = 0.0
+    send_submit_outcomes: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +168,34 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
     for queue, value in snapshot.queue_depths:
         queue_depth.labels(queue=queue).set(value)
 
+    admission = Gauge(
+        "sms_send_admission",
+        "Send admission capacity band inferred from Outbox and overdue facts.",
+        ("state",),
+        registry=registry,
+    )
+    current_state = snapshot.facts.send_admission_state
+    if current_state not in SEND_ADMISSION_STATES:
+        current_state = "closed"
+    for state in SEND_ADMISSION_STATES:
+        admission.labels(state=state).set(1.0 if state == current_state else 0.0)
+    oldest_age = Gauge(
+        "sms_outbox_oldest_age_seconds",
+        "Age in seconds of the oldest active Outbox event.",
+        registry=registry,
+    )
+    oldest_age.set(max(0.0, snapshot.facts.outbox_oldest_age_seconds))
+
+    submit_outcomes = Gauge(
+        "sms_send_submit_outcome",
+        "Vendor submit() diagnostic counts by low-cardinality outcome.",
+        ("result",),
+        registry=registry,
+    )
+    outcome_values = _values(snapshot.facts.send_submit_outcomes)
+    for result in SEND_SUBMIT_OUTCOMES:
+        submit_outcomes.labels(result=result).set(outcome_values.get(result, 0.0))
+
     send_rate = Gauge(
         "sms_send_rate_per_second",
         "Recipient messages submitted to vendor per second over five minutes.",
@@ -174,6 +225,16 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         registry=registry,
     )
     uncertain.set(snapshot.facts.uncertain)
+
+    lifecycle = Gauge(
+        "sms_uncertain_lifecycle_chunks",
+        "Uncertain lifecycle counts by active, overdue, terminal, resolved and late evidence.",
+        ("state",),
+        registry=registry,
+    )
+    lifecycle_values = _values(snapshot.facts.uncertain_lifecycle)
+    for state in UNCERTAIN_LIFECYCLE_STATES:
+        lifecycle.labels(state=state).set(lifecycle_values.get(state, 0.0))
 
     callback_failures = Gauge(
         "sms_callback_failures",

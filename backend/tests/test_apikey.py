@@ -182,6 +182,49 @@ def test_ip_allowlist_accepts_matching_cidr_and_blocks_other_sources() -> None:
     assert response.json()["code"] == "IP_NOT_ALLOWED"
 
 
+def test_production_empty_allowlist_requires_unexpired_exemption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ProductionSettings:
+        environment = "production"
+
+    monkeypatch.setattr("app.core.apikey.get_settings", lambda: ProductionSettings())
+    key = "current_key_with_enough_entropy_123"
+    expired = ApiKeyCandidate(
+        app_id=22,
+        name="app-open",
+        dept="平台部",
+        allowed_categories="notice",
+        current_hash=digest(key),
+        previous_hash=None,
+        previous_expires_at=None,
+        allowed_ips=(),
+    )
+    blocked = TestClient(_probe_app([expired]), client=("192.0.2.7", 12345)).get(
+        "/api/v1/messages/probe",
+        headers={"X-Api-Key": key},
+    )
+    assert blocked.status_code == 403
+    assert blocked.json()["code"] == "IP_NOT_ALLOWED"
+
+    exempt = ApiKeyCandidate(
+        app_id=22,
+        name="app-open",
+        dept="平台部",
+        allowed_categories="notice",
+        current_hash=digest(key),
+        previous_hash=None,
+        previous_expires_at=None,
+        allowed_ips=(),
+        ip_allowlist_exempt_until=datetime(2099, 1, 1, tzinfo=UTC),
+    )
+    allowed = TestClient(_probe_app([exempt]), client=("192.0.2.7", 12345)).get(
+        "/api/v1/messages/probe",
+        headers={"X-Api-Key": key},
+    )
+    assert allowed.status_code == 200
+
+
 def test_empty_allowlist_allows_any_source_and_unparsable_client_fails_closed() -> None:
     key = "current_key_with_enough_entropy_123"
     unrestricted = ApiKeyCandidate(

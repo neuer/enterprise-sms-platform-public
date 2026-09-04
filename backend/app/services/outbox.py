@@ -26,6 +26,7 @@ UUID_REFERENCE = re.compile(
 STRUCTURED_REFERENCE = re.compile(
     r"^(?:"
     r"batch[.]ready:[0-9a-f]{32}|"
+    r"chunk[.]ready:[1-9][0-9]*|"
     r"scheduled:[0-9a-f]{32}:ready|"
     r"batch:[0-9a-f]{32}:cancelled|"
     r"approval:[1-9][0-9]*:(?:approved|rejected|expired)|"
@@ -42,6 +43,7 @@ TASK_NAMES = {
     "app.tasks.bind_template",
     "app.tasks.sync_template",
     "app.tasks.send.process_batch",
+    "app.tasks.send.process_chunk",
     "app.tasks.deliver_callback",
     "app.tasks.outbox.compensate_quota",
     "app.tasks.outbox.deliver_alert",
@@ -215,6 +217,19 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         and spec.args == (spec.aggregate_id,)
         and spec.dedup_key == f"usage.release:{spec.aggregate_id}"
     )
+    chunk_ready_reference = (
+        spec.task_name == "app.tasks.send.process_chunk"
+        and spec.event_type == "chunk.ready"
+        and spec.aggregate_type == "sms_chunk"
+        and spec.queue in {"realtime", "bulk"}
+        and spec.aggregate_id.isdecimal()
+        and not spec.aggregate_id.startswith("0")
+        and len(spec.args) == 1
+        and spec.args[0] == int(spec.aggregate_id)
+        and isinstance(spec.args[0], int)
+        and not isinstance(spec.args[0], bool)
+        and spec.dedup_key == f"chunk.ready:{spec.aggregate_id}"
+    )
     manual_job_reference = (
         spec.task_name == "app.tasks.outbox.trigger_job"
         and spec.event_type == "job.trigger"
@@ -293,6 +308,8 @@ def validate_spec(spec: OutboxEventSpec) -> None:
     )
     if spec.task_name == "app.tasks.outbox.release_usage" and not usage_release_reference:
         raise ValueError("invalid usage release outbox contract")
+    if spec.task_name == "app.tasks.send.process_chunk" and not chunk_ready_reference:
+        raise ValueError("invalid chunk ready outbox contract")
     if spec.task_name == "app.tasks.outbox.trigger_job" and not (
         manual_job_reference or exact_sign_sync_reference
     ):
@@ -307,6 +324,7 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         raise ValueError("invalid sign adoption outbox contract")
     if (
         not usage_release_reference
+        and not chunk_ready_reference
         and not manual_job_reference
         and not exact_sign_sync_reference
         and not vendor_binding_reference

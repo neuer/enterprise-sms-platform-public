@@ -7,7 +7,6 @@ import hmac
 import ipaddress
 import logging
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -23,6 +22,7 @@ from app.core.auth.principal_context import bind_audit_principal
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.runtime_resources import database_engine
+from app.services.crypto import ParsedKeyring, parse_secret_keyring
 from app.settings import Settings, get_settings
 
 PREFIX_LENGTH = 8
@@ -30,7 +30,14 @@ MIN_KEY_LENGTH = 16
 MAX_ALLOWED_IPS = 50
 VALID_CATEGORIES = frozenset({"verify", "notice", "market"})
 LOGGER = logging.getLogger(__name__)
-_API_KEY_PEPPER_DOMAIN = b"sms-api-key-pepper-v1"
+
+
+class UnknownPepperVersionError(RuntimeError):
+    """记录绑定的 pepper 版本不在当前独立 keyring 中；必须失败关闭。"""
+
+    def __init__(self, version: int) -> None:
+        self.version = version
+        super().__init__("api key pepper version is unavailable")
 
 
 def _legacy_key_digest(key: str) -> str:
@@ -38,42 +45,75 @@ def _legacy_key_digest(key: str) -> str:
     return hashlib.sha256(key.encode("utf-8")).hexdigest()  # codeql[py/weak-sensitive-data-hashing]
 
 
-def _api_key_pepper() -> bytes | None:
-    """用数据 HMAC secret 派生 API Key pepper；测试/缺凭据时回退 SHA-256。"""
+def load_api_key_pepper_keyring(settings: Settings | None = None) -> ParsedKeyring | None:
+    """读取独立 API Key pepper keyring；缺文件时由调用方决定是否回退。"""
 
     try:
-        raw = get_settings().credential("data_hmac_key")
+        raw = (settings or get_settings()).credential("api_key_pepper_key")
     except Exception:
         return None
     if not raw:
         return None
-    return hmac.new(_API_KEY_PEPPER_DOMAIN, raw.encode("utf-8"), hashlib.sha256).digest()
+    return parse_secret_keyring(raw, label="API Key pepper")
 
 
-def hash_api_key(key: str) -> str:
-    """新写入使用 HMAC-SHA256(pepper, key)；无 pepper 时回退 SHA-256。"""
+def require_api_key_pepper_keyring(settings: Settings | None = None) -> ParsedKeyring:
+    """就绪检查必须能解析独立 pepper；不得回退到 data_hmac_key。"""
 
-    pepper = _api_key_pepper()
-    if pepper is None:
-        return _legacy_key_digest(key)
+    ring = load_api_key_pepper_keyring(settings)
+    if ring is None:
+        raise RuntimeError("api key pepper keyring is unavailable")
+    return ring
+
+
+def issue_api_key_digest(
+    key: str, *, settings: Settings | None = None
+) -> tuple[str, int | None]:
+    """新摘要绑定独立 pepper 的 active_version；无 pepper 时写 legacy SHA-256。"""
+
+    ring = load_api_key_pepper_keyring(settings)
+    if ring is None:
+        return _legacy_key_digest(key), None
+    return _peppered_digest(key, ring.keys[ring.active_version]), ring.active_version
+
+
+def hash_api_key(key: str, *, settings: Settings | None = None) -> str:
+    """新写入使用 HMAC-SHA256(pepper, key)；无独立 pepper 时回退 SHA-256。"""
+
+    return issue_api_key_digest(key, settings=settings)[0]
+
+
+def _peppered_digest(key: str, pepper: bytes) -> str:
     # HMAC-SHA256(pepper, key) 用于高熵 API Key，不是口令 KDF。
     return hmac.new(  # codeql[py/weak-sensitive-data-hashing]
         pepper, key.encode("utf-8"), hashlib.sha256
     ).hexdigest()
 
 
-def _digest_matches(key: str, stored: str) -> bool:
+def _digest_matches(
+    key: str,
+    stored: str,
+    version: int | None = None,
+    *,
+    settings: Settings | None = None,
+) -> bool:
     if not stored:
         return False
-    modern = hash_api_key(key)
-    legacy = _legacy_key_digest(key)
+    if version is None:
+        try:
+            return hmac.compare_digest(_legacy_key_digest(key), stored)
+        except ValueError:
+            return False
     try:
-        matched = hmac.compare_digest(modern, stored)
+        ring = load_api_key_pepper_keyring(settings)
+    except ValueError as exc:
+        raise UnknownPepperVersionError(version) from exc
+    if ring is None or version not in ring.keys:
+        raise UnknownPepperVersionError(version)
+    try:
+        return hmac.compare_digest(_peppered_digest(key, ring.keys[version]), stored)
     except ValueError:
-        matched = False
-    with suppress(ValueError):
-        matched = hmac.compare_digest(legacy, stored) or matched
-    return matched
+        return False
 
 
 api_key_scheme = APIKeyHeader(
@@ -96,12 +136,19 @@ class ApiKeyCandidate:
     current_hash: str
     previous_hash: str | None
     previous_expires_at: datetime | None
+    current_hash_version: int | None = None
+    previous_hash_version: int | None = None
     default_sign: str | None = None
     daily_quota: int = 0
     blacklist_check: bool = True
     freq_override: dict[str, int] | None = None
     rate_limit_per_min: int = 60
     allowed_ips: tuple[str, ...] = ()
+    recipient_limit_per_min: int = 10_000
+    segment_limit_per_min: int = 10_000
+    max_in_flight_chunks: int = 200
+    allow_market_api_bulk: bool = False
+    ip_allowlist_exempt_until: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +163,11 @@ class ApiAppContext:
     freq_override: dict[str, int] | None = None
     rate_limit_per_min: int = 60
     allowed_ips: tuple[str, ...] = ()
+    recipient_limit_per_min: int = 10_000
+    segment_limit_per_min: int = 10_000
+    max_in_flight_chunks: int = 200
+    allow_market_api_bulk: bool = False
+    ip_allowlist_exempt_until: datetime | None = None
 
 
 class ApiKeyRepository(Protocol):
@@ -146,9 +198,12 @@ class SqlApiKeyRepository:
                     """
                         SELECT id, name, dept, allowed_categories, default_sign,
                                daily_quota, blacklist_check, freq_override,
-                               rate_limit_per_min,
-                               allowed_ips,
-                               api_key_hash, api_key_prev_hash, api_key_prev_expires
+                               rate_limit_per_min, recipient_limit_per_min,
+                               segment_limit_per_min, max_in_flight_chunks,
+                               allow_market_api_bulk, allowed_ips,
+                               ip_allowlist_exempt_until,
+                               api_key_hash, api_key_prev_hash, api_key_prev_expires,
+                               api_key_hash_version, api_key_prev_hash_version
                         FROM app
                         WHERE status = 1
                           AND (api_key_prefix = :prefix OR api_key_prev_prefix = :prefix)
@@ -172,6 +227,16 @@ class SqlApiKeyRepository:
                         datetime | None,
                         row["api_key_prev_expires"],
                     ),
+                    current_hash_version=(
+                        int(row["api_key_hash_version"])
+                        if row["api_key_hash_version"] is not None
+                        else None
+                    ),
+                    previous_hash_version=(
+                        int(row["api_key_prev_hash_version"])
+                        if row["api_key_prev_hash_version"] is not None
+                        else None
+                    ),
                     default_sign=(
                         str(row["default_sign"]) if row["default_sign"] is not None else None
                     ),
@@ -181,6 +246,18 @@ class SqlApiKeyRepository:
                     rate_limit_per_min=int(row.get("rate_limit_per_min", 60)),
                     allowed_ips=tuple(
                         str(item) for item in (row["allowed_ips"] or ())
+                    ),
+                    recipient_limit_per_min=int(
+                        row.get("recipient_limit_per_min") or 10_000
+                    ),
+                    segment_limit_per_min=int(
+                        row.get("segment_limit_per_min") or 10_000
+                    ),
+                    max_in_flight_chunks=int(row.get("max_in_flight_chunks") or 200),
+                    allow_market_api_bulk=bool(row.get("allow_market_api_bulk") or False),
+                    ip_allowlist_exempt_until=cast(
+                        datetime | None,
+                        row.get("ip_allowlist_exempt_until"),
                     ),
                 )
                 for row in result.mappings()
@@ -215,9 +292,20 @@ def _ip_allowed(client_host: str, allowed_ips: tuple[str, ...]) -> bool:
     return any(client_ip in network for network in networks)
 
 
+def _empty_allowlist_permitted(context: ApiAppContext) -> bool:
+    """生产空白名单仅在未过期豁免内放行；开发/测试仍允许空名单。"""
+
+    if get_settings().environment != "production":
+        return True
+    until = context.ip_allowlist_exempt_until
+    return until is not None and until.tzinfo is not None and until > datetime.now(UTC)
+
+
 def _enforce_ip_allowlist(request: Request, context: ApiAppContext) -> None:
     client_host = trusted_client_ip(request)
     if not context.allowed_ips:
+        if not _empty_allowlist_permitted(context):
+            raise ApiError(403, "IP_NOT_ALLOWED", "来源 IP 不在应用白名单", None)
         LOGGER.warning(
             "api key accepted with empty ip allowlist",
             extra={"app_id": context.app_id},
@@ -238,9 +326,11 @@ class ApiKeyAuthenticator:
         repository: ApiKeyRepository,
         *,
         clock: Callable[[], datetime] = utc_now,
+        settings: Settings | None = None,
     ) -> None:
         self.repository = repository
         self.clock = clock
+        self.settings = settings
 
     async def authenticate(self, key: str) -> ApiAppContext:
         dummy = "0" * 64
@@ -252,13 +342,27 @@ class ApiKeyAuthenticator:
             raise ValueError("API Key clock must return timezone-aware datetime")
         candidates = await self.repository.find_candidates(key[:PREFIX_LENGTH])
         for candidate in candidates:
-            current_matches = _digest_matches(key, candidate.current_hash)
-            previous_matches = (
-                candidate.previous_hash is not None
-                and candidate.previous_expires_at is not None
-                and candidate.previous_expires_at > now
-                and _digest_matches(key, candidate.previous_hash)
-            )
+            try:
+                current_matches = _digest_matches(
+                    key,
+                    candidate.current_hash,
+                    candidate.current_hash_version,
+                    settings=self.settings,
+                )
+                previous_matches = (
+                    candidate.previous_hash is not None
+                    and candidate.previous_expires_at is not None
+                    and candidate.previous_expires_at > now
+                    and _digest_matches(
+                        key,
+                        candidate.previous_hash,
+                        candidate.previous_hash_version,
+                        settings=self.settings,
+                    )
+                )
+            except UnknownPepperVersionError:
+                LOGGER.warning("api key pepper version unavailable")
+                raise InvalidApiKey("API Key 无效") from None
             if current_matches or previous_matches:
                 categories = frozenset(
                     item.strip() for item in candidate.allowed_categories.split(",") if item.strip()
@@ -276,6 +380,11 @@ class ApiKeyAuthenticator:
                     candidate.freq_override,
                     candidate.rate_limit_per_min,
                     candidate.allowed_ips,
+                    candidate.recipient_limit_per_min,
+                    candidate.segment_limit_per_min,
+                    candidate.max_in_flight_chunks,
+                    candidate.allow_market_api_bulk,
+                    candidate.ip_allowlist_exempt_until,
                 )
         raise InvalidApiKey("API Key 无效")
 

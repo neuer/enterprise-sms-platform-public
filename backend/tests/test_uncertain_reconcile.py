@@ -22,6 +22,7 @@ class FakeRepository:
         self.candidates = candidates
         self.resolved: list[tuple[int, str]] = []
         self.alerts: list[int] = []
+        self.terminated: list[int] = []
 
     async def list_uncertain(self) -> list[UncertainChunk]:
         return self.chunks
@@ -34,6 +35,9 @@ class FakeRepository:
 
     async def alert_overdue(self, chunk: UncertainChunk) -> None:
         self.alerts.append(chunk.chunk_id)
+
+    async def terminalize_unknown(self, chunk: UncertainChunk) -> None:
+        self.terminated.append(chunk.chunk_id)
 
 
 def raw(service: CryptoService, custom_id: str, *, task_id: str = "task-9") -> RawCandidate:
@@ -80,6 +84,7 @@ async def test_mismatched_raw_never_resolves_and_overdue_only_alerts() -> None:
     assert await UncertainReconciler(repository, service, clock=lambda: now).run_once() == 0
     assert repository.resolved == []
     assert repository.alerts == [4]
+    assert repository.terminated == []
 
 
 @pytest.mark.asyncio
@@ -96,6 +101,7 @@ async def test_malformed_task_id_does_not_crash_reconcile_run() -> None:
 
     assert repository.resolved == []
     assert repository.alerts == [6]
+    assert repository.terminated == []
 
 
 @pytest.mark.asyncio
@@ -137,3 +143,29 @@ async def test_uncertain_threshold_comes_from_runtime_policy() -> None:
     await reconciler.run_once()
 
     assert repository.alerts == [5]
+    assert repository.terminated == []
+
+
+@pytest.mark.asyncio
+async def test_lifetime_without_evidence_enters_conservative_terminal() -> None:
+    service = crypto()
+    now = datetime(2026, 7, 11, 8, 0, tzinfo=UTC)
+    chunk = UncertainChunk(9, "custom-missing", now - timedelta(hours=72))
+    repository = FakeRepository([chunk], [raw(service, "another-custom")])
+
+    assert await UncertainReconciler(repository, service, clock=lambda: now).run_once() == 0
+    assert repository.resolved == []
+    assert repository.terminated == [9]
+    assert repository.alerts == []
+
+
+@pytest.mark.asyncio
+async def test_evidence_still_wins_after_lifetime() -> None:
+    service = crypto()
+    now = datetime(2026, 7, 11, 8, 0, tzinfo=UTC)
+    chunk = UncertainChunk(10, "custom-1", now - timedelta(hours=80))
+    repository = FakeRepository([chunk], [raw(service, "custom-1")])
+
+    assert await UncertainReconciler(repository, service, clock=lambda: now).run_once() == 1
+    assert repository.terminated == []
+    assert repository.resolved[0][0] == 10
