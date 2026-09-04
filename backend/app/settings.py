@@ -623,6 +623,14 @@ class Settings(BaseSettings):
             "vendor_secret_key",
         }:
             raise RuntimeError("vendor credentials are unavailable to the API component")
+        if (
+            name == "api_key_legacy_hmac_pepper"
+            and self.sms_component
+            and self.sms_component != "api"
+        ):
+            raise RuntimeError(
+                "legacy api key pepper is unavailable to non-api components"
+            )
 
         credential_files = {
             "vendor_secret_name": self.vendor_secret_name_file,

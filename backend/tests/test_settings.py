@@ -818,6 +818,9 @@ def test_runtime_credentials_are_read_from_configured_files(tmp_path: Path) -> N
         "jwt_secret",
         "ldap_bind_password",
     )
+    worker_readable = tuple(
+        name for name in credential_names if name != "api_key_legacy_hmac_pepper"
+    )
     kwargs: dict[str, object] = {
         "_env_file": None,
         "environment": "test",
@@ -833,8 +836,14 @@ def test_runtime_credentials_are_read_from_configured_files(tmp_path: Path) -> N
 
     settings = module.Settings(**kwargs)
 
-    for name in credential_names:
+    for name in worker_readable:
         assert settings.credential(name) == f"{name}-value"
+    with pytest.raises(RuntimeError, match="legacy api key pepper"):
+        settings.credential("api_key_legacy_hmac_pepper")
+    api_settings = module.Settings(**{**kwargs, "sms_component": "api"})
+    assert api_settings.credential("api_key_legacy_hmac_pepper") == (
+        "api_key_legacy_hmac_pepper-value"
+    )
     with pytest.raises(KeyError):
         settings.credential("unknown")
     missing_legacy = module.Settings(

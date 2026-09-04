@@ -76,11 +76,15 @@ def derive_legacy_data_hmac_pepper(material: str) -> bytes:
 
 
 def load_legacy_data_hmac_pepper(settings: Settings | None = None) -> bytes | None:
-    """读取独立只读历史 pepper；缺失时不得回退到当前 data_hmac_key。"""
+    """读取独立只读历史 pepper；缺失或 tombstone 时不得回退到当前 data_hmac_key。
+
+    文件必须保存创建旧摘要时使用的 `data_hmac_key` 原始文本；本函数再按
+    `HMAC-SHA256("sms-api-key-pepper-v1", raw_text)` 派生，禁止误存已派生的 32 字节。
+    """
 
     selected = settings or get_settings()
     raw = selected.optional_credential("api_key_legacy_hmac_pepper")
-    if not raw:
+    if not raw or raw == "!":
         return None
     return derive_legacy_data_hmac_pepper(raw)
 

@@ -259,6 +259,7 @@ def test_backend_services_mount_only_role_required_secrets() -> None:
         "data_aes_key",
         "data_hmac_key",
         "api_key_pepper_key",
+        "api_key_legacy_hmac_pepper",
         "audit_context_key",
         "audit_system_api_context_key",
         "alert_credential_public_key",
