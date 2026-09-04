@@ -318,6 +318,7 @@ def test_readiness_parses_pepper_keyring_without_exposing_value(tmp_path: Path) 
     system = b64(b"s")
     pepper = b64(b"p")
     values = {
+        "db_auth_password": "db-auth-password",
         "db_accept_password": "db-password",
         "data_aes_key": encoded,
         "data_hmac_key": encoded,

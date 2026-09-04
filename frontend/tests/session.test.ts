@@ -139,6 +139,29 @@ describe("Provider 与 JWT 会话", () => {
     expect(storageSignal).toHaveBeenCalledWith("sms_session_clear", expect.any(String))
   })
 
+  it("AUTH_CONTEXT_CHANGED 时清理会话且不重放改密请求", async () => {
+    const session = useSessionStore()
+    session.apply("local-access", admin)
+    const fetch = vi.fn().mockResolvedValue(
+      response(
+        { code: "AUTH_CONTEXT_CHANGED", message: "账号安全状态已变化，请重新登录后重试" },
+        409,
+      ),
+    )
+    vi.stubGlobal("fetch", fetch)
+    const unauthorized = vi.fn()
+    window.addEventListener("sms:unauthorized", unauthorized, { once: true })
+
+    await expect(session.changePassword("Old@Password123", "New@Password456")).rejects.toMatchObject({
+      code: "AUTH_CONTEXT_CHANGED",
+    })
+
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(session.isAuthenticated).toBe(false)
+    expect(getAccessToken()).toBeNull()
+    expect(unauthorized).toHaveBeenCalledOnce()
+  })
+
   it("首次登录只把 change token 返回给调用组件且不写任何浏览器存储", async () => {
     vi.stubGlobal(
       "fetch",

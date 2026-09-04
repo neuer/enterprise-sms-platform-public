@@ -13,6 +13,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.auth.backends import SessionStateUnavailable
+from app.core.auth.observability import (
+    observe_transition_created,
+    observe_transition_failure,
+    observe_transition_success,
+)
 from app.core.runtime_resources import bind_connection_system_audit, database_engine
 from app.settings import Settings, get_settings
 
@@ -83,7 +88,18 @@ class SqlAuthSecurityEventRepository:
         self.settings = settings or get_settings()
 
     def _engine(self) -> Any:
-        return database_engine(self.settings.database_url)
+        return database_engine(self.settings.database_url_for("auth"))
+
+    async def current_database_user(self) -> str:
+        """供启动/集成合同断言实际连接角色，不回显 DSN。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                user = await connection.scalar(text("SELECT current_user"))
+        finally:
+            await engine.dispose()
+        return str(user)
 
     async def ensure_transition(self, transition: AuthSecurityTransition) -> None:
         payload = {
@@ -94,12 +110,14 @@ class SqlAuthSecurityEventRepository:
             "transition_id": transition.transition_id,
         }
         engine = self._engine()
+        observe_transition_created(transition.action)
         try:
             async with engine.begin() as connection:
                 await bind_connection_system_audit(
                     connection,
                     actor_name="auth-system",
                     action=transition.action,
+                    producer_domain="api",
                 )
                 # sms_auth 只有 audit_log INSERT、没有 SELECT。冲突推断会要求
                 # 表级读取权限，因此保存点内 INSERT VALUES，只吞 unique_violation。
@@ -129,7 +147,9 @@ class SqlAuthSecurityEventRepository:
                 except IntegrityError as error:
                     if not _is_unique_violation(error):
                         raise
+            observe_transition_success(transition.action)
         except Exception as error:
+            observe_transition_failure(transition.action)
             raise SessionStateUnavailable("auth security audit unavailable") from error
         finally:
             await engine.dispose()

@@ -142,7 +142,12 @@ metrics_gate(){
     sms_frequency_filtered_messages \
     sms_poll_lag_seconds sms_usage_projection_drift_dimensions \
     sms_usage_projection_drift_absolute_delta sms_metrics_snapshot_age_seconds \
-    sms_send_admission sms_outbox_oldest_age_seconds sms_send_submit_outcome; do
+    sms_send_admission sms_outbox_oldest_age_seconds sms_send_submit_outcome \
+    auth_transition_created_total auth_transition_audit_success_total \
+    auth_transition_audit_failure_total auth_admit_total \
+    auth_policy_cache_hit_total auth_policy_cache_miss_total \
+    auth_policy_load_failure_total auth_policy_snapshot_age_seconds \
+    auth_guard_db_queries_total; do
     printf '%s\n' "$metrics_body" | grep -q "^# TYPE ${family} gauge$" || {
       echo "Prometheus 指标缺失: ${family}" >&2
       exit 1

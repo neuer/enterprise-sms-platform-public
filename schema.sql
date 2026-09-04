@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.79  2026-09-04
+-- v1.6.79：认证专项第二轮：锁定/封禁审计使用 sms_auth；日常改密增加
+--          单调 credential_version 与安全版本 CAS。
 -- v1.6.78  2026-09-04
 -- v1.6.78：人工 uncertain 处置改为可恢复 effect；chunk 级额度补偿、
 --          在途原子预留与跨实例 admission epoch。
@@ -239,6 +242,8 @@ CREATE TABLE local_credential (
     identity_id         BIGINT      PRIMARY KEY REFERENCES auth_identity(id) ON DELETE RESTRICT,
     password_hash       TEXT        NOT NULL,
     must_change_password BOOLEAN    NOT NULL DEFAULT TRUE,
+    credential_version  BIGINT      NOT NULL DEFAULT 1,
+    CONSTRAINT ck_local_credential_version_positive CHECK (credential_version > 0),
     password_changed_at TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -254,6 +259,9 @@ CREATE TABLE password_change_token (
     purpose                 VARCHAR(32) NOT NULL CHECK (purpose IN ('initial_password')),
     normalized_login_name   VARCHAR(64) NOT NULL,
     issued_security_version BIGINT      NOT NULL CHECK (issued_security_version > 0),
+    issued_credential_version BIGINT    NOT NULL DEFAULT 1,
+    CONSTRAINT ck_password_change_issued_credential_version
+      CHECK (issued_credential_version > 0),
     status                  VARCHAR(12) NOT NULL DEFAULT 'available',
     expires_at              TIMESTAMPTZ NOT NULL,
     consumed_at             TIMESTAMPTZ,

@@ -308,8 +308,62 @@ describe("统一 API 请求", () => {
 
     expect(getAccessToken()).toBeNull()
     expect(getSessionUser()).toBeNull()
-    expect(unauthorized).toHaveBeenCalledOnce()
+    expect(unauthorized).not.toHaveBeenCalled()
     expect(reauthentication).toHaveBeenCalledOnce()
+  })
+
+  it("业务 API 直接返回 AUTH_REAUTH_REQUIRED 时不刷新也不重放", async () => {
+    setAccessSession("ad-access", {
+      account_id: 8,
+      identity_id: 18,
+      provider_code: "ad",
+      username: "operator01",
+      display_name: "目录操作员",
+      dept: "研发部",
+      role: "operator",
+    })
+    const fetch = vi.fn().mockResolvedValue(
+      response({ code: "AUTH_REAUTH_REQUIRED", message: "AD 会话已到期，请重新登录" }, 401),
+    )
+    vi.stubGlobal("fetch", fetch)
+    const unauthorized = watchUnauthorized()
+    const reauthentication = vi.fn()
+    window.addEventListener("sms:reauth-required", reauthentication, { once: true })
+
+    const result = await authorizedFetch("/api/v1/web/reports/dashboard", { method: "GET" })
+
+    expect(result.status).toBe(401)
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(getAccessToken()).toBeNull()
+    expect(unauthorized).not.toHaveBeenCalled()
+    expect(reauthentication).toHaveBeenCalledOnce()
+  })
+
+  it("AUTH_CONTEXT_CHANGED 时清理会话且不重放原请求", async () => {
+    setAccessSession("local-access", {
+      account_id: 8,
+      identity_id: 18,
+      provider_code: "local",
+      username: "admin",
+      display_name: "平台管理员",
+      dept: "平台部",
+      role: "admin",
+    })
+    const fetch = vi.fn().mockResolvedValue(
+      response(
+        { code: "AUTH_CONTEXT_CHANGED", message: "账号安全状态已变化，请重新登录后重试" },
+        409,
+      ),
+    )
+    vi.stubGlobal("fetch", fetch)
+    const unauthorized = watchUnauthorized()
+
+    const result = await authorizedFetch("/api/v1/web/auth/password/change", { method: "POST" })
+
+    expect(result.status).toBe(409)
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(getAccessToken()).toBeNull()
+    expect(unauthorized).toHaveBeenCalledOnce()
   })
 
   it.each(["STEP_UP_REQUIRED", "STEP_UP_EXPIRED"])("%s 时保留当前会话且不广播未授权事件", async (code) => {

@@ -460,6 +460,7 @@ class SqlUserManagementRepository:
                         """
                         UPDATE local_credential SET
                           password_hash=:password_hash,must_change_password=TRUE,
+                          credential_version=credential_version+1,
                           password_changed_at=NULL,updated_at=now()
                         WHERE identity_id=:identity_id
                         """
@@ -474,6 +475,19 @@ class SqlUserManagementRepository:
                         """
                         UPDATE user_account SET security_version=security_version+1,
                           updated_at=now() WHERE id=:account_id
+                        """
+                    ),
+                    {"account_id": account_id},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE password_change_token SET
+                          status='revoked',
+                          processing_lease_id=NULL,
+                          processing_lease_expires_at=NULL
+                        WHERE account_id=:account_id
+                          AND status IN ('available','processing')
                         """
                     ),
                     {"account_id": account_id},
