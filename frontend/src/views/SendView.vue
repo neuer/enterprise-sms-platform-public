@@ -2,7 +2,7 @@
 import "../styles/workspace.css"
 
 import type { UploadRequestOptions } from "element-plus"
-import { computed, getCurrentInstance, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
+import { computed, getCurrentInstance, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from "vue"
 import type { Router } from "vue-router"
 
 import {
@@ -92,12 +92,45 @@ const renderedTemplateParts = computed(() => {
   return parts
 })
 
-const pastedMobiles = computed(() =>
-  form.mobilesText
+// ── 号码解析：≤2000 字的小文本每次变更同步解析，校验提示与计数即时反馈不变；
+// 更大粘贴（可能数万行）300ms 防抖，避免每次按键全量 split/Set 阻塞输入。 ──
+const MOBILES_SYNC_PARSE_MAX_LENGTH = 2_000
+const MOBILES_PARSE_DEBOUNCE_MS = 300
+
+function parseMobiles(text: string): string[] {
+  return text
     .split(/[\s,，;；]+/)
     .map((value) => value.trim())
-    .filter(Boolean),
+    .filter(Boolean)
+}
+
+// shallowRef 持有解析结果：大数组不做深度响应，仅在解析落盘时整体替换并触发下游 computed。
+const pastedMobiles = shallowRef<string[]>([])
+let mobilesParseTimer: number | undefined
+
+watch(
+  () => form.mobilesText,
+  (text) => {
+    window.clearTimeout(mobilesParseTimer)
+    if (text.length <= MOBILES_SYNC_PARSE_MAX_LENGTH) {
+      mobilesParseTimer = undefined
+      pastedMobiles.value = parseMobiles(text)
+      return
+    }
+    mobilesParseTimer = window.setTimeout(() => {
+      mobilesParseTimer = undefined
+      pastedMobiles.value = parseMobiles(text)
+    }, MOBILES_PARSE_DEBOUNCE_MS)
+  },
 )
+
+/** 提交 / 剔除等即时路径先落盘待定解析，绝不使用防抖窗口内的过期结果。 */
+function flushMobilesParse(): void {
+  if (mobilesParseTimer === undefined) return
+  window.clearTimeout(mobilesParseTimer)
+  mobilesParseTimer = undefined
+  pastedMobiles.value = parseMobiles(form.mobilesText)
+}
 
 // 与服务端一致的 ^1\d{10}$（lib/phone 单点）；提交前即时暴露格式错误，避免整单被 400 拒绝却只看到笼统提示。
 const invalidMobiles = computed(() => pastedMobiles.value.filter((value) => !PHONE_RE.test(value)))
@@ -370,24 +403,26 @@ const riskLines = computed<RiskLine[]>(() => {
   return lines
 })
 
+// 表单任何实质变更（含号码文本、模板参数按下标原地编辑、导入包切换）都作废上一受理结果并轮换幂等键；
+// 多源逐项浅比较，不再对 mobilesText 等大字段做全量 JSON 序列化。
 watch(
-  () =>
-    JSON.stringify({
-      category: form.category,
-      source: form.source,
-      contentMode: form.contentMode,
-      mobilesText: form.mobilesText,
-      content: form.content,
-      templateId: form.templateId,
-      templateParams: templateParams.value,
-      signName: form.signName,
-      scheduleEnabled: form.scheduleEnabled,
-      scheduledAt: form.scheduledAt,
-      isTest: form.isTest,
-      consentConfirmed: form.consentConfirmed,
-      remark: form.remark,
-      importId: imported.value?.import_id ?? null,
-    }),
+  [
+    () => form.category,
+    () => form.source,
+    () => form.contentMode,
+    () => form.mobilesText,
+    () => form.content,
+    () => form.templateId,
+    () => form.signName,
+    () => form.scheduleEnabled,
+    () => form.scheduledAt,
+    () => form.isTest,
+    () => form.consentConfirmed,
+    () => form.remark,
+    () => imported.value?.import_id ?? null,
+    // 模板参数经 v-model 按下标原地修改，需按值比较；数组极小（占位符个数），序列化开销可忽略。
+    () => JSON.stringify(templateParams.value),
+  ],
   () => {
     idempotencyKey.value = newIdempotencyKey()
     sendResult.value = null
@@ -479,7 +514,11 @@ function chooseCategory(category: Category): void {
 }
 
 function removeDuplicates(): void {
-  form.mobilesText = [...new Set(pastedMobiles.value)].join("\n")
+  flushMobilesParse()
+  const deduped = [...new Set(pastedMobiles.value)]
+  form.mobilesText = deduped.join("\n")
+  // 与新文本保持同步（元素已去分隔符，与重解析结果一致），统计即时更新，不等防抖窗口
+  pastedMobiles.value = deduped
 }
 
 function resetImport(): void {
@@ -515,6 +554,8 @@ function formatExpiry(value: string): string {
 }
 
 async function submit(): Promise<void> {
+  // 大文本粘贴后 300ms 防抖窗口内也可能点击提交：先落盘最新解析，再做禁用校验与组包。
+  flushMobilesParse()
   if (sendDisabled.value) return
   resetFeedback()
   busy.value = true
@@ -579,6 +620,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.clearTimeout(previewTimer)
+  window.clearTimeout(mobilesParseTimer)
 })
 </script>
 
