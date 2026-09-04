@@ -96,7 +96,10 @@ class SqlSendAdmissionRepository:
             realtime_paused=bool(values[0]),
             bulk_paused=bool(values[1]),
             vendor_failures=failures,
-            heartbeat_stale=int(row["heartbeat_stale"] or 0) > 0,
+            heartbeat_stale=(
+                bool(getattr(self.settings, "is_production", False))
+                and int(row["heartbeat_stale"] or 0) > 0
+            ),
         )
 
     async def load_control_state(self) -> dict[str, Any] | None:

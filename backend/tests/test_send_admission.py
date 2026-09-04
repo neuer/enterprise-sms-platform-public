@@ -274,6 +274,38 @@ async def test_repository_loads_same_keys_as_current_alerts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_repository_only_fail_closes_stale_heartbeats_in_production() -> None:
+    row = {
+        "outbox_active": 0,
+        "outbox_oldest_age_s": 0,
+        "outbox_dead": 0,
+        "uncertain_overdue": 0,
+        "callback_dead": 0,
+        "heartbeat_stale": 1,
+    }
+
+    async def load_with(*, production: bool) -> SendAdmissionFacts:
+        connection = FakeConnection(row)
+        repository = SqlSendAdmissionRepository(
+            settings=type(
+                "S",
+                (),
+                {
+                    "database_url": "postgresql+asyncpg://x",
+                    "redis_control_url": "redis://x",
+                    "is_production": production,
+                },
+            )(),
+            redis=FakeRedis([None, None, "0"]),
+        )
+        repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
+        return await repository.load()
+
+    assert (await load_with(production=False)).heartbeat_stale is False
+    assert (await load_with(production=True)).heartbeat_stale is True
+
+
+@pytest.mark.asyncio
 async def test_repository_fail_closes_on_invalid_vendor_counter() -> None:
     connection = FakeConnection(
         {
