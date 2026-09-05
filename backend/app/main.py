@@ -34,6 +34,10 @@ from app.api.users import router as users_router
 from app.api.vendor_test import router as vendor_test_router
 from app.api.web_messages import router as web_messages_router
 from app.build_info import APP_VERSION
+from app.core.auth.transition_sync import (
+    create_auth_transition_reconciler,
+    require_writer_lease_budget,
+)
 from app.core.bounded_executor import close_bounded_executor
 from app.core.correlation import CorrelationIdMiddleware
 from app.core.errors import (
@@ -87,8 +91,10 @@ def create_lifespan(
 
         selected = getattr(application.state, "settings", settings)
         configure_runtime_resources(selected, component="api")
+        require_writer_lease_budget(selected)
         heartbeat = None
         runtime_monitor = None
+        transition_audit = None
         try:
             register_task_modules()
             startup_gate: StartupConfigGate = application.state.startup_config_gate
@@ -101,12 +107,17 @@ def create_lifespan(
                 )
             heartbeat = create_default_heartbeat_service()
             runtime_monitor = create_runtime_monitor()
+            transition_audit = create_auth_transition_reconciler(selected)
             application.state.job_heartbeat = heartbeat
             application.state.runtime_monitor = runtime_monitor
+            application.state.auth_transition_reconciler = transition_audit
             heartbeat.start()
             runtime_monitor.start()
+            transition_audit.start()
             yield
         finally:
+            if transition_audit is not None:
+                await transition_audit.stop()
             if runtime_monitor is not None:
                 await runtime_monitor.stop()
             if heartbeat is not None:

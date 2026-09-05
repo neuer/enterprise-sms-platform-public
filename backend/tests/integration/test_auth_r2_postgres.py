@@ -361,3 +361,72 @@ async def test_multi_process_real_redis_and_postgres_transition_contract(
         await first.delete(*keys)
         await first.aclose()
         await second.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif("AUTH_GUARD_REDIS_URL" not in os.environ, reason="requires isolated Redis 7")
+async def test_reconciler_recovers_after_postgres_outage_without_followup_login(
+    auth_roles: tuple[AsyncEngine, URL, URL, Any],
+) -> None:
+    import asyncio
+
+    from redis.asyncio import Redis
+
+    from app.core.auth.service import AUDIT_DUE_KEY
+    from app.core.auth.transition_sync import AuthTransitionReconciler
+
+    owner, _auth_url, _accept_url, settings = auth_roles
+    client = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
+    real = SqlAuthSecurityEventRepository(cast(Settings, settings))
+
+    class FlakyWriter:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def ensure_transition(self, transition: AuthSecurityTransition) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise SessionStateUnavailable("auth security audit unavailable")
+            await real.ensure_transition(transition)
+
+    writer = FlakyWriter()
+    username = f"rc-{uuid4().hex[:12]}"
+    ip = "10.9.0.21"
+    guard = LoginGuard(RedisKeyValue(client), security_events=writer)
+    try:
+        for _ in range(4):
+            await guard.record_failure(username, ip, "local")
+        with pytest.raises(SessionStateUnavailable):
+            await guard.record_failure(username, ip, "local")
+        lock = await client.get(f"auth:lock:user:{username}")
+        await asyncio.sleep(1.2)
+        reconciler = AuthTransitionReconciler(
+            store=RedisKeyValue(client),
+            security_events=writer,
+            interval_s=1,
+        )
+        assert await reconciler.reconcile() >= 1
+        async with owner.connect() as connection:
+            count = await connection.scalar(
+                text(
+                    """
+                    SELECT COUNT(*) FROM audit_log
+                    WHERE action='auth_account_locked' AND object_id=:object_id
+                    """
+                ),
+                {"object_id": str(lock)},
+            )
+        assert int(count) == 1
+        assert writer.calls == 2
+    finally:
+        keys = [
+            f"auth:fail:user:{username}",
+            f"auth:lock:user:{username}",
+            f"auth:fail:ip:{ip}",
+            AUDIT_DUE_KEY,
+        ]
+        lock = await client.get(f"auth:lock:user:{username}")
+        if lock:
+            keys.append(f"auth:audit:transition:{lock}")
+        await client.delete(*keys)
+        await client.aclose()
