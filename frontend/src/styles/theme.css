@@ -439,6 +439,13 @@ button:focus-visible {
   font-size: 12px;
 }
 
+.login-safe-mode {
+  margin: 8px 0 2px;
+  color: #e6c27a;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 /* 主按钮：雅致金微渐变（VI 色阶内），蓝字 */
 .login-card .login-submit.el-button {
   width: 100%;

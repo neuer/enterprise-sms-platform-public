@@ -26,6 +26,7 @@ initTheme()
 const pinia = createPinia()
 useSessionStore(pinia).restore()
 // 守卫会等待这次恢复；restoreFromCookie 内部消化所有异常，只以布尔值收敛。
+// 无 Web Locks 时按 D101 跳过 Cookie 恢复，刷新后必须重新登录。
 const sessionReady = useSessionStore(pinia).restoreFromCookie()
 installAuthGuard(router, pinia, sessionReady)
 

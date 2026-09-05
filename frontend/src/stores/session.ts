@@ -11,6 +11,7 @@ import {
   type PlatformUser,
   type UserRole,
 } from "../api/auth"
+import { isSafeSingleTabMode } from "../api/refreshLock"
 import {
   invalidateSessionGeneration,
   SessionGenerationStaleError,
@@ -170,6 +171,7 @@ export const useSessionStore = defineStore("session", {
     },
     async restoreFromCookie(): Promise<boolean> {
       if (this.token) return true
+      if (isSafeSingleTabMode()) return false
       try {
         return await withSessionGeneration({}, async ({ isLive, signal }) => {
           if (this.token) return true
@@ -188,6 +190,10 @@ export const useSessionStore = defineStore("session", {
       }
     },
     async revalidateOnResume(): Promise<boolean> {
+      if (isSafeSingleTabMode()) {
+        this.clearAllTabs()
+        return false
+      }
       try {
         return await withSessionGeneration({ invalidateFirst: true }, async ({ isLive, signal }) => {
           const result = await refreshRequest(signal)

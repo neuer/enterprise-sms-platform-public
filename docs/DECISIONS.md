@@ -1326,3 +1326,19 @@
 - 影响：schema v1.6.76/0090、`vendor/routing.py`、发送 worker、metrics family
   `sms_send_submit_outcome`、威胁模型、failover 手册、PERFORMANCE.md 与 OpenAPI 发送说明。
   第二生产 adapter 仍未接入，不得把当前合同写成已具备多账户高可用。
+
+## D101 无 Web Locks 时采用安全单标签页，禁止静默并行 refresh
+
+- 决策：`navigator.locks.request` 不存在时，禁止 `withRefreshLock` 直接 `return run()`。
+  本页只用 Promise 链串行；不声称跨标签页互斥。此时：
+  `restoreFromCookie()` 立即返回 false，不调用 `/refresh`；
+  `revalidateOnResume()`（BFCache `pageshow`）失败关闭并 `clearAllTabs()`；
+  refresh 标签页绑定只留当前页内存，不读写 `sessionStorage`，刷新后必须重新登录。
+  登录页按能力检测（不是 UA）提示「仅允许单标签页，刷新后需要重新登录」。
+- 浏览器基线：Chrome/Edge 69+、Firefox 96+、Safari 15.4+ 具备 Web Locks，走既有跨标签页锁。
+  更旧内核、部分内嵌 WebView 或锁 API 被关闭时进入安全单标签页。不引入 BroadcastChannel
+  租约，不改 Cookie/epoch 协议，也不为前端单独加 Prometheus 指标（当前无前端指标汇）。
+- 原因：无锁时并行 refresh 会竞态轮换、覆盖代际或把旧主体写回；静默降级会让多标签页
+  看起来“还能用”却破坏 AUTH-R3 会话合同。
+- 影响：`frontend/src/api/refreshLock.ts`、`sessionTokens.ts`、`stores/session.ts`、
+  登录页提示与前端会话测试。#585 / #595 跟踪项保持开放。

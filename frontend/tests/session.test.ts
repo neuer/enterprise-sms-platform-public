@@ -530,4 +530,31 @@ describe("历史 Storage 残留不得再次导入 Access Token", () => {
       }
     },
   )
+
+  it("无 Web Locks 时 Cookie 恢复立即失败且不请求 refresh", async () => {
+    vi.stubGlobal("navigator", {})
+    const fetch = vi.fn()
+    vi.stubGlobal("fetch", fetch)
+    const session = useSessionStore()
+
+    await expect(session.restoreFromCookie()).resolves.toBe(false)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(session.isAuthenticated).toBe(false)
+  })
+
+  it("无 Web Locks 时 BFCache 恢复失败关闭并清除全部标签页", async () => {
+    vi.stubGlobal("navigator", {})
+    const fetch = vi.fn()
+    vi.stubGlobal("fetch", fetch)
+    const storageSignal = vi.spyOn(Storage.prototype, "setItem")
+    const session = useSessionStore()
+    session.apply("jwt-token", admin)
+
+    await expect(session.revalidateOnResume()).resolves.toBe(false)
+
+    expect(fetch).not.toHaveBeenCalled()
+    expect(session.isAuthenticated).toBe(false)
+    expect(getAccessToken()).toBeNull()
+    expect(storageSignal).toHaveBeenCalledWith("sms_session_clear", expect.any(String))
+  })
 })
