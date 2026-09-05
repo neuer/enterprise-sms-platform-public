@@ -37,6 +37,7 @@ from app.services.idempotency import (
     usage_request_key,
 )
 from app.services.masking import mask_phone_text, mask_verify_otp
+from app.services.send_inflight import InFlightInvariantViolation as InFlightInvariantViolation
 from app.services.usage_ledger import FrequencyDecisionItem
 from app.settings import get_settings
 
@@ -329,25 +330,17 @@ class PipelineStore(Protocol):
 class IdempotencyPort(Protocol):
     def claim_key(self, scope: IdempotencyScope, biz_id: str) -> str: ...
 
-    def frequency_result_key(
-        self, scope: IdempotencyScope, biz_id: str
-    ) -> str: ...
+    def frequency_result_key(self, scope: IdempotencyScope, biz_id: str) -> str: ...
 
-    def quota_result_key(
-        self, scope: IdempotencyScope, biz_id: str, date_key: str
-    ) -> str: ...
+    def quota_result_key(self, scope: IdempotencyScope, biz_id: str, date_key: str) -> str: ...
 
     async def request_fingerprint(
         self, scope: IdempotencyScope, biz_id: str
     ) -> IdempotencyFingerprint | None: ...
 
-    async def lookup(
-        self, scope: IdempotencyScope, biz_id: str
-    ) -> str | None: ...
+    async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None: ...
 
-    async def remember(
-        self, scope: IdempotencyScope, biz_id: str, batch_no: str
-    ) -> None: ...
+    async def remember(self, scope: IdempotencyScope, biz_id: str, batch_no: str) -> None: ...
 
     async def claim(
         self,
@@ -357,17 +350,11 @@ class IdempotencyPort(Protocol):
         fingerprint: str = "",
     ) -> str | None: ...
 
-    async def wait(
-        self, scope: IdempotencyScope, biz_id: str
-    ) -> str | None: ...
+    async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None: ...
 
-    async def release(
-        self, scope: IdempotencyScope, biz_id: str, token: str
-    ) -> None: ...
+    async def release(self, scope: IdempotencyScope, biz_id: str, token: str) -> None: ...
 
-    async def renew(
-        self, scope: IdempotencyScope, biz_id: str, token: str
-    ) -> bool: ...
+    async def renew(self, scope: IdempotencyScope, biz_id: str, token: str) -> bool: ...
 
     async def heartbeat(
         self,
@@ -686,17 +673,11 @@ class SendPipeline:
             "sign_name": request.sign_name or app.default_sign,
             "scheduled_at": _canonical_scheduled_at(request.scheduled_at)
             if normalize
-            else (
-                request.scheduled_at.isoformat()
-                if request.scheduled_at is not None
-                else None
-            ),
+            else (request.scheduled_at.isoformat() if request.scheduled_at is not None else None),
             "consent_confirmed": request.consent_confirmed,
             "is_test": request.is_test,
             "mobiles": (
-                sorted(set(request.mobiles or ()))
-                if normalize
-                else list(request.mobiles or ())
+                sorted(set(request.mobiles or ())) if normalize else list(request.mobiles or ())
             ),
             "protected_phone_identity": protected_identity,
             "vendor_test_uat": request.vendor_test_uat,
@@ -793,9 +774,7 @@ class SendPipeline:
             raise ValueError("scheduled_at must be in the future")
         horizon = now + timedelta(days=self.config.max_schedule_ahead_days)
         if request.scheduled_at > horizon:
-            raise ValueError(
-                f"scheduled_at 不能超过 {self.config.max_schedule_ahead_days} 天"
-            )
+            raise ValueError(f"scheduled_at 不能超过 {self.config.max_schedule_ahead_days} 天")
 
     async def _ensure_same_request(
         self,
@@ -809,9 +788,7 @@ class SendPipeline:
 
         stored = await self.idempotency.request_fingerprint(scope, biz_id)
         if stored is None:
-            raise IdempotencyConflict(
-                "同一幂等键缺少请求指纹，拒绝复用，请更换 biz_id"
-            )
+            raise IdempotencyConflict("同一幂等键缺少请求指纹，拒绝复用，请更换 biz_id")
         try:
             request_hash = self._request_hash(
                 request,
@@ -839,9 +816,7 @@ class SendPipeline:
             legacy_hash,
         ):
             return
-        raise IdempotencyConflict(
-            "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
-        )
+        raise IdempotencyConflict("同一幂等键已用于不同请求，请更换 biz_id 或复用原请求")
 
     async def _resolve_acceptance_commit(
         self,
@@ -860,11 +835,7 @@ class SendPipeline:
         resolver = getattr(self.store, "resolve_ambiguous_acceptance_commit", None)
         reservation_id = getattr(inflight, "id", None)
         generation = getattr(inflight, "generation", None)
-        if (
-            resolver is not None
-            and reservation_id is not None
-            and generation is not None
-        ):
+        if resolver is not None and reservation_id is not None and generation is not None:
             scope = idem_scope or IdempotencyScope(
                 command.scope_kind,
                 command.scope_id,
@@ -916,9 +887,7 @@ class SendPipeline:
         if self.admission_guard is None:
             return
         recipient_count = (
-            len(request.protected_mobiles)
-            if request.protected_mobiles
-            else len(request.mobiles)
+            len(request.protected_mobiles) if request.protected_mobiles else len(request.mobiles)
         )
         await self.admission_guard.authorize(
             category=request.category,
@@ -1001,6 +970,8 @@ class SendPipeline:
                 raise
             except InFlightQueryUnavailable:
                 raise
+            except InFlightInvariantViolation:
+                raise
             except Exception as exc:
                 raise InFlightQueryUnavailable("在途分片预留不可用") from exc
         counter = getattr(self.store, "count_in_flight_chunks", None)
@@ -1077,9 +1048,7 @@ class SendPipeline:
             key_version=self.crypto.active_version,
         )
         if getattr(viewed, "fingerprint", "") not in {"", request_hash}:
-            raise IdempotencyConflict(
-                "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
-            )
+            raise IdempotencyConflict("同一幂等键已用于不同请求，请更换 biz_id 或复用原请求")
         await self._consume_replay_limit(app)
         waited = await self.idempotency.wait(idem_scope, biz_id)
         if waited is None:
@@ -1149,9 +1118,7 @@ class SendPipeline:
         viewed = await inspect(idem_scope, biz_id) if inspect is not None else None
         if viewed is not None:
             if getattr(viewed, "fingerprint", "") not in {"", request_hash}:
-                raise IdempotencyConflict(
-                    "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
-                )
+                raise IdempotencyConflict("同一幂等键已用于不同请求，请更换 biz_id 或复用原请求")
             await self._consume_replay_limit(app)
             existing = await self.idempotency.wait(idem_scope, biz_id)
             if existing is not None:
@@ -1164,9 +1131,7 @@ class SendPipeline:
                 "",
                 request_hash,
             }:
-                raise IdempotencyConflict(
-                    "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
-                )
+                raise IdempotencyConflict("同一幂等键已用于不同请求，请更换 biz_id 或复用原请求")
             await self._consume_replay_limit(app)
             existing = await self.idempotency.wait(idem_scope, biz_id)
             if existing is not None:
@@ -1178,9 +1143,7 @@ class SendPipeline:
         await self._authorize_new_send(request)
         await self._consume_request_limit(app, request, preauthorization)
         lost = asyncio.Event()
-        heartbeat = asyncio.create_task(
-            self.idempotency.heartbeat(idem_scope, biz_id, token, lost)
-        )
+        heartbeat = asyncio.create_task(self.idempotency.heartbeat(idem_scope, biz_id, token, lost))
 
         async def check_ownership() -> None:
             if lost.is_set():
@@ -1214,9 +1177,7 @@ class SendPipeline:
                 claim_key=self.idempotency.claim_key(idem_scope, biz_id),
                 claim_token=fence_token,
                 claim_generation=viewed.generation if viewed is not None else 1,
-                frequency_result_key=self.idempotency.frequency_result_key(
-                    idem_scope, biz_id
-                ),
+                frequency_result_key=self.idempotency.frequency_result_key(idem_scope, biz_id),
                 idem_scope=idem_scope,
                 request_hash=request_hash,
                 request_hash_key_version=request_hash_key_version,
@@ -1313,9 +1274,7 @@ class SendPipeline:
             verify_otp_mask=self.config.verify_otp_mask,
         )
         self._enforce_quota_exemption(app, request)
-        inflight = await self._enforce_in_flight(
-            app, request, recipient_count=recipient_count
-        )
+        inflight = await self._enforce_in_flight(app, request, recipient_count=recipient_count)
         inflight_bound = False
         allow_unbound_release = True
 
@@ -1378,8 +1337,7 @@ class SendPipeline:
                     len(aliases) != len(request.protected_hmac_candidates)
                     or set(aliases) != self.crypto.hmac_versions
                     or any(
-                        re.fullmatch(r"[0-9a-f]{64}", digest) is None
-                        for digest in aliases.values()
+                        re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in aliases.values()
                     )
                     or aliases.get(protected_source[0].key_version)
                     != protected_source[0].phone_hmac
@@ -1521,8 +1479,8 @@ class SendPipeline:
                 raise AllFiltered("全部号码已被过滤")
             quota_cost = prepared.segments * len(accepted)
             if request.biz_id and idem_scope is not None:
-                quota_reservation_key = (
-                    self.idempotency.quota_result_key(idem_scope, request.biz_id, date_key)
+                quota_reservation_key = self.idempotency.quota_result_key(
+                    idem_scope, request.biz_id, date_key
                 )
             else:
                 quota_reservation_key = None
@@ -1627,18 +1585,14 @@ class SendPipeline:
                 ):
                     raise ValueError("Web 发送必须绑定稳定账号与身份")
                 if isinstance(principal, UncertainEffectPrincipal):
-                    if (
-                        request.biz_id is None
-                        or not request.biz_id.startswith("manual-resend:")
-                    ):
+                    if request.biz_id is None or not request.biz_id.startswith("manual-resend:"):
                         raise ValueError("system resend principal is not forgeable")
                     verifier = getattr(self.store, "verify_uncertain_effect", None)
                     if verifier is None:
                         raise ValueError("system resend principal is not forgeable")
                     await verifier(principal)
                 if request.import_reservation_id is not None and (
-                    request.channel != "web"
-                    or not isinstance(principal, SecurityPrincipal)
+                    request.channel != "web" or not isinstance(principal, SecurityPrincipal)
                 ):
                     raise ValueError("导入包预留只能绑定 Web 稳定主体")
                 if not isinstance(
@@ -1699,9 +1653,7 @@ class SendPipeline:
                     import_reservation_id=request.import_reservation_id,
                     inflight_reservation_id=getattr(inflight, "id", None),
                     inflight_reservation_generation=getattr(inflight, "generation", None),
-                    idempotency_claim_token=(
-                        claim_token.split(":", 1)[0] if claim_token else None
-                    ),
+                    idempotency_claim_token=(claim_token.split(":", 1)[0] if claim_token else None),
                     idempotency_claim_generation=claim_generation,
                     messages=tuple(accepted),
                 )

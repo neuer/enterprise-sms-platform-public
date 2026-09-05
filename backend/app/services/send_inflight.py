@@ -8,6 +8,16 @@ from typing import Any, Literal
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, OperationalError
 
+ACTIVE_INFLIGHT_STATES = frozenset({"reserved", "batch_bound", "materialized"})
+InFlightDeltaOperation = Literal[
+    "reserve",
+    "release",
+    "materialize",
+    "split",
+    "repair",
+    "reconcile",
+]
+
 AcceptCommitKind = Literal[
     "UNBOUND",
     "BOUND_TO_EXPECTED_BATCH",
@@ -30,6 +40,357 @@ class AcceptCommitResolution:
     kind: AcceptCommitKind
     batch_no: str | None = None
     reservation_state: str | None = None
+
+
+class InFlightInvariantViolation(RuntimeError):
+    """明细与聚合未同时更新；当前事务必须回滚。"""
+
+    def __init__(self, operation: str, detail: str = "") -> None:
+        self.operation = operation
+        super().__init__(detail or f"在途容量守恒失败: {operation}")
+
+
+def conservation_error(exc: BaseException) -> bool:
+    """识别延迟守恒触发器或双侧更新失败。"""
+
+    text = str(exc)
+    return "send_inflight balance" in text or isinstance(exc, InFlightInvariantViolation)
+
+
+async def apply_inflight_delta(
+    connection: Any,
+    *,
+    operation: InFlightDeltaOperation,
+    app_id: int,
+    delta: int,
+    reservation_id: int | None = None,
+    generation: int | None = None,
+    expected_states: frozenset[str] | None = None,
+    next_state: str | None = None,
+    next_reserved_chunks: int | None = None,
+    reason: str | None = None,
+    materialized_chunks: int | None = None,
+    estimated: int | None = None,
+    limit: int | None = None,
+    unbound_only: bool = False,
+) -> InFlightReservation | bool:
+    """统一容量转换：先锁 balance 再锁 reservation，两侧都必须命中。"""
+
+    if operation == "reserve":
+        return await _apply_reserve(
+            connection,
+            app_id=app_id,
+            estimated=estimated if estimated is not None else delta,
+            limit=limit,
+        )
+    return await _apply_reservation_delta(
+        connection,
+        operation=operation,
+        app_id=app_id,
+        delta=delta,
+        reservation_id=reservation_id,
+        generation=generation,
+        expected_states=expected_states,
+        next_state=next_state,
+        next_reserved_chunks=next_reserved_chunks,
+        reason=reason,
+        materialized_chunks=materialized_chunks,
+        limit=limit,
+        unbound_only=unbound_only,
+    )
+
+
+async def reserve_in_flight_chunks(
+    connection: Any,
+    *,
+    app_id: int,
+    estimated: int,
+    limit: int,
+) -> InFlightReservation:
+    """受理预留：创建明细并增加聚合。"""
+
+    created = await apply_inflight_delta(
+        connection,
+        operation="reserve",
+        app_id=app_id,
+        delta=estimated,
+        estimated=estimated,
+        limit=limit,
+    )
+    if not isinstance(created, InFlightReservation):
+        raise InFlightInvariantViolation("reserve")
+    return created
+
+
+async def mark_conservation_blocked(connection: Any, app_id: int) -> None:
+    """在独立事务中标记应用失败关闭，供新发送拒绝。"""
+
+    await connection.execute(
+        text(
+            """
+            UPDATE send_inflight_balance
+            SET conservation_blocked_at=COALESCE(conservation_blocked_at, now()),
+                updated_at=now()
+            WHERE app_id=:app_id
+            """
+        ),
+        {"app_id": app_id},
+    )
+
+
+async def _lock_balance(
+    connection: Any,
+    *,
+    app_id: int,
+    operation: str,
+    allow_create: bool,
+) -> dict[str, Any]:
+    if allow_create:
+        await connection.execute(
+            text(
+                """
+                INSERT INTO send_inflight_balance(app_id, reserved_chunks)
+                VALUES (:app_id, 0)
+                ON CONFLICT (app_id) DO NOTHING
+                """
+            ),
+            {"app_id": app_id},
+        )
+    row = (
+        (
+            await connection.execute(
+                text(
+                    """
+                SELECT reserved_chunks, conservation_blocked_at
+                FROM send_inflight_balance
+                WHERE app_id=:app_id
+                FOR UPDATE
+                """
+                ),
+                {"app_id": app_id},
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        raise InFlightInvariantViolation(operation, "balance missing")
+    if row["conservation_blocked_at"] is not None and operation == "reserve":
+        raise InFlightInvariantViolation(operation, "conservation blocked")
+    return dict(row)
+
+
+async def _adjust_locked_balance(
+    connection: Any,
+    *,
+    app_id: int,
+    stored: int,
+    delta: int,
+    operation: str,
+    limit: int | None,
+) -> int:
+    if delta == 0:
+        return stored
+    nxt = stored + delta
+    if nxt < 0:
+        raise InFlightInvariantViolation(operation, "balance below release")
+    if limit is not None and nxt > limit:
+        from app.services.pipeline import InFlightLimitExceeded
+
+        raise InFlightLimitExceeded("应用在途分片已达上限")
+    updated = (
+        await connection.execute(
+            text(
+                """
+                UPDATE send_inflight_balance
+                SET reserved_chunks=:next_value,
+                    updated_at=now()
+                WHERE app_id=:app_id
+                  AND reserved_chunks=:stored
+                RETURNING reserved_chunks
+                """
+            ),
+            {"app_id": app_id, "next_value": nxt, "stored": stored},
+        )
+    ).scalar_one_or_none()
+    if updated is None:
+        raise InFlightInvariantViolation(operation, "balance update missed")
+    return int(updated)
+
+
+async def _apply_reserve(
+    connection: Any,
+    *,
+    app_id: int,
+    estimated: int,
+    limit: int | None,
+) -> InFlightReservation:
+    if estimated < 1 or limit is None or limit < 1:
+        raise ValueError("in-flight reservation bounds invalid")
+    locked = await _lock_balance(
+        connection,
+        app_id=app_id,
+        operation="reserve",
+        allow_create=True,
+    )
+    await _adjust_locked_balance(
+        connection,
+        app_id=app_id,
+        stored=int(locked["reserved_chunks"]),
+        delta=estimated,
+        operation="reserve",
+        limit=limit,
+    )
+    created = (
+        (
+            await connection.execute(
+                text(
+                    """
+                INSERT INTO send_inflight_reservation (
+                  app_id, reserved_chunks, state, generation, expires_at
+                ) VALUES (
+                  :app_id, :estimated, 'reserved', 1,
+                  now() + interval '15 minutes'
+                )
+                RETURNING id, generation, reserved_chunks
+                """
+                ),
+                {"app_id": app_id, "estimated": estimated},
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if created is None:
+        raise InFlightInvariantViolation("reserve", "reservation insert missed")
+    return InFlightReservation(
+        int(created["id"]),
+        int(created["generation"]),
+        int(created["reserved_chunks"]),
+    )
+
+
+async def _apply_reservation_delta(
+    connection: Any,
+    *,
+    operation: str,
+    app_id: int,
+    delta: int,
+    reservation_id: int | None,
+    generation: int | None,
+    expected_states: frozenset[str] | None,
+    next_state: str | None,
+    next_reserved_chunks: int | None,
+    reason: str | None,
+    materialized_chunks: int | None,
+    limit: int | None,
+    unbound_only: bool,
+) -> bool:
+    if reservation_id is None or generation is None:
+        raise InFlightInvariantViolation(operation, "reservation identity required")
+    locked = await _lock_balance(
+        connection,
+        app_id=app_id,
+        operation=operation,
+        allow_create=operation in {"repair", "reconcile"},
+    )
+    current = (
+        (
+            await connection.execute(
+                text(
+                    """
+                SELECT id, generation, app_id, state, batch_id, reserved_chunks
+                FROM send_inflight_reservation
+                WHERE id=:id
+                FOR UPDATE
+                """
+                ),
+                {"id": reservation_id},
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if current is None:
+        return False
+    if int(current["app_id"]) != app_id:
+        raise InFlightInvariantViolation(operation, "reservation app mismatch")
+    if int(current["generation"]) != generation:
+        return False
+    state = str(current["state"])
+    if expected_states is not None and state not in expected_states:
+        return False
+    if unbound_only and (state != "reserved" or current["batch_id"] is not None):
+        return False
+    if operation == "release" and state == "released":
+        return False
+    amount = delta
+    if operation == "release":
+        amount = -int(current["reserved_chunks"])
+    occupancy = (
+        int(current["reserved_chunks"]) if next_reserved_chunks is None else next_reserved_chunks
+    )
+    if occupancy < 1:
+        raise InFlightInvariantViolation(operation, "reservation occupancy invalid")
+    await _adjust_locked_balance(
+        connection,
+        app_id=app_id,
+        stored=int(locked["reserved_chunks"]),
+        delta=amount,
+        operation=operation,
+        limit=limit,
+    )
+    updated = (
+        await connection.execute(
+            text(
+                """
+                UPDATE send_inflight_reservation
+                SET state=COALESCE(CAST(:next_state AS VARCHAR), state),
+                    reserved_chunks=:occupancy,
+                    materialized_chunks=COALESCE(
+                      CAST(:materialized_chunks AS INTEGER),
+                      materialized_chunks
+                    ),
+                    materialized_at=CASE
+                      WHEN CAST(:next_state AS VARCHAR)='materialized' THEN now()
+                      ELSE materialized_at
+                    END,
+                    released_at=CASE
+                      WHEN CAST(:next_state AS VARCHAR)='released' THEN now()
+                      WHEN CAST(:next_state AS VARCHAR) IS NOT NULL
+                       AND CAST(:next_state AS VARCHAR) <> 'released'
+                        THEN NULL
+                      ELSE released_at
+                    END,
+                    release_reason=CASE
+                      WHEN CAST(:next_state AS VARCHAR)='released' THEN :reason
+                      WHEN CAST(:next_state AS VARCHAR) IS NOT NULL
+                       AND CAST(:next_state AS VARCHAR) <> 'released'
+                        THEN NULL
+                      ELSE release_reason
+                    END,
+                    generation=CASE
+                      WHEN CAST(:next_state AS VARCHAR)='released' THEN generation + 1
+                      ELSE generation
+                    END
+                WHERE id=:id
+                  AND generation=:generation
+                RETURNING id
+                """
+            ),
+            {
+                "id": reservation_id,
+                "generation": generation,
+                "next_state": next_state,
+                "occupancy": occupancy,
+                "materialized_chunks": materialized_chunks,
+                "reason": reason,
+            },
+        )
+    ).scalar_one_or_none()
+    if updated is None:
+        raise InFlightInvariantViolation(operation, "reservation update missed")
+    return True
 
 
 async def bind_in_flight_reservation(
@@ -111,29 +472,25 @@ async def release_in_flight_reservation(
             generation=generation,
             app_id=app_id,
         )
-    released = await connection.execute(
-        text(
-            """
-            UPDATE send_inflight_reservation
-            SET state='released',
-                released_at=now(),
-                release_reason=:reason,
-                generation=generation + 1
-            WHERE id=:id
-              AND generation=:generation
-              AND state <> 'released'
-              AND app_id=COALESCE(CAST(:app_id AS BIGINT), app_id)
-            RETURNING app_id, reserved_chunks
-            """
-        ),
-        {
-            "id": reservation_id,
-            "generation": generation,
-            "reason": reason,
-            "app_id": app_id,
-        },
+    resolved_app = await _require_reservation_app(
+        connection,
+        reservation_id=reservation_id,
+        app_id=app_id,
     )
-    return await _debit_released_balance(connection, released.mappings().one_or_none())
+    if resolved_app is None:
+        return False
+    released = await apply_inflight_delta(
+        connection,
+        operation="release",
+        app_id=resolved_app,
+        delta=0,
+        reservation_id=reservation_id,
+        generation=generation,
+        expected_states=ACTIVE_INFLIGHT_STATES,
+        next_state="released",
+        reason=reason,
+    )
+    return bool(released)
 
 
 async def release_unbound_acceptance_reservation(
@@ -145,47 +502,49 @@ async def release_unbound_acceptance_reservation(
 ) -> bool:
     """仅释放仍为 reserved 且未绑定批次的受理失败预留。"""
 
-    released = await connection.execute(
-        text(
-            """
-            UPDATE send_inflight_reservation
-            SET state='released',
-                released_at=now(),
-                release_reason='acceptance-failed',
-                generation=generation + 1
-            WHERE id=:id
-              AND generation=:generation
-              AND state='reserved'
-              AND batch_id IS NULL
-              AND app_id=COALESCE(CAST(:app_id AS BIGINT), app_id)
-            RETURNING app_id, reserved_chunks
-            """
-        ),
-        {
-            "id": reservation_id,
-            "generation": generation,
-            "app_id": app_id,
-        },
+    resolved_app = await _require_reservation_app(
+        connection,
+        reservation_id=reservation_id,
+        app_id=app_id,
     )
-    return await _debit_released_balance(connection, released.mappings().one_or_none())
-
-
-async def _debit_released_balance(connection: Any, row: Any) -> bool:
-    if row is None:
+    if resolved_app is None:
         return False
-    await connection.execute(
-        text(
-            """
-            UPDATE send_inflight_balance
-            SET reserved_chunks=reserved_chunks - :amount,
-                updated_at=now()
-            WHERE app_id=:app_id
-              AND reserved_chunks >= :amount
-            """
-        ),
-        {"app_id": int(row["app_id"]), "amount": int(row["reserved_chunks"])},
+    released = await apply_inflight_delta(
+        connection,
+        operation="release",
+        app_id=resolved_app,
+        delta=0,
+        reservation_id=reservation_id,
+        generation=generation,
+        expected_states=frozenset({"reserved"}),
+        next_state="released",
+        reason="acceptance-failed",
+        unbound_only=True,
     )
-    return True
+    return bool(released)
+
+
+async def _require_reservation_app(
+    connection: Any,
+    *,
+    reservation_id: int,
+    app_id: int | None,
+) -> int | None:
+    if app_id is not None:
+        return int(app_id)
+    peeked = (
+        await connection.execute(
+            text(
+                """
+                SELECT app_id
+                FROM send_inflight_reservation
+                WHERE id=:id
+                """
+            ),
+            {"id": reservation_id},
+        )
+    ).scalar_one_or_none()
+    return None if peeked is None else int(peeked)
 
 
 async def request_inflight_release_for_batch(
@@ -197,17 +556,21 @@ async def request_inflight_release_for_batch(
     """终态批次幂等释放仍活动的预留。"""
 
     row = (
-        await connection.execute(
-            text(
-                """
+        (
+            await connection.execute(
+                text(
+                    """
                 SELECT id, generation
                 FROM send_inflight_reservation
                 WHERE batch_id=:batch_id AND state <> 'released'
                 """
-            ),
-            {"batch_id": batch_id},
+                ),
+                {"batch_id": batch_id},
+            )
         )
-    ).mappings().one_or_none()
+        .mappings()
+        .one_or_none()
+    )
     if row is None:
         return False
     return await release_in_flight_reservation(
@@ -230,74 +593,39 @@ async def materialize_in_flight_reservation(
     if actual_chunks < 0:
         raise ValueError("actual chunk count invalid")
     current = (
-        await connection.execute(
-            text(
-                """
+        (
+            await connection.execute(
+                text(
+                    """
                 SELECT id, generation, app_id, reserved_chunks, state
                 FROM send_inflight_reservation
                 WHERE batch_id=:batch_id AND state IN ('batch_bound','materialized')
-                FOR UPDATE
                 """
-            ),
-            {"batch_id": batch_id},
+                ),
+                {"batch_id": batch_id},
+            )
         )
-    ).mappings().one_or_none()
+        .mappings()
+        .one_or_none()
+    )
     if current is None:
         return
     if str(current["state"]) == "materialized":
         return
     estimated = int(current["reserved_chunks"])
-    app_id = int(current["app_id"])
-    reservation_id = int(current["id"])
-    generation = int(current["generation"])
-    if actual_chunks > estimated:
-        delta = actual_chunks - estimated
-        expanded = await connection.execute(
-            text(
-                """
-                UPDATE send_inflight_balance
-                SET reserved_chunks=reserved_chunks + :delta,
-                    updated_at=now()
-                WHERE app_id=:app_id
-                  AND reserved_chunks + :delta <= :limit
-                RETURNING reserved_chunks
-                """
-            ),
-            {"app_id": app_id, "delta": delta, "limit": limit},
-        )
-        if expanded.scalar_one_or_none() is None:
-            raise RuntimeError("in-flight materialize exceeds application limit")
-    elif actual_chunks < estimated:
-        delta = estimated - max(actual_chunks, 1)
-        await connection.execute(
-            text(
-                """
-                UPDATE send_inflight_balance
-                SET reserved_chunks=reserved_chunks - :delta,
-                    updated_at=now()
-                WHERE app_id=:app_id AND reserved_chunks >= :delta
-                """
-            ),
-            {"app_id": app_id, "delta": delta},
-        )
     occupancy = max(actual_chunks, 1)
-    await connection.execute(
-        text(
-            """
-            UPDATE send_inflight_reservation
-            SET state='materialized',
-                reserved_chunks=:occupancy,
-                materialized_chunks=:actual,
-                materialized_at=now()
-            WHERE id=:id AND generation=:generation AND state='batch_bound'
-            """
-        ),
-        {
-            "id": reservation_id,
-            "generation": generation,
-            "occupancy": occupancy,
-            "actual": actual_chunks,
-        },
+    await apply_inflight_delta(
+        connection,
+        operation="materialize",
+        app_id=int(current["app_id"]),
+        delta=occupancy - estimated,
+        reservation_id=int(current["id"]),
+        generation=int(current["generation"]),
+        expected_states=frozenset({"batch_bound"}),
+        next_state="materialized",
+        next_reserved_chunks=occupancy,
+        materialized_chunks=actual_chunks,
+        limit=limit,
     )
 
 
@@ -316,18 +644,22 @@ async def resolve_ambiguous_acceptance_commit(
 
     try:
         current = (
-            await connection.execute(
-                text(
-                    """
+            (
+                await connection.execute(
+                    text(
+                        """
                     SELECT id, generation, app_id, state, batch_id, release_reason
                     FROM send_inflight_reservation
                     WHERE id=:id
                     FOR UPDATE
                     """
-                ),
-                {"id": reservation_id},
+                    ),
+                    {"id": reservation_id},
+                )
             )
-        ).mappings().one_or_none()
+            .mappings()
+            .one_or_none()
+        )
     except (OperationalError, DBAPIError):
         return AcceptCommitResolution("UNKNOWN")
     if current is None:
@@ -371,9 +703,7 @@ async def resolve_ambiguous_acceptance_commit(
             batch_no=str(recorded["batch_no"]),
             reservation_state=state,
         )
-    if state in {"batch_bound", "materialized"} or (
-        state == "released" and batch_id is not None
-    ):
+    if state in {"batch_bound", "materialized"} or (state == "released" and batch_id is not None):
         if int(current["generation"]) != generation and state != "released":
             return AcceptCommitResolution(
                 "BOUND_TO_CONFLICTING_BATCH",
@@ -432,9 +762,10 @@ async def _lookup_idempotent_batch(
     biz_id: str,
 ) -> dict[str, Any] | None:
     row = (
-        await connection.execute(
-            text(
-                """
+        (
+            await connection.execute(
+                text(
+                    """
                 SELECT b.id, trim(b.batch_no) AS batch_no, b.app_id, b.biz_id,
                        b.send_inflight_reservation_id, i.request_hash
                 FROM idempotency_record i
@@ -443,14 +774,17 @@ async def _lookup_idempotent_batch(
                   AND i.scope_id=:scope_id
                   AND i.biz_id=:biz_id
                 """
-            ),
-            {
-                "scope_kind": scope_kind,
-                "scope_id": scope_id,
-                "biz_id": biz_id,
-            },
+                ),
+                {
+                    "scope_kind": scope_kind,
+                    "scope_id": scope_id,
+                    "biz_id": biz_id,
+                },
+            )
         )
-    ).mappings().one_or_none()
+        .mappings()
+        .one_or_none()
+    )
     return dict(row) if row is not None else None
 
 
@@ -461,9 +795,10 @@ async def _load_bound_batch(
     batch_id: int | None,
 ) -> dict[str, Any] | None:
     row = (
-        await connection.execute(
-            text(
-                """
+        (
+            await connection.execute(
+                text(
+                    """
                 SELECT b.id, trim(b.batch_no) AS batch_no, b.app_id, b.biz_id,
                        b.send_inflight_reservation_id, i.request_hash
                 FROM sms_batch b
@@ -474,13 +809,16 @@ async def _load_bound_batch(
                   )
                   OR b.send_inflight_reservation_id=:reservation_id
                 """
-            ),
-            {
-                "batch_id": batch_id,
-                "reservation_id": reservation_id,
-            },
+                ),
+                {
+                    "batch_id": batch_id,
+                    "reservation_id": reservation_id,
+                },
+            )
         )
-    ).mappings().first()
+        .mappings()
+        .first()
+    )
     return dict(row) if row is not None else None
 
 
@@ -531,49 +869,19 @@ async def repair_misreleased_bound_reservations(
         ).scalar_one_or_none()
         if replacement is not None:
             continue
-        restored = await connection.execute(
-            text(
-                """
-                UPDATE send_inflight_reservation
-                SET state='batch_bound',
-                    released_at=NULL,
-                    release_reason=NULL,
-                    generation=generation + 1
-                WHERE id=:id
-                  AND generation=:generation
-                  AND state='released'
-                  AND release_reason='acceptance-failed'
-                  AND batch_id=:batch_id
-                RETURNING reserved_chunks, app_id
-                """
-            ),
-            {
-                "id": int(row["id"]),
-                "generation": int(row["generation"]),
-                "batch_id": batch_id,
-            },
+        restored = await apply_inflight_delta(
+            connection,
+            operation="repair",
+            app_id=int(row["app_id"]),
+            delta=int(row["reserved_chunks"]),
+            reservation_id=int(row["id"]),
+            generation=int(row["generation"]),
+            expected_states=frozenset({"released"}),
+            next_state="batch_bound",
+            next_reserved_chunks=int(row["reserved_chunks"]),
         )
-        restored_row = restored.mappings().one_or_none()
-        if restored_row is None:
-            continue
-        credited = await connection.execute(
-            text(
-                """
-                UPDATE send_inflight_balance
-                SET reserved_chunks=reserved_chunks + :amount,
-                    updated_at=now()
-                WHERE app_id=:app_id
-                RETURNING app_id
-                """
-            ),
-            {
-                "app_id": int(restored_row["app_id"]),
-                "amount": int(restored_row["reserved_chunks"]),
-            },
-        )
-        if credited.scalar_one_or_none() is None:
-            raise RuntimeError("in-flight balance restore failed")
-        repaired += 1
+        if restored:
+            repaired += 1
     return repaired
 
 
@@ -684,4 +992,46 @@ async def reconcile_in_flight_reservations(connection: Any, *, limit: int = 100)
         connection,
         limit=limit,
     )
+    repaired += await reconcile_inflight_balance_conservation(
+        connection,
+        limit=limit,
+    )
+    return repaired
+
+
+async def reconcile_inflight_balance_conservation(
+    connection: Any,
+    *,
+    limit: int = 100,
+) -> int:
+    """按 app 把 balance 收敛到 SUM(active reservations)，禁止猜测释放。"""
+
+    apps = (
+        await connection.execute(
+            text(
+                """
+                SELECT app_id
+                FROM (
+                  SELECT app_id FROM send_inflight_balance
+                  UNION
+                  SELECT app_id FROM send_inflight_reservation
+                   WHERE state IN ('reserved','batch_bound','materialized')
+                ) apps
+                ORDER BY app_id
+                LIMIT :limit
+                """
+            ),
+            {"limit": limit},
+        )
+    ).scalars()
+    repaired = 0
+    for app_id in apps:
+        outcome = (
+            await connection.execute(
+                text("SELECT reconcile_send_inflight_app(:app_id)"),
+                {"app_id": int(app_id)},
+            )
+        ).scalar_one()
+        if outcome == "repaired":
+            repaired += 1
     return repaired

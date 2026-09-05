@@ -11,6 +11,9 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # 0001 已装入当前 schema.sql 的 DEFERRABLE 守恒触发器时，同事务里
+    # 0094 回填会留下 pending trigger events，必须先立即校验再 ALTER。
+    op.execute("SET CONSTRAINTS ALL IMMEDIATE")
     op.execute(
         """
         ALTER TABLE send_inflight_reservation

@@ -37,6 +37,7 @@ from app.services.pipeline import (
     ConsentRequired,
     IdempotencyClaimLost,
     IdempotencyConflict,
+    InFlightInvariantViolation,
     InFlightLimitExceeded,
     InFlightQueryUnavailable,
     InvalidContent,
@@ -122,7 +123,7 @@ class SendRequestModel(BaseModel):
                     "not": {"required": ["content"]},
                 },
             ]
-        }
+        },
     )
 
     category: Category
@@ -438,6 +439,13 @@ def _error(error: Exception) -> ApiError:
         return ApiError(503, "DEPENDENCY_UNAVAILABLE", str(error), None)
     if isinstance(error, BlacklistCacheUnavailable):
         return ApiError(503, "DEPENDENCY_UNAVAILABLE", str(error), None)
+    if isinstance(error, InFlightInvariantViolation):
+        return ApiError(
+            503,
+            "USAGE_PROJECTION_UNAVAILABLE",
+            "在途容量守恒尚未恢复，请稍后重试",
+            None,
+        )
     if isinstance(error, UsageProjectionUnavailable):
         return ApiError(
             503,
@@ -507,6 +515,7 @@ async def send_message(
         InvalidContent,
         ApplicationRateLimitExceeded,
         ControlPlaneUnavailable,
+        InFlightInvariantViolation,
         InFlightLimitExceeded,
         InFlightQueryUnavailable,
         MarketApiBulkForbidden,
@@ -658,6 +667,7 @@ async def send_vendor_test_api_uat(
         InvalidContent,
         ApplicationRateLimitExceeded,
         ControlPlaneUnavailable,
+        InFlightInvariantViolation,
         InFlightLimitExceeded,
         InFlightQueryUnavailable,
         MarketApiBulkForbidden,

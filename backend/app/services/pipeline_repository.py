@@ -152,60 +152,31 @@ class SqlPipelineStore:
     ) -> Any:
         if estimated < 1 or limit < 1:
             raise ValueError("in-flight reservation bounds invalid")
-        from app.services.pipeline import InFlightLimitExceeded
-        from app.services.send_inflight import InFlightReservation
+        from app.services.send_inflight import (
+            InFlightInvariantViolation,
+            conservation_error,
+            mark_conservation_blocked,
+            reserve_in_flight_chunks,
+        )
 
-        async with self._engine().begin() as connection:
-            await connection.execute(
-                text(
-                    """
-                    INSERT INTO send_inflight_balance(app_id, reserved_chunks)
-                    VALUES (:app_id, 0)
-                    ON CONFLICT (app_id) DO NOTHING
-                    """
-                ),
-                {"app_id": app_id},
-            )
-            updated = await connection.execute(
-                text(
-                    """
-                    UPDATE send_inflight_balance
-                    SET reserved_chunks = reserved_chunks + :estimated,
-                        updated_at = now()
-                    WHERE app_id=:app_id
-                      AND reserved_chunks + :estimated <= :limit
-                    RETURNING reserved_chunks
-                    """
-                ),
-                {
-                    "app_id": app_id,
-                    "estimated": estimated,
-                    "limit": limit,
-                },
-            )
-            if updated.scalar_one_or_none() is None:
-                raise InFlightLimitExceeded("应用在途分片已达上限")
-            created = (
-                await connection.execute(
-                    text(
-                        """
-                        INSERT INTO send_inflight_reservation (
-                          app_id, reserved_chunks, state, generation, expires_at
-                        ) VALUES (
-                          :app_id, :estimated, 'reserved', 1,
-                          now() + interval '15 minutes'
-                        )
-                        RETURNING id, generation, reserved_chunks
-                        """
-                    ),
-                    {"app_id": app_id, "estimated": estimated},
+        try:
+            async with self._engine().begin() as connection:
+                return await reserve_in_flight_chunks(
+                    connection,
+                    app_id=app_id,
+                    estimated=estimated,
+                    limit=limit,
                 )
-            ).mappings().one()
-            return InFlightReservation(
-                int(created["id"]),
-                int(created["generation"]),
-                int(created["reserved_chunks"]),
-            )
+        except InFlightInvariantViolation:
+            async with self._engine().begin() as connection:
+                await mark_conservation_blocked(connection, app_id)
+            raise
+        except IntegrityError as exc:
+            if not conservation_error(exc):
+                raise
+            async with self._engine().begin() as connection:
+                await mark_conservation_blocked(connection, app_id)
+            raise InFlightInvariantViolation("reserve") from exc
 
     async def release_in_flight_reservation(
         self,
@@ -214,16 +185,31 @@ class SqlPipelineStore:
         reason: str,
         app_id: int | None = None,
     ) -> bool:
-        from app.services.send_inflight import release_in_flight_reservation
+        from app.services.send_inflight import (
+            InFlightInvariantViolation,
+            conservation_error,
+            mark_conservation_blocked,
+            release_in_flight_reservation,
+        )
 
-        async with self._engine().begin() as connection:
-            return await release_in_flight_reservation(
-                connection,
-                reservation_id=reservation_id,
-                generation=generation,
-                reason=reason,
-                app_id=app_id,
-            )
+        try:
+            async with self._engine().begin() as connection:
+                return await release_in_flight_reservation(
+                    connection,
+                    reservation_id=reservation_id,
+                    generation=generation,
+                    reason=reason,
+                    app_id=app_id,
+                )
+        except (InFlightInvariantViolation, IntegrityError) as exc:
+            if isinstance(exc, IntegrityError) and not conservation_error(exc):
+                raise
+            if app_id is not None:
+                async with self._engine().begin() as connection:
+                    await mark_conservation_blocked(connection, app_id)
+            if isinstance(exc, InFlightInvariantViolation):
+                raise
+            raise InFlightInvariantViolation("release") from exc
 
     async def release_unbound_acceptance_reservation(
         self,
@@ -231,15 +217,29 @@ class SqlPipelineStore:
         generation: int,
         app_id: int,
     ) -> bool:
-        from app.services.send_inflight import release_unbound_acceptance_reservation
+        from app.services.send_inflight import (
+            InFlightInvariantViolation,
+            conservation_error,
+            mark_conservation_blocked,
+            release_unbound_acceptance_reservation,
+        )
 
-        async with self._engine().begin() as connection:
-            return await release_unbound_acceptance_reservation(
-                connection,
-                reservation_id=reservation_id,
-                generation=generation,
-                app_id=app_id,
-            )
+        try:
+            async with self._engine().begin() as connection:
+                return await release_unbound_acceptance_reservation(
+                    connection,
+                    reservation_id=reservation_id,
+                    generation=generation,
+                    app_id=app_id,
+                )
+        except (InFlightInvariantViolation, IntegrityError) as exc:
+            if isinstance(exc, IntegrityError) and not conservation_error(exc):
+                raise
+            async with self._engine().begin() as connection:
+                await mark_conservation_blocked(connection, app_id)
+            if isinstance(exc, InFlightInvariantViolation):
+                raise
+            raise InFlightInvariantViolation("release") from exc
 
     async def resolve_ambiguous_acceptance_commit(
         self,
@@ -315,8 +315,8 @@ class SqlPipelineStore:
                         """
                 ),
                 {
-                        "actor": f"app:{app_id}",
-                        "app_id": app_id,
+                    "actor": f"app:{app_id}",
+                    "app_id": app_id,
                     "object_id": str(app_id),
                     "hit_count": hit_count,
                 },
@@ -476,28 +476,30 @@ class SqlPipelineStore:
 
         async with self._engine().connect() as connection:
             row = (
-                await connection.execute(
-                    text(
-                        """
+                (
+                    await connection.execute(
+                        text(
+                            """
                         SELECT token, fingerprint, generation, state, batch_id,
                                expires_at > now() AS lease_valid
                         FROM idempotency_claim
                         WHERE scope_kind=:scope_kind AND scope_id=:scope_id
                           AND biz_id=:biz_id
                         """
-                    ),
-                    {
-                        "scope_kind": scope.kind,
-                        "scope_id": scope.id,
-                        "biz_id": biz_id,
-                    },
+                        ),
+                        {
+                            "scope_kind": scope.kind,
+                            "scope_id": scope.id,
+                            "biz_id": biz_id,
+                        },
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
         return dict(row) if row is not None else None
 
-    async def live_idempotency_claim(
-        self, scope: IdempotencyScope, biz_id: str
-    ) -> bool:
+    async def live_idempotency_claim(self, scope: IdempotencyScope, biz_id: str) -> bool:
         async with self._engine().connect() as connection:
             exists = (
                 await connection.execute(
@@ -519,9 +521,7 @@ class SqlPipelineStore:
             ).scalar_one_or_none()
         return exists is not None
 
-    async def verify_uncertain_effect(
-        self, principal: UncertainEffectPrincipal
-    ) -> None:
+    async def verify_uncertain_effect(self, principal: UncertainEffectPrincipal) -> None:
         """仅接受数据库中仍有效的双人处置 generation，禁止伪造系统主体。"""
 
         async with self._engine().connect() as connection:
@@ -555,9 +555,7 @@ class SqlPipelineStore:
         if row is None:
             raise ValueError("system resend principal is not forgeable")
 
-    async def exists(
-        self, scope: IdempotencyScope, biz_id: str, batch_no: str
-    ) -> bool:
+    async def exists(self, scope: IdempotencyScope, biz_id: str, batch_no: str) -> bool:
         async with self._engine().connect() as connection:
             result = await connection.execute(
                 text(
@@ -584,9 +582,7 @@ class SqlPipelineStore:
             )
             return bool(result.scalar_one())
 
-    async def find_existing(
-        self, scope: IdempotencyScope, biz_id: str
-    ) -> str | None:
+    async def find_existing(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         async with self._engine().connect() as connection:
             result = await connection.execute(
                 text(
@@ -784,14 +780,12 @@ class SqlPipelineStore:
             ],
         )
         if command.biz_id:
-            if (
-                command.idempotency_claim_token
-                and command.idempotency_claim_generation is not None
-            ):
+            if command.idempotency_claim_token and command.idempotency_claim_generation is not None:
                 claimed = (
-                    await connection.execute(
-                        text(
-                            """
+                    (
+                        await connection.execute(
+                            text(
+                                """
                             SELECT token, generation
                             FROM idempotency_claim
                             WHERE scope_kind=:scope_kind
@@ -801,14 +795,17 @@ class SqlPipelineStore:
                               AND expires_at > now()
                             FOR UPDATE
                             """
-                        ),
-                        {
-                            "scope_kind": command.scope_kind,
-                            "scope_id": command.scope_id,
-                            "biz_id": command.biz_id,
-                        },
+                            ),
+                            {
+                                "scope_kind": command.scope_kind,
+                                "scope_id": command.scope_id,
+                                "biz_id": command.biz_id,
+                            },
+                        )
                     )
-                ).mappings().one_or_none()
+                    .mappings()
+                    .one_or_none()
+                )
                 if (
                     claimed is None
                     or str(claimed["token"]).strip() != command.idempotency_claim_token
@@ -840,10 +837,7 @@ class SqlPipelineStore:
                     "scheduled_at": command.scheduled_at,
                 },
             )
-            if (
-                command.idempotency_claim_token
-                and command.idempotency_claim_generation is not None
-            ):
+            if command.idempotency_claim_token and command.idempotency_claim_generation is not None:
                 completed = (
                     await connection.execute(
                         text(
