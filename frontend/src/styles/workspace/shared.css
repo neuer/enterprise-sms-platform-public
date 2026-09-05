@@ -1,14 +1,5 @@
 /* 共享件：检索条 / 规则条 / 确认框 / 空态 / 标签 / 表格空态覆写（按页复制即缺陷，见块内注释）。 */
-/* filter-grid 十二列栅格已随审计日志页改造退役（最后使用方为 AuditView），不得复活。 */
-.filter-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 12px;
-  align-items: center;
-  justify-content: space-between;
-  min-width: 0;
-}
-
+/* filter-grid 十二列栅格与 filter-toolbar 紧凑工具栏均已随各页检索条改造退役（最后使用方为 AuditView），不得复活。 */
 .reply-heading,
 .blacklist-heading,
 .user-heading,
@@ -292,12 +283,6 @@
 
 .reply-mobile-list {
   display: none;
-}
-
-.reply-empty-copy {
-  margin: 0;
-  color: var(--tx-3);
-  font-size: 11px;
 }
 
 @media (max-width: 840px) {
@@ -609,70 +594,6 @@
   color: var(--line-2);
 }
 
-.channel-strip {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  padding: 5px 10px;
-  color: #dfe7e2;
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 10px;
-  background: var(--ink);
-  border: 1px solid #32413a;
-  border-radius: 6px;
-}
-
-.lane {
-  display: flex;
-  gap: 5px;
-  align-items: center;
-}
-
-.lane-name.realtime {
-  color: #71c4ad;
-}
-
-.lane-name.bulk {
-  color: #d8a35c;
-}
-
-.lane-track {
-  display: block;
-  width: 42px;
-  height: 3px;
-  overflow: hidden;
-  background: #4b5751;
-}
-
-.lane-track i {
-  display: block;
-  width: var(--load);
-  height: 100%;
-  background: #71c4ad;
-}
-
-.lane:nth-child(2) .lane-track i {
-  background: #d8a35c;
-}
-
-.tokens {
-  display: flex;
-  gap: 3px;
-  padding-left: 9px;
-  border-left: 1px solid #44524b;
-}
-
-.tokens i {
-  width: 5px;
-  height: 5px;
-  background: #59645f;
-  border-radius: 50%;
-}
-
-.tokens i.used {
-  background: #71c4ad;
-}
-
 .operator {
   display: flex;
   gap: 20px;
@@ -753,13 +674,6 @@ main {
   height: 298px;
   place-content: center;
   text-align: center;
-}
-
-.empty-rule {
-  width: 52px;
-  height: 6px;
-  margin: 0 auto 15px;
-  background: linear-gradient(90deg, var(--verdi) 0 33%, #35618f 33% 66%, var(--amber) 66%);
 }
 
 .empty-panel strong {

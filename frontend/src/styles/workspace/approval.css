@@ -591,44 +591,6 @@
   justify-content: flex-end;
 }
 
-.approval-detail-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1px;
-  margin: 18px 0;
-  overflow: hidden;
-  background: var(--hair);
-  border: 1px solid var(--hair);
-  border-radius: 6px;
-}
-
-.approval-detail-grid div {
-  padding: 10px 12px;
-  background: var(--panel);
-}
-
-.approval-detail-grid dt,
-.content-proof span {
-  color: var(--tx-3);
-  font-size: 10px;
-}
-
-.approval-detail-grid dd {
-  margin: 2px 0 0;
-}
-
-.content-proof {
-  margin-top: 16px;
-}
-
-.content-proof p {
-  margin: 5px 0 0;
-  padding: 14px;
-  white-space: pre-wrap;
-  background: var(--sink);
-  border-left: 3px solid var(--verdi);
-}
-
 .template-heading {
   margin-bottom: 18px;
 }

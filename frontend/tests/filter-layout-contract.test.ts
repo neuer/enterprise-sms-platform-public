@@ -14,7 +14,6 @@ const opsView = read("src/views/OpsView.vue")
 const reportView = read("src/views/ReportView.vue")
 const blacklistView = read("src/views/BlacklistView.vue")
 const sensitiveWordView = read("src/views/SensitiveWordView.vue")
-const compactViews: string[] = []
 const callbackView = read("src/views/CallbackView.vue")
 const securityDailyView = read("src/views/SecurityDailyView.vue")
 const approvalView = read("src/views/ApprovalView.vue")
@@ -192,9 +191,11 @@ describe("全站筛选布局契约", () => {
     expect(css).toMatch(/\.report-filter-bar\s*\{[^}]*display:\s*flex/s)
   })
 
-  it("轻量筛选统一使用紧凑工具栏", () => {
-    for (const source of compactViews) expect(source).toContain("filter-toolbar")
-    expect(css).toMatch(/\.filter-toolbar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/s)
+  it("紧凑工具栏 filter-toolbar 已退役：无视图使用且样式表不再携带规则", () => {
+    // 演进说明：原用例自相矛盾——compactViews 为空数组（视图断言循环恒真不参与判断），
+    // 却又用 css.toMatch 钉住规则存在；同文件其余 8 处对该类均为负断言。
+    // 规则本体已从 workspace 分片删除，此处改为纯负断言防复活。
+    expect(css).not.toMatch(/\.filter-toolbar\s*\{/s)
   })
 
   it("批次列表使用方案 A 单行胶囊筛选条", () => {

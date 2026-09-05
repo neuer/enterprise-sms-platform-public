@@ -545,67 +545,6 @@
   font-size: 10.5px;
 }
 
-.job-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 1px;
-  overflow: hidden;
-  background: var(--line);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-
-.job-item {
-  display: grid;
-  grid-template-columns: 9px minmax(0, 1fr);
-  gap: 8px;
-  align-items: start;
-  min-height: 58px;
-  padding: 10px;
-  background: var(--card);
-}
-
-.job-item.stalled {
-  background: color-mix(in srgb, var(--card) 94%, var(--el-color-danger));
-}
-
-.job-dot {
-  width: 7px;
-  height: 7px;
-  margin-top: 5px;
-  border-radius: 50%;
-}
-
-.job-dot.healthy {
-  background: var(--verdi);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--verdi) 12%, transparent);
-}
-
-.job-dot.danger {
-  background: var(--el-color-danger);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--el-color-danger) 12%, transparent);
-}
-
-.job-item div {
-  display: grid;
-  min-width: 0;
-}
-
-.job-item code {
-  overflow: hidden;
-  color: var(--ink);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.job-item time {
-  color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
-  font-size: 8px;
-}
-
 .job-description {
   margin: 3px 0 4px;
   color: var(--tx-2);
@@ -631,9 +570,6 @@
     grid-template-columns: 1fr;
   }
 
-  .job-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 560px) {
@@ -649,10 +585,6 @@
 
   .metric-card .el-card__body {
     min-height: 138px;
-  }
-
-  .job-grid {
-    grid-template-columns: 1fr;
   }
 
   .panel-title {
