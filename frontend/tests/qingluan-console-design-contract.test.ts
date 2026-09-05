@@ -1,12 +1,14 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { readWorkspaceCss } from "./workspace-css"
+
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 
 describe("青鸾 Console 深色监视台设计契约", () => {
   it("使用交接包定义的深色令牌和控制台尺寸", () => {
     const theme = source("src/styles/theme.css")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
 
     expect(theme).toContain("--bg: #101814")
     expect(theme).toContain("--panel: #18231e")
@@ -25,7 +27,7 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     const main = source("src/main.ts")
     const html = source("index.html")
     const theme = source("src/styles/theme.css")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
 
     expect(main).toContain('@fontsource/ibm-plex-mono/400.css')
     expect(main).toContain('@fontsource/ibm-plex-mono/500.css')
@@ -83,7 +85,7 @@ describe("青鸾 Console 深色监视台设计契约", () => {
   })
 
   it("仪表盘 KPI 卡片在不同内容量下始终等高对齐", () => {
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
 
     expect(workspace).toMatch(/\.metric-link\s*\{[^}]*display:\s*flex/s)
     expect(workspace).toMatch(/\.metric-card\s*\{[^}]*display:\s*flex[^}]*flex:\s*1/s)
@@ -108,7 +110,7 @@ describe("青鸾 Console 深色监视台设计契约", () => {
 
   it("所有运动在用户要求减少动态时关闭", () => {
     const theme = source("src/styles/theme.css")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     const styles = `${theme}\n${workspace}`
 
     expect(styles).toContain("@media (prefers-reduced-motion: reduce)")
@@ -117,7 +119,7 @@ describe("青鸾 Console 深色监视台设计契约", () => {
   })
 
   it("移动断点晚于深色桌面覆盖并恢复单栏工作区", () => {
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     const darkLayer = workspace.indexOf("青鸾 Console 深色监视台")
     const mobileLayer = workspace.lastIndexOf("@media (max-width: 959px)")
 

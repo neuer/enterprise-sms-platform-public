@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { readWorkspaceCss } from "./workspace-css"
+
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 
 describe("青鸾 Console 17 屏结构保真", () => {
@@ -16,7 +18,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("人工发送使用两类卡并根据预检切换主动作", () => {
     const view = source("src/views/SendView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     // verify 仅 API 渠道（PRD FR-00），Web 人工发送只展示通知/营销两张可选类别卡
     expect(view).toContain('data-testid="category-notice"')
     expect(view).toContain('data-testid="category-market"')
@@ -30,7 +32,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("批次详情使用 560px 抽屉和结果构成区", () => {
     const view = source("src/views/BatchView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain('size="min(560px, 92vw)"')
     expect(view).toContain('class="batch-hero"')
     expect(view).toContain("构成非成功率")
@@ -51,7 +53,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
   it("审批中心使用单一列表组件并按需解密正文", () => {
     const view = source("src/views/ApprovalView.vue")
     const list = source("src/components/ApprovalList.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("ApprovalList")
     expect(view).toContain("getApproval")
     expect(view).toContain("按需解密 · 本次查看已写敏感读审计")
@@ -75,7 +77,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("运维中心使用自定义页签条、单行检索条与常驻规则条", () => {
     const view = source("src/views/OpsView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("circuit-banner")
     expect(view).toContain("实时队列已恢复")
     expect(view).toContain("禁止自动重发")
@@ -105,7 +107,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("统计报表按方案 A 压成单行工具条、柱下图例和拆列明细", () => {
     const view = source("src/views/ReportView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("report-filter-bar")
     expect(view).toContain("含明文手机号")
     expect(view).toContain("未知不入分母")
@@ -127,7 +129,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("号码搜索使用单行检索条和常驻徽标条", () => {
     const view = source("src/views/MessageView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("message-filter-bar")
     expect(view).toContain("message-badge")
     expect(view).toContain("message-phone-decrypt")
@@ -144,7 +146,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("上行回复使用单行检索条和密表格", () => {
     const view = source("src/views/ReplyView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("reply-filter-bar")
     expect(view).toContain("reply-seg")
     expect(view).toContain("共 {{ total }} 条 · 每页 20")
@@ -160,7 +162,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("签名管理使用单行胶囊工具条和密表格", () => {
     const view = source("src/views/SignView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("sign-filter-bar")
     expect(view).toContain("sign-seg")
     expect(view).toContain("接口全量返回 · 前端过滤")
@@ -181,7 +183,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("模板管理使用单行胶囊工具条和密表格", () => {
     const view = source("src/views/TemplateView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("template-filter-bar")
     expect(view).toContain("template-seg")
     expect(view).toContain("接口全量返回 · 前端过滤")
@@ -203,7 +205,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("应用管理使用单行筛选条和密钥状态账本表格", () => {
     const view = source("src/views/AppManagementView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("apps-filter-bar")
     expect(view).toContain("apps-seg")
     expect(view).toContain("接口全量返回 · 前端过滤")
@@ -229,7 +231,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("用户与角色使用单行检索条和身份台账抽屉", () => {
     const view = source("src/views/UserView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("user-filter-bar")
     expect(view).toContain("user-seg")
     expect(view).toContain("user-rules")
@@ -255,7 +257,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("系统参数使用单行检索条、常驻规则条与分组参数网格", () => {
     const view = source("src/views/ConfigView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("config-filter-bar")
     expect(view).toContain("config-seg")
     expect(view).toContain('data-testid="config-group-seg"')
@@ -279,7 +281,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("回调任务使用单行检索条、常驻规则条与详情抽屉", () => {
     const view = source("src/views/CallbackView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("callback-filter-bar")
     expect(view).toContain("callback-seg")
     expect(view).toContain("callback-rules")
@@ -306,7 +308,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("安全日报使用页级紧凑单行检索条、常驻规则条与事实带台账", () => {
     const view = source("src/views/SecurityDailyView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("security-daily-filter-bar")
     expect(view).toContain("security-daily-seg")
     expect(view).toContain("security-daily-fld")
@@ -360,7 +362,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
 
   it("审计日志使用单行检索条、常驻规则条与载荷差异抽屉", () => {
     const view = source("src/views/AuditView.vue")
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     expect(view).toContain("audit-filter-bar")
     expect(view).toContain("audit-fld")
     expect(view).toContain("audit-keyword")

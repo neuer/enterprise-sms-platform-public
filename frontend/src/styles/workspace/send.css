@@ -1,0 +1,873 @@
+/* 人工发送：类别卡 / 号码与导入 / 模板 / 预检栏 / 配额与风险 / 提交结果。 */
+.send-heading {
+  margin-bottom: 14px;
+}
+
+.security-note {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  padding: 5px 11px;
+  color: var(--tx-2);
+  font-size: 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+}
+
+.security-note i {
+  width: 7px;
+  height: 7px;
+  background: var(--verdi-l);
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(47, 161, 132, 0.6);
+}
+
+.send-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 400px;
+  gap: 14px;
+  align-items: start;
+}
+
+.send-editor {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.form-panel {
+  min-width: 0;
+  padding: 15px 18px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.form-panel > header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
+  margin-bottom: 12px;
+}
+
+.form-panel > header .seg {
+  margin-left: auto;
+}
+
+.form-index {
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+}
+
+.form-panel h2 {
+  margin: 0;
+  color: var(--tx-hi);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.form-panel > header small {
+  color: var(--tx-3);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+.send-editor .el-textarea__inner,
+.send-editor .el-select__wrapper,
+.send-editor .el-input__wrapper {
+  border-radius: 8px;
+}
+
+.send-editor .el-textarea__inner {
+  padding: 9px 12px;
+  font-size: 12.5px;
+}
+
+.category-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.category-switch button {
+  position: relative;
+  padding: 12px 14px 11px 17px;
+  text-align: left;
+  background: var(--panel-2);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+
+.category-switch button::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  content: "";
+  border-radius: 10px 0 0 10px;
+}
+
+.category-switch button.notice::before {
+  background: var(--slate);
+}
+
+.category-switch button.market::before {
+  background: var(--amber);
+}
+
+.category-switch button:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+/* 类别卡选中渐变：rgba(69,116,163)/rgba(216,163,92) 即深色 --slate/--amber，就地令牌化等价。 */
+.category-switch button.notice.on {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--slate) 9%, transparent), transparent 60%);
+  border-color: var(--slate);
+}
+
+.category-switch button.market.on {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 7%, transparent), transparent 60%);
+  border-color: var(--amber);
+}
+
+.category-switch b {
+  display: block;
+  color: var(--tx-hi);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.cat-tag {
+  margin-left: 8px;
+  padding: 0 7px;
+  font: 10px/1.9 "IBM Plex Mono", monospace;
+  vertical-align: 1px;
+  border-radius: 4px;
+}
+
+/* 类别小徽章：底色按深色 --slate/--amber 同值就地令牌化；
+   notice 文字 #6f9bcf 保留深色值，亮色覆写见文件末尾明亮模式区块。 */
+.cat-tag.notice {
+  color: #6f9bcf;
+  background: color-mix(in srgb, var(--slate) 20%, transparent);
+}
+
+.cat-tag.market {
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+}
+
+.category-switch small {
+  display: block;
+  margin-top: 2px;
+  color: var(--tx-3);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+}
+
+.seg button {
+  padding: 4px 14px;
+  color: var(--tx-2);
+  font-size: 11.5px;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.seg button.on {
+  color: var(--tx-hi);
+  background: var(--panel);
+  border: 1px solid var(--hair);
+}
+
+/* 营销同意面板：琥珀底/边即深色 --amber 同值，就地令牌化。 */
+.consent-panel {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  padding: 11px 14px;
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 50%, transparent);
+  border-radius: 10px;
+}
+
+.consent-panel input {
+  margin-top: 3px;
+  accent-color: var(--amber);
+}
+
+.consent-panel b {
+  color: var(--tx-hi);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.consent-panel p {
+  margin: 2px 0 0;
+  color: var(--tx-2);
+  font-size: 10.5px;
+}
+
+.upload-zone,
+.template-fields {
+  display: grid;
+  gap: 10px;
+}
+
+.upload-zone .el-upload,
+.upload-zone .el-upload-dragger {
+  width: 100%;
+}
+
+.upload-zone .el-upload-dragger {
+  display: grid;
+  gap: 3px;
+  padding: 28px 20px;
+  background: var(--sink);
+  border-color: var(--hair);
+}
+
+.upload-zone .el-upload-dragger span {
+  color: var(--tx-2);
+  font-size: 11px;
+}
+
+.phone-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  align-items: center;
+  margin-top: 8px;
+  padding: 8px 12px;
+  color: var(--tx-2);
+  font-size: 11.5px;
+  background: var(--panel-2);
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+}
+
+.phone-stats b {
+  color: var(--tx-hi);
+  font-family: "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.phone-stats .bad b {
+  color: var(--verm);
+}
+
+.phone-stats .act,
+.import-ready .act {
+  display: flex;
+  gap: 12px;
+  margin-left: auto;
+}
+
+.phone-stats .act button,
+.import-ready .act button,
+.text-action {
+  padding: 0;
+  color: var(--verdi-l);
+  font-size: 11px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.import-box {
+  margin-top: 0;
+  padding: 14px;
+  border: 1px dashed var(--hair);
+  border-radius: 10px;
+}
+
+.import-box.failed {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  color: var(--tx);
+  /* rgba(228,106,79) 即深色 --verm：就地令牌化等价。 */
+  border-color: color-mix(in srgb, var(--verm) 45%, transparent);
+}
+
+.import-box.failed p {
+  margin: 0;
+}
+
+.import-ready {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+}
+
+.import-ready .cell span {
+  display: block;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.import-ready .cell b {
+  color: var(--tx-hi);
+  font: 15px "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.import-ready .cell.bad b {
+  color: var(--verm);
+}
+
+.import-meta {
+  margin: 10px 0 0;
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.import-processing {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.import-processing p {
+  margin: 0;
+  color: var(--tx-2);
+  font-size: 12px;
+}
+
+.import-processing small {
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.import-spinner {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 2px solid var(--hair);
+  border-top-color: var(--verdi-l);
+  border-radius: 50%;
+  animation: send-spin 0.9s linear infinite;
+}
+
+@keyframes send-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.mobiles-invalid-hint {
+  margin: 8px 0 0;
+  color: var(--verm);
+  font-size: 12px;
+}
+
+.tpl-params {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.inline-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.opt-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+  align-items: flex-start;
+}
+
+.opt {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: var(--tx);
+  font-size: 12px;
+}
+
+.opt input {
+  margin-top: 3px;
+  accent-color: var(--verdi);
+}
+
+.opt small {
+  display: block;
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.opt-row .el-date-editor {
+  width: 100%;
+  max-width: 230px;
+}
+
+.test-limit-hint {
+  margin: 8px 0 0;
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.template-render-preview {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--sink);
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+}
+
+.template-render-preview span {
+  color: var(--tx-3);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.template-render-preview p {
+  margin: 3px 0 0;
+  color: var(--tx);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 模板变量高亮：底色按深色 --slate 同值令牌化；文字 #6f9bcf 保留深色值，亮色覆写见文件末尾。 */
+.template-render-preview em {
+  padding: 0 3px;
+  color: #6f9bcf;
+  font-style: normal;
+  background: color-mix(in srgb, var(--slate) 20%, transparent);
+  border-radius: 3px;
+}
+
+.send-preview,
+.send-rail {
+  position: sticky;
+  top: 14px;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.preview-state {
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+}
+
+.preview-state.stale {
+  color: var(--amber);
+}
+
+.preview-error {
+  margin: 0;
+  color: var(--verm);
+  font-size: 11.5px;
+}
+
+.rail-card {
+  padding: 13px 16px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.rail-card > header {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 9px;
+  color: var(--tx-hi);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.rail-card > header small {
+  color: var(--tx-3);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+.final-content {
+  margin: 0;
+  padding: 10px 12px;
+  color: var(--tx-hi);
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--sink);
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+}
+
+/* 签名/退订语虚线标记：按深色 --verdi-l/--amber 同值就地令牌化。 */
+.final-content .fx-sign {
+  color: var(--verdi-l);
+  border-bottom: 1px dashed color-mix(in srgb, var(--verdi-l) 50%, transparent);
+}
+
+.final-content .fx-suffix {
+  color: var(--amber);
+  border-bottom: 1px dashed color-mix(in srgb, var(--amber) 55%, transparent);
+}
+
+.final-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 7px;
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.final-meta .legend {
+  display: flex;
+  gap: 12px;
+}
+
+.final-meta .legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 4px;
+  vertical-align: -1px;
+  border-radius: 2px;
+}
+
+.final-meta .legend .g {
+  background: var(--verdi-l);
+}
+
+.final-meta .legend .a {
+  background: var(--amber);
+}
+
+.final-meta .mono {
+  font-family: "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.audience-meter {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.audience-meter strong {
+  color: var(--tx-hi);
+  font: 600 26px/1.1 "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.audience-meter span {
+  color: var(--tx-3);
+  font-size: 11px;
+}
+
+.removed {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+  padding-top: 8px;
+  color: var(--tx-2);
+  font-size: 11px;
+  border-top: 1px solid var(--hair-2);
+}
+
+.removed b {
+  color: var(--tx);
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.removed small {
+  color: var(--tx-3);
+}
+
+.cost-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-top: 6px;
+}
+
+.cost-line .fx {
+  color: var(--tx-2);
+  font: 11.5px "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.cost-line strong {
+  color: var(--tx-hi);
+  font: 600 20px/1 "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.cost-line strong small {
+  margin-left: 4px;
+  color: var(--tx-3);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+
+.boundary {
+  margin: 5px 0 0;
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.quota-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 5px;
+  color: var(--tx-2);
+  font-size: 11px;
+}
+
+.quota-row b {
+  color: var(--tx);
+  font-family: "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.quota-bar {
+  display: flex;
+  height: 7px;
+  overflow: hidden;
+  background: var(--sink);
+  border: 1px solid var(--hair-2);
+  border-radius: 4px;
+}
+
+.quota-bar .used {
+  height: 100%;
+  background: var(--slate);
+}
+
+.quota-bar .this {
+  height: 100%;
+  /* 斜纹第二色即深色 --amber 45%：就地令牌化等价。 */
+  background: repeating-linear-gradient(135deg, var(--amber) 0 4px, color-mix(in srgb, var(--amber) 45%, transparent) 4px 8px);
+}
+
+.quota-foot {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 5px;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.quota-degraded p {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--tx-2);
+  font-size: 11px;
+  background: var(--panel-2);
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+}
+
+.quota-degraded b {
+  color: var(--amber);
+  font-weight: 500;
+}
+
+.risk-lines {
+  display: grid;
+  gap: 6px;
+}
+
+.risk-line {
+  position: relative;
+  padding: 7px 10px 7px 20px;
+  background: var(--panel-2);
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+}
+
+.risk-line::before {
+  position: absolute;
+  top: 13px;
+  left: 9px;
+  width: 7px;
+  height: 7px;
+  content: "";
+  border-radius: 50%;
+}
+
+/* 风险行告警态：琥珀底/边即深色 --amber 同值，就地令牌化。 */
+.risk-line.warn {
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+}
+
+.risk-line.warn::before {
+  background: var(--amber);
+}
+
+.risk-line.ok::before {
+  background: var(--verdi-l);
+}
+
+/* #6f9bcf 与 --chart-blue 在亮/暗两套主题下同值：直接引用令牌。 */
+.risk-line.info::before {
+  background: var(--chart-blue);
+}
+
+.risk-line b {
+  display: block;
+  color: var(--tx-hi);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.risk-line small {
+  display: block;
+  margin-top: 1px;
+  color: var(--tx-2);
+  font-size: 10.5px;
+}
+
+/* 提交结果面板：底渐变/边框即深色 --verdi/--verdi-l 同值，就地令牌化。 */
+.send-result {
+  display: grid;
+  gap: 9px;
+  padding: 12px 14px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--verdi) 14%, transparent), transparent 75%);
+  border: 1px solid color-mix(in srgb, var(--verdi-l) 45%, transparent);
+  border-radius: 10px;
+}
+
+.send-result > header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--tx-hi);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.send-result > header i {
+  width: 8px;
+  height: 8px;
+  background: var(--verdi-l);
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(47, 161, 132, 0.6);
+}
+
+.batch-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 7px 10px;
+  background: var(--sink);
+  border: 1px solid var(--hair-2);
+  border-radius: 7px;
+}
+
+.batch-row code {
+  overflow: hidden;
+  color: var(--tx-hi);
+  font: 12px "IBM Plex Mono", monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.batch-row button {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 8px;
+  color: var(--verdi-l);
+  font-size: 10.5px;
+  background: none;
+  border: 1px solid var(--hair);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.result-line {
+  margin: 0;
+  color: var(--tx);
+  font-size: 11.5px;
+}
+
+.result-stats {
+  display: flex;
+  gap: 13px;
+  margin: 0;
+  color: var(--tx-2);
+  font-size: 10.5px;
+}
+
+.result-stats b {
+  color: var(--tx);
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.result-acts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.result-acts .el-button {
+  margin-left: 0;
+}
+
+.submit-wrap {
+  display: grid;
+  gap: 0;
+}
+
+.send-submit.el-button {
+  width: 100%;
+  height: 40px;
+  font-size: 13.5px;
+  font-weight: 600;
+  border-radius: 9px;
+}
+
+.send-submit.el-button--primary.approval {
+  --el-button-bg-color: #9a6b2a;
+  --el-button-border-color: #9a6b2a;
+  --el-button-hover-bg-color: #b07c33;
+  --el-button-hover-border-color: #b07c33;
+  --el-button-active-bg-color: #9a6b2a;
+  --el-button-active-border-color: #9a6b2a;
+}
+
+.send-submit.el-button--primary.is-disabled,
+.send-submit.el-button--primary.is-disabled:hover {
+  color: var(--tx-3);
+  font-weight: 500;
+  background: var(--panel-2);
+  border: 1px solid var(--hair);
+}
+
+.submit-foot {
+  margin: 7px 0 0;
+  color: var(--tx-3);
+  font-size: 10.5px;
+  text-align: center;
+}

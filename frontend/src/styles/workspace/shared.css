@@ -1,0 +1,830 @@
+/* 共享件：检索条 / 规则条 / 确认框 / 空态 / 标签 / 表格空态覆写（按页复制即缺陷，见块内注释）。 */
+/* filter-grid 十二列栅格已随审计日志页改造退役（最后使用方为 AuditView），不得复活。 */
+.filter-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.reply-heading,
+.blacklist-heading,
+.user-heading,
+.config-heading,
+.callback-heading,
+.security-daily-heading {
+  align-items: end;
+}
+
+/* 黑名单/敏感词/用户与角色/系统参数/运维中心/回调任务/审计日志共享检索条选择器：ops-* 、callback-* 与 audit-* 均并入同一组，按页复制即缺陷；
+   安全日报检索条为页级紧凑专属样式（见文件尾部安全日报区），仅页头/结果面板/分页/确认框/规则条继续并入共享组。 */
+.reply-filter-bar,
+.blacklist-filter-bar,
+.sensitive-filter-bar,
+.user-filter-bar,
+.config-filter-bar,
+.ops-filter-bar,
+.callback-filter-bar,
+.audit-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+  padding: 14px 16px 10px;
+  margin-bottom: 14px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.reply-fld,
+.blacklist-fld,
+.sensitive-fld,
+.user-fld,
+.config-fld,
+.ops-fld,
+.callback-fld,
+.audit-fld {
+  display: grid;
+  gap: 5px;
+}
+
+.reply-fld > span,
+.blacklist-fld > span,
+.sensitive-fld > span,
+.user-fld > span,
+.config-fld > span,
+.ops-fld > span,
+.callback-fld > span,
+.audit-fld > span {
+  color: var(--tx-3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+/* 运维中心 unmatched 手机号精确查询与上行回复同构：mono 数据字 + 固定宽。 */
+.reply-filter-phone,
+.ops-phone {
+  width: 250px;
+}
+
+.reply-filter-phone .el-input__inner,
+.ops-phone .el-input__inner {
+  font-family: var(--mono);
+  letter-spacing: 0.06em;
+}
+
+/* 运维中心告警/无主报告与审计日志时间范围同上行回复同构：mono 范围输入。 */
+.reply-filter-dates,
+.ops-dates,
+.audit-dates {
+  --el-date-editor-datetimerange-width: 244px;
+}
+
+.reply-filter-dates.el-date-editor.el-input__wrapper,
+.ops-dates.el-date-editor.el-input__wrapper,
+.audit-dates.el-date-editor.el-input__wrapper {
+  padding-right: 8px;
+  padding-left: 8px;
+}
+
+.reply-filter-dates .el-range-input,
+.ops-dates .el-range-input,
+.audit-dates .el-range-input {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.reply-seg,
+.blacklist-seg,
+.sensitive-policy-seg,
+.user-seg,
+.config-seg,
+.ops-seg,
+.callback-seg {
+  display: flex;
+  overflow: hidden;
+  height: 34px;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+}
+
+.reply-seg button,
+.blacklist-seg button,
+.sensitive-policy-seg button,
+.user-seg button,
+.config-seg button,
+.ops-seg button,
+.callback-seg button {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  color: var(--tx-2);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 400;
+  white-space: nowrap;
+  background: var(--sink);
+  border: 0;
+  cursor: pointer;
+}
+
+.reply-seg button.on,
+.blacklist-seg button.on,
+.sensitive-policy-seg button.on,
+.user-seg button.on,
+.config-seg button.on,
+.ops-seg button.on,
+.callback-seg button.on {
+  color: #eaf1ed;
+  background: var(--verdi);
+}
+
+.reply-filter-go,
+.blacklist-filter-go,
+.sensitive-filter-go,
+.user-filter-go,
+.ops-filter-go,
+.callback-filter-go,
+.audit-filter-go {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.reply-privacy,
+.blacklist-privacy,
+.sensitive-filter-note,
+.user-privacy,
+.config-privacy,
+.ops-privacy,
+.callback-privacy,
+.audit-privacy {
+  flex: 1 0 100%;
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--hair-2);
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.reply-privacy code,
+.blacklist-privacy code,
+.sensitive-filter-note code,
+.user-privacy code,
+.config-privacy code,
+.ops-privacy code,
+.callback-privacy code,
+.audit-privacy code {
+  color: var(--tx-2);
+  font: 10px var(--mono);
+}
+
+.reply-phone-error {
+  color: var(--verm);
+  font-size: 10.5px;
+}
+
+.reply-results,
+.blacklist-results,
+.sensitive-results,
+.user-results,
+.ops-results,
+.callback-results,
+.security-daily-results,
+.audit-results {
+  padding: 2px 8px 8px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.reply-table .el-table__header th {
+  background: color-mix(in srgb, var(--paper) 78%, var(--verdi) 2%);
+}
+
+.phone-mask,
+.mono-time,
+.batch-code {
+  font-family: "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.phone-mask {
+  color: var(--tx);
+  letter-spacing: 0.03em;
+}
+
+.mono-time {
+  color: var(--tx-2);
+  font-size: 11px;
+}
+
+.reply-content {
+  display: inline-block;
+  max-width: 58ch;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.reply-content.is-optout {
+  padding: 1px 6px;
+  color: var(--el-color-danger);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--el-color-danger) 10%, transparent);
+  border-radius: 4px;
+}
+
+.batch-code {
+  color: var(--verdi);
+  font-size: 11px;
+  background: transparent;
+}
+
+.reply-batch-link {
+  padding: 0;
+  border: 0;
+  cursor: pointer;
+}
+
+.reply-batch-link:hover {
+  text-decoration: underline;
+}
+
+.reply-unlinked-group {
+  display: inline-grid;
+  gap: 2px;
+  justify-items: start;
+}
+
+.reply-unlinked {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.reply-status-none {
+  color: var(--tx-3);
+}
+
+.reply-pagination,
+.blacklist-pagination,
+.sensitive-pagination,
+.user-pagination,
+.ops-pagination,
+.callback-pagination,
+.security-daily-pagination,
+.audit-pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  min-height: 46px;
+  padding: 10px 8px 4px;
+  color: var(--tx-3);
+  font-size: 11px;
+  border-top: 1px solid var(--hair-2);
+}
+
+.reply-mobile-list {
+  display: none;
+}
+
+.reply-empty-copy {
+  margin: 0;
+  color: var(--tx-3);
+  font-size: 11px;
+}
+
+@media (max-width: 840px) {
+  .reply-heading,
+  .blacklist-heading,
+  .sensitive-heading,
+  .user-heading,
+  .config-heading,
+  .ops-heading,
+  .callback-heading,
+  .security-daily-heading {
+    align-items: start;
+  }
+
+  .reply-filter-bar,
+  .blacklist-filter-bar,
+  .sensitive-filter-bar,
+  .user-filter-bar,
+  .config-filter-bar,
+  .ops-filter-bar,
+  .callback-filter-bar,
+  .audit-filter-bar {
+    align-items: flex-start;
+  }
+
+  .reply-filter-phone,
+  .reply-filter-dates,
+  .blacklist-keyword,
+  .sensitive-keyword,
+  .user-keyword,
+  .config-keyword,
+  .ops-keyword,
+  .ops-phone,
+  .ops-dates,
+  .callback-keyword,
+  .callback-app-select,
+  .audit-keyword,
+  .audit-action,
+  .audit-object-type,
+  .audit-object-id,
+  .audit-dates {
+    width: 100%;
+  }
+
+  .reply-filter-dates,
+  .ops-dates,
+  .audit-dates {
+    --el-date-editor-datetimerange-width: 100%;
+  }
+
+  .reply-filter-go,
+  .blacklist-filter-go,
+  .sensitive-filter-go,
+  .user-filter-go,
+  .ops-filter-go,
+  .callback-filter-go,
+  .audit-filter-go {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .reply-filter-go .el-button,
+  .blacklist-filter-go .el-button,
+  .sensitive-filter-go .el-button,
+  .user-filter-go .el-button,
+  .ops-filter-go .el-button,
+  .callback-filter-go .el-button,
+  .audit-filter-go .el-button {
+    min-height: 44px;
+    flex: 1;
+  }
+}
+
+@media (max-width: 560px) {
+  .reply-pagination,
+  .blacklist-pagination,
+  .sensitive-pagination,
+  .user-pagination,
+  .ops-pagination,
+  .callback-pagination,
+  .security-daily-pagination,
+  .audit-pagination {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .reply-table {
+    display: none;
+  }
+
+  .reply-mobile-list {
+    display: block;
+    padding: 10px 12px;
+  }
+
+  .reply-mobile-item {
+    padding: 13px 2px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .reply-mobile-item header,
+  .reply-mobile-item footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .reply-mobile-item .reply-content {
+    width: 100%;
+    margin: 12px 0;
+    padding: 8px 10px;
+    background: color-mix(in srgb, var(--paper) 86%, var(--verdi) 2%);
+    border-radius: 4px;
+  }
+}
+
+/* 回调任务：检索条/规则条/结果面板/分页/空态/抽屉骨架/确认框已并入 reply-*、user-rules 与
+   sign-* 共享组，按页复制即缺陷；本区只保留 dead 脉冲、账本单元格与移动端卡片。 */
+.callback-pulse {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 0 8px;
+  align-items: baseline;
+  min-width: 148px;
+  padding-left: 18px;
+  border-left: 1px solid var(--line-2);
+}
+
+.callback-pulse span {
+  grid-column: 1 / -1;
+  color: var(--tx-3);
+  font-size: 10px;
+  letter-spacing: .12em;
+}
+
+.callback-pulse strong {
+  color: var(--verdi);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 32px;
+  font-weight: 400;
+}
+
+.callback-pulse.danger strong {
+  color: var(--el-color-danger);
+}
+
+.callback-app-select {
+  width: 168px;
+}
+
+.callback-state {
+  display: grid;
+  gap: 4px;
+  justify-items: start;
+}
+
+.callback-table strong,
+.callback-table code,
+.callback-table small {
+  display: block;
+}
+
+.callback-id,
+.callback-table small {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.callback-table code,
+.retry-count,
+.http-code,
+.callback-table time {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+}
+
+.callback-table code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.http-code {
+  color: var(--el-color-danger);
+}
+
+.callback-fact-grid dd {
+  overflow-wrap: anywhere;
+}
+
+.callback-mobile-list {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .callback-pulse {
+    width: 100%;
+    padding: 8px 0 0;
+    border-top: 1px solid var(--line-2);
+    border-left: 0;
+  }
+
+  .callback-table {
+    display: none;
+  }
+
+  .callback-mobile-list {
+    display: grid;
+    gap: 10px;
+    padding: 12px 8px;
+  }
+
+  .callback-mobile-list article {
+    min-width: 0;
+    padding: 14px;
+    background: var(--panel-2);
+    border: 1px solid var(--hair);
+    border-radius: 10px;
+  }
+
+  .callback-mobile-list header,
+  .callback-mobile-list footer {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .callback-mobile-list header small,
+  .callback-mobile-list time {
+    color: var(--tx-3);
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+  }
+
+  .callback-mobile-list p {
+    margin: 12px 0 0;
+    color: var(--tx-2);
+  }
+
+  .callback-mobile-list dl {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    margin: 10px 0;
+    overflow: hidden;
+    background: var(--hair-2);
+    border-radius: 8px;
+  }
+
+  .callback-mobile-list dl div {
+    min-width: 0;
+    padding: 7px 9px;
+    background: var(--panel);
+  }
+
+  .callback-mobile-list dt {
+    color: var(--tx-3);
+    font-size: 9px;
+  }
+
+  .callback-mobile-list dd {
+    margin: 1px 0 0;
+    overflow-wrap: anywhere;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 10px;
+  }
+
+  .callback-mobile-list footer {
+    align-items: flex-end;
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--hair-2);
+  }
+
+  .callback-mobile-list footer > span:last-child {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .callback-mobile-list footer .el-button + .el-button {
+    margin-left: 8px;
+  }
+}
+
+.topbar {
+  position: sticky;
+  z-index: 10;
+  top: 0;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto;
+  align-items: center;
+  height: 52px;
+  padding: 0 24px;
+  background: color-mix(in srgb, var(--paper) 94%, transparent);
+  border-bottom: 1px solid var(--line);
+}
+
+.breadcrumb {
+  margin: 0;
+  color: var(--tx-2);
+}
+
+.breadcrumb b {
+  margin: 0 7px;
+  color: var(--line-2);
+}
+
+.channel-strip {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 5px 10px;
+  color: #dfe7e2;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  background: var(--ink);
+  border: 1px solid #32413a;
+  border-radius: 6px;
+}
+
+.lane {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.lane-name.realtime {
+  color: #71c4ad;
+}
+
+.lane-name.bulk {
+  color: #d8a35c;
+}
+
+.lane-track {
+  display: block;
+  width: 42px;
+  height: 3px;
+  overflow: hidden;
+  background: #4b5751;
+}
+
+.lane-track i {
+  display: block;
+  width: var(--load);
+  height: 100%;
+  background: #71c4ad;
+}
+
+.lane:nth-child(2) .lane-track i {
+  background: #d8a35c;
+}
+
+.tokens {
+  display: flex;
+  gap: 3px;
+  padding-left: 9px;
+  border-left: 1px solid #44524b;
+}
+
+.tokens i {
+  width: 5px;
+  height: 5px;
+  background: #59645f;
+  border-radius: 50%;
+}
+
+.tokens i.used {
+  background: #71c4ad;
+}
+
+.operator {
+  display: flex;
+  gap: 20px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.balance {
+  color: var(--tx-3);
+  font-size: 11px;
+}
+
+.balance strong {
+  margin-left: 4px;
+  color: var(--tx);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
+
+.operator-name {
+  display: grid;
+  line-height: 1.25;
+}
+
+.operator-name small {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+main {
+  max-width: 1440px;
+  min-height: calc(100vh - 52px);
+  margin: 0 auto;
+  padding: 20px 26px;
+}
+
+.page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 26px;
+}
+
+.eyebrow {
+  margin: 0 0 3px;
+  color: var(--verdi);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.page-heading h1 {
+  margin: 0;
+  font-size: clamp(19px, 2vw, 23px);
+  line-height: 1.35;
+}
+
+.page-heading p:not(.eyebrow) {
+  margin: 4px 0 0;
+  color: var(--tx-2);
+}
+
+.page-heading time {
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+}
+
+.empty-panel {
+  min-height: 300px;
+  border-color: var(--line);
+  border-radius: 10px;
+}
+
+.empty-panel .el-card__body {
+  display: grid;
+  height: 298px;
+  place-content: center;
+  text-align: center;
+}
+
+.empty-rule {
+  width: 52px;
+  height: 6px;
+  margin: 0 auto 15px;
+  background: linear-gradient(90deg, var(--verdi) 0 33%, #35618f 33% 66%, var(--amber) 66%);
+}
+
+.empty-panel strong {
+  font-size: 14px;
+}
+
+.empty-panel p {
+  margin: 4px 0 0;
+  color: var(--tx-2);
+}
+
+.category-tag {
+  position: relative;
+  padding-inline-start: 11px;
+  color: var(--tx);
+  background: var(--surface);
+  border-color: var(--line-2);
+}
+
+.category-tag::before {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: 3px;
+  content: "";
+  background: var(--slate);
+  border-radius: 2px;
+}
+
+.category-tag--verify::before {
+  background: var(--verdi);
+}
+
+.category-tag--market::before {
+  background: var(--amber);
+}
+
+.status-tag {
+  font-weight: 600;
+}
+
+.empty-state {
+  display: grid;
+  min-height: 150px;
+  padding: 28px 20px;
+  place-content: center;
+  text-align: center;
+}
+
+.empty-state strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.empty-state p {
+  max-width: 38ch;
+  margin: 5px auto 0;
+  color: var(--tx-2);
+  font-size: 12px;
+}
+
+/* Element Plus 表格空态槽自带 line-height:60px 与 50% 宽度，
+   会让 EmptyState 换行文案出现巨大行距；统一归一化。 */
+.el-table__empty-text {
+  width: auto;
+  line-height: 1.6;
+}
