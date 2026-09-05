@@ -10,9 +10,43 @@ from typing import Literal
 TransitionAction = Literal["auth_account_locked", "auth_ip_banned"]
 TransitionOwner = Literal["api", "reconciler"]
 TransitionErrorClass = Literal["timeout", "unavailable", "other"]
+OrphanReason = Literal["missing_hash", "incomplete_envelope", "id_mismatch"]
+IntegrityDirection = Literal["hash_to_due", "due_to_hash"]
+IntegrityOutcome = Literal["repaired", "skipped", "orphaned"]
+EnvelopeFieldClass = Literal[
+    "action",
+    "provider",
+    "result",
+    "count",
+    "ttl",
+    "ip",
+    "schema",
+    "created",
+    "id",
+    "missing_hash",
+]
 _ACTIONS: tuple[TransitionAction, ...] = ("auth_account_locked", "auth_ip_banned")
 _OWNERS: tuple[TransitionOwner, ...] = ("api", "reconciler")
 _ERROR_CLASSES: tuple[TransitionErrorClass, ...] = ("timeout", "unavailable", "other")
+_ORPHAN_REASONS: tuple[OrphanReason, ...] = (
+    "missing_hash",
+    "incomplete_envelope",
+    "id_mismatch",
+)
+_INTEGRITY_DIRECTIONS: tuple[IntegrityDirection, ...] = ("hash_to_due", "due_to_hash")
+_INTEGRITY_OUTCOMES: tuple[IntegrityOutcome, ...] = ("repaired", "skipped", "orphaned")
+_FIELD_CLASSES: tuple[EnvelopeFieldClass, ...] = (
+    "action",
+    "provider",
+    "result",
+    "count",
+    "ttl",
+    "ip",
+    "schema",
+    "created",
+    "id",
+    "missing_hash",
+)
 _LOCK = Lock()
 _CREATED = {action: 0 for action in _ACTIONS}
 _SUCCESS = {action: 0 for action in _ACTIONS}
@@ -30,6 +64,16 @@ _POLICY_FAILURE = 0
 _GUARD_DB_QUERIES = 0
 _POLICY_AGE = 0.0
 _ADMIT = {"allowed": 0, "banned": 0, "prehash": 0, "unavailable": 0}
+_ORPHAN = {reason: 0 for reason in _ORPHAN_REASONS}
+_INTEGRITY = {
+    (direction, outcome): 0
+    for direction in _INTEGRITY_DIRECTIONS
+    for outcome in _INTEGRITY_OUTCOMES
+}
+_ENVELOPE_INVALID = {field: 0 for field in _FIELD_CLASSES}
+_DEAD_LETTER = {reason: 0 for reason in _ORPHAN_REASONS}
+_PENDING_WITHOUT_DUE = 0
+_DUE_WITHOUT_PAYLOAD = 0
 _SESSION_POLICY_PUBLISH = {
     "accepted": 0,
     "idempotent": 0,
@@ -86,6 +130,12 @@ class AuthObservabilitySnapshot:
     token_issue_policy_mismatch: tuple[tuple[str, int], ...] = ()
     token_issue_denied: tuple[tuple[str, int], ...] = ()
     legacy_policy_fallback: int = 0
+    transition_orphan: tuple[tuple[str, int], ...] = ()
+    transition_integrity_repair: tuple[tuple[str, str, int], ...] = ()
+    transition_envelope_invalid: tuple[tuple[str, int], ...] = ()
+    transition_pending_without_due: int = 0
+    transition_due_without_payload: int = 0
+    transition_dead_letter: tuple[tuple[str, int], ...] = ()
 
 
 def observe_transition_created(action: TransitionAction) -> None:
@@ -169,6 +219,46 @@ def observe_policy_snapshot_age(age_seconds: float) -> None:
 def observe_admit(outcome: Literal["allowed", "banned", "prehash", "unavailable"]) -> None:
     with _LOCK:
         _ADMIT[outcome] += 1
+
+
+def observe_transition_orphan(reason: str) -> None:
+    key: OrphanReason = reason if reason in _ORPHAN_REASONS else "incomplete_envelope"
+    with _LOCK:
+        _ORPHAN[key] += 1
+
+
+def observe_transition_integrity_repair(direction: str, outcome: str) -> None:
+    dir_key: IntegrityDirection = (
+        direction if direction in _INTEGRITY_DIRECTIONS else "hash_to_due"
+    )
+    out_key: IntegrityOutcome = outcome if outcome in _INTEGRITY_OUTCOMES else "skipped"
+    with _LOCK:
+        _INTEGRITY[dir_key, out_key] += 1
+
+
+def observe_transition_envelope_invalid(field_class: str) -> None:
+    key: EnvelopeFieldClass = (
+        field_class if field_class in _FIELD_CLASSES else "schema"
+    )
+    with _LOCK:
+        _ENVELOPE_INVALID[key] += 1
+
+
+def observe_transition_dead_letter(reason: str) -> None:
+    key: OrphanReason = reason if reason in _ORPHAN_REASONS else "incomplete_envelope"
+    with _LOCK:
+        _DEAD_LETTER[key] += 1
+
+
+def observe_transition_integrity_gauges(
+    *,
+    pending_without_due: int,
+    due_without_payload: int,
+) -> None:
+    global _PENDING_WITHOUT_DUE, _DUE_WITHOUT_PAYLOAD
+    with _LOCK:
+        _PENDING_WITHOUT_DUE = max(0, pending_without_due)
+        _DUE_WITHOUT_PAYLOAD = max(0, due_without_payload)
 
 
 def observe_session_policy_publish(outcome: str) -> None:
@@ -280,6 +370,16 @@ def auth_observability_snapshot() -> AuthObservabilitySnapshot:
             tuple(_TOKEN_ISSUE_POLICY_MISMATCH.items()),
             tuple(_TOKEN_ISSUE_DENIED.items()),
             _LEGACY_POLICY_FALLBACK,
+            tuple((reason, _ORPHAN[reason]) for reason in _ORPHAN_REASONS),
+            tuple(
+                (direction, outcome, _INTEGRITY[direction, outcome])
+                for direction in _INTEGRITY_DIRECTIONS
+                for outcome in _INTEGRITY_OUTCOMES
+            ),
+            tuple((field, _ENVELOPE_INVALID[field]) for field in _FIELD_CLASSES),
+            _PENDING_WITHOUT_DUE,
+            _DUE_WITHOUT_PAYLOAD,
+            tuple((reason, _DEAD_LETTER[reason]) for reason in _ORPHAN_REASONS),
         )
 
 
@@ -290,6 +390,7 @@ def reset_auth_observability() -> None:
     global _PENDING, _OLDEST_PENDING
     global _SESSION_POLICY_SNAPSHOT_AGE, _SESSION_POLICY_LAG
     global _LEGACY_POLICY_FALLBACK
+    global _PENDING_WITHOUT_DUE, _DUE_WITHOUT_PAYLOAD
     with _LOCK:
         for action in _ACTIONS:
             _CREATED[action] = 0
@@ -330,3 +431,13 @@ def reset_auth_observability() -> None:
         for key in _TOKEN_ISSUE_DENIED:
             _TOKEN_ISSUE_DENIED[key] = 0
         _LEGACY_POLICY_FALLBACK = 0
+        for reason in _ORPHAN_REASONS:
+            _ORPHAN[reason] = 0
+            _DEAD_LETTER[reason] = 0
+        for direction in _INTEGRITY_DIRECTIONS:
+            for outcome in _INTEGRITY_OUTCOMES:
+                _INTEGRITY[direction, outcome] = 0
+        for field in _FIELD_CLASSES:
+            _ENVELOPE_INVALID[field] = 0
+        _PENDING_WITHOUT_DUE = 0
+        _DUE_WITHOUT_PAYLOAD = 0

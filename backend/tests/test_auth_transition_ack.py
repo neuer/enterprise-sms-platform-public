@@ -116,7 +116,11 @@ async def test_writer_failure_sets_bounded_retry_backoff() -> None:
         await guard.record_failure("user01", "10.0.0.25", "local")
     with pytest.raises(SessionStateUnavailable):
         await guard.record_failure("user01", "10.0.0.25", "local")
-    audit = next(value for key, value in store.values.items() if str(key).startswith("auth:audit:"))
+    audit = next(
+        value
+        for key, value in store.values.items()
+        if str(key).startswith("auth:audit:transition:")
+    )
     assert audit["state"] == "pending"
     assert audit["attempts"] == 1
     assert int(audit["next_retry_at_ms"]) == 1000
@@ -148,12 +152,16 @@ async def test_expired_writer_lease_can_be_fenced_and_recovered() -> None:
     with pytest.raises(SessionStateUnavailable):
         await guard.record_failure("user01", "10.0.0.27", "local")
     lock = str(store.values["auth:lock:user:user01"])
-    store.values[store._audit_key(lock)] = {
-        "state": "writing",
-        "lease_id": "dead-lease",
-        "lease_expires_ms": 1,
-        "attempts": 1,
-    }
+    current = dict(store.values[store._audit_key(lock)])
+    current.update(
+        {
+            "state": "writing",
+            "lease_id": "dead-lease",
+            "lease_expires_ms": 1,
+            "attempts": 1,
+        }
+    )
+    store.values[store._audit_key(lock)] = current
     store.values["__now_ms"] = 10
     writer.fail_times = 0
     with pytest.raises(_GUARD_ERRORS):
@@ -192,7 +200,7 @@ async def test_database_insert_committed_but_ack_lost_is_deduplicated_and_acked(
     original_eval = store.eval
 
     async def drop_first_ack(script: str, numkeys: int, *args: object) -> object:
-        if "auth-audit-ack-v1" in script and not getattr(drop_first_ack, "done", False):
+        if "auth-audit-ack-" in script and not getattr(drop_first_ack, "done", False):
             drop_first_ack.done = True  # type: ignore[attr-defined]
             return 0
         return await original_eval(script, numkeys, *args)
@@ -241,7 +249,11 @@ async def test_retry_backoff_uses_redis_time_only(monkeypatch: pytest.MonkeyPatc
         await guard.record_failure("user01", "10.0.0.30", "local")
     with pytest.raises(SessionStateUnavailable):
         await guard.record_failure("user01", "10.0.0.30", "local")
-    audit = next(value for key, value in store.values.items() if str(key).startswith("auth:audit:"))
+    audit = next(
+        value
+        for key, value in store.values.items()
+        if str(key).startswith("auth:audit:transition:")
+    )
     assert int(audit["next_retry_at_ms"]) == 5_000
 
 
@@ -259,7 +271,11 @@ async def test_api_clock_skew_does_not_change_retry_semantics(
         await guard.record_failure("user01", "10.0.0.31", "local")
     with pytest.raises(SessionStateUnavailable):
         await guard.record_failure("user01", "10.0.0.31", "local")
-    audit = next(value for key, value in store.values.items() if str(key).startswith("auth:audit:"))
+    audit = next(
+        value
+        for key, value in store.values.items()
+        if str(key).startswith("auth:audit:transition:")
+    )
     assert int(audit["next_retry_at_ms"]) == 1000
 
 
@@ -380,6 +396,8 @@ async def test_transition_enters_dead_state_only_after_documented_limit() -> Non
         await guard.record_failure("user01", "10.0.0.35", "local")
     lock = str(store.values["auth:lock:user:user01"])
     store.values[store._audit_key(lock)] = {
+        "transition_id": lock,
+        "schema_version": "1",
         "state": "writing",
         "lease_id": "dead-lease",
         "attempts": 19,

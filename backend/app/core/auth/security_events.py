@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from ipaddress import ip_address
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -22,7 +25,23 @@ from app.core.runtime_resources import bind_connection_system_audit, database_en
 from app.settings import Settings, get_settings
 
 AuthSecurityAction = Literal["auth_account_locked", "auth_ip_banned"]
+DeadLetterReason = Literal["missing_hash", "incomplete_envelope", "id_mismatch"]
 _PROVIDER_CODE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+_DEAD_LETTER_HMAC_KEY = b"sms-auth-transition-dead-letter-v1"
+_DEAD_LETTER_REASONS = frozenset(
+    {"missing_hash", "incomplete_envelope", "id_mismatch"}
+)
+_HMAC_HEX = re.compile(r"[0-9a-f]{64}")
+
+
+def transition_dead_letter_hmac(transition_id: str) -> str:
+    """用应用常量对 transition UUID 做 HMAC，供运维死信引用，不是手机号索引。"""
+
+    return hmac.new(
+        _DEAD_LETTER_HMAC_KEY,
+        transition_id.encode("ascii"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def _is_unique_violation(error: BaseException) -> bool:
@@ -77,8 +96,31 @@ class AuthSecurityTransition:
             raise ValueError("认证安全转换无效") from None
 
 
+@dataclass(frozen=True, slots=True)
+class AuthTransitionDeadLetter:
+    """不含用户名、IP 或原始信封的运维死信。"""
+
+    transition_hmac: str
+    reason: DeadLetterReason
+    field_class: str
+    discovered_at: datetime
+    build_version: str
+
+    def __post_init__(self) -> None:
+        if (
+            _HMAC_HEX.fullmatch(self.transition_hmac) is None
+            or self.reason not in _DEAD_LETTER_REASONS
+            or not self.field_class
+            or not self.build_version
+            or self.discovered_at.tzinfo is None
+        ):
+            raise ValueError("认证转换死信无效")
+
+
 class AuthSecurityEventWriter(Protocol):
     async def ensure_transition(self, transition: AuthSecurityTransition) -> None: ...
+
+    async def record_dead_letter(self, record: AuthTransitionDeadLetter) -> None: ...
 
 
 class SqlAuthSecurityEventRepository:
@@ -151,5 +193,41 @@ class SqlAuthSecurityEventRepository:
         except Exception as error:
             observe_transition_failure(transition.action)
             raise SessionStateUnavailable("auth security audit unavailable") from error
+        finally:
+            await engine.dispose()
+
+    async def record_dead_letter(self, record: AuthTransitionDeadLetter) -> None:
+        """只写运维死信，绝不补写锁定/封禁审计。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                try:
+                    async with connection.begin_nested():
+                        await connection.execute(
+                            text(
+                                """
+                                INSERT INTO auth_transition_dead_letter(
+                                  transition_hmac,reason,field_class,
+                                  discovered_at,build_version
+                                ) VALUES(
+                                  :hmac,:reason,:field_class,:discovered_at,
+                                  :build_version
+                                )
+                                """
+                            ),
+                            {
+                                "hmac": record.transition_hmac,
+                                "reason": record.reason,
+                                "field_class": record.field_class,
+                                "discovered_at": record.discovered_at,
+                                "build_version": record.build_version,
+                            },
+                        )
+                except IntegrityError as error:
+                    if not _is_unique_violation(error):
+                        raise
+        except Exception as error:
+            raise SessionStateUnavailable("auth transition dead letter unavailable") from error
         finally:
             await engine.dispose()

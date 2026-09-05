@@ -1543,3 +1543,19 @@
   本期不做新旧二进制混跑拓扑、Redis failover 旧主复活、readiness
   `minimum_writer_version` 或新 Prometheus 家族。旧实例仍只写 v1，新实例
   双读可继承；旧实例本身仍可能超发，需尽快抽干。
+
+## D113 Transition Envelope 是 Canonical 事实，Due 索引不得单独存活
+
+- 决策：锁定/封禁审计的不可变信封、状态和 Due 成员必须在首次 Lua 内一次写全。
+  Hash 是 Canonical Source；`auth:audit:due` / `auth:audit:open` 只是可重建调度。
+  `pending`/`writing` 用 `PERSIST`，终态再 24h TTL。Reconcile 遇到 Due 无完整
+  信封时只死信+告警，禁止默认 Action/Provider/IP/Count，禁止重建空 Hash。
+  Hash 无 Due 时按原始 `created_at_ms`/`next_retry_at_ms` 补回调度。
+  滚动升级仍接受缺少 `schema_version`/`transition_id`/`object_kind` 但安全事实
+  完整的旧信封。认证 Redis 继续 `noeviction`；应用 ACL 不开放 `CONFIG`。
+- 原因：Due 成员比 Hash 活得更久时，旧 Reconcile 会用默认值写成错误审计，
+  把 IP 封禁重构成账号锁定。
+- 影响：`service.py`、`transition_sync.py`、`security_events.py`、
+  `auth_transition_dead_letter`、auth Redis ACL（`+scan`/`+zscore`）、
+  `docs/runbooks/auth-transition-audit.md`。
+  本期不把首次信封再抄一份 PostgreSQL Outbox；ACK 成功前信封仍只在 Redis。

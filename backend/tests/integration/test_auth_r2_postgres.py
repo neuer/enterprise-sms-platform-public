@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
@@ -19,7 +20,9 @@ from app.core.auth.backends import SessionStateUnavailable
 from app.core.auth.guard_policy import SqlAuthGuardPolicyLoader
 from app.core.auth.security_events import (
     AuthSecurityTransition,
+    AuthTransitionDeadLetter,
     SqlAuthSecurityEventRepository,
+    transition_dead_letter_hmac,
 )
 from app.core.auth.service import AccountLocked, LoginGuard, RateLimited, RedisKeyValue
 from app.core.runtime_resources import close_runtime_resources
@@ -430,3 +433,199 @@ async def test_reconciler_recovers_after_postgres_outage_without_followup_login(
             keys.append(f"auth:audit:transition:{lock}")
         await client.delete(*keys)
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_sms_auth_can_insert_dead_letter_but_has_no_select(
+    auth_roles: tuple[AsyncEngine, URL, URL, Any],
+) -> None:
+    owner, auth_url, _accept_url, settings = auth_roles
+    repository = SqlAuthSecurityEventRepository(cast(Settings, settings))
+    digest = transition_dead_letter_hmac(str(uuid4()))
+    await repository.record_dead_letter(
+        AuthTransitionDeadLetter(
+            transition_hmac=digest,
+            reason="missing_hash",
+            field_class="missing_hash",
+            discovered_at=datetime.now(UTC),
+            build_version="test",
+        )
+    )
+    async with owner.connect() as connection:
+        count = await connection.scalar(
+            text(
+                """
+                SELECT COUNT(*) FROM auth_transition_dead_letter
+                WHERE transition_hmac=:hmac
+                """
+            ),
+            {"hmac": digest},
+        )
+    assert int(count) == 1
+    engine = create_async_engine(auth_url)
+    try:
+        async with engine.connect() as connection:
+            with pytest.raises(DBAPIError):
+                await connection.execute(
+                    text("SELECT id FROM auth_transition_dead_letter LIMIT 1")
+                )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif("AUTH_GUARD_REDIS_URL" not in os.environ, reason="requires isolated Redis 7")
+async def test_multi_process_real_redis_and_postgres_transition_integrity(
+    auth_roles: tuple[AsyncEngine, URL, URL, Any],
+) -> None:
+    import asyncio
+
+    from redis.asyncio import Redis
+
+    from app.core.auth.service import AUDIT_DUE_KEY, AUDIT_OPEN_KEY
+    from app.core.auth.transition_sync import AuthTransitionReconciler
+
+    owner, _auth_url, _accept_url, settings = auth_roles
+    first = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
+    second = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
+    writer = SqlAuthSecurityEventRepository(cast(Settings, settings))
+    username = f"int-{uuid4().hex[:12]}"
+    left = LoginGuard(RedisKeyValue(first), security_events=writer)
+    right = LoginGuard(RedisKeyValue(second), security_events=writer)
+    orphan_id = str(uuid4())
+    pending_user = f"pend-{uuid4().hex[:12]}"
+    pending_ip = "10.9.3.21"
+    lock = None
+    pending_lock = None
+    try:
+        for index in range(5):
+            guard = left if index % 2 == 0 else right
+            with suppress(AccountLocked):
+                await guard.record_failure(username, f"10.9.2.{index}", "local")
+        lock = await first.get(f"auth:lock:user:{username}")
+        async with owner.connect() as connection:
+            count = await connection.scalar(
+                text(
+                    """
+                    SELECT COUNT(*) FROM audit_log
+                    WHERE action='auth_account_locked' AND object_id=:object_id
+                    """
+                ),
+                {"object_id": str(lock)},
+            )
+        assert int(count) == 1
+
+        await first.delete(f"auth:audit:transition:{lock}")
+        await first.zadd(AUDIT_DUE_KEY, {str(lock): 0})
+        await first.zadd(AUDIT_DUE_KEY, {orphan_id: 0})
+        await AuthTransitionReconciler(
+            store=RedisKeyValue(first),
+            security_events=writer,
+            interval_s=1,
+        ).reconcile()
+        async with owner.connect() as connection:
+            lock_count = await connection.scalar(
+                text(
+                    """
+                    SELECT COUNT(*) FROM audit_log
+                    WHERE action='auth_account_locked' AND object_id=:object_id
+                    """
+                ),
+                {"object_id": str(lock)},
+            )
+            fake_count = await connection.scalar(
+                text(
+                    """
+                    SELECT COUNT(*) FROM audit_log
+                    WHERE object_id=:object_id
+                    """
+                ),
+                {"object_id": orphan_id},
+            )
+            dead_letters = await connection.scalar(
+                text("SELECT COUNT(*) FROM auth_transition_dead_letter")
+            )
+        assert int(lock_count) == 1
+        assert int(fake_count) == 0
+        assert int(dead_letters) >= 1
+
+        class FlakyWriter:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def ensure_transition(self, transition: AuthSecurityTransition) -> None:
+                self.calls += 1
+                if self.calls == 1:
+                    raise SessionStateUnavailable("auth security audit unavailable")
+                await writer.ensure_transition(transition)
+
+            async def record_dead_letter(self, record: AuthTransitionDeadLetter) -> None:
+                await writer.record_dead_letter(record)
+
+        flaky = FlakyWriter()
+        pending_guard = LoginGuard(RedisKeyValue(second), security_events=flaky)
+        for _ in range(4):
+            await pending_guard.record_failure(pending_user, pending_ip, "ad")
+        with pytest.raises(SessionStateUnavailable):
+            await pending_guard.record_failure(pending_user, pending_ip, "ad")
+        pending_lock = await second.get(f"auth:lock:user:{pending_user}")
+        envelope = await second.hgetall(f"auth:audit:transition:{pending_lock}")
+        assert envelope["action"] == "auth_account_locked"
+        assert envelope["provider_code"] == "ad"
+        assert envelope["ip"] == pending_ip
+        assert int(await second.ttl(f"auth:audit:transition:{pending_lock}")) == -1
+        await second.zrem(AUDIT_DUE_KEY, str(pending_lock))
+        await asyncio.sleep(1.2)
+        await AuthTransitionReconciler(
+            store=RedisKeyValue(second),
+            security_events=flaky,
+            interval_s=1,
+        ).reconcile()
+        async with owner.connect() as connection:
+            pending_count = await connection.scalar(
+                text(
+                    """
+                    SELECT COUNT(*) FROM audit_log
+                    WHERE action='auth_account_locked' AND object_id=:object_id
+                    """
+                ),
+                {"object_id": str(pending_lock)},
+            )
+            after_val = await connection.scalar(
+                text(
+                    """
+                    SELECT after_val::text FROM audit_log
+                    WHERE action='auth_account_locked' AND object_id=:object_id
+                    """
+                ),
+                {"object_id": str(pending_lock)},
+            )
+        assert int(pending_count) == 1
+        assert "ad" in str(after_val)
+        restored = await second.hgetall(f"auth:audit:transition:{pending_lock}")
+        assert restored["created_at_ms"] == envelope["created_at_ms"]
+        assert restored["ip"] == pending_ip
+    finally:
+        keys = [
+            f"auth:fail:user:{username}",
+            f"auth:lock:user:{username}",
+            f"auth:fail:user:{pending_user}",
+            f"auth:lock:user:{pending_user}",
+            f"auth:fail:ip:{pending_ip}",
+        ]
+        if lock:
+            keys.append(f"auth:audit:transition:{lock}")
+            keys.append(f"auth:audit:dead-letter:{lock}")
+            await first.zrem(AUDIT_DUE_KEY, str(lock))
+            await first.zrem(AUDIT_OPEN_KEY, str(lock))
+        if pending_lock:
+            keys.append(f"auth:audit:transition:{pending_lock}")
+            keys.append(f"auth:audit:dead-letter:{pending_lock}")
+            await first.zrem(AUDIT_DUE_KEY, str(pending_lock))
+            await first.zrem(AUDIT_OPEN_KEY, str(pending_lock))
+        await first.zrem(AUDIT_DUE_KEY, orphan_id)
+        await first.zrem(AUDIT_OPEN_KEY, orphan_id)
+        keys.append(f"auth:audit:dead-letter:{orphan_id}")
+        await first.delete(*keys)
+        await first.aclose()
+        await second.aclose()

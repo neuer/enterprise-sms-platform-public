@@ -789,7 +789,9 @@ def test_auth_redis_acl_allows_auth_lua_primitives() -> None:
     assert {"+type", "+hgetall", "+persist", "+zrangebyscore", "+time"} <= required
     for command in sorted(required | {"+eval", "+evalsha", "+ping"}):
         assert command in auth_block
-    for forbidden in ("+keys", "+scan", "+flushall", "+config", "+script|load"):
+    assert "+scan" in auth_block
+    assert "+zscore" in auth_block
+    for forbidden in ("+keys", "+flushall", "+config", "+script|load"):
         assert forbidden not in auth_block
 
 
