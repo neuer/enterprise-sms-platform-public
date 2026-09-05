@@ -32,6 +32,15 @@ CHECK_SPEC = "spec_consistency"
 CHECK_CI_CONTRACTS = "ci_contracts"
 
 Mode = Literal["commit", "push"]
+GIT_HOOK_ENV_KEYS = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_PREFIX",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_QUARANTINE_PATH",
+)
 
 INFLIGHT_SQL_TOKENS = (
     "send_inflight",
@@ -556,6 +565,15 @@ def write_stamp(root: Path, digest: str) -> None:
     path.chmod(0o600)
 
 
+def isolated_check_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """去掉 git hook 注入的 GIT_*，避免 pytest 里的 git 操作打到当前仓库。"""
+
+    env = dict(base or os.environ)
+    for key in GIT_HOOK_ENV_KEYS:
+        env.pop(key, None)
+    return env
+
+
 def run_command(
     argv: Sequence[str],
     *,
@@ -563,7 +581,12 @@ def run_command(
     env: Mapping[str, str] | None = None,
 ) -> None:
     print("+ " + " ".join(argv), file=sys.stderr)
-    result = subprocess.run(argv, cwd=cwd, env=dict(env or os.environ), check=False)
+    result = subprocess.run(
+        argv,
+        cwd=cwd,
+        env=isolated_check_env(env),
+        check=False,
+    )
     if result.returncode != 0:
         raise GateError(f"command failed ({result.returncode}): {' '.join(argv)}")
 
@@ -594,7 +617,7 @@ def execute_plan(root: Path, plan: GatePlan) -> None:
     ):
         tools = resolve_backend_tools(root)
     ruff_cmd, python_cmd, pytest_cmd, venv_bin = tools or ([], [], [], None)
-    env = os.environ.copy()
+    env = isolated_check_env()
     if venv_bin is not None:
         env["PATH"] = str(venv_bin) + os.pathsep + env.get("PATH", "")
     test_env = dict(env)
@@ -608,7 +631,11 @@ def execute_plan(root: Path, plan: GatePlan) -> None:
     )
 
     if CHECK_SPEC in plan.checks:
-        run_command([sys.executable, str(root / "scripts" / "check_spec_consistency.py")], cwd=root)
+        run_command(
+            [sys.executable, str(root / "scripts" / "check_spec_consistency.py")],
+            cwd=root,
+            env=env,
+        )
     if CHECK_RUFF in plan.checks:
         existing = [path for path in plan.ruff_files if (root / path).is_file()]
         if existing:
@@ -621,6 +648,7 @@ def execute_plan(root: Path, plan: GatePlan) -> None:
                     *existing,
                 ],
                 cwd=root,
+                env=env,
             )
     if CHECK_PYTEST_CHANGED in plan.checks and plan.pytest_files:
         contract_set = set(plan.contract_tests)
@@ -636,7 +664,7 @@ def execute_plan(root: Path, plan: GatePlan) -> None:
             raise GateError("npm is required for frontend changes but is not on PATH")
         frontend = root / "frontend"
         for script in ("lint", "format:check", "typecheck", "test"):
-            run_command(["npm", "run", script], cwd=frontend)
+            run_command(["npm", "run", script], cwd=frontend, env=env)
     if CHECK_CI_CONTRACTS in plan.checks:
         if not plan.contract_tests:
             raise GateError("CI/gate paths changed but no contract tests were selected")
@@ -651,7 +679,7 @@ def execute_plan(root: Path, plan: GatePlan) -> None:
         require_docker()
         prepare = root / "scripts" / "local_test.sh"
         if prepare.is_file():
-            run_command(["bash", str(prepare), "prepare"], cwd=root)
+            run_command(["bash", str(prepare), "prepare"], cwd=root, env=env)
         run_command(
             [*python_cmd, "scripts_support/check_migration.py"],
             cwd=root / "backend",
@@ -662,6 +690,7 @@ def execute_plan(root: Path, plan: GatePlan) -> None:
         run_command(
             ["bash", str(root / "scripts" / "verify_vendor_postgres_recovery.sh")],
             cwd=root,
+            env=env,
         )
 
 

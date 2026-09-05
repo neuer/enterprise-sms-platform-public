@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -298,12 +299,24 @@ def test_invalid_git_paths_fail_closed(path: str) -> None:
 
 
 def git(repo: Path, *args: str) -> str:
+    env = os.environ.copy()
+    for key in (
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_PREFIX",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_QUARANTINE_PATH",
+    ):
+        env.pop(key, None)
     result = subprocess.run(
         ["git", *args],
         cwd=repo,
         check=True,
         text=True,
         capture_output=True,
+        env=env,
     )
     return result.stdout.strip()
 
@@ -322,7 +335,7 @@ def commit_file(repo: Path, path: str, content: str) -> str:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     git(repo, "add", "--", path)
-    git(repo, "commit", "-m", "test commit")
+    git(repo, "-c", f"core.hooksPath={os.devnull}", "commit", "-m", "test commit")
     return git(repo, "rev-parse", "HEAD")
 
 

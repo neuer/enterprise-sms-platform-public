@@ -20,6 +20,7 @@ from check_pre_vcs_gates import (  # noqa: E402
     CHECK_VENDOR_PG,
     GateError,
     decide_cursor_command,
+    isolated_check_env,
     parse_git_invocation,
     plan_for_paths,
 )
@@ -290,6 +291,17 @@ def test_git_hooks_call_the_same_classifier() -> None:
     assert "check_pre_vcs_gates.py" in pre_push
     assert "--git-hook push" in pre_push
     assert "check_public_readiness.py" in pre_push
+
+
+def test_isolated_check_env_drops_git_hook_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GIT_DIR", "/tmp/fake.git")
+    monkeypatch.setenv("GIT_INDEX_FILE", "/tmp/fake.index")
+
+    env = isolated_check_env()
+
+    assert "GIT_DIR" not in env
+    assert "GIT_INDEX_FILE" not in env
+    assert env.get("PATH")
 
 
 def test_execute_plan_invokes_check_migration_for_schema(
