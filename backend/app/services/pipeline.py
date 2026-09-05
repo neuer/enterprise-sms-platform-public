@@ -122,6 +122,8 @@ class SendAdmissionPort(Protocol):
         category: str,
         channel: str,
         recipient_count: int,
+        estimated_segments: int | None = None,
+        estimated_chunks: int | None = None,
     ) -> None: ...
 
 
@@ -924,7 +926,13 @@ class SendPipeline:
         next_day = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         return local.strftime("%Y%m%d"), max(1, int((next_day - local).total_seconds()))
 
-    async def _authorize_new_send(self, request: SendRequest) -> None:
+    async def _authorize_new_send(
+        self,
+        request: SendRequest,
+        *,
+        estimated_segments: int | None = None,
+        estimated_chunks: int | None = None,
+    ) -> None:
         if self.admission_guard is None:
             return
         recipient_count = (
@@ -934,6 +942,8 @@ class SendPipeline:
             category=request.category,
             channel=request.channel,
             recipient_count=max(1, recipient_count),
+            estimated_segments=estimated_segments,
+            estimated_chunks=estimated_chunks,
         )
 
     async def _consume_request_limit(
@@ -1317,6 +1327,12 @@ class SendPipeline:
             unsubscribe_auto_append=self.config.unsubscribe_auto_append,
             consent_confirmed=request.consent_confirmed,
             verify_otp_mask=self.config.verify_otp_mask,
+        )
+        batch_size = max(1, int(getattr(self.config, "vendor_batch_size", 500) or 500))
+        await self._authorize_new_send(
+            request,
+            estimated_segments=max(1, prepared.segments * recipient_count),
+            estimated_chunks=max(1, ceil(recipient_count / batch_size)),
         )
         self._enforce_quota_exemption(app, request)
         inflight = await self._enforce_in_flight(app, request, recipient_count=recipient_count)

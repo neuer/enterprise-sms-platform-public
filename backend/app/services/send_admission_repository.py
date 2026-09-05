@@ -9,8 +9,29 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine, redis_client
-from app.services.send_admission import SendAdmissionFacts
+from app.services.send_admission import SendAdmissionFacts, SendAdmissionLimits
 from app.settings import Settings, get_settings
+
+RECOVERY_BUDGET_LUA = """
+local t = redis.call('TIME')
+local now_sec = tonumber(t[1]) or 0
+local last = tonumber(redis.call('HGET', KEYS[1], 'sec')) or 0
+if last > 0 and now_sec < last then
+  return 0
+end
+if last ~= now_sec then
+  redis.call('HSET', KEYS[1], 'sec', now_sec, 'b', 0, 'r', 0, 's', 0)
+end
+local b = (tonumber(redis.call('HGET', KEYS[1], 'b')) or 0) + (tonumber(ARGV[1]) or 0)
+local r = (tonumber(redis.call('HGET', KEYS[1], 'r')) or 0) + (tonumber(ARGV[2]) or 0)
+local s = (tonumber(redis.call('HGET', KEYS[1], 's')) or 0) + (tonumber(ARGV[3]) or 0)
+if b > (tonumber(ARGV[4]) or 0) or r > (tonumber(ARGV[5]) or 0) or s > (tonumber(ARGV[6]) or 0) then
+  return 0
+end
+redis.call('HSET', KEYS[1], 'b', b, 'r', r, 's', s)
+redis.call('EXPIRE', KEYS[1], 3)
+return 1
+"""
 
 
 class AdmissionControlConflict(RuntimeError):
@@ -236,6 +257,64 @@ class SqlSendAdmissionRepository:
         winner = dict(winner_row)
         winner["outcome"] = "adopted"
         raise AdmissionControlConflict(winner)
+
+    async def consume_recovery_budget(
+        self,
+        *,
+        epoch: int,
+        batches: int,
+        recipients: int,
+        segments: int,
+        limits: SendAdmissionLimits,
+    ) -> bool:
+        """按当前 state_epoch 消费共享恢复预算；旧 generation 键不可复用。
+
+        control Redis ACL 只有 HGET/HSET/INCR，没有 INCRBY。
+        """
+
+        if epoch < 1 or batches < 1 or recipients < 1 or segments < 1:
+            raise ValueError("recovery budget inputs must be positive")
+        key = f"admission:recovery:{epoch}"
+        args = (
+            str(batches),
+            str(recipients),
+            str(segments),
+            str(limits.recovery_accept_batches_per_second),
+            str(limits.recovery_accept_recipients_per_second),
+            str(limits.recovery_accept_segments_per_second),
+        )
+        try:
+            async with asyncio.timeout(max(self.control_timeout_s, 2.0)):
+                try:
+                    allowed = await self.redis.eval(RECOVERY_BUDGET_LUA, 1, key, *args)
+                except Exception:
+                    allowed = await self._consume_recovery_budget_hash(key, args)
+        except Exception as exc:
+            raise RuntimeError("recovery budget control plane unavailable") from exc
+        return bool(int(allowed))
+
+    async def _consume_recovery_budget_hash(self, key: str, args: tuple[str, ...]) -> int:
+        """EVAL 失败时用 TIME/HGET/HSET；control ACL 允许这些命令。"""
+
+        now = await self.redis.time()
+        now_sec = int(now[0])
+        last_raw = await self.redis.hget(key, "sec")
+        last = int(last_raw) if last_raw not in {None, ""} else 0
+        if last > 0 and now_sec < last:
+            return 0
+        if last != now_sec:
+            await self.redis.hset(key, mapping={"sec": now_sec, "b": 0, "r": 0, "s": 0})
+        current = await self.redis.hmget(key, "b", "r", "s")
+        used = [int(item or 0) + int(args[index]) for index, item in enumerate(current)]
+        limits = [int(args[index]) for index in range(3, 6)]
+        if used[0] > limits[0] or used[1] > limits[1] or used[2] > limits[2]:
+            return 0
+        await self.redis.hset(
+            key,
+            mapping={"sec": now_sec, "b": used[0], "r": used[1], "s": used[2]},
+        )
+        await self.redis.expire(key, 3)
+        return 1
 
     async def record_transition(
         self,

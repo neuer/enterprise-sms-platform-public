@@ -1502,10 +1502,27 @@
 
 - 决策：创建 `hold_until=now()+60s` 的同一次转换必须返回
   `degraded/recovery_hold`，禁止保存 `open + future hold`。`valid_until`
-  过期与缺行视为 previous=CLOSED。唯一例外是迁移写入的一次性
-  `reason_code=bootstrap`：首次健康 facts 可进入 raw 状态且不建 hold，
-  标记随写入被消费。hold 期内 raw=OPEN 仍保持 recovery_hold；raw=CLOSED
-  立即关闭并清空 hold。0105 先修复存量再加 CHECK。
+  过期的 OPEN/CLOSED 行与缺行视为 previous=CLOSED。已在
+  `degraded/recovery_hold` 的行即使 `valid_until` 过期仍按 degraded 续读，
+  避免 15s 快照过期把已到期 hold 再次当成 CLOSED 并重开 60s。唯一例外是
+  迁移写入的一次性 `reason_code=bootstrap`：首次健康 facts 可进入 raw
+  状态且不建 hold，标记随写入被消费。hold 期内 raw=OPEN 仍保持
+  recovery_hold；raw=CLOSED 立即关闭并清空 hold。0105 先修复存量再加 CHECK。
 - 原因：旧代码先算出 OPEN 再写 future hold，当前请求立即全量放行，
   下一轮 previous=OPEN 使 hold 永不生效。
 - 影响：schema v1.6.91/0105、`send_admission.py`、`send_admission_repository.py`。
+
+## D111 recovery_hold 与普通降级同等或更严，并共享 generation 速率预算
+
+- 决策：`recovery_hold` 删除大请求豁免。单请求上限为
+  `recovery_max_recipients <= degraded_max_recipients`（默认都是 20），
+  另限 `recovery_max_segments`（默认 20）与 `recovery_max_chunks`（默认 1）。
+  超限 reason 为 `recovery_volume` / `recovery_segment_cost`；营销仍是
+  `degraded_bulk`。内容渲染后 Pipeline 再带预计条数/分片二次授权。
+  control Redis 按 `state_epoch` 共享每秒批次/收件人/计费条预算，
+  键 `admission:recovery:{epoch}`，TIME 取秒；control 不可用失败关闭。
+  本期不拆 RECOVERY_1/2 阶段，也不新增 Prometheus 家族。
+- 原因：恢复保持期比普通降级更宽松会在下游刚回落时注入大请求洪峰；
+  仅按收件人数不够限制长短信，仅单实例上限挡不住多 API 并发。
+- 影响：`send_admission.py`、`send_admission_repository.py`、`pipeline.py`、
+  `docs/runbooks/send-admission-lanes.md`。

@@ -669,6 +669,7 @@ def test_redis_domain_smoke_enforces_acl_and_secret_boundaries() -> None:
         "~export:step-up:*",
         "~vendor-test:step-up:*",
         "~quota:*",
+        "~admission:*",
         "~freq:*",
         "~idem:*",
         "~queue:paused:*",

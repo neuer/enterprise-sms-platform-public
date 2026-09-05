@@ -793,6 +793,22 @@ def test_auth_redis_acl_allows_auth_lua_primitives() -> None:
         assert forbidden not in auth_block
 
 
+def test_control_redis_acl_allows_admission_recovery_budget() -> None:
+    from app.services.send_admission_repository import RECOVERY_BUDGET_LUA
+
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
+        encoding="utf-8"
+    )
+    control_block = entrypoint.split("  control)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
+    assert "~admission:*" in control_block
+    required = {
+        f"+{name.lower()}"
+        for name in re.findall(r"redis\.call\('([A-Z]+)'", RECOVERY_BUDGET_LUA)
+    }
+    for command in sorted(required):
+        assert command in control_block
+
+
 def test_control_redis_acl_allows_weighted_send_cost_lua() -> None:
     from app.services.app_ratelimit import SLIDING_WINDOW_LUA, WEIGHTED_WINDOW_LUA
 

@@ -537,6 +537,22 @@ def test_fault_barrier_waits_for_queued_batches_and_chunks_that_can_still_send()
     assert "b.status = 'sending'" not in barrier
 
 
+def test_volume_case_waits_for_open_or_expired_recovery_hold() -> None:
+    source = (SCRIPTS / "e2e_api.py").read_text(encoding="utf-8")
+
+    helper = source[
+        source.index("def _refresh_admission_snapshot") : source.index("def case_05")
+    ]
+    assert "state='open' AND valid_until > now()" in helper
+    assert "FROM send_admission_state WHERE scope='send'" in helper
+    assert 'category="verify"' in helper
+    assert 'category="notice"' not in helper
+    assert "900 +" in helper
+    assert 'self._wait_admission_ready_for_volume("26")' in source
+    assert 'self._wait_admission_ready_for_volume("18")' not in source
+    assert 'self._force_resume_and_verify_unpaused("18")' in source
+
+
 def test_force_resume_cleanup_verifies_pause_codes_are_cleared() -> None:
     http = FakeHttp(
         [

@@ -7,6 +7,7 @@ import pytest
 from app.services.send_admission import (
     SendAdmissionFacts,
     SendAdmissionGuard,
+    SendAdmissionLimits,
     SendAdmissionRejected,
     SendAdmissionSnapshot,
     SendAdmissionUnavailable,
@@ -179,17 +180,39 @@ def test_degraded_allows_small_notice_but_rejects_market_and_bulk() -> None:
     assert large.reason == "degraded_volume"
 
 
-def test_recovery_hold_allows_large_realtime_but_not_market() -> None:
+@pytest.mark.parametrize("category", ["verify", "notice"])
+@pytest.mark.parametrize(
+    ("recipient_count", "allowed", "reason"),
+    [
+        (1, True, "recovery_hold"),
+        (20, True, "recovery_hold"),
+        (21, False, "recovery_volume"),
+        (500, False, "recovery_volume"),
+        (10_000, False, "recovery_volume"),
+    ],
+)
+def test_recovery_hold_recipient_boundaries(
+    category: str,
+    recipient_count: int,
+    allowed: bool,
+    reason: str,
+) -> None:
     recovering = facts(outbox_active=120)
-    large = decide(
+    decision = decide(
         recovering,
-        category="verify",
-        recipient_count=500,
+        category=category,
+        recipient_count=recipient_count,
         previous_state="closed",
     )
-    assert large.allowed is True
-    assert large.state == "degraded"
-    assert large.reason == "recovery_hold"
+    assert decision.allowed is allowed
+    assert decision.reason == reason
+    if not allowed:
+        assert decision.retry_after_s == 30
+        assert decision.state == "degraded"
+
+
+def test_recovery_hold_rejects_market_and_long_sms_cost() -> None:
+    recovering = facts(outbox_active=120)
     market = decide(
         recovering,
         category="market",
@@ -198,9 +221,49 @@ def test_recovery_hold_allows_large_realtime_but_not_market() -> None:
     )
     assert market.allowed is False
     assert market.reason == "degraded_bulk"
+    long_sms = decide(
+        recovering,
+        category="notice",
+        recipient_count=10,
+        previous_state="closed",
+        estimated_segments=80,
+    )
+    assert long_sms.allowed is False
+    assert long_sms.reason == "recovery_segment_cost"
+    short = decide(
+        recovering,
+        category="notice",
+        recipient_count=10,
+        previous_state="closed",
+        estimated_segments=10,
+        estimated_chunks=1,
+    )
+    assert short.allowed is True
+    multi_chunk = decide(
+        recovering,
+        category="verify",
+        recipient_count=20,
+        previous_state="closed",
+        estimated_segments=20,
+        estimated_chunks=2,
+    )
+    assert multi_chunk.allowed is False
+    assert multi_chunk.reason == "recovery_segment_cost"
+    ordinary = decide(
+        facts(outbox_active=200),
+        category="notice",
+        recipient_count=20,
+        estimated_segments=80,
+    )
+    assert ordinary.allowed is True
     real_degraded = decide(facts(outbox_active=200), category="verify", recipient_count=500)
     assert real_degraded.allowed is False
     assert real_degraded.reason == "degraded_volume"
+
+
+def test_recovery_limits_cannot_exceed_degraded_cap() -> None:
+    with pytest.raises(ValueError, match="cannot exceed degraded_max_recipients"):
+        SendAdmissionLimits(degraded_max_recipients=20, recovery_max_recipients=21)
 
 
 def test_lane_pause_closes_only_that_category() -> None:
@@ -646,6 +709,70 @@ async def test_bootstrap_and_expired_state_enter_recovery_hold() -> None:
 
 
 @pytest.mark.asyncio
+async def test_expired_recovery_hold_row_opens_instead_of_restarting_hold() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+
+    class ExpiredHold(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+            self.saved: list[dict[str, object]] = []
+
+        async def load_control_state(self) -> dict[str, object]:
+            return {
+                "state": "degraded",
+                "reason_code": "recovery_hold",
+                "state_epoch": 6,
+                "hold_until": now - timedelta(seconds=1),
+                "valid_until": now - timedelta(seconds=1),
+                "db_now": now,
+            }
+
+        async def save_control_state(self, **values: object) -> None:
+            self.saved.append(values)
+
+    repo = ExpiredHold()
+    snap = await SendAdmissionGuard(repo).snapshot()
+    assert snap.state == "open"
+    assert snap.reason == "ok"
+    assert repo.saved[0]["state"] == "open"
+    assert repo.saved[0]["hold_until"] is None
+
+
+@pytest.mark.asyncio
+async def test_expired_snapshot_keeps_active_recovery_hold() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+    hold = now + timedelta(seconds=40)
+
+    class ActiveHold(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+            self.saved: list[dict[str, object]] = []
+
+        async def load_control_state(self) -> dict[str, object]:
+            return {
+                "state": "degraded",
+                "reason_code": "recovery_hold",
+                "state_epoch": 4,
+                "hold_until": hold,
+                "valid_until": now - timedelta(seconds=1),
+                "db_now": now,
+            }
+
+        async def save_control_state(self, **values: object) -> None:
+            self.saved.append(values)
+
+    repo = ActiveHold()
+    snap = await SendAdmissionGuard(repo).snapshot()
+    assert snap.state == "degraded"
+    assert snap.reason == "recovery_hold"
+    assert repo.saved[0]["hold_until"] == hold
+
+
+@pytest.mark.asyncio
 async def test_migration_bootstrap_marker_opens_without_hold() -> None:
     from datetime import UTC, datetime, timedelta
 
@@ -794,9 +921,12 @@ async def test_authorize_keeps_recovery_hold_from_snapshot() -> None:
     assert notice.allowed is True
     assert notice.state == "degraded"
     assert notice.reason == "recovery_hold"
-    oversized = authorize_from_snapshot(snap, category="notice", recipient_count=500)
-    assert oversized.allowed is True
-    assert oversized.reason == "recovery_hold"
+    oversized = authorize_from_snapshot(snap, category="notice", recipient_count=21)
+    assert oversized.allowed is False
+    assert oversized.reason == "recovery_volume"
+    huge = authorize_from_snapshot(snap, category="notice", recipient_count=500)
+    assert huge.allowed is False
+    assert huge.reason == "recovery_volume"
     market = authorize_from_snapshot(snap, category="market", recipient_count=1)
     assert market.allowed is False
     assert market.reason == "degraded_bulk"
@@ -926,3 +1056,202 @@ async def test_cas_loser_retries_when_local_candidate_is_stricter() -> None:
     assert snap.state == "closed"
     assert snap.reason == "dispatcher_heartbeat_stale"
     assert repo.saves == 2
+
+
+class RecoveryBudgetFacts(FakeFacts):
+    def __init__(
+        self,
+        *,
+        epoch: int = 3,
+        allow: bool = True,
+        error: Exception | None = None,
+    ) -> None:
+        super().__init__(facts())
+        self.epoch = epoch
+        self.allow = allow
+        self.budget_error = error
+        self.consumed: list[dict[str, object]] = []
+
+    async def load_control_state(self) -> dict[str, object]:
+        from datetime import UTC, datetime, timedelta
+
+        now = datetime.now(UTC)
+        return {
+            "state": "degraded",
+            "reason_code": "recovery_hold",
+            "state_epoch": self.epoch,
+            "hold_until": now + timedelta(seconds=60),
+            "valid_until": now + timedelta(seconds=10),
+            "db_now": now,
+        }
+
+    async def save_control_state(self, **values: object) -> dict[str, object]:
+        return {
+            "state": values["state"],
+            "reason_code": values["reason"],
+            "state_epoch": self.epoch,
+            "outcome": "saved",
+        }
+
+    async def consume_recovery_budget(self, **values: object) -> bool:
+        self.consumed.append(values)
+        if self.budget_error is not None:
+            raise self.budget_error
+        return self.allow
+
+
+@pytest.mark.asyncio
+async def test_recovery_budget_is_shared_and_bound_to_epoch() -> None:
+    shared: dict[int, int] = {}
+
+    class SharedBudget(RecoveryBudgetFacts):
+        async def consume_recovery_budget(self, **values: object) -> bool:
+            self.consumed.append(values)
+            epoch = int(values["epoch"])
+            assert epoch == self.epoch
+            recipients = int(values["recipients"])
+            used = shared.get(epoch, 0)
+            if used + recipients > 20:
+                return False
+            shared[epoch] = used + recipients
+            return True
+
+    first = SharedBudget(epoch=7)
+    second = SharedBudget(epoch=7)
+    await SendAdmissionGuard(first).authorize(
+        category="notice",
+        channel="api",
+        recipient_count=20,
+        estimated_segments=20,
+    )
+    with pytest.raises(SendAdmissionRejected) as rejected:
+        await SendAdmissionGuard(second).authorize(
+            category="verify",
+            channel="api",
+            recipient_count=1,
+            estimated_segments=1,
+        )
+    assert rejected.value.reason == "recovery_rate"
+    assert rejected.value.retry_after_s == 1
+    next_epoch = SharedBudget(epoch=8)
+    await SendAdmissionGuard(next_epoch).authorize(
+        category="notice",
+        channel="api",
+        recipient_count=20,
+        estimated_segments=20,
+    )
+    assert next_epoch.consumed[0]["epoch"] == 8
+
+
+@pytest.mark.asyncio
+async def test_recovery_budget_fail_closes_when_control_plane_down() -> None:
+    repo = RecoveryBudgetFacts(error=RuntimeError("control redis down"))
+    with pytest.raises(SendAdmissionRejected) as error:
+        await SendAdmissionGuard(repo).authorize(
+            category="notice",
+            channel="api",
+            recipient_count=1,
+            estimated_segments=1,
+        )
+    assert error.value.reason == "recovery_rate"
+
+    class PersistOnly(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+
+        async def load_control_state(self) -> dict[str, object]:
+            from datetime import UTC, datetime, timedelta
+
+            now = datetime.now(UTC)
+            return {
+                "state": "degraded",
+                "reason_code": "recovery_hold",
+                "state_epoch": 3,
+                "hold_until": now + timedelta(seconds=60),
+                "valid_until": now + timedelta(seconds=10),
+                "db_now": now,
+            }
+
+        async def save_control_state(self, **values: object) -> dict[str, object]:
+            return {
+                "state": values["state"],
+                "reason_code": values["reason"],
+                "state_epoch": 3,
+                "outcome": "saved",
+            }
+
+    with pytest.raises(SendAdmissionUnavailable):
+        await SendAdmissionGuard(PersistOnly()).authorize(
+            category="notice",
+            channel="api",
+            recipient_count=1,
+            estimated_segments=1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_repository_recovery_budget_uses_epoch_key() -> None:
+    from app.services.send_admission_repository import RECOVERY_BUDGET_LUA
+
+    class EvalRedis:
+        def __init__(self, allowed: int) -> None:
+            self.allowed = allowed
+            self.calls: list[tuple[object, ...]] = []
+
+        async def eval(self, *args: object) -> int:
+            self.calls.append(args)
+            return self.allowed
+
+    redis = EvalRedis(1)
+    repository = SqlSendAdmissionRepository(
+        settings=type(
+            "S",
+            (),
+            {"database_url": "postgresql+asyncpg://x", "redis_control_url": "redis://x"},
+        )(),
+        redis=redis,
+    )
+    allowed = await repository.consume_recovery_budget(
+        epoch=4,
+        batches=1,
+        recipients=20,
+        segments=20,
+        limits=SendAdmissionLimits(),
+    )
+    assert allowed is True
+    script, key_count, key, *argv = redis.calls[0]
+    assert script == RECOVERY_BUDGET_LUA
+    assert "INCRBY" not in script
+    assert "HSET" in script
+    assert key_count == 1
+    assert key == "admission:recovery:4"
+    assert argv[:3] == ["1", "20", "20"]
+    redis.allowed = 0
+    denied = await repository.consume_recovery_budget(
+        epoch=4,
+        batches=1,
+        recipients=1,
+        segments=1,
+        limits=SendAdmissionLimits(),
+    )
+    assert denied is False
+    class BoomRedis:
+        async def eval(self, *_args: object) -> object:
+            raise RuntimeError("down")
+
+    boom = SqlSendAdmissionRepository(
+        settings=type(
+            "S",
+            (),
+            {"database_url": "postgresql+asyncpg://x", "redis_control_url": "redis://x"},
+        )(),
+        redis=BoomRedis(),
+    )
+    with pytest.raises(RuntimeError, match="recovery budget control plane"):
+        await boom.consume_recovery_budget(
+            epoch=4,
+            batches=1,
+            recipients=1,
+            segments=1,
+            limits=SendAdmissionLimits(),
+        )
