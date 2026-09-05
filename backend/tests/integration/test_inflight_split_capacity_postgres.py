@@ -956,9 +956,8 @@ def child_partial_split() -> None:
                         "parent": int(os.environ["SMS_SPLIT_PARENT_ID"]),
                     },
                 )
-                ready.write_text("ready", encoding="utf-8")
-                while True:
-                    await child_asyncio.sleep(1)
+                await child_asyncio.to_thread(ready.write_text, "ready", "utf-8")
+                await child_asyncio.Event().wait()
                 await trans.commit()
         finally:
             await engine.dispose()
