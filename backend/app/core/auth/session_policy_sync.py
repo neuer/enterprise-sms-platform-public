@@ -9,6 +9,7 @@ from contextlib import suppress
 from time import time
 from typing import Any
 
+from redis.exceptions import RedisError
 from sqlalchemy import text
 
 from app.core.auth.backends import SessionStateUnavailable
@@ -17,7 +18,6 @@ from app.core.auth.observability import (
     observe_session_policy_reconcile,
     observe_session_policy_revisions,
 )
-from app.core.auth.service import RedisKeyValue
 from app.core.auth.session_policy import (
     AuthSessionPolicy,
     AuthSessionPolicyConflict,
@@ -25,10 +25,25 @@ from app.core.auth.session_policy import (
     load_auth_session_policy,
     publish_auth_session_policy,
 )
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import database_engine, redis_client
 from app.settings import Settings, get_settings
 
 LOGGER = logging.getLogger(__name__)
+
+
+class _AuthRedis:
+    """只暴露策略 CAS/load 需要的 eval，避免就绪检查导入 LoginGuard。"""
+
+    def __init__(self, url: str) -> None:
+        self.redis = redis_client(url)
+
+    async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
+        try:
+            return await self.redis.eval(script, numkeys, *args)
+        except RedisError as error:
+            raise SessionStateUnavailable("auth session store unavailable") from error
+
+
 POLICY_SELECT = """
 SELECT revision, ad_session_max_age_minutes,
        EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at_epoch
@@ -88,7 +103,7 @@ class AuthSessionPolicyReconciler:
 
     def _store(self) -> Any:
         if self.store is None:
-            self.store = RedisKeyValue.from_url(self.settings.redis_auth_url)
+            self.store = _AuthRedis(self.settings.redis_auth_url)
         return self.store
 
     async def _postgres(self) -> AuthSessionPolicy:
@@ -144,11 +159,11 @@ class AuthSessionPolicyReconciler:
 
     async def _run(self) -> None:
         while True:
-            await asyncio.sleep(self.interval_s)
             try:
                 await self.reconcile()
             except Exception:
                 LOGGER.exception("auth session policy reconcile failed")
+            await asyncio.sleep(self.interval_s)
 
 
 def create_auth_session_policy_reconciler(
