@@ -1,10 +1,14 @@
 <script setup lang="ts">
-
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, h, onMounted, ref } from "vue"
 
 import { listConfigs, updateConfigs } from "../api/admin"
-import { addSensitiveWords, deleteSensitiveWord, listSensitiveWords, type SensitiveWordItem } from "../api/sensitiveWords"
+import {
+  addSensitiveWords,
+  deleteSensitiveWord,
+  listSensitiveWords,
+  type SensitiveWordItem,
+} from "../api/sensitiveWords"
 import EmptyState from "../components/EmptyState.vue"
 import { formatDateTime } from "../lib/time"
 
@@ -29,7 +33,10 @@ const policyOptions = [
 
 /** 与现提交口径一致拆分：换行/中英文逗号分号分隔，行号即拆分序号。 */
 const entries = computed(() =>
-  wordsText.value.split(/[\n,，;；]+/).map((value) => value.trim()).filter(Boolean),
+  wordsText.value
+    .split(/[\n,，;；]+/)
+    .map((value) => value.trim())
+    .filter(Boolean),
 )
 
 /** 超长词的 1 基序号；服务端 400 报错同样只带行号。 */
@@ -49,9 +56,7 @@ const oversizedHint = computed(() => {
   return `第 ${shown}${suffix} 行敏感词超过 ${MAX_WORD_LENGTH} 字；修正后才可提交。服务端报错同样只带行号。`
 })
 
-const canSubmit = computed(
-  () => entries.value.length > 0 && oversizedLines.value.length === 0 && !saving.value,
-)
+const canSubmit = computed(() => entries.value.length > 0 && oversizedLines.value.length === 0 && !saving.value)
 
 const filtering = computed(() => Boolean(keyword.value.trim()))
 const emptyState = computed(() =>
@@ -144,7 +149,10 @@ async function remove(item: SensitiveWordItem): Promise<void> {
   try {
     await ElMessageBox.confirm(
       h("div", { class: "sensitive-delete-dialog" }, [
-        h("p", `删除“${item.word}”？删除后该词不再参与命中判定（当前策略为${policy.value === "block" ? "命中阻断" : "仅审计"}，验证码 / 通知 / 营销全类别一致生效）。`),
+        h(
+          "p",
+          `删除“${item.word}”？删除后该词不再参与命中判定（当前策略为${policy.value === "block" ? "命中阻断" : "仅审计"}，验证码 / 通知 / 营销全类别一致生效）。`,
+        ),
         h("p", { class: "sensitive-delete-audit" }, "删除行为与操作人将写入审计日志；审计只记数量，不记词面。"),
       ]),
       "删除敏感词确认",
@@ -174,7 +182,10 @@ onMounted(() => void load())
     <div>
       <p class="eyebrow">CONTENT POLICY / 内容策略</p>
       <h1>敏感词</h1>
-      <p>命中按当前策略阻断（422 SENSITIVE_WORD）或仅审计，验证码 / 通知 / 营销全类别一致执行；变更写库即重建 Aho-Corasick 快照，其余进程按修订号自动加载。</p>
+      <p
+        >命中按当前策略阻断（422 SENSITIVE_WORD）或仅审计，验证码 / 通知 / 营销全类别一致执行；变更写库即重建
+        Aho-Corasick 快照，其余进程按修订号自动加载。</p
+      >
     </div>
     <div class="sensitive-head-ops">
       <div class="sensitive-policy" data-testid="sensitive-policy">
@@ -188,7 +199,8 @@ onMounted(() => void load())
             :data-testid="`sensitive-policy-${option.value}`"
             :disabled="policySaving"
             @click="setPolicy(option.value)"
-          >{{ option.label }}</button>
+            >{{ option.label }}</button
+          >
         </div>
       </div>
       <el-button data-testid="sensitive-add-open" type="primary" @click="openDrawer">添加敏感词</el-button>
@@ -212,10 +224,15 @@ onMounted(() => void load())
       <el-button data-testid="sensitive-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="sensitive-reset" @click="reset">重置</el-button>
     </div>
-    <p class="sensitive-filter-note">关键词服务端 ILIKE 仅匹配词面（通配符已转义）；词库服务端分页过滤。词库变更经 sensitive_word_revision 修订号广播，各进程下次匹配前自动重建快照。</p>
+    <p class="sensitive-filter-note"
+      >关键词服务端 ILIKE 仅匹配词面（通配符已转义）；词库服务端分页过滤。词库变更经 sensitive_word_revision
+      修订号广播，各进程下次匹配前自动重建快照。</p
+    >
   </form>
 
-  <el-alert v-if="errorMessage" class="sensitive-alert" :title="errorMessage" type="error" show-icon :closable="false"><template #default><el-button link type="primary" @click="load">重新加载</el-button></template></el-alert>
+  <el-alert v-if="errorMessage" class="sensitive-alert" :title="errorMessage" type="error" show-icon :closable="false"
+    ><template #default><el-button link type="primary" @click="load">重新加载</el-button></template></el-alert
+  >
 
   <section v-loading="loading" class="sensitive-results">
     <div v-if="items.length" class="sensitive-wall" data-testid="sensitive-wall">
@@ -234,7 +251,8 @@ onMounted(() => void load())
             :data-testid="`sensitive-delete-${item.id}`"
             :aria-label="`删除 ${item.word}`"
             @click="remove(item)"
-          >✕</button>
+            >✕</button
+          >
         </span>
       </el-tooltip>
     </div>
@@ -279,7 +297,9 @@ onMounted(() => void load())
       <div v-if="entries.length" class="sensitive-parse" data-testid="sensitive-parse">
         <span class="sensitive-chip sensitive-chip-ok">有效 {{ uniqueWords.length }}</span>
         <span v-if="dupeCount" class="sensitive-chip">批内去重 {{ dupeCount }}</span>
-        <span v-if="oversizedLines.length" class="sensitive-chip sensitive-chip-bad">超长 {{ oversizedLines.length }}（第 {{ oversizedLines.slice(0, 5).join("、") }} 行）</span>
+        <span v-if="oversizedLines.length" class="sensitive-chip sensitive-chip-bad"
+          >超长 {{ oversizedLines.length }}（第 {{ oversizedLines.slice(0, 5).join("、") }} 行）</span
+        >
       </div>
       <p v-if="oversizedHint" class="sensitive-parse-error">{{ oversizedHint }}</p>
     </el-form>
@@ -288,7 +308,9 @@ onMounted(() => void load())
         <small>写库成功即重建全量快照，其余进程按修订号自动加载；已存在词跳过；添加行为与数量写入审计日志。</small>
         <div>
           <el-button @click="drawerOpen = false">取消</el-button>
-          <el-button data-testid="sensitive-add" type="primary" :disabled="!canSubmit" :loading="saving" @click="add">加入词库</el-button>
+          <el-button data-testid="sensitive-add" type="primary" :disabled="!canSubmit" :loading="saving" @click="add"
+            >加入词库</el-button
+          >
         </div>
       </div>
     </template>

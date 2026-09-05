@@ -105,7 +105,9 @@
   display: inline-block;
   padding: 0 5px;
   color: var(--tx-3);
-  font: 9.5px/1.5 "IBM Plex Mono", monospace;
+  font:
+    9.5px/1.5 "IBM Plex Mono",
+    monospace;
   background: var(--panel-2);
   border-radius: 4px;
 }
@@ -206,7 +208,9 @@
 
 .approval-cd b {
   color: var(--tx);
-  font: 600 14px "IBM Plex Mono", monospace;
+  font:
+    600 14px "IBM Plex Mono",
+    monospace;
   font-variant-numeric: tabular-nums;
 }
 
@@ -239,14 +243,18 @@
 
 .approval-batch-no {
   color: var(--tx-hi);
-  font: 11.5px "IBM Plex Mono", monospace;
+  font:
+    11.5px "IBM Plex Mono",
+    monospace;
   overflow-wrap: anywhere;
 }
 
 .approval-sched-chip {
   padding: 1px 7px;
   color: var(--tx-3);
-  font: 10px/1.7 "IBM Plex Mono", monospace;
+  font:
+    10px/1.7 "IBM Plex Mono",
+    monospace;
   white-space: nowrap;
   border: 1px solid var(--line);
   border-radius: 4px;
@@ -373,7 +381,9 @@
 
 .approval-batch-cell code {
   color: var(--tx);
-  font: 11px "IBM Plex Mono", monospace;
+  font:
+    11px "IBM Plex Mono",
+    monospace;
 }
 
 .approval-batch-cell small,
@@ -441,7 +451,9 @@
   align-items: center;
   padding: 12px 4px 0;
   color: var(--tx-3);
-  font: 11px/1.5 "IBM Plex Mono", monospace;
+  font:
+    11px/1.5 "IBM Plex Mono",
+    monospace;
 }
 
 .approval-list-foot .el-pagination {
@@ -477,7 +489,9 @@
 
 .approval-drawer-head code {
   color: var(--tx-hi);
-  font: 12px "IBM Plex Mono", monospace;
+  font:
+    12px "IBM Plex Mono",
+    monospace;
 }
 
 .approval-drawer-sub {
@@ -538,7 +552,9 @@
 .approval-content-head em {
   padding: 1px 6px;
   color: var(--slate);
-  font: 9px/1.6 "IBM Plex Mono", monospace;
+  font:
+    9px/1.6 "IBM Plex Mono",
+    monospace;
   font-style: normal;
   white-space: nowrap;
   border: 1px solid color-mix(in srgb, var(--slate) 40%, var(--line));

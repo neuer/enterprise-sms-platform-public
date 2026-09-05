@@ -417,7 +417,7 @@
   grid-column: 1 / -1;
   color: var(--tx-3);
   font-size: 10px;
-  letter-spacing: .12em;
+  letter-spacing: 0.12em;
 }
 
 .callback-pulse strong {

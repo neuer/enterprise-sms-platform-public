@@ -74,9 +74,7 @@ const sortOptions: Array<{ value: ApprovalSort; label: string }> = [
   { value: "decided_desc", label: "最近决策" },
 ]
 
-const canApprove = computed(
-  () => session.role !== null && ["approver", "admin"].includes(session.role),
-)
+const canApprove = computed(() => session.role !== null && ["approver", "admin"].includes(session.role))
 
 const decisionReasonTrimmed = computed(() => decisionReason.value.trim())
 
@@ -315,9 +313,7 @@ function submitDrawerDecision(action: ApprovalAction): void {
  */
 const tickActive = computed(() => {
   if (status.value === "pending" && items.value.some((item) => item.expires_at !== null)) return true
-  return Boolean(
-    selected.value && selected.value.status === "pending" && selected.value.expires_at !== null,
-  )
+  return Boolean(selected.value && selected.value.status === "pending" && selected.value.expires_at !== null)
 })
 
 const listPolling = usePolling(() => load({ silent: true }), { intervalMs: POLL_INTERVAL_MS })
@@ -343,7 +339,10 @@ onMounted(() => {
       <p>Web 发送达阈值进入审批；超时未决自动过期并释放配额。</p>
     </div>
     <div class="approval-head-side">
-      <span class="approval-counts-pill" data-testid="approval-counts-pill"><b>{{ counts.pending }}</b> 待审 · <span :class="{ 'is-hot': counts.pending_urgent > 0 }">{{ counts.pending_urgent }} 临期</span></span>
+      <span class="approval-counts-pill" data-testid="approval-counts-pill"
+        ><b>{{ counts.pending }}</b> 待审 ·
+        <span :class="{ 'is-hot': counts.pending_urgent > 0 }">{{ counts.pending_urgent }} 临期</span></span
+      >
       <span class="approval-role"><i></i>当前身份 · {{ session.roleLabel }}</span>
     </div>
   </section>
@@ -361,13 +360,21 @@ onMounted(() => {
           @click="onStatusChange(opt.value)"
         >
           {{ opt.label }}
-          <span class="approval-seg-count" :class="{ 'is-hot': urgentOf(opt.value) > 0 }">{{ countOf(opt.value) }}</span>
+          <span class="approval-seg-count" :class="{ 'is-hot': urgentOf(opt.value) > 0 }">{{
+            countOf(opt.value)
+          }}</span>
         </button>
       </div>
     </div>
     <div class="approval-fld">
       <label for="approval-category">类别</label>
-      <el-select id="approval-category" v-model="category" class="approval-pill-select" data-testid="approval-category-filter" @change="applyFilters">
+      <el-select
+        id="approval-category"
+        v-model="category"
+        class="approval-pill-select"
+        data-testid="approval-category-filter"
+        @change="applyFilters"
+      >
         <el-option label="全部类别" value="" />
         <el-option label="通知" value="notice" />
         <el-option label="营销" value="market" />
@@ -402,7 +409,13 @@ onMounted(() => {
     </div>
     <div class="approval-fld">
       <label for="approval-sort">排序</label>
-      <el-select id="approval-sort" v-model="sort" class="approval-pill-select" data-testid="approval-sort-filter" @change="applyFilters">
+      <el-select
+        id="approval-sort"
+        v-model="sort"
+        class="approval-pill-select"
+        data-testid="approval-sort-filter"
+        @change="applyFilters"
+      >
         <el-option v-for="option in sortOptions" :key="option.value" :label="option.label" :value="option.value" />
       </el-select>
     </div>
@@ -504,10 +517,14 @@ onMounted(() => {
           <span>待审内容（OTP 已等长打码）</span>
           <em>按需解密 · 本次查看已写敏感读审计</em>
         </div>
-        <p v-loading="detailLoading" class="approval-content-body" data-testid="approval-detail-content">{{ detail?.content ?? "" }}</p>
+        <p v-loading="detailLoading" class="approval-content-body" data-testid="approval-detail-content">{{
+          detail?.content ?? ""
+        }}</p>
         <p v-if="contentMeta" class="approval-proof-meta">{{ contentMeta }}</p>
       </div>
-      <div v-if="selected.reason" class="reason-proof"><span>审批意见</span><p>{{ selected.reason }}</p></div>
+      <div v-if="selected.reason" class="reason-proof"
+        ><span>审批意见</span><p>{{ selected.reason }}</p></div
+      >
       <div v-if="canDecideSelected" class="approval-decide-box" data-testid="drawer-decide-box">
         <p class="approval-outcome">{{ previewDecision(selected) }}</p>
         <el-input
@@ -530,13 +547,15 @@ onMounted(() => {
             :disabled="decidingId !== null || !decisionReasonTrimmed"
             data-testid="drawer-reject"
             @click="submitDrawerDecision('reject')"
-          >驳回</el-button>
+            >驳回</el-button
+          >
           <el-button
             type="primary"
             :disabled="decidingId !== null"
             data-testid="drawer-approve"
             @click="submitDrawerDecision('approve')"
-          >通过</el-button>
+            >通过</el-button
+          >
         </div>
       </div>
       <el-alert

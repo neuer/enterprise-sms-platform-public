@@ -9,7 +9,7 @@ function response(body: unknown, status = 200) {
   return {
     ok: status >= 200 && status < 300,
     status,
-    headers: { get: (name: string) => name === "content-length" && body === undefined ? "0" : null },
+    headers: { get: (name: string) => (name === "content-length" && body === undefined ? "0" : null) },
     json: async () => body,
   }
 }
@@ -38,10 +38,7 @@ const deadTask = {
 
 const appOptions = [{ id: 7, name: "IAM" }]
 
-function routeFetch(
-  listBody: unknown,
-  overrides?: (url: string, init: RequestInit) => unknown,
-) {
+function routeFetch(listBody: unknown, overrides?: (url: string, init: RequestInit) => unknown) {
   return vi.fn().mockImplementation((input: string, init: RequestInit = {}) => {
     if (overrides) {
       const overridden = overrides(input, init)
@@ -132,9 +129,7 @@ describe("回调任务", () => {
       customClass: "callback-confirm-box",
     })
     expect(
-      fetch.mock.calls.some(
-        ([url, init]) => String(url).endsWith("/callbacks/9/retry") && init?.method === "POST",
-      ),
+      fetch.mock.calls.some(([url, init]) => String(url).endsWith("/callbacks/9/retry") && init?.method === "POST"),
     ).toBe(true)
     expect(success).toHaveBeenCalledWith("回调任务已重新入队 · 本次操作已记入审计")
     expect(String(fetch.mock.calls.at(-1)![0])).toContain("/admin/callbacks?page=1")
@@ -161,7 +156,9 @@ describe("回调任务", () => {
     let resolveRetry!: (value: unknown) => void
     const fetch = routeFetch({ total: 1, dead_total: 1, items: [deadTask] }, (url) => {
       if (String(url).endsWith("/retry")) {
-        return new Promise((resolve) => { resolveRetry = resolve })
+        return new Promise((resolve) => {
+          resolveRetry = resolve
+        })
       }
       return undefined
     })
@@ -204,9 +201,7 @@ describe("回调任务", () => {
     expect(wrapper.text()).toContain("08:05:00")
 
     const listCalls = () =>
-      fetch.mock.calls
-        .map(([url]) => String(url))
-        .filter((url) => url.startsWith("/api/v1/web/admin/callbacks?"))
+      fetch.mock.calls.map(([url]) => String(url)).filter((url) => url.startsWith("/api/v1/web/admin/callbacks?"))
 
     await wrapper.get("[data-testid='callback-status-retrying']").trigger("click")
     await flushPromises()
@@ -261,9 +256,7 @@ describe("回调任务", () => {
     await wrapper.get("[data-testid='clear-callback-filters']").trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("当前没有回调任务")
-    expect(
-      (wrapper.get("input[data-testid='callback-batch-filter']").element as HTMLInputElement).value,
-    ).toBe("")
+    expect((wrapper.get("input[data-testid='callback-batch-filter']").element as HTMLInputElement).value).toBe("")
     wrapper.unmount()
   })
 

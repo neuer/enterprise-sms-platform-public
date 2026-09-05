@@ -31,21 +31,74 @@ const report = {
   can_export_decrypted: false,
   summary: { total: 15, total_segments: 19, delivered: 11, failed: 3, unknown: 1, success_rate: 11 / 14 },
   dim_summary: [
-    { dim_value: "7", dim_label: "OA应用", total: 15, total_segments: 19, delivered: 11, failed: 3, unknown: 1, success_rate: 11 / 14 },
+    {
+      dim_value: "7",
+      dim_label: "OA应用",
+      total: 15,
+      total_segments: 19,
+      delivered: 11,
+      failed: 3,
+      unknown: 1,
+      success_rate: 11 / 14,
+    },
   ],
   items: [
-    { period_start: "2026-07-11", dim_value: "7", dim_label: "OA应用", total: 5, total_segments: 6, delivered: 4, failed: 1, unknown: 0, success_rate: 0.8 },
-    { period_start: "2026-07-12", dim_value: "7", dim_label: "OA应用", total: 10, total_segments: 13, delivered: 7, failed: 2, unknown: 1, success_rate: 7 / 9 },
+    {
+      period_start: "2026-07-11",
+      dim_value: "7",
+      dim_label: "OA应用",
+      total: 5,
+      total_segments: 6,
+      delivered: 4,
+      failed: 1,
+      unknown: 0,
+      success_rate: 0.8,
+    },
+    {
+      period_start: "2026-07-12",
+      dim_value: "7",
+      dim_label: "OA应用",
+      total: 10,
+      total_segments: 13,
+      delivered: 7,
+      failed: 2,
+      unknown: 1,
+      success_rate: 7 / 9,
+    },
   ],
 }
 const publicId = "c0a80101-0000-4000-8000-000000000134"
 
 describe("统计报表页", () => {
   it("展示服务端摘要、维度排行和异步明细导出", async () => {
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(response(report))
-      .mockResolvedValueOnce(response({ id: publicId, status: "pending", decrypted: false, row_count: null, download_url: null, expires_at: null, created_at: "2026-07-12T08:00:00+08:00" }, 202))
-      .mockResolvedValueOnce(response({ id: publicId, status: "done", decrypted: false, row_count: 15, download_url: `/api/v1/web/reports/export/${publicId}/download`, expires_at: "2026-07-19T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00" }))
+      .mockResolvedValueOnce(
+        response(
+          {
+            id: publicId,
+            status: "pending",
+            decrypted: false,
+            row_count: null,
+            download_url: null,
+            expires_at: null,
+            created_at: "2026-07-12T08:00:00+08:00",
+          },
+          202,
+        ),
+      )
+      .mockResolvedValueOnce(
+        response({
+          id: publicId,
+          status: "done",
+          decrypted: false,
+          row_count: 15,
+          download_url: `/api/v1/web/reports/export/${publicId}/download`,
+          expires_at: "2026-07-19T08:00:00+08:00",
+          created_at: "2026-07-12T08:00:00+08:00",
+        }),
+      )
       .mockResolvedValueOnce(response(null))
     vi.stubGlobal("fetch", fetch)
     vi.stubGlobal(
@@ -102,10 +155,34 @@ describe("统计报表页", () => {
 
   it("明文下载重新认证并把单次令牌只放在下载请求头", async () => {
     const decryptedReport = { ...report, can_export_decrypted: true }
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(response(decryptedReport))
-      .mockResolvedValueOnce(response({ id: publicId, status: "pending", decrypted: true, row_count: null, download_url: null, expires_at: null, created_at: "2026-07-12T08:00:00+08:00" }, 202))
-      .mockResolvedValueOnce(response({ id: publicId, status: "done", decrypted: true, row_count: 15, download_url: `/api/v1/web/reports/export/${publicId}/download`, expires_at: "2026-07-19T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00" }))
+      .mockResolvedValueOnce(
+        response(
+          {
+            id: publicId,
+            status: "pending",
+            decrypted: true,
+            row_count: null,
+            download_url: null,
+            expires_at: null,
+            created_at: "2026-07-12T08:00:00+08:00",
+          },
+          202,
+        ),
+      )
+      .mockResolvedValueOnce(
+        response({
+          id: publicId,
+          status: "done",
+          decrypted: true,
+          row_count: 15,
+          download_url: `/api/v1/web/reports/export/${publicId}/download`,
+          expires_at: "2026-07-19T08:00:00+08:00",
+          created_at: "2026-07-12T08:00:00+08:00",
+        }),
+      )
       .mockResolvedValueOnce(response({ token: "single-use-token", expires_in: 300 }))
       .mockResolvedValueOnce(response(null))
     vi.stubGlobal("fetch", fetch)
@@ -122,9 +199,15 @@ describe("统计报表页", () => {
     const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
     await wrapper.get(".el-checkbox input").setValue(true)
-    await wrapper.findAll("button").find((item) => item.text().includes("导出明细 CSV"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((item) => item.text().includes("导出明细 CSV"))!
+      .trigger("click")
     await flushPromises()
-    await wrapper.findAll("button").find((item) => item.text().includes("下载 CSV"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((item) => item.text().includes("下载 CSV"))!
+      .trigger("click")
     await flushPromises()
 
     expect(fetch.mock.calls[3][0]).toBe(`/api/v1/web/reports/export/${publicId}/step-up`)
@@ -140,7 +223,15 @@ describe("统计报表页", () => {
 
   it("重复点击导出只保留一条轮询链", async () => {
     vi.useFakeTimers()
-    const pending = { id: publicId, status: "pending", decrypted: false, row_count: null, download_url: null, expires_at: null, created_at: "2026-07-12T08:00:00+08:00" }
+    const pending = {
+      id: publicId,
+      status: "pending",
+      decrypted: false,
+      row_count: null,
+      download_url: null,
+      expires_at: null,
+      created_at: "2026-07-12T08:00:00+08:00",
+    }
     const fetch = vi.fn((url: string, init?: RequestInit) => {
       if (String(url) === "/api/v1/web/reports/export" && init?.method === "POST") {
         return Promise.resolve(response(pending, 202))
@@ -179,7 +270,15 @@ describe("统计报表页", () => {
 
   it("导出任务超过约 5 分钟未完成时停止轮询并提示超时", async () => {
     vi.useFakeTimers()
-    const pending = { id: publicId, status: "pending", decrypted: false, row_count: null, download_url: null, expires_at: null, created_at: "2026-07-12T08:00:00+08:00" }
+    const pending = {
+      id: publicId,
+      status: "pending",
+      decrypted: false,
+      row_count: null,
+      download_url: null,
+      expires_at: null,
+      created_at: "2026-07-12T08:00:00+08:00",
+    }
     const fetch = vi.fn((url: string, init?: RequestInit) => {
       if (String(url) === "/api/v1/web/reports/export" && init?.method === "POST") {
         return Promise.resolve(response(pending, 202))
@@ -295,7 +394,12 @@ describe("报表趋势图", () => {
     const option = chart.setOption.mock.calls.at(-1)?.[0]
     expect(option.series).toHaveLength(6)
     expect(option.series.map((serie: { name: string }) => serie.name)).toEqual([
-      "应用1", "应用2", "应用3", "应用4", "应用5", "其他",
+      "应用1",
+      "应用2",
+      "应用3",
+      "应用4",
+      "应用5",
+      "其他",
     ])
     expect(option.series[5].data).toEqual([30])
     wrapper.unmount()

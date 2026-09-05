@@ -246,9 +246,7 @@ describe("登录页", () => {
     expect(wrapper.get("[data-testid='provider-ad']").classes()).toContain("on")
     expect(wrapper.get("[data-testid='provider-ad']").attributes("aria-checked")).toBe("true")
     expect(wrapper.get(".login-field-label").text()).toBe("企业 AD 账号")
-    expect(wrapper.get("[data-testid='login-username']").attributes("placeholder")).toBe(
-      "企业 AD 账号",
-    )
+    expect(wrapper.get("[data-testid='login-username']").attributes("placeholder")).toBe("企业 AD 账号")
     await wrapper.get("[data-testid='login-username']").setValue("operator01")
     await wrapper.get("[data-testid='login-password']").setValue("wrong")
     await wrapper.get("form").trigger("submit")
@@ -264,9 +262,7 @@ describe("登录页", () => {
 
     const { wrapper } = await mountLogin()
 
-    expect(wrapper.get("[data-testid='login-safe-single-tab']").text()).toContain(
-      "仅允许单标签页登录",
-    )
+    expect(wrapper.get("[data-testid='login-safe-single-tab']").text()).toContain("仅允许单标签页登录")
   })
 
   it("具备 Web Locks 时不显示单标签页提示", async () => {

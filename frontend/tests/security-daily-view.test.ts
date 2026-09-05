@@ -44,47 +44,149 @@ const payload = {
   })),
   ssh: [{ label: "认证面", value: "仅允许受控账号", assessment: "符合基线", tone: "good" }],
   web: [{ label: "5xx", value: "数据不可用", assessment: "数据不可用", tone: "warn" }],
-  audit: [{ time: "14:42", actor: "security-admin", source_ip: "203.0.113.18", action: "手动运维", assessment: "待确认", tone: "warn" }],
+  audit: [
+    {
+      time: "14:42",
+      actor: "security-admin",
+      source_ip: "203.0.113.18",
+      action: "手动运维",
+      assessment: "待确认",
+      tone: "warn",
+    },
+  ],
   runtime: [{ label: "关键服务", value: "数据不可用", assessment: "数据不可用", tone: "warn" }],
   actions: [{ priority: "medium", title: "确认管理操作来源", detail: "核对授权运维窗口。" }],
-  coverage: [{ source: "SSH journal", window: "00:00 — 23:59（UTC+8）", status: "完整", note: "覆盖认证证据", tone: "good" }],
+  coverage: [
+    { source: "SSH journal", window: "00:00 — 23:59（UTC+8）", status: "完整", note: "覆盖认证证据", tone: "good" },
+  ],
 }
 
 const reports = [
   {
-    id: 1, report_date: "2026-07-13", period_start: "2026-07-13T00:00:00+08:00", period_end: "2026-07-13T23:59:59+08:00",
-    status: "normal", generation_status: "ready", delivery_status: "not_sent", generated_at: "2026-07-14T08:00:00+08:00", delivered_at: null,
-    recipient_count: 1, retry_count: 0, last_error: null, last_error_at: null, updated_at: "2026-07-14T08:00:00+08:00", payload, timeline: [],
+    id: 1,
+    report_date: "2026-07-13",
+    period_start: "2026-07-13T00:00:00+08:00",
+    period_end: "2026-07-13T23:59:59+08:00",
+    status: "normal",
+    generation_status: "ready",
+    delivery_status: "not_sent",
+    generated_at: "2026-07-14T08:00:00+08:00",
+    delivered_at: null,
+    recipient_count: 1,
+    retry_count: 0,
+    last_error: null,
+    last_error_at: null,
+    updated_at: "2026-07-14T08:00:00+08:00",
+    payload,
+    timeline: [],
   },
   {
-    id: 2, report_date: "2026-07-14", period_start: "2026-07-14T00:00:00+08:00", period_end: "2026-07-14T23:59:59+08:00",
-    status: "attention", generation_status: "ready", delivery_status: "sent", generated_at: "2026-07-15T08:00:00+08:00", delivered_at: "2026-07-15T08:02:00+08:00",
-    recipient_count: 1, retry_count: 0, last_error: null, last_error_at: null, updated_at: "2026-07-15T08:02:00+08:00", payload, timeline: [],
+    id: 2,
+    report_date: "2026-07-14",
+    period_start: "2026-07-14T00:00:00+08:00",
+    period_end: "2026-07-14T23:59:59+08:00",
+    status: "attention",
+    generation_status: "ready",
+    delivery_status: "sent",
+    generated_at: "2026-07-15T08:00:00+08:00",
+    delivered_at: "2026-07-15T08:02:00+08:00",
+    recipient_count: 1,
+    retry_count: 0,
+    last_error: null,
+    last_error_at: null,
+    updated_at: "2026-07-15T08:02:00+08:00",
+    payload,
+    timeline: [],
   },
   {
-    id: 3, report_date: "2026-07-15", period_start: "2026-07-15T00:00:00+08:00", period_end: "2026-07-15T23:59:59+08:00",
-    status: "high", generation_status: "ready", delivery_status: "failed", generated_at: "2026-07-16T08:00:00+08:00", delivered_at: null,
-    recipient_count: 1, retry_count: 1, last_error: "mailer 暂不可用", last_error_at: "2026-07-16T08:03:00+08:00", updated_at: "2026-07-16T08:03:00+08:00", payload, timeline: [],
+    id: 3,
+    report_date: "2026-07-15",
+    period_start: "2026-07-15T00:00:00+08:00",
+    period_end: "2026-07-15T23:59:59+08:00",
+    status: "high",
+    generation_status: "ready",
+    delivery_status: "failed",
+    generated_at: "2026-07-16T08:00:00+08:00",
+    delivered_at: null,
+    recipient_count: 1,
+    retry_count: 1,
+    last_error: "mailer 暂不可用",
+    last_error_at: "2026-07-16T08:03:00+08:00",
+    updated_at: "2026-07-16T08:03:00+08:00",
+    payload,
+    timeline: [],
   },
   {
-    id: 4, report_date: "2026-07-16", period_start: "2026-07-16T00:00:00+08:00", period_end: "2026-07-16T23:59:59+08:00",
-    status: "normal", generation_status: "failed", delivery_status: "not_sent", generated_at: null, delivered_at: null,
-    recipient_count: 0, retry_count: 0, last_error: "数据源不可用", last_error_at: null, updated_at: "2026-07-17T08:00:00+08:00", payload: null, timeline: [],
+    id: 4,
+    report_date: "2026-07-16",
+    period_start: "2026-07-16T00:00:00+08:00",
+    period_end: "2026-07-16T23:59:59+08:00",
+    status: "normal",
+    generation_status: "failed",
+    delivery_status: "not_sent",
+    generated_at: null,
+    delivered_at: null,
+    recipient_count: 0,
+    retry_count: 0,
+    last_error: "数据源不可用",
+    last_error_at: null,
+    updated_at: "2026-07-17T08:00:00+08:00",
+    payload: null,
+    timeline: [],
   },
   {
-    id: 5, report_date: "2026-07-17", period_start: "2026-07-17T00:00:00+08:00", period_end: "2026-07-17T23:59:59+08:00",
-    status: "high", generation_status: "unavailable", delivery_status: "pending", generated_at: null, delivered_at: null,
-    recipient_count: 0, retry_count: 0, last_error: null, last_error_at: null, updated_at: "2026-07-18T08:00:00+08:00", payload: null, timeline: [],
+    id: 5,
+    report_date: "2026-07-17",
+    period_start: "2026-07-17T00:00:00+08:00",
+    period_end: "2026-07-17T23:59:59+08:00",
+    status: "high",
+    generation_status: "unavailable",
+    delivery_status: "pending",
+    generated_at: null,
+    delivered_at: null,
+    recipient_count: 0,
+    retry_count: 0,
+    last_error: null,
+    last_error_at: null,
+    updated_at: "2026-07-18T08:00:00+08:00",
+    payload: null,
+    timeline: [],
   },
   {
-    id: 6, report_date: "2026-07-18", period_start: "2026-07-18T00:00:00+08:00", period_end: "2026-07-18T23:59:59+08:00",
-    status: "attention", generation_status: "ready", delivery_status: "unknown", generated_at: "2026-07-19T08:00:00+08:00", delivered_at: null,
-    recipient_count: 1, retry_count: 0, last_error: "投递结果未知", last_error_at: "2026-07-19T08:03:00+08:00", updated_at: "2026-07-19T08:03:00+08:00", payload, timeline: [],
+    id: 6,
+    report_date: "2026-07-18",
+    period_start: "2026-07-18T00:00:00+08:00",
+    period_end: "2026-07-18T23:59:59+08:00",
+    status: "attention",
+    generation_status: "ready",
+    delivery_status: "unknown",
+    generated_at: "2026-07-19T08:00:00+08:00",
+    delivered_at: null,
+    recipient_count: 1,
+    retry_count: 0,
+    last_error: "投递结果未知",
+    last_error_at: "2026-07-19T08:03:00+08:00",
+    updated_at: "2026-07-19T08:03:00+08:00",
+    payload,
+    timeline: [],
   },
   {
-    id: 7, report_date: "2026-07-19", period_start: "2026-07-19T00:00:00+08:00", period_end: "2026-07-19T23:59:59+08:00",
-    status: "normal", generation_status: "ready", delivery_status: "failed", generated_at: "2026-07-20T08:00:00+08:00", delivered_at: "2026-07-20T08:02:00+08:00",
-    recipient_count: 1, retry_count: 1, last_error: "安全日报邮件配置已更新，旧投递请求已失效", last_error_at: "2026-07-20T08:04:00+08:00", updated_at: "2026-07-20T08:04:00+08:00", payload, timeline: [],
+    id: 7,
+    report_date: "2026-07-19",
+    period_start: "2026-07-19T00:00:00+08:00",
+    period_end: "2026-07-19T23:59:59+08:00",
+    status: "normal",
+    generation_status: "ready",
+    delivery_status: "failed",
+    generated_at: "2026-07-20T08:00:00+08:00",
+    delivered_at: "2026-07-20T08:02:00+08:00",
+    recipient_count: 1,
+    retry_count: 1,
+    last_error: "安全日报邮件配置已更新，旧投递请求已失效",
+    last_error_at: "2026-07-20T08:04:00+08:00",
+    updated_at: "2026-07-20T08:04:00+08:00",
+    payload,
+    timeline: [],
   },
 ]
 
@@ -118,10 +220,32 @@ describe("安全日报页面", () => {
       sender_address: "security-daily@reports.neuer.cn",
     })
     api.listSecurityDailyReports.mockResolvedValue({ items: reports, total: reports.length, page: 1, page_size: 20 })
-    api.getSecurityDailyReport.mockImplementation((reportId: number) => Promise.resolve(reports.find((item) => item.id === reportId)))
-    api.previewSecurityDailyReport.mockResolvedValue({ report_date: "2026-07-15", status: "attention", available: true, message: null, html: "", text: "安全日报预览", payload })
-    api.sendSecurityDailyReport.mockResolvedValue({ request_id: "c0a80101-0000-4000-8000-000000000001", report_date: "2026-07-13", action: "send", state: "pending", idempotent: false })
-    api.retrySecurityDailyReport.mockResolvedValue({ request_id: "c0a80101-0000-4000-8000-000000000002", report_date: "2026-07-15", action: "retry", state: "pending", idempotent: false })
+    api.getSecurityDailyReport.mockImplementation((reportId: number) =>
+      Promise.resolve(reports.find((item) => item.id === reportId)),
+    )
+    api.previewSecurityDailyReport.mockResolvedValue({
+      report_date: "2026-07-15",
+      status: "attention",
+      available: true,
+      message: null,
+      html: "",
+      text: "安全日报预览",
+      payload,
+    })
+    api.sendSecurityDailyReport.mockResolvedValue({
+      request_id: "c0a80101-0000-4000-8000-000000000001",
+      report_date: "2026-07-13",
+      action: "send",
+      state: "pending",
+      idempotent: false,
+    })
+    api.retrySecurityDailyReport.mockResolvedValue({
+      request_id: "c0a80101-0000-4000-8000-000000000002",
+      report_date: "2026-07-15",
+      action: "retry",
+      state: "pending",
+      idempotent: false,
+    })
     api.updateSecurityDailyConfiguration.mockResolvedValue({
       enabled: true,
       recipients: ["security-owner@example.com"],
@@ -262,7 +386,11 @@ describe("安全日报页面", () => {
     })
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
-    await wrapper.findAll("button").filter((button) => button.text().includes("查看详情")).at(0)!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .filter((button) => button.text().includes("查看详情"))
+      .at(0)!
+      .trigger("click")
     await flushPromises()
     const drawer = wrapper.find(".el-drawer")
 
@@ -280,9 +408,7 @@ describe("安全日报页面", () => {
     await wrapper.get("[data-testid='security-daily-status-high']").trigger("click")
     await flushPromises()
 
-    expect(api.listSecurityDailyReports).toHaveBeenLastCalledWith(
-      expect.objectContaining({ status: "high", page: 1 }),
-    )
+    expect(api.listSecurityDailyReports).toHaveBeenLastCalledWith(expect.objectContaining({ status: "high", page: 1 }))
     expect(wrapper.text()).toContain("没有符合筛选条件的安全日报")
     expect(wrapper.text()).not.toContain("暂无已生成安全日报")
 
@@ -343,14 +469,20 @@ describe("安全日报页面", () => {
   it("通过配置邮件入口读取并保存启停、Key 和收件人", async () => {
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
-    await wrapper.findAll("button").find((button) => button.text().includes("配置邮件"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("配置邮件"))!
+      .trigger("click")
     await flushPromises()
 
     expect(api.getSecurityDailyConfiguration).toHaveBeenCalledOnce()
     expect(wrapper.text()).toContain("当前状态：已配置")
     await wrapper.find("input[type='password']").setValue("re_ui_test")
     await wrapper.find("textarea").setValue("ops@example.com\nsecurity@example.com")
-    await wrapper.findAll("button").find((button) => button.text() === "保存")!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "保存")!
+      .trigger("click")
     await flushPromises()
 
     expect(api.updateSecurityDailyConfiguration).toHaveBeenCalledWith({
@@ -364,17 +496,26 @@ describe("安全日报页面", () => {
   it("收件人地址无效或大小写重复时阻止保存并给出提示", async () => {
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
-    await wrapper.findAll("button").find((button) => button.text().includes("配置邮件"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("配置邮件"))!
+      .trigger("click")
     await flushPromises()
 
     await wrapper.find("textarea").setValue("not-an-email")
-    await wrapper.findAll("button").find((button) => button.text() === "保存")!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "保存")!
+      .trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("收件人地址无效")
     expect(api.updateSecurityDailyConfiguration).not.toHaveBeenCalled()
 
     await wrapper.find("textarea").setValue("Ops@example.com\nops@example.com")
-    await wrapper.findAll("button").find((button) => button.text() === "保存")!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "保存")!
+      .trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("收件人不能重复")
     expect(api.updateSecurityDailyConfiguration).not.toHaveBeenCalled()
@@ -384,7 +525,10 @@ describe("安全日报页面", () => {
   it("勾选清空 Key 时禁用新 Key 输入并提交清空语义", async () => {
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
-    await wrapper.findAll("button").find((button) => button.text().includes("配置邮件"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("配置邮件"))!
+      .trigger("click")
     await flushPromises()
 
     const passwordInput = wrapper.find("input[type='password']")
@@ -392,7 +536,10 @@ describe("安全日报页面", () => {
     await wrapper.get(".el-checkbox input").setValue(true)
     expect(wrapper.find("input[type='password']").attributes("disabled")).toBeDefined()
 
-    await wrapper.findAll("button").find((button) => button.text() === "保存")!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "保存")!
+      .trigger("click")
     await flushPromises()
     expect(api.updateSecurityDailyConfiguration).toHaveBeenCalledWith({
       enabled: true,
@@ -405,13 +552,20 @@ describe("安全日报页面", () => {
   it("关闭或取消邮件配置对话框时清空已输入的 Resend Key", async () => {
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
-    await wrapper.findAll("button").find((button) => button.text().includes("配置邮件"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("配置邮件"))!
+      .trigger("click")
     await flushPromises()
 
     await wrapper.find("input[type='password']").setValue("re_should_not_linger")
     await wrapper.get(".el-checkbox input").setValue(true)
-    await wrapper.findAll("button").find((button) => button.text() === "取消")!.trigger("click")
-    wrapper.findAllComponents({ name: "ElDialog" })
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text() === "取消")!
+      .trigger("click")
+    wrapper
+      .findAllComponents({ name: "ElDialog" })
       .find((item) => item.props("title") === "安全日报邮件配置")!
       .vm.$emit("closed")
     await flushPromises()
@@ -432,7 +586,10 @@ describe("安全日报页面", () => {
     })
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
-    await wrapper.findAll("button").find((button) => button.text().includes("配置邮件"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("配置邮件"))!
+      .trigger("click")
     await flushPromises()
 
     expect(wrapper.text()).toContain("当前状态：未配置")
@@ -445,9 +602,16 @@ describe("安全日报页面", () => {
     const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
-    await wrapper.findAll("button").filter((button) => button.text().includes("查看详情")).at(0)!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .filter((button) => button.text().includes("查看详情"))
+      .at(0)!
+      .trigger("click")
     await flushPromises()
-    await wrapper.findAll("button").find((button) => button.text().includes("手动投递"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("手动投递"))!
+      .trigger("click")
     await flushPromises()
 
     const message = vnodeText(confirm.mock.calls[0][0])
@@ -466,7 +630,10 @@ describe("安全日报页面", () => {
     const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
 
-    await wrapper.findAll("button").find((button) => button.text().includes("立即生成"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("立即生成"))!
+      .trigger("click")
     await flushPromises()
 
     const message = vnodeText(confirm.mock.calls[0][0])

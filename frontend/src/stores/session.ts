@@ -76,10 +76,7 @@ function clearLegacyPersistence(): void {
 }
 
 function isSessionAbort(error: unknown): boolean {
-  return (
-    error instanceof SessionGenerationStaleError ||
-    (error instanceof DOMException && error.name === "AbortError")
-  )
+  return error instanceof SessionGenerationStaleError || (error instanceof DOMException && error.name === "AbortError")
 }
 
 function isPlatformUser(value: unknown): value is PlatformUser {
@@ -111,8 +108,7 @@ export const useSessionStore = defineStore("session", {
     providers: [] as AuthProvider[],
   }),
   getters: {
-    isAuthenticated: (state) =>
-      Boolean(state.token && state.accountId > 0 && state.identityId > 0 && state.role),
+    isAuthenticated: (state) => Boolean(state.token && state.accountId > 0 && state.identityId > 0 && state.role),
     roleLabel: (state) => (state.role ? ROLE_LABELS[state.role] : "未登录"),
   },
   actions: {
@@ -218,8 +214,7 @@ export const useSessionStore = defineStore("session", {
       username: string,
       password: string,
     ): Promise<
-      | { nextAction: "authenticated" }
-      | { nextAction: "change_password"; changeToken: string; expiresAt: number }
+      { nextAction: "authenticated" } | { nextAction: "change_password"; changeToken: string; expiresAt: number }
     > {
       try {
         return await withSessionGeneration({ invalidateFirst: true }, async ({ isLive, signal }) => {

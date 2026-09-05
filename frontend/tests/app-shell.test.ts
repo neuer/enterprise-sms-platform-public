@@ -101,9 +101,11 @@ describe("应用骨架", () => {
 
     expect(getDashboard).not.toHaveBeenCalled()
 
-    window.dispatchEvent(new CustomEvent("sms:dashboard-balance", {
-      detail: { currentBalance: 4200 },
-    }))
+    window.dispatchEvent(
+      new CustomEvent("sms:dashboard-balance", {
+        detail: { currentBalance: 4200 },
+      }),
+    )
     await flushPromises()
     expect(wrapper.get(".balance").text()).toContain("4,200")
 
@@ -287,8 +289,7 @@ describe("应用骨架", () => {
 
     const wrapper = mount(App, { global: { plugins: [pinia, router] } })
     await flushPromises()
-    const badgeCalls = () =>
-      fetch.mock.calls.filter(([url]) => String(url).includes("/web/approvals?")).length
+    const badgeCalls = () => fetch.mock.calls.filter(([url]) => String(url).includes("/web/approvals?")).length
 
     // 审批页自身轮询会回写角标，全局角标轮询在此路由暂停，不重复请求
     expect(badgeCalls()).toBe(0)
@@ -517,28 +518,32 @@ describe("应用骨架", () => {
       dept: "平台技术部",
       role: "admin",
     })
-    const fetch = vi.fn(async (url: string): Promise<{
-      ok: boolean
-      status: number
-      headers: { get: () => string | null }
-      json: () => Promise<unknown>
-    }> => {
-      if (url.endsWith("/password-policy")) {
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: () => null },
-          json: async () => ({
-            min_length: 12,
-            max_length: 128,
-            required_character_classes: 3,
-            forbid_username: true,
-            description: "12–128 位，至少包含三类字符，不能包含用户名",
-          }),
+    const fetch = vi.fn(
+      async (
+        url: string,
+      ): Promise<{
+        ok: boolean
+        status: number
+        headers: { get: () => string | null }
+        json: () => Promise<unknown>
+      }> => {
+        if (url.endsWith("/password-policy")) {
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => ({
+              min_length: 12,
+              max_length: 128,
+              required_character_classes: 3,
+              forbid_username: true,
+              description: "12–128 位，至少包含三类字符，不能包含用户名",
+            }),
+          }
         }
-      }
-      return { ok: true, status: 200, headers: { get: () => "0" }, json: async () => undefined }
-    })
+        return { ok: true, status: 200, headers: { get: () => "0" }, json: async () => undefined }
+      },
+    )
     vi.stubGlobal("fetch", fetch)
     await router.push("/dashboard")
     await router.isReady()

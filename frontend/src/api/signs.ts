@@ -12,16 +12,18 @@ export interface SmsSign {
 export const listSigns = () => apiRequest<SmsSign[]>("/signs", { method: "GET" })
 export const createSign = (name: string) =>
   apiRequest<SmsSign>("/signs", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
   })
 export const updateSign = (id: number, name: string) =>
   apiRequest<SmsSign>("/signs/" + id, {
-    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
   })
-export const deleteSign = (id: number) =>
-  apiRequest<void>("/signs/" + id, { method: "DELETE" })
-export const syncSign = (id: number) =>
-  apiRequest<void>("/signs/" + id + "/sync", { method: "POST" })
+export const deleteSign = (id: number) => apiRequest<void>("/signs/" + id, { method: "DELETE" })
+export const syncSign = (id: number) => apiRequest<void>("/signs/" + id + "/sync", { method: "POST" })
 export const adoptExistingSign = (id: number, vendorSignId: number, confirmedName: string) =>
   apiRequest<void>("/signs/" + id + "/adopt-existing", {
     method: "POST",

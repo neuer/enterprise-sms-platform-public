@@ -32,7 +32,9 @@ function enumerateDays(start: string, end: string): string[] | null {
   const days: string[] = []
   for (let current = first; current <= last && days.length <= 62; current += 86_400_000) {
     const date = new Date(current)
-    days.push(`${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`)
+    days.push(
+      `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`,
+    )
   }
   return days.length > 62 ? null : days
 }

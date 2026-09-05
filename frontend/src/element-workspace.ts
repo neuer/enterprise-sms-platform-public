@@ -67,10 +67,35 @@ import type { App } from "vue"
  */
 export function registerWorkspaceElement(app: App): void {
   for (const plugin of [
-    ElAlert, ElCard, ElCheckbox, ElCheckboxGroup, ElDatePicker, ElDescriptions,
-    ElDescriptionsItem, ElDialog, ElDrawer, ElForm, ElFormItem, ElInputNumber,
-    ElLoading, ElOption, ElPagination, ElPopover, ElRadioButton, ElRadioGroup,
-    ElSegmented, ElSelect, ElSkeleton, ElSwitch, ElTabPane, ElTable, ElTableColumn,
-    ElTabs, ElTag, ElTooltip, ElUpload,
-  ]) app.use(plugin)
+    ElAlert,
+    ElCard,
+    ElCheckbox,
+    ElCheckboxGroup,
+    ElDatePicker,
+    ElDescriptions,
+    ElDescriptionsItem,
+    ElDialog,
+    ElDrawer,
+    ElForm,
+    ElFormItem,
+    ElInputNumber,
+    ElLoading,
+    ElOption,
+    ElPagination,
+    ElPopover,
+    ElRadioButton,
+    ElRadioGroup,
+    ElSegmented,
+    ElSelect,
+    ElSkeleton,
+    ElSwitch,
+    ElTabPane,
+    ElTable,
+    ElTableColumn,
+    ElTabs,
+    ElTag,
+    ElTooltip,
+    ElUpload,
+  ])
+    app.use(plugin)
 }

@@ -66,11 +66,7 @@ export function createLocalUser(payload: CreateLocalUserInput): Promise<ManagedU
   })
 }
 
-export function updateUserRole(
-  accountId: number,
-  role: UserRole,
-  roleOverride: boolean,
-): Promise<ManagedUser> {
+export function updateUserRole(accountId: number, role: UserRole, roleOverride: boolean): Promise<ManagedUser> {
   return apiRequest<ManagedUser>(`/admin/users/${accountId}/role`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -86,10 +82,7 @@ export function updateUserStatus(accountId: number, status: 0 | 1): Promise<Mana
   })
 }
 
-export function resetLocalPassword(
-  accountId: number,
-  temporaryPassword: string,
-): Promise<ManagedUser> {
+export function resetLocalPassword(accountId: number, temporaryPassword: string): Promise<ManagedUser> {
   return apiRequest<ManagedUser>(`/admin/users/${accountId}/password/reset`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

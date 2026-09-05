@@ -91,9 +91,12 @@ describe("Provider 与 JWT 会话", () => {
 
     await session.loadProviders()
 
-    expect(fetch).toHaveBeenCalledWith("/api/v1/web/auth/providers", expect.objectContaining({
-      headers: { Accept: "application/json" },
-    }))
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/v1/web/auth/providers",
+      expect.objectContaining({
+        headers: { Accept: "application/json" },
+      }),
+    )
     expect(session.providers.map((item) => item.code)).toEqual(["local", "ad"])
   })
 
@@ -142,12 +145,11 @@ describe("Provider 与 JWT 会话", () => {
   it("AUTH_CONTEXT_CHANGED 时清理会话且不重放改密请求", async () => {
     const session = useSessionStore()
     session.apply("local-access", admin)
-    const fetch = vi.fn().mockResolvedValue(
-      response(
-        { code: "AUTH_CONTEXT_CHANGED", message: "账号安全状态已变化，请重新登录后重试" },
-        409,
-      ),
-    )
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        response({ code: "AUTH_CONTEXT_CHANGED", message: "账号安全状态已变化，请重新登录后重试" }, 409),
+      )
     vi.stubGlobal("fetch", fetch)
     const unauthorized = vi.fn()
     window.addEventListener("sms:unauthorized", unauthorized, { once: true })

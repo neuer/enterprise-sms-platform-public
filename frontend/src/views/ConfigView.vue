@@ -1,5 +1,4 @@
 <script setup lang="ts">
-
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, h, nextTick, onMounted, reactive, ref } from "vue"
 
@@ -92,12 +91,7 @@ const groups = computed(() => {
     if (activeGroup.value && item.group !== activeGroup.value) {
       continue
     }
-    if (
-      query &&
-      ![item.key, item.description ?? "", item.group].some((text) =>
-        text.toLowerCase().includes(query),
-      )
-    ) {
+    if (query && ![item.key, item.description ?? "", item.group].some((text) => text.toLowerCase().includes(query))) {
       continue
     }
     const rows = result.get(item.group) || []
@@ -178,10 +172,7 @@ async function loadProvider(): Promise<void> {
   providerLoading.value = true
   providerError.value = ""
   try {
-    const [provider, mappings] = await Promise.all([
-      getAuthProvider("ad"),
-      listAuthProviderRoleMappings("ad"),
-    ])
+    const [provider, mappings] = await Promise.all([getAuthProvider("ad"), listAuthProviderRoleMappings("ad")])
     hydrateProvider(provider)
     roleMappings.value = mappings.mappings.map((item) => ({ ...item }))
   } catch (error) {
@@ -226,9 +217,7 @@ async function save(): Promise<void> {
     ElMessage.info("没有待保存的变更")
     return
   }
-  const restartKeys = new Set(
-    configs.value.filter((item) => item.beat_restart_required).map((item) => item.key),
-  )
+  const restartKeys = new Set(configs.value.filter((item) => item.beat_restart_required).map((item) => item.key))
   try {
     if (items.some((item) => restartKeys.has(item.key))) {
       await ElMessageBox.confirm(
@@ -373,7 +362,10 @@ onMounted(() => {
     <div>
       <p class="eyebrow">POLICY REGISTRY / 策略注册表</p>
       <h1>系统参数</h1>
-      <p>运行参数、认证源与真实联调统一在此受控；参数改动逐键写入审计，标有 BEAT RESTART 的项需重启容器生效，敏感值不回显。安全日报邮件配置请进入独立的“安全日报”页面。</p>
+      <p
+        >运行参数、认证源与真实联调统一在此受控；参数改动逐键写入审计，标有 BEAT RESTART
+        的项需重启容器生效，敏感值不回显。安全日报邮件配置请进入独立的“安全日报”页面。</p
+      >
     </div>
   </section>
 
@@ -391,7 +383,8 @@ onMounted(() => {
       @click="selectTab(tab.name)"
       @keydown.left.prevent="moveTab(-1)"
       @keydown.right.prevent="moveTab(1)"
-    >{{ tab.label }}</button>
+      >{{ tab.label }}</button
+    >
   </nav>
 
   <section
@@ -422,7 +415,7 @@ onMounted(() => {
         <div class="provider-mark ad">AD</div>
         <div>
           <strong>{{ adProvider.name }}</strong>
-          <p>{{ adProvider.enabled ? 'AD 当前已启用' : 'AD 当前已禁用' }}</p>
+          <p>{{ adProvider.enabled ? "AD 当前已启用" : "AD 当前已禁用" }}</p>
         </div>
         <div class="provider-version-state">
           <span>草稿版本 v{{ adProvider.draft_version }}</span>
@@ -432,11 +425,17 @@ onMounted(() => {
       </header>
 
       <div class="provider-readiness">
-        <span :class="{ ready: adProvider.bind_secret_available }"><i></i>Bind Secret {{ adProvider.bind_secret_available ? '已就绪' : '未就绪' }}</span>
-        <span :class="{ ready: adProvider.ca_available }"><i></i>CA 证书{{ adProvider.ca_available ? '已就绪' : '未就绪' }}</span>
+        <span :class="{ ready: adProvider.bind_secret_available }"
+          ><i></i>Bind Secret {{ adProvider.bind_secret_available ? "已就绪" : "未就绪" }}</span
+        >
+        <span :class="{ ready: adProvider.ca_available }"
+          ><i></i>CA 证书{{ adProvider.ca_available ? "已就绪" : "未就绪" }}</span
+        >
         <span v-if="providerDirty" class="stale"><i></i>配置已修改，需保存并重新测试</span>
         <span v-else-if="currentDraftTested" class="ready"><i></i>当前草稿测试通过</span>
-        <span v-else-if="adProvider.last_test_status" class="stale"><i></i>当前草稿尚未通过测试 · {{ adProvider.last_test_status }}</span>
+        <span v-else-if="adProvider.last_test_status" class="stale"
+          ><i></i>当前草稿尚未通过测试 · {{ adProvider.last_test_status }}</span
+        >
         <span v-else class="stale"><i></i>当前草稿尚未通过测试</span>
       </div>
       <p v-if="disabledPreserved" class="provider-preserved">配置与角色映射均已保留，可随时重新测试并启用。</p>
@@ -444,7 +443,12 @@ onMounted(() => {
       <el-form class="provider-form" label-position="top" @submit.prevent="saveProviderDraft">
         <div class="provider-field-grid">
           <el-form-item label="LDAP 服务地址" required>
-            <el-input v-model="adForm.server" data-testid="ad-server" placeholder="ldaps://ad.example.com:636" @input="markProviderDirty" />
+            <el-input
+              v-model="adForm.server"
+              data-testid="ad-server"
+              placeholder="ldaps://ad.example.com:636"
+              @input="markProviderDirty"
+            />
           </el-form-item>
           <el-form-item label="Base DN" required>
             <el-input v-model="adForm.base_dn" placeholder="DC=example,DC=com" @input="markProviderDirty" />
@@ -454,40 +458,101 @@ onMounted(() => {
             <small>Bind 密码只从 Docker secret 读取，本页不录入、不回显。</small>
           </el-form-item>
           <el-form-item label="用户搜索过滤器" required>
-            <el-input v-model="adForm.user_search_filter" placeholder="(sAMAccountName={username})" @input="markProviderDirty" />
+            <el-input
+              v-model="adForm.user_search_filter"
+              placeholder="(sAMAccountName={username})"
+              @input="markProviderDirty"
+            />
           </el-form-item>
           <el-form-item label="连接超时（秒）">
-            <el-input-number v-model="adForm.connect_timeout_s" :min="0.1" :max="30" :step="0.5" @change="markProviderDirty" />
+            <el-input-number
+              v-model="adForm.connect_timeout_s"
+              :min="0.1"
+              :max="30"
+              :step="0.5"
+              @change="markProviderDirty"
+            />
           </el-form-item>
           <el-form-item label="接收超时（秒）">
-            <el-input-number v-model="adForm.receive_timeout_s" :min="0.1" :max="30" :step="0.5" @change="markProviderDirty" />
+            <el-input-number
+              v-model="adForm.receive_timeout_s"
+              :min="0.1"
+              :max="30"
+              :step="0.5"
+              @change="markProviderDirty"
+            />
           </el-form-item>
         </div>
 
-        <button type="button" class="provider-advanced-toggle" :aria-expanded="advancedOpen" @click="advancedOpen = !advancedOpen">
-          <span>高级属性映射</span><small>{{ advancedOpen ? '收起' : '展开' }} LDAP 属性字段</small>
+        <button
+          type="button"
+          class="provider-advanced-toggle"
+          :aria-expanded="advancedOpen"
+          @click="advancedOpen = !advancedOpen"
+        >
+          <span>高级属性映射</span><small>{{ advancedOpen ? "收起" : "展开" }} LDAP 属性字段</small>
         </button>
         <div v-if="advancedOpen" class="provider-field-grid advanced">
-          <el-form-item label="用户名属性"><el-input v-model="adForm.username_attribute" @input="markProviderDirty" /></el-form-item>
-          <el-form-item label="显示名称属性"><el-input v-model="adForm.display_name_attribute" @input="markProviderDirty" /></el-form-item>
-          <el-form-item label="部门属性"><el-input v-model="adForm.dept_attribute" @input="markProviderDirty" /></el-form-item>
-          <el-form-item label="稳定主体属性"><el-input v-model="adForm.subject_attribute" @input="markProviderDirty" /></el-form-item>
-          <el-form-item label="目录组属性"><el-input v-model="adForm.group_attribute" @input="markProviderDirty" /></el-form-item>
+          <el-form-item label="用户名属性"
+            ><el-input v-model="adForm.username_attribute" @input="markProviderDirty"
+          /></el-form-item>
+          <el-form-item label="显示名称属性"
+            ><el-input v-model="adForm.display_name_attribute" @input="markProviderDirty"
+          /></el-form-item>
+          <el-form-item label="部门属性"
+            ><el-input v-model="adForm.dept_attribute" @input="markProviderDirty"
+          /></el-form-item>
+          <el-form-item label="稳定主体属性"
+            ><el-input v-model="adForm.subject_attribute" @input="markProviderDirty"
+          /></el-form-item>
+          <el-form-item label="目录组属性"
+            ><el-input v-model="adForm.group_attribute" @input="markProviderDirty"
+          /></el-form-item>
         </div>
       </el-form>
 
       <div class="provider-actions">
         <el-button data-testid="save-ad-draft" :loading="providerSaving" @click="saveProviderDraft">保存草稿</el-button>
-        <el-button data-testid="test-ad" type="primary" plain :loading="testing" :disabled="providerDirty" @click="runProviderTest">测试连接</el-button>
-        <el-button data-testid="activate-ad" type="primary" :loading="providerSaving" :disabled="!canActivateProvider" @click="activateProvider">启用配置</el-button>
-        <el-button v-if="adProvider.enabled" data-testid="disable-ad" type="danger" plain :loading="providerSaving" @click="disableProvider">禁用 AD</el-button>
+        <el-button
+          data-testid="test-ad"
+          type="primary"
+          plain
+          :loading="testing"
+          :disabled="providerDirty"
+          @click="runProviderTest"
+          >测试连接</el-button
+        >
+        <el-button
+          data-testid="activate-ad"
+          type="primary"
+          :loading="providerSaving"
+          :disabled="!canActivateProvider"
+          @click="activateProvider"
+          >启用配置</el-button
+        >
+        <el-button
+          v-if="adProvider.enabled"
+          data-testid="disable-ad"
+          type="danger"
+          plain
+          :loading="providerSaving"
+          @click="disableProvider"
+          >禁用 AD</el-button
+        >
       </div>
 
       <section class="role-mapping-panel">
-        <header><div><strong>目录组角色映射</strong><p>AD 账号未人工覆盖时，按最近同步的目录组计算平台角色。</p></div><el-button @click="addRoleMapping">添加映射</el-button></header>
+        <header
+          ><div><strong>目录组角色映射</strong><p>AD 账号未人工覆盖时，按最近同步的目录组计算平台角色。</p></div
+          ><el-button @click="addRoleMapping">添加映射</el-button></header
+        >
         <div v-if="roleMappings.length" class="role-mapping-list">
           <div v-for="(mapping, index) in roleMappings" :key="index" class="role-mapping-row">
-            <el-input v-model="mapping.external_group" :data-testid="`mapping-group-${index}`" placeholder="CN=SMS-Operators,OU=Groups,..." />
+            <el-input
+              v-model="mapping.external_group"
+              :data-testid="`mapping-group-${index}`"
+              placeholder="CN=SMS-Operators,OU=Groups,..."
+            />
             <el-input v-model="mapping.dept" :data-testid="`mapping-dept-${index}`" placeholder="授权部门" />
             <el-select v-model="mapping.role" :data-testid="`mapping-role-${index}`">
               <el-option v-for="(label, role) in ROLE_LABELS" :key="role" :label="label" :value="role" />
@@ -496,7 +561,15 @@ onMounted(() => {
           </div>
         </div>
         <p v-else class="role-mapping-empty">尚未配置目录组映射；AD 用户不会自动获得平台角色。</p>
-        <footer><el-button data-testid="save-role-mappings" type="primary" :loading="mappingsSaving" @click="saveRoleMappings">保存角色映射</el-button></footer>
+        <footer
+          ><el-button
+            data-testid="save-role-mappings"
+            type="primary"
+            :loading="mappingsSaving"
+            @click="saveRoleMappings"
+            >保存角色映射</el-button
+          ></footer
+        >
       </section>
     </article>
   </section>
@@ -513,7 +586,8 @@ onMounted(() => {
     </el-alert>
 
     <div class="config-filter-bar">
-      <label class="config-fld"><span>关键词</span>
+      <label class="config-fld"
+        ><span>关键词</span>
         <el-input
           v-model="searchQuery"
           data-testid="config-search"
@@ -523,9 +597,12 @@ onMounted(() => {
           aria-label="搜索系统参数"
         />
       </label>
-      <div class="config-fld"><span>分组</span>
+      <div class="config-fld"
+        ><span>分组</span>
         <div class="config-seg" role="group" aria-label="参数分组筛选" data-testid="config-group-seg">
-          <button type="button" :class="{ on: activeGroup === '' }" data-testid="config-group-all" @click="setGroup('')">全部</button>
+          <button type="button" :class="{ on: activeGroup === '' }" data-testid="config-group-all" @click="setGroup('')"
+            >全部</button
+          >
           <button
             v-for="group in groupOptions"
             :key="group"
@@ -533,26 +610,47 @@ onMounted(() => {
             :class="{ on: activeGroup === group }"
             :data-testid="`config-group-${group}`"
             @click="setGroup(group)"
-          >{{ group }}</button>
+            >{{ group }}</button
+          >
         </div>
       </div>
       <p class="config-privacy">接口全量返回，关键词与分组均为前端过滤；改动逐键写入审计日志，敏感值不回显。</p>
     </div>
 
     <aside class="config-rules" aria-label="调度生效与敏感值规则">
-      <div><span>调度生效规则</span><p>标有 BEAT RESTART 的参数由 beat 与 API 在启动时读取，修改后需重启两个容器；不会动态热更。</p></div>
+      <div
+        ><span>调度生效规则</span
+        ><p>标有 BEAT RESTART 的参数由 beat 与 API 在启动时读取，修改后需重启两个容器；不会动态热更。</p></div
+      >
       <div><span>敏感值规则</span><p>SENSITIVE 项已配置值不回显；留空保持原值，「清除配置」即将其置空。</p></div>
     </aside>
 
     <section v-loading="loading" class="config-groups">
-      <EmptyState v-if="!groups.length && !loading" title="没有匹配的系统参数" description="换个关键字或分组试试，也可清空搜索查看全部参数。" />
+      <EmptyState
+        v-if="!groups.length && !loading"
+        title="没有匹配的系统参数"
+        description="换个关键字或分组试试，也可清空搜索查看全部参数。"
+      />
       <section v-for="[group, items] in groups" :key="group" class="config-group">
-        <header class="config-group-title"><strong>{{ group }}</strong><span>{{ items.length }} PARAMETERS</span></header>
+        <header class="config-group-title"
+          ><strong>{{ group }}</strong
+          ><span>{{ items.length }} PARAMETERS</span></header
+        >
         <div class="config-grid">
           <article v-for="item in items" :key="item.key" class="config-item">
-            <header><code>{{ item.key }}</code><span v-if="item.beat_restart_required" class="restart-badge">BEAT RESTART</span><span v-if="item.sensitive" class="secret-badge">SENSITIVE</span></header>
+            <header
+              ><code>{{ item.key }}</code
+              ><span v-if="item.beat_restart_required" class="restart-badge">BEAT RESTART</span
+              ><span v-if="item.sensitive" class="secret-badge">SENSITIVE</span></header
+            >
             <p>{{ item.description || "未提供参数说明" }}</p>
-            <el-select v-if="item.value_type === 'bool'" v-model="values[item.key]" :data-testid="`config-${item.key}`" @change="mark(item.key)"><el-option label="开启 · true" value="true" /><el-option label="关闭 · false" value="false" /></el-select>
+            <el-select
+              v-if="item.value_type === 'bool'"
+              v-model="values[item.key]"
+              :data-testid="`config-${item.key}`"
+              @change="mark(item.key)"
+              ><el-option label="开启 · true" value="true" /><el-option label="关闭 · false" value="false"
+            /></el-select>
             <el-input-number
               v-else-if="item.value_type === 'int'"
               :model-value="values[item.key] === '' ? undefined : Number(values[item.key])"
@@ -564,20 +662,56 @@ onMounted(() => {
               controls-position="right"
               @update:model-value="(value: number | undefined) => setNumber(item.key, value)"
             />
-            <el-input v-else v-model="values[item.key]" :data-testid="`config-${item.key}`" :type="item.sensitive ? 'password' : 'text'" :show-password="item.sensitive" :placeholder="item.sensitive && item.configured ? '留空保持原值' : '输入参数值'" @input="mark(item.key)" />
-            <small v-if="!item.sensitive && item.value_type === 'int' && (item.min_value !== null || item.max_value !== null)" class="config-range-hint">范围 {{ item.min_value ?? 1 }} – {{ item.max_value ?? "∞" }} · 默认 {{ item.default }}</small>
-            <small v-else-if="!item.sensitive && FORMAT_HINTS[item.key]" class="config-range-hint">{{ FORMAT_HINTS[item.key] }}</small>
-            <div v-if="item.sensitive && item.configured" class="secret-control"><small>已配置，值不回显</small><el-button link type="danger" @click="values[item.key] = ''; mark(item.key)">清除配置</el-button></div><small v-else-if="item.sensitive">未配置 · 当前 log-sink</small>
+            <el-input
+              v-else
+              v-model="values[item.key]"
+              :data-testid="`config-${item.key}`"
+              :type="item.sensitive ? 'password' : 'text'"
+              :show-password="item.sensitive"
+              :placeholder="item.sensitive && item.configured ? '留空保持原值' : '输入参数值'"
+              @input="mark(item.key)"
+            />
+            <small
+              v-if="
+                !item.sensitive && item.value_type === 'int' && (item.min_value !== null || item.max_value !== null)
+              "
+              class="config-range-hint"
+              >范围 {{ item.min_value ?? 1 }} – {{ item.max_value ?? "∞" }} · 默认 {{ item.default }}</small
+            >
+            <small v-else-if="!item.sensitive && FORMAT_HINTS[item.key]" class="config-range-hint">{{
+              FORMAT_HINTS[item.key]
+            }}</small>
+            <div v-if="item.sensitive && item.configured" class="secret-control">
+              <small>已配置，值不回显</small>
+              <!-- 多语句内联处理器依赖分号分隔：prettier 的 semi:false 折行会产生非法 Vue 表达式，故豁免格式化 -->
+              <!-- prettier-ignore -->
+              <el-button link type="danger" @click="values[item.key] = ''; mark(item.key)">清除配置</el-button>
+            </div>
+            <small v-else-if="item.sensitive">未配置 · 当前 log-sink</small>
             <div class="config-item-meta">
-              <small v-if="item.updated_by">最近由 {{ item.updated_by }} 更新 · {{ formatDateTime(item.updated_at) }}</small>
+              <small v-if="item.updated_by"
+                >最近由 {{ item.updated_by }} 更新 · {{ formatDateTime(item.updated_at) }}</small
+              >
               <small v-else></small>
-              <el-button v-if="isModified(item)" link type="primary" :data-testid="`config-reset-${item.key}`" @click="resetToDefault(item)">重置默认值</el-button>
+              <el-button
+                v-if="isModified(item)"
+                link
+                type="primary"
+                :data-testid="`config-reset-${item.key}`"
+                @click="resetToDefault(item)"
+                >重置默认值</el-button
+              >
             </div>
           </article>
         </div>
       </section>
     </section>
-    <footer class="config-savebar"><span>共 {{ configs.length }} 项受控参数 · <b :class="{ 'is-pending': changes.length > 0 }">{{ changes.length }} 项待保存</b></span><el-button type="primary" :loading="saving" @click="save">保存变更</el-button></footer>
+    <footer class="config-savebar"
+      ><span
+        >共 {{ configs.length }} 项受控参数 ·
+        <b :class="{ 'is-pending': changes.length > 0 }">{{ changes.length }} 项待保存</b></span
+      ><el-button type="primary" :loading="saving" @click="save">保存变更</el-button></footer
+    >
   </section>
 
   <VendorTestConsole

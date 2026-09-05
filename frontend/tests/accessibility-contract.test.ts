@@ -17,9 +17,7 @@ const datePickerViews = [
 
 function channel(value: number): number {
   const normalized = value / 255
-  return normalized <= 0.04045
-    ? normalized / 12.92
-    : ((normalized + 0.055) / 1.055) ** 2.4
+  return normalized <= 0.04045 ? normalized / 12.92 : ((normalized + 0.055) / 1.055) ** 2.4
 }
 
 function luminance(color: string): number {
@@ -38,12 +36,8 @@ function contrast(foreground: string, background: string): number {
 
 describe("无障碍样式契约", () => {
   it("所有全局 CSS 变量都有定义", () => {
-    const definitions = new Set(
-      [...css.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map((match) => match[1]),
-    )
-    const usages = new Set(
-      [...css.matchAll(/var\((--[a-z0-9-]+)/gi)].map((match) => match[1]),
-    )
+    const definitions = new Set([...css.matchAll(/(--[a-z0-9-]+)\s*:/gi)].map((match) => match[1]))
+    const usages = new Set([...css.matchAll(/var\((--[a-z0-9-]+)/gi)].map((match) => match[1]))
 
     expect([...usages].filter((name) => name !== "--load" && !definitions.has(name))).toEqual([])
   })
@@ -95,9 +89,15 @@ describe("无障碍样式契约", () => {
   })
 
   it("移动筛选器和日期范围可收缩且运维页签条保留横向滚动", () => {
-    expect(css).toMatch(/@media \(max-width: 840px\)[\s\S]*\.audit-keyword,[\s\S]*?\.audit-dates\s*\{[^}]*width:\s*100%/s)
-    expect(css).toMatch(/@media \(max-width: 840px\)[\s\S]*\.audit-dates\s*\{[^}]*--el-date-editor-datetimerange-width:\s*100%/s)
-    expect(css).not.toMatch(/\.(?:query-filter-card|message-search-card|audit-filter-card|reply-filter-card)[^{]*\{[^}]*overflow-x:\s*auto/s)
+    expect(css).toMatch(
+      /@media \(max-width: 840px\)[\s\S]*\.audit-keyword,[\s\S]*?\.audit-dates\s*\{[^}]*width:\s*100%/s,
+    )
+    expect(css).toMatch(
+      /@media \(max-width: 840px\)[\s\S]*\.audit-dates\s*\{[^}]*--el-date-editor-datetimerange-width:\s*100%/s,
+    )
+    expect(css).not.toMatch(
+      /\.(?:query-filter-card|message-search-card|audit-filter-card|reply-filter-card)[^{]*\{[^}]*overflow-x:\s*auto/s,
+    )
     expect(css).toMatch(/\.config-tabs,\s*\.ops-tabs\s*\{[^}]*overflow-x:\s*auto/s)
   })
 
@@ -122,8 +122,12 @@ describe("无障碍样式契约", () => {
   })
 
   it("移动端复选框长文案允许收缩换行", () => {
-    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.el-checkbox\s*\{[^}]*height:\s*auto[^}]*align-items:\s*flex-start/s)
-    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.el-checkbox__label\s*\{[^}]*min-width:\s*0[^}]*white-space:\s*normal/s)
+    expect(css).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*\.el-checkbox\s*\{[^}]*height:\s*auto[^}]*align-items:\s*flex-start/s,
+    )
+    expect(css).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*\.el-checkbox__label\s*\{[^}]*min-width:\s*0[^}]*white-space:\s*normal/s,
+    )
   })
 
   it("移动导航关闭时退出无障碍树和键盘焦点序列", () => {
@@ -150,16 +154,32 @@ describe("无障碍样式契约", () => {
   it("日期选择器使用统一的输入、范围和选中态", () => {
     expect(css).toContain(".el-picker__popper.qingluan-date-popper")
     expect(css).toMatch(/\.el-date-editor[^}]*box-shadow:\s*0 0 0 1px var\(--line-2\) inset/s)
-    expect(css).toMatch(/\.el-date-table td\.in-range[^}]*background-color:\s*color-mix\(in srgb, var\(--verdi\) 10%, var\(--card\)\)/s)
-    expect(css).toMatch(/\.el-date-table td\.current:not\(\.disabled\) \.el-date-table-cell__text[^}]*background:\s*var\(--verdi\)/s)
+    expect(css).toMatch(
+      /\.el-date-table td\.in-range[^}]*background-color:\s*color-mix\(in srgb, var\(--verdi\) 10%, var\(--card\)\)/s,
+    )
+    expect(css).toMatch(
+      /\.el-date-table td\.current:not\(\.disabled\) \.el-date-table-cell__text[^}]*background:\s*var\(--verdi\)/s,
+    )
   })
 
   it("日期选择弹层在窄屏内纵向排布", () => {
-    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper\.el-picker__popper[^}]*position:\s*fixed\s*!important[^}]*inset:\s*8px 8px auto\s*!important/s)
-    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper \.el-date-range-picker__content[^}]*display:\s*block[^}]*width:\s*100%/s)
-    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper \.el-date-range-picker__time-header[^}]*display:\s*grid/s)
-    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper \.el-date-range-picker__editors-wrap[^}]*display:\s*grid/s)
-    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper \.el-picker-panel__body[^}]*width:\s*100%[^}]*min-width:\s*0/s)
-    expect(css).toMatch(/@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper \.el-picker-panel__footer[^}]*position:\s*sticky[^}]*bottom:\s*0/s)
+    expect(css).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper\.el-picker__popper[^}]*position:\s*fixed\s*!important[^}]*inset:\s*8px 8px auto\s*!important/s,
+    )
+    expect(css).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper \.el-date-range-picker__content[^}]*display:\s*block[^}]*width:\s*100%/s,
+    )
+    expect(css).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper \.el-date-range-picker__time-header[^}]*display:\s*grid/s,
+    )
+    expect(css).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper \.el-date-range-picker__editors-wrap[^}]*display:\s*grid/s,
+    )
+    expect(css).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper \.el-picker-panel__body[^}]*width:\s*100%[^}]*min-width:\s*0/s,
+    )
+    expect(css).toMatch(
+      /@media \(max-width: 640px\)[\s\S]*\.qingluan-date-popper \.el-picker-panel__footer[^}]*position:\s*sticky[^}]*bottom:\s*0/s,
+    )
   })
 })

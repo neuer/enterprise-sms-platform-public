@@ -173,10 +173,7 @@ describe("统一轮询 usePolling", () => {
 
   it("任务返回 true 视为终态：停止轮询且不触发 onTimeout，可再次 start", async () => {
     const onTimeout = vi.fn()
-    const task = vi.fn()
-      .mockReturnValueOnce(undefined)
-      .mockReturnValueOnce(true)
-      .mockReturnValue(undefined)
+    const task = vi.fn().mockReturnValueOnce(undefined).mockReturnValueOnce(true).mockReturnValue(undefined)
     const polling = usePolling(task, { intervalMs: 1_000, maxAttempts: 5, onTimeout })
     polling.start()
     await vi.advanceTimersByTimeAsync(1_000)

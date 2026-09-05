@@ -44,9 +44,28 @@ const { render } = useChart(root, (chart) => {
       axisLabel: { color: theme.text, fontSize: 10, formatter: (value: number) => value.toLocaleString() },
     },
     series: [
-      { name: "验证码", type: "bar", stack: "total", barMaxWidth: 42, data: props.points.map((item) => item.verify), itemStyle: { color: theme.green } },
-      { name: "通知", type: "bar", stack: "total", data: props.points.map((item) => item.notice), itemStyle: { color: theme.blue } },
-      { name: "营销", type: "bar", stack: "total", data: props.points.map((item) => item.market), itemStyle: { color: theme.amber } },
+      {
+        name: "验证码",
+        type: "bar",
+        stack: "total",
+        barMaxWidth: 42,
+        data: props.points.map((item) => item.verify),
+        itemStyle: { color: theme.green },
+      },
+      {
+        name: "通知",
+        type: "bar",
+        stack: "total",
+        data: props.points.map((item) => item.notice),
+        itemStyle: { color: theme.blue },
+      },
+      {
+        name: "营销",
+        type: "bar",
+        stack: "total",
+        data: props.points.map((item) => item.market),
+        itemStyle: { color: theme.amber },
+      },
     ],
   })
 })

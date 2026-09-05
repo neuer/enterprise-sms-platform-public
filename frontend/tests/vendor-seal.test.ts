@@ -1,13 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import {
-  clearCredentialDraft,
-  sealVendorCredentials,
-} from "../src/lib/vendorSeal"
+import { clearCredentialDraft, sealVendorCredentials } from "../src/lib/vendorSeal"
 
 const secureCrypto = globalThis.crypto
-const secureContextError =
-  "当前入口不支持正式凭据安全加密，请通过临时 HTTPS 安全入口重新登录"
+const secureContextError = "当前入口不支持正式凭据安全加密，请通过临时 HTTPS 安全入口重新登录"
 
 function base64(bytes: ArrayBuffer): string {
   return btoa(String.fromCharCode(...new Uint8Array(bytes)))
@@ -60,17 +56,11 @@ describe("浏览器正式凭据密封", () => {
       ["aad", "algorithm", "ciphertext", "nonce", "session_id", "wrapped_key"].sort(),
     )
     expect(envelope.algorithm).toBe("RSA-OAEP-256+A256GCM")
-    expect(new TextDecoder().decode(decode(envelope.aad))).toBe(
-      boundAad,
-    )
+    expect(new TextDecoder().decode(decode(envelope.aad))).toBe(boundAad)
     expect(JSON.stringify(envelope)).not.toContain(secretName)
     expect(JSON.stringify(envelope)).not.toContain(secretKey)
 
-    const aesRaw = await crypto.subtle.decrypt(
-      { name: "RSA-OAEP" },
-      keys.privateKey,
-      decode(envelope.wrapped_key),
-    )
+    const aesRaw = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, keys.privateKey, decode(envelope.wrapped_key))
     const aesKey = await crypto.subtle.importKey("raw", aesRaw, "AES-GCM", false, ["decrypt"])
     const plaintext = new Uint8Array(
       await crypto.subtle.decrypt(
@@ -83,9 +73,7 @@ describe("浏览器正式凭据密封", () => {
     const nameLength = view.getUint16(0)
     const keyLength = view.getUint16(2)
     expect(new TextDecoder().decode(plaintext.slice(4, 4 + nameLength))).toBe(secretName)
-    expect(new TextDecoder().decode(plaintext.slice(4 + nameLength, 4 + nameLength + keyLength))).toBe(
-      secretKey,
-    )
+    expect(new TextDecoder().decode(plaintext.slice(4 + nameLength, 4 + nameLength + keyLength))).toBe(secretKey)
     expect(localStorage.length).toBe(0)
     expect(sessionStorage.length).toBe(0)
   })
@@ -100,11 +88,7 @@ describe("浏览器正式凭据密封", () => {
 
   it.each([
     ["非安全上下文", false, secureCrypto],
-    [
-      "缺少 WebCrypto subtle",
-      true,
-      { getRandomValues: secureCrypto.getRandomValues.bind(secureCrypto) } as Crypto,
-    ],
+    ["缺少 WebCrypto subtle", true, { getRandomValues: secureCrypto.getRandomValues.bind(secureCrypto) } as Crypto],
   ])("%s 时在读取凭据前返回固定安全错误", async (_label, isSecure, browserCrypto) => {
     vi.stubGlobal("isSecureContext", isSecure)
     vi.stubGlobal("crypto", browserCrypto)

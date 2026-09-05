@@ -112,11 +112,7 @@ export async function sealVendorCredentials(
       false,
       ["encrypt"],
     )
-    const aesKey = await crypto.subtle.generateKey(
-      { name: "AES-GCM", length: 256 },
-      true,
-      ["encrypt"],
-    )
+    const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt"])
     rawAes = new Uint8Array(await crypto.subtle.exportKey("raw", aesKey))
     const [wrappedKey, ciphertext] = await Promise.all([
       crypto.subtle.encrypt({ name: "RSA-OAEP" }, publicKey, arrayBuffer(rawAes)),

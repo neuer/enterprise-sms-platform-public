@@ -17,9 +17,51 @@ function response(body: unknown, status = 200) {
 }
 
 const configs = [
-  { key: "vendor_qps", value: "5", value_type: "int", description: "厂商 QPS", group: "运行调度", sensitive: false, configured: true, beat_restart_required: false, updated_by: null, updated_at: null, default: "5", min_value: null, max_value: 1000 },
-  { key: "report_poll_seconds", value: "60", value_type: "int", description: "报告轮询", group: "运行调度", sensitive: false, configured: true, beat_restart_required: true, updated_by: null, updated_at: null, default: "60", min_value: 10, max_value: 3600 },
-  { key: "alert_wecom_webhook", value: null, value_type: "str", description: "企微 Webhook", group: "告警通知", sensitive: true, configured: true, beat_restart_required: false, updated_by: "admin01", updated_at: "2026-07-12T08:00:00+08:00", default: "", min_value: null, max_value: null },
+  {
+    key: "vendor_qps",
+    value: "5",
+    value_type: "int",
+    description: "厂商 QPS",
+    group: "运行调度",
+    sensitive: false,
+    configured: true,
+    beat_restart_required: false,
+    updated_by: null,
+    updated_at: null,
+    default: "5",
+    min_value: null,
+    max_value: 1000,
+  },
+  {
+    key: "report_poll_seconds",
+    value: "60",
+    value_type: "int",
+    description: "报告轮询",
+    group: "运行调度",
+    sensitive: false,
+    configured: true,
+    beat_restart_required: true,
+    updated_by: null,
+    updated_at: null,
+    default: "60",
+    min_value: 10,
+    max_value: 3600,
+  },
+  {
+    key: "alert_wecom_webhook",
+    value: null,
+    value_type: "str",
+    description: "企微 Webhook",
+    group: "告警通知",
+    sensitive: true,
+    configured: true,
+    beat_restart_required: false,
+    updated_by: "admin01",
+    updated_at: "2026-07-12T08:00:00+08:00",
+    default: "",
+    min_value: null,
+    max_value: null,
+  },
 ]
 
 const adConfig = {
@@ -61,9 +103,7 @@ const roleMappings = {
   ],
 }
 
-function configFetch(
-  overrides?: (url: string, init: RequestInit) => ReturnType<typeof response> | undefined,
-) {
+function configFetch(overrides?: (url: string, init: RequestInit) => ReturnType<typeof response> | undefined) {
   return vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
     const overridden = overrides?.(url, init)
     if (overridden) return Promise.resolve(overridden)
@@ -77,7 +117,25 @@ function configFetch(
 }
 
 const auditPage = {
-  items: [{ id: 9, correlation_id: "30000000-0000-4000-8000-000000000009", actor: "admin01", actor_subject_kind: "human", actor_account_id: 1, actor_identity_id: 10, actor_app_id: null, role: "admin", ip: "10.0.0.8", action: "config_update", object_type: "sys_config", object_id: "vendor_qps", before_val: { value: "5", note: "old" }, after_val: { value: "8", enabled: true }, created_at: "2026-07-12T08:00:00+08:00" }],
+  items: [
+    {
+      id: 9,
+      correlation_id: "30000000-0000-4000-8000-000000000009",
+      actor: "admin01",
+      actor_subject_kind: "human",
+      actor_account_id: 1,
+      actor_identity_id: 10,
+      actor_app_id: null,
+      role: "admin",
+      ip: "10.0.0.8",
+      action: "config_update",
+      object_type: "sys_config",
+      object_id: "vendor_qps",
+      before_val: { value: "5", note: "old" },
+      after_val: { value: "8", enabled: true },
+      created_at: "2026-07-12T08:00:00+08:00",
+    },
+  ],
   total: 1,
   page: 1,
   page_size: 20,
@@ -107,20 +165,13 @@ describe("审计与系统参数", () => {
     const wrapper = mount(ConfigView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
-    expect(wrapper.findAll("[role='tab']").map((tab) => tab.text())).toEqual([
-      "运行参数",
-      "认证源",
-      "真实联调",
-    ])
+    expect(wrapper.findAll("[role='tab']").map((tab) => tab.text())).toEqual(["运行参数", "认证源", "真实联调"])
     wrapper.unmount()
 
     session.role = "viewer"
     const viewer = mount(ConfigView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
-    expect(viewer.findAll("[role='tab']").map((tab) => tab.text())).toEqual([
-      "运行参数",
-      "认证源",
-    ])
+    expect(viewer.findAll("[role='tab']").map((tab) => tab.text())).toEqual(["运行参数", "认证源"])
     viewer.unmount()
     vi.unstubAllGlobals()
   })
@@ -140,16 +191,23 @@ describe("审计与系统参数", () => {
     expect(wrapper.text()).toContain("修改后需重启两个容器")
     expect(wrapper.text()).toContain("已配置，值不回显")
     await wrapper.get("[data-testid='config-report_poll_seconds'] input").setValue("90")
-    await wrapper.findAll("button").find((button) => button.text().includes("清除配置"))!.trigger("click")
-    await wrapper.findAll("button").find((button) => button.text().includes("保存变更"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("清除配置"))!
+      .trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("保存变更"))!
+      .trigger("click")
     await flushPromises()
 
     expect(ElMessageBox.confirm).toHaveBeenCalled()
-    const request = fetch.mock.calls.find(
-      ([url, init]) => url === "/api/v1/web/admin/configs" && init.method === "PUT",
-    )
+    const request = fetch.mock.calls.find(([url, init]) => url === "/api/v1/web/admin/configs" && init.method === "PUT")
     expect(JSON.parse(String(request?.[1].body))).toEqual({
-      items: [{ key: "report_poll_seconds", value: "90" }, { key: "alert_wecom_webhook", value: "" }],
+      items: [
+        { key: "report_poll_seconds", value: "90" },
+        { key: "alert_wecom_webhook", value: "" },
+      ],
     })
     wrapper.unmount()
     vi.unstubAllGlobals()
@@ -157,18 +215,27 @@ describe("审计与系统参数", () => {
   })
 
   it("敏感参数清除与保存后实时刷新待保存计数", async () => {
-    vi.stubGlobal("fetch", configFetch((url, init) => {
-      if (url === "/api/v1/web/admin/configs" && init.method === "PUT") return response(configs)
-      return undefined
-    }))
+    vi.stubGlobal(
+      "fetch",
+      configFetch((url, init) => {
+        if (url === "/api/v1/web/admin/configs" && init.method === "PUT") return response(configs)
+        return undefined
+      }),
+    )
     const wrapper = mount(ConfigView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
 
     expect(wrapper.text()).toContain("0 项待保存")
-    await wrapper.findAll("button").find((button) => button.text().includes("清除配置"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("清除配置"))!
+      .trigger("click")
     expect(wrapper.text()).toContain("1 项待保存")
 
-    await wrapper.findAll("button").find((button) => button.text().includes("保存变更"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("保存变更"))!
+      .trigger("click")
     await flushPromises()
 
     expect(wrapper.text()).toContain("0 项待保存")
@@ -197,9 +264,9 @@ describe("审计与系统参数", () => {
     await wrapper.get("[data-testid='config-report_poll_seconds'] input").setValue("90")
     const reset = wrapper.get("[data-testid='config-reset-report_poll_seconds']")
     await reset.trigger("click")
-    expect(
-      (wrapper.get("[data-testid='config-report_poll_seconds'] input").element as HTMLInputElement).value,
-    ).toBe("60")
+    expect((wrapper.get("[data-testid='config-report_poll_seconds'] input").element as HTMLInputElement).value).toBe(
+      "60",
+    )
     expect(wrapper.find("[data-testid='config-reset-report_poll_seconds']").exists()).toBe(false)
     expect(wrapper.find("[data-testid='config-reset-alert_wecom_webhook']").exists()).toBe(false)
     wrapper.unmount()
@@ -304,10 +371,13 @@ describe("审计与系统参数", () => {
       tested_version: 3,
       last_test_status: "success",
     }
-    vi.stubGlobal("fetch", configFetch((url) => {
-      if (url === "/api/v1/web/admin/auth-providers/ad") return response(upgraded)
-      return undefined
-    }))
+    vi.stubGlobal(
+      "fetch",
+      configFetch((url) => {
+        if (url === "/api/v1/web/admin/auth-providers/ad") return response(upgraded)
+        return undefined
+      }),
+    )
     const wrapper = mount(ConfigView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
 
@@ -320,13 +390,22 @@ describe("审计与系统参数", () => {
   })
 
   it("禁用 AD 保留配置并可维护目录组角色映射", async () => {
-    const enabled = { ...adProvider, enabled: true, active_config: adConfig, active_version: 3, tested_version: 3, last_test_status: "success" }
+    const enabled = {
+      ...adProvider,
+      enabled: true,
+      active_config: adConfig,
+      active_version: 3,
+      tested_version: 3,
+      last_test_status: "success",
+    }
     const disabled = { ...enabled, enabled: false }
     const fetch = configFetch((url, init) => {
       if (url === "/api/v1/web/admin/auth-providers/ad") return response(enabled)
       if (url === "/api/v1/web/admin/auth-providers/ad/disable") return response(disabled)
       if (url === "/api/v1/web/admin/auth-providers/ad/role-mappings" && init.method === "PUT") {
-        return response({ mappings: [{ external_group: "CN=SMS-Admins,OU=Groups,DC=example,DC=com", role: "admin", dept: "平台部" }] })
+        return response({
+          mappings: [{ external_group: "CN=SMS-Admins,OU=Groups,DC=example,DC=com", role: "admin", dept: "平台部" }],
+        })
       }
       return undefined
     })
@@ -345,9 +424,7 @@ describe("审计与系统参数", () => {
     await wrapper.getComponent("[data-testid='mapping-role-0']").setValue("admin")
     await wrapper.get("[data-testid='save-role-mappings']").trigger("click")
     await flushPromises()
-    const request = fetch.mock.calls.find(
-      ([url, init]) => url.endsWith("/role-mappings") && init.method === "PUT",
-    )
+    const request = fetch.mock.calls.find(([url, init]) => url.endsWith("/role-mappings") && init.method === "PUT")
     expect(JSON.parse(String(request?.[1].body))).toEqual({
       mappings: [{ external_group: "CN=SMS-Admins,OU=Groups,DC=example,DC=com", role: "admin", dept: "平台部" }],
     })
@@ -372,9 +449,7 @@ describe("审计与系统参数", () => {
     expect(wrapper.text()).toContain("config_update")
     expect(wrapper.find('input[placeholder="开始时间"]').exists()).toBe(true)
     expect(wrapper.find("[data-testid='audit-action']").exists()).toBe(true)
-    expect(
-      fetch.mock.calls.some((call) => String(call[0]).includes("/admin/audit-logs/actions")),
-    ).toBe(true)
+    expect(fetch.mock.calls.some((call) => String(call[0]).includes("/admin/audit-logs/actions"))).toBe(true)
 
     await wrapper.get("[data-testid='audit-actor']").setValue("admin01")
     await wrapper.get("[data-testid='audit-object-id']").setValue("vendor_qps")
@@ -385,7 +460,10 @@ describe("审计与系统参数", () => {
     correlationInput!.value = "30000000-0000-4000-8000-000000000009"
     correlationInput!.dispatchEvent(new Event("input"))
     await flushPromises()
-    await wrapper.findAll("button").find((button) => button.text().includes("查询"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("查询"))!
+      .trigger("click")
     await flushPromises()
     expect(lastAuditQuery(fetch)).toContain("actor=admin01")
     expect(lastAuditQuery(fetch)).toContain("object_id=vendor_qps")
@@ -396,7 +474,10 @@ describe("审计与系统参数", () => {
     expect(lastAuditQuery(fetch)).not.toContain("actor=admin01")
     expect(lastAuditQuery(fetch)).not.toContain("object_id")
 
-    await wrapper.findAll("button").find((button) => button.text().includes("详情"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("详情"))!
+      .trigger("click")
     await flushPromises()
     expect(document.body.textContent).toContain("变更")
     expect(document.body.textContent).toContain("删除")
@@ -434,7 +515,10 @@ describe("审计与系统参数", () => {
     expect(wrapper.text()).toContain("暂无审计事件")
 
     await wrapper.get("[data-testid='audit-actor']").setValue("admin01")
-    await wrapper.findAll("button").find((button) => button.text().includes("查询"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("查询"))!
+      .trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("没有符合条件的审计事件")
 

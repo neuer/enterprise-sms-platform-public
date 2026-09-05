@@ -25,7 +25,10 @@ function applyRole(role: "admin" | "approver" | "operator"): ReturnType<typeof c
     account_id: 1,
     identity_id: 11,
     provider_code: "local",
-    username: `${role}01`, display_name: "测试用户", dept: "平台部", role,
+    username: `${role}01`,
+    display_name: "测试用户",
+    dept: "平台部",
+    role,
   })
   return pinia
 }
@@ -151,10 +154,7 @@ describe("模板管理", () => {
     await wrapper.get("[data-testid='template-sync-2']").trigger("click")
     await flushPromises()
 
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/v1/web/templates/2/sync",
-      expect.objectContaining({ method: "POST" }),
-    )
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/web/templates/2/sync", expect.objectContaining({ method: "POST" }))
     vi.unstubAllGlobals()
   })
 
@@ -301,7 +301,10 @@ describe("模板管理", () => {
 
   it("校验不通过时不发起提交请求", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
-      ok: true, status: 200, headers: { get: () => null }, json: async () => [template],
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => [template],
     })
     vi.stubGlobal("fetch", fetchMock)
     const warning = vi.spyOn(ElMessage, "warning").mockImplementation(() => ({ close: () => undefined }))
@@ -329,7 +332,10 @@ describe("模板管理", () => {
       vendor_state: "rejected",
     }
     const fetchMock = vi.fn().mockResolvedValue({
-      ok: true, status: 200, headers: { get: () => null }, json: async () => [rejectedTemplate],
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: async () => [rejectedTemplate],
     })
     vi.stubGlobal("fetch", fetchMock)
     vi.spyOn(ElMessageBox, "confirm").mockRejectedValue("cancel")
@@ -346,9 +352,7 @@ describe("模板管理", () => {
     expect(confirmMessage).toContain("写入审计日志")
     expect(confirmMessage).toContain("已绑定厂商编号或已被批次引用的模板不可删除")
     expect(error).not.toHaveBeenCalled()
-    expect(
-      fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "DELETE").length,
-    ).toBe(0)
+    expect(fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "DELETE").length).toBe(0)
     vi.unstubAllGlobals()
   })
 
@@ -356,7 +360,8 @@ describe("模板管理", () => {
     const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       if (String(input).includes("/sync")) {
         return {
-          ok: false, status: 502,
+          ok: false,
+          status: 502,
           headers: { get: () => null },
           json: async () => ({ code: "VENDOR_ERROR", message: "厂商模板接口不可用", detail: null }),
         }

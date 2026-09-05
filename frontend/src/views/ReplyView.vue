@@ -43,9 +43,7 @@ const phoneError = computed<string | undefined>(() => {
   return value === "" || PHONE_RE.test(value) ? undefined : "手机号须为 11 位以 1 开头的数字"
 })
 
-const filtering = computed(
-  () => Boolean(phone.value.trim()) || Boolean(range.value) || disposition.value !== "all",
-)
+const filtering = computed(() => Boolean(phone.value.trim()) || Boolean(range.value) || disposition.value !== "all")
 const emptyState = computed(() =>
   filtering.value
     ? {
@@ -180,14 +178,18 @@ onMounted(load)
           :class="{ on: disposition === option.value }"
           :data-testid="`reply-disposition-${option.value}`"
           @click="setDisposition(option.value)"
-        >{{ option.label }}</button>
+          >{{ option.label }}</button
+        >
       </div>
     </div>
     <div class="reply-filter-go">
       <el-button data-testid="reply-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="reply-reset" @click="reset">重置</el-button>
     </div>
-    <p class="reply-privacy">查询参数不进入 Nginx/Uvicorn 访问日志；服务端仅向 SQL 传递 <code>phone_hmac</code> 候选。本页无解密端点，号码恒以掩码展示。</p>
+    <p class="reply-privacy"
+      >查询参数不进入 Nginx/Uvicorn 访问日志；服务端仅向 SQL 传递
+      <code>phone_hmac</code> 候选。本页无解密端点，号码恒以掩码展示。</p
+    >
   </form>
 
   <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
@@ -195,13 +197,19 @@ onMounted(load)
   <section class="reply-results">
     <el-table v-loading="loading" :data="items" row-key="id" class="reply-table">
       <el-table-column label="回复时间" width="178">
-        <template #default="{ row }"><time class="mono-time">{{ formatDateTime(row.reply_time) }}</time></template>
+        <template #default="{ row }"
+          ><time class="mono-time">{{ formatDateTime(row.reply_time) }}</time></template
+        >
       </el-table-column>
       <el-table-column label="回复号码" width="145">
         <template #default="{ row }"><PhoneMask :value="row.phone" /></template>
       </el-table-column>
       <el-table-column label="用户原文" min-width="260">
-        <template #default="{ row }"><span class="reply-content" :class="{ 'is-optout': isOptOutContent(row.content) }">{{ row.content }}</span></template>
+        <template #default="{ row }"
+          ><span class="reply-content" :class="{ 'is-optout': isOptOutContent(row.content) }">{{
+            row.content
+          }}</span></template
+        >
       </el-table-column>
       <el-table-column label="关联批次" min-width="190">
         <template #default="{ row }">
@@ -211,7 +219,8 @@ onMounted(load)
             class="batch-code reply-batch-link"
             :title="`查看批次 ${row.batch_no}`"
             @click="openBatch(row.batch_no)"
-          >{{ row.batch_no }}</button>
+            >{{ row.batch_no }}</button
+          >
           <span v-else class="reply-unlinked-group">
             <el-tag type="warning" effect="plain">未关联</el-tag>
             <small class="reply-unlinked">未匹配到平台批次</small>
@@ -233,7 +242,8 @@ onMounted(load)
             :loading="optingOutId === row.id"
             :data-testid="`reply-optout-${row.id}`"
             @click="optout(row)"
-          >退订加黑</el-button>
+            >退订加黑</el-button
+          >
           <span v-else class="reply-status-none">—</span>
         </template>
       </el-table-column>
@@ -256,7 +266,8 @@ onMounted(load)
             class="batch-code reply-batch-link"
             :title="`查看批次 ${item.batch_no}`"
             @click="openBatch(item.batch_no)"
-          >{{ item.batch_no }}</button>
+            >{{ item.batch_no }}</button
+          >
           <span v-else class="reply-unlinked-group">
             <el-tag type="warning" effect="plain">未关联</el-tag>
             <small class="reply-unlinked">未匹配到平台批次</small>
@@ -269,7 +280,8 @@ onMounted(load)
             :loading="optingOutId === item.id"
             :data-testid="`reply-mobile-optout-${item.id}`"
             @click="optout(item)"
-          >退订加黑</el-button>
+            >退订加黑</el-button
+          >
         </footer>
       </article>
       <EmptyState v-if="!loading && !items.length" :title="emptyState.title" :description="emptyState.description" />

@@ -84,9 +84,7 @@ const filtered = computed(() => {
   })
 })
 
-const emptyTitle = computed(() =>
-  items.value.length === 0 ? "当前没有模板" : "没有符合筛选条件的模板",
-)
+const emptyTitle = computed(() => (items.value.length === 0 ? "当前没有模板" : "没有符合筛选条件的模板"))
 const emptyDescription = computed(() =>
   items.value.length === 0
     ? "新建模板并提交厂商审核后，可在这里跟踪审核状态与厂商编号。"
@@ -188,12 +186,10 @@ function syncVariablesFromContent(): void {
 
 watch(() => form.content, syncVariablesFromContent)
 
-const canSync = (item: SmsTemplate) =>
-  item.vendor_state !== "draft" && item.vendor_template_id !== null
+const canSync = (item: SmsTemplate) => item.vendor_state !== "draft" && item.vendor_template_id !== null
 const canEdit = (item: SmsTemplate) =>
   ["draft", "rejected"].includes(item.vendor_state) && item.vendor_template_id === null
-const canDelete = (item: SmsTemplate) =>
-  item.vendor_state !== "approved" && item.vendor_template_id === null
+const canDelete = (item: SmsTemplate) => item.vendor_state !== "approved" && item.vendor_template_id === null
 const canUse = (item: SmsTemplate) => item.vendor_state === "approved"
 
 /** 详情抽屉审核轨迹：三态全部由 vendor_template_id 与 vendor_state 前端推导。 */
@@ -306,10 +302,7 @@ async function remove(item: SmsTemplate): Promise<void> {
   try {
     await ElMessageBox.confirm(
       h("div", { class: "template-delete-dialog" }, [
-        h(
-          "p",
-          `确认删除模板「${item.name}」？删除后不可恢复；已绑定厂商编号或已被批次引用的模板不可删除。`,
-        ),
+        h("p", `确认删除模板「${item.name}」？删除后不可恢复；已绑定厂商编号或已被批次引用的模板不可删除。`),
         h("p", { class: "template-delete-audit" }, "删除行为与操作人将写入审计日志。"),
       ]),
       "删除模板",
@@ -411,7 +404,8 @@ onMounted(load)
                 v-if="part.pos !== undefined"
                 class="var-chip"
                 :title="`变量 {${part.pos}} · 最大 ${part.maxLen ?? '—'} 字`"
-              >{{ "{" + part.pos + "}" }}<i>≤{{ part.maxLen ?? "—" }}</i></span>
+                >{{ "{" + part.pos + "}" }}<i>≤{{ part.maxLen ?? "—" }}</i></span
+              >
               <template v-else>{{ part.text }}</template>
             </template>
           </span>
@@ -420,16 +414,42 @@ onMounted(load)
       <el-table-column label="厂商状态" width="170">
         <template #default="{ row }">
           <StatusTag :status="row.vendor_state" :label="stateLabel(row.vendor_state)" />
-          <span class="cell-sub" :class="{ 'cell-sub-verm': stateSub(row).tone === 'verm' }">{{ stateSub(row).text }}</span>
+          <span class="cell-sub" :class="{ 'cell-sub-verm': stateSub(row).tone === 'verm' }">{{
+            stateSub(row).text
+          }}</span>
         </template>
       </el-table-column>
       <el-table-column v-if="canWrite" label="操作" width="150" fixed="right">
         <template #default="{ row }">
           <div @click.stop>
-            <el-button v-if="canUse(row)" :data-testid="`template-use-${row.id}`" link type="primary" @click="useForSend(row)">用于发送</el-button>
-            <el-button v-if="canSync(row)" :data-testid="`template-sync-${row.id}`" link type="primary" :loading="syncingId === row.id" @click="sync(row)">同步</el-button>
-            <el-button v-if="canEdit(row)" :data-testid="`template-edit-${row.id}`" link @click="resetEditor(row)">编辑</el-button>
-            <el-button v-if="canDelete(row)" :data-testid="`template-delete-${row.id}`" link type="danger" @click="remove(row)">删除</el-button>
+            <el-button
+              v-if="canUse(row)"
+              :data-testid="`template-use-${row.id}`"
+              link
+              type="primary"
+              @click="useForSend(row)"
+              >用于发送</el-button
+            >
+            <el-button
+              v-if="canSync(row)"
+              :data-testid="`template-sync-${row.id}`"
+              link
+              type="primary"
+              :loading="syncingId === row.id"
+              @click="sync(row)"
+              >同步</el-button
+            >
+            <el-button v-if="canEdit(row)" :data-testid="`template-edit-${row.id}`" link @click="resetEditor(row)"
+              >编辑</el-button
+            >
+            <el-button
+              v-if="canDelete(row)"
+              :data-testid="`template-delete-${row.id}`"
+              link
+              type="danger"
+              @click="remove(row)"
+              >删除</el-button
+            >
           </div>
         </template>
       </el-table-column>
@@ -455,14 +475,24 @@ onMounted(load)
               v-if="part.pos !== undefined"
               class="var-chip"
               :title="`变量 {${part.pos}} · 最大 ${part.maxLen ?? '—'} 字`"
-            >{{ "{" + part.pos + "}" }}<i>≤{{ part.maxLen ?? "—" }}</i></span>
+              >{{ "{" + part.pos + "}" }}<i>≤{{ part.maxLen ?? "—" }}</i></span
+            >
             <template v-else>{{ part.text }}</template>
           </template>
         </p>
         <p class="cell-sub" :class="{ 'cell-sub-verm': stateSub(row).tone === 'verm' }">{{ stateSub(row).text }}</p>
         <footer v-if="canWrite" @click.stop>
-          <el-button v-if="canUse(row)" :data-testid="`template-mobile-use-${row.id}`" link type="primary" @click="useForSend(row)">用于发送</el-button>
-          <el-button v-if="canSync(row)" link type="primary" :loading="syncingId === row.id" @click="sync(row)">同步</el-button>
+          <el-button
+            v-if="canUse(row)"
+            :data-testid="`template-mobile-use-${row.id}`"
+            link
+            type="primary"
+            @click="useForSend(row)"
+            >用于发送</el-button
+          >
+          <el-button v-if="canSync(row)" link type="primary" :loading="syncingId === row.id" @click="sync(row)"
+            >同步</el-button
+          >
           <el-button v-if="canEdit(row)" link @click="resetEditor(row)">编辑</el-button>
           <el-button v-if="canDelete(row)" link type="danger" @click="remove(row)">删除</el-button>
         </footer>
@@ -491,7 +521,10 @@ onMounted(load)
           <span v-if="index > 0" class="trail-connector"></span>
           <span class="trail-step" :class="step.tone">
             <i class="dot"></i>
-            <span class="trail-txt"><b>{{ step.title }}</b><small>{{ step.desc }}</small></span>
+            <span class="trail-txt"
+              ><b>{{ step.title }}</b
+              ><small>{{ step.desc }}</small></span
+            >
           </span>
         </template>
       </div>
@@ -511,7 +544,8 @@ onMounted(load)
               v-if="part.pos !== undefined"
               class="var-chip"
               :title="`变量 {${part.pos}} · 最大 ${part.maxLen ?? '—'} 字`"
-            >{{ "{" + part.pos + "}" }}<i>≤{{ part.maxLen ?? "—" }}</i></span>
+              >{{ "{" + part.pos + "}" }}<i>≤{{ part.maxLen ?? "—" }}</i></span
+            >
             <template v-else>{{ part.text }}</template>
           </template>
         </p>
@@ -522,18 +556,39 @@ onMounted(load)
         <p class="template-vendor-preview">{{ vendorPreviewOf(detail.content, detail.var_specs) }}</p>
       </div>
       <dl class="template-fact-grid">
-        <div><dt>平台编号</dt><dd class="mono-id">{{ detail.id }}</dd></div>
-        <div><dt>厂商编号</dt><dd class="mono-id">{{ detail.vendor_template_id || "—" }}</dd></div>
+        <div
+          ><dt>平台编号</dt><dd class="mono-id">{{ detail.id }}</dd></div
+        >
+        <div
+          ><dt>厂商编号</dt><dd class="mono-id">{{ detail.vendor_template_id || "—" }}</dd></div
+        >
         <div>
           <dt>变量声明</dt>
           <dd class="mono-id">{{ detail.var_specs.length ? varSpecsLine(detail.var_specs) : "无变量" }}</dd>
         </div>
       </dl>
       <div v-if="canWrite" class="template-detail-actions">
-        <el-button v-if="canEdit(detail)" data-testid="template-detail-edit" type="primary" @click="editFromDetail">修改并重新提交</el-button>
-        <el-button v-if="canUse(detail)" data-testid="template-detail-use" type="primary" @click="useForSend(detail)">用于发送</el-button>
-        <el-button v-if="canSync(detail)" data-testid="template-detail-sync" :loading="syncingId === detail.id" @click="sync(detail)">同步审核状态</el-button>
-        <el-button v-if="canDelete(detail)" data-testid="template-detail-delete" link type="danger" @click="remove(detail)">删除模板</el-button>
+        <el-button v-if="canEdit(detail)" data-testid="template-detail-edit" type="primary" @click="editFromDetail"
+          >修改并重新提交</el-button
+        >
+        <el-button v-if="canUse(detail)" data-testid="template-detail-use" type="primary" @click="useForSend(detail)"
+          >用于发送</el-button
+        >
+        <el-button
+          v-if="canSync(detail)"
+          data-testid="template-detail-sync"
+          :loading="syncingId === detail.id"
+          @click="sync(detail)"
+          >同步审核状态</el-button
+        >
+        <el-button
+          v-if="canDelete(detail)"
+          data-testid="template-detail-delete"
+          link
+          type="danger"
+          @click="remove(detail)"
+          >删除模板</el-button
+        >
         <p class="why">已绑定厂商编号的模板不可编辑或删除，但仍可同步厂商状态；被拒绝或撤销后请新建模板。</p>
       </div>
     </template>
@@ -593,7 +648,9 @@ onMounted(load)
         <small>{{ EDITOR_FOOTNOTE }}</small>
         <div>
           <el-button @click="editorOpen = false">取消</el-button>
-          <el-button data-testid="template-submit" type="primary" :loading="saving" @click="submit">{{ editingSource === null ? "提交厂商审核" : "重新提交审核" }}</el-button>
+          <el-button data-testid="template-submit" type="primary" :loading="saving" @click="submit">{{
+            editingSource === null ? "提交厂商审核" : "重新提交审核"
+          }}</el-button>
         </div>
       </div>
     </template>

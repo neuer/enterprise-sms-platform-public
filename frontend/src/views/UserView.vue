@@ -1,5 +1,4 @@
 <script setup lang="ts">
-
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, h, onMounted, reactive, ref } from "vue"
 
@@ -93,10 +92,7 @@ const statusOptions = [
 
 const filtering = computed(
   () =>
-    Boolean(filters.keyword.trim()) ||
-    Boolean(filters.providerCode) ||
-    Boolean(filters.role) ||
-    filters.status !== "",
+    Boolean(filters.keyword.trim()) || Boolean(filters.providerCode) || Boolean(filters.role) || filters.status !== "",
 )
 
 function errorText(error: unknown, fallback: string): string {
@@ -215,9 +211,7 @@ function passwordProblem(password: string, username: string): string | null {
   if (password.length < policy.min_length || password.length > policy.max_length) {
     return `密码长度必须为 ${policy.min_length}–${policy.max_length} 位`
   }
-  const classes = [/\p{Ll}/u, /\p{Lu}/u, /\p{N}/u, /[^\p{L}\p{N}]/u].filter((re) =>
-    re.test(password),
-  ).length
+  const classes = [/\p{Ll}/u, /\p{Lu}/u, /\p{N}/u, /[^\p{L}\p{N}]/u].filter((re) => re.test(password)).length
   if (classes < policy.required_character_classes) {
     return `密码必须满足至少 ${policy.required_character_classes} 类：大写字母、小写字母、数字、特殊字符`
   }
@@ -246,9 +240,7 @@ function passwordPrechecks(password: string, username: string): Precheck[] {
       { key: "forbid", label: "不含用户名", ok: null },
     ]
   }
-  const classes = [/\p{Ll}/u, /\p{Lu}/u, /\p{N}/u, /[^\p{L}\p{N}]/u].filter((re) =>
-    re.test(password),
-  ).length
+  const classes = [/\p{Ll}/u, /\p{Lu}/u, /\p{N}/u, /[^\p{L}\p{N}]/u].filter((re) => re.test(password)).length
   const normalized = username.trim().toLowerCase()
   return [
     {
@@ -278,9 +270,7 @@ const createError = computed(() => {
   if (!createForm.username.trim() && !createForm.temporary_password) return ""
   const issue =
     usernameProblem(createForm.username) ??
-    (createForm.temporary_password
-      ? passwordProblem(createForm.temporary_password, createForm.username)
-      : null)
+    (createForm.temporary_password ? passwordProblem(createForm.temporary_password, createForm.username) : null)
   return issue ?? ""
 })
 
@@ -405,11 +395,7 @@ async function confirmPasswordReset(): Promise<void> {
           "p",
           `将重置 ${selected.value.display_name || selected.value.username} 的本地密码，并立即吊销现有会话；用户下次登录必须修改密码。`,
         ),
-        h(
-          "p",
-          { class: "user-confirm-audit" },
-          "重置行为、操作人与对象 account_id 将写入审计日志；临时密码不回显。",
-        ),
+        h("p", { class: "user-confirm-audit" }, "重置行为、操作人与对象 account_id 将写入审计日志；临时密码不回显。"),
       ]),
       "确认重置密码",
       {
@@ -445,11 +431,7 @@ async function changeStatus(user: ManagedUser): Promise<void> {
             ? `停用 ${user.display_name || user.username} 后，该账号将无法登录且现有会话立即失效；台账记录保留，可随时重新启用。`
             : `将重新允许 ${user.display_name || user.username} 登录平台，角色与权限维持不变。`,
         ),
-        h(
-          "p",
-          { class: "user-confirm-audit" },
-          `${action}行为、操作人与对象 account_id 将写入审计日志。`,
-        ),
+        h("p", { class: "user-confirm-audit" }, `${action}行为、操作人与对象 account_id 将写入审计日志。`),
       ]),
       `确认${action}账号`,
       {
@@ -474,11 +456,7 @@ async function forceLogout(user: ManagedUser): Promise<void> {
     await ElMessageBox.confirm(
       h("div", { class: "user-confirm-dialog" }, [
         h("p", `将立即吊销 ${user.display_name || user.username} 的全部现有会话，需重新登录。`),
-        h(
-          "p",
-          { class: "user-confirm-audit" },
-          "强制下线行为、操作人与对象 account_id 将写入审计日志。",
-        ),
+        h("p", { class: "user-confirm-audit" }, "强制下线行为、操作人与对象 account_id 将写入审计日志。"),
       ]),
       "确认强制下线",
       {
@@ -508,7 +486,10 @@ onMounted(() => {
     <div>
       <p class="eyebrow">IDENTITY LEDGER / 身份治理</p>
       <h1>用户与角色</h1>
-      <p>本地账号由管理员维护，AD 账号首次成功登录后进入台账；角色人工覆盖优先于目录组映射。账号、角色与凭据变更即递增 security_version，既有会话立即失效；写操作全部写入审计。</p>
+      <p
+        >本地账号由管理员维护，AD 账号首次成功登录后进入台账；角色人工覆盖优先于目录组映射。账号、角色与凭据变更即递增
+        security_version，既有会话立即失效；写操作全部写入审计。</p
+      >
     </div>
     <el-button data-testid="create-local-user" type="primary" @click="openCreate">创建本地账号</el-button>
   </section>
@@ -536,7 +517,8 @@ onMounted(() => {
           :class="{ on: filters.providerCode === option.value }"
           :data-testid="`user-provider-${option.key}`"
           @click="setProvider(option.value)"
-        >{{ option.label }}</button>
+          >{{ option.label }}</button
+        >
       </div>
     </div>
     <div class="user-fld">
@@ -549,7 +531,8 @@ onMounted(() => {
           :class="{ on: filters.role === option.value }"
           :data-testid="`user-role-${option.key}`"
           @click="setRole(option.value)"
-        >{{ option.label }}</button>
+          >{{ option.label }}</button
+        >
       </div>
     </div>
     <div class="user-fld">
@@ -562,19 +545,28 @@ onMounted(() => {
           :class="{ on: filters.status === option.value }"
           :data-testid="`user-status-${option.key}`"
           @click="setStatus(option.value)"
-        >{{ option.label }}</button>
+          >{{ option.label }}</button
+        >
       </div>
     </div>
     <div class="user-filter-go">
       <el-button data-testid="user-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="user-reset" @click="resetFilters">重置</el-button>
     </div>
-    <p class="user-privacy">关键词服务端匹配用户名、显示姓名与部门；认证源 / 角色 / 状态点选即重查。台账服务端分页，全部写操作经审计，停用与重置密码须二次确认。</p>
+    <p class="user-privacy"
+      >关键词服务端匹配用户名、显示姓名与部门；认证源 / 角色 /
+      状态点选即重查。台账服务端分页，全部写操作经审计，停用与重置密码须二次确认。</p
+    >
   </form>
 
   <aside class="user-rules" aria-label="账号与密码规则">
-    <div><span>用户名规则</span><p>本地用户名：3–64 位 ASCII 字母、数字、点、下划线或短横线；不区分大小写，创建后不可修改。</p></div>
-    <div><span>密码规则</span><p>{{ passwordPolicy.description }}；创建或重置后为临时密码，首次登录必须修改。</p></div>
+    <div
+      ><span>用户名规则</span
+      ><p>本地用户名：3–64 位 ASCII 字母、数字、点、下划线或短横线；不区分大小写，创建后不可修改。</p></div
+    >
+    <div
+      ><span>密码规则</span><p>{{ passwordPolicy.description }}；创建或重置后为临时密码，首次登录必须修改。</p></div
+    >
   </aside>
 
   <el-alert v-if="errorMessage" class="user-alert" :title="errorMessage" type="error" show-icon :closable="false">
@@ -595,7 +587,9 @@ onMounted(() => {
             <strong class="user-name">{{ row.display_name || row.username }}</strong>
             <code class="user-code">{{ row.username }}</code>
             <div class="identity-tags">
-              <el-tag size="small" :type="row.provider_code === 'ad' ? 'primary' : 'info'" effect="plain">{{ providerLabel(row.provider_code) }}</el-tag>
+              <el-tag size="small" :type="row.provider_code === 'ad' ? 'primary' : 'info'" effect="plain">{{
+                providerLabel(row.provider_code)
+              }}</el-tag>
               <el-tag size="small" :type="credentialTagType(row)" effect="plain">{{ credentialLabel(row) }}</el-tag>
             </div>
           </template>
@@ -605,7 +599,9 @@ onMounted(() => {
             <span>{{ row.dept || "未分配部门" }}</span>
             <div class="source-groups">
               <el-tag v-for="group in row.source_groups" :key="group" size="small" effect="plain">{{ group }}</el-tag>
-              <small v-if="!row.source_groups.length">{{ row.provider_code === "local" ? "本地维护，无目录来源组" : "暂无同步记录" }}</small>
+              <small v-if="!row.source_groups.length">{{
+                row.provider_code === "local" ? "本地维护，无目录来源组" : "暂无同步记录"
+              }}</small>
             </div>
           </template>
         </el-table-column>
@@ -617,10 +613,14 @@ onMounted(() => {
         </el-table-column>
         <el-table-column label="状态 / 同步" min-width="210">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.status === 1 ? 'success' : 'info'">{{ row.status === 1 ? "有效" : "停用" }}</el-tag>
+            <el-tag size="small" :type="row.status === 1 ? 'success' : 'info'">{{
+              row.status === 1 ? "有效" : "停用"
+            }}</el-tag>
             <span class="sync-state" :class="row.sync_status"><i></i>{{ syncLabel(row.sync_status) }}</span>
             <div class="user-times">
-              <time v-if="row.provider_code !== 'local'" class="mono-time">同步 {{ formatDateTime(row.last_synced_at) }}</time>
+              <time v-if="row.provider_code !== 'local'" class="mono-time"
+                >同步 {{ formatDateTime(row.last_synced_at) }}</time
+              >
               <time class="mono-time">最近登录 {{ formatDateTime(row.last_login_at) }}</time>
             </div>
           </template>
@@ -628,10 +628,27 @@ onMounted(() => {
         <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <div class="user-row-actions">
-              <el-button :data-testid="`role-${row.account_id}`" link type="primary" @click="openRole(row)">角色</el-button>
-              <el-button v-if="row.provider_code === 'local'" :data-testid="`reset-password-${row.account_id}`" link type="primary" @click="openPasswordReset(row)">重置密码</el-button>
-              <el-button :data-testid="`status-${row.account_id}`" link :type="row.status === 1 ? 'danger' : 'success'" @click="changeStatus(row)">{{ row.status === 1 ? "停用" : "启用" }}</el-button>
-              <el-button :data-testid="`revoke-${row.account_id}`" link type="danger" @click="forceLogout(row)">下线</el-button>
+              <el-button :data-testid="`role-${row.account_id}`" link type="primary" @click="openRole(row)"
+                >角色</el-button
+              >
+              <el-button
+                v-if="row.provider_code === 'local'"
+                :data-testid="`reset-password-${row.account_id}`"
+                link
+                type="primary"
+                @click="openPasswordReset(row)"
+                >重置密码</el-button
+              >
+              <el-button
+                :data-testid="`status-${row.account_id}`"
+                link
+                :type="row.status === 1 ? 'danger' : 'success'"
+                @click="changeStatus(row)"
+                >{{ row.status === 1 ? "停用" : "启用" }}</el-button
+              >
+              <el-button :data-testid="`revoke-${row.account_id}`" link type="danger" @click="forceLogout(row)"
+                >下线</el-button
+              >
             </div>
           </template>
         </el-table-column>
@@ -640,11 +657,18 @@ onMounted(() => {
       <div class="user-mobile-list">
         <article v-for="user in users" :key="user.account_id">
           <header>
-            <div><strong class="user-name">{{ user.display_name || user.username }}</strong><code class="user-code">{{ user.username }}</code></div>
-            <el-tag size="small" :type="user.status === 1 ? 'success' : 'info'">{{ user.status === 1 ? "有效" : "停用" }}</el-tag>
+            <div
+              ><strong class="user-name">{{ user.display_name || user.username }}</strong
+              ><code class="user-code">{{ user.username }}</code></div
+            >
+            <el-tag size="small" :type="user.status === 1 ? 'success' : 'info'">{{
+              user.status === 1 ? "有效" : "停用"
+            }}</el-tag>
           </header>
           <div class="identity-tags">
-            <el-tag size="small" :type="user.provider_code === 'ad' ? 'primary' : 'info'" effect="plain">{{ providerLabel(user.provider_code) }}</el-tag>
+            <el-tag size="small" :type="user.provider_code === 'ad' ? 'primary' : 'info'" effect="plain">{{
+              providerLabel(user.provider_code)
+            }}</el-tag>
             <el-tag size="small" :type="credentialTagType(user)" effect="plain">{{ credentialLabel(user) }}</el-tag>
             <span class="sync-state" :class="user.sync_status"><i></i>{{ syncLabel(user.sync_status) }}</span>
           </div>
@@ -652,15 +676,37 @@ onMounted(() => {
           <p>最近登录 {{ formatDateTime(user.last_login_at) }}</p>
           <div class="source-groups">
             <el-tag v-for="group in user.source_groups" :key="group" size="small" effect="plain">{{ group }}</el-tag>
-            <small v-if="!user.source_groups.length">{{ user.provider_code === "local" ? "本地维护，无目录来源组" : "暂无同步记录" }}</small>
+            <small v-if="!user.source_groups.length">{{
+              user.provider_code === "local" ? "本地维护，无目录来源组" : "暂无同步记录"
+            }}</small>
           </div>
           <footer>
-            <span><el-tag :type="roleTag[user.role]" size="small">{{ ROLE_LABELS[user.role] }}</el-tag>{{ roleOrigin(user) }}</span>
+            <span
+              ><el-tag :type="roleTag[user.role]" size="small">{{ ROLE_LABELS[user.role] }}</el-tag
+              >{{ roleOrigin(user) }}</span
+            >
             <span>
-              <el-button :data-testid="`mobile-role-${user.account_id}`" link type="primary" @click="openRole(user)">角色</el-button>
-              <el-button v-if="user.provider_code === 'local'" :data-testid="`mobile-reset-password-${user.account_id}`" link type="primary" @click="openPasswordReset(user)">重置密码</el-button>
-              <el-button :data-testid="`mobile-status-${user.account_id}`" link :type="user.status === 1 ? 'danger' : 'success'" @click="changeStatus(user)">{{ user.status === 1 ? "停用" : "启用" }}</el-button>
-              <el-button :data-testid="`mobile-revoke-${user.account_id}`" link type="danger" @click="forceLogout(user)">下线</el-button>
+              <el-button :data-testid="`mobile-role-${user.account_id}`" link type="primary" @click="openRole(user)"
+                >角色</el-button
+              >
+              <el-button
+                v-if="user.provider_code === 'local'"
+                :data-testid="`mobile-reset-password-${user.account_id}`"
+                link
+                type="primary"
+                @click="openPasswordReset(user)"
+                >重置密码</el-button
+              >
+              <el-button
+                :data-testid="`mobile-status-${user.account_id}`"
+                link
+                :type="user.status === 1 ? 'danger' : 'success'"
+                @click="changeStatus(user)"
+                >{{ user.status === 1 ? "停用" : "启用" }}</el-button
+              >
+              <el-button :data-testid="`mobile-revoke-${user.account_id}`" link type="danger" @click="forceLogout(user)"
+                >下线</el-button
+              >
             </span>
           </footer>
         </article>
@@ -687,7 +733,13 @@ onMounted(() => {
     </footer>
   </section>
 
-  <el-drawer v-model="createDrawerOpen" size="min(440px, 92vw)" :teleported="false" class="user-drawer" @closed="resetCreateForm">
+  <el-drawer
+    v-model="createDrawerOpen"
+    size="min(440px, 92vw)"
+    :teleported="false"
+    class="user-drawer"
+    @closed="resetCreateForm"
+  >
     <template #header>
       <div class="user-drawer-head">
         <div class="user-drawer-title">创建本地账号</div>
@@ -712,7 +764,14 @@ onMounted(() => {
         <small class="field-rule" data-testid="create-role-permission">{{ roleDescriptions[createForm.role] }}</small>
       </el-form-item>
       <el-form-item label="临时密码" required>
-        <el-input v-model="createForm.temporary_password" data-testid="create-password" type="password" show-password autocomplete="new-password" :maxlength="passwordPolicy.max_length" />
+        <el-input
+          v-model="createForm.temporary_password"
+          data-testid="create-password"
+          type="password"
+          show-password
+          autocomplete="new-password"
+          :maxlength="passwordPolicy.max_length"
+        />
         <small class="field-rule">{{ passwordPolicy.description }}；首次登录必须修改。</small>
       </el-form-item>
     </el-form>
@@ -722,7 +781,8 @@ onMounted(() => {
         :key="check.key"
         class="user-chip"
         :class="{ 'user-chip-ok': check.ok === true, 'user-chip-bad': check.ok === false }"
-      >{{ check.label }}</span>
+        >{{ check.label }}</span
+      >
     </div>
     <p v-if="createError" class="user-parse-error">{{ createError }}</p>
     <template #footer>
@@ -730,7 +790,14 @@ onMounted(() => {
         <small>创建行为与操作人写入审计日志；临时密码只随本次请求提交，不回显、不入库明文。</small>
         <div>
           <el-button @click="closeCreate">取消</el-button>
-          <el-button data-testid="save-local-user" type="primary" :disabled="!canCreate" :loading="saving" @click="saveLocalUser">创建账号</el-button>
+          <el-button
+            data-testid="save-local-user"
+            type="primary"
+            :disabled="!canCreate"
+            :loading="saving"
+            @click="saveLocalUser"
+            >创建账号</el-button
+          >
         </div>
       </div>
     </template>
@@ -758,8 +825,16 @@ onMounted(() => {
         </el-form-item>
         <el-form-item label="角色来源">
           <div v-if="selected.provider_code === 'ad'" class="override-control">
-            <el-switch v-model="overrideDraft" data-testid="override-switch" inline-prompt active-text="人工" inactive-text="AD" />
-            <p>{{ overrideDraft ? "保存后固定为所选角色，后续目录同步不改写。" : "保存后按最近来源组和当前映射恢复角色。" }}</p>
+            <el-switch
+              v-model="overrideDraft"
+              data-testid="override-switch"
+              inline-prompt
+              active-text="人工"
+              inactive-text="AD"
+            />
+            <p>{{
+              overrideDraft ? "保存后固定为所选角色，后续目录同步不改写。" : "保存后按最近来源组和当前映射恢复角色。"
+            }}</p>
           </div>
           <p v-else class="local-role-note">本地账号角色始终由平台管理员维护。</p>
         </el-form-item>
@@ -783,7 +858,13 @@ onMounted(() => {
     </template>
   </el-drawer>
 
-  <el-drawer v-model="resetDrawerOpen" size="min(440px, 92vw)" :teleported="false" class="user-drawer" @closed="resetPasswordDraft = ''">
+  <el-drawer
+    v-model="resetDrawerOpen"
+    size="min(440px, 92vw)"
+    :teleported="false"
+    class="user-drawer"
+    @closed="resetPasswordDraft = ''"
+  >
     <template #header>
       <div class="user-drawer-head">
         <div class="user-drawer-title">重置本地密码</div>
@@ -798,7 +879,14 @@ onMounted(() => {
       </section>
       <el-form label-position="top" class="user-form" @submit.prevent="confirmPasswordReset">
         <el-form-item label="新临时密码" required>
-          <el-input v-model="resetPasswordDraft" data-testid="reset-password-input" type="password" show-password autocomplete="new-password" :maxlength="passwordPolicy.max_length" />
+          <el-input
+            v-model="resetPasswordDraft"
+            data-testid="reset-password-input"
+            type="password"
+            show-password
+            autocomplete="new-password"
+            :maxlength="passwordPolicy.max_length"
+          />
           <small class="field-rule">{{ passwordPolicy.description }}。</small>
         </el-form-item>
       </el-form>
@@ -808,7 +896,8 @@ onMounted(() => {
           :key="check.key"
           class="user-chip"
           :class="{ 'user-chip-ok': check.ok === true, 'user-chip-bad': check.ok === false }"
-        >{{ check.label }}</span>
+          >{{ check.label }}</span
+        >
       </div>
     </template>
     <template #footer>
@@ -816,7 +905,14 @@ onMounted(() => {
         <small>重置行为与操作人写入审计日志；临时密码不回显。</small>
         <div>
           <el-button @click="closePasswordReset">取消</el-button>
-          <el-button data-testid="confirm-password-reset" type="danger" :disabled="!canReset" :loading="saving" @click="confirmPasswordReset">重置密码</el-button>
+          <el-button
+            data-testid="confirm-password-reset"
+            type="danger"
+            :disabled="!canReset"
+            :loading="saving"
+            @click="confirmPasswordReset"
+            >重置密码</el-button
+          >
         </div>
       </div>
     </template>

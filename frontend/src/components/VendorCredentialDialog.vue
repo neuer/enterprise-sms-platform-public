@@ -141,13 +141,8 @@ watch(
     />
     <template #footer>
       <el-button :disabled="submitting" @click="close">保留现状</el-button>
-      <el-button
-        type="primary"
-        :loading="submitting"
-        :disabled="submitting || !secureContextAvailable"
-        @click="submit"
-      >
-        {{ operation === 'rotate_credentials' ? '密封并轮换' : '密封并安装' }}
+      <el-button type="primary" :loading="submitting" :disabled="submitting || !secureContextAvailable" @click="submit">
+        {{ operation === "rotate_credentials" ? "密封并轮换" : "密封并安装" }}
       </el-button>
     </template>
   </el-dialog>

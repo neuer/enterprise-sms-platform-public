@@ -145,7 +145,7 @@ describe("认证请求边界", () => {
 
   it("认证 JSON 超过正文上限时受控失败且不回显正文", async () => {
     beginRefreshTabBinding()
-    const oversized = `{${"\"k\":".padEnd(33 * 1024, "1")}}`
+    const oversized = `{${'"k":'.padEnd(33 * 1024, "1")}}`
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
