@@ -763,6 +763,41 @@ class UatSuite:
 
         wait_until(case_id, pending, timeout_s=30, interval_s=0.5)
 
+    def _wait_admission_ready_for_volume(self, case_id: str) -> None:
+        """大请求必须等到 OPEN：recovery_hold 不再豁免收件人上限。"""
+
+        def ready() -> bool | None:
+            marker = self._probe().psql_value(
+                "SELECT CASE "
+                "WHEN state='open' THEN 'ready' "
+                "WHEN state='degraded' AND reason_code='recovery_hold' "
+                "AND (hold_until IS NULL OR hold_until <= now()) THEN 'ready' "
+                "ELSE 'wait' END "
+                "FROM send_admission_state WHERE scope='send'"
+            )
+            return True if marker == "ready" else None
+
+        wait_until(case_id, ready, timeout_s=90, interval_s=1)
+        if (
+            self._probe().psql_value(
+                "SELECT state FROM send_admission_state WHERE scope='send'"
+            )
+            == "open"
+        ):
+            return
+        self._expect(
+            case_id,
+            self.api_send(
+                case_id,
+                app="app-iam",
+                category="notice",
+                mobiles=[self.phone(int(case_id), 99)],
+                content="恢复保持探测",
+                biz_suffix="adm-open",
+            ),
+            200,
+        )
+
     def case_05(self) -> None:
         phone = self.phone(5, 0)
         first = self._expect(
@@ -1936,6 +1971,7 @@ class UatSuite:
             raise UatFailure("UAT-25 export filters retained plaintext phone")
 
     def case_26(self) -> None:
+        self._wait_admission_ready_for_volume("26")
         self.set_config("anomaly_enabled", "true")
         self.set_config("anomaly_multiplier", "3")
         self.set_config("anomaly_min_total", "500")
