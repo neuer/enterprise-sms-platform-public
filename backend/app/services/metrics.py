@@ -573,6 +573,50 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
     )
     for action, seconds in auth.transition_database_duration_seconds:
         duration.labels(action=action).set(seconds)
+    orphan = Gauge(
+        "auth_transition_orphan_total",
+        "Orphan auth transitions removed from the due index.",
+        ("reason",),
+        registry=registry,
+    )
+    for reason, value in auth.transition_orphan:
+        orphan.labels(reason=reason).set(value)
+    integrity = Gauge(
+        "auth_transition_integrity_repair_total",
+        "Auth transition Hash/Due integrity repairs.",
+        ("direction", "outcome"),
+        registry=registry,
+    )
+    for direction, outcome, value in auth.transition_integrity_repair:
+        integrity.labels(direction=direction, outcome=outcome).set(value)
+    envelope_invalid = Gauge(
+        "auth_transition_envelope_invalid_total",
+        "Auth transition envelopes rejected for a missing field class.",
+        ("field_class",),
+        registry=registry,
+    )
+    for field_class, value in auth.transition_envelope_invalid:
+        envelope_invalid.labels(field_class=field_class).set(value)
+    pending_without_due = Gauge(
+        "auth_transition_pending_without_due",
+        "Non-terminal auth transitions missing a due index member.",
+        registry=registry,
+    )
+    pending_without_due.set(auth.transition_pending_without_due)
+    due_without_payload = Gauge(
+        "auth_transition_due_without_payload",
+        "Due index members whose immutable envelope is missing.",
+        registry=registry,
+    )
+    due_without_payload.set(auth.transition_due_without_payload)
+    dead_letter = Gauge(
+        "auth_transition_dead_letter_total",
+        "Operational dead-letter facts for orphaned auth transitions.",
+        ("reason",),
+        registry=registry,
+    )
+    for reason, value in auth.transition_dead_letter:
+        dead_letter.labels(reason=reason).set(value)
     admit = Gauge(
         "auth_admit_total",
         "Login admit outcomes on the Redis-first path.",

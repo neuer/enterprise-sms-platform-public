@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.92  2026-09-06
+-- v1.6.92：认证 Transition 孤儿 Due 成员写入运维死信，禁止猜测锁定/封禁事实。
 -- v1.6.91  2026-09-06
 -- v1.6.91：send_admission_state 禁止 open+hold，recovery_hold 只能是 degraded。
 -- v1.6.90  2026-09-05
@@ -2788,6 +2790,20 @@ CREATE UNIQUE INDEX idx_audit_auth_security_transition
     ON audit_log(action, object_id)
     WHERE action IN ('auth_account_locked','auth_ip_banned');
 
+CREATE TABLE auth_transition_dead_letter (
+    id              BIGSERIAL PRIMARY KEY,
+    transition_hmac VARCHAR(64) NOT NULL,
+    reason          VARCHAR(32) NOT NULL,
+    field_class     VARCHAR(32) NOT NULL,
+    discovered_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    build_version   VARCHAR(64) NOT NULL,
+    CONSTRAINT ck_auth_transition_dl_reason CHECK (reason IN (
+        'missing_hash','incomplete_envelope','id_mismatch'
+    )),
+    CONSTRAINT ck_auth_transition_dl_hmac CHECK (transition_hmac ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT uq_auth_transition_dl_hmac UNIQUE (transition_hmac)
+);
+
 -- 仅 sms_owner 可读；业务角色只提交绑定 txid/session_user 的 HMAC，不能读取 key。
 CREATE TABLE audit_context_signing_key (
     key_kind text PRIMARY KEY CHECK (key_kind IN (
@@ -3070,9 +3086,11 @@ GRANT INSERT, UPDATE ON
 TO sms_auth;
 GRANT INSERT, UPDATE, DELETE ON external_role_mapping TO sms_auth;
 GRANT INSERT ON audit_log TO sms_auth;
+GRANT INSERT ON auth_transition_dead_letter TO sms_auth;
 GRANT USAGE, SELECT ON SEQUENCE
     user_account_id_seq, auth_provider_id_seq, auth_identity_id_seq,
-    external_role_mapping_id_seq, password_change_token_id_seq, audit_log_id_seq
+    external_role_mapping_id_seq, password_change_token_id_seq, audit_log_id_seq,
+    auth_transition_dead_letter_id_seq
 TO sms_auth;
 
 -- API 消息受理、管理页面与运行控制；账号表写入仍只属于 sms_auth。

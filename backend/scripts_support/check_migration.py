@@ -987,6 +987,12 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
            AND has_table_privilege('sms_auth','password_change_token','INSERT')
            AND has_table_privilege('sms_auth','password_change_token','UPDATE')
            AND NOT has_table_privilege('sms_auth','audit_log','SELECT')
+           AND has_table_privilege('sms_auth','auth_transition_dead_letter','INSERT')
+           AND NOT has_table_privilege('sms_auth','auth_transition_dead_letter','SELECT')
+           AND NOT has_table_privilege('sms_auth','auth_transition_dead_letter','UPDATE')
+           AND NOT has_table_privilege('sms_auth','auth_transition_dead_letter','DELETE')
+           AND has_sequence_privilege(
+             'sms_auth','auth_transition_dead_letter_id_seq','USAGE')
            AND NOT has_table_privilege('sms_auth','password_change_token','DELETE')
            AND NOT has_table_privilege('sms_auth','password_change_token','TRUNCATE')
            AND has_sequence_privilege(
@@ -1169,6 +1175,12 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
             database,
             role,
             "UPDATE audit_log SET actor=actor",
+        )
+        assert_role_sql_denied(
+            container,
+            database,
+            role,
+            "SELECT id FROM auth_transition_dead_letter LIMIT 1",
         )
 
 

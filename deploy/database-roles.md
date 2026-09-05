@@ -77,9 +77,10 @@ Compose 启动顺序固定为：
 `Settings.database_url_for()` 提供，调用方不得传入任意用户名或密码路径。
 
 API 容器的默认 `DB_RUNTIME_ROLE=accept`，但认证子系统必须按子职责显式使用
-`database_url_for("auth")`：锁定/IP 封禁审计与认证阈值快照走 `sms_auth`，
-不得把这些写入扩大到 `sms_accept`。生产缺失 `db_auth_password` 时启动/readyz
-失败关闭。
+`database_url_for("auth")`：锁定/IP 封禁审计、Transition 死信与认证阈值快照走
+`sms_auth`，不得把这些写入扩大到 `sms_accept`。`sms_auth` 对
+`auth_transition_dead_letter` 只有 INSERT（加序列 USAGE/SELECT），没有表级
+SELECT/UPDATE/DELETE。生产缺失 `db_auth_password` 时启动/readyz 失败关闭。
 
 ## 验证与回滚
 

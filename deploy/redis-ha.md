@@ -62,7 +62,7 @@ CA、certificate、canonical private key，运行整套预检后通过普通受�
 | 故障域 | 客户端 ACL 用户 | 数据 | 允许消费者 | 故障语义 |
 |---|---|---|---|---|
 | broker | `sms_broker` | Celery 队列与结果 | workers、beat、outbox-dispatcher | PostgreSQL Outbox 保留待发布事件；不得改变认证判断 |
-| auth | `sms_auth` | 登录限流、会话撤销、step-up | api | 不可用时登录、JWT 校验和高风险操作 fail closed |
+| auth | `sms_auth` | 登录限流、会话撤销、step-up、锁定/封禁 Transition 信封 | api | 不可用时登录、JWT 校验和高风险操作 fail closed |
 | control | `sms_control` | 配额/频控/幂等/业务锁/运行投影 | api、workers、beat | PostgreSQL 事实账本不丢；恢复后重建投影 |
 
 ## Phase 0 单生产 VM 三实例风险接受边界
@@ -106,7 +106,7 @@ API 容器不挂载 `redis_broker_password`，worker-callback 不挂载 `redis_a
 
 - 每个域至少跨两个故障区，启用自动主从切换；维护窗前验证客户端 DNS/endpoint 在切换后保持稳定。
 - auth/control 启用 AOF `everysec` 或托管服务等价持久化、加密快照和跨区域副本；broker 按 Outbox 可重放边界设置同等级或更强持久化。
-- `maxmemory-policy=noeviction`；达到容量阈值时明确失败并告警，不得静默驱逐会话撤销、限流或配额键。
+- `maxmemory-policy=noeviction`；达到容量阈值时明确失败并告警，不得静默驱逐会话撤销、限流、配额键或未 ACK 的认证 Transition 信封。应用 ACL 不能 `CONFIG GET`，该合同由 `deploy/redis-domain-entrypoint.sh` 与部署测试强制。auth ACL 额外允许 `SCAN`/`ZSCORE`，仅用于信封完整性对账，仍禁止 `KEYS`/`FLUSH*`。
 - 禁止公网入口；安全组只允许对应应用子网。传输层使用托管服务 TLS 与 CA 校验，证书到期在 30/14/7 天告警。
 - 连接预算按 API/worker/beat/outbox 进程数核算，至少保留 20% 管理与切换余量。
 

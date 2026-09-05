@@ -147,7 +147,11 @@ metrics_gate(){
     sms_uncertain_effect_oldest_pending_seconds \
     sms_uncertain_effect_child_recovered \
     auth_transition_created_total auth_transition_audit_success_total \
-    auth_transition_audit_failure_total auth_admit_total \
+    auth_transition_audit_failure_total auth_transition_orphan_total \
+    auth_transition_integrity_repair_total \
+    auth_transition_envelope_invalid_total \
+    auth_transition_pending_without_due auth_transition_due_without_payload \
+    auth_transition_dead_letter_total auth_admit_total \
     auth_policy_cache_hit_total auth_policy_cache_miss_total \
     auth_policy_load_failure_total auth_policy_snapshot_age_seconds \
     auth_guard_db_queries_total; do

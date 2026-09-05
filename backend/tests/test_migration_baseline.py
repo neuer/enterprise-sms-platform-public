@@ -1048,6 +1048,24 @@ def test_admission_recovery_hold_is_expand_only() -> None:
     assert "return" in source.split("def downgrade", 1)[1]
 
 
+def test_auth_transition_dead_letter_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0106_auth_transition_dead_letter.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.92：" in schema
+    for contract in (schema, source):
+        assert "auth_transition_dead_letter" in contract
+        assert "ck_auth_transition_dl_reason" in contract
+        assert "missing_hash" in contract
+        assert "incomplete_envelope" in contract
+        assert "id_mismatch" in contract
+    assert 'revision = "0106_auth_transition_dead_letter"' in source
+    assert 'down_revision = "0105_admission_recovery_hold"' in source
+    assert "DELETE FROM" not in source
+    assert "return" in source.split("def downgrade", 1)[1]
+
+
 def test_idempotency_claim_lease_lifecycle_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0099_idempotency_claim_lease_lifecycle.py"
