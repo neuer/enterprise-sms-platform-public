@@ -18,22 +18,19 @@ from app.settings import Settings, get_settings
 
 RECOVERY_BUDGET_LUA = """
 local t = redis.call('TIME')
-local now_sec = tonumber(t[1])
-local last = tonumber(redis.call('HGET', KEYS[1], 'sec'))
-if last ~= nil and now_sec < last then
-  return 0
-end
-if last == nil or last ~= now_sec then
-  redis.call('HSET', KEYS[1], 'sec', now_sec, 'b', 0, 'r', 0, 's', 0)
-end
-local b = tonumber(redis.call('HGET', KEYS[1], 'b')) + tonumber(ARGV[1])
-local r = tonumber(redis.call('HGET', KEYS[1], 'r')) + tonumber(ARGV[2])
-local s = tonumber(redis.call('HGET', KEYS[1], 's')) + tonumber(ARGV[3])
+local sec = tostring(t[1])
+local bk = KEYS[1] .. ':' .. sec .. ':b'
+local rk = KEYS[1] .. ':' .. sec .. ':r'
+local sk = KEYS[1] .. ':' .. sec .. ':s'
+local b = tonumber(redis.call('INCRBY', bk, ARGV[1]))
+local r = tonumber(redis.call('INCRBY', rk, ARGV[2]))
+local s = tonumber(redis.call('INCRBY', sk, ARGV[3]))
+redis.call('EXPIRE', bk, 3)
+redis.call('EXPIRE', rk, 3)
+redis.call('EXPIRE', sk, 3)
 if b > tonumber(ARGV[4]) or r > tonumber(ARGV[5]) or s > tonumber(ARGV[6]) then
   return 0
 end
-redis.call('HSET', KEYS[1], 'b', b, 'r', r, 's', s)
-redis.call('EXPIRE', KEYS[1], tonumber(ARGV[7]))
 return 1
 """
 
@@ -276,7 +273,7 @@ class SqlSendAdmissionRepository:
         if epoch < 1 or batches < 1 or recipients < 1 or segments < 1:
             raise ValueError("recovery budget inputs must be positive")
         try:
-            async with asyncio.timeout(self.control_timeout_s):
+            async with asyncio.timeout(max(self.control_timeout_s, 2.0)):
                 allowed = await self.redis.eval(
                     RECOVERY_BUDGET_LUA,
                     1,
@@ -287,7 +284,6 @@ class SqlSendAdmissionRepository:
                     str(limits.recovery_accept_batches_per_second),
                     str(limits.recovery_accept_recipients_per_second),
                     str(limits.recovery_accept_segments_per_second),
-                    "3",
                 )
         except Exception as exc:
             raise SendAdmissionUnavailable() from exc

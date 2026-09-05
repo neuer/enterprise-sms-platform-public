@@ -641,9 +641,12 @@ class SendAdmissionGuard:
         consume = getattr(self.repository, "consume_recovery_budget", None)
         if consume is None:
             raise SendAdmissionUnavailable()
+        epoch = snap.state_epoch
+        if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 1:
+            raise SendAdmissionUnavailable()
         try:
             allowed = await consume(
-                epoch=snap.state_epoch,
+                epoch=epoch,
                 batches=1,
                 recipients=recipients,
                 segments=max(1, int(estimated_segments)),

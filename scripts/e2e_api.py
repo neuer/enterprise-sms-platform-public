@@ -420,6 +420,11 @@ class UatSuite:
         actual_code = self._code(response)
         if response.status != status or (code is not None and actual_code != code):
             suffix = f" code={actual_code}" if actual_code is not None else ""
+            if isinstance(response.data, dict):
+                detail = response.data.get("detail")
+                reason = detail.get("reason") if isinstance(detail, dict) else None
+                if isinstance(reason, str) and re.fullmatch(r"[a-z0-9_]{1,64}", reason):
+                    suffix += f" reason={reason}"
             raise UatFailure(f"UAT-{case_id} expected HTTP {status}, got {response.status}{suffix}")
         if response.data is None:
             return {}
@@ -1430,6 +1435,9 @@ class UatSuite:
             raise UatFailure("UAT-17 uncertain batch was resent")
 
     def case_18(self) -> None:
+        self._wait_send_pipeline_idle("18/precondition")
+        self._force_resume_and_verify_unpaused("18")
+        self._wait_admission_ready_for_volume("18")
         suffix = self._phone_bucket % 10_000
         failed_phone = f"1990000{suffix:04d}"
         data = self._expect(
