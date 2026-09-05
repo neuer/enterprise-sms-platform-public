@@ -812,6 +812,10 @@ async def test_recovery_repository_selects_only_recoverable_work(
     assert "submitting_since=NULL" in recovery_sql
     assert "c.submitting_since<now()-interval '5 minutes'" in recovery_sql
     assert "b.status IN ('queued','sending')" in recovery_sql
+    assert "AND c.status='submitting'" in recovery_sql
+    assert "c.route_generation=a.generation" in recovery_sql
+    assert "outcome='inconsistent'" in recovery_sql
+    assert "c.status='submitted'" in recovery_sql
     assert "b.updated_at" not in recovery_sql
     assert "5 minutes" in recovery_sql
     enqueue_sql = connection.calls[2][0]

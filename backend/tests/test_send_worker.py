@@ -9,7 +9,12 @@ import app.tasks.send as send_module
 from app.services.vendor_control_state import VendorControlStateUnavailable
 from app.services.vendor_test_budget import SubmissionClaim, SubmissionClaimStatus
 from app.services.vendor_test_guard import VendorTestRecipientDenied
-from app.tasks.send import ChunkPayload, SendWorker
+from app.tasks.send import (
+    ChunkPayload,
+    FinalizeKind,
+    FinalizeReport,
+    SendWorker,
+)
 from app.vendor.routing import PRIMARY_VENDOR_ID, VendorAttempt, VendorRouter
 from app.vendor.zhihui import VendorApiError, VendorProtocolError, VendorTransportError
 
@@ -79,6 +84,62 @@ class FakeStore:
 
     async def mark_submitted(self, chunk_id: int, task_id: str) -> None:
         self.events.append(("submitted", (chunk_id, task_id)))
+
+    async def complete_vendor_attempt(
+        self,
+        attempt_id: int,
+        *,
+        outcome: str,
+        safe_to_failover: bool = False,
+        vendor_code: int | None = None,
+    ) -> bool:
+        self.events.append(("attempt", (attempt_id, outcome)))
+        return True
+
+    async def finalize_vendor_attempt(
+        self,
+        attempt_id: int,
+        chunk_id: int,
+        *,
+        expected_generation: int,
+        result: str,
+        vendor_task_id: str | None = None,
+        vendor_code: int | None = None,
+        safe_to_failover: bool = False,
+        retry_delay_s: int | None = None,
+        expected_retry_count: int | None = None,
+        batch_id: int | None = None,
+        balance_blocked: bool = False,
+    ) -> FinalizeReport:
+        if result == "submitted":
+            await self.mark_submitted(chunk_id, vendor_task_id or "")
+        elif result == "uncertain":
+            await self.mark_uncertain(chunk_id)
+        elif result == "retry_scheduled":
+            scheduled = await self.schedule_retry(
+                chunk_id,
+                vendor_code or 0,
+                expected_retry_count or 0,
+                retry_delay_s or 1,
+            )
+            if not scheduled:
+                return FinalizeReport(FinalizeKind.LOST_CAS, result)
+        elif result == "delayed":
+            await self.delay(chunk_id, vendor_code or 0, retry_delay_s or 1)
+        elif result == "paused":
+            if balance_blocked:
+                await self.balance_blocked(batch_id or 0, chunk_id)
+            else:
+                await self.pause_blocked(chunk_id, vendor_code or 0)
+        elif result in {"rejected", "failed"} and not safe_to_failover:
+            await self.mark_failed(chunk_id, vendor_code or 0, result)
+        await self.complete_vendor_attempt(
+            attempt_id,
+            outcome=result,
+            safe_to_failover=safe_to_failover,
+            vendor_code=vendor_code,
+        )
+        return FinalizeReport(FinalizeKind.APPLIED, result)
 
     async def mark_failed(self, chunk_id: int, code: int, message: str) -> None:
         self.failed_messages.append(message)

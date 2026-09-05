@@ -1342,3 +1342,18 @@
   看起来“还能用”却破坏 AUTH-R3 会话合同。
 - 影响：`frontend/src/api/refreshLock.ts`、`sessionTokens.ts`、`stores/session.ts`、
   登录页提示与前端会话测试。#585 / #595 跟踪项保持开放。
+
+## D102 供应商结果必须在单一事务内终结，禁止把 submitted 降为 uncertain
+
+- 决策：HTTP 之后的 attempt、chunk、message、live-test usage 与必要 batch 聚合必须
+  由 `finalize_vendor_attempt` 在同一 PostgreSQL 事务内 CAS 完成。调用方必须分类
+  CAS 失败：同结果幂等、不同结果失败关闭、恢复器已标 uncertain 则报告 UNCERTAIN，
+  不得在数据库未接受 submitted 时返回 SUBMITTED。
+- 恢复器只处理 `attempt=invoking AND chunk=submitting AND generation 匹配` 且租约
+  超过 15 分钟的组合；该阈值必须大于供应商 10s 绝对超时 + 持久化预算 + 调度抖动。
+  `chunk=submitted + attempt=invoking` 有 submitted_at/task 伪名/sent message 时修复
+  attempt；无法证明则标 `inconsistent`，禁止自动重发或降级 chunk。
+- 原因：先更新 chunk 再更新 attempt 会在两事务之间留下可被 stale recovery 误伤的
+  已提交短信，进而触发错误的人工重发。
+- 影响：schema v1.6.84/0098、`send.py` / `send_repository.py`、`reconcile_repository.py`。
+  #628/#630 仍独立；本决策不解决 COMMIT 响应丢失或 Claim 租约续期。

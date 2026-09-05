@@ -64,7 +64,73 @@ class SubmitOutcome(StrEnum):
     NO_OP_ALREADY_TERMINAL = "no_op_already_terminal"
 
 
+class FinalizeKind(StrEnum):
+    """供应商原子终结的 CAS 分类；调用方不得忽略。"""
+
+    APPLIED = "applied"
+    ALREADY_FINALIZED_SAME_RESULT = "already_finalized_same_result"
+    FINALIZED_DIFFERENT_RESULT = "finalized_different_result"
+    RECOVERY_MARKED_UNCERTAIN = "recovery_marked_uncertain"
+    STATE_CORRUPTION = "state_corruption"
+    LOST_CAS = "lost_cas"
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizeReport:
+    """finalize_vendor_attempt 的权威结果。"""
+
+    kind: FinalizeKind
+    result: str
+
+
 SUBMIT_OUTCOME_LABELS = tuple(item.value for item in SubmitOutcome)
+
+
+def classify_finalize_conflict(
+    *,
+    attempt_outcome: str,
+    chunk_status: str,
+    requested: str,
+) -> FinalizeKind:
+    """CAS 未更新 invoking 时，按权威组合分类，禁止把不同结果报成成功。"""
+
+    if attempt_outcome == requested:
+        if requested == "submitted" and chunk_status == "submitted":
+            return FinalizeKind.ALREADY_FINALIZED_SAME_RESULT
+        if requested == "uncertain" and chunk_status == "uncertain":
+            return FinalizeKind.ALREADY_FINALIZED_SAME_RESULT
+        if requested in {"retry_scheduled", "delayed", "paused"} and chunk_status == "retrying":
+            return FinalizeKind.ALREADY_FINALIZED_SAME_RESULT
+        if requested in {"rejected", "failed"} and chunk_status == "failed":
+            return FinalizeKind.ALREADY_FINALIZED_SAME_RESULT
+        if requested == "rejected" and chunk_status == "submitting":
+            return FinalizeKind.ALREADY_FINALIZED_SAME_RESULT
+        return FinalizeKind.STATE_CORRUPTION
+    if attempt_outcome == "uncertain" or chunk_status == "uncertain":
+        return FinalizeKind.RECOVERY_MARKED_UNCERTAIN
+    if requested == "submitted" and chunk_status == "submitted":
+        return FinalizeKind.STATE_CORRUPTION
+    if attempt_outcome in {"submitted", "uncertain", "failed", "inconsistent"}:
+        return FinalizeKind.FINALIZED_DIFFERENT_RESULT
+    return FinalizeKind.STATE_CORRUPTION
+
+
+def submit_outcome_from_finalize(
+    report: FinalizeReport,
+    requested: SubmitOutcome,
+) -> SubmitOutcome:
+    """CAS 失败时不得报告 SUBMITTED。"""
+
+    if report.kind in {
+        FinalizeKind.APPLIED,
+        FinalizeKind.ALREADY_FINALIZED_SAME_RESULT,
+    }:
+        return requested
+    if report.kind is FinalizeKind.RECOVERY_MARKED_UNCERTAIN:
+        return SubmitOutcome.UNCERTAIN
+    if requested is SubmitOutcome.RETRY_SCHEDULED:
+        return SubmitOutcome.STALE
+    return SubmitOutcome.UNCERTAIN
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +223,22 @@ class ChunkStore(Protocol):
     ) -> SubmissionClaim: ...
 
     async def mark_submitted(self, chunk_id: int, task_id: str) -> None: ...
+
+    async def finalize_vendor_attempt(
+        self,
+        attempt_id: int,
+        chunk_id: int,
+        *,
+        expected_generation: int,
+        result: str,
+        vendor_task_id: str | None = None,
+        vendor_code: int | None = None,
+        safe_to_failover: bool = False,
+        retry_delay_s: int | None = None,
+        expected_retry_count: int | None = None,
+        batch_id: int | None = None,
+        balance_blocked: bool = False,
+    ) -> FinalizeReport: ...
 
     async def mark_failed(self, chunk_id: int, code: int, message: str) -> None: ...
 
@@ -477,26 +559,32 @@ class SendWorker:
         self,
         chunk: ChunkPayload,
         error: VendorApiError,
+        *,
+        persist_chunk: bool = True,
     ) -> SubmitOutcome:
         policy = error.policy
         if policy.balance_blocked:
-            await self.store.balance_blocked(chunk.batch_id, chunk.chunk_id)
+            if persist_chunk:
+                await self.store.balance_blocked(chunk.batch_id, chunk.chunk_id)
             await self.store.pause_queues(error.code)
             await self._record_failure(chunk, error.code)
             return SubmitOutcome.PAUSED
         if policy.delay_s is not None:
-            await self.store.delay(chunk.chunk_id, error.code, policy.delay_s)
+            if persist_chunk:
+                await self.store.delay(chunk.chunk_id, error.code, policy.delay_s)
             return SubmitOutcome.DELAYED
         if policy.pause_queues:
-            await self.store.pause_blocked(chunk.chunk_id, error.code)
+            if persist_chunk:
+                await self.store.pause_blocked(chunk.chunk_id, error.code)
             await self.store.pause_queues(error.code)
             await self._record_failure(chunk, error.code)
             return SubmitOutcome.PAUSED
-        await self.store.mark_failed(
-            chunk.chunk_id,
-            error.code,
-            error.safe_message,
-        )
+        if persist_chunk:
+            await self.store.mark_failed(
+                chunk.chunk_id,
+                error.code,
+                error.safe_message,
+            )
         await self._record_failure(chunk, error.code)
         return SubmitOutcome.FAILED
 
@@ -527,6 +615,40 @@ class SendWorker:
             outcome=outcome,
             safe_to_failover=safe_to_failover,
             vendor_code=vendor_code,
+        )
+
+    async def _finalize_invoke(
+        self,
+        chunk: ChunkPayload,
+        *,
+        vendor_id: str,
+        generation: int,
+        attempt_id: int | None,
+        result: str,
+        vendor_task_id: str | None = None,
+        vendor_code: int | None = None,
+        safe_to_failover: bool = False,
+        retry_delay_s: int | None = None,
+        expected_retry_count: int | None = None,
+        balance_blocked: bool = False,
+    ) -> FinalizeReport | None:
+        """有 invoking 行时走原子终结；否则保持旧的分步路径。"""
+
+        finalizer = getattr(self.store, "finalize_vendor_attempt", None)
+        if attempt_id is None or finalizer is None:
+            return None
+        return await finalizer(
+            attempt_id,
+            chunk.chunk_id,
+            expected_generation=generation,
+            result=result,
+            vendor_task_id=vendor_task_id,
+            vendor_code=vendor_code,
+            safe_to_failover=safe_to_failover,
+            retry_delay_s=retry_delay_s,
+            expected_retry_count=expected_retry_count,
+            batch_id=chunk.batch_id,
+            balance_blocked=balance_blocked,
         )
 
     async def submit(
@@ -628,19 +750,43 @@ class SendWorker:
                     custom_id=chunk.custom_id,
                 )
             except (VendorTransportError, VendorProtocolError):
-                await self._persist_attempt(
+                report = await self._finalize_invoke(
                     chunk,
                     vendor_id=vendor_id,
                     generation=generation,
-                    outcome="uncertain",
                     attempt_id=attempt_id,
+                    result="uncertain",
                 )
-                await self.store.mark_uncertain(chunk.chunk_id)
-                return SubmitOutcome.UNCERTAIN
+                if report is None:
+                    await self._persist_attempt(
+                        chunk,
+                        vendor_id=vendor_id,
+                        generation=generation,
+                        outcome="uncertain",
+                        attempt_id=attempt_id,
+                    )
+                    await self.store.mark_uncertain(chunk.chunk_id)
+                    return SubmitOutcome.UNCERTAIN
+                return submit_outcome_from_finalize(report, SubmitOutcome.UNCERTAIN)
             except VendorApiError as error:
                 policy = error.policy
                 if policy.retry_delays_s and retry_index < len(policy.retry_delays_s):
                     delay = policy.retry_delays_s[retry_index]
+                    report = await self._finalize_invoke(
+                        chunk,
+                        vendor_id=vendor_id,
+                        generation=generation,
+                        attempt_id=attempt_id,
+                        result="retry_scheduled",
+                        vendor_code=error.code,
+                        retry_delay_s=delay,
+                        expected_retry_count=retry_index,
+                    )
+                    if report is not None:
+                        return submit_outcome_from_finalize(
+                            report,
+                            SubmitOutcome.RETRY_SCHEDULED,
+                        )
                     if not await self.store.schedule_retry(
                         chunk.chunk_id,
                         error.code,
@@ -664,6 +810,17 @@ class SendWorker:
                             await self.submit(child, lane=lane, allow_split=False)
                         return SubmitOutcome.SPLIT
                 if policy.delay_s is not None:
+                    report = await self._finalize_invoke(
+                        chunk,
+                        vendor_id=vendor_id,
+                        generation=generation,
+                        attempt_id=attempt_id,
+                        result="delayed",
+                        vendor_code=error.code,
+                        retry_delay_s=policy.delay_s,
+                    )
+                    if report is not None:
+                        return submit_outcome_from_finalize(report, SubmitOutcome.DELAYED)
                     await self.store.delay(chunk.chunk_id, error.code, policy.delay_s)
                     await self._persist_attempt(
                         chunk,
@@ -675,17 +832,32 @@ class SendWorker:
                     )
                     return SubmitOutcome.DELAYED
                 hold_like = policy.balance_blocked or policy.pause_queues
-                await self._persist_attempt(
+                report = await self._finalize_invoke(
                     chunk,
                     vendor_id=vendor_id,
                     generation=generation,
-                    outcome="paused" if hold_like else "rejected",
                     attempt_id=attempt_id,
-                    safe_to_failover=policy.safe_to_failover,
+                    result="paused" if hold_like else "rejected",
                     vendor_code=error.code,
+                    safe_to_failover=policy.safe_to_failover,
+                    balance_blocked=policy.balance_blocked,
                 )
+                if report is None:
+                    await self._persist_attempt(
+                        chunk,
+                        vendor_id=vendor_id,
+                        generation=generation,
+                        outcome="paused" if hold_like else "rejected",
+                        attempt_id=attempt_id,
+                        safe_to_failover=policy.safe_to_failover,
+                        vendor_code=error.code,
+                    )
                 if hold_like:
-                    return await self._apply_terminal_api_error(chunk, error)
+                    return await self._apply_terminal_api_error(
+                        chunk,
+                        error,
+                        persist_chunk=report is None,
+                    )
                 attempts.append(
                     VendorAttempt(
                         vendor_id,
@@ -713,25 +885,54 @@ class SendWorker:
                         lease_epoch = await self._token(lane, vendor_id)
                         lease_vendor = vendor_id
                         if lease_epoch is None:
-                            return await self._apply_terminal_api_error(chunk, error)
+                            return await self._apply_terminal_api_error(
+                                chunk,
+                                error,
+                                persist_chunk=report is None,
+                            )
                         continue
-                return await self._apply_terminal_api_error(chunk, error)
+                return await self._apply_terminal_api_error(
+                    chunk,
+                    error,
+                    persist_chunk=report is None,
+                )
             except Exception:
                 if vendor_invoked:
-                    await self._persist_attempt(
+                    report = await self._finalize_invoke(
                         chunk,
                         vendor_id=vendor_id,
                         generation=generation,
-                        outcome="uncertain",
                         attempt_id=attempt_id,
+                        result="uncertain",
                     )
-                    await self.store.mark_uncertain(chunk.chunk_id)
+                    if report is None:
+                        await self._persist_attempt(
+                            chunk,
+                            vendor_id=vendor_id,
+                            generation=generation,
+                            outcome="uncertain",
+                            attempt_id=attempt_id,
+                        )
+                        await self.store.mark_uncertain(chunk.chunk_id)
                 else:
                     await self.store.release_unsent(chunk.chunk_id)
                     if lease_epoch is not None:
                         await self._refund_token(lease_epoch, lease_vendor)
                 raise
             else:
+                report = await self._finalize_invoke(
+                    chunk,
+                    vendor_id=vendor_id,
+                    generation=generation,
+                    attempt_id=attempt_id,
+                    result="submitted",
+                    vendor_task_id=task_id,
+                )
+                if report is not None:
+                    outcome = submit_outcome_from_finalize(report, SubmitOutcome.SUBMITTED)
+                    if outcome is SubmitOutcome.SUBMITTED:
+                        await self._record_success()
+                    return outcome
                 try:
                     await self.store.mark_submitted(chunk.chunk_id, task_id)
                 except Exception:

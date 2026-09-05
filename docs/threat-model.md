@@ -80,7 +80,8 @@ secret。每个系统只能消费自己服务商的 GetReport/GetReply。
 
 1. Provider A 超时或连接中断后，chunk 必须进入 `uncertain`，禁止自动调用 Provider B。
 2. 只有调用前确定性不可用，或 A 协议明确拒绝且 `safe_to_failover=true` 时才允许选 B。
-3. 同一 chunk 在全部供应商 attempt 中最多一次 `submitted`/`uncertain`；回执按 vendor
+3. 同一 chunk 在全部供应商 attempt 中最多一次 `submitted`/`uncertain`/`inconsistent`；
+   attempt 与 chunk 必须同一事务终结，已 submitted 的 chunk 不得被 stale invoking 降级；回执按 vendor
    identity 去重，拒绝后的迟到回执不得改写另一供应商结果。
 4. 人工换供应商必须先走 uncertain 双人处置并创建新批次，不得复用旧 chunk。
 

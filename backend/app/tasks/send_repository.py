@@ -33,7 +33,12 @@ from app.services.vendor_test_recipient_repository import (
 )
 from app.settings import Settings, get_settings
 from app.tasks import celery_app
-from app.tasks.send import ChunkPayload
+from app.tasks.send import (
+    ChunkPayload,
+    FinalizeKind,
+    FinalizeReport,
+    classify_finalize_conflict,
+)
 from app.vendor.identifiers import vendor_identifier_pseudonym
 from app.vendor.routing import VendorAttempt
 
@@ -1213,7 +1218,8 @@ class SqlChunkStore:
                     )
                 ).mappings().all()
                 if any(
-                    str(row["outcome"]) in {"submitted", "uncertain", "invoking"}
+                    str(row["outcome"])
+                    in {"submitted", "uncertain", "invoking", "inconsistent"}
                     for row in history
                 ):
                     raise RuntimeError("vendor attempt already irreversible")
@@ -1266,6 +1272,284 @@ class SqlChunkStore:
                 )
         finally:
             await engine.dispose()
+
+    async def finalize_vendor_attempt(
+        self,
+        attempt_id: int,
+        chunk_id: int,
+        *,
+        expected_generation: int,
+        result: str,
+        vendor_task_id: str | None = None,
+        vendor_code: int | None = None,
+        safe_to_failover: bool = False,
+        retry_delay_s: int | None = None,
+        expected_retry_count: int | None = None,
+        batch_id: int | None = None,
+        balance_blocked: bool = False,
+    ) -> FinalizeReport:
+        """在同一事务内 CAS 终结 attempt 与 chunk，避免 submitted/invoking 撕裂。"""
+
+        if result not in {
+            "submitted",
+            "uncertain",
+            "retry_scheduled",
+            "delayed",
+            "paused",
+            "rejected",
+            "failed",
+            "cancelled_before_invoke",
+        }:
+            raise ValueError("unsupported vendor finalize result")
+        task_pseudonym = (
+            vendor_identifier_pseudonym(
+                self.crypto,
+                vendor_task_id,
+                domain="vendor-task-id",
+            )
+            if result == "submitted" and vendor_task_id
+            else None
+        )
+        enqueue: tuple[int, str, int] | None = None
+        report = FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                attempt = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT id, chunk_id, generation, outcome
+                            FROM sms_vendor_attempt
+                            WHERE id=:id
+                            FOR UPDATE
+                            """
+                        ),
+                        {"id": attempt_id},
+                    )
+                ).mappings().one_or_none()
+                if attempt is None:
+                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
+                if int(attempt["chunk_id"]) != chunk_id:
+                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
+                if int(attempt["generation"]) != expected_generation:
+                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
+                chunk = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT c.id, c.status, c.batch_id, c.route_generation,
+                                   b.category
+                            FROM sms_chunk c
+                            JOIN sms_batch b ON b.id=c.batch_id
+                            WHERE c.id=:id
+                            FOR UPDATE OF c
+                            """
+                        ),
+                        {"id": chunk_id},
+                    )
+                ).mappings().one_or_none()
+                if chunk is None:
+                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
+                await connection.execute(
+                    text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
+                    {"id": int(chunk["batch_id"])},
+                )
+                if str(attempt["outcome"]) != "invoking":
+                    return FinalizeReport(
+                        classify_finalize_conflict(
+                            attempt_outcome=str(attempt["outcome"]),
+                            chunk_status=str(chunk["status"]),
+                            requested=result,
+                        ),
+                        result,
+                    )
+                updated = (
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE sms_vendor_attempt
+                            SET outcome=:outcome,
+                                safe_to_failover=:safe_to_failover,
+                                vendor_code=:vendor_code,
+                                updated_at=now()
+                            WHERE id=:id AND outcome='invoking'
+                            RETURNING id
+                            """
+                        ),
+                        {
+                            "id": attempt_id,
+                            "outcome": result,
+                            "safe_to_failover": safe_to_failover,
+                            "vendor_code": vendor_code,
+                        },
+                    )
+                ).scalar_one_or_none()
+                if updated is None:
+                    current = (
+                        await connection.execute(
+                            text(
+                                """
+                                SELECT a.outcome, c.status
+                                FROM sms_vendor_attempt a
+                                JOIN sms_chunk c ON c.id=a.chunk_id
+                                WHERE a.id=:id
+                                """
+                            ),
+                            {"id": attempt_id},
+                        )
+                    ).mappings().one()
+                    return FinalizeReport(
+                        classify_finalize_conflict(
+                            attempt_outcome=str(current["outcome"]),
+                            chunk_status=str(current["status"]),
+                            requested=result,
+                        ),
+                        result,
+                    )
+                if result == "submitted":
+                    submitted = await connection.execute(
+                        text(
+                            """
+                            UPDATE sms_chunk SET status='submitted',
+                              vendor_task_id=:task_id, submitted_at=now(),
+                              submitting_since=NULL, retry_not_before=NULL
+                            WHERE id=:id AND status='submitting'
+                            RETURNING id
+                            """
+                        ),
+                        {"id": chunk_id, "task_id": task_pseudonym},
+                    )
+                    if submitted.scalar_one_or_none() is None:
+                        return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                    await settle_live_test_attempt(connection, chunk_id, "confirmed")
+                    await connection.execute(
+                        text("UPDATE sms_message SET status='sent' WHERE chunk_id=:id"),
+                        {"id": chunk_id},
+                    )
+                elif result == "uncertain":
+                    transitioned = await connection.execute(
+                        text(
+                            "UPDATE sms_chunk SET status='uncertain',"
+                            "uncertain_since=COALESCE(submitting_since,now()),"
+                            "submitting_since=NULL,retry_not_before=NULL "
+                            "WHERE id=:id AND status='submitting' RETURNING id"
+                        ),
+                        {"id": chunk_id},
+                    )
+                    if transitioned.scalar_one_or_none() is None:
+                        return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                    await settle_live_test_attempt(connection, chunk_id, "uncertain")
+                elif result in {"retry_scheduled", "delayed"}:
+                    delay_s = int(retry_delay_s or 1)
+                    if result == "retry_scheduled":
+                        changed = await connection.execute(
+                            text(
+                                "UPDATE sms_chunk c SET status='retrying',"
+                                "vendor_code=:code,retry_count=retry_count+1,"
+                                "submitting_since=NULL,"
+                                "retry_not_before=now()+make_interval(secs=>:delay_s) "
+                                "FROM sms_batch b "
+                                "WHERE c.id=:id AND c.status='submitting' "
+                                "AND c.retry_count=:expected_retry_count "
+                                "AND c.retry_count<5 AND b.id=c.batch_id "
+                                "RETURNING b.category"
+                            ),
+                            {
+                                "id": chunk_id,
+                                "code": vendor_code,
+                                "expected_retry_count": expected_retry_count,
+                                "delay_s": delay_s,
+                            },
+                        )
+                    else:
+                        changed = await connection.execute(
+                            text(
+                                """
+                                UPDATE sms_chunk c SET status='retrying',
+                                  vendor_code=:code, retry_count=retry_count+1,
+                                  submitting_since=NULL,
+                                  retry_not_before=now()+make_interval(secs=>:delay_s)
+                                FROM sms_batch b
+                                WHERE c.id=:id AND c.status='submitting'
+                                  AND b.id=c.batch_id AND c.retry_count<8
+                                RETURNING b.category
+                                """
+                            ),
+                            {"id": chunk_id, "code": vendor_code, "delay_s": delay_s},
+                        )
+                    category = changed.scalar_one_or_none()
+                    if category is None:
+                        return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                    await settle_live_test_attempt(connection, chunk_id, "released")
+                    enqueue = (chunk_id, str(category), delay_s)
+                elif result == "paused":
+                    if balance_blocked:
+                        transitioned = await connection.execute(
+                            text(
+                                "UPDATE sms_chunk SET status='retrying',vendor_code=999,"
+                                "submitting_since=NULL,retry_not_before=now() "
+                                "WHERE id=:id AND status='submitting' RETURNING id"
+                            ),
+                            {"id": chunk_id},
+                        )
+                        if transitioned.scalar_one_or_none() is None:
+                            return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                        await settle_live_test_attempt(connection, chunk_id, "released")
+                        await connection.execute(
+                            text(
+                                "UPDATE sms_batch SET status='balance_blocked' WHERE id=:id"
+                            ),
+                            {"id": int(batch_id or chunk["batch_id"])},
+                        )
+                    else:
+                        transitioned = await connection.execute(
+                            text(
+                                "UPDATE sms_chunk SET status='retrying',vendor_code=:code,"
+                                "submitting_since=NULL,retry_not_before=now() "
+                                "WHERE id=:id AND status='submitting' RETURNING id"
+                            ),
+                            {"id": chunk_id, "code": vendor_code},
+                        )
+                        if transitioned.scalar_one_or_none() is None:
+                            return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                        await settle_live_test_attempt(connection, chunk_id, "released")
+                elif result in {"rejected", "failed"} and not safe_to_failover:
+                    failed = await connection.execute(
+                        text(
+                            """
+                            UPDATE sms_chunk SET status='failed',vendor_code=:code,
+                              vendor_msg=:message,submitting_since=NULL,
+                              retry_not_before=NULL
+                            WHERE id=:id AND status='submitting'
+                            RETURNING batch_id
+                            """
+                        ),
+                        {
+                            "id": chunk_id,
+                            "code": vendor_code,
+                            "message": result,
+                        },
+                    )
+                    transitioned_batch_id = failed.scalar_one_or_none()
+                    if transitioned_batch_id is None:
+                        return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                    await settle_live_test_attempt(connection, chunk_id, "released")
+                    await self._finalize_failed_messages(
+                        connection,
+                        chunk_id,
+                        int(transitioned_batch_id),
+                    )
+                report = FinalizeReport(FinalizeKind.APPLIED, result)
+        finally:
+            await engine.dispose()
+        if enqueue is not None and report.kind is FinalizeKind.APPLIED:
+            await self._enqueue_retry(
+                enqueue[0],
+                self.lane_for(enqueue[1]),
+                enqueue[2],
+            )
+        return report
 
     async def complete_vendor_attempt(
         self,
