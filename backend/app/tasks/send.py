@@ -808,6 +808,7 @@ class SendWorker:
                         for child in children:
                             await self.submit(child, lane=lane, allow_split=False)
                         return SubmitOutcome.SPLIT
+                    return SubmitOutcome.STALE
                 if policy.delay_s is not None:
                     report = await self._finalize_invoke(
                         chunk,

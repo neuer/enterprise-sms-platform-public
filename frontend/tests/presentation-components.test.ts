@@ -71,6 +71,13 @@ describe("共享语义展示组件", () => {
     })
     expect(queued.getComponent({ name: "ElTag" }).props("type")).toBe("info")
 
+    const splitBlocked = mount(StatusTag, {
+      props: { status: "split_capacity_blocked" },
+      global: { plugins: [ElementPlus] },
+    })
+    expect(splitBlocked.text()).toBe("拆分容量阻塞")
+    expect(splitBlocked.getComponent({ name: "ElTag" }).props("type")).toBe("warning")
+
     const future = mount(StatusTag, {
       props: { status: "future_state" },
       global: { plugins: [ElementPlus] },

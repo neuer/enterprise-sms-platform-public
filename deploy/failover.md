@@ -333,6 +333,9 @@ COMMIT 成功但 HTTP 响应丢失时，先查 `idempotency_claim.state=complete
 `send_inflight_balance` 必须持续等于活动 reservation 求和；任一侧更新 0 行时整事务
 回滚，并由 `reconcile_send_inflight_app` 按公式修复，禁止把聚合直接清零。守恒异常
 期间对应应用新发送失败关闭。
+供应商 1006 动态拆分必须在同一事务把 reservation/balance 净增加 1；容量不足时父分片
+进入 `split_capacity_blocked`，禁止再次调用已拒绝的供应商，由对账在余量释放后重试。
+占用分片数高于 materialized reservation 时只允许按公式扩容，不得收缩或清零。
 `biz_id` 只是关联证据；对应数据库幂等行已经随恢复点之后的数据丢失时，它本身不能阻止重复
 发送。恢复前必须建立以下 gap fence：
 

@@ -794,6 +794,8 @@ async def test_recovery_repository_selects_only_recoverable_work(
             FakeResult(),
             FakeResult(),
             FakeResult(),
+            FakeResult(),
+            FakeResult(),
         ]
     )
     engine = FakeEngine(connection)

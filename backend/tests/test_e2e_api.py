@@ -530,7 +530,10 @@ def test_fault_barrier_waits_for_queued_batches_and_chunks_that_can_still_send()
     assert "FROM sms_batch b" in barrier
     assert "b.status = 'queued'" in barrier
     assert "c.batch_id = b.id" in barrier
-    assert "c.status IN ('pending','submitting','retrying')" in barrier
+    assert (
+        "c.status IN ('pending','submitting','retrying','split_capacity_blocked')"
+        in barrier
+    )
     assert "b.status = 'sending'" not in barrier
 
 

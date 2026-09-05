@@ -40,6 +40,7 @@ export const STATUS_LABELS: Record<string, string> = {
   expired: "已过期",
   uncertain: "结果未知",
   unknown_terminal: "未知终态",
+  split_capacity_blocked: "拆分容量阻塞",
   balance_blocked: "余额阻断",
   unknown: "未知",
   dead: "终止重试",

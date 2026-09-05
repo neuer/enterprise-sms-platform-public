@@ -756,7 +756,7 @@ class UatSuite:
                 "OR EXISTS ("
                 "SELECT 1 FROM sms_chunk c "
                 "WHERE c.batch_id = b.id "
-                "AND c.status IN ('pending','submitting','retrying')"
+                "AND c.status IN ('pending','submitting','retrying','split_capacity_blocked')"
                 ")"
             )
             return True if count == 0 else None

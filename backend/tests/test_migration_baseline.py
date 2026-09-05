@@ -984,6 +984,33 @@ def test_inflight_balance_conservation_repairs_aggregate_only() -> None:
     assert "return" in source.split("def downgrade", 1)[1]
 
 
+def test_inflight_split_capacity_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0103_inflight_split_capacity.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.89：" in schema
+    for contract in (schema, source):
+        assert "send_chunk_occupying_states" in contract
+        assert "split_capacity_blocked" in contract
+        assert "uk_sms_chunk_split_child" in contract
+        assert "parent_chunk_id" in contract
+        assert "split_generation" in contract
+        assert "child_ordinal" in contract
+    assert 'revision = "0103_inflight_split_capacity"' in source
+    assert 'down_revision = "0102_auth_issue_policy_generation"' in source
+    assert "SET CONSTRAINTS ALL IMMEDIATE" in source
+    for contract in (schema, source):
+        assert "check_send_inflight_chunk_occupancy" in contract
+        assert "check_sms_chunk_split_children_complete" in contract
+        assert "trg_sms_chunk_inflight_occupancy" in contract
+        assert "SECURITY DEFINER" in contract
+        assert "search_path=pg_catalog,public" in contract
+    assert "DELETE FROM" not in source
+    assert "reserved_chunks = 0" not in source
+    assert "return" in source.split("def downgrade", 1)[1]
+
+
 def test_idempotency_claim_lease_lifecycle_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0099_idempotency_claim_lease_lifecycle.py"
@@ -1480,6 +1507,7 @@ def test_round4_migration_pseudonymizes_vendor_metadata_and_guards_raw_index(
     ):
         assert fragment in schema
         assert fragment in source
+    assert "SET CONSTRAINTS ALL IMMEDIATE" in source
 
     spec = importlib.util.spec_from_file_location("round4_revision", revision)
     assert spec is not None and spec.loader is not None
