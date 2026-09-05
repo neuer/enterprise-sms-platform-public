@@ -60,7 +60,9 @@ class SendAdmissionFacts:
     realtime_paused: bool
     bulk_paused: bool
     vendor_failures: int
-    heartbeat_stale: bool = False
+    realtime_heartbeat_stale: bool = False
+    bulk_heartbeat_stale: bool = False
+    dispatcher_heartbeat_stale: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,8 +129,10 @@ def _raw_capacity(
     """按当前事实落入 CLOSED / DEGRADED / OPEN，不含恢复滞回。"""
 
     age = _age(facts)
-    if facts.heartbeat_stale:
-        return "closed", "heartbeat_stale"
+    if facts.dispatcher_heartbeat_stale:
+        return "closed", "dispatcher_heartbeat_stale"
+    if facts.realtime_heartbeat_stale and facts.bulk_heartbeat_stale:
+        return "closed", "send_lanes_heartbeat_stale"
     if facts.realtime_paused and facts.bulk_paused:
         return "closed", "queues_paused"
     if facts.outbox_active >= limits.closed_outbox_active:
@@ -213,6 +217,40 @@ def evaluate_capacity(
     return raw_state, reason
 
 
+def _lane_for_category(category: str) -> Literal["realtime", "bulk"]:
+    return "bulk" if category == "market" else "realtime"
+
+
+def _apply_lane_and_request(
+    facts: SendAdmissionFacts,
+    *,
+    category: str,
+    recipient_count: int,
+    state: AdmissionState,
+    reason: str,
+    limits: SendAdmissionLimits,
+) -> SendAdmissionDecision:
+    """全局容量带确定后再叠加 lane 心跳/暂停与请求规模，禁止二次查库。"""
+
+    if state == "closed":
+        return SendAdmissionDecision(state, reason, False, 60)
+    lane = _lane_for_category(category)
+    if lane == "realtime" and facts.realtime_heartbeat_stale:
+        return SendAdmissionDecision("closed", "realtime_heartbeat_stale", False, 60)
+    if lane == "bulk" and facts.bulk_heartbeat_stale:
+        return SendAdmissionDecision("closed", "bulk_heartbeat_stale", False, 60)
+    if lane == "realtime" and facts.realtime_paused:
+        return SendAdmissionDecision("closed", "realtime_paused", False, 60)
+    if lane == "bulk" and facts.bulk_paused:
+        return SendAdmissionDecision("closed", "bulk_paused", False, 60)
+    if state == "degraded":
+        if category == "market":
+            return SendAdmissionDecision(state, "degraded_bulk", False, 30)
+        if reason != "recovery_hold" and recipient_count > limits.degraded_max_recipients:
+            return SendAdmissionDecision(state, "degraded_volume", False, 30)
+    return SendAdmissionDecision(state, reason, True, 0)
+
+
 def decide(
     facts: SendAdmissionFacts,
     *,
@@ -229,20 +267,14 @@ def decide(
         limits=selected,
         previous_state=previous_state,
     )
-    if state == "closed":
-        return SendAdmissionDecision(state, reason, False, 60)
-
-    lane = "bulk" if category == "market" else "realtime"
-    if lane == "realtime" and facts.realtime_paused:
-        return SendAdmissionDecision("closed", "realtime_paused", False, 60)
-    if lane == "bulk" and facts.bulk_paused:
-        return SendAdmissionDecision("closed", "bulk_paused", False, 60)
-    if state == "degraded":
-        if category == "market":
-            return SendAdmissionDecision(state, "degraded_bulk", False, 30)
-        if reason != "recovery_hold" and recipient_count > selected.degraded_max_recipients:
-            return SendAdmissionDecision(state, "degraded_volume", False, 30)
-    return SendAdmissionDecision(state, reason, True, 0)
+    return _apply_lane_and_request(
+        facts,
+        category=category,
+        recipient_count=recipient_count,
+        state=state,
+        reason=reason,
+        limits=selected,
+    )
 
 
 def authorize_from_snapshot(
@@ -255,20 +287,14 @@ def authorize_from_snapshot(
     """只在权威快照上叠加请求级约束，禁止再次评估全局容量。"""
 
     selected = limits or SendAdmissionLimits()
-    state, reason = snapshot.state, snapshot.reason
-    if state == "closed":
-        return SendAdmissionDecision(state, reason, False, 60)
-    lane = "bulk" if category == "market" else "realtime"
-    if lane == "realtime" and snapshot.facts.realtime_paused:
-        return SendAdmissionDecision("closed", "realtime_paused", False, 60)
-    if lane == "bulk" and snapshot.facts.bulk_paused:
-        return SendAdmissionDecision("closed", "bulk_paused", False, 60)
-    if state == "degraded":
-        if category == "market":
-            return SendAdmissionDecision(state, "degraded_bulk", False, 30)
-        if reason != "recovery_hold" and recipient_count > selected.degraded_max_recipients:
-            return SendAdmissionDecision(state, "degraded_volume", False, 30)
-    return SendAdmissionDecision(state, reason, True, 0)
+    return _apply_lane_and_request(
+        snapshot.facts,
+        category=category,
+        recipient_count=recipient_count,
+        state=snapshot.state,
+        reason=snapshot.reason,
+        limits=selected,
+    )
 
 
 class SendAdmissionGuard:

@@ -49,7 +49,15 @@ def test_capacity_bands_use_outbox_not_broker() -> None:
         "closed",
         "queues_paused",
     )
-    assert evaluate_capacity(facts(heartbeat_stale=True)) == ("closed", "heartbeat_stale")
+    assert evaluate_capacity(facts(dispatcher_heartbeat_stale=True)) == (
+        "closed",
+        "dispatcher_heartbeat_stale",
+    )
+    assert evaluate_capacity(facts(realtime_heartbeat_stale=True)) == ("open", "ok")
+    assert evaluate_capacity(facts(bulk_heartbeat_stale=True)) == ("open", "ok")
+    assert evaluate_capacity(
+        facts(realtime_heartbeat_stale=True, bulk_heartbeat_stale=True)
+    ) == ("closed", "send_lanes_heartbeat_stale")
 
 
 def test_recovery_hysteresis_holds_closed_then_degraded() -> None:
@@ -126,6 +134,55 @@ def test_lane_pause_closes_only_that_category() -> None:
     )
     assert both.allowed is False
     assert both.reason == "queues_paused"
+
+
+def test_lane_heartbeat_closes_only_that_category() -> None:
+    bulk_only = facts(bulk_heartbeat_stale=True)
+    assert evaluate_capacity(bulk_only) == ("open", "ok")
+    notice = decide(bulk_only, category="notice", recipient_count=1)
+    assert notice.allowed is True
+    assert notice.reason == "ok"
+    market = decide(bulk_only, category="market", recipient_count=1)
+    assert market.allowed is False
+    assert market.reason == "bulk_heartbeat_stale"
+    realtime_only = facts(realtime_heartbeat_stale=True)
+    assert decide(realtime_only, category="verify", recipient_count=1).reason == (
+        "realtime_heartbeat_stale"
+    )
+    assert decide(realtime_only, category="market", recipient_count=1).allowed is True
+    dispatcher = facts(dispatcher_heartbeat_stale=True)
+    assert decide(dispatcher, category="notice", recipient_count=1).reason == (
+        "dispatcher_heartbeat_stale"
+    )
+    assert decide(dispatcher, category="market", recipient_count=1).reason == (
+        "dispatcher_heartbeat_stale"
+    )
+    both_lanes = facts(realtime_heartbeat_stale=True, bulk_heartbeat_stale=True)
+    assert decide(both_lanes, category="notice", recipient_count=1).reason == (
+        "send_lanes_heartbeat_stale"
+    )
+
+
+def test_snapshot_lane_heartbeat_does_not_close_the_other_lane() -> None:
+    snap = SendAdmissionSnapshot(1, 0.0, facts(bulk_heartbeat_stale=True), "open", "ok")
+    notice = authorize_from_snapshot(snap, category="notice", recipient_count=1)
+    assert notice.allowed is True
+    market = authorize_from_snapshot(snap, category="market", recipient_count=1)
+    assert market.allowed is False
+    assert market.reason == "bulk_heartbeat_stale"
+    hold = SendAdmissionSnapshot(
+        1,
+        0.0,
+        facts(realtime_heartbeat_stale=True),
+        "degraded",
+        "recovery_hold",
+    )
+    verify = authorize_from_snapshot(hold, category="verify", recipient_count=1)
+    assert verify.allowed is False
+    assert verify.reason == "realtime_heartbeat_stale"
+    market_hold = authorize_from_snapshot(hold, category="market", recipient_count=1)
+    assert market_hold.allowed is False
+    assert market_hold.reason == "degraded_bulk"
 
 
 class FakeFacts:
@@ -263,7 +320,9 @@ async def test_repository_loads_same_keys_as_current_alerts() -> None:
             "outbox_dead": 1,
             "uncertain_overdue": 2,
             "callback_dead": 3,
-            "heartbeat_stale": 0,
+            "realtime_heartbeat_stale": 0,
+            "bulk_heartbeat_stale": 0,
+            "dispatcher_heartbeat_stale": 0,
         }
     )
     redis = FakeRedis(["999", None, "4"])
@@ -291,7 +350,9 @@ async def test_repository_loads_same_keys_as_current_alerts() -> None:
     assert "callback_task" in sql
     assert "send_runtime_heartbeat" in sql
     assert "send-realtime" in sql
+    assert "send-bulk" in sql
     assert "outbox-dispatcher" in sql
+    assert "required(component)" not in sql
     for forbidden in ("phone_enc", "phone_hmac", "phone_mask", "secret", "broker"):
         assert forbidden not in sql
     assert redis.keys == [
@@ -307,7 +368,9 @@ async def test_repository_only_fail_closes_stale_heartbeats_in_production() -> N
         "outbox_dead": 0,
         "uncertain_overdue": 0,
         "callback_dead": 0,
-        "heartbeat_stale": 1,
+        "realtime_heartbeat_stale": 0,
+        "bulk_heartbeat_stale": 1,
+        "dispatcher_heartbeat_stale": 0,
     }
 
     async def load_with(*, production: bool) -> SendAdmissionFacts:
@@ -327,8 +390,13 @@ async def test_repository_only_fail_closes_stale_heartbeats_in_production() -> N
         repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
         return await repository.load()
 
-    assert (await load_with(production=False)).heartbeat_stale is False
-    assert (await load_with(production=True)).heartbeat_stale is True
+    development = await load_with(production=False)
+    assert development.bulk_heartbeat_stale is False
+    assert development.realtime_heartbeat_stale is False
+    production = await load_with(production=True)
+    assert production.bulk_heartbeat_stale is True
+    assert production.realtime_heartbeat_stale is False
+    assert production.dispatcher_heartbeat_stale is False
 
 
 @pytest.mark.asyncio
@@ -340,7 +408,9 @@ async def test_repository_fail_closes_on_invalid_vendor_counter() -> None:
             "outbox_dead": 0,
             "uncertain_overdue": 0,
             "callback_dead": 0,
-            "heartbeat_stale": 0,
+            "realtime_heartbeat_stale": 0,
+            "bulk_heartbeat_stale": 0,
+            "dispatcher_heartbeat_stale": 0,
         }
     )
     repository = SqlSendAdmissionRepository(
@@ -558,7 +628,7 @@ async def test_cas_loser_retries_when_local_candidate_is_stricter() -> None:
 
     class ClosedThenAdopt(FakeFacts):
         def __init__(self) -> None:
-            super().__init__(facts(heartbeat_stale=True))
+            super().__init__(facts(dispatcher_heartbeat_stale=True))
             self.saves = 0
 
         async def load_control_state(self) -> dict[str, object]:
@@ -573,7 +643,7 @@ async def test_cas_loser_retries_when_local_candidate_is_stricter() -> None:
                 }
             return {
                 "state": "closed",
-                "reason_code": "heartbeat_stale",
+                "reason_code": "dispatcher_heartbeat_stale",
                 "state_epoch": 9,
                 "hold_until": None,
                 "valid_until": now + timedelta(seconds=10),
@@ -595,5 +665,5 @@ async def test_cas_loser_retries_when_local_candidate_is_stricter() -> None:
     guard = SendAdmissionGuard(repo)
     snap = await guard.snapshot()
     assert snap.state == "closed"
-    assert snap.reason == "heartbeat_stale"
+    assert snap.reason == "dispatcher_heartbeat_stale"
     assert repo.saves == 2
