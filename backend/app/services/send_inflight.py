@@ -122,10 +122,7 @@ async def release_in_flight_reservation(
             WHERE id=:id
               AND generation=:generation
               AND state <> 'released'
-              AND (
-                :app_id IS NULL
-                OR app_id=:app_id
-              )
+              AND app_id=COALESCE(CAST(:app_id AS BIGINT), app_id)
             RETURNING app_id, reserved_chunks
             """
         ),
@@ -160,10 +157,7 @@ async def release_unbound_acceptance_reservation(
               AND generation=:generation
               AND state='reserved'
               AND batch_id IS NULL
-              AND (
-                :app_id IS NULL
-                OR app_id=:app_id
-              )
+              AND app_id=COALESCE(CAST(:app_id AS BIGINT), app_id)
             RETURNING app_id, reserved_chunks
             """
         ),
@@ -475,7 +469,8 @@ async def _load_bound_batch(
                 FROM sms_batch b
                 LEFT JOIN idempotency_record i ON i.batch_id=b.id
                 WHERE (
-                    :batch_id IS NOT NULL AND b.id=:batch_id
+                    CAST(:batch_id AS BIGINT) IS NOT NULL
+                    AND b.id=CAST(:batch_id AS BIGINT)
                   )
                   OR b.send_inflight_reservation_id=:reservation_id
                 """

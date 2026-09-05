@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -44,7 +45,12 @@ from app.services.pipeline import (
 from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL
 from app.services.quota import QuotaFenceLost
 from app.services.send_admission import SendAdmissionRejected
-from app.services.send_inflight import AcceptCommitResolution
+from app.services.send_inflight import (
+    AcceptCommitResolution,
+    _load_bound_batch,
+    release_in_flight_reservation,
+    release_unbound_acceptance_reservation,
+)
 from app.services.vendor_test_guard import VendorTestRecipientDenied
 
 ADMIN = SecurityPrincipal(1, 10, "admin", "平台部", "admin")
@@ -63,6 +69,17 @@ def test_idempotency_live_sql_keeps_unknown_and_unfinished_callback() -> None:
     assert "callback_task" in sql
     assert "pending" in sql and "retrying" in sql
     assert "phone" not in sql
+
+
+def test_inflight_optional_ids_have_explicit_asyncpg_types() -> None:
+    release_src = inspect.getsource(release_in_flight_reservation)
+    unbound_src = inspect.getsource(release_unbound_acceptance_reservation)
+    load_src = inspect.getsource(_load_bound_batch)
+    for source in (release_src, unbound_src):
+        assert "COALESCE(CAST(:app_id AS BIGINT), app_id)" in source
+        assert ":app_id IS NULL" not in source
+    assert "CAST(:batch_id AS BIGINT)" in load_src
+    assert ":batch_id IS NOT NULL" not in load_src
 
 
 def crypto() -> CryptoService:
