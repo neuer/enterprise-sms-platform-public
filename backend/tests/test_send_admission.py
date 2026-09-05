@@ -136,6 +136,16 @@ def test_closed_recovery_creates_hold_and_returns_degraded() -> None:
     assert (degraded_raw, degraded_reason) == ("degraded", "recovery_hold")
     assert degraded_hold == now + timedelta(seconds=60)
 
+    marked, marked_reason, marked_hold = transition_admission_state(
+        previous="closed",
+        raw_state="open",
+        raw_reason="ok",
+        db_now=now,
+        hold_until=None,
+        previous_reason="bootstrap",
+    )
+    assert (marked, marked_reason, marked_hold) == ("open", "ok", None)
+
 
 def test_recovery_hysteresis_holds_closed_then_degraded() -> None:
     recovering = facts(outbox_active=1200)
@@ -633,6 +643,38 @@ async def test_bootstrap_and_expired_state_enter_recovery_hold() -> None:
     expired_snap = await SendAdmissionGuard(expired).snapshot()
     assert expired_snap.state == "degraded"
     assert expired_snap.reason == "recovery_hold"
+
+
+@pytest.mark.asyncio
+async def test_migration_bootstrap_marker_opens_without_hold() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+
+    class BootstrapRow(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+            self.saved: list[dict[str, object]] = []
+
+        async def load_control_state(self) -> dict[str, object]:
+            return {
+                "state": "closed",
+                "reason_code": "bootstrap",
+                "state_epoch": 1,
+                "hold_until": None,
+                "valid_until": now + timedelta(seconds=10),
+                "db_now": now,
+            }
+
+        async def save_control_state(self, **values: object) -> None:
+            self.saved.append(values)
+
+    repo = BootstrapRow()
+    snap = await SendAdmissionGuard(repo).snapshot()
+    assert snap.state == "open"
+    assert snap.reason == "ok"
+    assert repo.saved[0]["state"] == "open"
+    assert repo.saved[0]["hold_until"] is None
 
 
 @pytest.mark.asyncio

@@ -227,6 +227,7 @@ def transition_admission_state(
     raw_reason: str,
     db_now: datetime,
     hold_until: datetime | None,
+    previous_reason: str | None = None,
 ) -> tuple[AdmissionState, str, datetime | None]:
     """把 raw 容量与持久 previous/hold 收成可保存的 state/reason/hold。"""
 
@@ -234,6 +235,8 @@ def transition_admission_state(
         return "closed", raw_reason, None
     previous_state = previous if previous in ADMISSION_STATES else "closed"
     active_hold = hold_until if hold_until is not None and hold_until > db_now else None
+    if previous_state == "closed" and previous_reason == "bootstrap":
+        return raw_state, raw_reason, None
     if previous_state == "closed":
         new_hold = db_now + timedelta(seconds=RECOVERY_HOLD_SECONDS)
         if active_hold is not None and active_hold > new_hold:
@@ -415,12 +418,16 @@ class SendAdmissionGuard:
         from datetime import UTC, datetime
 
         previous = None if self._snapshot is None else self._snapshot.state
+        previous_reason: str | None = None
         epoch = 1
         hold_until: datetime | None = None
         now_utc = datetime.now(UTC)
         if persisted:
             raw_db_now = persisted.get("db_now")
             db_now = _aware_datetime(raw_db_now) if raw_db_now is not None else now_utc
+            raw_db_reason = persisted.get("reason_code") or persisted.get("reason")
+            if isinstance(raw_db_reason, str) and raw_db_reason:
+                previous_reason = raw_db_reason
             raw_valid_until = persisted.get("valid_until")
             raw_hold_until = persisted.get("hold_until")
             if raw_valid_until is not None and _aware_datetime(raw_valid_until) < db_now:
@@ -452,6 +459,7 @@ class SendAdmissionGuard:
             raw_reason=reason,
             db_now=now_utc,
             hold_until=hold_until,
+            previous_reason=previous_reason,
         )
         return state, reason, epoch, hold
 

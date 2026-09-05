@@ -30,7 +30,9 @@ queue pause 使用同一映射：`realtime_paused` 只关 realtime，`bulk_pause
 
 ## Recovery hold
 
-`CLOSED` 或过期控制面首次回到健康 facts 时，本次快照必须是
-`degraded/recovery_hold`，并在同一行写入 `hold_until`。`state=open` 且
-带 hold 是非法组合，数据库 CHECK 会拒绝。hold 到期前营销仍拒绝；
-verify/notice 可按降级规则放行。
+`CLOSED`（`outbox_backlog` 等运行原因）或过期控制面首次回到健康
+facts 时，本次快照必须是 `degraded/recovery_hold`，并在同一行写入
+`hold_until`。迁移初始化的 `closed/bootstrap` 是一次性标记，全新部署
+首次健康可进入 OPEN 且不建 hold。`state=open` 且带 hold 是非法组合，
+数据库 CHECK 会拒绝。hold 到期前营销仍拒绝；verify/notice 可按降级
+规则放行。
