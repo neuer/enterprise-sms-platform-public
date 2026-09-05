@@ -527,6 +527,12 @@ async def test_reconcile_restores_historical_acceptance_failed(
         )
         await connection.execute(
             text(
+                "DROP TRIGGER IF EXISTS trg_send_inflight_reservation_occupancy "
+                "ON send_inflight_reservation"
+            )
+        )
+        await connection.execute(
+            text(
                 "ALTER TABLE send_inflight_reservation "
                 "DROP CONSTRAINT ck_send_inflight_acceptance_failed_unbound"
             )
@@ -560,6 +566,8 @@ async def test_reconcile_restores_historical_acceptance_failed(
             ),
             {"app_id": app_id},
         )
+        # 0102 occupancy is DEFERRABLE; ALTER TABLE cannot run with pending events.
+        await connection.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
         await connection.execute(
             text(
                 """
@@ -602,6 +610,17 @@ async def test_reconcile_restores_historical_acceptance_failed(
                 DEFERRABLE INITIALLY DEFERRED
                 FOR EACH ROW
                 EXECUTE FUNCTION check_send_inflight_balance_conservation()
+                """
+            )
+        )
+        await connection.execute(
+            text(
+                """
+                CREATE CONSTRAINT TRIGGER trg_send_inflight_reservation_occupancy
+                AFTER INSERT OR UPDATE OR DELETE ON send_inflight_reservation
+                DEFERRABLE INITIALLY DEFERRED
+                FOR EACH ROW
+                EXECUTE FUNCTION check_send_inflight_chunk_occupancy()
                 """
             )
         )
