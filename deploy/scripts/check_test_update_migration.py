@@ -46,7 +46,7 @@ _DROP_TRIGGER_RE = re.compile(
     re.IGNORECASE,
 )
 _CREATE_TRIGGER_RE = re.compile(
-    r"\bCREATE\s+TRIGGER\s+([A-Za-z_][A-Za-z0-9_]*)\b.*\bON\s+"
+    r"\bCREATE\s+(?:CONSTRAINT\s+)?TRIGGER\s+([A-Za-z_][A-Za-z0-9_]*)\b.*\bON\s+"
     r"([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE | re.DOTALL,
 )

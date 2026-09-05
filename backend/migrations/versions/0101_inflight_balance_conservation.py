@@ -206,11 +206,23 @@ def upgrade() -> None:
     )
     op.execute(
         """
+        DROP TRIGGER IF EXISTS trg_send_inflight_reservation_conservation
+          ON send_inflight_reservation
+        """
+    )
+    op.execute(
+        """
         CREATE CONSTRAINT TRIGGER trg_send_inflight_reservation_conservation
         AFTER INSERT OR UPDATE OR DELETE ON send_inflight_reservation
         DEFERRABLE INITIALLY DEFERRED
         FOR EACH ROW
         EXECUTE FUNCTION check_send_inflight_balance_conservation()
+        """
+    )
+    op.execute(
+        """
+        DROP TRIGGER IF EXISTS trg_send_inflight_balance_conservation
+          ON send_inflight_balance
         """
     )
     op.execute(
