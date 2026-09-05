@@ -1,10 +1,6 @@
 import { afterEach, vi } from "vitest"
 
-import {
-  hasWebLocks,
-  isSafeSingleTabMode,
-  withRefreshLock,
-} from "../src/api/refreshLock"
+import { hasWebLocks, isSafeSingleTabMode, withRefreshLock } from "../src/api/refreshLock"
 import {
   beginRefreshTabBinding,
   getRefreshTabBinding,

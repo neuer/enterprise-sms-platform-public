@@ -48,7 +48,10 @@ function applyRole(role: "admin" | "approver" | "operator"): ReturnType<typeof c
     account_id: 1,
     identity_id: 11,
     provider_code: "local",
-    username: `${role}01`, display_name: "测试用户", dept: "平台部", role,
+    username: `${role}01`,
+    display_name: "测试用户",
+    dept: "平台部",
+    role,
   })
   return pinia
 }
@@ -143,8 +146,8 @@ describe("签名管理", () => {
     ;(document.querySelector("[data-testid='sign-adopt-submit']") as HTMLElement).click()
     await flushPromises()
 
-    const request = fetchMock.mock.calls.find(([url, init]) =>
-      String(url).endsWith("/signs/9/adopt-existing") && (init as RequestInit)?.method === "POST",
+    const request = fetchMock.mock.calls.find(
+      ([url, init]) => String(url).endsWith("/signs/9/adopt-existing") && (init as RequestInit)?.method === "POST",
     )
     expect(request).toBeTruthy()
     expect(JSON.parse(String((request?.[1] as RequestInit).body))).toEqual({
@@ -327,9 +330,7 @@ describe("签名管理", () => {
     expect(confirmMessage).toContain("写入审计日志")
     expect(confirmMessage).toContain("被应用设为默认签名或已被批次引用的签名不可删除")
     expect(error).not.toHaveBeenCalled()
-    expect(
-      fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "DELETE").length,
-    ).toBe(0)
+    expect(fetchMock.mock.calls.filter(([, init]) => (init as RequestInit)?.method === "DELETE").length).toBe(0)
     vi.unstubAllGlobals()
   })
 
@@ -337,7 +338,8 @@ describe("签名管理", () => {
     const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       if (String(input).includes("/sync")) {
         return {
-          ok: false, status: 502,
+          ok: false,
+          status: 502,
           headers: { get: () => null },
           json: async () => ({ code: "VENDOR_ERROR", message: "厂商签名接口不可用", detail: null }),
         }

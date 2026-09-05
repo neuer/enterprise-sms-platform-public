@@ -15,9 +15,7 @@ import { SESSION_CLEAR_SIGNAL_KEY, useSessionStore } from "./stores/session"
 import egretMarkUrl from "./assets/brand/login-egret-watermark.png"
 
 // 日常改密弹窗只在认证壳内点开：异步加载，登录首屏不背 ElDialog/ElForm 的组件代码。
-const DailyPasswordChangeDialog = defineAsyncComponent(
-  () => import("./components/DailyPasswordChangeDialog.vue"),
-)
+const DailyPasswordChangeDialog = defineAsyncComponent(() => import("./components/DailyPasswordChangeDialog.vue"))
 
 const route = useRoute()
 const router = useRouter()
@@ -40,9 +38,7 @@ const dashboardRoute = computed(() => route.path === "/dashboard")
 const approvalRoute = computed(() => route.path === "/approvals")
 const approverRole = computed(() => session.role === "approver" || session.role === "admin")
 const balanceLabel = computed(() =>
-  currentBalance.value === null
-    ? "厂商余额暂无数据"
-    : `厂商余额 ${currentBalance.value.toLocaleString()} 计费条`,
+  currentBalance.value === null ? "厂商余额暂无数据" : `厂商余额 ${currentBalance.value.toLocaleString()} 计费条`,
 )
 interface NavigationItem {
   label: string
@@ -52,10 +48,13 @@ interface NavigationItem {
 }
 
 const navigation: Array<{ group: string; items: NavigationItem[] }> = [
-  { group: "概览", items: [
-    { label: "仪表盘", path: "/dashboard", marker: "总" },
-    { label: "统计报表", path: "/reports", marker: "析" },
-  ] },
+  {
+    group: "概览",
+    items: [
+      { label: "仪表盘", path: "/dashboard", marker: "总" },
+      { label: "统计报表", path: "/reports", marker: "析" },
+    ],
+  },
   { group: "发送", items: [{ label: "人工发送", path: "/send", marker: "发", roles: ["operator", "admin"] }] },
   {
     group: "治理",
@@ -93,9 +92,7 @@ const visibleNavigation = computed(() =>
   navigation
     .map((section) => ({
       ...section,
-      items: section.items.filter(
-        (item) => !item.roles || Boolean(session.role && item.roles.includes(session.role)),
-      ),
+      items: section.items.filter((item) => !item.roles || Boolean(session.role && item.roles.includes(session.role))),
     }))
     .filter((section) => section.items.length > 0),
 )
@@ -173,9 +170,13 @@ function syncApprovalBadgePolling(): void {
 }
 
 watch(() => route.fullPath, closeNavigation)
-watch(authenticatedShell, (authed) => {
-  if (!authed) currentBalance.value = null
-}, { immediate: true })
+watch(
+  authenticatedShell,
+  (authed) => {
+    if (!authed) currentBalance.value = null
+  },
+  { immediate: true },
+)
 watch([authenticatedShell, approverRole, approvalRoute], syncApprovalBadgePolling, { immediate: true })
 
 onBeforeMount(() => {
@@ -237,8 +238,22 @@ async function handlePasswordChanged(): Promise<void> {
             <feGaussianBlur stdDeviation="12" />
           </filter>
         </defs>
-        <path d="M -30 845 C 170 795, 280 700, 420 620 C 560 540, 720 455, 920 355 C 1075 270, 1210 155, 1470 45" fill="none" stroke="url(#loginFlow)" stroke-width="210" opacity=".1" filter="url(#loginFlowBlurA)" />
-        <path d="M -30 845 C 170 795, 280 700, 420 620 C 560 540, 720 455, 920 355 C 1075 270, 1210 155, 1470 45" fill="none" stroke="url(#loginFlow)" stroke-width="72" opacity=".12" filter="url(#loginFlowBlurB)" />
+        <path
+          d="M -30 845 C 170 795, 280 700, 420 620 C 560 540, 720 455, 920 355 C 1075 270, 1210 155, 1470 45"
+          fill="none"
+          stroke="url(#loginFlow)"
+          stroke-width="210"
+          opacity=".1"
+          filter="url(#loginFlowBlurA)"
+        />
+        <path
+          d="M -30 845 C 170 795, 280 700, 420 620 C 560 540, 720 455, 920 355 C 1075 270, 1210 155, 1470 45"
+          fill="none"
+          stroke="url(#loginFlow)"
+          stroke-width="72"
+          opacity=".12"
+          filter="url(#loginFlowBlurB)"
+        />
       </svg>
       <svg class="login-flow login-flow-mobile" viewBox="0 0 390 844" preserveAspectRatio="none" aria-hidden="true">
         <defs>
@@ -255,8 +270,22 @@ async function handlePasswordChanged(): Promise<void> {
             <feGaussianBlur stdDeviation="10" />
           </filter>
         </defs>
-        <path d="M -20 430 C 80 400, 150 340, 210 270 C 270 200, 320 120, 420 60" fill="none" stroke="url(#loginFlowM)" stroke-width="140" opacity=".1" filter="url(#loginFlowBlurC)" />
-        <path d="M -20 430 C 80 400, 150 340, 210 270 C 270 200, 320 120, 420 60" fill="none" stroke="url(#loginFlowM)" stroke-width="48" opacity=".12" filter="url(#loginFlowBlurD)" />
+        <path
+          d="M -20 430 C 80 400, 150 340, 210 270 C 270 200, 320 120, 420 60"
+          fill="none"
+          stroke="url(#loginFlowM)"
+          stroke-width="140"
+          opacity=".1"
+          filter="url(#loginFlowBlurC)"
+        />
+        <path
+          d="M -20 430 C 80 400, 150 340, 210 270 C 270 200, 320 120, 420 60"
+          fill="none"
+          stroke="url(#loginFlowM)"
+          stroke-width="48"
+          opacity=".12"
+          filter="url(#loginFlowBlurD)"
+        />
       </svg>
       <img class="login-wm" :src="egretMarkUrl" alt="" aria-hidden="true" />
       <router-view />
@@ -276,19 +305,15 @@ async function handlePasswordChanged(): Promise<void> {
           <section v-for="section in visibleNavigation" :key="section.group" class="nav-section">
             <h2>{{ section.group }}</h2>
             <template v-for="item in section.items" :key="item.path">
-              <router-link
-                :to="item.path"
-                class="nav-link"
-                active-class="active"
-                @click="closeNavigation"
-              >
+              <router-link :to="item.path" class="nav-link" active-class="active" @click="closeNavigation">
                 <span class="nav-marker" aria-hidden="true">{{ item.marker }}</span>
                 {{ item.label }}
                 <span
                   v-if="item.path === '/approvals' && approvalBadge.pending > 0"
                   class="nav-badge"
                   :aria-label="`${approvalBadge.pending} 条待审批`"
-                >{{ approvalBadge.pending }}</span>
+                  >{{ approvalBadge.pending }}</span
+                >
               </router-link>
             </template>
           </section>
@@ -320,7 +345,10 @@ async function handlePasswordChanged(): Promise<void> {
             <span aria-hidden="true"></span>
             <span aria-hidden="true"></span>
           </button>
-          <p class="breadcrumb"><span>{{ pageGroup }}</span><b>/</b> {{ pageTitle }}</p>
+          <p class="breadcrumb"
+            ><span>{{ pageGroup }}</span
+            ><b>/</b> {{ pageTitle }}</p
+          >
 
           <div class="operator">
             <button
@@ -330,16 +358,22 @@ async function handlePasswordChanged(): Promise<void> {
               :aria-pressed="themeMode === 'light'"
               :title="themeMode === 'light' ? '切换到深色模式' : '切换到明亮模式'"
               @click="switchTheme"
-            >{{ themeMode === 'light' ? '☾ 深色' : '☀ 明亮' }}</button>
-            <span class="balance" :aria-label="balanceLabel">余额 <strong>{{ currentBalance?.toLocaleString() ?? '—' }}</strong></span>
-            <span class="operator-name">{{ session.displayName }} <small>{{ session.roleLabel }}</small></span>
+              >{{ themeMode === "light" ? "☾ 深色" : "☀ 明亮" }}</button
+            >
+            <span class="balance" :aria-label="balanceLabel"
+              >余额 <strong>{{ currentBalance?.toLocaleString() ?? "—" }}</strong></span
+            >
+            <span class="operator-name"
+              >{{ session.displayName }} <small>{{ session.roleLabel }}</small></span
+            >
             <button
               v-if="session.providerCode === 'local'"
               class="toolbar-action"
               data-testid="change-password"
               type="button"
               @click="passwordDialogOpen = true"
-            >修改密码</button>
+              >修改密码</button
+            >
             <button class="logout-button" data-testid="logout" type="button" @click="logout">退出</button>
           </div>
         </header>
@@ -348,10 +382,7 @@ async function handlePasswordChanged(): Promise<void> {
           <router-view />
         </main>
       </div>
-      <DailyPasswordChangeDialog
-        v-model="passwordDialogOpen"
-        @changed="handlePasswordChanged"
-      />
+      <DailyPasswordChangeDialog v-model="passwordDialogOpen" @changed="handlePasswordChanged" />
     </div>
   </el-config-provider>
 </template>

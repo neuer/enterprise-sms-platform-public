@@ -51,9 +51,7 @@ const catalog = computed(() => {
   })
 })
 
-const accountLabel = computed(() =>
-  providerCode.value === "ad" ? "企业 AD 账号" : "账号",
-)
+const accountLabel = computed(() => (providerCode.value === "ad" ? "企业 AD 账号" : "账号"))
 
 let hintTimer = 0
 
@@ -165,12 +163,7 @@ function invalidateInitialPasswordChange(message: string): void {
         <i class="login-goldline" aria-hidden="true"></i>
       </div>
 
-      <p
-        v-if="safeSingleTab"
-        class="login-safe-mode"
-        data-testid="login-safe-single-tab"
-        role="status"
-      >
+      <p v-if="safeSingleTab" class="login-safe-mode" data-testid="login-safe-single-tab" role="status">
         {{ safeSingleTabMessage }}
       </p>
 
@@ -179,12 +172,7 @@ function invalidateInitialPasswordChange(message: string): void {
           <p id="login-sources-label" class="sr-only">身份来源</p>
           <span v-if="loadingProviders" class="provider-loading">正在读取认证源…</span>
           <template v-else>
-            <div
-              class="provider-switch"
-              role="radiogroup"
-              aria-labelledby="login-sources-label"
-              aria-label="认证源"
-            >
+            <div class="provider-switch" role="radiogroup" aria-labelledby="login-sources-label" aria-label="认证源">
               <template v-for="(provider, index) in catalog" :key="provider.code">
                 <span v-if="index > 0" class="provider-switch-sep" aria-hidden="true">·</span>
                 <div class="provider-switch-item" :class="{ 'is-off': !provider.enabled }">
@@ -239,13 +227,7 @@ function invalidateInitialPasswordChange(message: string): void {
         <p v-if="errorMessage" class="login-error" role="alert">{{ errorMessage }}</p>
         <p v-if="successMessage" class="login-success" role="status">{{ successMessage }}</p>
 
-        <el-button
-          class="login-submit"
-          :loading="submitting"
-          native-type="submit"
-          size="large"
-          type="primary"
-        >
+        <el-button class="login-submit" :loading="submitting" native-type="submit" size="large" type="primary">
           登录
         </el-button>
       </form>

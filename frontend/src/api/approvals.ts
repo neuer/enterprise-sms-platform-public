@@ -78,11 +78,7 @@ export async function getApproval(id: number): Promise<ApprovalDetail> {
   return apiRequest<ApprovalDetail>(`/approvals/${id}`, { method: "GET" })
 }
 
-export async function decideApproval(
-  id: number,
-  action: ApprovalAction,
-  reason?: string,
-): Promise<DecisionOutcome> {
+export async function decideApproval(id: number, action: ApprovalAction, reason?: string): Promise<DecisionOutcome> {
   return apiRequest<DecisionOutcome>(`/approvals/${id}/decision`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

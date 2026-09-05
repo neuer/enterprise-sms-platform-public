@@ -55,7 +55,10 @@ export interface BatchMessage {
   report_time: string | null
 }
 
-export interface BatchMessagePage { total: number; items: BatchMessage[] }
+export interface BatchMessagePage {
+  total: number
+  items: BatchMessage[]
+}
 
 export interface MessageItem {
   id: number
@@ -76,7 +79,11 @@ export interface PhoneBadge {
   recv_30d: number
 }
 
-export interface MessagePage { total: number; badge: PhoneBadge; items: MessageItem[] }
+export interface MessagePage {
+  total: number
+  badge: PhoneBadge
+  items: MessageItem[]
+}
 
 export interface TimelineEvent {
   ts: string
@@ -117,16 +124,12 @@ export interface BatchMessageFilters {
   page?: number
 }
 
-export function getBatchMessages(
-  batchNo: string,
-  filters: BatchMessageFilters = {},
-): Promise<BatchMessagePage> {
+export function getBatchMessages(batchNo: string, filters: BatchMessageFilters = {}): Promise<BatchMessagePage> {
   const query = new URLSearchParams({ page: String(filters.page ?? 1), size: String(DEFAULT_PAGE_SIZE) })
   if (filters.status) query.set("status", filters.status)
-  return apiRequestAbs<BatchMessagePage>(
-    `/api/v1/messages/batches/${encodeURIComponent(batchNo)}/details?${query}`,
-    { method: "GET" },
-  )
+  return apiRequestAbs<BatchMessagePage>(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/details?${query}`, {
+    method: "GET",
+  })
 }
 
 export interface MessageSearchFilters {
@@ -149,10 +152,7 @@ function jsonPost<T>(path: string, body: Record<string, string | number | undefi
   })
 }
 
-export function searchMessages(
-  phone: string,
-  filters: MessageSearchFilters = {},
-): Promise<MessagePage> {
+export function searchMessages(phone: string, filters: MessageSearchFilters = {}): Promise<MessagePage> {
   return jsonPost<MessagePage>("/messages", {
     phone,
     start: filters.start,
@@ -183,6 +183,8 @@ export function rescheduleBatch(batchNo: string, scheduledAt: string): Promise<v
   })
 }
 
-export function resendFailedBatch(batchNo: string): Promise<{ batch_no: string; resend_of: string; accepted: number; status: string }> {
+export function resendFailedBatch(
+  batchNo: string,
+): Promise<{ batch_no: string; resend_of: string; accepted: number; status: string }> {
   return apiRequestAbs(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/resend-failed`, { method: "POST" })
 }

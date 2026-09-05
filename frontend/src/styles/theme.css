@@ -488,7 +488,9 @@ button:focus-visible {
   background: var(--card);
   border-radius: 6px;
   box-shadow: 0 0 0 1px var(--line-2) inset;
-  transition: box-shadow 120ms ease, background-color 120ms ease;
+  transition:
+    box-shadow 120ms ease,
+    background-color 120ms ease;
 }
 
 .el-date-editor.el-input .el-input__wrapper:hover,
@@ -549,7 +551,9 @@ button:focus-visible {
   background: var(--card);
   border: 1px solid var(--line-2);
   border-radius: 8px;
-  box-shadow: 0 18px 44px rgb(18 38 30 / 14%), 0 3px 10px rgb(18 38 30 / 8%);
+  box-shadow:
+    0 18px 44px rgb(18 38 30 / 14%),
+    0 3px 10px rgb(18 38 30 / 8%);
 }
 
 .el-picker__popper.qingluan-date-popper .el-popper__arrow::before {
@@ -966,7 +970,6 @@ button:focus-visible {
     font-size: 17.5px;
   }
 }
-
 
 /* ===== 明亮模式：Element 覆写与深色登录门 =====
    下方深色重混规则（el-tag/el-alert）按暗色面板调优，亮色模式下恢复亮底深字版本；

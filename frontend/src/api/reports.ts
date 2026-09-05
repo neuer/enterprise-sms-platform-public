@@ -99,10 +99,7 @@ export function getExportTask(id: string): Promise<ExportTask> {
   return apiRequest<ExportTask>(`/reports/export/${id}`, { method: "GET" })
 }
 
-export function issueExportStepUp(
-  id: string,
-  password: string,
-): Promise<{ token: string; expires_in: 300 }> {
+export function issueExportStepUp(id: string, password: string): Promise<{ token: string; expires_in: 300 }> {
   return apiRequest<{ token: string; expires_in: 300 }>(
     `/reports/export/${id}/step-up`,
     {

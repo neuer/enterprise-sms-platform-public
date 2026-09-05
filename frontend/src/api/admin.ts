@@ -131,11 +131,9 @@ export function listAudits(filters: AuditFilters): Promise<AuditPage> {
   return apiRequest<AuditPage>(`/admin/audit-logs?${query}`, { method: "GET" })
 }
 
-export const listAuditActions = () =>
-  apiRequest<string[]>("/admin/audit-logs/actions", { method: "GET" })
+export const listAuditActions = () => apiRequest<string[]>("/admin/audit-logs/actions", { method: "GET" })
 
-export const listConfigs = () =>
-  apiRequest<ConfigItem[]>("/admin/configs", { method: "GET" })
+export const listConfigs = () => apiRequest<ConfigItem[]>("/admin/configs", { method: "GET" })
 
 export function updateConfigs(items: ConfigUpdate[]): Promise<ConfigItem[]> {
   return apiRequest<ConfigItem[]>("/admin/configs", {
@@ -153,10 +151,7 @@ export function getAuthProvider(providerCode: string): Promise<AuthProviderAdmin
   return apiRequest<AuthProviderAdmin>(providerPath(providerCode), { method: "GET" })
 }
 
-export function saveAuthProviderDraft(
-  providerCode: string,
-  config: LdapProviderConfig,
-): Promise<AuthProviderAdmin> {
+export function saveAuthProviderDraft(providerCode: string, config: LdapProviderConfig): Promise<AuthProviderAdmin> {
   return apiRequest<AuthProviderAdmin>(providerPath(providerCode, "/draft"), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -203,13 +198,7 @@ export type VendorTestMode = "setup_required" | "inactive" | "controlled" | "blo
 export type VendorPauseKind = "manual" | "critical" | "daily" | null
 export type VendorOperationStatus = "requested" | "running" | "succeeded" | "failed"
 export type VendorOperationType =
-  | "install_credentials"
-  | "rotate_credentials"
-  | "activate"
-  | "pause"
-  | "resume"
-  | "reset_configuration"
-  | "uat_send"
+  "install_credentials" | "rotate_credentials" | "activate" | "pause" | "resume" | "reset_configuration" | "uat_send"
 
 export interface VendorTestStatus {
   mode: VendorTestMode
@@ -247,11 +236,7 @@ export interface VendorStepUpResponse {
 }
 
 export type VendorStepUpOperation =
-  | "install_credentials"
-  | "rotate_credentials"
-  | "activate"
-  | "reset_configuration"
-  | "resume_critical"
+  "install_credentials" | "rotate_credentials" | "activate" | "reset_configuration" | "resume_critical"
 
 export interface VendorTestUatPayload {
   recipient_id: number
@@ -266,10 +251,7 @@ export interface VendorTestUatPayload {
   remark?: string
 }
 
-export type VendorTestUatPreviewPayload = Omit<
-  VendorTestUatPayload,
-  "recipient_id" | "remark" | "biz_id"
->
+export type VendorTestUatPreviewPayload = Omit<VendorTestUatPayload, "recipient_id" | "remark" | "biz_id">
 
 interface VendorApiErrorBody {
   code?: string
@@ -287,16 +269,8 @@ export class VendorRequestError extends Error {
   }
 }
 
-async function vendorRequest<T>(
-  path: string,
-  init: RequestInit,
-  timeoutMs?: number,
-): Promise<T> {
-  const result = await authorizedJsonResult<T>(
-    `/api/v1/web/admin/vendor-test${path}`,
-    init,
-    timeoutMs,
-  )
+async function vendorRequest<T>(path: string, init: RequestInit, timeoutMs?: number): Promise<T> {
+  const result = await authorizedJsonResult<T>(`/api/v1/web/admin/vendor-test${path}`, init, timeoutMs)
   if (!result.ok) {
     const body = (result.body ?? {}) as VendorApiErrorBody
     throw new VendorRequestError(
@@ -359,14 +333,8 @@ export function listVendorTestRecipients(): Promise<VendorTestRecipient[]> {
   return vendorRequest<VendorTestRecipient[]>("/recipients", { method: "GET" })
 }
 
-export function addVendorTestRecipient(
-  label: string,
-  phone: string,
-): Promise<VendorTestRecipient> {
-  return vendorRequest<VendorTestRecipient>(
-    "/recipients",
-    jsonRequest("POST", { label, phone }),
-  )
+export function addVendorTestRecipient(label: string, phone: string): Promise<VendorTestRecipient> {
+  return vendorRequest<VendorTestRecipient>("/recipients", jsonRequest("POST", { label, phone }))
 }
 
 export function disableVendorTestRecipient(id: number): Promise<VendorTestRecipient> {
@@ -375,10 +343,7 @@ export function disableVendorTestRecipient(id: number): Promise<VendorTestRecipi
   })
 }
 
-export function refreshVendorTestRecipientIndex(
-  id: number,
-  phone: string,
-): Promise<VendorTestRecipient> {
+export function refreshVendorTestRecipientIndex(id: number, phone: string): Promise<VendorTestRecipient> {
   return vendorRequest<VendorTestRecipient>(
     `/recipients/${encodeURIComponent(id)}/refresh-index`,
     jsonRequest("POST", { phone }),
@@ -386,17 +351,11 @@ export function refreshVendorTestRecipientIndex(
 }
 
 export function activateVendorTest(stepUpToken: string): Promise<VendorTestOperation> {
-  return vendorRequest<VendorTestOperation>(
-    "/activate",
-    jsonRequest("POST", { step_up_token: stepUpToken }),
-  )
+  return vendorRequest<VendorTestOperation>("/activate", jsonRequest("POST", { step_up_token: stepUpToken }))
 }
 
 export function resetVendorTest(stepUpToken: string): Promise<VendorTestOperation> {
-  return vendorRequest<VendorTestOperation>(
-    "/reset",
-    jsonRequest("POST", { step_up_token: stepUpToken }),
-  )
+  return vendorRequest<VendorTestOperation>("/reset", jsonRequest("POST", { step_up_token: stepUpToken }))
 }
 
 export function pauseVendorTest(): Promise<VendorTestOperation> {
@@ -411,27 +370,17 @@ export function resumeVendorTest(stepUpToken?: string): Promise<VendorTestOperat
 }
 
 export function getVendorTestOperation(operationId: string): Promise<VendorTestOperation> {
-  return vendorRequest<VendorTestOperation>(
-    `/operations/${encodeURIComponent(operationId)}`,
-    { method: "GET" },
-  )
+  return vendorRequest<VendorTestOperation>(`/operations/${encodeURIComponent(operationId)}`, { method: "GET" })
 }
 
-export function sendVendorTestUat(
-  payload: VendorTestUatPayload,
-): Promise<VendorTestOperation> {
+export function sendVendorTestUat(payload: VendorTestUatPayload): Promise<VendorTestOperation> {
   return vendorRequest<VendorTestOperation>("/messages", jsonRequest("POST", payload))
 }
 
-export function previewVendorTestUat(
-  payload: VendorTestUatPreviewPayload,
-): Promise<BillingPreview> {
+export function previewVendorTestUat(payload: VendorTestUatPreviewPayload): Promise<BillingPreview> {
   return vendorRequest<BillingPreview>("/messages/preview", jsonRequest("POST", payload))
 }
 
 export function getVendorTestUat(operationId: string): Promise<VendorTestOperation> {
-  return vendorRequest<VendorTestOperation>(
-    `/messages/${encodeURIComponent(operationId)}`,
-    { method: "GET" },
-  )
+  return vendorRequest<VendorTestOperation>(`/messages/${encodeURIComponent(operationId)}`, { method: "GET" })
 }

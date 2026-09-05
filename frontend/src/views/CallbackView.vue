@@ -1,5 +1,4 @@
 <script setup lang="ts">
-
 import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, h, onMounted, reactive, ref } from "vue"
 
@@ -54,9 +53,7 @@ const eventSegOptions = [
   { label: "明细报告", value: "message.report" as CallbackEvent, key: "report" },
 ]
 
-const filtering = computed(() =>
-  Boolean(filters.status || filters.appId || filters.event || filters.batchNo.trim()),
-)
+const filtering = computed(() => Boolean(filters.status || filters.appId || filters.event || filters.batchNo.trim()))
 
 function eventLabel(value: CallbackTask["event"]): string {
   return value === "batch.finished" ? "批次终态" : "明细报告"
@@ -159,11 +156,7 @@ async function retry(item: CallbackTask): Promise<void> {
           "p",
           `将把 CB-${item.id}（${item.app_name} · ${eventLabel(item.event)}）重置为待投递并清零重试计数，dispatcher 随即按应用当前回调配置重新投递；应用已停用或回调 URL / 密钥已变更时重推将被拒绝。`,
         ),
-        h(
-          "p",
-          { class: "callback-confirm-audit" },
-          "重推行为、操作人与任务 id 将写入审计日志。",
-        ),
+        h("p", { class: "callback-confirm-audit" }, "重推行为、操作人与任务 id 将写入审计日志。"),
       ]),
       "确认手动重推",
       {
@@ -199,7 +192,8 @@ onMounted(() => {
       <p>任务仅存事件引用与无 PII 元数据；目标 URL、签名密钥和消息 body 永不进入管理界面。写操作全部写入审计。</p>
     </div>
     <div class="callback-pulse" :class="{ danger: deadTotal > 0 }">
-      <span>dead 总计</span><strong>{{ deadTotal }}</strong><small>/ 列表 {{ total }} 项</small>
+      <span>dead 总计</span><strong>{{ deadTotal }}</strong
+      ><small>/ 列表 {{ total }} 项</small>
     </div>
   </section>
 
@@ -214,7 +208,8 @@ onMounted(() => {
           :class="{ on: filters.status === option.value }"
           :data-testid="`callback-status-${option.key}`"
           @click="setStatus(option.value)"
-        >{{ option.label }}</button>
+          >{{ option.label }}</button
+        >
       </div>
     </div>
     <div class="callback-fld">
@@ -227,7 +222,8 @@ onMounted(() => {
           :class="{ on: filters.event === option.value }"
           :data-testid="`callback-event-${option.key}`"
           @click="setEvent(option.value)"
-        >{{ option.label }}</button>
+          >{{ option.label }}</button
+        >
       </div>
     </div>
     <div class="callback-fld">
@@ -260,13 +256,27 @@ onMounted(() => {
       <el-button data-testid="callback-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="callback-reset" @click="resetFilters">重置</el-button>
     </div>
-    <p class="callback-privacy">状态 / 事件 / 应用点选即重查；批次号服务端 ILIKE 模糊匹配，通配符已转义。任务仅存事件引用与无 PII 元数据，目标 URL、签名密钥与消息 body 不进入本页。</p>
+    <p class="callback-privacy"
+      >状态 / 事件 / 应用点选即重查；批次号服务端 ILIKE 模糊匹配，通配符已转义。任务仅存事件引用与无 PII 元数据，目标
+      URL、签名密钥与消息 body 不进入本页。</p
+    >
   </form>
 
   <aside class="callback-rules" aria-label="重试、租约与重推规则">
-    <div><span>重试序列</span><p>投递失败按 60s → 5m → 15m → 1h → 1h 重试，5 次后转 dead；间隔以 callback_retry_schedule 参数为准，beat 启动时读取。</p></div>
-    <div><span>租约接管</span><p>worker 租约停滞后由其他实例接管并累计接管次数；「已停滞」即当前租约超时未续约。</p></div>
-    <div><span>手动重推</span><p>仅 dead 任务可重推：重置为待投递并清零重试计数，需应用启用且回调 URL / 密钥未变更。</p></div>
+    <div
+      ><span>重试序列</span
+      ><p
+        >投递失败按 60s → 5m → 15m → 1h → 1h 重试，5 次后转 dead；间隔以 callback_retry_schedule 参数为准，beat
+        启动时读取。</p
+      ></div
+    >
+    <div
+      ><span>租约接管</span><p>worker 租约停滞后由其他实例接管并累计接管次数；「已停滞」即当前租约超时未续约。</p></div
+    >
+    <div
+      ><span>手动重推</span
+      ><p>仅 dead 任务可重推：重置为待投递并清零重试计数，需应用启用且回调 URL / 密钥未变更。</p></div
+    >
   </aside>
 
   <el-alert v-if="errorMessage" class="callback-alert" :title="errorMessage" type="error" show-icon :closable="false">
@@ -314,11 +324,15 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column label="创建时间" width="178">
-          <template #default="{ row }"><time>{{ formatDateTime(row.created_at) }}</time></template>
+          <template #default="{ row }"
+            ><time>{{ formatDateTime(row.created_at) }}</time></template
+          >
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button :data-testid="`callback-detail-${row.id}`" link type="primary" @click="openDetail(row)">详情</el-button>
+            <el-button :data-testid="`callback-detail-${row.id}`" link type="primary" @click="openDetail(row)"
+              >详情</el-button
+            >
             <el-button
               v-if="row.status === 'dead'"
               :data-testid="`callback-retry-${row.id}`"
@@ -326,7 +340,8 @@ onMounted(() => {
               type="danger"
               :loading="retryingId === row.id"
               @click="retry(row)"
-            >手动重推</el-button>
+              >手动重推</el-button
+            >
           </template>
         </el-table-column>
       </el-table>
@@ -334,22 +349,42 @@ onMounted(() => {
       <div class="callback-mobile-list">
         <article v-for="item in items" :key="item.id">
           <header>
-            <strong>{{ item.app_name }} <small>CB-{{ item.id }}</small></strong>
+            <strong
+              >{{ item.app_name }} <small>CB-{{ item.id }}</small></strong
+            >
             <el-tag :type="statusType(item.status)" :effect="item.status === 'dead' ? 'dark' : 'plain'">
               {{ statusLabel(item.status) }}
             </el-tag>
           </header>
-          <p>{{ eventLabel(item.event) }} · {{ item.batch_no || "未关联批次" }}<template v-if="item.stalled"> · 已停滞</template></p>
+          <p
+            >{{ eventLabel(item.event) }} · {{ item.batch_no || "未关联批次"
+            }}<template v-if="item.stalled"> · 已停滞</template></p
+          >
           <dl>
-            <div><dt>引用</dt><dd>{{ item.reference_count }}</dd></div>
-            <div><dt>重试</dt><dd>{{ item.retry_count }}/5</dd></div>
-            <div v-if="item.status === 'retrying' && item.next_retry_at"><dt>下次重试</dt><dd>{{ formatDateTime(item.next_retry_at) }}</dd></div>
-            <div><dt>结果</dt><dd>{{ item.last_http_code ? `HTTP ${item.last_http_code}` : item.last_error || "—" }}</dd></div>
+            <div
+              ><dt>引用</dt><dd>{{ item.reference_count }}</dd></div
+            >
+            <div
+              ><dt>重试</dt><dd>{{ item.retry_count }}/5</dd></div
+            >
+            <div v-if="item.status === 'retrying' && item.next_retry_at"
+              ><dt>下次重试</dt><dd>{{ formatDateTime(item.next_retry_at) }}</dd></div
+            >
+            <div
+              ><dt>结果</dt
+              ><dd>{{ item.last_http_code ? `HTTP ${item.last_http_code}` : item.last_error || "—" }}</dd></div
+            >
           </dl>
           <footer>
             <time>{{ formatDateTime(item.created_at) }}</time>
             <span>
-              <el-button :data-testid="`mobile-callback-detail-${item.id}`" link type="primary" @click="openDetail(item)">详情</el-button>
+              <el-button
+                :data-testid="`mobile-callback-detail-${item.id}`"
+                link
+                type="primary"
+                @click="openDetail(item)"
+                >详情</el-button
+              >
               <el-button
                 v-if="item.status === 'dead'"
                 :data-testid="`mobile-callback-retry-${item.id}`"
@@ -357,7 +392,8 @@ onMounted(() => {
                 type="danger"
                 :loading="retryingId === item.id"
                 @click="retry(item)"
-              >手动重推</el-button>
+                >手动重推</el-button
+              >
             </span>
           </footer>
         </article>
@@ -373,7 +409,13 @@ onMounted(() => {
 
     <footer class="callback-pagination">
       <span>共 {{ total }} 项 · 每页 20 · dead 总计 {{ deadTotal }}</span>
-      <el-pagination v-model:current-page="filters.page" :page-size="filters.pageSize" :total="total" layout="prev, pager, next" @current-change="load" />
+      <el-pagination
+        v-model:current-page="filters.page"
+        :page-size="filters.pageSize"
+        :total="total"
+        layout="prev, pager, next"
+        @current-change="load"
+      />
     </footer>
   </section>
 
@@ -394,19 +436,48 @@ onMounted(() => {
         <div>
           <dt>状态</dt>
           <dd>
-            <el-tag :type="statusType(selected.status)" :effect="selected.status === 'dead' ? 'dark' : 'plain'" size="small">{{ statusLabel(selected.status) }}</el-tag>
+            <el-tag
+              :type="statusType(selected.status)"
+              :effect="selected.status === 'dead' ? 'dark' : 'plain'"
+              size="small"
+              >{{ statusLabel(selected.status) }}</el-tag
+            >
             <el-tag v-if="selected.stalled" size="small" type="danger" effect="dark">已停滞</el-tag>
           </dd>
         </div>
-        <div><dt>尝试</dt><dd class="mono-id">{{ selected.retry_count }}/5</dd></div>
-        <div><dt>下次重试</dt><dd>{{ selected.status === "retrying" ? formatDateTime(selected.next_retry_at) : "—" }}</dd></div>
-        <div><dt>最近结果</dt><dd>{{ selected.last_http_code ? `HTTP ${selected.last_http_code}` : "—" }}<template v-if="selected.last_error"> · {{ selected.last_error }}</template></dd></div>
-        <div><dt>租约</dt><dd>{{ selected.lease_id ? `执行中 · 到期 ${formatDateTime(selected.lease_expires_at)}` : "—" }}</dd></div>
-        <div><dt>接管次数</dt><dd class="mono-id">{{ selected.takeover_count }}</dd></div>
-        <div><dt>事件 ID</dt><dd class="mono-id">{{ selected.event_id }}</dd></div>
-        <div><dt>关联 RID</dt><dd class="mono-id">{{ selected.correlation_id }}</dd></div>
-        <div><dt>创建时间</dt><dd>{{ formatDateTime(selected.created_at) }}</dd></div>
-        <div><dt>完成时间</dt><dd>{{ formatDateTime(selected.finished_at) }}</dd></div>
+        <div
+          ><dt>尝试</dt><dd class="mono-id">{{ selected.retry_count }}/5</dd></div
+        >
+        <div
+          ><dt>下次重试</dt
+          ><dd>{{ selected.status === "retrying" ? formatDateTime(selected.next_retry_at) : "—" }}</dd></div
+        >
+        <div
+          ><dt>最近结果</dt
+          ><dd
+            >{{ selected.last_http_code ? `HTTP ${selected.last_http_code}` : "—"
+            }}<template v-if="selected.last_error"> · {{ selected.last_error }}</template></dd
+          ></div
+        >
+        <div
+          ><dt>租约</dt
+          ><dd>{{ selected.lease_id ? `执行中 · 到期 ${formatDateTime(selected.lease_expires_at)}` : "—" }}</dd></div
+        >
+        <div
+          ><dt>接管次数</dt><dd class="mono-id">{{ selected.takeover_count }}</dd></div
+        >
+        <div
+          ><dt>事件 ID</dt><dd class="mono-id">{{ selected.event_id }}</dd></div
+        >
+        <div
+          ><dt>关联 RID</dt><dd class="mono-id">{{ selected.correlation_id }}</dd></div
+        >
+        <div
+          ><dt>创建时间</dt><dd>{{ formatDateTime(selected.created_at) }}</dd></div
+        >
+        <div
+          ><dt>完成时间</dt><dd>{{ formatDateTime(selected.finished_at) }}</dd></div
+        >
       </dl>
     </template>
     <template #footer>
@@ -419,7 +490,8 @@ onMounted(() => {
             type="danger"
             :loading="retryingId === selected.id"
             @click="retry(selected)"
-          >手动重推</el-button>
+            >手动重推</el-button
+          >
         </div>
       </div>
     </template>

@@ -91,11 +91,13 @@ describe("真实联调前端 API", () => {
   it("清空联调设置只提交单用途令牌且类型契约包含 reset_configuration", async () => {
     const stepUpOperation: VendorStepUpOperation = "reset_configuration"
     const operationType: VendorTestOperation["operation_type"] = "reset_configuration"
-    const fetch = vi.fn().mockResolvedValue(response({
-      operation_id: "00000000-0000-4000-8000-000000000066",
-      operation_type: operationType,
-      status: "requested",
-    }))
+    const fetch = vi.fn().mockResolvedValue(
+      response({
+        operation_id: "00000000-0000-4000-8000-000000000066",
+        operation_type: operationType,
+        status: "requested",
+      }),
+    )
     vi.stubGlobal("fetch", fetch)
 
     await resetVendorTest("reset-step-token")

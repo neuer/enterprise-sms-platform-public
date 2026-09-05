@@ -12,12 +12,7 @@ const infoStates = new Set(["queued", "sending"])
 const dangerStates = new Set(["failed", "rejected", "cancelled", "expired", "dead", "unknown"])
 const warningStates = new Set(["pending", "pending_approval", "scheduled"])
 const successStates = new Set(["completed", "delivered", "approved"])
-const interventionStates = new Set([
-  "uncertain",
-  "unknown_terminal",
-  "completed_unknown",
-  "balance_blocked",
-])
+const interventionStates = new Set(["uncertain", "unknown_terminal", "completed_unknown", "balance_blocked"])
 
 const presentation = computed<{ type: TagType; effect: TagEffect }>(() => {
   if (interventionStates.has(props.status)) return { type: "danger", effect: "dark" }
@@ -30,11 +25,7 @@ const presentation = computed<{ type: TagType; effect: TagEffect }>(() => {
 </script>
 
 <template>
-  <el-tag
-    :type="presentation.type"
-    :effect="presentation.effect"
-    :class="['status-tag', `status-tag--${status}`]"
-  >
+  <el-tag :type="presentation.type" :effect="presentation.effect" :class="['status-tag', `status-tag--${status}`]">
     {{ label || STATUS_LABELS[status] || status }}
   </el-tag>
 </template>

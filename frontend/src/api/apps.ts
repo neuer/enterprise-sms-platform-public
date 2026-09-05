@@ -92,10 +92,7 @@ export function estimateWorstCaseCapacity(input: {
   daily_quota: number
 }): { recipientsPerMin: number; segmentsPerMin: number; dailySegments: number | null } {
   return {
-    recipientsPerMin: Math.min(
-      input.recipient_limit_per_min,
-      input.rate_limit_per_min * MAX_RECIPIENTS_PER_REQUEST,
-    ),
+    recipientsPerMin: Math.min(input.recipient_limit_per_min, input.rate_limit_per_min * MAX_RECIPIENTS_PER_REQUEST),
     segmentsPerMin: input.segment_limit_per_min,
     dailySegments: input.daily_quota > 0 ? input.daily_quota : null,
   }
@@ -103,8 +100,7 @@ export function estimateWorstCaseCapacity(input: {
 
 export const listApps = () => apiRequest<ManagedApp[]>("/admin/apps", { method: "GET" })
 
-export const getApp = (id: number) =>
-  apiRequest<ManagedApp>(`/admin/apps/${id}`, { method: "GET" })
+export const getApp = (id: number) => apiRequest<ManagedApp>(`/admin/apps/${id}`, { method: "GET" })
 
 export const createApp = (payload: AppPayload & { name: string }) =>
   apiRequest<{ id: number; api_key: string; callback_secret: string | null }>("/admin/apps", {
@@ -120,14 +116,12 @@ export const updateApp = (id: number, payload: AppPayload) =>
     body: JSON.stringify(payload),
   })
 
-export const disableApp = (id: number) =>
-  apiRequest<void>(`/admin/apps/${id}`, { method: "DELETE" })
+export const disableApp = (id: number) => apiRequest<void>(`/admin/apps/${id}`, { method: "DELETE" })
 
 export const rotateAppKey = (id: number) =>
   apiRequest<{ api_key: string; old_key_expires_at: string }>(`/admin/apps/${id}/rotate-key`, { method: "POST" })
 
-export const revokeOldAppKey = (id: number) =>
-  apiRequest<void>(`/admin/apps/${id}/revoke-old-key`, { method: "POST" })
+export const revokeOldAppKey = (id: number) => apiRequest<void>(`/admin/apps/${id}/revoke-old-key`, { method: "POST" })
 
 export const rotateCallbackSecret = (id: number) =>
   apiRequest<{ callback_secret: string }>(`/admin/apps/${id}/rotate-callback-secret`, { method: "POST" })

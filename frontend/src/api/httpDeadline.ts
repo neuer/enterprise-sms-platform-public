@@ -36,10 +36,7 @@ export function createDeadline(
     }
   }
   options.callerSignal?.addEventListener("abort", relayAbort, { once: true })
-  const timer = window.setTimeout(
-    () => controller.abort(new DOMException(timeoutMessage, "TimeoutError")),
-    timeoutMs,
-  )
+  const timer = window.setTimeout(() => controller.abort(new DOMException(timeoutMessage, "TimeoutError")), timeoutMs)
   return {
     signal: controller.signal,
     cleanup: () => {
@@ -161,11 +158,7 @@ export async function readLimitedBytes(
   return total === 0 ? null : concatBytes(chunks)
 }
 
-export async function readJsonBody<T>(
-  response: Response,
-  signal: AbortSignal,
-  maxBytes: number,
-): Promise<T | null> {
+export async function readJsonBody<T>(response: Response, signal: AbortSignal, maxBytes: number): Promise<T | null> {
   const bytes = await readLimitedBytes(response, signal, maxBytes)
   if (bytes == null) return null
   let text: string
@@ -188,11 +181,7 @@ type LegacyReadable = {
   blob?: () => Promise<Blob>
 }
 
-async function readLegacyBytes(
-  response: Response,
-  signal: AbortSignal,
-  maxBytes: number,
-): Promise<Uint8Array | null> {
+async function readLegacyBytes(response: Response, signal: AbortSignal, maxBytes: number): Promise<Uint8Array | null> {
   const legacy = response as Response & LegacyReadable
   if (typeof legacy.text === "function") {
     const text = await raceAbort(legacy.text.call(response), signal)
@@ -214,11 +203,7 @@ async function readLegacyBytes(
   throw new HttpBodyError("INVALID_JSON_RESPONSE", "响应不是有效 JSON")
 }
 
-export async function readLimitedBlob(
-  response: Response,
-  signal: AbortSignal,
-  maxBytes: number,
-): Promise<Blob> {
+export async function readLimitedBlob(response: Response, signal: AbortSignal, maxBytes: number): Promise<Blob> {
   if (!response.body) {
     const legacy = response as Response & LegacyReadable
     if (typeof legacy.blob === "function") {

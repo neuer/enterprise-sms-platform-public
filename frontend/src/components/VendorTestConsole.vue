@@ -83,10 +83,11 @@ const errorMessage = computed(() => restoreErrorMessage.value || loadErrorMessag
 const activeApps = computed(() => apps.value.filter((item) => item.status === 1))
 const isControlled = computed(() => status.value?.mode === "controlled")
 const operationBusy = computed(
-  () => operationRestoring.value
-    || operationCompletionRefreshing.value
-    || activeOperation.value?.status === "requested"
-    || activeOperation.value?.status === "running",
+  () =>
+    operationRestoring.value ||
+    operationCompletionRefreshing.value ||
+    activeOperation.value?.status === "requested" ||
+    activeOperation.value?.status === "running",
 )
 const credentialOperation = computed(() =>
   status.value?.credential_configured ? "rotate_credentials" : "install_credentials",
@@ -94,16 +95,15 @@ const credentialOperation = computed(() =>
 const resetAvailable = computed(() => {
   if (!status.value) return false
   if (status.value.pause_kind !== null) return false
-  return ["inactive", "controlled"].includes(status.value.mode)
-    && status.value.credential_configured
+  return ["inactive", "controlled"].includes(status.value.mode) && status.value.credential_configured
 })
-const resetOperationPending = computed(() =>
-  activeOperation.value?.operation_type === "reset_configuration"
-  && (activeOperation.value.status === "requested" || activeOperation.value.status === "running"),
+const resetOperationPending = computed(
+  () =>
+    activeOperation.value?.operation_type === "reset_configuration" &&
+    (activeOperation.value.status === "requested" || activeOperation.value.status === "running"),
 )
-const resetOperationFailed = computed(() =>
-  activeOperation.value?.operation_type === "reset_configuration"
-  && activeOperation.value.status === "failed",
+const resetOperationFailed = computed(
+  () => activeOperation.value?.operation_type === "reset_configuration" && activeOperation.value.status === "failed",
 )
 
 const statusPresentation = computed(() => {
@@ -191,11 +191,11 @@ function rememberedOperation(): Pick<VendorTestOperation, "operation_id" | "oper
     if (typeof parsed !== "object" || parsed === null) throw new Error("invalid operation")
     const candidate = parsed as Record<string, unknown>
     if (
-      Object.keys(candidate).sort().join(",") !== "operation_id,operation_type"
-      || typeof candidate.operation_id !== "string"
-      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.operation_id)
-      || typeof candidate.operation_type !== "string"
-      || !OPERATION_TYPES.has(candidate.operation_type as VendorTestOperation["operation_type"])
+      Object.keys(candidate).sort().join(",") !== "operation_id,operation_type" ||
+      typeof candidate.operation_id !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate.operation_id) ||
+      typeof candidate.operation_type !== "string" ||
+      !OPERATION_TYPES.has(candidate.operation_type as VendorTestOperation["operation_type"])
     ) {
       throw new Error("invalid operation")
     }
@@ -214,9 +214,10 @@ async function restoreOperation(): Promise<void> {
   if (!remembered) return
   operationRestoring.value = true
   try {
-    const operation = remembered.operation_type === "uat_send"
-      ? await getVendorTestUat(remembered.operation_id)
-      : await getVendorTestOperation(remembered.operation_id)
+    const operation =
+      remembered.operation_type === "uat_send"
+        ? await getVendorTestUat(remembered.operation_id)
+        : await getVendorTestOperation(remembered.operation_id)
     if (disposed) return
     activeOperation.value = operation
     restoreErrorMessage.value = ""
@@ -254,8 +255,8 @@ function finishOperation(operation: VendorTestOperation): void {
   if (operation.status === "failed") {
     if (operation.operation_type === "reset_configuration") {
       ElMessage.error(
-        `切回 Mock 未确认完成：${operation.safe_code || "RESET_FAILED"}；`
-        + "测试环境可能处于部分切换状态，请勿发送，并按安全代码恢复同一操作",
+        `切回 Mock 未确认完成：${operation.safe_code || "RESET_FAILED"}；` +
+          "测试环境可能处于部分切换状态，请勿发送，并按安全代码恢复同一操作",
       )
     } else if (operation.vendor_code !== null) {
       ElMessage.error(`运营商返回错误代码 ${operation.vendor_code}`)
@@ -278,9 +279,10 @@ async function pollOperation(): Promise<void> {
   const current = activeOperation.value
   if (!current || disposed) return
   try {
-    const next = current.operation_type === "uat_send"
-      ? await getVendorTestUat(current.operation_id)
-      : await getVendorTestOperation(current.operation_id)
+    const next =
+      current.operation_type === "uat_send"
+        ? await getVendorTestUat(current.operation_id)
+        : await getVendorTestOperation(current.operation_id)
     if (disposed || activeOperation.value?.operation_id !== next.operation_id) return
     pollFailureNotified = false
     activeOperation.value = next
@@ -356,11 +358,12 @@ async function submitStepUp(): Promise<void> {
   controlBusy.value = true
   try {
     const token = await issueVendorTestStepUp(action, stepUpPassword.value)
-    const operation = action === "activate"
-      ? await activateVendorTest(token.token)
-      : action === "reset_configuration"
-        ? await resetVendorTest(token.token)
-        : await resumeVendorTest(token.token)
+    const operation =
+      action === "activate"
+        ? await activateVendorTest(token.token)
+        : action === "reset_configuration"
+          ? await resetVendorTest(token.token)
+          : await resumeVendorTest(token.token)
     stepUpVisible.value = false
     trackOperation(operation)
   } catch (error) {
@@ -373,11 +376,11 @@ async function submitStepUp(): Promise<void> {
 
 async function pause(): Promise<void> {
   try {
-    await ElMessageBox.confirm(
-      "暂停后真实出口立即关闭；已提交或结果未知的批次不会自动重发。",
-      "人工暂停真实联调",
-      { type: "warning", confirmButtonText: "立即暂停", cancelButtonText: "保持运行" },
-    )
+    await ElMessageBox.confirm("暂停后真实出口立即关闭；已提交或结果未知的批次不会自动重发。", "人工暂停真实联调", {
+      type: "warning",
+      confirmButtonText: "立即暂停",
+      cancelButtonText: "保持运行",
+    })
     controlBusy.value = true
     trackOperation(await pauseVendorTest())
   } catch (error) {
@@ -396,11 +399,11 @@ async function resume(): Promise<void> {
   }
   if (status.value?.pause_kind === "critical") {
     try {
-      await ElMessageBox.confirm(
-        "确认已完成余额或运营商错误处置。恢复前系统会再次检查余额。",
-        "恢复安全阻断",
-        { type: "warning", confirmButtonText: "进入二次认证", cancelButtonText: "继续阻断" },
-      )
+      await ElMessageBox.confirm("确认已完成余额或运营商错误处置。恢复前系统会再次检查余额。", "恢复安全阻断", {
+        type: "warning",
+        confirmButtonText: "进入二次认证",
+        cancelButtonText: "继续阻断",
+      })
       stepUpAction.value = "resume_critical"
       stepUpVisible.value = true
     } catch {
@@ -409,11 +412,11 @@ async function resume(): Promise<void> {
     return
   }
   try {
-    await ElMessageBox.confirm(
-      "确认恢复人工暂停并重新开放已登记号码的真实 UAT。",
-      "恢复受控联调",
-      { type: "warning", confirmButtonText: "恢复联调", cancelButtonText: "继续暂停" },
-    )
+    await ElMessageBox.confirm("确认恢复人工暂停并重新开放已登记号码的真实 UAT。", "恢复受控联调", {
+      type: "warning",
+      confirmButtonText: "恢复联调",
+      cancelButtonText: "继续暂停",
+    })
     controlBusy.value = true
     trackOperation(await resumeVendorTest())
   } catch (error) {
@@ -468,9 +471,7 @@ async function submitIndexRefresh(): Promise<void> {
   refreshBusy.value = true
   try {
     const refreshed = await refreshVendorTestRecipientIndex(recipient.id, phone)
-    recipients.value = recipients.value.map((item) =>
-      item.id === refreshed.id ? refreshed : item,
-    )
+    recipients.value = recipients.value.map((item) => (item.id === refreshed.id ? refreshed : item))
     refreshVisible.value = false
     ElMessage.success("号码索引已覆盖当前全部密钥版本")
   } catch (error) {
@@ -508,10 +509,18 @@ onBeforeUnmount(() => {
         <p>{{ statusPresentation.detail }}</p>
       </div>
       <dl v-if="status">
-        <div><dt>凭据</dt><dd>{{ status.credential_configured ? '正式凭据已安装' : '正式凭据未安装' }}</dd></div>
-        <div><dt>收件人</dt><dd>{{ status.active_recipient_count }} 个已登记</dd></div>
-        <div><dt>预算</dt><dd>{{ status.daily_limit }} 条/日</dd></div>
-        <div><dt>心跳</dt><dd>{{ formatDateTime(status.heartbeat_at, "状态时间无效") }}</dd></div>
+        <div
+          ><dt>凭据</dt><dd>{{ status.credential_configured ? "正式凭据已安装" : "正式凭据未安装" }}</dd></div
+        >
+        <div
+          ><dt>收件人</dt><dd>{{ status.active_recipient_count }} 个已登记</dd></div
+        >
+        <div
+          ><dt>预算</dt><dd>{{ status.daily_limit }} 条/日</dd></div
+        >
+        <div
+          ><dt>心跳</dt><dd>{{ formatDateTime(status.heartbeat_at, "状态时间无效") }}</dd></div
+        >
       </dl>
     </header>
 
@@ -531,29 +540,38 @@ onBeforeUnmount(() => {
 
         <div class="vendor-readiness-list">
           <div :class="{ ready: status?.credential_configured }">
-            <span>01</span><div><strong>正式凭据</strong><small>{{ status?.credential_configured ? '已安装，不回显任何值' : '尚未安装' }}</small></div>
+            <span>01</span
+            ><div
+              ><strong>正式凭据</strong
+              ><small>{{ status?.credential_configured ? "已安装，不回显任何值" : "尚未安装" }}</small></div
+            >
           </div>
           <div :class="{ ready: activeRecipients.length > 0 }">
-            <span>02</span><div><strong>测试收件人</strong><small>{{ activeRecipients.length }} 个有效掩码号码</small></div>
+            <span>02</span
+            ><div
+              ><strong>测试收件人</strong><small>{{ activeRecipients.length }} 个有效掩码号码</small></div
+            >
           </div>
           <div :class="{ ready: isControlled }">
-            <span>03</span><div><strong>真实出口</strong><small>{{ isControlled ? '已受控开放' : '保持关闭' }}</small></div>
+            <span>03</span
+            ><div
+              ><strong>真实出口</strong><small>{{ isControlled ? "已受控开放" : "保持关闭" }}</small></div
+            >
           </div>
         </div>
 
         <div class="vendor-test-actions">
-          <el-button
-            data-testid="vendor-credentials"
-            :disabled="operationBusy"
-            @click="credentialDialog = true"
-          >{{ status?.credential_configured ? '轮换正式凭据' : '安装正式凭据' }}</el-button>
+          <el-button data-testid="vendor-credentials" :disabled="operationBusy" @click="credentialDialog = true">{{
+            status?.credential_configured ? "轮换正式凭据" : "安装正式凭据"
+          }}</el-button>
           <el-button
             v-if="status?.mode === 'inactive'"
             data-testid="vendor-activate"
             type="primary"
             :disabled="!status.credential_configured || activeRecipients.length < 1 || operationBusy"
             @click="requestActivation"
-          >二次认证并激活</el-button>
+            >二次认证并激活</el-button
+          >
           <el-button
             v-if="resetAvailable"
             data-testid="vendor-reset"
@@ -562,7 +580,8 @@ onBeforeUnmount(() => {
             plain
             :disabled="operationBusy || controlBusy"
             @click="requestReset"
-          >切回 Mock</el-button>
+            >切回 Mock</el-button
+          >
           <el-button
             v-if="isControlled"
             data-testid="vendor-pause"
@@ -570,14 +589,16 @@ onBeforeUnmount(() => {
             plain
             :disabled="operationBusy || controlBusy"
             @click="pause"
-          >人工暂停</el-button>
+            >人工暂停</el-button
+          >
           <el-button
             v-if="status?.mode === 'blocked'"
             data-testid="vendor-resume"
             type="primary"
             :disabled="status.pause_kind === 'daily' || operationBusy || controlBusy"
             @click="resume"
-          >{{ status.pause_kind === 'critical' ? '处置后认证恢复' : '恢复联调' }}</el-button>
+            >{{ status.pause_kind === "critical" ? "处置后认证恢复" : "恢复联调" }}</el-button
+          >
         </div>
 
         <section class="vendor-recipient-panel">
@@ -587,13 +608,17 @@ onBeforeUnmount(() => {
               data-testid="vendor-add-recipient"
               :disabled="isControlled || operationBusy"
               @click="recipientDialog = true"
-            >登记号码</el-button>
+              >登记号码</el-button
+            >
           </header>
           <div v-if="recipients.length" class="vendor-recipient-list">
             <article v-for="recipient in recipients" :key="recipient.id">
-              <div><strong>{{ recipient.label }}</strong><PhoneMask :value="recipient.phone_mask" /></div>
+              <div
+                ><strong>{{ recipient.label }}</strong
+                ><PhoneMask :value="recipient.phone_mask"
+              /></div>
               <el-tag :type="recipient.status === 'active' ? 'success' : 'info'" size="small">
-                {{ recipient.status === 'active' ? '有效' : '已停用' }}
+                {{ recipient.status === "active" ? "有效" : "已停用" }}
               </el-tag>
               <div v-if="recipient.status === 'active'" class="vendor-recipient-actions">
                 <el-button
@@ -602,13 +627,15 @@ onBeforeUnmount(() => {
                   :data-testid="`vendor-refresh-recipient-${recipient.id}`"
                   :disabled="operationBusy"
                   @click="openIndexRefresh(recipient)"
-                >刷新索引</el-button>
+                  >刷新索引</el-button
+                >
                 <el-button
                   link
                   type="danger"
                   :disabled="isControlled || operationBusy"
                   @click="disableRecipient(recipient)"
-                >停用</el-button>
+                  >停用</el-button
+                >
               </div>
             </article>
           </div>
@@ -636,9 +663,15 @@ onBeforeUnmount(() => {
       <div class="vendor-operation-state" :class="activeOperation.status">
         <i></i><strong>{{ operationStatusLabel(activeOperation.status) }}</strong>
       </div>
-      <div v-if="activeOperation.batch_no"><span>批次引用</span><code>{{ activeOperation.batch_no }}</code></div>
-      <div v-if="activeOperation.safe_code"><span>安全代码</span><code>{{ activeOperation.safe_code }}</code></div>
-      <div v-if="activeOperation.vendor_code !== null"><span>运营商错误代码</span><code>{{ activeOperation.vendor_code }}</code></div>
+      <div v-if="activeOperation.batch_no"
+        ><span>批次引用</span><code>{{ activeOperation.batch_no }}</code></div
+      >
+      <div v-if="activeOperation.safe_code"
+        ><span>安全代码</span><code>{{ activeOperation.safe_code }}</code></div
+      >
+      <div v-if="activeOperation.vendor_code !== null"
+        ><span>运营商错误代码</span><code>{{ activeOperation.vendor_code }}</code></div
+      >
       <p v-if="resetOperationPending" class="vendor-operation-guidance">
         正在切回 Mock，请勿发送或重复操作；切换前历史未决记录会保留。
       </p>
@@ -647,11 +680,7 @@ onBeforeUnmount(() => {
       </p>
     </section>
 
-    <VendorCredentialDialog
-      v-model="credentialDialog"
-      :operation="credentialOperation"
-      @operation="trackOperation"
-    />
+    <VendorCredentialDialog v-model="credentialDialog" :operation="credentialOperation" @operation="trackOperation" />
     <VendorTestRecipientDialog v-model="recipientDialog" @added="recipientAdded" />
 
     <el-dialog
@@ -664,8 +693,9 @@ onBeforeUnmount(() => {
     >
       <div v-if="refreshVisible" class="vendor-sensitive-form">
         <p>
-          数据密钥轮换后，请重新输入 <PhoneMask v-if="refreshRecipient" :value="refreshRecipient.phone_mask" /> 对应的同一号码。
-          系统只重建跨版本 HMAC 索引，不解密或回显历史号码。
+          数据密钥轮换后，请重新输入
+          <PhoneMask v-if="refreshRecipient" :value="refreshRecipient.phone_mask" /> 对应的同一号码。 系统只重建跨版本
+          HMAC 索引，不解密或回显历史号码。
         </p>
         <el-input
           v-model="refreshPhone"
@@ -680,22 +710,21 @@ onBeforeUnmount(() => {
       </div>
       <template #footer>
         <el-button :disabled="refreshBusy" @click="refreshVisible = false">保留现状</el-button>
-        <el-button
-          data-testid="vendor-refresh-submit"
-          type="primary"
-          :loading="refreshBusy"
-          @click="submitIndexRefresh"
-        >确认刷新</el-button>
+        <el-button data-testid="vendor-refresh-submit" type="primary" :loading="refreshBusy" @click="submitIndexRefresh"
+          >确认刷新</el-button
+        >
       </template>
     </el-dialog>
 
     <el-dialog
       v-model="stepUpVisible"
-      :title="stepUpAction === 'activate'
-        ? '二次认证激活'
-        : stepUpAction === 'reset_configuration'
-          ? '切回 Mock'
-          : '二次认证恢复'"
+      :title="
+        stepUpAction === 'activate'
+          ? '二次认证激活'
+          : stepUpAction === 'reset_configuration'
+            ? '切回 Mock'
+            : '二次认证恢复'
+      "
       width="440px"
       destroy-on-close
       append-to-body
@@ -720,8 +749,8 @@ onBeforeUnmount(() => {
             全部版本。生产环境的配置、凭据、服务和数据不受影响。
           </p>
           <p>
-            保留全部加密测试号码及其索引，也保留管理员、短信业务数据、审计记录、当日 UAT 用量、
-            uncertain 占额、数据库、Docker volume 和运行态目录；切换前已发送、待回执、uncertain
+            保留全部加密测试号码及其索引，也保留管理员、短信业务数据、审计记录、当日 UAT 用量、 uncertain
+            占额、数据库、Docker volume 和运行态目录；切换前已发送、待回执、uncertain
             或被错误环境消费的历史状态不会自动修复。这不是系统初始化。
           </p>
         </el-alert>
@@ -730,9 +759,9 @@ onBeforeUnmount(() => {
           <el-form-item label="当前 Provider 密码" required>
             <el-input
               v-model="stepUpPassword"
-              :data-testid="stepUpAction === 'reset_configuration'
-                ? 'vendor-reset-password'
-                : 'vendor-step-up-password'"
+              :data-testid="
+                stepUpAction === 'reset_configuration' ? 'vendor-reset-password' : 'vendor-step-up-password'
+              "
               type="password"
               autocomplete="current-password"
               spellcheck="false"
@@ -759,18 +788,21 @@ onBeforeUnmount(() => {
           :data-testid="stepUpAction === 'reset_configuration' ? 'vendor-reset-cancel' : undefined"
           :disabled="controlBusy"
           @click="closeStepUp"
-        >{{ stepUpAction === 'reset_configuration' ? '保留现状' : '继续检查' }}</el-button>
+          >{{ stepUpAction === "reset_configuration" ? "保留现状" : "继续检查" }}</el-button
+        >
         <el-button
           :data-testid="stepUpAction === 'reset_configuration' ? 'vendor-reset-submit' : undefined"
           :type="stepUpAction === 'reset_configuration' ? 'danger' : 'primary'"
           :loading="controlBusy"
           @click="submitStepUp"
         >
-          {{ stepUpAction === 'activate'
-            ? '验证并激活'
-            : stepUpAction === 'reset_configuration'
-              ? '验证并切回 Mock'
-              : '验证并恢复' }}
+          {{
+            stepUpAction === "activate"
+              ? "验证并激活"
+              : stepUpAction === "reset_configuration"
+                ? "验证并切回 Mock"
+                : "验证并恢复"
+          }}
         </el-button>
       </template>
     </el-dialog>

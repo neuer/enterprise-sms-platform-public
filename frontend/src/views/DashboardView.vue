@@ -1,12 +1,7 @@
 <script setup lang="ts">
-
 import { computed, onMounted, ref } from "vue"
 
-import {
-  getDashboard,
-  type DashboardChannelMonitor,
-  type DashboardSnapshot,
-} from "../api/dashboard"
+import { getDashboard, type DashboardChannelMonitor, type DashboardSnapshot } from "../api/dashboard"
 import BalanceChart from "../components/BalanceChart.vue"
 import ChannelMonitor from "../components/ChannelMonitor.vue"
 import EmptyState from "../components/EmptyState.vue"
@@ -22,12 +17,14 @@ const errorMessage = ref("")
 const lastChannelSuccessAt = ref<string | null>(null)
 
 const totalMessages = computed(() => snapshot.value?.categories.reduce((sum, item) => sum + item.total, 0) ?? 0)
-const totalSegments = computed(() => snapshot.value?.categories.reduce((sum, item) => sum + item.total_segments, 0) ?? 0)
+const totalSegments = computed(
+  () => snapshot.value?.categories.reduce((sum, item) => sum + item.total_segments, 0) ?? 0,
+)
 const operations = computed(() => snapshot.value?.operations)
 const balanceThreshold = computed(() => operations.value?.balance_alert_threshold ?? null)
-const balanceThresholdLabel = computed(() => balanceThreshold.value === null
-  ? "告警阈值暂不可用"
-  : `告警阈值 ${balanceThreshold.value.toLocaleString()}`)
+const balanceThresholdLabel = computed(() =>
+  balanceThreshold.value === null ? "告警阈值暂不可用" : `告警阈值 ${balanceThreshold.value.toLocaleString()}`,
+)
 const stalledJobs = computed(() => operations.value?.jobs.filter((item) => item.stalled) ?? [])
 const healthyJobCount = computed(() => (operations.value?.jobs.length ?? 0) - stalledJobs.value.length)
 const balancePollJob = computed(() => operations.value?.jobs.find((item) => item.job_name === "poll_balance") ?? null)
@@ -81,9 +78,11 @@ async function load(): Promise<void> {
     }
     snapshot.value = result
     if (result.operations) {
-      window.dispatchEvent(new CustomEvent("sms:dashboard-balance", {
-        detail: { currentBalance: result.operations.current_balance },
-      }))
+      window.dispatchEvent(
+        new CustomEvent("sms:dashboard-balance", {
+          detail: { currentBalance: result.operations.current_balance },
+        }),
+      )
     }
   } catch (error) {
     if (snapshot.value?.operations) {
@@ -137,9 +136,15 @@ onMounted(refreshPolling.start)
           <strong>{{ totalMessages.toLocaleString() }}</strong>
           <small>{{ totalSegments.toLocaleString() }} 计费条</small>
           <div class="category-strip" aria-label="分类消息量">
-            <span v-for="item in snapshot.categories" :key="item.category" :class="item.category" :style="{ flexGrow: Math.max(item.total, 1) }" :title="`${CATEGORY_LABELS[item.category]} ${item.total}`"></span>
+            <span
+              v-for="item in snapshot.categories"
+              :key="item.category"
+              :class="item.category"
+              :style="{ flexGrow: Math.max(item.total, 1) }"
+              :title="`${CATEGORY_LABELS[item.category]} ${item.total}`"
+            ></span>
           </div>
-          <p>{{ snapshot.categories.map(item => `${CATEGORY_LABELS[item.category]} ${item.total}`).join(' · ') }}</p>
+          <p>{{ snapshot.categories.map((item) => `${CATEGORY_LABELS[item.category]} ${item.total}`).join(" · ") }}</p>
         </el-card>
       </router-link>
       <router-link to="/reports" class="metric-link" data-testid="metric-success">
@@ -151,7 +156,9 @@ onMounted(refreshPolling.start)
           <div class="rate-rows" aria-label="分类目成功率">
             <div v-for="item in snapshot.categories" :key="item.category" class="rate-row">
               <span>{{ CATEGORY_LABELS[item.category] }}</span>
-              <div class="rate-track"><i :class="item.category" :style="{ width: `${Math.min(100, item.success_rate * 100)}%` }"></i></div>
+              <div class="rate-track"
+                ><i :class="item.category" :style="{ width: `${Math.min(100, item.success_rate * 100)}%` }"></i
+              ></div>
               <b>{{ (item.success_rate * 100).toFixed(1) }}%</b>
             </div>
           </div>
@@ -169,11 +176,16 @@ onMounted(refreshPolling.start)
         <el-card
           shadow="never"
           class="metric-card"
-          :class="{ danger: operations.current_balance !== null && balanceThreshold !== null && operations.current_balance < balanceThreshold }"
+          :class="{
+            danger:
+              operations.current_balance !== null &&
+              balanceThreshold !== null &&
+              operations.current_balance < balanceThreshold,
+          }"
         >
           <span>厂商余额</span>
           <span class="kpi-go">→ 余额</span>
-          <strong>{{ operations.current_balance?.toLocaleString() ?? '—' }}</strong>
+          <strong>{{ operations.current_balance?.toLocaleString() ?? "—" }}</strong>
           <small>计费条 · {{ balanceThresholdLabel }}</small>
           <p class="balance-runway">{{ balanceRunwayLabel }}</p>
         </el-card>
@@ -182,7 +194,12 @@ onMounted(refreshPolling.start)
 
     <section class="dashboard-main-grid" :class="{ 'single-column': !operations }">
       <el-card shadow="never" class="dashboard-panel trend-panel">
-        <template #header><div class="panel-title"><div><strong>近 7 日发送趋势</strong><small>按类目 · 消息条数</small></div><router-link to="/reports" class="panel-jump">报表 →</router-link></div></template>
+        <template #header
+          ><div class="panel-title"
+            ><div><strong>近 7 日发送趋势</strong><small>按类目 · 消息条数</small></div
+            ><router-link to="/reports" class="panel-jump">报表 →</router-link></div
+          ></template
+        >
         <TrendChart v-if="snapshot.trend?.length" :points="snapshot.trend" />
         <div v-if="snapshot.trend?.length" class="trend-legend">
           <span><i class="verify"></i>验证码</span>
@@ -192,16 +209,35 @@ onMounted(refreshPolling.start)
         <EmptyState v-else title="趋势暂不可用" description="统计聚合任务每日运行后生成趋势。" />
       </el-card>
       <el-card v-if="operations" shadow="never" class="dashboard-panel balance-panel">
-        <template #header><div class="panel-title"><div><strong>厂商余额</strong><small>近 14 日 · 每日末值</small></div><router-link to="/reports" class="panel-jump">详情 →</router-link></div></template>
+        <template #header
+          ><div class="panel-title"
+            ><div><strong>厂商余额</strong><small>近 14 日 · 每日末值</small></div
+            ><router-link to="/reports" class="panel-jump">详情 →</router-link></div
+          ></template
+        >
         <template v-if="operations.balances.length">
           <div class="balance-summary">
-            <strong class="balance-now">{{ operations.current_balance?.toLocaleString() ?? '—' }}<small>计费条</small></strong>
+            <strong class="balance-now"
+              >{{ operations.current_balance?.toLocaleString() ?? "—" }}<small>计费条</small></strong
+            >
             <BalanceChart :points="operations.balances" />
             <div class="balance-meta">
-              <div><span>告警阈值</span><b>{{ balanceThreshold?.toLocaleString() ?? '—' }}</b></div>
-              <div><span>日均消耗（14 日）</span><b>{{ balanceStats ? `≈ ${Math.round(balanceStats.daily).toLocaleString()}` : '—' }}</b></div>
-              <div><span>预计可用</span><b :class="{ warn: balanceStats?.runway != null && balanceStats.runway <= 30 }">{{ balanceStats?.runway != null ? `≈ ${balanceStats.runway} 天` : '—' }}</b></div>
-              <div><span>余额轮询</span><b :class="{ warn: balancePollJob?.stalled }">{{ balancePollLabel }}</b></div>
+              <div
+                ><span>告警阈值</span><b>{{ balanceThreshold?.toLocaleString() ?? "—" }}</b></div
+              >
+              <div
+                ><span>日均消耗（14 日）</span
+                ><b>{{ balanceStats ? `≈ ${Math.round(balanceStats.daily).toLocaleString()}` : "—" }}</b></div
+              >
+              <div
+                ><span>预计可用</span
+                ><b :class="{ warn: balanceStats?.runway != null && balanceStats.runway <= 30 }">{{
+                  balanceStats?.runway != null ? `≈ ${balanceStats.runway} 天` : "—"
+                }}</b></div
+              >
+              <div
+                ><span>余额轮询</span><b :class="{ warn: balancePollJob?.stalled }">{{ balancePollLabel }}</b></div
+              >
             </div>
           </div>
         </template>
@@ -211,11 +247,7 @@ onMounted(refreshPolling.start)
 
     <template v-if="operations">
       <div class="zone-label"><span>运行健康 · 实时</span></div>
-      <router-link
-        to="/ops?tab=queue"
-        class="channel-monitor-link"
-        data-testid="channel-monitor-link"
-      >
+      <router-link to="/ops?tab=queue" class="channel-monitor-link" data-testid="channel-monitor-link">
         <ChannelMonitor
           :realtime-queue="operations.channel_monitor.realtime_queue"
           :bulk-queue="operations.channel_monitor.bulk_queue"
@@ -231,21 +263,55 @@ onMounted(refreshPolling.start)
 
       <section class="ops-grid" aria-label="运行健康明细">
         <el-card shadow="never" class="dashboard-panel alert-panel">
-          <template #header><div class="panel-title"><div><strong>当前告警</strong><small>实时状态摘要，仅展示标题</small></div><router-link to="/ops?tab=alerts" class="panel-jump">查看全部</router-link></div></template>
+          <template #header
+            ><div class="panel-title"
+              ><div><strong>当前告警</strong><small>实时状态摘要，仅展示标题</small></div
+              ><router-link to="/ops?tab=alerts" class="panel-jump">查看全部</router-link></div
+            ></template
+          >
           <ul v-if="operations.alerts.length" class="alert-list">
-            <li v-for="item in operations.alerts" :key="`${item.created_at}-${item.title}`"><i :class="item.level"></i><div><strong>{{ item.title }}</strong><time>{{ formatHms(item.created_at) }}</time></div></li>
+            <li v-for="item in operations.alerts" :key="`${item.created_at}-${item.title}`"
+              ><i :class="item.level"></i
+              ><div
+                ><strong>{{ item.title }}</strong
+                ><time>{{ formatHms(item.created_at) }}</time></div
+              ></li
+            >
           </ul>
           <EmptyState v-else title="当前没有未恢复告警" description="已登记的权威运行状态均为正常。" />
         </el-card>
 
         <el-card shadow="never" class="dashboard-panel disposition-panel">
-          <template #header><div class="panel-title"><div><strong>待处置</strong><small>需人工跟进的运行项</small></div><router-link to="/ops" class="panel-jump">运维台</router-link></div></template>
+          <template #header
+            ><div class="panel-title"
+              ><div><strong>待处置</strong><small>需人工跟进的运行项</small></div
+              ><router-link to="/ops" class="panel-jump">运维台</router-link></div
+            ></template
+          >
           <div class="disposition-rows">
             <router-link
               v-for="item in [
-                { key: 'uncertain', tab: 'uncertain', label: 'uncertain', value: operations.dispositions.uncertain, note: '结果未知分片，禁止自动重发' },
-                { key: 'unmatched', tab: 'unmatched', label: 'unmatched', value: operations.dispositions.unmatched, note: '无主回执，等待迁移对账' },
-                { key: 'callback_dead', tab: 'callbacks', label: 'callback dead', value: operations.dispositions.callback_dead, note: '回调五次失败，需人工重推' },
+                {
+                  key: 'uncertain',
+                  tab: 'uncertain',
+                  label: 'uncertain',
+                  value: operations.dispositions.uncertain,
+                  note: '结果未知分片，禁止自动重发',
+                },
+                {
+                  key: 'unmatched',
+                  tab: 'unmatched',
+                  label: 'unmatched',
+                  value: operations.dispositions.unmatched,
+                  note: '无主回执，等待迁移对账',
+                },
+                {
+                  key: 'callback_dead',
+                  tab: 'callbacks',
+                  label: 'callback dead',
+                  value: operations.dispositions.callback_dead,
+                  note: '回调五次失败，需人工重推',
+                },
               ]"
               :key="item.key"
               class="disposition-link"
@@ -253,16 +319,25 @@ onMounted(refreshPolling.start)
               :data-testid="`disposition-${item.key}`"
             >
               <div class="disposition-row" :class="{ active: item.value > 0 }">
-                <strong>{{ item.value }}</strong><span>{{ item.label }}</span><small>{{ item.note }}</small>
+                <strong>{{ item.value }}</strong
+                ><span>{{ item.label }}</span
+                ><small>{{ item.note }}</small>
               </div>
             </router-link>
           </div>
         </el-card>
 
         <el-card shadow="never" class="dashboard-panel jobs-panel">
-          <template #header><div class="panel-title"><div><strong>任务健康</strong><small>超过预期间隔 ×2 或最近失败为异常</small></div><router-link to="/ops?tab=jobs" class="panel-jump">全部任务 →</router-link></div></template>
+          <template #header
+            ><div class="panel-title"
+              ><div><strong>任务健康</strong><small>超过预期间隔 ×2 或最近失败为异常</small></div
+              ><router-link to="/ops?tab=jobs" class="panel-jump">全部任务 →</router-link></div
+            ></template
+          >
           <div class="jobs-sum">
-            <b>{{ healthyJobCount }}<span> / {{ operations.jobs.length }}</span></b>
+            <b
+              >{{ healthyJobCount }}<span> / {{ operations.jobs.length }}</span></b
+            >
             <span>正常</span>
           </div>
           <article v-for="job in stalledJobs" :key="job.job_name" class="job-alert">
@@ -270,11 +345,17 @@ onMounted(refreshPolling.start)
             <p>{{ jobDescription(job.job_name) }}</p>
             <time>最后运行 {{ formatDateTime(job.last_run_at, "尚未运行") }}</time>
           </article>
-          <p class="jobs-ok">{{ stalledJobs.length ? '其余任务均在预期间隔内运行；默认只显示异常项，不再平铺全部。' : '全部任务均在预期间隔内运行。' }}</p>
+          <p class="jobs-ok">{{
+            stalledJobs.length
+              ? "其余任务均在预期间隔内运行；默认只显示异常项，不再平铺全部。"
+              : "全部任务均在预期间隔内运行。"
+          }}</p>
         </el-card>
       </section>
     </template>
   </div>
 
-  <el-card v-else-if="!errorMessage" v-loading="loading" shadow="never" class="empty-panel dashboard-loading"><el-skeleton :rows="8" animated /></el-card>
+  <el-card v-else-if="!errorMessage" v-loading="loading" shadow="never" class="empty-panel dashboard-loading"
+    ><el-skeleton :rows="8" animated
+  /></el-card>
 </template>

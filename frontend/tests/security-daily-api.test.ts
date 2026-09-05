@@ -34,16 +34,34 @@ describe("安全日报 API client", () => {
     )
 
     fetch.mockResolvedValueOnce(
-      new Response(JSON.stringify({ request_id: "id", report_date: "2026-07-15", action: "send", state: "pending", idempotent: false }), {
-        status: 202,
-        headers: { "Content-Type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({
+          request_id: "id",
+          report_date: "2026-07-15",
+          action: "send",
+          state: "pending",
+          idempotent: false,
+        }),
+        {
+          status: 202,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
     )
     fetch.mockResolvedValueOnce(
-      new Response(JSON.stringify({ request_id: "id-2", report_date: "2026-07-15", action: "retry", state: "pending", idempotent: false }), {
-        status: 202,
-        headers: { "Content-Type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({
+          request_id: "id-2",
+          report_date: "2026-07-15",
+          action: "retry",
+          state: "pending",
+          idempotent: false,
+        }),
+        {
+          status: 202,
+          headers: { "Content-Type": "application/json" },
+        },
+      ),
     )
     await sendSecurityDailyReport(42)
     expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/admin/security-daily/reports/42/send")
@@ -55,24 +73,31 @@ describe("安全日报 API client", () => {
   })
 
   it("通过专用配置接口提交 Resend Key 和收件人", async () => {
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({
-          enabled: true,
-          recipients: ["ops@example.com"],
-          resend_api_key_configured: true,
-          sender_domain: "reports.neuer.cn",
-          sender_address: "security-daily@reports.neuer.cn",
-        }), { status: 200, headers: { "Content-Type": "application/json" } }),
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            recipients: ["ops@example.com"],
+            resend_api_key_configured: true,
+            sender_domain: "reports.neuer.cn",
+            sender_address: "security-daily@reports.neuer.cn",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({
-          enabled: true,
-          recipients: ["ops@example.com"],
-          resend_api_key_configured: true,
-          sender_domain: "reports.neuer.cn",
-          sender_address: "security-daily@reports.neuer.cn",
-        }), { status: 200, headers: { "Content-Type": "application/json" } }),
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            recipients: ["ops@example.com"],
+            resend_api_key_configured: true,
+            sender_domain: "reports.neuer.cn",
+            sender_address: "security-daily@reports.neuer.cn",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
       )
     vi.stubGlobal("fetch", fetch)
 

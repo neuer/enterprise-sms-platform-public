@@ -13,30 +13,55 @@
   background: #dce3dc;
   border-color: #dce3dc;
 }
-[data-theme="light"] .el-overlay { background: var(--el-mask-color); }
-[data-theme="light"] .el-drawer { box-shadow: -16px 0 48px rgba(21, 32, 26, 0.18); }
+[data-theme="light"] .el-overlay {
+  background: var(--el-mask-color);
+}
+[data-theme="light"] .el-drawer {
+  box-shadow: -16px 0 48px rgba(21, 32, 26, 0.18);
+}
 /* 顶栏随主题走亮色（主视觉层钉了深色背景 #111a16；文字全部走令牌，无需另行覆写） */
-[data-theme="light"] .topbar { background: color-mix(in srgb, var(--paper) 94%, transparent); }
+[data-theme="light"] .topbar {
+  background: color-mix(in srgb, var(--paper) 94%, transparent);
+}
 /* 侧边栏在明亮模式下同样转亮，仅品牌章保留深绿渐变 */
 [data-theme="light"] .sidebar {
   color: var(--tx);
   background: var(--panel);
   scrollbar-color: rgba(21, 32, 26, 0.25) transparent;
 }
-[data-theme="light"] .brand strong { color: var(--tx-hi); }
-[data-theme="light"] .brand small { color: var(--tx-3); }
-[data-theme="light"] .nav-section h2 { color: var(--tx-3); }
-[data-theme="light"] .nav-link { color: var(--tx-2); }
-[data-theme="light"] .nav-link:hover { color: var(--tx-hi); background: rgba(21, 32, 26, 0.05); }
+[data-theme="light"] .brand strong {
+  color: var(--tx-hi);
+}
+[data-theme="light"] .brand small {
+  color: var(--tx-3);
+}
+[data-theme="light"] .nav-section h2 {
+  color: var(--tx-3);
+}
+[data-theme="light"] .nav-link {
+  color: var(--tx-2);
+}
+[data-theme="light"] .nav-link:hover {
+  color: var(--tx-hi);
+  background: rgba(21, 32, 26, 0.05);
+}
 [data-theme="light"] .nav-link.active {
   color: var(--verdi-text);
   background: color-mix(in srgb, var(--verdi) 12%, #ffffff);
   box-shadow: inset 2px 0 var(--verdi);
 }
-[data-theme="light"] .nav-marker { color: var(--tx-3); }
-[data-theme="light"] .nav-link.active .nav-marker { color: var(--verdi-text); }
-[data-theme="light"] .sidebar-foot { color: var(--tx-3); }
-[data-theme="light"] .navigation-close { color: var(--tx-2); }
+[data-theme="light"] .nav-marker {
+  color: var(--tx-3);
+}
+[data-theme="light"] .nav-link.active .nav-marker {
+  color: var(--verdi-text);
+}
+[data-theme="light"] .sidebar-foot {
+  color: var(--tx-3);
+}
+[data-theme="light"] .navigation-close {
+  color: var(--tx-2);
+}
 [data-theme="light"] .disposition-row.active {
   background: color-mix(in srgb, var(--verm) 6%, var(--panel));
   border-color: color-mix(in srgb, var(--verm) 45%, var(--line));
@@ -44,23 +69,37 @@
 
 /* 透明白高光（rgba(255,255,255,…)）在亮底上不可见，统一换成 rgba(21,32,26,…) 深色纱：
    类别卡悬停描边、表格行悬停、徽章/进度轨底色。 */
-[data-theme="light"] .category-switch button:hover:not(:disabled) { border-color: rgba(21, 32, 26, 0.2); }
+[data-theme="light"] .category-switch button:hover:not(:disabled) {
+  border-color: rgba(21, 32, 26, 0.2);
+}
 [data-theme="light"] .el-table,
 [data-theme="light"] .sign-table,
 [data-theme="light"] .template-table,
-[data-theme="light"] .apps-table { --el-table-row-hover-bg-color: rgba(21, 32, 26, 0.04); }
-[data-theme="light"] .approval-table tbody tr:hover { background: rgba(21, 32, 26, 0.04); }
+[data-theme="light"] .apps-table {
+  --el-table-row-hover-bg-color: rgba(21, 32, 26, 0.04);
+}
+[data-theme="light"] .approval-table tbody tr:hover {
+  background: rgba(21, 32, 26, 0.04);
+}
 [data-theme="light"] .message-badge-tag,
-[data-theme="light"] .apps-key-tag { background: rgba(21, 32, 26, 0.05); }
-[data-theme="light"] .apps-quota-bar { background: rgba(21, 32, 26, 0.08); }
+[data-theme="light"] .apps-key-tag {
+  background: rgba(21, 32, 26, 0.05);
+}
+[data-theme="light"] .apps-quota-bar {
+  background: rgba(21, 32, 26, 0.08);
+}
 
 /* 按深色面板调优的浅蓝文字（#6f9bcf/#93b6e0/#cfe3ff）亮底对比不足，向深取 --slate。
    .batch-note 必须排除 .is-warn：后者是琥珀语义且源序在前，不隔离会被本规则压盖。 */
 [data-theme="light"] .cat-tag.notice,
 [data-theme="light"] .template-render-preview em,
 [data-theme="light"] .approval-content-head em,
-[data-theme="light"] .demo-script { color: var(--slate); }
-[data-theme="light"] .batch-note:not(.is-warn) { color: var(--slate); }
+[data-theme="light"] .demo-script {
+  color: var(--slate);
+}
+[data-theme="light"] .batch-note:not(.is-warn) {
+  color: var(--slate);
+}
 
 /* 按深色面板调优的浅朱红文字（#ef9b89/#f0a08c/#d66b6b）亮底对比不足，向深取 --verm。 */
 [data-theme="light"] .approval-seg-count.is-hot,
@@ -73,18 +112,34 @@
 [data-theme="light"] .user-chip-bad,
 [data-theme="light"] .sensitive-tile:hover .sensitive-tile-del,
 [data-theme="light"] .sensitive-tile-del:focus-visible,
-[data-theme="light"] .security-delivery-facts .security-error { color: var(--verm); }
-[data-theme="light"] .security-metric.danger { border-top-color: var(--verm); }
+[data-theme="light"] .security-delivery-facts .security-error {
+  color: var(--verm);
+}
+[data-theme="light"] .security-metric.danger {
+  border-top-color: var(--verm);
+}
 
 /* 深色渐变横幅（审批熔断/安全日报概览）在亮底下反白为令牌浅色渐变，文字随令牌。 */
 [data-theme="light"] .circuit-banner {
   color: var(--tx-hi);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 12%, #ffffff), color-mix(in srgb, var(--amber) 7%, #ffffff));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--amber) 12%, #ffffff),
+    color-mix(in srgb, var(--amber) 7%, #ffffff)
+  );
 }
 [data-theme="light"] .circuit-banner.recovered {
   color: var(--tx-hi);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--verdi) 10%, #ffffff), color-mix(in srgb, var(--verdi) 6%, #ffffff));
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--verdi) 10%, #ffffff),
+    color-mix(in srgb, var(--verdi) 6%, #ffffff)
+  );
 }
 [data-theme="light"] .security-daily-state {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--verdi) 10%, #ffffff), color-mix(in srgb, var(--verdi) 6%, #ffffff));
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--verdi) 10%, #ffffff),
+    color-mix(in srgb, var(--verdi) 6%, #ffffff)
+  );
 }

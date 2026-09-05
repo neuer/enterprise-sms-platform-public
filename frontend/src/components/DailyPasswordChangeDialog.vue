@@ -1,13 +1,5 @@
 <script setup lang="ts">
-import {
-  ElAlert,
-  ElButton,
-  ElDialog,
-  ElForm,
-  ElFormItem,
-  ElInput,
-  ElMessage,
-} from "element-plus"
+import { ElAlert, ElButton, ElDialog, ElForm, ElFormItem, ElInput, ElMessage } from "element-plus"
 import { computed, ref, watch } from "vue"
 
 import { AuthApiError, passwordPolicyRequest, type PasswordPolicy } from "../api/auth"
@@ -104,18 +96,8 @@ async function submit(): Promise<void> {
     :teleported="false"
     @closed="clearSensitiveFields"
   >
-    <ElAlert
-      :title="policy.description"
-      type="info"
-      :closable="false"
-      show-icon
-    />
-    <ElForm
-      data-testid="daily-password-form"
-      class="daily-password-form"
-      label-position="top"
-      @submit.prevent="submit"
-    >
+    <ElAlert :title="policy.description" type="info" :closable="false" show-icon />
+    <ElForm data-testid="daily-password-form" class="daily-password-form" label-position="top" @submit.prevent="submit">
       <ElFormItem label="当前密码">
         <ElInput
           v-model="currentPassword"

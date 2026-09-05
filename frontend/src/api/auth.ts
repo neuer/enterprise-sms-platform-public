@@ -1,13 +1,5 @@
-import {
-  AUTH_JSON_MAX_BYTES,
-  HttpBodyError,
-  fetchJsonWithDeadline,
-} from "./httpDeadline"
-import {
-  beginRefreshTabBinding,
-  clearRefreshTabBinding,
-  getRefreshTabBinding,
-} from "./sessionTokens"
+import { AUTH_JSON_MAX_BYTES, HttpBodyError, fetchJsonWithDeadline } from "./httpDeadline"
+import { beginRefreshTabBinding, clearRefreshTabBinding, getRefreshTabBinding } from "./sessionTokens"
 
 /**
  * 本模块是 pre-auth 流程（登录/刷新/改密/注销），刻意不走 client.ts 的
@@ -174,10 +166,7 @@ export async function refreshRequest(signal?: AbortSignal): Promise<LoginSuccess
   )
 }
 
-export async function initialPasswordChangeRequest(
-  changeToken: string,
-  newPassword: string,
-): Promise<void> {
+export async function initialPasswordChangeRequest(changeToken: string, newPassword: string): Promise<void> {
   await authJson("/api/v1/web/auth/password/initial", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

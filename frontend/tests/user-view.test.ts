@@ -244,8 +244,7 @@ describe("用户与角色", () => {
     })
     await flushPromises()
 
-    const created = () =>
-      fetch.mock.calls.filter(([url]) => url === "/api/v1/web/admin/users/local").length
+    const created = () => fetch.mock.calls.filter(([url]) => url === "/api/v1/web/admin/users/local").length
 
     await wrapper.get("[data-testid='create-local-user']").trigger("click")
     const save = () => wrapper.get("[data-testid='save-local-user']")
@@ -288,9 +287,7 @@ describe("用户与角色", () => {
     await flushPromises()
 
     const listCalls = () =>
-      fetch.mock.calls
-        .map(([url]) => String(url))
-        .filter((url) => url.startsWith("/api/v1/web/admin/users?"))
+      fetch.mock.calls.map(([url]) => String(url)).filter((url) => url.startsWith("/api/v1/web/admin/users?"))
 
     await wrapper.get("[data-testid='user-provider-local']").trigger("click")
     await flushPromises()

@@ -74,15 +74,18 @@ describe("统一 API 请求", () => {
 
   it("Storage 删除失败且 401 清理后不得再附带旧 Authorization", async () => {
     sessionStorage.setItem("sms_token", "expired")
-    sessionStorage.setItem("sms_user", JSON.stringify({
-      account_id: 8,
-      identity_id: 18,
-      provider_code: "local",
-      username: "admin",
-      display_name: "管理员",
-      dept: "平台部",
-      role: "admin",
-    }))
+    sessionStorage.setItem(
+      "sms_user",
+      JSON.stringify({
+        account_id: 8,
+        identity_id: 18,
+        provider_code: "local",
+        username: "admin",
+        display_name: "管理员",
+        dept: "平台部",
+        role: "admin",
+      }),
+    )
     const remove = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
       throw new DOMException("restricted", "SecurityError")
     })
@@ -154,8 +157,7 @@ describe("统一 API 请求", () => {
       .mockResolvedValueOnce(response({ total: 7 }, 200))
     vi.stubGlobal("fetch", fetch)
 
-    await expect(apiRequest<{ total: number }>("/reports/dashboard", { method: "GET" })).resolves
-      .toEqual({ total: 7 })
+    await expect(apiRequest<{ total: number }>("/reports/dashboard", { method: "GET" })).resolves.toEqual({ total: 7 })
 
     expect(fetch).toHaveBeenCalledTimes(3)
     expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/auth/refresh")
@@ -197,9 +199,7 @@ describe("统一 API 请求", () => {
       }
       const authorization = (init?.headers as Record<string, string>).Authorization
       return Promise.resolve(
-        authorization === "Bearer expired"
-          ? response({ code: "UNAUTHORIZED" }, 401)
-          : response({ ok: true }, 200),
+        authorization === "Bearer expired" ? response({ code: "UNAUTHORIZED" }, 401) : response({ ok: true }, 200),
       )
     })
     vi.stubGlobal("fetch", fetch)
@@ -209,9 +209,7 @@ describe("统一 API 请求", () => {
       apiRequest("/reports/dashboard", { method: "GET" }),
     ])
 
-    expect(
-      fetch.mock.calls.filter(([url]) => url === "/api/v1/web/auth/refresh"),
-    ).toHaveLength(1)
+    expect(fetch.mock.calls.filter(([url]) => url === "/api/v1/web/auth/refresh")).toHaveLength(1)
   })
 
   it("refresh 返回不同稳定主体时清空旧标签且不重放原请求", async () => {
@@ -249,9 +247,7 @@ describe("统一 API 请求", () => {
     vi.stubGlobal("fetch", fetch)
     const unauthorized = watchUnauthorized()
 
-    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow(
-      "UNAUTHORIZED",
-    )
+    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow("UNAUTHORIZED")
 
     expect(fetch).toHaveBeenCalledTimes(2)
     expect(getAccessToken()).toBeNull()
@@ -277,9 +273,7 @@ describe("统一 API 请求", () => {
     vi.stubGlobal("fetch", fetch)
     const unauthorized = watchUnauthorized()
 
-    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow(
-      "会话权威状态暂不可用",
-    )
+    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow("会话权威状态暂不可用")
 
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_user")).toBeNull()
@@ -313,9 +307,7 @@ describe("统一 API 请求", () => {
     const reauthentication = vi.fn()
     window.addEventListener("sms:reauth-required", reauthentication, { once: true })
 
-    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow(
-      "AD 会话已到期，请重新登录",
-    )
+    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow("AD 会话已到期，请重新登录")
 
     expect(getAccessToken()).toBeNull()
     expect(getSessionUser()).toBeNull()
@@ -333,9 +325,9 @@ describe("统一 API 请求", () => {
       dept: "研发部",
       role: "operator",
     })
-    const fetch = vi.fn().mockResolvedValue(
-      response({ code: "AUTH_REAUTH_REQUIRED", message: "AD 会话已到期，请重新登录" }, 401),
-    )
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(response({ code: "AUTH_REAUTH_REQUIRED", message: "AD 会话已到期，请重新登录" }, 401))
     vi.stubGlobal("fetch", fetch)
     const unauthorized = watchUnauthorized()
     const reauthentication = vi.fn()
@@ -360,12 +352,11 @@ describe("统一 API 请求", () => {
       dept: "平台部",
       role: "admin",
     })
-    const fetch = vi.fn().mockResolvedValue(
-      response(
-        { code: "AUTH_CONTEXT_CHANGED", message: "账号安全状态已变化，请重新登录后重试" },
-        409,
-      ),
-    )
+    const fetch = vi
+      .fn()
+      .mockResolvedValue(
+        response({ code: "AUTH_CONTEXT_CHANGED", message: "账号安全状态已变化，请重新登录后重试" }, 409),
+      )
     vi.stubGlobal("fetch", fetch)
     const unauthorized = watchUnauthorized()
 
@@ -434,9 +425,7 @@ describe("统一 API 请求", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ code: "ACCOUNT_LOCKED" }, 423)))
     const unauthorized = watchUnauthorized()
 
-    await expect(apiRequest("/admin/vendor-test/step-up", { method: "POST" })).rejects.toThrow(
-      "ACCOUNT_LOCKED",
-    )
+    await expect(apiRequest("/admin/vendor-test/step-up", { method: "POST" })).rejects.toThrow("ACCOUNT_LOCKED")
 
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_user")).toBeNull()
@@ -513,9 +502,7 @@ describe("统一 API 请求", () => {
     const fetch = vi.fn()
     vi.stubGlobal("fetch", fetch)
 
-    await expect(authorizedFetch(url, { method: "GET" })).rejects.toThrow(
-      "授权请求必须与当前站点同源",
-    )
+    await expect(authorizedFetch(url, { method: "GET" })).rejects.toThrow("授权请求必须与当前站点同源")
     expect(fetch).not.toHaveBeenCalled()
   })
 
@@ -524,9 +511,7 @@ describe("统一 API 请求", () => {
     const fetch = vi.fn(
       (_url: string, init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () =>
-            reject(new DOMException("请求超时", "TimeoutError")),
-          )
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("请求超时", "TimeoutError")))
         }),
     )
     vi.stubGlobal("fetch", fetch)
@@ -541,9 +526,7 @@ describe("统一 API 请求", () => {
     const fetch = vi.fn(
       (_url: string, init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () =>
-            reject(new DOMException("会话已清理", "AbortError")),
-          )
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("会话已清理", "AbortError")))
         }),
     )
     vi.stubGlobal("fetch", fetch)
@@ -556,15 +539,18 @@ describe("统一 API 请求", () => {
 
   it("注销开始后丢弃仍在飞行的 refresh 结果", async () => {
     sessionStorage.setItem("sms_token", "expired")
-    sessionStorage.setItem("sms_user", JSON.stringify({
-      account_id: 8,
-      identity_id: 18,
-      provider_code: "local",
-      username: "admin",
-      display_name: "管理员",
-      dept: "平台部",
-      role: "admin",
-    }))
+    sessionStorage.setItem(
+      "sms_user",
+      JSON.stringify({
+        account_id: 8,
+        identity_id: 18,
+        provider_code: "local",
+        username: "admin",
+        display_name: "管理员",
+        dept: "平台部",
+        role: "admin",
+      }),
+    )
     setAccessSession("expired", {
       account_id: 8,
       identity_id: 18,
@@ -579,9 +565,7 @@ describe("统一 API 请求", () => {
       if (url === "/api/v1/web/auth/refresh") {
         return new Promise<Response>((resolve) => {
           releaseRefresh = resolve
-          init?.signal?.addEventListener("abort", () =>
-            resolve(response({ code: "UNAUTHORIZED" }, 401)),
-          )
+          init?.signal?.addEventListener("abort", () => resolve(response({ code: "UNAUTHORIZED" }, 401)))
         })
       }
       return Promise.resolve(response({ code: "UNAUTHORIZED" }, 401))
@@ -625,9 +609,7 @@ describe("统一 API 请求", () => {
       if (url === "/api/v1/web/auth/refresh") {
         refreshCalls += 1
         return new Promise<Response>((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () =>
-            reject(new DOMException("刷新超时", "TimeoutError")),
-          )
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("刷新超时", "TimeoutError")))
         })
       }
       return Promise.resolve(response({ code: "UNAUTHORIZED" }, 401))
@@ -649,7 +631,10 @@ describe("统一 API 请求", () => {
 
   it("业务 JSON 正文停滞时仍于默认截止线内失败", async () => {
     vi.useFakeTimers()
-    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(hangingJsonResponse())))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(hangingJsonResponse())),
+    )
 
     const pending = apiRequest("/reports/dashboard", { method: "GET" })
     const assertion = expect(pending).rejects.toThrow("请求超时")
