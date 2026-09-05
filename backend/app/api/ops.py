@@ -188,7 +188,7 @@ class UncertainResolutionModel(BaseModel):
     source_dept: str | None = None
     source_channel: str | None = None
     source_category: str | None = None
-    effect_generation: int = 1
+    effect_generation: int = Field(default=1, ge=1)
     effect_error: str | None = None
 
 

@@ -3510,7 +3510,7 @@ components:
         source_dept: { anyOf: [{ type: string }, { type: 'null' }] }
         source_channel: { anyOf: [{ type: string }, { type: 'null' }] }
         source_category: { anyOf: [{ type: string }, { type: 'null' }] }
-        effect_generation: { type: integer, minimum: 1 }
+        effect_generation: { type: integer, default: 1, minimum: 1 }
         effect_error: { anyOf: [{ type: string }, { type: 'null' }] }
 
     UncertainPageModel:
