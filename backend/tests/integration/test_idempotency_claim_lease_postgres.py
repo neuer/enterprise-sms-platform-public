@@ -15,16 +15,22 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 from redis.asyncio import Redis
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.auth.accounts import ApplicationPrincipal
-from app.core.runtime_resources import bind_connection_system_audit
+from app.core.auth.principal_context import audit_principal_scope
+from app.core.correlation import correlation_scope
+from app.core.runtime_resources import (
+    _set_audit_transaction_context,
+    bind_connection_system_audit,
+    close_runtime_resources,
+)
 from app.services.app_ratelimit import ControlPlaneUnavailable
 from app.services.crypto import CryptoService
 from app.services.idempotency import IdempotencyCoordinator, IdempotencyScope, parse_claim_payload
-from app.services.pipeline import BatchCommand
+from app.services.pipeline import BatchCommand, StoredBatch
 from app.services.pipeline_repository import SqlPipelineStore
 from scripts_support.maintain_partitions import maintain
 
@@ -42,8 +48,26 @@ def _crypto() -> CryptoService:
     return CryptoService.from_secret_values(_AES, _HMAC)
 
 
-def _store(database_url: Any) -> SqlPipelineStore:
-    return SqlPipelineStore(settings=cast(Any, SimpleNamespace(database_url=database_url)))
+class EngineBoundStore(SqlPipelineStore):
+    """测试用本地 engine，避免跨用例复用 database_engine 事件循环。"""
+
+    def __init__(self, engine: Any, settings: Any) -> None:
+        super().__init__(settings=settings)
+        self._bound_engine = engine
+        sync_engine = engine.sync_engine
+        if not getattr(sync_engine, "_sms_claim_audit_begin", False):
+            event.listen(sync_engine, "begin", _set_audit_transaction_context)
+            sync_engine._sms_claim_audit_begin = True
+
+    def _engine(self) -> Any:
+        return self._bound_engine
+
+
+def _store(engine: Any, database_url: Any) -> EngineBoundStore:
+    return EngineBoundStore(
+        engine,
+        settings=cast(Any, SimpleNamespace(database_url=database_url)),
+    )
 
 
 def child_hold_claim() -> None:
@@ -51,21 +75,27 @@ def child_hold_claim() -> None:
 
     async def _claim() -> str:
         redis = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
-        store = _store(make_url(os.environ["OUTBOX_POSTGRES_DSN"]))
+        database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+        engine = create_async_engine(database_url, hide_parameters=True)
+        store = _store(engine, database_url)
         coordinator = IdempotencyCoordinator(
             redis,
             store,
             claim_ttl_s=int(os.environ["SMS_CLAIM_TTL"]),
         )
         scope = IdempotencyScope("app", os.environ["SMS_CLAIM_SCOPE"])
-        token = await coordinator.claim(
-            scope,
-            os.environ["SMS_CLAIM_BIZ"],
-            fingerprint=os.environ["SMS_CLAIM_FP"],
-        )
-        if token is None:
-            raise AssertionError("child must own the claim")
-        return token
+        try:
+            token = await coordinator.claim(
+                scope,
+                os.environ["SMS_CLAIM_BIZ"],
+                fingerprint=os.environ["SMS_CLAIM_FP"],
+            )
+            if token is None:
+                raise AssertionError("child must own the claim")
+            return token
+        finally:
+            await redis.aclose()
+            await engine.dispose()
 
     token = asyncio.run(_claim())
     Path(os.environ["SMS_CLAIM_TOKEN"]).write_text(token, encoding="utf-8")
@@ -155,6 +185,28 @@ def _command(
     )
 
 
+async def _complete(
+    store: SqlPipelineStore,
+    *,
+    app_id: int,
+    biz_id: str,
+    token: str,
+    generation: int,
+    fingerprint: str,
+) -> StoredBatch:
+    principal = ApplicationPrincipal(app_id, "claim-app", "平台部")
+    with audit_principal_scope(principal), correlation_scope(uuid4()):
+        return await store.save(
+            _command(
+                app_id=app_id,
+                biz_id=biz_id,
+                token=token,
+                generation=generation,
+                fingerprint=fingerprint,
+            )
+        )
+
+
 async def _claim_row(engine: Any, scope: IdempotencyScope, biz_id: str) -> dict[str, Any]:
     async with engine.connect() as connection:
         row = (
@@ -185,13 +237,14 @@ async def claim_env() -> Any:
     await _prepare_db(engine)
     nonce = uuid4().hex[:16]
     app_id = await _insert_app(engine, nonce)
-    store = _store(database_url)
+    store = _store(engine, database_url)
     redis = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
     try:
         yield engine, store, redis, app_id
     finally:
         await redis.aclose()
         await engine.dispose()
+        await close_runtime_resources()
 
 
 @pytest.mark.asyncio
@@ -207,14 +260,13 @@ async def test_owner_completes_within_five_seconds(
     assert token is not None
     viewed = await coordinator.inspect(scope, biz_id)
     assert viewed is not None
-    stored = await store.save(
-        _command(
-            app_id=app_id,
-            biz_id=biz_id,
-            token=token,
-            generation=viewed.generation,
-            fingerprint=fingerprint,
-        )
+    stored = await _complete(
+        store,
+        app_id=app_id,
+        biz_id=biz_id,
+        token=token,
+        generation=viewed.generation,
+        fingerprint=fingerprint,
     )
     await coordinator.release(scope, biz_id, token)
     row = await _claim_row(engine, scope, biz_id)
@@ -248,14 +300,13 @@ async def test_legal_owner_completes_after_35_60_90_120_seconds(
             assert not lost.is_set()
             viewed = await coordinator.inspect(scope, biz_id)
             assert viewed is not None
-            stored = await store.save(
-                _command(
-                    app_id=app_id,
-                    biz_id=biz_id,
-                    token=token,
-                    generation=viewed.generation,
-                    fingerprint=fingerprint,
-                )
+            stored = await _complete(
+                store,
+                app_id=app_id,
+                biz_id=biz_id,
+                token=token,
+                generation=viewed.generation,
+                fingerprint=fingerprint,
             )
             row = await _claim_row(engine, scope, biz_id)
             assert row["state"] == "completed"
@@ -360,14 +411,13 @@ async def test_redis_flush_rebuilds_active_and_completed(
     assert live_token is not None and done_token is not None
     done_view = await done.inspect(scope, done_biz)
     assert done_view is not None
-    stored = await store.save(
-        _command(
-            app_id=app_id,
-            biz_id=done_biz,
-            token=done_token,
-            generation=done_view.generation,
-            fingerprint=fingerprint,
-        )
+    stored = await _complete(
+        store,
+        app_id=app_id,
+        biz_id=done_biz,
+        token=done_token,
+        generation=done_view.generation,
+        fingerprint=fingerprint,
     )
     await redis.delete(live.claim_key(scope, live_biz), done.claim_key(scope, done_biz))
     rebuilt = await live.inspect(scope, live_biz)
@@ -463,14 +513,13 @@ async def test_expired_lease_takeover_and_stale_owner_cannot_finish(
                 fingerprint=fingerprint,
             )
         )
-    stored = await store.save(
-        _command(
-            app_id=app_id,
-            biz_id=biz_id,
-            token=token2,
-            generation=new_view.generation,
-            fingerprint=fingerprint,
-        )
+    stored = await _complete(
+        store,
+        app_id=app_id,
+        biz_id=biz_id,
+        token=token2,
+        generation=new_view.generation,
+        fingerprint=fingerprint,
     )
     assert stored.idempotent is False
 
@@ -488,14 +537,13 @@ async def test_completed_claim_survives_commit_ack_loss_and_cannot_be_taken(
     assert token is not None
     viewed = await coordinator.inspect(scope, biz_id)
     assert viewed is not None
-    stored = await store.save(
-        _command(
-            app_id=app_id,
-            biz_id=biz_id,
-            token=token,
-            generation=viewed.generation,
-            fingerprint=fingerprint,
-        )
+    stored = await _complete(
+        store,
+        app_id=app_id,
+        biz_id=biz_id,
+        token=token,
+        generation=viewed.generation,
+        fingerprint=fingerprint,
     )
     await coordinator.release(scope, biz_id, token)
     await redis.delete(coordinator.claim_key(scope, biz_id), coordinator.key(scope, biz_id))
