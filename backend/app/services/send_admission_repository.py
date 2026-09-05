@@ -18,19 +18,22 @@ from app.settings import Settings, get_settings
 
 RECOVERY_BUDGET_LUA = """
 local t = redis.call('TIME')
-local sec = tostring(t[1])
-local bk = KEYS[1] .. ':' .. sec .. ':b'
-local rk = KEYS[1] .. ':' .. sec .. ':r'
-local sk = KEYS[1] .. ':' .. sec .. ':s'
-local b = tonumber(redis.call('INCRBY', bk, ARGV[1]))
-local r = tonumber(redis.call('INCRBY', rk, ARGV[2]))
-local s = tonumber(redis.call('INCRBY', sk, ARGV[3]))
-redis.call('EXPIRE', bk, 3)
-redis.call('EXPIRE', rk, 3)
-redis.call('EXPIRE', sk, 3)
+local now_sec = tonumber(t[1])
+local last = tonumber(redis.call('HGET', KEYS[1], 'sec'))
+if last ~= nil and now_sec < last then
+  return 0
+end
+if last == nil or last ~= now_sec then
+  redis.call('HSET', KEYS[1], 'sec', now_sec, 'b', 0, 'r', 0, 's', 0)
+end
+local b = tonumber(redis.call('HGET', KEYS[1], 'b')) + tonumber(ARGV[1])
+local r = tonumber(redis.call('HGET', KEYS[1], 'r')) + tonumber(ARGV[2])
+local s = tonumber(redis.call('HGET', KEYS[1], 's')) + tonumber(ARGV[3])
 if b > tonumber(ARGV[4]) or r > tonumber(ARGV[5]) or s > tonumber(ARGV[6]) then
   return 0
 end
+redis.call('HSET', KEYS[1], 'b', b, 'r', r, 's', s)
+redis.call('EXPIRE', KEYS[1], 3)
 return 1
 """
 
@@ -268,7 +271,10 @@ class SqlSendAdmissionRepository:
         segments: int,
         limits: SendAdmissionLimits,
     ) -> bool:
-        """按当前 state_epoch 消费共享恢复预算；旧 generation 键不可复用。"""
+        """按当前 state_epoch 消费共享恢复预算；旧 generation 键不可复用。
+
+        control Redis ACL 只有 HGET/HSET/INCR，没有 INCRBY。
+        """
 
         if epoch < 1 or batches < 1 or recipients < 1 or segments < 1:
             raise ValueError("recovery budget inputs must be positive")

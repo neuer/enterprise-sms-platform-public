@@ -1157,6 +1157,8 @@ async def test_repository_recovery_budget_uses_epoch_key() -> None:
     assert allowed is True
     script, key_count, key, *argv = redis.calls[0]
     assert script == RECOVERY_BUDGET_LUA
+    assert "INCRBY" not in script
+    assert "HSET" in script
     assert key_count == 1
     assert key == "admission:recovery:4"
     assert argv[:3] == ["1", "20", "20"]
