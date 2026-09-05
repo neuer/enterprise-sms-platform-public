@@ -634,10 +634,9 @@ class SendWorker:
     ) -> FinalizeReport | None:
         """有 invoking 行时走原子终结；否则保持旧的分步路径。"""
 
-        finalizer = getattr(self.store, "finalize_vendor_attempt", None)
-        if attempt_id is None or finalizer is None:
+        if attempt_id is None:
             return None
-        return await finalizer(
+        return await self.store.finalize_vendor_attempt(
             attempt_id,
             chunk.chunk_id,
             expected_generation=generation,
