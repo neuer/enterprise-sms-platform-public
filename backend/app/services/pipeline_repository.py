@@ -283,7 +283,7 @@ class SqlPipelineStore:
         fingerprint: str,
         ttl_s: int,
     ) -> int | None:
-        """以 PostgreSQL 单调 generation 占用 claim；未过期占用返回 None。"""
+        """占用或接管可抢占 Claim；completed 不可抢占。"""
 
         async with self._engine().begin() as connection:
             row = (
@@ -292,10 +292,10 @@ class SqlPipelineStore:
                         """
                         INSERT INTO idempotency_claim (
                           scope_kind, scope_id, biz_id, token, fingerprint,
-                          generation, expires_at
+                          generation, expires_at, state
                         ) VALUES (
                           :scope_kind, :scope_id, :biz_id, :token, :fingerprint,
-                          1, now() + make_interval(secs => :ttl_s)
+                          1, now() + make_interval(secs => :ttl_s), 'active'
                         )
                         ON CONFLICT (scope_kind, scope_id, biz_id)
                         DO UPDATE SET
@@ -303,8 +303,17 @@ class SqlPipelineStore:
                           token = EXCLUDED.token,
                           fingerprint = EXCLUDED.fingerprint,
                           expires_at = EXCLUDED.expires_at,
+                          state = 'active',
+                          batch_id = NULL,
+                          completed_at = NULL,
+                          released_at = NULL,
+                          release_reason = NULL,
                           updated_at = now()
-                        WHERE idempotency_claim.expires_at < now()
+                        WHERE idempotency_claim.state IN ('expired','released')
+                           OR (
+                             idempotency_claim.state='active'
+                             AND idempotency_claim.expires_at < now()
+                           )
                         RETURNING generation
                         """
                     ),
@@ -320,6 +329,124 @@ class SqlPipelineStore:
             ).scalar_one_or_none()
         return int(row) if row is not None else None
 
+    async def renew_idempotency_claim(
+        self,
+        scope: IdempotencyScope,
+        biz_id: str,
+        *,
+        token: str,
+        fingerprint: str,
+        generation: int,
+        ttl_s: int,
+        clock_margin_s: int = 1,
+    ) -> bool:
+        """权威续租；旧 generation/token 不得改写新 owner。"""
+
+        async with self._engine().begin() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE idempotency_claim SET
+                          expires_at=now()+make_interval(secs=>:ttl_s),
+                          updated_at=now()
+                        WHERE scope_kind=:scope_kind AND scope_id=:scope_id
+                          AND biz_id=:biz_id AND token=:token
+                          AND fingerprint=:fingerprint
+                          AND generation=:generation
+                          AND state='active'
+                          AND expires_at>now()-make_interval(secs=>:margin_s)
+                        RETURNING generation
+                        """
+                    ),
+                    {
+                        "scope_kind": scope.kind,
+                        "scope_id": scope.id,
+                        "biz_id": biz_id,
+                        "token": token,
+                        "fingerprint": fingerprint,
+                        "generation": generation,
+                        "ttl_s": ttl_s,
+                        "margin_s": clock_margin_s,
+                    },
+                )
+            ).scalar_one_or_none()
+        return row is not None
+
+    async def release_idempotency_claim(
+        self,
+        scope: IdempotencyScope,
+        biz_id: str,
+        *,
+        token: str,
+        generation: int,
+        reason: str = "abandoned",
+    ) -> bool:
+        """仅释放仍 active 且未绑定批次的 Claim。"""
+
+        async with self._engine().begin() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE idempotency_claim SET
+                          state='released',
+                          released_at=now(),
+                          release_reason=:reason,
+                          updated_at=now()
+                        WHERE scope_kind=:scope_kind AND scope_id=:scope_id
+                          AND biz_id=:biz_id AND token=:token
+                          AND generation=:generation
+                          AND state='active'
+                          AND batch_id IS NULL
+                          AND NOT EXISTS (
+                            SELECT 1 FROM idempotency_record r
+                            WHERE r.scope_kind=idempotency_claim.scope_kind
+                              AND r.scope_id=idempotency_claim.scope_id
+                              AND r.biz_id=idempotency_claim.biz_id
+                              AND r.expires_at>now()
+                          )
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "scope_kind": scope.kind,
+                        "scope_id": scope.id,
+                        "biz_id": biz_id,
+                        "token": token,
+                        "generation": generation,
+                        "reason": reason[:32],
+                    },
+                )
+            ).scalar_one_or_none()
+        return row is not None
+
+    async def load_idempotency_claim(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> dict[str, Any] | None:
+        """读取权威 Claim，供 Redis 缺失时重建或判断可抢占。"""
+
+        async with self._engine().connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT token, fingerprint, generation, state, batch_id,
+                               expires_at > now() AS lease_valid
+                        FROM idempotency_claim
+                        WHERE scope_kind=:scope_kind AND scope_id=:scope_id
+                          AND biz_id=:biz_id
+                        """
+                    ),
+                    {
+                        "scope_kind": scope.kind,
+                        "scope_id": scope.id,
+                        "biz_id": biz_id,
+                    },
+                )
+            ).mappings().one_or_none()
+        return dict(row) if row is not None else None
+
     async def live_idempotency_claim(
         self, scope: IdempotencyScope, biz_id: str
     ) -> bool:
@@ -330,7 +457,9 @@ class SqlPipelineStore:
                         """
                         SELECT 1 FROM idempotency_claim
                         WHERE scope_kind=:scope_kind AND scope_id=:scope_id
-                          AND biz_id=:biz_id AND expires_at > now()
+                          AND biz_id=:biz_id
+                          AND state='active'
+                          AND expires_at > now()
                         """
                     ),
                     {
@@ -620,6 +749,7 @@ class SqlPipelineStore:
                             WHERE scope_kind=:scope_kind
                               AND scope_id=:scope_id
                               AND biz_id=:biz_id
+                              AND state='active'
                               AND expires_at > now()
                             FOR UPDATE
                             """
@@ -662,6 +792,41 @@ class SqlPipelineStore:
                     "scheduled_at": command.scheduled_at,
                 },
             )
+            if (
+                command.idempotency_claim_token
+                and command.idempotency_claim_generation is not None
+            ):
+                completed = (
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE idempotency_claim SET
+                              state='completed',
+                              batch_id=:batch_id,
+                              completed_at=now(),
+                              updated_at=now()
+                            WHERE scope_kind=:scope_kind
+                              AND scope_id=:scope_id
+                              AND biz_id=:biz_id
+                              AND token=:token
+                              AND generation=:generation
+                              AND state='active'
+                              AND expires_at > now()
+                            RETURNING id
+                            """
+                        ),
+                        {
+                            "scope_kind": command.scope_kind,
+                            "scope_id": command.scope_id,
+                            "biz_id": command.biz_id,
+                            "token": command.idempotency_claim_token,
+                            "generation": command.idempotency_claim_generation,
+                            "batch_id": batch_id,
+                        },
+                    )
+                ).scalar_one_or_none()
+                if completed is None:
+                    raise RuntimeError("idempotency claim lost")
         if command.status == "pending_approval":
             if not isinstance(command.principal, SecurityPrincipal):
                 raise ValueError("待审批批次缺少稳定申请主体")

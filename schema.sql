@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.85  2026-09-05
+-- v1.6.85：idempotency_claim 增加 active/completed/released/expired 状态机，
+--          expires_at 为 PostgreSQL 权威租约；完成态与 batch 同事务绑定。
 -- v1.6.84  2026-09-05
 -- v1.6.84：sms_vendor_attempt 增加 inconsistent，供已提交分片与 invoking
 --          撕裂时人工隔离；恢复器不得把 submitted chunk 降为 uncertain。
@@ -636,11 +639,45 @@ CREATE TABLE idempotency_claim (
     fingerprint  VARCHAR(64)  NOT NULL DEFAULT '',
     generation   INTEGER      NOT NULL CHECK (generation >= 1),
     expires_at   TIMESTAMPTZ  NOT NULL,
+    state        VARCHAR(16)  NOT NULL DEFAULT 'active',
+    batch_id     BIGINT       REFERENCES sms_batch(id),
+    completed_at TIMESTAMPTZ,
+    released_at  TIMESTAMPTZ,
+    release_reason VARCHAR(32),
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    CONSTRAINT uk_idempotency_claim_scope UNIQUE (scope_kind, scope_id, biz_id)
+    CONSTRAINT uk_idempotency_claim_scope UNIQUE (scope_kind, scope_id, biz_id),
+    CONSTRAINT ck_idempotency_claim_state
+      CHECK (state IN ('active','completed','released','expired')),
+    CONSTRAINT ck_idempotency_claim_state_shape CHECK (
+      (
+        state='active'
+        AND batch_id IS NULL
+        AND completed_at IS NULL
+        AND released_at IS NULL
+        AND release_reason IS NULL
+      )
+      OR (
+        state='completed'
+        AND batch_id IS NOT NULL
+        AND completed_at IS NOT NULL
+        AND released_at IS NULL
+      )
+      OR (
+        state='released'
+        AND batch_id IS NULL
+        AND released_at IS NOT NULL
+        AND release_reason IS NOT NULL
+      )
+      OR (
+        state='expired'
+        AND batch_id IS NULL
+      )
+    )
 );
 CREATE INDEX idx_idempotency_claim_expire ON idempotency_claim(expires_at);
+CREATE INDEX idx_idempotency_claim_active
+    ON idempotency_claim (expires_at) WHERE state='active';
 
 CREATE TABLE sms_chunk (
     id             BIGSERIAL PRIMARY KEY,

@@ -1638,6 +1638,42 @@ async def test_lost_claim_fails_closed_before_business_side_effects() -> None:
 
 
 @pytest.mark.asyncio
+async def test_phone_protect_waves_renew_ownership_between_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checks = 0
+
+    async def ownership() -> None:
+        nonlocal checks
+        checks += 1
+
+    def fake_protect(
+        self: SendPipeline,
+        phones: Any,
+        *,
+        blacklist_required: bool,
+    ) -> tuple[list[Any], dict[str, Any], dict[str, str], dict[str, dict[int, str]]]:
+        return [], {}, {}, {}
+
+    monkeypatch.setattr(SendPipeline, "_protect_plain_phones", fake_protect)
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    await pipeline._protect_plain_phones_batched(
+        ["13800138000"] * 4001,
+        blacklist_required=False,
+        ownership_check=ownership,
+    )
+    assert checks >= 1
+
+
+@pytest.mark.asyncio
 async def test_replaced_claim_stops_frequency_loop_before_quota_and_storage() -> None:
     ownership = {"token": "claim-token"}
 

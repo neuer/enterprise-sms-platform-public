@@ -326,6 +326,8 @@ receipt 与绑定检查均为 `performed`，否则不得扩大到更多应用、
 ## RPO 数据缺口围栏与窗口对账
 
 恢复点到旧主冻结之间的 API 受理、幂等记录、批次、厂商提交和已拉取报告都可能不在快照。
+COMMIT 成功但 HTTP 响应丢失时，先查 `idempotency_claim.state=completed` 与绑定的
+`batch_id`/`idempotency_record`，复用同一批次，禁止换 `biz_id` 重发。
 `biz_id` 只是关联证据；对应数据库幂等行已经随恢复点之后的数据丢失时，它本身不能阻止重复
 发送。恢复前必须建立以下 gap fence：
 

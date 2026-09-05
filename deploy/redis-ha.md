@@ -17,8 +17,10 @@ broker/auth/control 使用三个不同 host:port 端点、三个独立 ACL 密�
 幂等 Claim、queue pause、token bucket 与 admission epoch 必须带单调 generation。
 旧主复活或复制回退不得覆盖更高 generation：token bucket 在 `last_ms` 回退时清零令牌；
 pause 写入递增 `ratelimit:queue:paused:generation`；Claim 值为
-`token:fingerprint:generation`，续租/释放按 token 前缀匹配。usage 投影丢失只能从
-PostgreSQL 重建，缺失不得视为零。
+`token:fingerprint:generation`，续租/释放按精确载荷匹配，权威租约与
+`active/completed/released/expired` 状态在 PostgreSQL，Redis 只保存 generation-aware
+投影。flush 或旧主低 generation 不得覆盖 PostgreSQL 当前 owner，只能按 DB 事实重建。
+usage 投影丢失只能从 PostgreSQL 重建，缺失不得视为零。
 
 `managed` 只用于三个独立托管高可用端点。禁止把三个 DNS 名解析到同一 Redis 集群；变更
 复核需保存服务端实例/复制组 ID 的无敏感摘要。
