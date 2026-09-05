@@ -128,8 +128,10 @@ class UncertainEffectPrincipal:
         return "system"
 
     @property
-    def actor_account_id(self) -> int:
-        return self.confirmer_account_id
+    def actor_account_id(self) -> None:
+        """system 审计行不得点名稳定账号；确认人只留在 resolution 事实里。"""
+
+        return None
 
     @property
     def actor_identity_id(self) -> None:

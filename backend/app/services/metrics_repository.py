@@ -252,6 +252,100 @@ class SqlMetricsRepository:
                     )
                 )
 
+                effect_result = await connection.execute(
+                    text(
+                        """
+                        SELECT
+                          CASE
+                            WHEN source_channel IN ('api','web')
+                            THEN source_channel
+                            ELSE 'other'
+                          END source_channel,
+                          action,
+                          CASE state
+                            WHEN 'closed' THEN 'applied'
+                            WHEN 'effect_applied' THEN 'applied'
+                            WHEN 'retryable_effect_error' THEN 'retryable'
+                            WHEN 'manual_intervention_required' THEN 'manual'
+                            WHEN 'effect_pending' THEN 'pending'
+                            WHEN 'applying' THEN 'pending'
+                            WHEN 'approved' THEN 'pending'
+                            WHEN 'proposed' THEN 'pending'
+                            ELSE 'other'
+                          END result,
+                          count(state) count
+                        FROM sms_uncertain_resolution
+                        GROUP BY 1,2,3
+                        ORDER BY 1,2,3
+                        """
+                    )
+                )
+                uncertain_effects = tuple(
+                    (
+                        str(row["source_channel"]),
+                        str(row["action"]),
+                        str(row["result"]),
+                        max(0, int(row["count"])),
+                    )
+                    for row in effect_result.mappings()
+                )
+
+                error_result = await connection.execute(
+                    text(
+                        """
+                        SELECT
+                          CASE
+                            WHEN effect_error IN (
+                              'source_context_invalid',
+                              'usage_subject_invalid',
+                              'source_app_invalid',
+                              'source_category_invalid',
+                              'generation_mismatch',
+                              'actor_invalid'
+                            ) THEN effect_error
+                            ELSE 'other'
+                          END kind,
+                          count(effect_error) count
+                        FROM sms_uncertain_resolution
+                        WHERE state='manual_intervention_required'
+                          AND effect_error IS NOT NULL
+                        GROUP BY 1
+                        ORDER BY 1
+                        """
+                    )
+                )
+                uncertain_effect_usage_subject_errors = tuple(
+                    (str(row["kind"]), max(0, int(row["count"])))
+                    for row in error_result.mappings()
+                )
+
+                oldest_pending = await connection.scalar(
+                    text(
+                        """
+                        SELECT COALESCE(
+                          EXTRACT(EPOCH FROM (
+                            now()-min(COALESCE(confirmed_at, approved_at))
+                          )),
+                          0
+                        )
+                        FROM sms_uncertain_resolution
+                        WHERE state IN (
+                          'effect_pending','applying','retryable_effect_error'
+                        )
+                          AND COALESCE(confirmed_at, approved_at) IS NOT NULL
+                        """
+                    )
+                )
+                child_recovered = await connection.scalar(
+                    text(
+                        """
+                        SELECT count(recovered)
+                        FROM sms_uncertain_child
+                        WHERE recovered
+                        """
+                    )
+                )
+
                 return MetricsFacts(
                     send_rates=send_rates,
                     vendor_errors=vendor_errors,
@@ -300,4 +394,14 @@ class SqlMetricsRepository:
                     send_admission_state=admission_state,
                     outbox_oldest_age_seconds=oldest_age,
                     send_submit_outcomes=send_submit_outcomes,
+                    uncertain_effects=uncertain_effects,
+                    uncertain_effect_usage_subject_errors=(
+                        uncertain_effect_usage_subject_errors
+                    ),
+                    uncertain_effect_oldest_pending_seconds=max(
+                        0.0, float(oldest_pending or 0)
+                    ),
+                    uncertain_effect_child_recovered=max(
+                        0, int(child_recovered or 0)
+                    ),
                 )

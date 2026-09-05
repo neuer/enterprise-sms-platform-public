@@ -2446,6 +2446,9 @@ paths:
     post:
       tags: [admin]
       summary: 另一名管理员确认 uncertain 处置；重发只允许新批次
+      description: |
+        Web 来源重发不得使用 app_id=-1 或固定部门 web。确认时固化源批次 dept/category/channel；
+        effect 使用受控 system_effect 主体或真实 source app，并继续走 Usage Ledger。
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: resolution_id, in: path, required: true, schema: { type: integer } }
@@ -3504,6 +3507,11 @@ components:
         proposer_account_id: { type: integer }
         confirmer_account_id: { anyOf: [{ type: integer }, { type: 'null' }] }
         child_batch_id: { anyOf: [{ type: integer }, { type: 'null' }] }
+        source_dept: { anyOf: [{ type: string }, { type: 'null' }] }
+        source_channel: { anyOf: [{ type: string }, { type: 'null' }] }
+        source_category: { anyOf: [{ type: string }, { type: 'null' }] }
+        effect_generation: { type: integer, default: 1, minimum: 1 }
+        effect_error: { anyOf: [{ type: string }, { type: 'null' }] }
 
     UncertainPageModel:
       type: object

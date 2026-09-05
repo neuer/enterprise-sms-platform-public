@@ -332,6 +332,7 @@ class SqlApiKeyRepository:
                                api_key_hash_algorithm, api_key_prev_hash_algorithm
                         FROM app
                         WHERE status = 1
+                          AND usage_subject_kind = 'api_app'
                           AND (api_key_prefix = :prefix OR api_key_prev_prefix = :prefix)
                         """
                 ),

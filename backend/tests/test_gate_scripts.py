@@ -141,6 +141,8 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
     assert "test_inflight_ambiguous_commit_postgres.py" in postgres_gate
     assert "test_inflight_balance_conservation_postgres.py" in postgres_gate
     assert "test_inflight_split_capacity_postgres.py" in postgres_gate
+    assert "test_uncertain_web_resend_postgres.py" in postgres_gate
+    assert "test_uncertain_web_usage_subject_postgres.py" in postgres_gate
     assert "OUTBOX_POSTGRES_DSN" in postgres_gate
     assert "EXPORT_AUTH_POSTGRES_DSN" in postgres_gate
     assert "alert_channel_availability()" in postgres_gate
@@ -368,6 +370,10 @@ def test_g2_gate_scrapes_required_prometheus_families() -> None:
         "sms_send_admission",
         "sms_outbox_oldest_age_seconds",
         "sms_send_submit_outcome",
+        "sms_uncertain_effect",
+        "sms_uncertain_effect_usage_subject_error",
+        "sms_uncertain_effect_oldest_pending_seconds",
+        "sms_uncertain_effect_child_recovered",
     )
     assert "http://localhost:${api_port}/metrics" in all_gate
     for family in required:

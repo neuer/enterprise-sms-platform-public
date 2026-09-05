@@ -216,7 +216,8 @@ const outboxEmpty = computed(() =>
 )
 const UNCERTAIN_EMPTY = {
   title: "当前没有结果未知的分片",
-  description: "uncertain 禁止自动重发；仅 reconcile 可按厂商报文修复，到期进入保守终态后须双人确认处置。",
+  description:
+    "uncertain 禁止自动重发；仅 reconcile 可按厂商报文修复，到期进入保守终态后须双人确认处置。Web 重发使用源批次部门与受控 system 计费主体，不会使用 app_id=-1。",
 }
 const JOBS_EMPTY = {
   title: "暂无任务心跳记录",
@@ -1096,7 +1097,11 @@ onMounted(() => {
   >
     <header class="ops-panel-title"
       ><div
-        ><strong>结果未知分片</strong><small>禁止自动重发；保守终态后双人确认处置，重发只建新批次</small></div
+        ><strong>结果未知分片</strong
+        ><small
+          >禁止自动重发；保守终态后双人确认处置，重发只建新批次。Web 重发继承源部门并走受控 system 主体，不使用负数
+          app_id</small
+        ></div
       ></header
     >
     <section class="ops-results">

@@ -105,7 +105,12 @@ class SqlAppRepository:
         engine = self._engine()
         try:
             async with engine.connect() as connection:
-                rows = await connection.execute(text(f"SELECT {APP_COLUMNS} FROM app ORDER BY id"))
+                rows = await connection.execute(
+                    text(
+                        f"SELECT {APP_COLUMNS} FROM app "
+                        "WHERE usage_subject_kind='api_app' ORDER BY id"
+                    )
+                )
                 return [_safe_row(row) for row in rows.mappings()]
         finally:
             await engine.dispose()
@@ -115,7 +120,10 @@ class SqlAppRepository:
         try:
             async with engine.connect() as connection:
                 result = await connection.execute(
-                    text(f"SELECT {APP_COLUMNS} FROM app WHERE id = :app_id"),
+                    text(
+                        f"SELECT {APP_COLUMNS} FROM app "
+                        "WHERE id = :app_id AND usage_subject_kind='api_app'"
+                    ),
                     {"app_id": app_id},
                 )
                 row = result.mappings().one_or_none()
@@ -222,7 +230,7 @@ class SqlAppRepository:
                           callback_url=:callback_url,
                           callback_report_enabled=:callback_report_enabled,
                           status=:status, updated_at=now()
-                        WHERE id=:app_id
+                        WHERE id=:app_id AND usage_subject_kind='api_app'
                         RETURNING {APP_COLUMNS}
                         """
                     ),
@@ -278,7 +286,8 @@ class SqlAppRepository:
                           api_key_prev_prefix=NULL, api_key_prev_expires=NULL,
                           api_key_prev_hash_version=NULL,
                           api_key_prev_hash_algorithm=NULL,
-                          updated_at=now() WHERE id=:app_id
+                          updated_at=now()
+                        WHERE id=:app_id AND usage_subject_kind='api_app'
                         """
                     ),
                     {
@@ -317,6 +326,7 @@ class SqlAppRepository:
                           api_key_hash_algorithm=:api_key_hash_algorithm,
                           updated_at=now()
                         WHERE id=:app_id AND status=1
+                          AND usage_subject_kind='api_app'
                         """
                     ),
                     values
@@ -355,7 +365,8 @@ class SqlAppRepository:
                           api_key_prev_prefix=NULL, api_key_prev_expires=NULL,
                           api_key_prev_hash_version=NULL,
                           api_key_prev_hash_algorithm=NULL,
-                          updated_at=now() WHERE id=:app_id
+                          updated_at=now()
+                        WHERE id=:app_id AND usage_subject_kind='api_app'
                         """
                     ),
                     {"app_id": app_id},
@@ -381,7 +392,9 @@ class SqlAppRepository:
                     text(
                         """
                         UPDATE app SET callback_secret_enc=:callback_secret_enc,
-                          updated_at=now() WHERE id=:app_id AND status=1
+                          updated_at=now()
+                        WHERE id=:app_id AND status=1
+                          AND usage_subject_kind='api_app'
                         """
                     ),
                     values | {"app_id": app_id},

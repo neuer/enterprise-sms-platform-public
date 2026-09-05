@@ -185,6 +185,11 @@ class UncertainResolutionModel(BaseModel):
     proposer_account_id: int
     confirmer_account_id: int | None
     child_batch_id: int | None
+    source_dept: str | None = None
+    source_channel: str | None = None
+    source_category: str | None = None
+    effect_generation: int = Field(default=1, ge=1)
+    effect_error: str | None = None
 
 
 class UncertainPageModel(PageModel):

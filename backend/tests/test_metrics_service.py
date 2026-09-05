@@ -156,6 +156,14 @@ def test_render_exposes_fixed_low_cardinality_metrics_and_zero_categories() -> N
     assert 'sms_vendor_error_chunks{code="other"} 7.0' in body
     assert "unbounded-code" not in body
     assert "sms_uncertain_chunks 4.0" in body
+    assert (
+        'sms_uncertain_effect{action="resend_new_batch",result="applied",'
+        'source_channel="web"} 0.0'
+        in body
+    )
+    assert 'sms_uncertain_effect_usage_subject_error{kind="other"} 0.0' in body
+    assert "sms_uncertain_effect_oldest_pending_seconds 0.0" in body
+    assert "sms_uncertain_effect_child_recovered 0.0" in body
     assert 'sms_uncertain_lifecycle_chunks{state="active"} 1.0' in body
     assert 'sms_uncertain_lifecycle_chunks{state="overdue"} 3.0' in body
     assert 'sms_uncertain_lifecycle_chunks{state="unknown_terminal"} 2.0' in body

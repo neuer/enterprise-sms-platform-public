@@ -174,10 +174,25 @@ export interface UncertainResolutionItem {
   chunk_id: number
   batch_id: number
   action: UncertainResolutionAction | string
-  state: "proposed" | "confirmed"
+  state:
+    | "proposed"
+    | "approved"
+    | "effect_pending"
+    | "applying"
+    | "effect_applied"
+    | "closed"
+    | "approval_rejected"
+    | "retryable_effect_error"
+    | "manual_intervention_required"
+    | "cancelled_before_effect"
   proposer_account_id: number
   confirmer_account_id: number | null
   child_batch_id: number | null
+  source_dept?: string | null
+  source_channel?: string | null
+  source_category?: string | null
+  effect_generation?: number
+  effect_error?: string | null
 }
 
 export const proposeUncertainResolution = (chunkId: number, action: UncertainResolutionAction) =>

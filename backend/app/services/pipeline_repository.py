@@ -12,7 +12,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
-from app.core.runtime_resources import database_engine, redis_client
+from app.core.runtime_resources import (
+    bind_connection_system_audit,
+    database_engine,
+    redis_client,
+)
 from app.services.approval_repository import record_pending_approval_alert
 from app.services.blacklist import RedisBlacklistCache
 from app.services.blacklist_repository import SqlBlacklistRepository
@@ -691,10 +695,7 @@ class SqlPipelineStore:
                 ),
                 "creator_account_id": (
                     command.principal.account_id
-                    if isinstance(
-                        command.principal,
-                        (SecurityPrincipal, UncertainEffectPrincipal),
-                    )
+                    if isinstance(command.principal, SecurityPrincipal)
                     else None
                 ),
                 "creator_identity_id": (
@@ -917,6 +918,20 @@ class SqlPipelineStore:
                     dedup_key=f"batch.ready:{batch_no}",
                 ),
             )
+        if isinstance(command.principal, UncertainEffectPrincipal):
+            await bind_connection_system_audit(
+                connection,
+                actor_name=command.principal.actor_name,
+                action="message_send",
+                producer_domain="api",
+            )
+        after_val: dict[str, object] = {
+            "batch_no": batch_no,
+            "phone_count": len(command.messages),
+            "consent_confirmed": command.consent_confirmed,
+        }
+        if isinstance(command.principal, UncertainEffectPrincipal):
+            after_val["uncertain_resend"] = True
         await connection.execute(
             text(
                 """
@@ -933,22 +948,28 @@ class SqlPipelineStore:
             {
                 "actor": command.principal.actor_name,
                 "actor_subject_kind": command.principal.subject_kind,
-                "actor_account_id": command.principal.actor_account_id,
-                "actor_identity_id": command.principal.actor_identity_id,
-                "actor_app_id": command.principal.actor_app_id,
+                "actor_account_id": (
+                    None
+                    if isinstance(command.principal, UncertainEffectPrincipal)
+                    else command.principal.actor_account_id
+                ),
+                "actor_identity_id": (
+                    None
+                    if isinstance(command.principal, UncertainEffectPrincipal)
+                    else command.principal.actor_identity_id
+                ),
+                "actor_app_id": (
+                    None
+                    if isinstance(command.principal, UncertainEffectPrincipal)
+                    else command.principal.actor_app_id
+                ),
                 "role": (
                     command.principal.role
                     if isinstance(command.principal, SecurityPrincipal)
                     else None
                 ),
                 "batch_no": batch_no,
-                "after": json.dumps(
-                    {
-                        "batch_no": batch_no,
-                        "phone_count": len(command.messages),
-                        "consent_confirmed": command.consent_confirmed,
-                    }
-                ),
+                "after": json.dumps(after_val),
             },
         )
         if command.import_reservation_id is not None:
