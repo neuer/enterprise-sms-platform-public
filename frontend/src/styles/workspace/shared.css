@@ -1,14 +1,5 @@
 /* 共享件：检索条 / 规则条 / 确认框 / 空态 / 标签 / 表格空态覆写（按页复制即缺陷，见块内注释）。 */
-/* filter-grid 十二列栅格已随审计日志页改造退役（最后使用方为 AuditView），不得复活。 */
-.filter-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 12px;
-  align-items: center;
-  justify-content: space-between;
-  min-width: 0;
-}
-
+/* filter-grid 十二列栅格与 filter-toolbar 紧凑工具栏均已随各页检索条改造退役（最后使用方为 AuditView），不得复活。 */
 .reply-heading,
 .blacklist-heading,
 .user-heading,
