@@ -299,6 +299,7 @@ def _check_raw_sql(
             "CREATE OR REPLACE VIEW ",
             "CREATE VIEW ",
             "SET CONSTRAINTS ALL IMMEDIATE",
+            "SET CONSTRAINTS ALL DEFERRED",
         )
     ):
         return

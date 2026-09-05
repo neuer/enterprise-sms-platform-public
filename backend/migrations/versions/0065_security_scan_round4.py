@@ -140,9 +140,6 @@ def _backfill_template_names(crypto: CryptoService) -> None:
 def upgrade() -> None:
     crypto = CryptoService.from_settings(get_settings())
     _pseudonymize_vendor_metadata(crypto)
-    # 0001 已装入当前 schema.sql 的 DEFERRABLE occupancy 触发器时，
-    # sms_chunk 回填会留下 pending trigger events，必须先立即校验再 ALTER。
-    op.execute("SET CONSTRAINTS ALL IMMEDIATE")
     op.execute(
         """
         UPDATE raw_vendor_log r SET custom_ids=ARRAY(
@@ -157,8 +154,8 @@ def upgrade() -> None:
     op.execute("ALTER TABLE reply_event ALTER COLUMN ext_code SET NOT NULL")
     op.execute("ALTER TABLE sms_reply ALTER COLUMN ext_code SET DEFAULT ''")
     op.execute("ALTER TABLE sms_reply ALTER COLUMN ext_code SET NOT NULL")
-    # 0001 装入当前 schema 的占用延迟触发器后，上面的 sms_chunk 回填
-    # 会留下 pending trigger events，必须先立即校验再 ADD CONSTRAINT。
+    # 0001 已装入当前 schema.sql 的 DEFERRABLE occupancy 触发器时，
+    # sms_chunk 回填会留下 pending trigger events，必须先立即校验再 ALTER。
     op.execute("SET CONSTRAINTS ALL IMMEDIATE")
     _add_check(
         "sms_chunk",
@@ -272,6 +269,9 @@ def upgrade() -> None:
         "ck_import_task_canonical_filename",
         "filename IN ('upload.csv','upload.xlsx')",
     )
+    # 同一 upgrade head 可能是长事务；恢复 DEFERRED，避免 0094 回填
+    # reservation 时守恒触发器在缺 balance 行上立即失败。
+    op.execute("SET CONSTRAINTS ALL DEFERRED")
 
 
 def downgrade() -> None:
