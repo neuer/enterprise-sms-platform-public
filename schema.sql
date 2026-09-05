@@ -812,7 +812,8 @@ ALTER TABLE send_inflight_reservation
     OR batch_id IS NULL
   ) NOT VALID;
 CREATE OR REPLACE FUNCTION reject_bound_acceptance_failed()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path=pg_catalog,public AS $$
 BEGIN
   IF NEW.release_reason IS NOT DISTINCT FROM 'acceptance-failed'
      AND (
