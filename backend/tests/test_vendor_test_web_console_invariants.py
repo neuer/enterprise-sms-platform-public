@@ -145,8 +145,8 @@ def test_repository_invariant_gate_covers_every_secure_access_boundary() -> None
 
 def test_ci_vendor_gate_is_mock_only_and_installs_locked_frontend_runtime() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-    backend_job = workflow.split("  backend:\n", maxsplit=1)[1].split(
-        "\n  frontend:\n", maxsplit=1
+    backend_job = workflow.split("  backend-vendor-lint:\n", maxsplit=1)[1].split(
+        "\n  backend-coverage:\n", maxsplit=1
     )[0]
 
     assert 'node-version: "24"' in backend_job
@@ -154,6 +154,7 @@ def test_ci_vendor_gate_is_mock_only_and_installs_locked_frontend_runtime() -> N
     assert backend_job.index("npm ci") < backend_job.index(
         "bash scripts/verify_vendor_live_test.sh"
     )
+    assert "SMS_SKIP_VENDOR_POSTGRES_RECOVERY" in backend_job
     for forbidden in (
         "vendor.example.invalid",
         "VENDOR_MOCK: \"0\"",

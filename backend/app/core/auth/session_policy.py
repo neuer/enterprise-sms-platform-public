@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from app.core.auth.backends import SessionStateUnavailable
 from app.core.auth.observability import (
@@ -14,6 +14,7 @@ from app.core.auth.observability import (
 )
 
 AD_SESSION_POLICY_KEY = "auth:ad:session-policy"
+MIN_ACCEPTED_POLICY_KEY = "auth:ad:min-accepted-policy-revision"
 MIN_AD_SESSION_MAX_AGE_MINUTES = 15
 MAX_AD_SESSION_MAX_AGE_MINUTES = 10_080
 
@@ -120,6 +121,30 @@ end
 return false
 """
 
+POLICY_MIN_ACCEPTED_LUA = r"""
+-- auth-session-policy-min-accepted-v1
+local incoming = tonumber(ARGV[1])
+if incoming == nil or incoming < 1 then
+  return {0, 'invalid'}
+end
+local current = tonumber(redis.call('GET', KEYS[1]))
+if current == nil or incoming > current then
+  redis.call('SET', KEYS[1], ARGV[1])
+  redis.call('PERSIST', KEYS[1])
+  return {1, 'accepted'}
+end
+if incoming == current then
+  return {1, 'idempotent'}
+end
+return {1, 'kept'}
+"""
+
+
+class AuthSessionPolicyLoader(Protocol):
+    """签发、Access 验证与 Refresh 验证共用的最小策略合同。"""
+
+    async def load(self) -> AuthSessionPolicy: ...
+
 
 class AuthSessionPolicyConflict(SessionStateUnavailable):
     """同 revision 内容冲突、旧 revision 回滚或 Redis 策略状态不可用。"""
@@ -136,6 +161,7 @@ class AuthSessionPolicy:
     revision: int
     ad_session_max_age_minutes: int
     updated_at_epoch: int = 0
+    min_accepted_policy_revision: int = 1
 
     def __post_init__(self) -> None:
         if self.revision < 1:
@@ -146,6 +172,11 @@ class AuthSessionPolicy:
             <= MAX_AD_SESSION_MAX_AGE_MINUTES
         ):
             raise ValueError("AD session policy max age is invalid")
+        if (
+            self.min_accepted_policy_revision < 1
+            or self.min_accepted_policy_revision > self.revision
+        ):
+            raise ValueError("AD session policy min accepted revision is invalid")
 
 
 def _text(value: object) -> str:
@@ -188,6 +219,24 @@ def effective_ad_deadline(
     return min(token_deadline, auth_time + policy.ad_session_max_age_minutes * 60)
 
 
+async def _load_min_accepted_revision(store: Any) -> int:
+    getter = getattr(store, "get", None)
+    if getter is None:
+        return 1
+    try:
+        raw = await getter(MIN_ACCEPTED_POLICY_KEY)
+    except SessionStateUnavailable:
+        raise
+    except Exception:
+        raise SessionStateUnavailable("AD session policy unavailable") from None
+    if raw is None or raw is False or raw == "" or raw == b"":
+        return 1
+    try:
+        return int(_text(raw))
+    except (TypeError, ValueError, UnicodeError):
+        raise SessionStateUnavailable("AD session policy unavailable") from None
+
+
 async def load_auth_session_policy(store: Any) -> AuthSessionPolicy:
     """读取当前策略；缺失、畸形或冲突一律失败关闭。"""
 
@@ -205,7 +254,16 @@ async def load_auth_session_policy(store: Any) -> AuthSessionPolicy:
     if raw is None or raw is False or raw == "" or raw == b"" or raw == [] or raw == {}:
         raise SessionStateUnavailable("AD session policy unavailable")
     try:
-        policy = parse_auth_session_policy(raw)
+        parsed = parse_auth_session_policy(raw)
+        min_accepted = await _load_min_accepted_revision(store)
+        policy = AuthSessionPolicy(
+            parsed.revision,
+            parsed.ad_session_max_age_minutes,
+            parsed.updated_at_epoch,
+            min_accepted,
+        )
+    except SessionStateUnavailable:
+        raise
     except (KeyError, TypeError, ValueError, UnicodeError):
         raise SessionStateUnavailable("AD session policy unavailable") from None
     observe_session_policy_revisions(redis_revision=policy.revision)
@@ -257,6 +315,17 @@ def eval_memory_session_policy(
         return [1, outcome]
     if "auth-session-policy-load-v1" in script:
         return values.get(str(args[0]))
+    if "auth-session-policy-min-accepted-v1" in script:
+        incoming_revision = int(_text(args[1]))
+        revision_key = str(args[0])
+        current_raw = values.get(revision_key)
+        current_revision = int(_text(current_raw)) if current_raw is not None else None
+        if current_revision is None or incoming_revision > current_revision:
+            values[revision_key] = incoming_revision
+            return [1, "accepted"]
+        if incoming_revision == current_revision:
+            return [1, "idempotent"]
+        return [1, "kept"]
     return None
 
 
@@ -300,6 +369,11 @@ def compare_authoritative_policy(
     if redis.ad_session_max_age_minutes != postgres.ad_session_max_age_minutes:
         observe_session_policy_conflict("mismatch")
         return "conflict"
+    if redis.min_accepted_policy_revision < postgres.min_accepted_policy_revision:
+        return "behind"
+    if redis.min_accepted_policy_revision > postgres.min_accepted_policy_revision:
+        observe_session_policy_conflict("ahead")
+        return "ahead"
     return "aligned"
 
 
@@ -326,9 +400,42 @@ async def publish_auth_session_policy(store: Any, policy: AuthSessionPolicy) -> 
         raise SessionStateUnavailable("AD session policy unavailable") from None
     status, outcome = _cas_result(raw)
     if status == 1:
+        await _publish_min_accepted_revision(store, policy.min_accepted_policy_revision)
         observe_session_policy_publish(outcome)
         observe_session_policy_revisions(redis_revision=policy.revision)
         return outcome
     observe_session_policy_publish(outcome)
     observe_session_policy_conflict(outcome)
     raise AuthSessionPolicyConflict(outcome)
+
+
+async def _publish_min_accepted_revision(store: Any, revision: int) -> None:
+    """独立键单调抬升最低签发世代，旧二进制 CAS 不会把它删掉。"""
+
+    eval_script = getattr(store, "eval", None)
+    if eval_script is None:
+        raise SessionStateUnavailable("AD session policy unavailable")
+    try:
+        raw = await eval_script(
+            POLICY_MIN_ACCEPTED_LUA,
+            1,
+            MIN_ACCEPTED_POLICY_KEY,
+            str(revision),
+        )
+    except SessionStateUnavailable:
+        raise
+    except Exception:
+        raise SessionStateUnavailable("AD session policy unavailable") from None
+    status, _outcome = _cas_result(raw)
+    if status != 1:
+        raise SessionStateUnavailable("AD session policy unavailable")
+
+
+class RedisAuthSessionPolicyLoader:
+    """只读 Redis 快照；缺失或损坏失败关闭，不发布策略。"""
+
+    def __init__(self, store: Any) -> None:
+        self.store = store
+
+    async def load(self) -> AuthSessionPolicy:
+        return await load_auth_session_policy(self.store)

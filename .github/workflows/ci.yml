@@ -148,14 +148,12 @@ jobs:
             --trusted-pr-evidence "${{ steps.reuse.outputs.reuse }}" \
             --github-output "$GITHUB_OUTPUT"
 
-  backend:
-    name: backend
+  backend-vendor-lint:
+    name: backend-vendor-lint
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
-    outputs:
-      tested_sha: ${{ steps.bind.outputs.sha }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       # 只检出本 run 的 github.sha，不用 job output 当 ref。
       # workflow_dispatch/schedule 可写默认分支 cache；CodeQL 把 needs.*.outputs
@@ -189,6 +187,8 @@ jobs:
       - name: Prepare development-only CI files
         run: bash scripts/local_test.sh prepare
       - name: Verify controlled vendor-live safety
+        env:
+          SMS_SKIP_VENDOR_POSTGRES_RECOVERY: "1"
         run: bash scripts/verify_vendor_live_test.sh
       - name: Lint and type-check backend
         run: |
@@ -221,6 +221,31 @@ jobs:
             ../deploy/scripts/offline_image_archive.py \
             ../deploy/scripts/release_manifest.py \
             ../scripts/security_acceptance.py ../scripts/e2e_api.py ../scripts/perf_smoke.py
+
+  backend-coverage:
+    name: backend-coverage
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Bind backend evidence to candidate
+        id: bind
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.7.12"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Prepare development-only CI files
+        run: bash scripts/local_test.sh prepare
       - name: Run complete backend tests with independent coverage gates
         env:
           ENVIRONMENT: "test"
@@ -255,6 +280,31 @@ jobs:
           cd backend
           uv run python scripts_support/check_migration.py
           uv run python ../scripts/check_contract.py ../openapi.yaml
+
+  backend:
+    name: backend
+    needs: [changes, backend-vendor-lint, backend-coverage]
+    if: >-
+      ${{ !cancelled()
+          && needs.changes.result == 'success'
+          && needs.changes.outputs.backend == 'true' }}
+    outputs:
+      tested_sha: ${{ steps.bind.outputs.sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Bind backend evidence to candidate
+        id: bind
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Require parallel backend children
+        run: |
+          test "${{ needs.backend-vendor-lint.result }}" = success
+          test "${{ needs.backend-coverage.result }}" = success
 
   frontend:
     name: frontend

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0102_inflight_split_capacity"
-down_revision = "0101_inflight_balance_conservation"
+revision = "0103_inflight_split_capacity"
+down_revision = "0102_auth_issue_policy_generation"
 branch_labels = None
 depends_on = None
 
@@ -233,5 +233,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # 回滚不得删除拆分身份、占用函数与阻塞态（D106 / #631）。
+    # 回滚不得删除拆分身份、占用函数与阻塞态（D107 / #631）。
     return

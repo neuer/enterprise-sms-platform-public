@@ -986,10 +986,10 @@ def test_inflight_balance_conservation_repairs_aggregate_only() -> None:
 
 def test_inflight_split_capacity_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-    revision = BACKEND / "migrations/versions/0102_inflight_split_capacity.py"
+    revision = BACKEND / "migrations/versions/0103_inflight_split_capacity.py"
     source = revision.read_text(encoding="utf-8")
 
-    assert "-- v1.6.88：" in schema
+    assert "-- v1.6.89：" in schema
     for contract in (schema, source):
         assert "send_chunk_occupying_states" in contract
         assert "split_capacity_blocked" in contract
@@ -997,8 +997,8 @@ def test_inflight_split_capacity_is_expand_only() -> None:
         assert "parent_chunk_id" in contract
         assert "split_generation" in contract
         assert "child_ordinal" in contract
-    assert 'revision = "0102_inflight_split_capacity"' in source
-    assert 'down_revision = "0101_inflight_balance_conservation"' in source
+    assert 'revision = "0103_inflight_split_capacity"' in source
+    assert 'down_revision = "0102_auth_issue_policy_generation"' in source
     assert "SET CONSTRAINTS ALL IMMEDIATE" in source
     for contract in (schema, source):
         assert "check_send_inflight_chunk_occupancy" in contract
@@ -1026,6 +1026,23 @@ def test_idempotency_claim_lease_lifecycle_is_expand_only() -> None:
     assert 'down_revision = "0098_vendor_attempt_atomic_finalize"' in source
     assert "DELETE FROM" not in source
     assert source.split("def downgrade")[0].count("UPDATE ") == 0
+
+
+def test_auth_issue_policy_generation_revokes_pre_fix_ad_sessions() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0102_auth_issue_policy_generation.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.88：" in schema
+    for contract in (schema, source):
+        assert "min_accepted_policy_revision" in contract
+        assert "ck_auth_session_policy_min_accepted" in contract
+    assert 'revision = "0102_auth_issue_policy_generation"' in source
+    assert 'down_revision = "0101_inflight_balance_conservation"' in source
+    assert "security_version = ua.security_version + 1" in source
+    assert "ap.code = 'ad'" in source
+    assert "DELETE FROM" not in source
+    assert "return" in source.split("def downgrade", 1)[1]
 
 
 def test_auth_session_policy_is_expand_only() -> None:

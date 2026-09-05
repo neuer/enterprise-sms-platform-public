@@ -126,6 +126,7 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
     assert "DEBUG=1" in gate
     assert "check_invariants.py" in gate
     assert "verify_vendor_postgres_recovery.sh" in gate
+    assert 'SMS_SKIP_VENDOR_POSTGRES_RECOVERY:-0' in gate
     assert "test_vendor_uat_recovery_postgres.py" in postgres_gate
     assert "test_export_authorization_postgres.py" in postgres_gate
     assert "test_stable_principal_postgres.py" in postgres_gate

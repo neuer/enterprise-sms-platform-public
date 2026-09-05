@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import jwt
 import pytest
@@ -10,12 +11,17 @@ from app.core.auth.jwt import (
     ACCESS_TOKEN_TYPE,
     JWT_AUDIENCE,
     JWT_ISSUER,
+    JwtClaims,
     JwtService,
     ReauthenticationRequired,
 )
-from app.core.auth.observability import reset_auth_observability
+from app.core.auth.observability import (
+    auth_observability_snapshot,
+    reset_auth_observability,
+)
 from app.core.auth.session_policy import (
     AD_SESSION_POLICY_KEY,
+    MIN_ACCEPTED_POLICY_KEY,
     AuthSessionPolicy,
     AuthSessionPolicyConflict,
     apply_policy_cas,
@@ -24,17 +30,42 @@ from app.core.auth.session_policy import (
     parse_auth_session_policy,
     publish_auth_session_policy,
 )
-from app.core.auth.session_policy_sync import AuthSessionPolicyReconciler
+from app.core.auth.session_policy_sync import (
+    AlignedAuthSessionPolicyLoader,
+    AuthSessionPolicyReconciler,
+)
 from app.core.health import AuthSessionPolicyReadinessCheck
 from app.services.admin import AdminService, ConfigRow, ConfigUpdate
 from app.services.runtime_policy import RuntimePolicy
 from tests.test_admin_service import ADMIN, FakeRepository
 from tests.test_auth import TAB_ID, FakeKeyValue
-from tests.test_auth_ad_deadline import SECRET, ad_claims
+from tests.test_auth_ad_deadline import SECRET, ad_claims, seed_policy
+
+_ISSUE_POLICY_MIGRATION = (
+    Path(__file__).resolve().parents[1] / "migrations/versions/0102_auth_issue_policy_generation.py"
+).read_text(encoding="utf-8")
 
 
-def _policy(revision: int, minutes: int, epoch: int = 0) -> AuthSessionPolicy:
-    return AuthSessionPolicy(revision, minutes, epoch)
+def _policy(
+    revision: int,
+    minutes: int,
+    epoch: int = 0,
+    min_accepted: int = 1,
+) -> AuthSessionPolicy:
+    return AuthSessionPolicy(revision, minutes, epoch, min_accepted)
+
+
+def _unbound_ad_claims() -> JwtClaims:
+    return JwtClaims(
+        account_id=8,
+        identity_id=18,
+        provider_code="ad",
+        login_name="ad.user",
+        display_name="目录用户",
+        dept="研发部",
+        role="operator",
+        security_version=1,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -88,10 +119,7 @@ async def test_delayed_old_login_cannot_overwrite_new_policy() -> None:
     store = FakeKeyValue()
     late = JwtService(SECRET, store, clock=lambda: started)
     await late.publish_ad_session_policy(60, version=2)
-    pair = await late.issue_pair(
-        ad_claims(now=started, deadline_s=8 * 3600),
-        TAB_ID,
-    )
+    pair = await late.issue_pair(_unbound_ad_claims(), TAB_ID)
     policy = await load_auth_session_policy(store)
     assert policy.revision == 2
     assert policy.ad_session_max_age_minutes == 60
@@ -116,7 +144,7 @@ async def test_policy_decrease_limits_existing_access_and_refresh() -> None:
     started = datetime(2026, 9, 5, 8, 0, tzinfo=UTC)
     current = [started + timedelta(minutes=30)]
     store = FakeKeyValue()
-    service = JwtService(SECRET, store, clock=lambda: current[0])
+    service = await seed_policy(JwtService(SECRET, store, clock=lambda: current[0]))
     access_pair = await service.issue_pair(
         ad_claims(now=started, deadline_s=8 * 3600),
         TAB_ID,
@@ -137,7 +165,7 @@ async def test_policy_increase_does_not_extend_existing_deadline() -> None:
     started = datetime(2026, 9, 5, 8, 0, tzinfo=UTC)
     current = [started]
     store = FakeKeyValue()
-    service = JwtService(SECRET, store, clock=lambda: current[0])
+    service = await seed_policy(JwtService(SECRET, store, clock=lambda: current[0]))
     access_pair = await service.issue_pair(ad_claims(now=started, deadline_s=60), TAB_ID)
     refresh_pair = await service.issue_pair(ad_claims(now=started, deadline_s=60), TAB_ID)
     await service.publish_ad_session_policy(960, version=2)
@@ -153,7 +181,7 @@ async def test_access_and_refresh_consume_same_policy_snapshot() -> None:
     started = datetime(2026, 9, 5, 8, 0, tzinfo=UTC)
     current = [started + timedelta(minutes=20)]
     store = FakeKeyValue()
-    service = JwtService(SECRET, store, clock=lambda: current[0])
+    service = await seed_policy(JwtService(SECRET, store, clock=lambda: current[0]))
     access_pair = await service.issue_pair(
         ad_claims(now=started, deadline_s=8 * 3600),
         TAB_ID,
@@ -174,21 +202,8 @@ async def test_unrelated_runtime_config_error_does_not_break_ad_refresh() -> Non
     started = datetime(2026, 9, 5, 8, 0, tzinfo=UTC)
     current = [started]
     store = FakeKeyValue()
-    unavailable = [False]
-
-    async def policy() -> RuntimePolicy:
-        if unavailable[0]:
-            raise OSError("database unavailable")
-        return RuntimePolicy.from_mapping({"ad_session_max_age_minutes": "480"})
-
-    service = JwtService(
-        SECRET,
-        store,
-        clock=lambda: current[0],
-        runtime_policy_loader=policy,
-    )
+    service = await seed_policy(JwtService(SECRET, store, clock=lambda: current[0]))
     pair = await service.issue_pair(ad_claims(now=started, deadline_s=3600), TAB_ID)
-    unavailable[0] = True
     current[0] = started + timedelta(minutes=10)
     rotated = await service.rotate_refresh(pair.refresh_token, TAB_ID)
     assert rotated.refresh_token
@@ -217,6 +232,7 @@ async def test_missing_redis_policy_fails_closed_without_default() -> None:
             "exp": int((started + timedelta(minutes=15)).timestamp()),
             "auth_time": started.timestamp(),
             "reauth_deadline": started.timestamp() + 480 * 60,
+            "auth_policy_version": 1,
         },
         SECRET,
         algorithm="HS256",
@@ -304,9 +320,7 @@ async def test_postgres_commit_recovers_after_redis_outage() -> None:
 
 
 def test_compare_detects_same_revision_content_conflict() -> None:
-    assert (
-        compare_authoritative_policy(_policy(2, 60), _policy(2, 480)) == "conflict"
-    )
+    assert compare_authoritative_policy(_policy(2, 60), _policy(2, 480)) == "conflict"
 
 
 @pytest.mark.asyncio
@@ -351,3 +365,288 @@ async def test_admin_policy_update_publishes_revision_after_commit() -> None:
         ip="10.0.0.8",
     )
     assert published == [_policy(2, 60)]
+
+
+def _decode(token: str) -> dict[str, object]:
+    return jwt.decode(
+        token,
+        SECRET,
+        algorithms=["HS256"],
+        audience=JWT_AUDIENCE,
+        options={"verify_exp": False, "verify_iat": False},
+    )
+
+
+@pytest.mark.asyncio
+async def test_ad_issue_pair_uses_auth_session_policy_snapshot() -> None:
+    started = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: started)
+    await service.publish_ad_session_policy(15, version=8)
+    pair = await service.issue_pair(_unbound_ad_claims(), TAB_ID)
+    access = _decode(pair.token)
+    assert access["reauth_deadline"] == started.timestamp() + 15 * 60
+    assert access["auth_policy_version"] == 8
+
+
+@pytest.mark.asyncio
+async def test_ad_issue_pair_binds_actual_policy_revision() -> None:
+    started = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: started)
+    await service.publish_ad_session_policy(30, version=4)
+    claims = JwtClaims(
+        account_id=8,
+        identity_id=18,
+        provider_code="ad",
+        login_name="ad.user",
+        display_name="目录用户",
+        dept="研发部",
+        role="operator",
+        security_version=1,
+        auth_policy_version=1,
+    )
+    pair = await service.issue_pair(claims, TAB_ID)
+    access = _decode(pair.token)
+    refresh = _decode(pair.refresh_token)
+    assert access["auth_policy_version"] == 4
+    assert refresh["auth_policy_version"] == 4
+
+
+@pytest.mark.asyncio
+async def test_ad_issue_pair_policy_unavailable_fails_before_any_token_or_cookie() -> None:
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store)
+    with pytest.raises(SessionStateUnavailable):
+        await service.issue_pair(_unbound_ad_claims(), TAB_ID)
+    assert AD_SESSION_POLICY_KEY not in store.values
+    assert MIN_ACCEPTED_POLICY_KEY not in store.values
+    assert not any(key.startswith("auth:jwt:refresh-family:") for key in store.values)
+
+
+@pytest.mark.asyncio
+async def test_ad_issue_pair_never_falls_back_to_480_minutes() -> None:
+    started = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: started)
+    await service.publish_ad_session_policy(15, version=3)
+    pair = await service.issue_pair(_unbound_ad_claims(), TAB_ID)
+    access = _decode(pair.token)
+    assert access["reauth_deadline"] == started.timestamp() + 15 * 60
+    assert access["reauth_deadline"] != started.timestamp() + 480 * 60
+
+
+@pytest.mark.asyncio
+async def test_ad_issue_pair_does_not_load_full_runtime_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(mapping: object) -> RuntimePolicy:
+        raise AssertionError("full RuntimePolicy must not be loaded")
+
+    monkeypatch.setattr(RuntimePolicy, "from_mapping", boom)
+    started = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: started)
+    await service.publish_ad_session_policy(45, version=6)
+    pair = await service.issue_pair(_unbound_ad_claims(), TAB_ID)
+    access = _decode(pair.token)
+    assert access["auth_policy_version"] == 6
+    assert access["reauth_deadline"] == started.timestamp() + 45 * 60
+
+
+@pytest.mark.asyncio
+async def test_unrelated_runtime_config_error_does_not_change_ad_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def boom(mapping: object) -> RuntimePolicy:
+        raise OSError("mail config unavailable")
+
+    monkeypatch.setattr(RuntimePolicy, "from_mapping", boom)
+    started = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: started)
+    await service.publish_ad_session_policy(15, version=8)
+    pair = await service.issue_pair(_unbound_ad_claims(), TAB_ID)
+    access = _decode(pair.token)
+    assert access["reauth_deadline"] == started.timestamp() + 15 * 60
+    assert access["auth_policy_version"] == 8
+
+
+@pytest.mark.asyncio
+async def test_delayed_login_cannot_publish_or_overwrite_session_policy() -> None:
+    started = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: started)
+    await service.publish_ad_session_policy(15, version=8)
+    before = dict(store.values[AD_SESSION_POLICY_KEY])
+    min_before = store.values[MIN_ACCEPTED_POLICY_KEY]
+    pair = await service.issue_pair(
+        ad_claims(now=started, deadline_s=8 * 3600, auth_time=started.timestamp()),
+        TAB_ID,
+    )
+    assert store.values[AD_SESSION_POLICY_KEY] == before
+    assert store.values[MIN_ACCEPTED_POLICY_KEY] == min_before
+    access = _decode(pair.token)
+    assert access["auth_policy_version"] == 8
+
+
+@pytest.mark.asyncio
+async def test_policy_increase_does_not_extend_session_issued_under_lower_max_age() -> None:
+    started = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
+    current = [started]
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: current[0])
+    await service.publish_ad_session_policy(15, version=8)
+    access_pair = await service.issue_pair(_unbound_ad_claims(), TAB_ID)
+    refresh_pair = await service.issue_pair(_unbound_ad_claims(), TAB_ID)
+    await service.publish_ad_session_policy(480, version=9)
+    current[0] = started + timedelta(minutes=15)
+    with pytest.raises(ReauthenticationRequired):
+        await service.verify(access_pair.token)
+    with pytest.raises(ReauthenticationRequired):
+        await service.rotate_refresh(refresh_pair.refresh_token, TAB_ID)
+
+
+@pytest.mark.asyncio
+async def test_access_and_refresh_carry_same_policy_revision_and_deadline() -> None:
+    started = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: started)
+    await service.publish_ad_session_policy(20, version=7)
+    pair = await service.issue_pair(_unbound_ad_claims(), TAB_ID)
+    access = _decode(pair.token)
+    refresh = _decode(pair.refresh_token)
+    assert access["auth_time"] == refresh["auth_time"] == started.timestamp()
+    assert access["reauth_deadline"] == refresh["reauth_deadline"]
+    assert access["auth_policy_version"] == refresh["auth_policy_version"] == 7
+
+
+@pytest.mark.asyncio
+async def test_redis_missing_policy_is_reconciled_or_login_fails_closed() -> None:
+    started = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: started)
+    with pytest.raises(SessionStateUnavailable):
+        await service.issue_pair(_unbound_ad_claims(), TAB_ID)
+    authoritative = _policy(4, 45, 100)
+
+    async def postgres() -> AuthSessionPolicy:
+        return authoritative
+
+    reconciler = AuthSessionPolicyReconciler(
+        store=store,
+        postgres_loader=postgres,
+    )
+    assert await reconciler.reconcile() == "missing"
+    pair = await service.issue_pair(_unbound_ad_claims(), TAB_ID)
+    assert _decode(pair.token)["auth_policy_version"] == 4
+
+
+@pytest.mark.asyncio
+async def test_redis_ahead_or_conflicting_policy_fails_readiness_and_login() -> None:
+    store = FakeKeyValue()
+    await publish_auth_session_policy(store, _policy(5, 30, 1))
+
+    async def postgres() -> AuthSessionPolicy:
+        return _policy(2, 30, 1)
+
+    loader = AlignedAuthSessionPolicyLoader(store, postgres_loader=postgres)
+    service = JwtService(SECRET, store, session_policy_loader=loader.load)
+    check = AuthSessionPolicyReadinessCheck(
+        object(),  # type: ignore[arg-type]
+        reconciler=AuthSessionPolicyReconciler(
+            store=store,
+            postgres_loader=postgres,
+        ),
+    )
+    with pytest.raises(SessionStateUnavailable, match="ahead"):
+        await check()
+    with pytest.raises(SessionStateUnavailable, match="ahead"):
+        await service.issue_pair(_unbound_ad_claims(), TAB_ID)
+    assert not any(key.startswith("auth:jwt:refresh-family:") for key in store.values)
+
+
+@pytest.mark.asyncio
+async def test_risky_pre_fix_ad_sessions_are_revoked_during_release() -> None:
+    started = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: started)
+    await service.publish_ad_session_policy(
+        480,
+        version=2,
+        min_accepted_policy_revision=2,
+    )
+    missing_version = jwt.encode(
+        {
+            "iss": JWT_ISSUER,
+            "aud": JWT_AUDIENCE,
+            "sub": "8",
+            "identity_id": 18,
+            "provider_code": "ad",
+            "login_name": "ad.user",
+            "display_name": "目录用户",
+            "dept": "研发部",
+            "role": "operator",
+            "security_version": 1,
+            "token_type": ACCESS_TOKEN_TYPE,
+            "sid": "s" * 32,
+            "jti": "j" * 32,
+            "iat": started.timestamp(),
+            "exp": int((started + timedelta(minutes=15)).timestamp()),
+            "auth_time": started.timestamp(),
+            "reauth_deadline": started.timestamp() + 480 * 60,
+        },
+        SECRET,
+        algorithm="HS256",
+        headers={"kid": "1"},
+    )
+    fallback_revision = jwt.encode(
+        {
+            "iss": JWT_ISSUER,
+            "aud": JWT_AUDIENCE,
+            "sub": "8",
+            "identity_id": 18,
+            "provider_code": "ad",
+            "login_name": "ad.user",
+            "display_name": "目录用户",
+            "dept": "研发部",
+            "role": "operator",
+            "security_version": 1,
+            "token_type": ACCESS_TOKEN_TYPE,
+            "sid": "t" * 32,
+            "jti": "k" * 32,
+            "iat": started.timestamp(),
+            "exp": int((started + timedelta(minutes=15)).timestamp()),
+            "auth_time": started.timestamp(),
+            "reauth_deadline": started.timestamp() + 480 * 60,
+            "auth_policy_version": 1,
+        },
+        SECRET,
+        algorithm="HS256",
+        headers={"kid": "1"},
+    )
+    with pytest.raises(ReauthenticationRequired):
+        await service.verify(missing_version)
+    with pytest.raises(ReauthenticationRequired):
+        await service.verify(fallback_revision)
+    assert "min_accepted_policy_revision = revision + 1" in _ISSUE_POLICY_MIGRATION
+    assert "security_version = ua.security_version + 1" in _ISSUE_POLICY_MIGRATION
+    snapshot = auth_observability_snapshot()
+    assert snapshot.legacy_policy_fallback == 0
+
+
+@pytest.mark.asyncio
+async def test_multi_api_instances_issue_against_same_policy_revision() -> None:
+    started = datetime(2026, 9, 5, 9, 0, tzinfo=UTC)
+    store = FakeKeyValue()
+    first = JwtService(SECRET, store, clock=lambda: started)
+    second = JwtService(SECRET, store, clock=lambda: started)
+    await first.publish_ad_session_policy(15, version=8)
+    left = await first.issue_pair(_unbound_ad_claims(), TAB_ID)
+    right = await second.issue_pair(_unbound_ad_claims(), TAB_ID)
+    assert _decode(left.token)["auth_policy_version"] == 8
+    assert _decode(right.token)["auth_policy_version"] == 8
+    assert _decode(left.token)["reauth_deadline"] == _decode(right.token)["reauth_deadline"]
+    snapshot = auth_observability_snapshot()
+    assert snapshot.legacy_policy_fallback == 0
+    assert dict(snapshot.token_issue_denied)["policy_unavailable"] == 0

@@ -588,5 +588,44 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         registry=registry,
     )
     session_lag.set(auth.session_policy_publish_lag_seconds)
+    issue_revision = Gauge(
+        "auth_token_issue_policy_revision",
+        "Last AD token issue policy revision by provider.",
+        ("provider",),
+        registry=registry,
+    )
+    for provider, value in auth.token_issue_policy_revision:
+        if provider in {"ad", "local"}:
+            issue_revision.labels(provider=provider).set(value)
+    issue_load = Gauge(
+        "auth_token_issue_policy_load_total",
+        "AD token issue policy load outcomes.",
+        ("outcome",),
+        registry=registry,
+    )
+    for outcome, value in auth.token_issue_policy_load:
+        issue_load.labels(outcome=outcome).set(value)
+    issue_mismatch = Gauge(
+        "auth_token_issue_policy_mismatch_total",
+        "AD token issue policy field mismatches.",
+        ("type",),
+        registry=registry,
+    )
+    for mismatch_type, value in auth.token_issue_policy_mismatch:
+        issue_mismatch.labels(type=mismatch_type).set(value)
+    issue_denied = Gauge(
+        "auth_token_issue_denied_total",
+        "AD token issue denials.",
+        ("reason",),
+        registry=registry,
+    )
+    for reason, value in auth.token_issue_denied:
+        issue_denied.labels(reason=reason).set(value)
+    legacy_fallback = Gauge(
+        "auth_legacy_policy_fallback_total",
+        "Legacy AD session policy fallback count; must stay zero.",
+        registry=registry,
+    )
+    legacy_fallback.set(auth.legacy_policy_fallback)
 
     return generate_latest(registry)
