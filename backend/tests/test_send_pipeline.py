@@ -46,10 +46,15 @@ from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL
 from app.services.quota import QuotaFenceLost
 from app.services.send_admission import SendAdmissionRejected
 from app.services.send_inflight import (
+    ACTIVE_INFLIGHT_STATES,
     AcceptCommitResolution,
+    _apply_reservation_delta,
     _load_bound_batch,
+    apply_inflight_delta,
+    materialize_in_flight_reservation,
     release_in_flight_reservation,
     release_unbound_acceptance_reservation,
+    reserve_in_flight_chunks,
 )
 from app.services.vendor_test_guard import VendorTestRecipientDenied
 
@@ -72,14 +77,25 @@ def test_idempotency_live_sql_keeps_unknown_and_unfinished_callback() -> None:
 
 
 def test_inflight_optional_ids_have_explicit_asyncpg_types() -> None:
-    release_src = inspect.getsource(release_in_flight_reservation)
-    unbound_src = inspect.getsource(release_unbound_acceptance_reservation)
+    delta_src = inspect.getsource(_apply_reservation_delta)
     load_src = inspect.getsource(_load_bound_batch)
-    for source in (release_src, unbound_src):
-        assert "COALESCE(CAST(:app_id AS BIGINT), app_id)" in source
-        assert ":app_id IS NULL" not in source
+    assert "CAST(:next_state AS VARCHAR)" in delta_src
+    assert "CAST(:materialized_chunks AS INTEGER)" in delta_src
+    assert ":next_state IS NOT NULL" not in delta_src
     assert "CAST(:batch_id AS BIGINT)" in load_src
     assert ":batch_id IS NOT NULL" not in load_src
+
+
+def test_inflight_mutations_use_conservation_primitive() -> None:
+    for source in (
+        inspect.getsource(release_in_flight_reservation),
+        inspect.getsource(release_unbound_acceptance_reservation),
+        inspect.getsource(materialize_in_flight_reservation),
+        inspect.getsource(reserve_in_flight_chunks),
+    ):
+        assert "apply_inflight_delta" in source
+    assert inspect.getsource(apply_inflight_delta).count("def apply_inflight_delta") == 1
+    assert frozenset({"reserved", "batch_bound", "materialized"}) == ACTIVE_INFLIGHT_STATES
 
 
 def crypto() -> CryptoService:
@@ -124,19 +140,13 @@ class FakeIdempotency:
     def claim_key(self, scope: IdempotencyScope, biz_id: str) -> str:
         return f"idem:claim:{scope.key}:{biz_id}"
 
-    def frequency_result_key(
-        self, scope: IdempotencyScope, biz_id: str
-    ) -> str:
+    def frequency_result_key(self, scope: IdempotencyScope, biz_id: str) -> str:
         return f"idem:freq:{scope.key}:{biz_id}"
 
-    def quota_result_key(
-        self, scope: IdempotencyScope, biz_id: str, date_key: str
-    ) -> str:
+    def quota_result_key(self, scope: IdempotencyScope, biz_id: str, date_key: str) -> str:
         return f"idem:quota:{scope.key}:{biz_id}:{date_key}"
 
-    async def remember(
-        self, scope: IdempotencyScope, biz_id: str, batch_no: str
-    ) -> None:
+    async def remember(self, scope: IdempotencyScope, biz_id: str, batch_no: str) -> None:
         self.remembered.append((scope, biz_id, batch_no))
 
     async def inspect(self, scope: IdempotencyScope, biz_id: str) -> Any:
@@ -148,14 +158,10 @@ class FakeIdempotency:
     async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         return self.existing
 
-    async def release(
-        self, scope: IdempotencyScope, biz_id: str, token: str
-    ) -> None:
+    async def release(self, scope: IdempotencyScope, biz_id: str, token: str) -> None:
         self.released.append(token)
 
-    async def renew(
-        self, scope: IdempotencyScope, biz_id: str, token: str
-    ) -> bool:
+    async def renew(self, scope: IdempotencyScope, biz_id: str, token: str) -> bool:
         return True
 
     async def heartbeat(
@@ -571,9 +577,7 @@ async def test_controlled_api_preauthorization_limits_once_and_is_reused_by_acce
             biz_id="api-uat-preauth",
             is_test=True,
             protected_mobiles=(protected,),
-            protected_hmac_candidates=tuple(
-                service_crypto.hmac_candidates("13800138000").items()
-            ),
+            protected_hmac_candidates=tuple(service_crypto.hmac_candidates("13800138000").items()),
             vendor_test_uat=True,
         ),
         preauthorization=authorization,
@@ -1138,9 +1142,7 @@ async def test_unbound_inflight_reservation_releases_on_accept_failure() -> None
             super().__init__()
             self.releases: list[tuple[int, int, str]] = []
 
-        async def reserve_in_flight_chunks(
-            self, app_id: int, estimated: int, limit: int
-        ) -> object:
+        async def reserve_in_flight_chunks(self, app_id: int, estimated: int, limit: int) -> object:
             assert app_id == 7
             assert estimated == 1
             assert limit >= 1
@@ -1176,9 +1178,7 @@ class _ReservedFailingStore(FailingStore):
         self.releases: list[tuple[int, int, str]] = []
         self.resolution: AcceptCommitResolution | None = None
 
-    async def reserve_in_flight_chunks(
-        self, app_id: int, estimated: int, limit: int
-    ) -> object:
+    async def reserve_in_flight_chunks(self, app_id: int, estimated: int, limit: int) -> object:
         return type("Reservation", (), {"id": 41, "generation": 1})()
 
     async def release_in_flight_reservation(
@@ -1291,9 +1291,7 @@ async def test_save_failure_lookup_hit_does_not_release_inflight() -> None:
             super().__init__()
             self.lookups = 0
 
-        async def lookup(
-            self, scope: IdempotencyScope, biz_id: str
-        ) -> str | None:
+        async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
             self.lookups += 1
             return "committed-batch" if self.lookups >= 3 else None
 
@@ -1302,9 +1300,7 @@ async def test_save_failure_lookup_hit_does_not_release_inflight() -> None:
             super().__init__()
             self.releases: list[tuple[int, int, str]] = []
 
-        async def reserve_in_flight_chunks(
-            self, app_id: int, estimated: int, limit: int
-        ) -> object:
+        async def reserve_in_flight_chunks(self, app_id: int, estimated: int, limit: int) -> object:
             return type("Reservation", (), {"id": 41, "generation": 1})()
 
         async def release_in_flight_reservation(
@@ -1426,9 +1422,7 @@ async def test_web_idempotency_uses_web_scope_and_same_hash_returns_original() -
     result = await pipeline.accept(app, request)
 
     assert result.idempotent is True
-    assert idempotency.lookup_calls == [
-        (IdempotencyScope("account", "1:10"), "web-biz-1")
-    ]
+    assert idempotency.lookup_calls == [(IdempotencyScope("account", "1:10"), "web-biz-1")]
     assert store.commands == []
 
 
@@ -1466,9 +1460,7 @@ async def test_console_uat_idempotency_is_bound_to_stable_web_principal() -> Non
     pipeline.idempotency = idempotency
 
     assert (await pipeline.accept(app, request)).idempotent is True
-    assert idempotency.lookup_calls == [
-        (IdempotencyScope("account", "1:10"), request.biz_id)
-    ]
+    assert idempotency.lookup_calls == [(IdempotencyScope("account", "1:10"), request.biz_id)]
 
 
 @pytest.mark.asyncio
@@ -1608,14 +1600,10 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
             super().__init__()
             self.by_biz: dict[str, tuple[str, str]] = {}
 
-        async def exists(
-            self, scope: IdempotencyScope, biz_id: str, batch_no: str
-        ) -> bool:
+        async def exists(self, scope: IdempotencyScope, biz_id: str, batch_no: str) -> bool:
             return self.by_biz.get(f"{scope.key}:{biz_id}", (None, None))[0] == batch_no
 
-        async def find_existing(
-            self, scope: IdempotencyScope, biz_id: str
-        ) -> str | None:
+        async def find_existing(self, scope: IdempotencyScope, biz_id: str) -> str | None:
             return self.by_biz.get(f"{scope.key}:{biz_id}", (None, None))[0]
 
         async def find_request_fingerprint(
@@ -1626,18 +1614,14 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
 
         async def save(self, command: Any) -> StoredBatch:
             self.commands.append(command)
-            self.by_biz[
-                f"{command.scope_kind}:{command.scope_id}:{command.biz_id}"
-            ] = (
+            self.by_biz[f"{command.scope_kind}:{command.scope_id}:{command.biz_id}"] = (
                 "shared-batch",
                 command.request_hash,
             )
             return StoredBatch("shared-batch", False)
 
         async def response_for(self, batch_no: str) -> BatchResponse:
-            return BatchResponse(
-                batch_no, True, 1, 0, 0, 0, 1, 1, "queued", None, None
-            )
+            return BatchResponse(batch_no, True, 1, 0, 0, 0, 1, 1, "queued", None, None)
 
     class BlockingFrequency(FakeFrequency):
         def __init__(self) -> None:
@@ -1745,14 +1729,10 @@ async def test_idempotency_claim_is_released_after_pipeline_failure() -> None:
             return 1
 
     class RepositoryFailingStore(FailingStore):
-        async def exists(
-            self, scope: IdempotencyScope, biz_id: str, batch_no: str
-        ) -> bool:
+        async def exists(self, scope: IdempotencyScope, biz_id: str, batch_no: str) -> bool:
             return False
 
-        async def find_existing(
-            self, scope: IdempotencyScope, biz_id: str
-        ) -> str | None:
+        async def find_existing(self, scope: IdempotencyScope, biz_id: str) -> str | None:
             return None
 
     redis = ClaimRedis()
@@ -1785,9 +1765,7 @@ async def test_idempotency_claim_is_released_after_pipeline_failure() -> None:
 @pytest.mark.asyncio
 async def test_lost_claim_fails_closed_before_business_side_effects() -> None:
     class LostClaimIdempotency(FakeIdempotency):
-        async def renew(
-            self, scope: IdempotencyScope, biz_id: str, token: str
-        ) -> bool:
+        async def renew(self, scope: IdempotencyScope, biz_id: str, token: str) -> bool:
             return False
 
     store = FakeStore()
@@ -1948,9 +1926,7 @@ async def test_claim_loss_after_reserve_refunds_without_save_or_publish() -> Non
             super().__init__()
             self.lost = False
 
-        async def renew(
-            self, scope: IdempotencyScope, biz_id: str, token: str
-        ) -> bool:
+        async def renew(self, scope: IdempotencyScope, biz_id: str, token: str) -> bool:
             return not self.lost
 
     idem = LosingIdempotency()
@@ -1989,9 +1965,7 @@ async def test_release_failure_does_not_mask_successful_response(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     class ReleaseFailureIdempotency(FakeIdempotency):
-        async def release(
-            self, scope: IdempotencyScope, biz_id: str, token: str
-        ) -> None:
+        async def release(self, scope: IdempotencyScope, biz_id: str, token: str) -> None:
             raise RuntimeError("redis unavailable")
 
     pipeline = SendPipeline(
@@ -2058,25 +2032,31 @@ async def test_verify_pipeline_deduplicates_encrypts_masks_and_enqueues_referenc
     assert result.accepted == 2
     assert result.removed_duplicate == 1
     assert not hasattr(command, "persisted_content")
-    assert service.decrypt_bound_packed_text(
-        command.display_content_enc,
-        EncryptionContext(
-            domain="sms-display-content",
-            table="sms_batch",
-            column="display_content_enc",
-            object_id=command.batch_no,
-        ),
-    ) == "验证码******"
+    assert (
+        service.decrypt_bound_packed_text(
+            command.display_content_enc,
+            EncryptionContext(
+                domain="sms-display-content",
+                table="sms_batch",
+                column="display_content_enc",
+                object_id=command.batch_no,
+            ),
+        )
+        == "验证码******"
+    )
     assert b"123456" not in command.display_content_enc
-    assert service.decrypt_bound_packed_text(
-        command.send_content_enc,
-        EncryptionContext(
-            domain="sms-content",
-            table="sms_batch",
-            column="send_content_enc",
-            object_id=command.batch_no,
-        ),
-    ) == "验证码123456"
+    assert (
+        service.decrypt_bound_packed_text(
+            command.send_content_enc,
+            EncryptionContext(
+                domain="sms-content",
+                table="sms_batch",
+                column="send_content_enc",
+                object_id=command.batch_no,
+            ),
+        )
+        == "验证码123456"
+    )
     assert command.sign_name == "【青鸾】"
     assert command.resend_of == "original-batch"
     assert all(message.phone_mask in {"138****8000", "139****9000"} for message in command.messages)
@@ -2365,9 +2345,7 @@ async def test_save_commit_then_raise_returns_database_fact_without_refund() -> 
             super().__init__()
             self.lookups = 0
 
-        async def lookup(
-            self, scope: IdempotencyScope, biz_id: str
-        ) -> str | None:
+        async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
             self.lookups += 1
             return "committed-batch" if self.lookups >= 3 else None
 
@@ -2745,6 +2723,7 @@ async def test_web_channel_skips_application_rate_limiter() -> None:
     )
     assert result.batch_no == "new-batch"
 
+
 @pytest.mark.asyncio
 async def test_uncertain_effect_principal_requires_verified_resolution() -> None:
     class ClosedStore(FakeStore):
@@ -2835,9 +2814,7 @@ async def test_replay_if_present_returns_existing_without_admission() -> None:
         admission_guard=BoomAdmission(),  # type: ignore[arg-type]
     )
     policy = policy_for_category("notice", app.allowed_categories)
-    idempotency.stored_request_hash = pipeline._request_hash(
-        request, app, policy, key_version=1
-    )
+    idempotency.stored_request_hash = pipeline._request_hash(request, app, policy, key_version=1)
     empty = await pipeline.replay_if_present(
         app,
         SendRequest("notice", ["13800138000"], content="通知"),
@@ -2905,9 +2882,7 @@ async def test_replay_if_present_waits_for_in_flight_claim() -> None:
         config=PipelineConfig(),
     )
     policy = policy_for_category("notice", app.allowed_categories)
-    idempotency.stored_request_hash = pipeline._request_hash(
-        request, app, policy, key_version=1
-    )
+    idempotency.stored_request_hash = pipeline._request_hash(request, app, policy, key_version=1)
     replayed = await pipeline.replay_if_present(app, request)
     assert replayed is not None
     assert replayed.batch_no == "existing"
@@ -3003,9 +2978,7 @@ async def test_replay_if_present_consumes_replay_limit_only() -> None:
         acceptance_limiter=limiter,  # type: ignore[arg-type]
     )
     policy = policy_for_category("notice", app.allowed_categories)
-    idempotency.stored_request_hash = pipeline._request_hash(
-        request, app, policy, key_version=1
-    )
+    idempotency.stored_request_hash = pipeline._request_hash(request, app, policy, key_version=1)
     replayed = await pipeline.replay_if_present(app, request)
     assert replayed is not None
     assert limiter.replayed == 1
@@ -3034,11 +3007,8 @@ async def test_replay_if_present_rewrites_uat_plaintext_identity() -> None:
     )
     rewritten = pipeline._with_uat_replay_identity(request)
     policy = policy_for_category("notice", app.allowed_categories)
-    idempotency.stored_request_hash = pipeline._request_hash(
-        rewritten, app, policy, key_version=1
-    )
+    idempotency.stored_request_hash = pipeline._request_hash(rewritten, app, policy, key_version=1)
     replayed = await pipeline.replay_if_present(app, request)
     assert replayed is not None
     assert rewritten.protected_mobiles
     assert rewritten.mobiles == ()
-

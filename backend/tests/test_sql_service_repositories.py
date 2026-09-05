@@ -466,24 +466,30 @@ async def test_template_repository_update_persists_only_object_bound_ciphertext(
     assert "验证码{1}" not in str(update_params)
     assert "验证码" not in str(update_params)
     assert isinstance(update_params, dict)
-    assert crypto.decrypt_bound_packed_text(
-        update_params["content_enc"],
-        EncryptionContext(
-            domain="sms-template-content",
-            table="sms_template",
-            column="content_enc",
-            object_id="17",
-        ),
-    ) == "验证码{1}"
-    assert crypto.decrypt_bound_packed_text(
-        update_params["name_enc"],
-        EncryptionContext(
-            domain="sms-template-name",
-            table="sms_template",
-            column="name_enc",
-            object_id="17",
-        ),
-    ) == "验证码"
+    assert (
+        crypto.decrypt_bound_packed_text(
+            update_params["content_enc"],
+            EncryptionContext(
+                domain="sms-template-content",
+                table="sms_template",
+                column="content_enc",
+                object_id="17",
+            ),
+        )
+        == "验证码{1}"
+    )
+    assert (
+        crypto.decrypt_bound_packed_text(
+            update_params["name_enc"],
+            EncryptionContext(
+                domain="sms-template-name",
+                table="sms_template",
+                column="name_enc",
+                object_id="17",
+            ),
+        )
+        == "验证码"
+    )
 
 
 @pytest.mark.asyncio
@@ -783,6 +789,7 @@ async def test_recovery_repository_selects_only_recoverable_work(
             FakeResult(rowcount=1),
             FakeResult(rows=[{"batch_no": "batch-1", "category": "notice"}]),
             FakeResult(rows=[{"batch_no": "batch-2", "category": "market", "chunk_id": 8}]),
+            FakeResult(),
             FakeResult(),
             FakeResult(),
             FakeResult(),
@@ -1325,9 +1332,7 @@ async def test_terminalize_unknown_locks_and_enqueues_final_callback(
             FakeResult(rows=[{"chunk_id": 3, "batch_id": 8}]),
             FakeResult(rowcount=1),
             FakeResult(),
-            FakeResult(
-                rows=[{"id": 8, "status": "completed_unknown", "unknown_cnt": 2}]
-            ),
+            FakeResult(rows=[{"id": 8, "status": "completed_unknown", "unknown_cnt": 2}]),
             FakeResult(),
         ]
     )
@@ -1436,9 +1441,7 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = BatchQueryService()
-    connection = FakeConnection(
-        [FakeResult(scalar=0), FakeResult(rows=[]), FakeResult(rows=[])]
-    )
+    connection = FakeConnection([FakeResult(scalar=0), FakeResult(rows=[]), FakeResult(rows=[])])
     bind_engine(monkeypatch, service, connection)
 
     result = await service.list_batches(
@@ -1520,9 +1523,7 @@ async def test_batch_list_batch_no_filter_escapes_like_wildcards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = BatchQueryService()
-    connection = FakeConnection(
-        [FakeResult(scalar=0), FakeResult(rows=[]), FakeResult(rows=[])]
-    )
+    connection = FakeConnection([FakeResult(scalar=0), FakeResult(rows=[]), FakeResult(rows=[])])
     bind_engine(monkeypatch, service, connection)
 
     await service.list_batches(

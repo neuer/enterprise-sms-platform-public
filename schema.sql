@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.87  2026-09-05
+-- v1.6.87：send_inflight_balance = SUM(active reservations)；明细与聚合必须
+--          同事务更新，COMMIT 时由延迟约束触发器校验，对账按公式修复漂移。
 -- v1.6.86  2026-09-05
 -- v1.6.86：acceptance-failed 只能释放 reserved 且未绑定批次的在途预留；
 --          已绑定/materialized 行由触发器与 CHECK 拒绝，对账可恢复误释放。
@@ -780,6 +783,7 @@ CREATE TABLE sms_uncertain_child (
 CREATE TABLE send_inflight_balance (
     app_id BIGINT PRIMARY KEY REFERENCES app(id) ON DELETE RESTRICT,
     reserved_chunks INTEGER NOT NULL DEFAULT 0 CHECK (reserved_chunks >= 0),
+    conservation_blocked_at TIMESTAMPTZ,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE send_inflight_reservation (
@@ -841,6 +845,148 @@ CREATE INDEX idx_send_inflight_misreleased_acceptance
     WHERE state='released'
       AND release_reason='acceptance-failed'
       AND batch_id IS NOT NULL;
+CREATE OR REPLACE FUNCTION send_inflight_active_states()
+RETURNS TEXT[] LANGUAGE sql IMMUTABLE AS $$
+  SELECT ARRAY['reserved', 'batch_bound', 'materialized']::text[];
+$$;
+CREATE OR REPLACE FUNCTION check_send_inflight_balance_conservation()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path=pg_catalog,public AS $$
+DECLARE
+  target_app BIGINT;
+  expected INTEGER;
+  stored INTEGER;
+BEGIN
+  target_app := COALESCE(NEW.app_id, OLD.app_id);
+  SELECT COALESCE(SUM(reserved_chunks), 0)::integer
+    INTO expected
+    FROM send_inflight_reservation
+   WHERE app_id = target_app
+     AND state = ANY (send_inflight_active_states());
+  SELECT reserved_chunks
+    INTO stored
+    FROM send_inflight_balance
+   WHERE app_id = target_app;
+  IF stored IS NULL THEN
+    IF expected <> 0 THEN
+      RAISE EXCEPTION 'send_inflight balance missing'
+        USING ERRCODE = '23514';
+    END IF;
+    RETURN NULL;
+  END IF;
+  IF stored <> expected THEN
+    RAISE EXCEPTION 'send_inflight balance drift'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+REVOKE ALL ON FUNCTION check_send_inflight_balance_conservation() FROM PUBLIC;
+CREATE CONSTRAINT TRIGGER trg_send_inflight_reservation_conservation
+AFTER INSERT OR UPDATE OR DELETE ON send_inflight_reservation
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION check_send_inflight_balance_conservation();
+CREATE CONSTRAINT TRIGGER trg_send_inflight_balance_conservation
+AFTER INSERT OR UPDATE OR DELETE ON send_inflight_balance
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION check_send_inflight_balance_conservation();
+CREATE TABLE send_inflight_reconcile_fact (
+    id BIGSERIAL PRIMARY KEY,
+    app_id BIGINT NOT NULL REFERENCES app(id) ON DELETE RESTRICT,
+    stored_balance INTEGER,
+    computed_active_sum INTEGER NOT NULL,
+    delta INTEGER NOT NULL,
+    active_reservation_count INTEGER NOT NULL,
+    result VARCHAR(16) NOT NULL,
+    CONSTRAINT ck_send_inflight_reconcile_result
+      CHECK (result IN ('matched', 'repaired', 'blocked')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE OR REPLACE FUNCTION reconcile_send_inflight_app(p_app_id BIGINT)
+RETURNS TEXT LANGUAGE plpgsql SECURITY DEFINER
+SET search_path=pg_catalog,public AS $$
+DECLARE
+  computed INTEGER;
+  active_count INTEGER;
+  stored INTEGER;
+  blocked_at TIMESTAMPTZ;
+  dupes INTEGER;
+BEGIN
+  PERFORM pg_advisory_xact_lock(868632, p_app_id);
+  SELECT COUNT(*) INTO dupes
+    FROM (
+      SELECT batch_id
+        FROM send_inflight_reservation
+       WHERE app_id = p_app_id
+         AND state = ANY (send_inflight_active_states())
+         AND batch_id IS NOT NULL
+       GROUP BY batch_id
+      HAVING COUNT(*) > 1
+    ) d;
+  SELECT COALESCE(SUM(reserved_chunks), 0)::integer, COUNT(*)::integer
+    INTO computed, active_count
+    FROM send_inflight_reservation
+   WHERE app_id = p_app_id
+     AND state = ANY (send_inflight_active_states());
+  SELECT reserved_chunks, conservation_blocked_at
+    INTO stored, blocked_at
+    FROM send_inflight_balance
+   WHERE app_id = p_app_id
+   FOR UPDATE;
+  IF dupes > 0 THEN
+    IF FOUND THEN
+      UPDATE send_inflight_balance
+         SET conservation_blocked_at = COALESCE(conservation_blocked_at, now()),
+             updated_at = now()
+       WHERE app_id = p_app_id;
+    END IF;
+    INSERT INTO send_inflight_reconcile_fact(
+      app_id, stored_balance, computed_active_sum, delta,
+      active_reservation_count, result
+    ) VALUES (
+      p_app_id, stored, computed, computed - COALESCE(stored, 0),
+      active_count, 'blocked'
+    );
+    RETURN 'blocked';
+  END IF;
+  IF NOT FOUND THEN
+    IF computed = 0 THEN
+      RETURN 'matched';
+    END IF;
+    INSERT INTO send_inflight_balance(app_id, reserved_chunks)
+    VALUES (p_app_id, computed);
+    INSERT INTO send_inflight_reconcile_fact(
+      app_id, stored_balance, computed_active_sum, delta,
+      active_reservation_count, result
+    ) VALUES (p_app_id, NULL, computed, computed, active_count, 'repaired');
+    RETURN 'repaired';
+  END IF;
+  IF stored = computed THEN
+    IF blocked_at IS NOT NULL THEN
+      UPDATE send_inflight_balance
+         SET conservation_blocked_at = NULL,
+             updated_at = now()
+       WHERE app_id = p_app_id;
+    END IF;
+    RETURN 'matched';
+  END IF;
+  UPDATE send_inflight_balance
+     SET reserved_chunks = computed,
+         conservation_blocked_at = NULL,
+         updated_at = now()
+   WHERE app_id = p_app_id;
+  INSERT INTO send_inflight_reconcile_fact(
+    app_id, stored_balance, computed_active_sum, delta,
+    active_reservation_count, result
+  ) VALUES (
+    p_app_id, stored, computed, computed - stored, active_count, 'repaired'
+  );
+  RETURN 'repaired';
+END;
+$$;
+REVOKE ALL ON FUNCTION reconcile_send_inflight_app(BIGINT) FROM PUBLIC;
 CREATE TABLE send_admission_state (
     scope VARCHAR(16) PRIMARY KEY,
     state VARCHAR(16) NOT NULL CHECK (state IN ('open','degraded','closed')),
@@ -2762,6 +2908,7 @@ GRANT SELECT ON
     sms_uncertain_resolution, sms_uncertain_child,
     usage_chunk_allocation, usage_chunk_release,
     send_inflight_balance, send_inflight_reservation,
+    send_inflight_reconcile_fact,
     send_admission_state, send_runtime_heartbeat,
     auth_session_policy
 TO sms_accept;
@@ -2777,6 +2924,7 @@ GRANT INSERT, UPDATE ON
     sms_uncertain_resolution, sms_uncertain_child,
     usage_chunk_allocation, usage_chunk_release,
     send_inflight_balance, send_inflight_reservation,
+    send_inflight_reconcile_fact,
     send_admission_state, send_runtime_heartbeat,
     auth_session_policy
 TO sms_accept;
@@ -2809,7 +2957,8 @@ GRANT USAGE, SELECT ON SEQUENCE
     vendor_test_send_attempt_id_seq, vendor_test_recipient_id_seq,
     callback_task_id_seq, alert_log_id_seq,
     usage_projection_version_seq, security_daily_report_id_seq,
-    sms_uncertain_resolution_id_seq, send_inflight_reservation_id_seq
+    sms_uncertain_resolution_id_seq, send_inflight_reservation_id_seq,
+    send_inflight_reconcile_fact_id_seq
 TO sms_accept;
 
 -- 发送、拉取、对账、统计与业务 worker。
@@ -2829,6 +2978,7 @@ GRANT SELECT ON
     sms_uncertain_resolution, sms_uncertain_child, sms_vendor_attempt,
     usage_chunk_allocation, usage_chunk_release,
     send_inflight_balance, send_inflight_reservation,
+    send_inflight_reconcile_fact,
     send_admission_state, send_runtime_heartbeat
 TO sms_send;
 GRANT UPDATE (vendor_template_id,vendor_state,vendor_reject_reason,updated_at)
@@ -2844,6 +2994,7 @@ GRANT INSERT, UPDATE, DELETE ON
     sms_uncertain_resolution, sms_uncertain_child,
     usage_chunk_allocation, usage_chunk_release,
     send_inflight_balance, send_inflight_reservation,
+    send_inflight_reconcile_fact,
     send_admission_state, send_runtime_heartbeat
 TO sms_send;
 GRANT INSERT, UPDATE ON security_daily_report TO sms_send;
@@ -2870,7 +3021,7 @@ GRANT USAGE, SELECT ON SEQUENCE
     audit_log_id_seq, callback_task_id_seq, import_phone_id_seq,
     usage_projection_version_seq, security_daily_report_id_seq,
     sms_uncertain_resolution_id_seq, sms_vendor_attempt_id_seq,
-    send_inflight_reservation_id_seq
+    send_inflight_reservation_id_seq, send_inflight_reconcile_fact_id_seq
 TO sms_send;
 
 -- 回调 worker 的横向影响限制在回调事实、租约、告警与 Outbox。
@@ -2945,9 +3096,18 @@ GRANT SELECT (outcome, created_at)
     ON sms_vendor_attempt TO sms_metrics;
 GRANT SELECT (id, revision, ad_session_max_age_minutes, updated_at)
     ON auth_session_policy TO sms_metrics;
+GRANT SELECT (app_id, reserved_chunks, conservation_blocked_at)
+    ON send_inflight_balance TO sms_metrics;
+GRANT SELECT (app_id, stored_balance, computed_active_sum, delta,
+              active_reservation_count, result, created_at)
+    ON send_inflight_reconcile_fact TO sms_metrics;
 GRANT SELECT (replay_eligibility, processing_lease_epoch, processing_lease_expires_at,
               system_replay_audit_state)
     ON raw_vendor_log TO sms_metrics;
+GRANT EXECUTE ON FUNCTION send_inflight_active_states()
+    TO sms_accept, sms_send, sms_scheduler, sms_metrics;
+GRANT EXECUTE ON FUNCTION reconcile_send_inflight_app(BIGINT)
+    TO sms_accept, sms_send;
 
 -- 新表/序列默认不向任何运行身份授权；迁移必须显式更新本矩阵。
 ALTER DEFAULT PRIVILEGES FOR ROLE sms_owner IN SCHEMA public

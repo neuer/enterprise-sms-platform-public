@@ -295,6 +295,7 @@ def _check_raw_sql(
             "CREATE OR REPLACE FUNCTION ",
             "CREATE POLICY ",
             "CREATE TRIGGER ",
+            "CREATE CONSTRAINT TRIGGER ",
             "CREATE OR REPLACE VIEW ",
             "CREATE VIEW ",
         )

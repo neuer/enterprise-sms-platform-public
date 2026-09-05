@@ -210,6 +210,8 @@ Content-Type: application/json
 在途预留不会被 `acceptance-failed` 释放；若平台暂时无法确认提交结果，返回 503
 `DEPENDENCY_UNAVAILABLE`，调用方必须用原 `biz_id` 查询或重试，禁止换键。预留已绑定
 不一致批次时返回 409 `STATE_CONFLICT`，同样不得换键重发。
+在途容量守恒异常时新发送对该应用失败关闭，返回 503 `USAGE_PROJECTION_UNAVAILABLE`，
+调用方应稍后用原 `biz_id` 重试，禁止清零或换键。
 
 推荐的重试模式：
 

@@ -961,6 +961,26 @@ def test_inflight_acceptance_failed_guard_is_expand_only() -> None:
     assert "return" in source.split("def downgrade", 1)[1]
 
 
+def test_inflight_balance_conservation_repairs_aggregate_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0101_inflight_balance_conservation.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.87：" in schema
+    for contract in (schema, source):
+        assert "send_inflight_active_states" in contract
+        assert "check_send_inflight_balance_conservation" in contract
+        assert "reconcile_send_inflight_app" in contract
+        assert "send_inflight_reconcile_fact" in contract
+        assert "conservation_blocked_at" in contract
+    assert 'revision = "0101_inflight_balance_conservation"' in source
+    assert 'down_revision = "0100_inflight_acceptance_failed_guard"' in source
+    assert "DELETE FROM send_inflight_reservation" not in source
+    assert "reserved_chunks = 0" not in source
+    assert "reconcile_send_inflight_app" in source.split("def downgrade")[0]
+    assert "return" in source.split("def downgrade", 1)[1]
+
+
 def test_idempotency_claim_lease_lifecycle_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0099_idempotency_claim_lease_lifecycle.py"

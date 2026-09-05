@@ -1391,3 +1391,24 @@
   属于正式批次的容量，造成系统性低估。
 - 影响：schema v1.6.86/0100、`send_inflight.py`、`pipeline.py`、
   `pipeline_repository.py`、`deploy/failover.md`。
+
+## D105 在途容量以 reservation 明细为权威，balance 必须等于活动求和
+
+- 决策：权威公式为
+  `send_inflight_balance.reserved_chunks = SUM(reserved_chunks)
+  WHERE state IN send_inflight_active_states()`，活动态固定为
+  `reserved/batch_bound/materialized`。reserve、release、materialize、split 与
+  repair 一律走 `apply_inflight_delta`：先锁 balance 再锁 reservation，两侧
+  RETURNING 都必须命中一行，否则抛 `InFlightInvariantViolation` 并回滚。
+  缺失 balance 只允许 reserve 与对账修复创建；release/materialize 不得静默建行。
+- COMMIT 用 DEFERRABLE 约束触发器复核公式，旧 API 只改一侧也会在提交时失败。
+  0101 只安装函数/触发器/事实表，不在迁移里改写业务行；启动后由同一
+  `reconcile_send_inflight_app` 按求和修复聚合（禁止清零）。漂移写入
+  `send_inflight_reconcile_fact`（仅内部 ID 与计数）；
+  同一 batch 多个活动 reservation 只记 `blocked` 并失败关闭新发送，不猜测释放。
+  `conservation_blocked_at` 使新 reserve 返回 503。过程计数器不新增 Prometheus
+  族（D020/D102–D104），事实在 balance/fact 行上由 `/metrics` 抓取。
+- 原因：先改明细再改聚合且不检查 rowcount 会提交“已 released/materialized 但
+  聚合未同步”，之后重复 release 也无法自愈。
+- 影响：schema v1.6.87/0101、`send_inflight.py`、`pipeline.py`、
+  `pipeline_repository.py`、`deploy/failover.md`。#631 动态 split 必须复用该原语。

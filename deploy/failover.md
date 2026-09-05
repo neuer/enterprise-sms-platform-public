@@ -330,6 +330,9 @@ COMMIT 成功但 HTTP 响应丢失时，先查 `idempotency_claim.state=complete
 `batch_id`/`idempotency_record`，复用同一批次，禁止换 `biz_id` 重发。
 已绑定或 materialized 的 `send_inflight_reservation` 不得按 `acceptance-failed`
 释放；`send_inflight_balance` 必须继续计入该批次占用，由批次终态或对账回收。
+`send_inflight_balance` 必须持续等于活动 reservation 求和；任一侧更新 0 行时整事务
+回滚，并由 `reconcile_send_inflight_app` 按公式修复，禁止把聚合直接清零。守恒异常
+期间对应应用新发送失败关闭。
 `biz_id` 只是关联证据；对应数据库幂等行已经随恢复点之后的数据丢失时，它本身不能阻止重复
 发送。恢复前必须建立以下 gap fence：
 
