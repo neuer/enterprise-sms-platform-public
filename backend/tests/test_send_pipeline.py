@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -26,6 +27,8 @@ from app.services.idempotency import (
 )
 from app.services.pipeline import (
     AcceptancePreauthorization,
+    AcceptCommitConflict,
+    AcceptCommitUnknown,
     AllFiltered,
     BatchResponse,
     ConsentRequired,
@@ -42,6 +45,12 @@ from app.services.pipeline import (
 from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL
 from app.services.quota import QuotaFenceLost
 from app.services.send_admission import SendAdmissionRejected
+from app.services.send_inflight import (
+    AcceptCommitResolution,
+    _load_bound_batch,
+    release_in_flight_reservation,
+    release_unbound_acceptance_reservation,
+)
 from app.services.vendor_test_guard import VendorTestRecipientDenied
 
 ADMIN = SecurityPrincipal(1, 10, "admin", "平台部", "admin")
@@ -60,6 +69,17 @@ def test_idempotency_live_sql_keeps_unknown_and_unfinished_callback() -> None:
     assert "callback_task" in sql
     assert "pending" in sql and "retrying" in sql
     assert "phone" not in sql
+
+
+def test_inflight_optional_ids_have_explicit_asyncpg_types() -> None:
+    release_src = inspect.getsource(release_in_flight_reservation)
+    unbound_src = inspect.getsource(release_unbound_acceptance_reservation)
+    load_src = inspect.getsource(_load_bound_batch)
+    for source in (release_src, unbound_src):
+        assert "COALESCE(CAST(:app_id AS BIGINT), app_id)" in source
+        assert ":app_id IS NULL" not in source
+    assert "CAST(:batch_id AS BIGINT)" in load_src
+    assert ":batch_id IS NOT NULL" not in load_src
 
 
 def crypto() -> CryptoService:
@@ -1148,6 +1168,170 @@ async def test_unbound_inflight_reservation_releases_on_accept_failure() -> None
             SendRequest("notice", ["13800138000"], content="通知", biz_id="inflight-1"),
         )
     assert store.releases == [(41, 1, "acceptance-failed")]
+
+
+class _ReservedFailingStore(FailingStore):
+    def __init__(self) -> None:
+        super().__init__()
+        self.releases: list[tuple[int, int, str]] = []
+        self.resolution: AcceptCommitResolution | None = None
+
+    async def reserve_in_flight_chunks(
+        self, app_id: int, estimated: int, limit: int
+    ) -> object:
+        return type("Reservation", (), {"id": 41, "generation": 1})()
+
+    async def release_in_flight_reservation(
+        self, reservation_id: int, generation: int, reason: str
+    ) -> bool:
+        self.releases.append((reservation_id, generation, reason))
+        return True
+
+    async def resolve_ambiguous_acceptance_commit(self, **_kwargs: object) -> object:
+        assert self.resolution is not None
+        return self.resolution
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_commit_keeps_bound_inflight_reservation() -> None:
+    store = _ReservedFailingStore()
+    store.resolution = AcceptCommitResolution(
+        "BOUND_TO_EXPECTED_BATCH",
+        batch_no="existing",
+    )
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest("notice", ["13800138000"], content="通知", biz_id="bound-1")
+    policy = policy_for_category(request.category, app.allowed_categories)
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(
+            stored_request_hash="pending",
+        ),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    pipeline.idempotency.stored_request_hash = pipeline._request_hash(
+        request, app, policy, key_version=1
+    )
+    result = await pipeline.accept(app, request)
+    assert result.batch_no == "existing"
+    assert store.releases == []
+
+
+@pytest.mark.asyncio
+async def test_unknown_commit_does_not_release_inflight() -> None:
+    store = _ReservedFailingStore()
+    store.resolution = AcceptCommitResolution("UNKNOWN")
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(AcceptCommitUnknown, match="尚未确认"):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="unk-1"),
+        )
+    assert store.releases == []
+
+
+@pytest.mark.asyncio
+async def test_conflicting_bound_commit_does_not_release_inflight() -> None:
+    store = _ReservedFailingStore()
+    store.resolution = AcceptCommitResolution("BOUND_TO_CONFLICTING_BATCH")
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(AcceptCommitConflict, match="不一致"):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="conf-1"),
+        )
+    assert store.releases == []
+
+
+@pytest.mark.asyncio
+async def test_unbound_commit_resolution_still_releases_inflight() -> None:
+    store = _ReservedFailingStore()
+    store.resolution = AcceptCommitResolution("UNBOUND")
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="unb-1"),
+        )
+    assert store.releases == [(41, 1, "acceptance-failed")]
+
+
+@pytest.mark.asyncio
+async def test_save_failure_lookup_hit_does_not_release_inflight() -> None:
+    class CommitThenRaiseIdempotency(FakeIdempotency):
+        def __init__(self) -> None:
+            super().__init__()
+            self.lookups = 0
+
+        async def lookup(
+            self, scope: IdempotencyScope, biz_id: str
+        ) -> str | None:
+            self.lookups += 1
+            return "committed-batch" if self.lookups >= 3 else None
+
+    class TrackingFailingStore(FailingStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.releases: list[tuple[int, int, str]] = []
+
+        async def reserve_in_flight_chunks(
+            self, app_id: int, estimated: int, limit: int
+        ) -> object:
+            return type("Reservation", (), {"id": 41, "generation": 1})()
+
+        async def release_in_flight_reservation(
+            self, reservation_id: int, generation: int, reason: str
+        ) -> bool:
+            self.releases.append((reservation_id, generation, reason))
+            return True
+
+    store = TrackingFailingStore()
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest("notice", ["13800138000"], content="通知", biz_id="commit-hit")
+    policy = policy_for_category(request.category, app.allowed_categories)
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=CommitThenRaiseIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    pipeline.idempotency.stored_request_hash = pipeline._request_hash(
+        request, app, policy, key_version=1
+    )
+    result = await pipeline.accept(app, request)
+    assert result.batch_no == "existing"
+    assert store.releases == []
 
 
 @pytest.mark.asyncio

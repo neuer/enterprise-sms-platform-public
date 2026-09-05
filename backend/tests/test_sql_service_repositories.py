@@ -785,6 +785,8 @@ async def test_recovery_repository_selects_only_recoverable_work(
             FakeResult(rows=[{"batch_no": "batch-2", "category": "market", "chunk_id": 8}]),
             FakeResult(),
             FakeResult(),
+            FakeResult(),
+            FakeResult(),
         ]
     )
     engine = FakeEngine(connection)

@@ -212,6 +212,7 @@ class SqlPipelineStore:
         reservation_id: int,
         generation: int,
         reason: str,
+        app_id: int | None = None,
     ) -> bool:
         from app.services.send_inflight import release_in_flight_reservation
 
@@ -221,7 +222,54 @@ class SqlPipelineStore:
                 reservation_id=reservation_id,
                 generation=generation,
                 reason=reason,
+                app_id=app_id,
             )
+
+    async def release_unbound_acceptance_reservation(
+        self,
+        reservation_id: int,
+        generation: int,
+        app_id: int,
+    ) -> bool:
+        from app.services.send_inflight import release_unbound_acceptance_reservation
+
+        async with self._engine().begin() as connection:
+            return await release_unbound_acceptance_reservation(
+                connection,
+                reservation_id=reservation_id,
+                generation=generation,
+                app_id=app_id,
+            )
+
+    async def resolve_ambiguous_acceptance_commit(
+        self,
+        *,
+        reservation_id: int,
+        generation: int,
+        app_id: int,
+        scope_kind: str,
+        scope_id: str,
+        biz_id: str,
+        request_hash: str,
+    ) -> Any:
+        from app.services.send_inflight import resolve_ambiguous_acceptance_commit
+
+        try:
+            async with self._engine().begin() as connection:
+                return await resolve_ambiguous_acceptance_commit(
+                    connection,
+                    reservation_id=reservation_id,
+                    generation=generation,
+                    app_id=app_id,
+                    scope_kind=scope_kind,
+                    scope_id=scope_id,
+                    biz_id=biz_id,
+                    request_hash=request_hash,
+                )
+        except Exception:
+            from app.services.send_inflight import AcceptCommitResolution
+
+            return AcceptCommitResolution("UNKNOWN")
 
     async def blacklisted(self, phone_hmacs: set[str]) -> set[str]:
         if not phone_hmacs:

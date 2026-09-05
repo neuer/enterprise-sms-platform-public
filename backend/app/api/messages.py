@@ -30,6 +30,8 @@ from app.services.crypto import CryptoService, ProtectedPhone
 from app.services.freq import FrequencyFenceLost, FrequencyLimiter
 from app.services.idempotency import IdempotencyCoordinationTimeout, IdempotencyCoordinator
 from app.services.pipeline import (
+    AcceptCommitConflict,
+    AcceptCommitUnknown,
     AllFiltered,
     BatchResponse,
     ConsentRequired,
@@ -382,6 +384,10 @@ def _error(error: Exception) -> ApiError:
             str(error),
             None,
         )
+    if isinstance(error, AcceptCommitConflict):
+        return ApiError(409, "STATE_CONFLICT", str(error), None)
+    if isinstance(error, AcceptCommitUnknown):
+        return ApiError(503, "DEPENDENCY_UNAVAILABLE", str(error), None)
     if isinstance(error, VendorTestConsoleOnly):
         return ApiError(
             403,
@@ -517,6 +523,8 @@ async def send_message(
         FrequencyFenceLost,
         IdempotencyCoordinationTimeout,
         IdempotencyClaimLost,
+        AcceptCommitConflict,
+        AcceptCommitUnknown,
     ) as error:
         raise _error(error) from None
     if result.idempotency_expires_at is not None:
@@ -666,6 +674,8 @@ async def send_vendor_test_api_uat(
         FrequencyFenceLost,
         IdempotencyCoordinationTimeout,
         IdempotencyClaimLost,
+        AcceptCommitConflict,
+        AcceptCommitUnknown,
     ) as error:
         raise _error(error) from None
 

@@ -198,7 +198,8 @@ SQL
       tests/integration/test_raw_replay_fencing_postgres.py \
       tests/integration/test_ops_audit_postgres.py \
       tests/integration/test_vendor_attempt_finalize_postgres.py \
-      tests/integration/test_idempotency_claim_lease_postgres.py
+      tests/integration/test_idempotency_claim_lease_postgres.py \
+      tests/integration/test_inflight_ambiguous_commit_postgres.py
 )
 
 printf '%s\n' "真实 PostgreSQL 恢复、稳定主体授权与安全会话合同通过：一次性数据库，仅合成数据"
