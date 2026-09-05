@@ -126,6 +126,8 @@ def _rule(path: str) -> tuple[RuleResult, bool]:
         return BACKEND_G2, False
     if path.startswith("scripts/check_") and path.endswith(".py"):
         return BACKEND, False
+    if path.startswith((".cursor/", ".githooks/")):
+        return BACKEND, False
     if path.startswith("scripts/"):
         return BACKEND_G2, False
     if path in ROOT_SPEC_DOCS or path in {"openapi.yaml", "schema.sql"}:

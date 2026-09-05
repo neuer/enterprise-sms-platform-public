@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": ".cursor/hooks/block-git-without-gates.sh",
+        "matcher": "git commit|git push",
+        "failClosed": true,
+        "timeout": 900
+      }
+    ]
+  }
+}

@@ -65,3 +65,9 @@ if [[ -f "$private_patterns" ]]; then
 fi
 
 python3 "$ROOT/scripts/check_public_readiness.py" "${args[@]}"
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "pre-push: python3 is required for pre-vcs gates" >&2
+  exit 1
+fi
+python3 "$ROOT/scripts/check_pre_vcs_gates.py" --git-hook push

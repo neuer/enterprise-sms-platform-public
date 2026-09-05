@@ -8,7 +8,7 @@ cd "$ROOT"
   exit 1
 }
 
-chmod +x .githooks/pre-push
+chmod +x .githooks/pre-commit .githooks/pre-push
 git config core.hooksPath .githooks
 
 patterns="$(git rev-parse --git-common-dir)/public-scan-patterns"

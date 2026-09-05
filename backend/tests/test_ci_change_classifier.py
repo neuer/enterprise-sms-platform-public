@@ -75,6 +75,9 @@ from classify_ci_changes import (  # noqa: E402
         ("deploy/scripts/vendor_test_manager.py", (True, True, True)),
         ("deploy/scripts/test_update_manager.py", (True, True, True)),
         (".github/workflows/ci.yml", (True, False, True)),
+        (".cursor/hooks.json", (True, False, False)),
+        (".githooks/pre-commit", (True, False, False)),
+        (".githooks/pre-push", (True, False, False)),
         ("new-top-level/unknown.txt", (True, True, True)),
     ],
 )
