@@ -26,6 +26,7 @@ case "$MODE" in
 esac
 
 cd "$ROOT"
+python3 scripts/check_pre_vcs_gates.py --require-hooks-path
 python3 scripts/check_spec_consistency.py
 python3 scripts/check_invariants.py
 python3 scripts/check_public_readiness.py

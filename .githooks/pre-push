@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Main local gate for `git push`. Enable with: scripts/install_git_hooks.sh
+# Path-based checks: scripts/check_pre_vcs_gates.py --git-hook push
+# `git push --no-verify` bypasses this hook; Cursor only blocks that bypass.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"

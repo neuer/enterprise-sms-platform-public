@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Cursor beforeShellExecution 入口：只输出 hook JSON，实际矩阵在共享脚本。
+# Optional Cursor backup: deny git commit/push that skip hooks.
+# The main gate is .githooks/pre-commit and pre-push after
+# scripts/install_git_hooks.sh. This is not the human enable step.
 set -euo pipefail
 
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"

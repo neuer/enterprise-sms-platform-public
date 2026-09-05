@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Main local gate for `git commit`. Enable with: scripts/install_git_hooks.sh
+# Path-based checks: scripts/check_pre_vcs_gates.py --git-hook commit
+# `git commit --no-verify` bypasses this hook; Cursor only blocks that bypass.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"

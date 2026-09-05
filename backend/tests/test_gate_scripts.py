@@ -310,6 +310,16 @@ def test_changed_dev_check_does_not_run_deleted_backend_test_paths() -> None:
     assert 'backend_tests+=("${path#backend/}")' in changed_test_case
 
 
+def test_dev_check_requires_local_git_hooks_path() -> None:
+    source = (ROOT / "scripts/dev_check.sh").read_text(encoding="utf-8")
+    header = source.split("run_contract() {", maxsplit=1)[0]
+
+    assert "check_pre_vcs_gates.py --require-hooks-path" in header
+    assert header.index("check_pre_vcs_gates.py --require-hooks-path") < header.index(
+        "check_spec_consistency.py"
+    )
+
+
 def test_dev_check_avoids_duplicate_frontend_typecheck_and_classifies_shell() -> None:
     source = (ROOT / "scripts/dev_check.sh").read_text(encoding="utf-8")
     frontend = source.split("run_frontend() {", maxsplit=1)[1].split(

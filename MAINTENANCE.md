@@ -9,12 +9,15 @@ PR、CI 和已完成状态不回填。PR 与 CI 事实以 GitHub 为准，发布
 
 ## 日常开发
 
-首次克隆只安装版本化 Hook：
+首次克隆或新 worktree 启用 git pre-commit / pre-push。这是本机门禁的启用步骤，
+不是 Cursor Settings → Hooks：
 
 ```bash
 scripts/install_git_hooks.sh
 ```
 
+`git commit` 走 `.githooks/pre-commit`，`git push` 走 `.githooks/pre-push`，按变更路径
+选检查，不是一刀切。`git commit --no-verify` 会绕过 git hook，不要用。
 编码过程中直接运行与改动相关的 pytest/Vitest 或局部静态检查。准备提交时再执行一次：
 
 ```bash

@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """按变更路径决定 commit/push 前必须跑哪些本地门禁，而不是一刀切。
 
+主入口是 git hook：``git commit`` → ``.githooks/pre-commit``，
+``git push`` → ``.githooks/pre-push``。一次启用：
+``scripts/install_git_hooks.sh``（仓库本地 ``core.hooksPath=.githooks``）。
+Cursor ``beforeShellExecution`` 只拦 ``--no-verify`` / ``-n`` /
+``core.hooksPath=/dev/null``，以及尚未安装 hook 的 commit/push。
+
 默认只跑当前变更集合真正需要的最便宜检查。schema/Alembic 才强制
 ``check_migration.py``；in-flight / vendor-postgres 恢复面才强制
 ``verify_vendor_postgres_recovery.sh``。缺 Docker/DSN 时，只有已被点名的
@@ -170,6 +176,54 @@ class GatePlan:
         if self.contract_tests:
             lines.append("  contract tests: " + ", ".join(self.contract_tests))
         return "\n".join(lines)
+
+
+EXPECTED_HOOKS_PATH = ".githooks"
+HOOKS_ENABLE_HINT = "run scripts/install_git_hooks.sh to enable local git pre-commit/pre-push"
+
+
+def local_hooks_path(root: Path) -> str:
+    """读取仓库本地 core.hooksPath；未设置则返回空串。"""
+
+    result = subprocess.run(
+        ["git", "config", "--local", "--get", "core.hooksPath"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def hooks_path_enabled(root: Path) -> bool:
+    """本地 hooksPath 是否指向本仓库 .githooks。"""
+
+    value = local_hooks_path(root)
+    if value in {EXPECTED_HOOKS_PATH, str((root / EXPECTED_HOOKS_PATH).resolve())}:
+        return True
+    if not value:
+        return False
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    try:
+        return candidate.resolve() == (root / EXPECTED_HOOKS_PATH).resolve()
+    except OSError:
+        return False
+
+
+def require_git_hooks(root: Path) -> None:
+    """hooksPath 未启用或 hook 文件不可执行时失败关闭。"""
+
+    if not hooks_path_enabled(root):
+        current = local_hooks_path(root) or "unset"
+        raise GateError(
+            f"local core.hooksPath is {current}, expected .githooks; {HOOKS_ENABLE_HINT}"
+        )
+    for name in ("pre-commit", "pre-push"):
+        path = root / EXPECTED_HOOKS_PATH / name
+        if not path.is_file() or not os.access(path, os.X_OK):
+            raise GateError(f"{path} is missing or not executable; {HOOKS_ENABLE_HINT}")
 
 
 def repo_root_from_cwd(cwd: str | None = None) -> Path:
@@ -728,6 +782,7 @@ def decide_cursor_command(
     root: Path,
     runner: Any | None = None,
 ) -> dict[str, str]:
+    """Cursor 只拦绕过 hook；真正的路径门禁由 git pre-commit/pre-push 执行。"""
     invocation = parse_git_invocation(command)
     if invocation is None:
         return cursor_response("allow")
@@ -741,9 +796,9 @@ def decide_cursor_command(
             user_message=message,
             agent_message=message,
         )
-    execute = runner or run_gates
+    _ = runner  # Cursor is not the gate runner; .githooks pre-commit/pre-push are.
     try:
-        plan = execute(root, invocation.subcommand, invocation)
+        require_git_hooks(root)
     except GateError as exc:
         message = str(exc)
         return cursor_response(
@@ -751,12 +806,7 @@ def decide_cursor_command(
             user_message=message,
             agent_message=message,
         )
-    summary = plan.explain()
-    return cursor_response(
-        "allow",
-        user_message=summary,
-        agent_message=summary,
-    )
+    return cursor_response("allow")
 
 
 def emit_cursor(payload: Mapping[str, str]) -> int:
@@ -800,6 +850,15 @@ def git_hook_main(mode: Mode) -> int:
         return 1
 
 
+def require_hooks_path_main() -> int:
+    try:
+        require_git_hooks(repo_root_from_cwd())
+        return 0
+    except GateError as exc:
+        print(f"pre-vcs-gates: {exc}", file=sys.stderr)
+        return 1
+
+
 def plan_main(paths: Iterable[str], root: Path) -> int:
     plan = plan_for_paths(list(paths), root=root, diffs={})
     print(plan.explain())
@@ -821,6 +880,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cursor-hook", action="store_true")
     parser.add_argument("--git-hook", choices=("commit", "push"))
+    parser.add_argument("--require-hooks-path", action="store_true")
     parser.add_argument("--plan", action="store_true")
     parser.add_argument("--paths", nargs="*")
     return parser
@@ -833,10 +893,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return cursor_hook_main()
     if args.git_hook:
         return git_hook_main(args.git_hook)
+    if args.require_hooks_path:
+        return require_hooks_path_main()
     if args.plan:
         root = repo_root_from_cwd()
         return plan_main(args.paths or [], root)
-    parser.error("choose --cursor-hook, --git-hook, or --plan")
+    parser.error("choose --cursor-hook, --git-hook, --require-hooks-path, or --plan")
     return 2
 
 

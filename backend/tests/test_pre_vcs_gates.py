@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,9 +21,11 @@ from check_pre_vcs_gates import (  # noqa: E402
     CHECK_VENDOR_PG,
     GateError,
     decide_cursor_command,
+    hooks_path_enabled,
     isolated_check_env,
     parse_git_invocation,
     plan_for_paths,
+    require_git_hooks,
 )
 
 
@@ -218,44 +221,34 @@ def test_cursor_hook_allows_status_and_denies_no_verify(tmp_path: Path) -> None:
     assert set(deny) <= {"permission", "user_message", "agent_message"}
 
 
-def test_cursor_hook_denies_when_required_migration_fails() -> None:
-    def fail_runner(root: Path, mode: str, invocation: object) -> None:
-        raise GateError("check_migration.py failed")
-
-    deny = decide_cursor_command(
-        "git commit -m schema",
-        root=ROOT,
-        runner=fail_runner,
-    )
-    assert deny["permission"] == "deny"
-    assert "check_migration.py failed" in deny["user_message"]
-
-
-def test_cursor_hook_denies_missing_docker_for_required_vendor_recovery() -> None:
-    def fail_runner(root: Path, mode: str, invocation: object) -> None:
-        raise GateError("docker is required for this change-set but is not on PATH")
-
-    deny = decide_cursor_command(
-        "git push origin HEAD",
-        root=ROOT,
-        runner=fail_runner,
-    )
-    assert deny["permission"] == "deny"
-    assert "docker is required" in deny["agent_message"]
-
-
-def test_cursor_hook_reports_plan_when_runner_succeeds() -> None:
-    captured: list[object] = []
+def test_cursor_hook_allows_commit_without_running_gates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called: list[object] = []
 
     def ok_runner(root: Path, mode: str, invocation: object) -> SimpleNamespace:
-        captured.append((mode, invocation))
-        return plan(["backend/app/core/auth/jwt.py"])
+        called.append((mode, invocation))
+        return plan(["schema.sql"])
 
+    monkeypatch.setattr("check_pre_vcs_gates.hooks_path_enabled", lambda root: True)
+    monkeypatch.setattr("check_pre_vcs_gates.require_git_hooks", lambda root: None)
     allow = decide_cursor_command("git commit -m auth", root=ROOT, runner=ok_runner)
-    assert allow["permission"] == "allow"
-    assert "ruff" in allow["agent_message"]
-    assert "check_migration" not in allow["agent_message"]
-    assert captured[0][0] == "commit"
+    assert allow == {"permission": "allow"}
+    assert called == []
+
+
+def test_cursor_hook_denies_when_hooks_path_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("check_pre_vcs_gates.hooks_path_enabled", lambda root: False)
+    monkeypatch.setattr(
+        "check_pre_vcs_gates.local_hooks_path",
+        lambda root: "",
+    )
+    deny = decide_cursor_command("git commit -m x", root=ROOT)
+    assert deny["permission"] == "deny"
+    assert "install_git_hooks.sh" in deny["user_message"]
+    assert "check_migration" not in deny["user_message"]
 
 
 def test_cursor_wrapper_and_hooks_json_are_fail_closed() -> None:
@@ -283,14 +276,41 @@ def test_install_git_hooks_change_runs_hook_contract() -> None:
 
 
 def test_git_hooks_call_the_same_classifier() -> None:
-    pre_commit = (ROOT / ".githooks/pre-commit").read_text(encoding="utf-8")
-    pre_push = (ROOT / ".githooks/pre-push").read_text(encoding="utf-8")
+    pre_commit = ROOT / ".githooks/pre-commit"
+    pre_push = ROOT / ".githooks/pre-push"
 
-    assert "check_pre_vcs_gates.py" in pre_commit
-    assert "--git-hook commit" in pre_commit
-    assert "check_pre_vcs_gates.py" in pre_push
-    assert "--git-hook push" in pre_push
-    assert "check_public_readiness.py" in pre_push
+    assert pre_commit.is_file() and os.access(pre_commit, os.X_OK)
+    assert pre_push.is_file() and os.access(pre_push, os.X_OK)
+    assert "check_pre_vcs_gates.py" in pre_commit.read_text(encoding="utf-8")
+    assert "--git-hook commit" in pre_commit.read_text(encoding="utf-8")
+    assert "check_pre_vcs_gates.py" in pre_push.read_text(encoding="utf-8")
+    assert "--git-hook push" in pre_push.read_text(encoding="utf-8")
+    assert "check_public_readiness.py" in pre_push.read_text(encoding="utf-8")
+    assert "install_git_hooks.sh" in pre_commit.read_text(encoding="utf-8")
+
+
+def test_install_script_enables_local_githooks_from_worktrees() -> None:
+    source = (ROOT / "scripts/install_git_hooks.sh").read_text(encoding="utf-8")
+
+    assert "git config --local core.hooksPath .githooks" in source
+    assert "chmod +x .githooks/pre-commit .githooks/pre-push" in source
+    assert "rev-parse --is-inside-work-tree" in source
+    assert "-d .git" not in source
+    assert "Cursor Settings is not required" in source
+
+
+def test_require_git_hooks_accepts_configured_githooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("check_pre_vcs_gates.local_hooks_path", lambda root: ".githooks")
+    assert hooks_path_enabled(ROOT) is True
+    require_git_hooks(ROOT)
+
+
+def test_require_git_hooks_fails_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("check_pre_vcs_gates.local_hooks_path", lambda root: "")
+    with pytest.raises(GateError, match="install_git_hooks.sh"):
+        require_git_hooks(ROOT)
 
 
 def test_isolated_check_env_drops_git_hook_vars(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -302,6 +322,21 @@ def test_isolated_check_env_drops_git_hook_vars(monkeypatch: pytest.MonkeyPatch)
     assert "GIT_DIR" not in env
     assert "GIT_INDEX_FILE" not in env
     assert env.get("PATH")
+
+
+def test_execute_plan_docs_only_runs_no_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from check_pre_vcs_gates import execute_plan
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "check_pre_vcs_gates.run_command",
+        lambda argv, cwd, env=None: calls.append(list(argv)),
+    )
+
+    execute_plan(ROOT, plan(["docs/plans/note.md", "README.md"]))
+    assert calls == []
 
 
 def test_execute_plan_invokes_check_migration_for_schema(
