@@ -709,6 +709,38 @@ async def test_bootstrap_and_expired_state_enter_recovery_hold() -> None:
 
 
 @pytest.mark.asyncio
+async def test_expired_recovery_hold_row_opens_instead_of_restarting_hold() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+
+    class ExpiredHold(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+            self.saved: list[dict[str, object]] = []
+
+        async def load_control_state(self) -> dict[str, object]:
+            return {
+                "state": "degraded",
+                "reason_code": "recovery_hold",
+                "state_epoch": 6,
+                "hold_until": now - timedelta(seconds=1),
+                "valid_until": now - timedelta(seconds=1),
+                "db_now": now,
+            }
+
+        async def save_control_state(self, **values: object) -> None:
+            self.saved.append(values)
+
+    repo = ExpiredHold()
+    snap = await SendAdmissionGuard(repo).snapshot()
+    assert snap.state == "open"
+    assert snap.reason == "ok"
+    assert repo.saved[0]["state"] == "open"
+    assert repo.saved[0]["hold_until"] is None
+
+
+@pytest.mark.asyncio
 async def test_migration_bootstrap_marker_opens_without_hold() -> None:
     from datetime import UTC, datetime, timedelta
 

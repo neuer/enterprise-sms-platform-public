@@ -480,12 +480,17 @@ class SendAdmissionGuard:
                 previous_reason = raw_db_reason
             raw_valid_until = persisted.get("valid_until")
             raw_hold_until = persisted.get("hold_until")
+            loaded_state = persisted.get("state") or previous
             if raw_valid_until is not None and _aware_datetime(raw_valid_until) < db_now:
-                previous = "closed"
-            else:
-                loaded_state = persisted.get("state") or previous
-                if loaded_state in ADMISSION_STATES:
-                    previous = loaded_state
+                # 过期 OPEN/CLOSED 快照按 CLOSED 重入 hold。已在 recovery_hold
+                # 的行必须续读 degraded，否则 hold 到期后的下一次请求会因
+                # 15s valid_until 过期再次被当成 CLOSED，永远到不了 OPEN。
+                if loaded_state == "degraded" and previous_reason == "recovery_hold":
+                    previous = "degraded"
+                else:
+                    previous = "closed"
+            elif loaded_state in ADMISSION_STATES:
+                previous = loaded_state
             if raw_hold_until is not None:
                 hold_until = _aware_datetime(raw_hold_until)
             raw_epoch = persisted.get("state_epoch")
