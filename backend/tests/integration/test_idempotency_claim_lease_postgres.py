@@ -25,7 +25,6 @@ from app.core.correlation import correlation_scope
 from app.core.runtime_resources import (
     _set_audit_transaction_context,
     bind_connection_system_audit,
-    close_runtime_resources,
 )
 from app.services.app_ratelimit import ControlPlaneUnavailable
 from app.services.crypto import CryptoService
@@ -242,9 +241,11 @@ async def claim_env() -> Any:
     try:
         yield engine, store, redis, app_id
     finally:
+        if getattr(engine.sync_engine, "_sms_claim_audit_begin", False):
+            event.remove(engine.sync_engine, "begin", _set_audit_transaction_context)
+            engine.sync_engine._sms_claim_audit_begin = False
         await redis.aclose()
         await engine.dispose()
-        await close_runtime_resources()
 
 
 @pytest.mark.asyncio
