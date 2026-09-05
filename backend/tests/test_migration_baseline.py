@@ -928,6 +928,21 @@ def test_idempotency_claim_generation_is_expand_only() -> None:
     assert "DELETE FROM" not in source
 
 
+def test_vendor_attempt_atomic_finalize_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0098_vendor_attempt_atomic_finalize.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.84：" in schema
+    for contract in (schema, source):
+        assert "inconsistent" in contract
+        assert "sms_vendor_attempt_outcome_check" in contract
+    assert 'revision = "0098_vendor_attempt_atomic_finalize"' in source
+    assert 'down_revision = "0097_auth_session_policy"' in source
+    assert "DELETE FROM" not in source
+    assert source.split("def downgrade")[0].count("UPDATE ") == 0
+
+
 def test_auth_session_policy_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0097_auth_session_policy.py"

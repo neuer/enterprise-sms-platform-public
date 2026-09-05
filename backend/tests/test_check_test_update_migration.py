@@ -110,6 +110,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0095_vendor_attempt_generation_machine",
         "0096_idempotency_claim_generation",
         "0097_auth_session_policy",
+        "0098_vendor_attempt_atomic_finalize",
     ]
 
 

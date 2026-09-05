@@ -344,7 +344,8 @@ receipt 与绑定检查均为 `performed`，否则不得扩大到更多应用、
 围栏完成后，先保存并加密厂商拉取原始响应到 `raw_vendor_log`，事务提交后再解析；对陌生
 customId 落 `unmatched`，不得丢弃。以 raw 的 custom_ids 与平台 chunk 对照：
 
-- submitted 按厂商报告推进，不做重复下发；
+- submitted 按厂商报告推进，不做重复下发；stale invoking 恢复不得把已 submitted 的 chunk 降为 uncertain；
+- `attempt=invoking` 且无法证明未受理时标 `inconsistent`，禁止自动重发或换供应商；
 - uncertain 只由 reconcile 依据 customId 修复为 submitted 或 failed，**禁止自动重发**；
 - 无厂商记录且从未提交的 pending 才能走事实源兜底投递；
 - GetReport/GetReply 是拉走即消费：对新平台服务商/凭据，切换期间始终只允许当前获批恢复

@@ -9,6 +9,20 @@ from sqlalchemy import text
 from app.core.runtime_resources import database_engine
 from app.services.reconcile import RecoveryWork
 from app.settings import Settings, get_settings
+from app.vendor.zhihui import VENDOR_TIMEOUT_S
+
+# 必须严格大于供应商绝对总超时 + 持久化预算 + 调度抖动；禁止只靠放大阈值掩盖竞态。
+STALE_INVOKING_CUTOFF_S = 15 * 60
+MAX_VENDOR_PERSIST_BUDGET_S = 30
+SCHEDULER_JITTER_S = 60
+
+
+def stale_invoking_cutoff_is_safe(vendor_timeout_s: float = VENDOR_TIMEOUT_S) -> bool:
+    """契约：恢复器不得在活跃 HTTP owner 仍可能返回前接管 invoking。"""
+
+    return (
+        vendor_timeout_s + MAX_VENDOR_PERSIST_BUDGET_S + SCHEDULER_JITTER_S
+    ) < STALE_INVOKING_CUTOFF_S
 
 
 class SqlRecoveryRepository:
@@ -22,12 +36,42 @@ class SqlRecoveryRepository:
                 await connection.execute(
                     text(
                         """
-                        WITH stale_invoking AS (
-                          UPDATE sms_vendor_attempt
+                        WITH repaired AS (
+                          UPDATE sms_vendor_attempt a
+                          SET outcome='submitted', updated_at=now()
+                          FROM sms_chunk c
+                          WHERE a.chunk_id=c.id
+                            AND a.outcome='invoking'
+                            AND c.status='submitted'
+                            AND c.route_generation=a.generation
+                            AND c.vendor_task_id IS NOT NULL
+                            AND c.submitted_at IS NOT NULL
+                            AND EXISTS (
+                              SELECT 1 FROM sms_message m
+                              WHERE m.chunk_id=c.id AND m.status='sent'
+                            )
+                          RETURNING a.id
+                        ), inconsistent AS (
+                          UPDATE sms_vendor_attempt a
+                          SET outcome='inconsistent', updated_at=now()
+                          FROM sms_chunk c
+                          WHERE a.chunk_id=c.id
+                            AND a.outcome='invoking'
+                            AND c.status IN (
+                              'submitted','failed','uncertain','unknown_terminal'
+                            )
+                            AND a.id NOT IN (SELECT id FROM repaired)
+                          RETURNING a.chunk_id
+                        ), stale_invoking AS (
+                          UPDATE sms_vendor_attempt a
                           SET outcome='uncertain', updated_at=now()
-                          WHERE outcome='invoking'
-                            AND invoke_started_at < now() - interval '15 minutes'
-                          RETURNING chunk_id
+                          FROM sms_chunk c
+                          WHERE a.chunk_id=c.id
+                            AND a.outcome='invoking'
+                            AND c.status='submitting'
+                            AND c.route_generation=a.generation
+                            AND a.invoke_started_at < now() - interval '15 minutes'
+                          RETURNING a.chunk_id
                         ), stale_chunks AS (
                           UPDATE sms_chunk c SET
                             status='uncertain',
@@ -36,11 +80,9 @@ class SqlRecoveryRepository:
                           FROM sms_batch b
                           WHERE b.id=c.batch_id
                             AND b.status IN ('queued','sending')
+                            AND c.status='submitting'
                             AND (
-                              (
-                                c.status='submitting'
-                                AND c.submitting_since<now()-interval '5 minutes'
-                              )
+                              c.submitting_since<now()-interval '5 minutes'
                               OR c.id IN (SELECT chunk_id FROM stale_invoking)
                             )
                           RETURNING c.id

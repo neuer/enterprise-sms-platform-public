@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.84  2026-09-05
+-- v1.6.84：sms_vendor_attempt 增加 inconsistent，供已提交分片与 invoking
+--          撕裂时人工隔离；恢复器不得把 submitted chunk 降为 uncertain。
 -- v1.6.83  2026-09-05
 -- v1.6.83：AD 会话策略以 auth_session_policy 单行 revision 为权威围栏，
 --          Redis 只接受单调 CAS；认证热路径不回退默认 480。
@@ -799,7 +802,7 @@ CREATE TABLE sms_vendor_attempt (
                        CHECK (outcome IN (
                          'not_invoked','rejected','submitted','uncertain','failed',
                          'retry_scheduled','delayed','paused','stale',
-                         'invoking','cancelled_before_invoke'
+                         'invoking','cancelled_before_invoke','inconsistent'
                        )),
     adapter_id         VARCHAR(32) NOT NULL DEFAULT 'zhihui'
                        CONSTRAINT ck_sms_vendor_attempt_adapter_id
