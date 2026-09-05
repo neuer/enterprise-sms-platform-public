@@ -515,6 +515,18 @@ async def test_reconcile_restores_historical_acceptance_failed(
     async with engine.begin() as connection:
         await connection.execute(
             text(
+                "DROP TRIGGER IF EXISTS trg_send_inflight_reservation_conservation "
+                "ON send_inflight_reservation"
+            )
+        )
+        await connection.execute(
+            text(
+                "DROP TRIGGER IF EXISTS trg_send_inflight_balance_conservation "
+                "ON send_inflight_balance"
+            )
+        )
+        await connection.execute(
+            text(
                 "ALTER TABLE send_inflight_reservation "
                 "DROP CONSTRAINT ck_send_inflight_acceptance_failed_unbound"
             )
@@ -567,6 +579,29 @@ async def test_reconcile_restores_historical_acceptance_failed(
                 BEFORE UPDATE ON send_inflight_reservation
                 FOR EACH ROW
                 EXECUTE FUNCTION reject_bound_acceptance_failed()
+                """
+            )
+        )
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                """
+                CREATE CONSTRAINT TRIGGER trg_send_inflight_reservation_conservation
+                AFTER INSERT OR UPDATE OR DELETE ON send_inflight_reservation
+                DEFERRABLE INITIALLY DEFERRED
+                FOR EACH ROW
+                EXECUTE FUNCTION check_send_inflight_balance_conservation()
+                """
+            )
+        )
+        await connection.execute(
+            text(
+                """
+                CREATE CONSTRAINT TRIGGER trg_send_inflight_balance_conservation
+                AFTER INSERT OR UPDATE OR DELETE ON send_inflight_balance
+                DEFERRABLE INITIALLY DEFERRED
+                FOR EACH ROW
+                EXECUTE FUNCTION check_send_inflight_balance_conservation()
                 """
             )
         )

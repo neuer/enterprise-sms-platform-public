@@ -156,6 +156,17 @@ async def _restore_conservation_triggers(connection: Any) -> None:
     )
 
 
+async def _invent_historical_drift(engine: Any, mutate_sql: str, params: dict[str, Any]) -> None:
+    """先提交卸触发器，再提交漂移写入，最后单独恢复。同事务恢复会在 COMMIT 时立即校验。"""
+
+    async with engine.begin() as connection:
+        await _drop_conservation_triggers(connection)
+    async with engine.begin() as connection:
+        await connection.execute(text(mutate_sql), params)
+    async with engine.begin() as connection:
+        await _restore_conservation_triggers(connection)
+
+
 @pytest_asyncio.fixture
 async def conservation_env() -> Any:
     database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
@@ -204,19 +215,15 @@ async def test_release_rolls_back_when_balance_below_amount(
 ) -> None:
     engine, store, app_id = conservation_env
     reserved = await store.reserve_in_flight_chunks(app_id, 5, 200)
-    async with engine.begin() as connection:
-        await _drop_conservation_triggers(connection)
-        await connection.execute(
-            text(
-                """
-                UPDATE send_inflight_balance
-                SET reserved_chunks=3
-                WHERE app_id=:app_id
-                """
-            ),
-            {"app_id": app_id},
-        )
-        await _restore_conservation_triggers(connection)
+    await _invent_historical_drift(
+        engine,
+        """
+        UPDATE send_inflight_balance
+        SET reserved_chunks=3
+        WHERE app_id=:app_id
+        """,
+        {"app_id": app_id},
+    )
     with pytest.raises(InFlightInvariantViolation):
         await store.release_in_flight_reservation(
             reserved.id, reserved.generation, "orphan-expired", app_id
@@ -242,12 +249,11 @@ async def test_materialize_shrink_rolls_back_when_balance_missing(
             ),
             {"id": reserved.id},
         )
-        await _drop_conservation_triggers(connection)
-        await connection.execute(
-            text("DELETE FROM send_inflight_balance WHERE app_id=:app_id"),
-            {"app_id": app_id},
-        )
-        await _restore_conservation_triggers(connection)
+    await _invent_historical_drift(
+        engine,
+        "DELETE FROM send_inflight_balance WHERE app_id=:app_id",
+        {"app_id": app_id},
+    )
     with pytest.raises(InFlightInvariantViolation):
         async with engine.begin() as connection:
             await apply_inflight_delta(
@@ -299,20 +305,16 @@ async def test_reconcile_repairs_high_balance_and_clears_block(
 ) -> None:
     engine, store, app_id = conservation_env
     reserved = await store.reserve_in_flight_chunks(app_id, 2, 200)
-    async with engine.begin() as connection:
-        await _drop_conservation_triggers(connection)
-        await connection.execute(
-            text(
-                """
-                UPDATE send_inflight_balance
-                SET reserved_chunks=9,
-                    conservation_blocked_at=now()
-                WHERE app_id=:app_id
-                """
-            ),
-            {"app_id": app_id},
-        )
-        await _restore_conservation_triggers(connection)
+    await _invent_historical_drift(
+        engine,
+        """
+        UPDATE send_inflight_balance
+        SET reserved_chunks=9,
+            conservation_blocked_at=now()
+        WHERE app_id=:app_id
+        """,
+        {"app_id": app_id},
+    )
     with pytest.raises(InFlightInvariantViolation, match="blocked"):
         await store.reserve_in_flight_chunks(app_id, 1, 200)
     async with engine.begin() as connection:
