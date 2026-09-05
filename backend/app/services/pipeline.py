@@ -37,7 +37,7 @@ from app.services.idempotency import (
     usage_request_key,
 )
 from app.services.masking import mask_phone_text, mask_verify_otp
-from app.services.send_inflight import InFlightInvariantViolation
+from app.services.send_inflight import InFlightInvariantViolation as InFlightInvariantViolation
 from app.services.usage_ledger import FrequencyDecisionItem
 from app.settings import get_settings
 
