@@ -74,6 +74,13 @@ function clearLegacyPersistence(): void {
   }
 }
 
+function isSessionAbort(error: unknown): boolean {
+  return (
+    error instanceof SessionGenerationStaleError ||
+    (error instanceof DOMException && error.name === "AbortError")
+  )
+}
+
 function isPlatformUser(value: unknown): value is PlatformUser {
   if (!value || typeof value !== "object") return false
   const user = value as Record<string, unknown>
@@ -172,6 +179,7 @@ export const useSessionStore = defineStore("session", {
           return true
         })
       } catch (error) {
+        if (isSessionAbort(error)) return false
         if (error instanceof AuthApiError && error.code === "AUTH_REAUTH_REQUIRED") {
           window.dispatchEvent(new Event("sms:reauth-required"))
         }
@@ -188,6 +196,7 @@ export const useSessionStore = defineStore("session", {
           return true
         })
       } catch (error) {
+        if (isSessionAbort(error)) return false
         if (error instanceof AuthApiError && error.code === "AUTH_REAUTH_REQUIRED") {
           window.dispatchEvent(new Event("sms:reauth-required"))
         }

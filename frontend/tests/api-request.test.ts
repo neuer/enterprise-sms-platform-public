@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, vi } from "vitest"
 
-import { apiRequest, authorizedFetch } from "../src/api/client"
+import { apiRequest, authorizedBlob, authorizedFetch } from "../src/api/client"
 import {
   clearRefreshTabBinding,
   getAccessToken,
@@ -30,6 +30,17 @@ function invalidJsonResponse(status: number) {
     status,
     headers: { "Content-Type": "application/json" },
   })
+}
+
+function hangingJsonResponse(prefix = '{"total":') {
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(prefix))
+      },
+    }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  )
 }
 
 describe("统一 API 请求", () => {
@@ -395,21 +406,26 @@ describe("统一 API 请求", () => {
     expect(unauthorized).not.toHaveBeenCalled()
   })
 
-  it("401 响应 clone 失败时保留会话且不广播未授权事件", async () => {
-    sessionStorage.setItem("sms_token", "admin.jwt")
-    sessionStorage.setItem("sms_user", "{}")
-    const rejectedResponse = response({ code: "UNAUTHORIZED" }, 401)
-    vi.spyOn(rejectedResponse, "clone").mockImplementation(() => {
-      throw new TypeError("clone failed")
-    })
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(rejectedResponse))
-    const unauthorized = watchUnauthorized()
-
-    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow("UNAUTHORIZED")
-
-    expect(sessionStorage.getItem("sms_token")).toBeNull()
-    expect(sessionStorage.getItem("sms_user")).toBeNull()
-    expect(unauthorized).not.toHaveBeenCalled()
+  it("成功与错误 JSON 都只解析一次且不再 clone 响应", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({ total: 1 }, 200))
+      .mockResolvedValueOnce(response({ code: "NOT_FOUND", message: "不存在" }, 404))
+    vi.stubGlobal("fetch", fetch)
+    const clone = vi.spyOn(Response.prototype, "clone")
+    const json = vi.spyOn(Response.prototype, "json")
+    try {
+      await expect(apiRequest("/reports/dashboard", { method: "GET" })).resolves.toEqual({ total: 1 })
+      await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toMatchObject({
+        code: "NOT_FOUND",
+        message: "不存在",
+      })
+      expect(clone).not.toHaveBeenCalled()
+      expect(json).not.toHaveBeenCalled()
+    } finally {
+      clone.mockRestore()
+      json.mockRestore()
+    }
   })
 
   it("明确 ACCOUNT_LOCKED 时清除会话并广播未授权事件", async () => {
@@ -629,5 +645,107 @@ describe("统一 API 请求", () => {
     await vi.advanceTimersByTimeAsync(10_000)
     await secondAssertion
     expect(refreshCalls).toBe(2)
+  })
+
+  it("业务 JSON 正文停滞时仍于默认截止线内失败", async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(hangingJsonResponse())))
+
+    const pending = apiRequest("/reports/dashboard", { method: "GET" })
+    const assertion = expect(pending).rejects.toThrow("请求超时")
+    await vi.advanceTimersByTimeAsync(30_000)
+    await assertion
+  })
+
+  it("会话清理在响应头到达后仍取消正文读取", async () => {
+    let started = false
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        started = true
+        return Promise.resolve(hangingJsonResponse())
+      }),
+    )
+
+    const pending = apiRequest("/reports/dashboard", { method: "GET" })
+    await vi.waitFor(() => expect(started).toBe(true))
+    window.dispatchEvent(new Event("sms:session-clearing"))
+    await expect(pending).rejects.toThrow()
+  })
+
+  it("Refresh 正文停滞时释放 single-flight 且可再次发起", async () => {
+    vi.useFakeTimers()
+    sessionStorage.setItem("sms_token", "expired")
+    sessionStorage.setItem("sms_user", "{}")
+    let refreshCalls = 0
+    const fetch = vi.fn((url: string) => {
+      if (url === "/api/v1/web/auth/refresh") {
+        refreshCalls += 1
+        return Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('{"token":'))
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        )
+      }
+      return Promise.resolve(response({ code: "UNAUTHORIZED" }, 401))
+    })
+    vi.stubGlobal("fetch", fetch)
+
+    const first = apiRequest("/reports/dashboard", { method: "GET" })
+    const firstAssertion = expect(first).rejects.toThrow("会话权威状态暂不可用")
+    await vi.advanceTimersByTimeAsync(10_000)
+    await firstAssertion
+    expect(refreshCalls).toBe(1)
+
+    const second = apiRequest("/reports/dashboard", { method: "GET" })
+    const secondAssertion = expect(second).rejects.toThrow("会话权威状态暂不可用")
+    await vi.advanceTimersByTimeAsync(10_000)
+    await secondAssertion
+    expect(refreshCalls).toBe(2)
+  })
+
+  it("正文超时后不自动重放非幂等请求", async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn(() => Promise.resolve(hangingJsonResponse()))
+    vi.stubGlobal("fetch", fetch)
+
+    const pending = apiRequest("/admin/users/8/status", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: 0 }),
+    })
+    const assertion = expect(pending).rejects.toThrow("请求超时")
+    await vi.advanceTimersByTimeAsync(30_000)
+    await assertion
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it("下载正文停滞时仍于下载截止线内失败", async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array([1, 2, 3]))
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/octet-stream" } },
+          ),
+        ),
+      ),
+    )
+
+    const pending = authorizedBlob("/api/v1/web/reports/export/1/download", { method: "GET" }, 120_000)
+    const assertion = expect(pending).rejects.toThrow("请求超时")
+    await vi.advanceTimersByTimeAsync(120_000)
+    await assertion
   })
 })

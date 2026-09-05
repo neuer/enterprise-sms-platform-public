@@ -1,9 +1,19 @@
 /**
- * 前端请求基建单点：同源断言、超时、Bearer 注入、401+UNAUTHORIZED 单飞刷新重放、
- * 会话代际联动取消。所有业务 api 模块统一使用本文件的 apiRequest/authorizedFetch，
- * 禁止再平行实现请求封装（auth.ts 为 pre-auth 例外，见该文件注释）。
+ * 前端请求基建单点：同源断言、端到端 Deadline、Bearer 注入、
+ * 401+UNAUTHORIZED 单飞刷新重放、会话代际联动取消。所有业务 api 模块统一使用
+ * 本文件的 apiRequest/authorizedFetch/authorizedBlob，禁止再平行实现请求封装
+ * （auth.ts 为 pre-auth 例外，见该文件注释）。
  */
 import { AuthApiError, refreshRequest } from "./auth"
+import {
+  API_JSON_MAX_BYTES,
+  DOWNLOAD_MAX_BYTES,
+  HttpBodyError,
+  createDeadline,
+  joinAbortSignals,
+  readJsonBody,
+  readLimitedBlob,
+} from "./httpDeadline"
 import { withRefreshLock } from "./refreshLock"
 import {
   getSessionGeneration,
@@ -40,14 +50,24 @@ export class ApiRequestError extends Error {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
-const REFRESH_TIMEOUT_MS = 10_000
 export const DOWNLOAD_TIMEOUT_MS = 120_000
+
+export interface AuthorizedJsonResult<T> {
+  status: number
+  ok: boolean
+  headers: Headers
+  body: T | ApiErrorBody | null
+}
+
 type RefreshResult = "refreshed" | "unauthorized" | "reauth-required" | "unavailable"
+type AuthDecision = "account-locked" | "reauth-required" | "context-changed" | "unauthorized" | "none"
 let refreshInFlight: Promise<RefreshResult> | null = null
 const sessionControllers = new Set<AbortController>()
 window.addEventListener("sms:session-clearing", () => {
   invalidateSessionGeneration()
   cancelSessionRequests()
+  clearAccessSession()
+  clearRefreshTabBinding()
 })
 
 export function authorization(): Record<string, string> {
@@ -72,27 +92,40 @@ function cancelSessionRequests(): void {
   sessionControllers.clear()
 }
 
-function fetchWithTimeout(
-  url: string,
-  init: RequestInit,
-  controller: AbortController,
-  timeoutMs: number,
-): Promise<Response> {
-  const timer = window.setTimeout(
-    () => controller.abort(new DOMException("请求超时", "TimeoutError")),
-    timeoutMs,
-  )
-  return fetch(url, { ...init, signal: controller.signal }).finally(() => {
-    window.clearTimeout(timer)
-  })
+function mapHttpBodyError(error: unknown): never {
+  if (error instanceof HttpBodyError) {
+    throw new ApiRequestError(0, error.code, error.message)
+  }
+  throw error
 }
 
-function requestWithCurrentAuthorization(
-  url: string,
-  init: RequestInit,
-  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
-): Promise<Response> {
-  assertSameOrigin(url)
+function startAuthorizedAttempt(
+  timeoutMs: number,
+  externalSignal: AbortSignal | undefined,
+  timeoutMessage: string,
+): { signal: AbortSignal; cleanup: () => void } {
+  const sessionController = new AbortController()
+  sessionControllers.add(sessionController)
+  const releaseTrack = trackSessionController(sessionController)
+  const joined = externalSignal
+    ? joinAbortSignals([sessionController.signal, externalSignal])
+    : { signal: sessionController.signal, cleanup: () => undefined }
+  const deadline = createDeadline(timeoutMs, {
+    callerSignal: joined.signal,
+    timeoutMessage,
+  })
+  return {
+    signal: deadline.signal,
+    cleanup: () => {
+      deadline.cleanup()
+      joined.cleanup()
+      sessionControllers.delete(sessionController)
+      releaseTrack()
+    },
+  }
+}
+
+function authorizedHeaders(init: RequestInit): Record<string, string> {
   const headers: Record<string, string> = {}
   if (init.headers instanceof Headers) {
     init.headers.forEach((value, key) => {
@@ -108,20 +141,47 @@ function requestWithCurrentAuthorization(
   }
   const token = getAccessToken()
   if (token) headers.Authorization = `Bearer ${token}`
-  const controller = new AbortController()
-  const externalSignal = init.signal
-  const abortFromExternal = () => controller.abort(externalSignal?.reason)
-  if (externalSignal) {
-    if (externalSignal.aborted) controller.abort(externalSignal.reason)
-    else externalSignal.addEventListener("abort", abortFromExternal, { once: true })
-  }
-  sessionControllers.add(controller)
-  const releaseTrack = trackSessionController(controller)
-  return fetchWithTimeout(url, { ...init, headers }, controller, timeoutMs).finally(() => {
-    sessionControllers.delete(controller)
-    releaseTrack()
-    if (externalSignal) externalSignal.removeEventListener("abort", abortFromExternal)
+  return headers
+}
+
+async function fetchAuthorizedOnce(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal,
+): Promise<Response> {
+  assertSameOrigin(url)
+  return fetch(url, { ...init, headers: authorizedHeaders(init), signal })
+}
+
+function rebuildJsonResponse(response: Response, body: unknown): Response {
+  const headers = new Headers(response.headers)
+  headers.delete("content-length")
+  if (!headers.has("content-type")) headers.set("Content-Type", "application/json")
+  return new Response(body == null ? null : JSON.stringify(body), {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
   })
+}
+
+function classifyAuthDecision(status: number, body: unknown): AuthDecision {
+  const code =
+    body && typeof body === "object" && "code" in body && typeof body.code === "string"
+      ? body.code
+      : undefined
+  if (status === 423 && code === "ACCOUNT_LOCKED") return "account-locked"
+  if (status === 401 && code === "AUTH_REAUTH_REQUIRED") return "reauth-required"
+  if (status === 409 && code === "AUTH_CONTEXT_CHANGED") return "context-changed"
+  if (status === 401 && code === "UNAUTHORIZED") return "unauthorized"
+  return "none"
+}
+
+function applyAuthDecision(decision: AuthDecision): void {
+  if (decision === "account-locked" || decision === "context-changed") {
+    clearSession()
+  } else if (decision === "reauth-required") {
+    clearSession("reauth-required")
+  }
 }
 
 function clearSession(broadcast: "unauthorized" | "reauth-required" | "none" = "unauthorized"): void {
@@ -148,19 +208,13 @@ async function refreshSession(): Promise<RefreshResult> {
       const currentUser = getSessionUser()
       const controller = new AbortController()
       const releaseTrack = trackSessionController(controller)
-      const timer = window.setTimeout(
-        () => controller.abort(new DOMException("刷新超时", "TimeoutError")),
-        REFRESH_TIMEOUT_MS,
-      )
       let result: Awaited<ReturnType<typeof refreshRequest>>
       try {
         result = await refreshRequest(controller.signal)
       } finally {
-        window.clearTimeout(timer)
         releaseTrack()
       }
       if (!isCurrentSessionGeneration(epoch)) {
-        clearAccessSession()
         return "unauthorized"
       }
       if (
@@ -180,7 +234,6 @@ async function refreshSession(): Promise<RefreshResult> {
       return "refreshed"
     } catch (error) {
       if (!isCurrentSessionGeneration(epoch)) {
-        clearAccessSession()
         return "unauthorized"
       }
       if (error instanceof AuthApiError && error.status === 401) {
@@ -201,11 +254,105 @@ async function refreshSession(): Promise<RefreshResult> {
   }
 }
 
-async function errorCode(response: Response): Promise<string | undefined> {
+async function replayAfterUnauthorized<T>(
+  attemptedToken: string | null,
+  retry: () => Promise<T>,
+  fallback: () => T,
+): Promise<T> {
+  const currentToken = getAccessToken()
+  if (currentToken && attemptedToken && currentToken !== attemptedToken) {
+    return retry()
+  }
+  const refreshed = await refreshSession()
+  if (refreshed === "refreshed") return retry()
+  if (refreshed === "unavailable") {
+    throw new ApiRequestError(503, "AUTH_SESSION_UNAVAILABLE", "会话权威状态暂不可用，请稍后重试")
+  }
+  if (refreshed === "reauth-required") {
+    throw new ApiRequestError(401, "AUTH_REAUTH_REQUIRED", "AD 会话已到期，请重新登录")
+  }
+  return fallback()
+}
+
+async function jsonAttempt<T>(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<AuthorizedJsonResult<T>> {
+  const attempt = startAuthorizedAttempt(timeoutMs, init.signal ?? undefined, "请求超时")
   try {
-    return ((await response.clone().json()) as ApiErrorBody).code
-  } catch {
-    return undefined
+    const response = await fetchAuthorizedOnce(url, init, attempt.signal)
+    const body = await readJsonBody<T | ApiErrorBody>(response, attempt.signal, API_JSON_MAX_BYTES)
+    return { status: response.status, ok: response.ok, headers: response.headers, body }
+  } catch (error) {
+    mapHttpBodyError(error)
+  } finally {
+    attempt.cleanup()
+  }
+}
+
+export async function authorizedJsonResult<T>(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<AuthorizedJsonResult<T>> {
+  const attemptedToken = getAccessToken()
+  const first = await jsonAttempt<T>(url, init, timeoutMs)
+  const decision = classifyAuthDecision(first.status, first.body)
+  applyAuthDecision(decision)
+  if (decision !== "unauthorized") return first
+  try {
+    return await replayAfterUnauthorized(
+      attemptedToken,
+      () => jsonAttempt<T>(url, init, timeoutMs),
+      () => first,
+    )
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.code === "AUTH_SESSION_UNAVAILABLE") {
+      return {
+        status: 503,
+        ok: false,
+        headers: new Headers({ "Content-Type": "application/json" }),
+        body: {
+          code: "AUTH_SESSION_UNAVAILABLE",
+          message: "会话权威状态暂不可用，请稍后重试",
+          detail: null,
+        },
+      }
+    }
+    if (error instanceof ApiRequestError && error.code === "AUTH_REAUTH_REQUIRED") {
+      return {
+        status: 401,
+        ok: false,
+        headers: new Headers({ "Content-Type": "application/json" }),
+        body: {
+          code: "AUTH_REAUTH_REQUIRED",
+          message: "AD 会话已到期，请重新登录",
+          detail: null,
+        },
+      }
+    }
+    throw error
+  }
+}
+
+async function rawAttempt(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<{ response: Response; body: ApiErrorBody | null }> {
+  const attempt = startAuthorizedAttempt(timeoutMs, init.signal ?? undefined, "请求超时")
+  try {
+    const response = await fetchAuthorizedOnce(url, init, attempt.signal)
+    if (response.status === 401 || response.status === 409 || response.status === 423) {
+      const body = await readJsonBody<ApiErrorBody>(response, attempt.signal, API_JSON_MAX_BYTES)
+      return { response: rebuildJsonResponse(response, body), body }
+    }
+    return { response, body: null }
+  } catch (error) {
+    mapHttpBodyError(error)
+  } finally {
+    attempt.cleanup()
   }
 }
 
@@ -215,67 +362,135 @@ export async function authorizedFetch(
   timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
   const attemptedToken = getAccessToken()
-  const response = await requestWithCurrentAuthorization(url, init, timeoutMs)
-  const code = await errorCode(response)
-  if (response.status === 423 && code === "ACCOUNT_LOCKED") {
-    clearSession()
-    return response
+  const first = await rawAttempt(url, init, timeoutMs)
+  const decision = classifyAuthDecision(first.response.status, first.body)
+  applyAuthDecision(decision)
+  if (decision !== "unauthorized") return first.response
+  try {
+    const replayed = await replayAfterUnauthorized(
+      attemptedToken,
+      () => rawAttempt(url, init, timeoutMs),
+      () => first,
+    )
+    return replayed.response
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.code === "AUTH_SESSION_UNAVAILABLE") {
+      return new Response(
+        JSON.stringify({
+          code: "AUTH_SESSION_UNAVAILABLE",
+          message: "会话权威状态暂不可用，请稍后重试",
+          detail: null,
+        }),
+        { status: 503, headers: { "Content-Type": "application/json" } },
+      )
+    }
+    if (error instanceof ApiRequestError && error.code === "AUTH_REAUTH_REQUIRED") {
+      return new Response(
+        JSON.stringify({
+          code: "AUTH_REAUTH_REQUIRED",
+          message: "AD 会话已到期，请重新登录",
+          detail: null,
+        }),
+        { status: 401, headers: { "Content-Type": "application/json" } },
+      )
+    }
+    throw error
   }
-  if (response.status === 401 && code === "AUTH_REAUTH_REQUIRED") {
-    clearSession("reauth-required")
-    return response
-  }
-  if (response.status === 409 && code === "AUTH_CONTEXT_CHANGED") {
-    clearSession()
-    return response
-  }
-  if (response.status !== 401 || code !== "UNAUTHORIZED") return response
+}
 
-  const currentToken = getAccessToken()
-  if (currentToken && attemptedToken && currentToken !== attemptedToken) {
-    return requestWithCurrentAuthorization(url, init, timeoutMs)
+type BlobAttempt =
+  | { kind: "blob"; blob: Blob }
+  | { kind: "error"; status: number; body: ApiErrorBody | null }
+
+async function blobAttempt(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<BlobAttempt> {
+  const attempt = startAuthorizedAttempt(timeoutMs, init.signal ?? undefined, "请求超时")
+  try {
+    const response = await fetchAuthorizedOnce(url, init, attempt.signal)
+    if (!response.ok) {
+      let body: ApiErrorBody | null = null
+      try {
+        body = await readJsonBody<ApiErrorBody>(response, attempt.signal, API_JSON_MAX_BYTES)
+      } catch (error) {
+        if (!(error instanceof HttpBodyError)) throw error
+      }
+      return { kind: "error", status: response.status, body }
+    }
+    return {
+      kind: "blob",
+      blob: await readLimitedBlob(response, attempt.signal, DOWNLOAD_MAX_BYTES),
+    }
+  } catch (error) {
+    mapHttpBodyError(error)
+  } finally {
+    attempt.cleanup()
   }
-  const refreshed = await refreshSession()
-  if (refreshed === "refreshed") {
-    return requestWithCurrentAuthorization(url, init, timeoutMs)
-  }
-  if (refreshed === "unavailable") {
-    return new Response(
-      JSON.stringify({
+}
+
+function throwDownloadError(status: number, body: ApiErrorBody | null): never {
+  throw new ApiRequestError(
+    status,
+    body?.code || `HTTP_${status}`,
+    body?.message || body?.code || `下载失败（${status}）`,
+    body?.detail,
+  )
+}
+
+export async function authorizedBlob(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = DOWNLOAD_TIMEOUT_MS,
+): Promise<Blob> {
+  const attemptedToken = getAccessToken()
+  const first = await blobAttempt(url, init, timeoutMs)
+  if (first.kind === "blob") return first.blob
+  const decision = classifyAuthDecision(first.status, first.body)
+  applyAuthDecision(decision)
+  if (decision !== "unauthorized") throwDownloadError(first.status, first.body)
+  try {
+    const replayed = await replayAfterUnauthorized(
+      attemptedToken,
+      () => blobAttempt(url, init, timeoutMs),
+      () => first,
+    )
+    if (replayed.kind === "blob") return replayed.blob
+    throwDownloadError(replayed.status, replayed.body)
+  } catch (error) {
+    if (error instanceof ApiRequestError && error.code === "AUTH_SESSION_UNAVAILABLE") {
+      throwDownloadError(503, {
         code: "AUTH_SESSION_UNAVAILABLE",
         message: "会话权威状态暂不可用，请稍后重试",
         detail: null,
-      }),
-      { status: 503, headers: { "Content-Type": "application/json" } },
-    )
-  }
-  if (refreshed === "reauth-required") {
-    return new Response(
-      JSON.stringify({
+      })
+    }
+    if (error instanceof ApiRequestError && error.code === "AUTH_REAUTH_REQUIRED") {
+      throwDownloadError(401, {
         code: "AUTH_REAUTH_REQUIRED",
         message: "AD 会话已到期，请重新登录",
         detail: null,
-      }),
-      { status: 401, headers: { "Content-Type": "application/json" } },
-    )
+      })
+    }
+    throw error
   }
-  return response
 }
 
-async function unwrapJson<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as ApiErrorBody
+function unwrapAuthorizedJson<T>(result: AuthorizedJsonResult<T>): T {
+  if (!result.ok) {
+    const body = (result.body ?? {}) as ApiErrorBody
     throw new ApiRequestError(
-      response.status,
-      body.code || `HTTP_${response.status}`,
-      body.message || body.code || `请求失败（${response.status}）`,
+      result.status,
+      body.code || `HTTP_${result.status}`,
+      body.message || body.code || `请求失败（${result.status}）`,
       body.detail,
     )
   }
-  if (response.status === 204 || response.headers.get("content-length") === "0") {
+  if (result.status === 204 || result.body == null) {
     return undefined as T
   }
-  return (await response.json()) as T
+  return result.body as T
 }
 
 /** Web 业务端点：path 自动加 `/api/v1/web` 前缀。 */
@@ -284,10 +499,16 @@ export async function apiRequest<T>(
   init: RequestInit,
   timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<T> {
-  return unwrapJson<T>(await authorizedFetch(`/api/v1/web${path}`, init, timeoutMs))
+  return unwrapAuthorizedJson<T>(
+    await authorizedJsonResult<T>(`/api/v1/web${path}`, init, timeoutMs),
+  )
 }
 
 /** 绝对路径端点（如 `/api/v1/messages/...`）：与 apiRequest 同错误类型，不加前缀。 */
-export async function apiRequestAbs<T>(path: string, init: RequestInit): Promise<T> {
-  return unwrapJson<T>(await authorizedFetch(path, init))
+export async function apiRequestAbs<T>(
+  path: string,
+  init: RequestInit,
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
+): Promise<T> {
+  return unwrapAuthorizedJson<T>(await authorizedJsonResult<T>(path, init, timeoutMs))
 }

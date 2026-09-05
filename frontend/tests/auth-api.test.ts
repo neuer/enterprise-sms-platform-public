@@ -91,4 +91,77 @@ describe("认证请求边界", () => {
 
     expect(requestSignal?.aborted).toBe(true)
   })
+
+  it("登录响应头已到但正文停滞时仍于 55 秒截止", async () => {
+    vi.useFakeTimers()
+    beginRefreshTabBinding()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('{"token":'))
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        ),
+      ),
+    )
+
+    const request = loginRequest("ad", "user01", "password")
+    const rejected = expect(request).rejects.toMatchObject({ name: "TimeoutError" })
+    await vi.advanceTimersByTimeAsync(54_999)
+    await vi.advanceTimersByTimeAsync(1)
+    await rejected
+  })
+
+  it("Refresh 正文停滞时于 10 秒内退出", async () => {
+    vi.useFakeTimers()
+    beginRefreshTabBinding()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new TextEncoder().encode('{"token":'))
+              },
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+        ),
+      ),
+    )
+
+    const request = refreshRequest()
+    const rejected = expect(request).rejects.toMatchObject({ name: "TimeoutError" })
+    await vi.advanceTimersByTimeAsync(10_000)
+    await rejected
+  })
+
+  it("认证 JSON 超过正文上限时受控失败且不回显正文", async () => {
+    beginRefreshTabBinding()
+    const oversized = `{${"\"k\":".padEnd(33 * 1024, "1")}}`
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response(oversized, {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+        ),
+      ),
+    )
+
+    await expect(refreshRequest()).rejects.toMatchObject({
+      name: "AuthApiError",
+      code: "RESPONSE_TOO_LARGE",
+      message: "响应正文超过允许大小",
+    })
+  })
 })

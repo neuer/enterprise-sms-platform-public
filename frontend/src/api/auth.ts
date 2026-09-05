@@ -1,4 +1,9 @@
 import {
+  AUTH_JSON_MAX_BYTES,
+  HttpBodyError,
+  fetchJsonWithDeadline,
+} from "./httpDeadline"
+import {
   beginRefreshTabBinding,
   clearRefreshTabBinding,
   getRefreshTabBinding,
@@ -7,7 +12,7 @@ import {
 /**
  * 本模块是 pre-auth 流程（登录/刷新/改密/注销），刻意不走 client.ts 的
  * authorizedFetch：刷新处理器本身依赖 refreshRequest，套娃会造成递归。
- * 因此这里保留裸 fetch，但统一组合调用方取消与本地截止线，并显式限定同源 Cookie。
+ * 因此这里保留独立请求，但与业务层共用端到端 JSON Deadline。
  */
 const AUTH_REQUEST_TIMEOUT_MS = 30_000
 export const PASSWORD_AUTH_REQUEST_TIMEOUT_MS = 55_000
@@ -70,71 +75,58 @@ export class AuthApiError extends Error {
   }
 }
 
-function boundedSignal(
-  timeoutMs: number,
-  callerSignal?: AbortSignal,
-): { signal: AbortSignal; cleanup: () => void } {
-  const controller = new AbortController()
-  const relayAbort = () => controller.abort(callerSignal?.reason)
-  if (callerSignal?.aborted) {
-    relayAbort()
-  } else {
-    callerSignal?.addEventListener("abort", relayAbort, { once: true })
-  }
-  const timeout = window.setTimeout(
-    () => controller.abort(new DOMException("认证请求超时", "TimeoutError")),
-    timeoutMs,
-  )
-  return {
-    signal: controller.signal,
-    cleanup: () => {
-      window.clearTimeout(timeout)
-      callerSignal?.removeEventListener("abort", relayAbort)
-    },
-  }
-}
-
-async function authFetch(
-  input: RequestInfo | URL,
+async function authJson<T>(
+  input: string,
   init: RequestInit = {},
   timeoutMs = AUTH_REQUEST_TIMEOUT_MS,
   callerSignal?: AbortSignal,
-): Promise<Response> {
-  const bounded = boundedSignal(timeoutMs, callerSignal)
+): Promise<T | null> {
   try {
-    return await fetch(input, {
-      ...init,
+    const { response, body } = await fetchJsonWithDeadline<T | ApiErrorBody>(input, init, {
+      timeoutMs,
+      callerSignal,
+      maxBodyBytes: AUTH_JSON_MAX_BYTES,
+      timeoutMessage: "认证请求超时",
       credentials: "same-origin",
-      signal: bounded.signal,
     })
-  } finally {
-    bounded.cleanup()
+    if (!response.ok) {
+      const errorBody = (body ?? {}) as ApiErrorBody
+      throw new AuthApiError(
+        response.status,
+        errorBody.code || `HTTP_${response.status}`,
+        errorBody.message || errorBody.code || `请求失败（${response.status}）`,
+      )
+    }
+    return body as T | null
+  } catch (error) {
+    if (error instanceof HttpBodyError) {
+      throw new AuthApiError(0, error.code, error.message)
+    }
+    throw error
   }
 }
 
-async function apiError(response: Response): Promise<AuthApiError> {
-  const body = (await response.json().catch(() => ({}))) as ApiErrorBody
-  return new AuthApiError(
-    response.status,
-    body.code || `HTTP_${response.status}`,
-    body.message || body.code || `请求失败（${response.status}）`,
-  )
+function requireJson<T>(body: T | null): T {
+  if (body == null) {
+    throw new AuthApiError(0, "INVALID_JSON_RESPONSE", "响应不是有效 JSON")
+  }
+  return body
 }
 
 export async function providerRequest(): Promise<AuthProvider[]> {
-  const response = await authFetch("/api/v1/web/auth/providers", {
-    headers: { Accept: "application/json" },
-  })
-  if (!response.ok) throw await apiError(response)
-  return (await response.json()) as AuthProvider[]
+  return requireJson(
+    await authJson<AuthProvider[]>("/api/v1/web/auth/providers", {
+      headers: { Accept: "application/json" },
+    }),
+  )
 }
 
 export async function passwordPolicyRequest(): Promise<PasswordPolicy> {
-  const response = await authFetch("/api/v1/web/auth/password-policy", {
-    headers: { Accept: "application/json" },
-  })
-  if (!response.ok) throw await apiError(response)
-  return (await response.json()) as PasswordPolicy
+  return requireJson(
+    await authJson<PasswordPolicy>("/api/v1/web/auth/password-policy", {
+      headers: { Accept: "application/json" },
+    }),
+  )
 }
 
 export async function loginRequest(
@@ -145,18 +137,18 @@ export async function loginRequest(
 ): Promise<LoginResponse> {
   const tabId = beginRefreshTabBinding()
   try {
-    const response = await authFetch(
-      "/api/v1/web/auth/login",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider_code: providerCode, username, password, tab_id: tabId }),
-      },
-      PASSWORD_AUTH_REQUEST_TIMEOUT_MS,
-      signal,
+    return requireJson(
+      await authJson<LoginResponse>(
+        "/api/v1/web/auth/login",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider_code: providerCode, username, password, tab_id: tabId }),
+        },
+        PASSWORD_AUTH_REQUEST_TIMEOUT_MS,
+        signal,
+      ),
     )
-    if (!response.ok) throw await apiError(response)
-    return (await response.json()) as LoginResponse
   } catch (error) {
     clearRefreshTabBinding()
     throw error
@@ -168,30 +160,29 @@ export async function refreshRequest(signal?: AbortSignal): Promise<LoginSuccess
   if (!tabId) {
     throw new AuthApiError(401, "UNAUTHORIZED", "当前标签页会话绑定缺失，请重新登录")
   }
-  const response = await authFetch(
-    "/api/v1/web/auth/refresh",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tab_id: tabId }),
-    },
-    REFRESH_REQUEST_TIMEOUT_MS,
-    signal,
+  return requireJson(
+    await authJson<LoginSuccess>(
+      "/api/v1/web/auth/refresh",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tab_id: tabId }),
+      },
+      REFRESH_REQUEST_TIMEOUT_MS,
+      signal,
+    ),
   )
-  if (!response.ok) throw await apiError(response)
-  return (await response.json()) as LoginSuccess
 }
 
 export async function initialPasswordChangeRequest(
   changeToken: string,
   newPassword: string,
 ): Promise<void> {
-  const response = await authFetch("/api/v1/web/auth/password/initial", {
+  await authJson("/api/v1/web/auth/password/initial", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ change_token: changeToken, new_password: newPassword }),
   })
-  if (!response.ok) throw await apiError(response)
 }
 
 export async function passwordChangeRequest(
@@ -199,7 +190,7 @@ export async function passwordChangeRequest(
   currentPassword: string,
   newPassword: string,
 ): Promise<void> {
-  const response = await authFetch("/api/v1/web/auth/password/change", {
+  await authJson("/api/v1/web/auth/password/change", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
@@ -210,11 +201,10 @@ export async function passwordChangeRequest(
       new_password: newPassword,
     }),
   })
-  if (!response.ok) throw await apiError(response)
 }
 
 export async function logoutRequest(token: string, signal?: AbortSignal): Promise<void> {
-  const response = await authFetch(
+  await authJson(
     "/api/v1/web/auth/logout",
     {
       method: "POST",
@@ -223,5 +213,4 @@ export async function logoutRequest(token: string, signal?: AbortSignal): Promis
     AUTH_REQUEST_TIMEOUT_MS,
     signal,
   )
-  if (!response.ok) throw await apiError(response)
 }

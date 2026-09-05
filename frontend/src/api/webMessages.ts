@@ -1,9 +1,8 @@
 import {
   apiRequest,
-  authorizedFetch,
+  authorizedBlob,
   ApiRequestError,
   DOWNLOAD_TIMEOUT_MS,
-  type ApiErrorBody,
 } from "./client"
 
 export type Category = "notice" | "market"
@@ -97,17 +96,7 @@ export async function uploadPhones(file: File): Promise<ImportResult> {
 }
 
 export async function downloadImportInvalidFile(url: string): Promise<Blob> {
-  const response = await authorizedFetch(url, { method: "GET" }, DOWNLOAD_TIMEOUT_MS)
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as ApiErrorBody
-    throw new ApiRequestError(
-      response.status,
-      body.code || `HTTP_${response.status}`,
-      body.message || body.code || `下载失败（${response.status}）`,
-      body.detail,
-    )
-  }
-  return response.blob()
+  return authorizedBlob(url, { method: "GET" }, DOWNLOAD_TIMEOUT_MS)
 }
 
 export async function previewBilling(
