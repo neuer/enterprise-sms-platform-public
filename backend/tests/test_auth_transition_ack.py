@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 
 from app.core.auth.backends import SessionStateUnavailable
 from app.core.auth.security_events import AuthSecurityTransition
-from app.core.auth.service import AccountLocked, LoginGuard, RateLimited
+from app.core.auth.service import (
+    ACCOUNT_WINDOW_S,
+    WRITER_LEASE_MS,
+    AccountLocked,
+    LoginGuard,
+    RateLimited,
+    writer_lease_ms,
+)
+from app.core.auth.transition_sync import (
+    AuthTransitionReconciler,
+    require_writer_lease_budget,
+)
 from tests.test_auth import FakeKeyValue, RecordingSecurityEvents
 
 _GUARD_ERRORS = (AccountLocked, RateLimited, SessionStateUnavailable)
@@ -191,7 +203,7 @@ async def test_database_insert_committed_but_ack_lost_is_deduplicated_and_acked(
     with pytest.raises(_GUARD_ERRORS):
         await guard.record_failure("user01", "10.0.0.28", "local")
     assert writer.calls == 1
-    store.values["__now_ms"] = 10_000
+    store.values["__now_ms"] = WRITER_LEASE_MS + 1
     with pytest.raises(_GUARD_ERRORS):
         await guard.record_failure("user01", "10.0.0.28", "local")
     assert writer.calls == 2
@@ -215,3 +227,190 @@ async def test_transition_audit_retry_does_not_extend_lock_or_ban_ttl() -> None:
         await guard.record_failure("user01", "10.0.0.29", "local")
     assert store.values["auth:lock:user:user01"] == lock_before
     assert _lock_ttl(store) == 900
+
+
+@pytest.mark.asyncio
+async def test_retry_backoff_uses_redis_time_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = FakeKeyValue()
+    store.values["__now_ms"] = 4_000
+    monkeypatch.setattr("app.core.auth.service.monotonic", lambda: 9_999)
+    writer = CountingWriter()
+    writer.fail_times = 1
+    guard = LoginGuard(store, security_events=writer)
+    for _ in range(4):
+        await guard.record_failure("user01", "10.0.0.30", "local")
+    with pytest.raises(SessionStateUnavailable):
+        await guard.record_failure("user01", "10.0.0.30", "local")
+    audit = next(value for key, value in store.values.items() if str(key).startswith("auth:audit:"))
+    assert int(audit["next_retry_at_ms"]) == 5_000
+
+
+@pytest.mark.asyncio
+async def test_api_clock_skew_does_not_change_retry_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = FakeKeyValue()
+    store.values["__now_ms"] = 0
+    monkeypatch.setattr("time.time", lambda: 1_000_000)
+    writer = CountingWriter()
+    writer.fail_times = 1
+    guard = LoginGuard(store, security_events=writer)
+    for _ in range(4):
+        await guard.record_failure("user01", "10.0.0.31", "local")
+    with pytest.raises(SessionStateUnavailable):
+        await guard.record_failure("user01", "10.0.0.31", "local")
+    audit = next(value for key, value in store.values.items() if str(key).startswith("auth:audit:"))
+    assert int(audit["next_retry_at_ms"]) == 1000
+
+
+def test_writer_lease_budget_exceeds_database_timeout_budget() -> None:
+    settings = SimpleNamespace(
+        db_pool_timeout_seconds=3.0,
+        db_connect_timeout_seconds=3.0,
+        db_api_statement_timeout_ms=15_000,
+    )
+    budget_ms = int(
+        (
+            settings.db_pool_timeout_seconds
+            + settings.db_connect_timeout_seconds
+            + settings.db_api_statement_timeout_ms / 1000
+        )
+        * 1000
+    )
+    assert writer_lease_ms(settings) > budget_ms
+    assert WRITER_LEASE_MS > 5_000
+    require_writer_lease_budget(settings)
+
+
+@pytest.mark.asyncio
+async def test_slow_database_writer_keeps_or_renews_exclusive_lease() -> None:
+    store = FakeKeyValue()
+
+    class LeaseProbe(CountingWriter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.held_ms = 0
+
+        async def ensure_transition(self, transition: AuthSecurityTransition) -> None:
+            lock = str(store.values["auth:lock:user:user01"])
+            audit = store.values[store._audit_key(lock)]
+            self.held_ms = int(audit["lease_expires_ms"]) - store._now_ms()
+            await super().ensure_transition(transition)
+
+    writer = LeaseProbe()
+    guard = LoginGuard(store, security_events=writer)
+    for _ in range(4):
+        await guard.record_failure("user01", "10.0.0.32", "local")
+    with pytest.raises(_GUARD_ERRORS):
+        await guard.record_failure("user01", "10.0.0.32", "local")
+    assert writer.held_ms >= 21_000
+
+
+@pytest.mark.asyncio
+async def test_stale_writer_fail_cannot_override_new_owner() -> None:
+    store = FakeKeyValue()
+    store.values["auth:audit:transition:8a5a77a4-286f-4d81-9a64-5379e30df987"] = {
+        "state": "writing",
+        "lease_id": "new-lease",
+        "attempts": 1,
+        "created_at_ms": 0,
+    }
+    result = await store.eval(
+        "-- auth-audit-fail-v1\n",
+        1,
+        "auth:audit:transition:8a5a77a4-286f-4d81-9a64-5379e30df987",
+        "old-lease",
+        "86400",
+        "20",
+        "86400000",
+    )
+    assert result == 0
+    assert (
+        store.values["auth:audit:transition:8a5a77a4-286f-4d81-9a64-5379e30df987"]["state"]
+        == "writing"
+    )
+
+
+@pytest.mark.asyncio
+async def test_reconciler_persists_transition_without_followup_login_traffic() -> None:
+    store = FakeKeyValue()
+    writer = CountingWriter()
+    writer.fail_times = 1
+    guard = LoginGuard(store, security_events=writer)
+    for _ in range(4):
+        await guard.record_failure("user01", "10.0.0.33", "local")
+    with pytest.raises(SessionStateUnavailable):
+        await guard.record_failure("user01", "10.0.0.33", "local")
+    assert writer.calls == 1
+    store.values["__now_ms"] = 2_000
+    reconciler = AuthTransitionReconciler(store=store, security_events=writer, interval_s=1)
+    assert await reconciler.reconcile() == 1
+    lock = str(store.values["auth:lock:user:user01"])
+    assert store.values[store._audit_key(lock)]["state"] == "audited"
+    assert writer.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_pending_transition_survives_business_lock_ttl() -> None:
+    store = FakeKeyValue()
+    writer = CountingWriter()
+    writer.fail_times = 1
+    guard = LoginGuard(store, security_events=writer)
+    for _ in range(4):
+        await guard.record_failure("user01", "10.0.0.34", "local")
+    with pytest.raises(SessionStateUnavailable):
+        await guard.record_failure("user01", "10.0.0.34", "local")
+    lock = str(store.values.pop("auth:lock:user:user01"))
+    store.values.pop("auth:fail:user:user01", None)
+    store.values["__now_ms"] = ACCOUNT_WINDOW_S * 1000 + 2_000
+    reconciler = AuthTransitionReconciler(store=store, security_events=writer, interval_s=1)
+    assert await reconciler.reconcile() == 1
+    assert store.values[store._audit_key(lock)]["state"] == "audited"
+
+
+@pytest.mark.asyncio
+async def test_transition_enters_dead_state_only_after_documented_limit() -> None:
+    store = FakeKeyValue()
+    writer = CountingWriter()
+    writer.fail_times = 100
+    guard = LoginGuard(store, security_events=writer)
+    for _ in range(4):
+        await guard.record_failure("user01", "10.0.0.35", "local")
+    with pytest.raises(SessionStateUnavailable):
+        await guard.record_failure("user01", "10.0.0.35", "local")
+    lock = str(store.values["auth:lock:user:user01"])
+    store.values[store._audit_key(lock)] = {
+        "state": "writing",
+        "lease_id": "dead-lease",
+        "attempts": 19,
+        "created_at_ms": 0,
+        "action": "auth_account_locked",
+        "provider_code": "local",
+        "result_code": "ACCOUNT_LOCKED",
+        "count": "5",
+        "remaining_ttl_seconds": "900",
+        "ip": "10.0.0.35",
+    }
+    store.values["__now_ms"] = 10
+    with pytest.raises(SessionStateUnavailable):
+        await guard.record_failure("user01", "10.0.0.35", "local")
+    assert store.values[store._audit_key(lock)]["state"] == "dead"
+
+
+@pytest.mark.asyncio
+async def test_lock_and_ban_claims_are_both_settled_when_first_write_fails() -> None:
+    store = FakeKeyValue()
+    writer = CountingWriter()
+    writer.fail_times = 1
+    store.values["auth:fail:user:user01"] = 4
+    store.values["auth:fail:ip:10.0.0.36"] = 19
+    guard = LoginGuard(store, security_events=writer)
+    with pytest.raises(SessionStateUnavailable):
+        await guard.record_failure("user01", "10.0.0.36", "local")
+    actions = [item.action for item in writer.transitions]
+    assert writer.calls == 2
+    assert "auth_ip_banned" in actions
+    lock = str(store.values["auth:lock:user:user01"])
+    ban = str(store.values["auth:ban:ip:10.0.0.36"])
+    assert store.values[store._audit_key(lock)]["state"] == "pending"
+    assert store.values[store._audit_key(ban)]["state"] == "audited"

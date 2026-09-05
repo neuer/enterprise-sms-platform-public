@@ -453,6 +453,58 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         success.labels(action=action).set(value)
     for action, value in auth.transition_failure:
         failure.labels(action=action).set(value)
+    pending = Gauge(
+        "auth_transition_pending",
+        "Auth lock/ban transitions waiting for durable audit.",
+        registry=registry,
+    )
+    pending.set(auth.transition_pending)
+    oldest = Gauge(
+        "auth_transition_oldest_pending_seconds",
+        "Age of the oldest pending auth transition.",
+        registry=registry,
+    )
+    oldest.set(auth.transition_oldest_pending_seconds)
+    claims = Gauge(
+        "auth_transition_claim_total",
+        "Writer lease claims for auth transitions.",
+        ("action", "owner"),
+        registry=registry,
+    )
+    for action, owner, value in auth.transition_claim:
+        claims.labels(action=action, owner=owner).set(value)
+    expired = Gauge(
+        "auth_transition_lease_expired_total",
+        "Auth transition writer leases that expired before ACK.",
+        ("action",),
+        registry=registry,
+    )
+    for action, value in auth.transition_lease_expired:
+        expired.labels(action=action).set(value)
+    retries = Gauge(
+        "auth_transition_retry_total",
+        "Auth transition writer retries after a failed audit write.",
+        ("action", "error_class"),
+        registry=registry,
+    )
+    for action, error_class, value in auth.transition_retry:
+        retries.labels(action=action, error_class=error_class).set(value)
+    dead = Gauge(
+        "auth_transition_dead_total",
+        "Auth transitions that exhausted the documented recovery limit.",
+        ("action",),
+        registry=registry,
+    )
+    for action, value in auth.transition_dead:
+        dead.labels(action=action).set(value)
+    duration = Gauge(
+        "auth_transition_database_duration_seconds",
+        "Last auth transition audit write duration.",
+        ("action",),
+        registry=registry,
+    )
+    for action, seconds in auth.transition_database_duration_seconds:
+        duration.labels(action=action).set(seconds)
     admit = Gauge(
         "auth_admit_total",
         "Login admit outcomes on the Redis-first path.",
