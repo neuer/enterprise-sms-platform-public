@@ -14,7 +14,7 @@
 
 ## 硬性边界
 
-所有运行凭据只允许以 `deploy/secrets/<name>` 宿主文件作为权威源。生产目录必须是非符号链接目录、mode 精确为 `0700`，并且恰好包含下表 26 个非空普通文件、mode 精确为 `0600`；不得出现 `dev-apikeys.txt`、额外文件或符号链接。不得把值写入 `.env`、数据库、Compose environment、镜像、日志、API、前端、工单或聊天。
+所有运行凭据只允许以 `deploy/secrets/<name>` 宿主文件作为权威源。生产目录必须是非符号链接目录、mode 精确为 `0700`，并且恰好包含下表 26 个必选非空普通文件、mode 精确为 `0600`；另可条件性包含 `api_key_legacy_hmac_pepper`。不得出现 `dev-apikeys.txt`、其它额外文件或符号链接。不得把值写入 `.env`、数据库、Compose environment、镜像、日志、API、前端、工单或聊天。
 
 生产根目录 `.env` 必须显式且唯一设置 `ENVIRONMENT=production`、`DEBUG=0`、`AUTH_MOCK=0`、`VENDOR_MOCK=0`，不得通过 shell 或 `.env` 激活任何 `COMPOSE_PROFILES`/`dev` profile。production 的启动与轮换会 fail-closed 校验这些明确的非密钥键。唯一生产 Compose 入口是 `sudo /usr/local/sbin/sms-compose ...`；动作必须是第一个参数，包装器拒绝 `--profile`、额外 `--env-file` 等全局参数作为首参，固定注入项目根 `.env` 与 Compose 文件，禁止绕过包装器直接运行 Compose。production `up` 只允许文档化的安全选项和固定生产服务，拒绝 `mock-vendor`、未知服务、`--scale`、构建、拉取及其他参数；development Mock 路径不受此生产参数白名单限制。
 
@@ -44,6 +44,7 @@ generation 与四个服务目录均只允许 root 遍历。Compose 的 source �
 | `data_aes_key` | 32 随机字节的 base64，或 README 规定的 AES keyring JSON | api、worker-realtime、worker-report、worker-bulk、worker-callback | 与 HMAC keyring 版本集合一致；保留仍被 `key_version` 引用的旧版本 |
 | `data_hmac_key` | 独立 32 随机字节的 base64，或 HMAC keyring JSON | api、worker-realtime、worker-report、worker-bulk、worker-callback | 与 AES 同窗更新；先验证历史 HMAC 查询再切 active_version |
 | `api_key_pepper_key` | 独立 32 随机字节的 base64，或 pepper keyring JSON；禁止复用 `data_hmac_key` | 仅 api | 与数据 HMAC 独立轮换；先确认仍被 `api_key_hash_version` 引用的版本仍在 keyring，再切 active_version；就绪检查缺失引用版本即失败关闭 |
+| `api_key_legacy_hmac_pepper` | **条件性迁移 Secret**：保存创建旧摘要时的 `data_hmac_key` **原始文本**，不是已派生的 32 字节 pepper。代码会再执行 `HMAC-SHA256("sms-api-key-pepper-v1", raw_text)`。无历史摘要时权威源可省略，runtime 写入 tombstone `!` | 仅 api | `required_while_legacy_api_key_digest_exists`；数据库仍有 `legacy_data_hmac_pepper_v1` 或未分类清单包含该算法时缺失即 readiness/release 失败。历史行清零并过观察窗口后 `forbidden_after_migration_closed`，可删除权威源。不得挂 worker/beat/Redis/PostgreSQL |
 | `audit_context_key` | 稳定 human/api_app 主体专用 32 随机字节 base64；不得复用其他 key | 仅 api、migrate | 与自治事件 key 同窗轮换；先运行 migrate 同步 owner-only 验证表，再重建 api，禁止挂载到 worker/beat/outbox |
 | `audit_system_api_context_key` | API 自治事件专用 32 随机字节 base64 | 仅 api、migrate | 只签 `AUDIT_PRODUCER_DOMAIN=api`，不得复用任何审计 key |
 | `audit_system_realtime_context_key` | realtime worker 自治事件专用 32 随机字节 base64 | 仅 worker-realtime、migrate | 只签 realtime 域；不得挂给其他 worker |
@@ -70,7 +71,7 @@ Compose 后端服务按职责最小挂载，精确矩阵如下；公共 anchor �
 
 | 服务 | 容器内 secrets |
 |---|---|
-| api | AES/HMAC、`api_key_pepper_key`、`audit_context_key`、`audit_system_api_context_key`、`alert_credential_public_key`、JWT、LDAP、`metrics_scrape_token`、`db_auth_password`、`db_accept_password`、`db_callback_password`、`db_export_password`、`db_metrics_password`、`redis_auth_password`、`redis_control_password`；不得挂载厂商凭据 |
+| api | AES/HMAC、`api_key_pepper_key`、条件性 `api_key_legacy_hmac_pepper`、`audit_context_key`、`audit_system_api_context_key`、`alert_credential_public_key`、JWT、LDAP、`metrics_scrape_token`、`db_auth_password`、`db_accept_password`、`db_callback_password`、`db_export_password`、`db_metrics_password`、`redis_auth_password`、`redis_control_password`；不得挂载厂商凭据 |
 | worker-realtime | 厂商两项、AES/HMAC、`audit_system_realtime_context_key`、`db_send_password`、`db_callback_password`、`redis_broker_password`、`redis_control_password` |
 | worker-report | 厂商两项、AES/HMAC、`db_send_password`、`redis_broker_password`、`redis_control_password`；不得挂载审计 key、callback DB 密码或 vendor-control UDS |
 | worker-bulk | 厂商两项、AES/HMAC、`audit_system_bulk_context_key`、`db_send_password`、`db_export_password`、`redis_broker_password`、`redis_control_password` |

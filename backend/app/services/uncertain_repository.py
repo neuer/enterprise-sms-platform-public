@@ -187,6 +187,17 @@ class SqlUncertainRepository:
                 batch = aggregate.mappings().one()
                 if str(batch["status"]) in {"completed", "completed_unknown"}:
                     await enqueue_batch_finished(connection, int(batch["id"]))
+                    from app.services.send_inflight import request_inflight_release_for_batch
+
+                    await request_inflight_release_for_batch(
+                        connection,
+                        batch_id=int(batch["id"]),
+                        reason=(
+                            "batch-completed-unknown"
+                            if str(batch["status"]) == "completed_unknown"
+                            else "batch-completed"
+                        ),
+                    )
                 unknown_count = int(batch["unknown_cnt"])
             await SqlAlertService(self.settings).emit(
                 alert_type="uncertain_terminal",

@@ -70,6 +70,11 @@ class TokenBucket:
         self.redis = redis
         self.key = key
 
+    def _bucket_key(self, vendor_id: str | None) -> str:
+        if vendor_id:
+            return f"{self.key}:{vendor_id}"
+        return self.key
+
     async def acquire(
         self,
         *,
@@ -77,6 +82,7 @@ class TokenBucket:
         vendor_qps: int,
         reserved_realtime_qps: int,
         now_ms: int | None = None,
+        vendor_id: str | None = None,
     ) -> int | None:
         if lane not in {"realtime", "bulk"}:
             raise ValueError("lane must be realtime or bulk")
@@ -86,7 +92,7 @@ class TokenBucket:
         result = await self.redis.eval(
             TOKEN_BUCKET_LUA,
             1,
-            self.key,
+            self._bucket_key(vendor_id),
             lane,
             str(vendor_qps),
             str(reserved_realtime_qps),
@@ -95,7 +101,13 @@ class TokenBucket:
         lease_epoch = int(result)
         return None if lease_epoch < 0 else lease_epoch
 
-    async def refund(self, *, vendor_qps: int, lease_epoch: int) -> None:
+    async def refund(
+        self,
+        *,
+        vendor_qps: int,
+        lease_epoch: int,
+        vendor_id: str | None = None,
+    ) -> None:
         """原子返还一个未使用令牌，且永不超过桶容量。"""
 
         if vendor_qps < 1:
@@ -103,7 +115,7 @@ class TokenBucket:
         await self.redis.eval(
             TOKEN_REFUND_LUA,
             1,
-            self.key,
+            self._bucket_key(vendor_id),
             str(vendor_qps),
             str(lease_epoch),
         )

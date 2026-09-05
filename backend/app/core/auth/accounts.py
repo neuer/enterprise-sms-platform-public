@@ -96,7 +96,55 @@ class ApplicationPrincipal:
         return self.app_id
 
 
-type ActorPrincipal = SecurityPrincipal | ApplicationPrincipal
+@dataclass(frozen=True, slots=True)
+class UncertainEffectPrincipal:
+    """不可伪造的 uncertain 人工重发执行主体；只能由已批准 resolution 构造。"""
+
+    resolution_id: int
+    proposer_account_id: int
+    confirmer_account_id: int
+    effect_generation: int
+    dept: str
+
+    def __post_init__(self) -> None:
+        if (
+            self.resolution_id < 1
+            or self.proposer_account_id < 1
+            or self.confirmer_account_id < 1
+            or self.effect_generation < 1
+        ):
+            raise ValueError("uncertain effect principal invalid")
+        if self.proposer_account_id == self.confirmer_account_id:
+            raise ValueError("uncertain effect principal must be dual-controlled")
+        if not self.dept or len(self.dept) > 128:
+            raise ValueError("uncertain effect department invalid")
+
+    @property
+    def actor_name(self) -> str:
+        return f"system_resend:{self.resolution_id}"
+
+    @property
+    def subject_kind(self) -> Literal["system"]:
+        return "system"
+
+    @property
+    def actor_account_id(self) -> int:
+        return self.confirmer_account_id
+
+    @property
+    def actor_identity_id(self) -> None:
+        return None
+
+    @property
+    def actor_app_id(self) -> None:
+        return None
+
+    @property
+    def account_id(self) -> int:
+        return self.confirmer_account_id
+
+
+type ActorPrincipal = SecurityPrincipal | ApplicationPrincipal | UncertainEffectPrincipal
 
 
 @dataclass(frozen=True, slots=True)

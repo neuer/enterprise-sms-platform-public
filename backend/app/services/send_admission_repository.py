@@ -13,6 +13,14 @@ from app.services.send_admission import SendAdmissionFacts
 from app.settings import Settings, get_settings
 
 
+class AdmissionControlConflict(RuntimeError):
+    """CAS 败者读到新鲜胜者；不等于控制面不可用。"""
+
+    def __init__(self, winner: dict[str, Any]) -> None:
+        self.winner = winner
+        super().__init__("admission control conflict")
+
+
 class SqlSendAdmissionRepository:
     """只读积压聚合 + 状态变化写入 alert_log；不读手机号、正文或 broker。"""
 
@@ -109,7 +117,8 @@ class SqlSendAdmissionRepository:
                 await connection.execute(
                     text(
                         """
-                        SELECT state, reason_code, state_epoch, hold_until, valid_until
+                        SELECT state, reason_code, state_epoch, hold_until,
+                               valid_until, now() AS db_now
                         FROM send_admission_state WHERE scope='send'
                         """
                     )
@@ -124,7 +133,7 @@ class SqlSendAdmissionRepository:
         reason: str,
         hold_until: Any,
         epoch: int,
-    ) -> None:
+    ) -> dict[str, Any]:
         engine = self._engine()
         async with engine.begin() as connection:
             updated = await connection.execute(
@@ -140,13 +149,49 @@ class SqlSendAdmissionRepository:
                     ON CONFLICT (scope) DO UPDATE SET
                       state=EXCLUDED.state,
                       reason_code=EXCLUDED.reason_code,
-                      state_epoch=send_admission_state.state_epoch + 1,
+                      state_epoch=CASE
+                        WHEN send_admission_state.state IS DISTINCT FROM EXCLUDED.state
+                          OR send_admission_state.reason_code
+                             IS DISTINCT FROM EXCLUDED.reason_code
+                          OR send_admission_state.hold_until
+                             IS DISTINCT FROM EXCLUDED.hold_until
+                        THEN send_admission_state.state_epoch + 1
+                        ELSE send_admission_state.state_epoch
+                      END,
                       hold_until=EXCLUDED.hold_until,
                       valid_until=EXCLUDED.valid_until,
                       observed_at=now(),
                       updated_at=now()
-                    WHERE send_admission_state.state_epoch = :epoch
-                       OR send_admission_state.valid_until < now()
+                    WHERE (
+                      send_admission_state.valid_until < now()
+                      OR send_admission_state.state_epoch = :epoch
+                    )
+                    AND (
+                      send_admission_state.valid_until < now()
+                      OR (
+                        send_admission_state.state
+                          IS NOT DISTINCT FROM EXCLUDED.state
+                        AND send_admission_state.reason_code
+                          IS NOT DISTINCT FROM EXCLUDED.reason_code
+                        AND send_admission_state.hold_until
+                          IS NOT DISTINCT FROM EXCLUDED.hold_until
+                      )
+                      OR (
+                        CASE send_admission_state.state
+                          WHEN 'closed' THEN 2
+                          WHEN 'degraded' THEN 1
+                          ELSE 0
+                        END
+                        <=
+                        CASE EXCLUDED.state
+                          WHEN 'closed' THEN 2
+                          WHEN 'degraded' THEN 1
+                          ELSE 0
+                        END
+                      )
+                    )
+                    RETURNING state, reason_code, state_epoch, hold_until,
+                              valid_until, now() AS db_now
                     """
                 ),
                 {
@@ -156,8 +201,27 @@ class SqlSendAdmissionRepository:
                     "hold_until": hold_until,
                 },
             )
-            if int(updated.rowcount or 0) < 1:
-                raise RuntimeError("admission epoch fencing lost")
+            row = updated.mappings().one_or_none()
+            if row is not None:
+                saved = dict(row)
+                saved["outcome"] = "saved"
+                return saved
+            winner_row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT state, reason_code, state_epoch, hold_until,
+                               valid_until, now() AS db_now
+                        FROM send_admission_state WHERE scope='send'
+                        """
+                    )
+                )
+            ).mappings().one_or_none()
+        if winner_row is None:
+            raise RuntimeError("admission control state missing after conflict")
+        winner = dict(winner_row)
+        winner["outcome"] = "adopted"
+        raise AdmissionControlConflict(winner)
 
     async def record_transition(
         self,

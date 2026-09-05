@@ -17,8 +17,9 @@ def test_weighted_cost_lua_uses_fixed_time_buckets() -> None:
     assert "ZADD" not in WEIGHTED_WINDOW_LUA
     assert "HGETALL" not in WEIGHTED_WINDOW_LUA
     assert "HINCRBY" in WEIGHTED_WINDOW_LUA
-    assert "for offset = 0, window - 1" in WEIGHTED_WINDOW_LUA
-    assert "tonumber(ARGV[2])" in WEIGHTED_WINDOW_LUA
+    assert "redis.call('TIME')" in WEIGHTED_WINDOW_LUA
+    assert "for slot = 0, 59" in WEIGHTED_WINDOW_LUA
+    assert "last_epoch" in WEIGHTED_WINDOW_LUA
 
 
 @pytest.mark.asyncio
@@ -37,8 +38,8 @@ async def test_weighted_cost_keys_stay_under_control_acl_prefix() -> None:
     )
     keys = redis.calls[0][2:4]
     assert keys == (
-        "ratelimit:app:7:recipients:buckets",
-        "ratelimit:app:7:segments:buckets",
+        "ratelimit:app:7:recipients:v2",
+        "ratelimit:app:7:segments:v2",
     )
 
 
@@ -64,6 +65,7 @@ async def test_application_sliding_window_uses_app_key_and_atomic_lua() -> None:
     call = redis.calls[0]
     assert call[1:3] == (1, "ratelimit:app:7")
     assert call[-2:] == ("60", "request-1")
+    assert "redis.call('TIME')" in call[0]
 
 
 @pytest.mark.asyncio
@@ -81,10 +83,10 @@ class WeightedRedis:
             return 1
         recipient_key = str(args[0])
         segment_key = str(args[1])
-        recipient_limit = int(args[4])
-        recipient_weight = int(args[5])
-        segment_limit = int(args[6])
-        segment_weight = int(args[7])
+        recipient_limit = int(args[2])
+        recipient_weight = int(args[3])
+        segment_limit = int(args[4])
+        segment_weight = int(args[5])
         next_recipients = self.totals.get(recipient_key, 0) + recipient_weight
         next_segments = self.totals.get(segment_key, 0) + segment_weight
         if next_recipients > recipient_limit or next_segments > segment_limit:

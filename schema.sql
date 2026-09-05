@@ -1,5 +1,14 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.82  2026-09-04
+-- v1.6.82：幂等 Claim 以 PostgreSQL generation 为权威围栏，Redis 只保存
+--          token:fingerprint:generation 精确载荷。
+-- v1.6.81  2026-09-04
+-- v1.6.81：sms_vendor_attempt 改为每个 generation 一行，invoking 后禁止
+--          自动切换；UNIQUE(chunk_id, generation) 保证跨任务单调。
+-- v1.6.80  2026-09-04
+-- v1.6.80：send_inflight_reservation 补齐 batch_bound/materialize/release
+--          与批次指针，从活跃批次重建在途余额。
 -- v1.6.79  2026-09-04
 -- v1.6.79：认证专项第二轮：锁定/封禁审计使用 sms_auth；日常改密增加
 --          单调 credential_version 与安全版本 CAS。
@@ -612,6 +621,21 @@ CREATE TABLE idempotency_record (
 );
 CREATE INDEX idx_idem_expire ON idempotency_record(expires_at);
 
+CREATE TABLE idempotency_claim (
+    id           BIGSERIAL PRIMARY KEY,
+    scope_kind   VARCHAR(16)  NOT NULL,
+    scope_id     VARCHAR(64)  NOT NULL,
+    biz_id       VARCHAR(32)  NOT NULL,
+    token        CHAR(32)     NOT NULL,
+    fingerprint  VARCHAR(64)  NOT NULL DEFAULT '',
+    generation   INTEGER      NOT NULL CHECK (generation >= 1),
+    expires_at   TIMESTAMPTZ  NOT NULL,
+    created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    CONSTRAINT uk_idempotency_claim_scope UNIQUE (scope_kind, scope_id, biz_id)
+);
+CREATE INDEX idx_idempotency_claim_expire ON idempotency_claim(expires_at);
+
 CREATE TABLE sms_chunk (
     id             BIGSERIAL PRIMARY KEY,
     batch_id       BIGINT      NOT NULL REFERENCES sms_batch(id),
@@ -717,11 +741,27 @@ CREATE TABLE send_inflight_reservation (
     app_id BIGINT NOT NULL REFERENCES app(id) ON DELETE RESTRICT,
     batch_id BIGINT UNIQUE REFERENCES sms_batch(id),
     reserved_chunks INTEGER NOT NULL CHECK (reserved_chunks >= 1),
-    state VARCHAR(16) NOT NULL DEFAULT 'reserved'
-      CHECK (state IN ('reserved','materialized','released')),
+    materialized_chunks INTEGER,
+    state VARCHAR(16) NOT NULL DEFAULT 'reserved',
+    generation INTEGER NOT NULL DEFAULT 1,
+    CONSTRAINT send_inflight_reservation_state_check
+      CHECK (state IN ('reserved','batch_bound','materialized','released')),
+    CONSTRAINT ck_send_inflight_reservation_generation CHECK (generation >= 1),
+    CONSTRAINT ck_send_inflight_materialized_chunks
+      CHECK (materialized_chunks IS NULL OR materialized_chunks >= 0),
+    expires_at TIMESTAMPTZ,
+    release_reason VARCHAR(32),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    released_at TIMESTAMPTZ
+    bound_at TIMESTAMPTZ,
+    materialized_at TIMESTAMPTZ,
+    released_at TIMESTAMPTZ,
+    CONSTRAINT ck_inflight_released_pair CHECK (
+      (state = 'released') = (released_at IS NOT NULL AND release_reason IS NOT NULL)
+    )
 );
+CREATE INDEX idx_send_inflight_reservation_active
+    ON send_inflight_reservation(app_id, state, expires_at)
+    WHERE state <> 'released';
 CREATE TABLE send_admission_state (
     scope VARCHAR(16) PRIMARY KEY,
     state VARCHAR(16) NOT NULL CHECK (state IN ('open','degraded','closed')),
@@ -752,18 +792,27 @@ CREATE TABLE sms_vendor_attempt (
                        CHECK (vendor_id ~ '^[a-z][a-z0-9_]{0,31}$'),
     generation         INTEGER     NOT NULL CHECK (generation >= 1),
     outcome            VARCHAR(24) NOT NULL
+                       CONSTRAINT sms_vendor_attempt_outcome_check
                        CHECK (outcome IN (
                          'not_invoked','rejected','submitted','uncertain','failed',
-                         'retry_scheduled','delayed','paused','stale'
+                         'retry_scheduled','delayed','paused','stale',
+                         'invoking','cancelled_before_invoke'
                        )),
+    adapter_id         VARCHAR(32) NOT NULL DEFAULT 'zhihui'
+                       CONSTRAINT ck_sms_vendor_attempt_adapter_id
+                       CHECK (adapter_id ~ '^[a-z][a-z0-9_]{0,31}$'),
+    routing_reason     VARCHAR(64),
     safe_to_failover   BOOLEAN     NOT NULL DEFAULT FALSE,
     vendor_code        INTEGER,
+    invoke_started_at  TIMESTAMPTZ,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (chunk_id, vendor_id, generation)
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uk_sms_vendor_attempt_generation UNIQUE (chunk_id, generation),
+    CONSTRAINT uk_sms_vendor_attempt_vendor_generation UNIQUE (chunk_id, vendor_id, generation)
 );
 CREATE UNIQUE INDEX uk_sms_vendor_attempt_irreversible
     ON sms_vendor_attempt (chunk_id)
-    WHERE outcome IN ('submitted','uncertain');
+    WHERE outcome IN ('submitted','uncertain','invoking');
 CREATE INDEX idx_sms_vendor_attempt_chunk
     ON sms_vendor_attempt (chunk_id, created_at DESC);
 
@@ -2009,6 +2058,11 @@ ALTER TABLE sms_batch ADD COLUMN usage_reservation_id UUID
 CREATE UNIQUE INDEX uk_sms_batch_usage_reservation
     ON sms_batch(usage_reservation_id)
     WHERE usage_reservation_id IS NOT NULL;
+ALTER TABLE sms_batch ADD COLUMN send_inflight_reservation_id BIGINT
+    REFERENCES send_inflight_reservation(id) ON DELETE RESTRICT;
+CREATE UNIQUE INDEX uk_sms_batch_send_inflight_reservation
+    ON sms_batch(send_inflight_reservation_id)
+    WHERE send_inflight_reservation_id IS NOT NULL;
 
 -- ─────────────── 统计 ───────────────
 CREATE TABLE stat_daily (
@@ -2598,7 +2652,8 @@ TO sms_auth;
 
 -- API 消息受理、管理页面与运行控制；账号表写入仍只属于 sms_auth。
 GRANT SELECT ON
-    app, dept_quota, sms_batch, sms_resend_action, idempotency_record, sms_chunk, sms_message,
+    app, dept_quota, sms_batch, sms_resend_action, idempotency_record, idempotency_claim,
+    sms_chunk, sms_message,
     sms_reply, raw_vendor_log, report_event, report_event_projection, reply_event,
     unmatched_report, job_run, import_task, import_phone, approval, sms_template,
     sms_sign, blacklist, blacklist_hmac_alias, sensitive_word, callback_report_event, callback_task,
@@ -2617,7 +2672,7 @@ GRANT SELECT ON
     send_admission_state, send_runtime_heartbeat
 TO sms_accept;
 GRANT INSERT, UPDATE, DELETE ON
-    app, dept_quota, sms_batch, idempotency_record, sms_message,
+    app, dept_quota, sms_batch, idempotency_record, idempotency_claim, sms_message,
     import_task, import_phone, approval, sms_template, sms_sign, blacklist,
     blacklist_hmac_alias,
     sensitive_word, usage_reservation, usage_frequency_subject,
@@ -2652,6 +2707,7 @@ GRANT INSERT ON worker_lease_event TO sms_accept;
 GRANT USAGE, SELECT ON SEQUENCE worker_lease_event_id_seq TO sms_accept;
 GRANT USAGE, SELECT ON SEQUENCE
     app_id_seq, sms_batch_id_seq, idempotency_record_id_seq,
+    idempotency_claim_id_seq,
     sms_message_id_seq, import_task_id_seq,
     import_phone_id_seq, approval_id_seq, sms_template_id_seq, sms_sign_id_seq,
     sensitive_word_id_seq, audit_log_id_seq,

@@ -494,6 +494,9 @@ async def test_prepare_chunks_plans_ten_thousand_numbers_without_decrypt(
         results.append(FakeResult())
         results.append(FakeResult())
     results.append(FakeResult())
+    results.append(FakeResult(scalar=20))
+    results.append(FakeResult(scalar=200))
+    results.append(FakeResult())
     results.extend(FakeResult() for _ in range(20))
     connection = SequenceConnection(results)
     store = chunk_store()
@@ -1188,6 +1191,7 @@ async def test_mark_failed_aggregates_batch_and_only_enqueues_terminal_callback(
             FakeResult(rowcount=1),
             FakeResult(),
             FakeResult({"id": 11, "status": aggregate_status}),
+            FakeResult(),
         ]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
@@ -1299,6 +1303,7 @@ async def test_guard_denial_fails_unclaimed_chunk_without_budget_attempt(
             FakeResult(scalar=11),
             FakeResult(),
             FakeResult({"id": 11, "status": "completed"}),
+            FakeResult(),
         ]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
