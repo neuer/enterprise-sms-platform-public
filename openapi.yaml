@@ -24,6 +24,7 @@ info:
     - v1.6.40：安全日报管理员页面配置 Resend Key、收件人与启停状态，API 同步独立 mailer 配置
     - v1.6.43：管理员可将本地待审核签名与厂商已有签名 ID 精确关联；realtime worker 仅调用 GetSignState 复核，不重复 BindSign
     - v1.6.45：模板为全局资源，不按部门隔离；发送接口的 template_id 始终是平台模板 ID，不能填写厂商编号
+    - v1.6.88：AD 登录签发绑定权威会话策略 revision；策略不可用时 503 AUTH_SESSION_UNAVAILABLE，不写 refresh Cookie
 
 servers:
   - url: https://sms.example.com

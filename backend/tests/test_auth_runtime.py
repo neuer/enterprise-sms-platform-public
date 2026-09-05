@@ -865,11 +865,13 @@ async def test_daily_password_change_rejects_ad_before_password_provider_work() 
     )
     auth = FakeAuthService(identity)
     users = FakeUserRepository(value)
+    store = FakeKeyValue()
     tokens = JwtService(
         SECRET,
-        FakeKeyValue(),
+        store,
         security_session_loader=users.load_security_session,
     )
+    await tokens.publish_ad_session_policy(480, version=1)
     service = AuthFacade(auth, users, tokens, FakeHasher())
     pair = await tokens.issue_pair(
         JwtClaims(8, 18, "ad", "admin", "管理员", "平台部", "admin", 3),

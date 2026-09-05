@@ -350,10 +350,12 @@ def verify_auth_session_policy_privileges(container: str, database: str) -> None
            AND NOT has_table_privilege('sms_scheduler','auth_session_policy','UPDATE'))::int,
           has_column_privilege(
             'sms_metrics','auth_session_policy','revision','SELECT')::int,
+          has_column_privilege(
+            'sms_metrics','auth_session_policy','min_accepted_policy_revision','SELECT')::int,
           (NOT has_table_privilege('sms_metrics','auth_session_policy','UPDATE'))::int
         """,
     ).strip()
-    if result != "1|1|1|1|1|1|1|1|1":
+    if result != "1|1|1|1|1|1|1|1|1|1":
         raise RuntimeError("auth session policy privileges are unsafe")
 
 

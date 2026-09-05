@@ -42,6 +42,7 @@ from app.core.auth.service import (
     RateLimited,
     RedisKeyValue,
 )
+from app.core.auth.session_policy_sync import AlignedAuthSessionPolicyLoader
 from app.core.auth.users import (
     AuthContextChanged,
     PasswordChangeAuthorization,
@@ -54,7 +55,6 @@ from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 from app.core.errors import ApiError
 from app.services.auth_provider import AuthProviderService, ProviderSummary
 from app.services.auth_provider_repository import SqlAuthProviderRepository
-from app.services.runtime_policy import SqlRuntimePolicyLoader
 from app.services.user_management import LastAdminProtected
 from app.settings import Settings, get_settings
 
@@ -505,9 +505,7 @@ class AuthFacade:
                 None,
             )
         try:
-            authorization = await self.reauthenticate_current(
-                claims, current_password, ip
-            )
+            authorization = await self.reauthenticate_current(claims, current_password, ip)
         except ApiError as error:
             if error.code == "STEP_UP_REQUIRED":
                 raise ApiError(401, "UNAUTHORIZED", "当前密码错误", None) from None
@@ -704,7 +702,6 @@ def create_auth_facade(settings: Settings) -> AuthFacade:
         local_repository=users,
         local_passwords=passwords,
     )
-    policy_loader = SqlRuntimePolicyLoader(settings)
     guard_policy = SqlAuthGuardPolicyLoader(settings)
     auth = AuthService(
         providers,
@@ -714,12 +711,13 @@ def create_auth_facade(settings: Settings) -> AuthFacade:
             security_events=SqlAuthSecurityEventRepository(settings),
         ),
     )
+    session_policy = AlignedAuthSessionPolicyLoader(store, settings=settings)
     tokens = JwtService(
         settings.credential("jwt_secret"),
         store,
         accept_legacy=settings.jwt_accept_legacy,
         security_session_loader=users.load_security_session,
-        runtime_policy_loader=policy_loader.load,
+        session_policy_loader=session_policy.load,
     )
     return AuthFacade(
         auth,

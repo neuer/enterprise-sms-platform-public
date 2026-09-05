@@ -50,6 +50,11 @@ _SESSION_POLICY_CONFLICT = {"stale": 0, "conflict": 0, "ahead": 0, "mismatch": 0
 _SESSION_POLICY_REVISION = {"postgres": 0, "redis": 0}
 _SESSION_POLICY_SNAPSHOT_AGE = 0.0
 _SESSION_POLICY_LAG = 0.0
+_TOKEN_ISSUE_POLICY_REVISION = {"ad": 0, "local": 0}
+_TOKEN_ISSUE_POLICY_LOAD = {"success": 0, "unavailable": 0, "invalid": 0}
+_TOKEN_ISSUE_POLICY_MISMATCH = {"revision": 0, "deadline": 0}
+_TOKEN_ISSUE_DENIED = {"policy_unavailable": 0}
+_LEGACY_POLICY_FALLBACK = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +81,11 @@ class AuthObservabilitySnapshot:
     session_policy_conflict: tuple[tuple[str, int], ...] = ()
     session_policy_snapshot_age_seconds: float = 0.0
     session_policy_publish_lag_seconds: float = 0.0
+    token_issue_policy_revision: tuple[tuple[str, int], ...] = ()
+    token_issue_policy_load: tuple[tuple[str, int], ...] = ()
+    token_issue_policy_mismatch: tuple[tuple[str, int], ...] = ()
+    token_issue_denied: tuple[tuple[str, int], ...] = ()
+    legacy_policy_fallback: int = 0
 
 
 def observe_transition_created(action: TransitionAction) -> None:
@@ -208,6 +218,30 @@ def observe_session_policy_snapshot_age(
         _SESSION_POLICY_SNAPSHOT_AGE = max(0.0, current - float(updated_at_epoch))
 
 
+def observe_token_issue_policy_revision(provider: str, revision: int) -> None:
+    key = provider if provider in _TOKEN_ISSUE_POLICY_REVISION else "ad"
+    with _LOCK:
+        _TOKEN_ISSUE_POLICY_REVISION[key] = max(0, revision)
+
+
+def observe_token_issue_policy_load(outcome: str) -> None:
+    key = outcome if outcome in _TOKEN_ISSUE_POLICY_LOAD else "unavailable"
+    with _LOCK:
+        _TOKEN_ISSUE_POLICY_LOAD[key] += 1
+
+
+def observe_token_issue_policy_mismatch(mismatch_type: str) -> None:
+    key = mismatch_type if mismatch_type in _TOKEN_ISSUE_POLICY_MISMATCH else "revision"
+    with _LOCK:
+        _TOKEN_ISSUE_POLICY_MISMATCH[key] += 1
+
+
+def observe_token_issue_denied(reason: str) -> None:
+    key = reason if reason in _TOKEN_ISSUE_DENIED else "policy_unavailable"
+    with _LOCK:
+        _TOKEN_ISSUE_DENIED[key] += 1
+
+
 def auth_observability_snapshot() -> AuthObservabilitySnapshot:
     with _LOCK:
         return AuthObservabilitySnapshot(
@@ -241,6 +275,11 @@ def auth_observability_snapshot() -> AuthObservabilitySnapshot:
             tuple(_SESSION_POLICY_CONFLICT.items()),
             _SESSION_POLICY_SNAPSHOT_AGE,
             _SESSION_POLICY_LAG,
+            tuple(_TOKEN_ISSUE_POLICY_REVISION.items()),
+            tuple(_TOKEN_ISSUE_POLICY_LOAD.items()),
+            tuple(_TOKEN_ISSUE_POLICY_MISMATCH.items()),
+            tuple(_TOKEN_ISSUE_DENIED.items()),
+            _LEGACY_POLICY_FALLBACK,
         )
 
 
@@ -250,6 +289,7 @@ def reset_auth_observability() -> None:
     global _POLICY_HIT, _POLICY_MISS, _POLICY_FAILURE, _GUARD_DB_QUERIES, _POLICY_AGE
     global _PENDING, _OLDEST_PENDING
     global _SESSION_POLICY_SNAPSHOT_AGE, _SESSION_POLICY_LAG
+    global _LEGACY_POLICY_FALLBACK
     with _LOCK:
         for action in _ACTIONS:
             _CREATED[action] = 0
@@ -281,3 +321,12 @@ def reset_auth_observability() -> None:
         _SESSION_POLICY_REVISION["redis"] = 0
         _SESSION_POLICY_SNAPSHOT_AGE = 0.0
         _SESSION_POLICY_LAG = 0.0
+        for key in _TOKEN_ISSUE_POLICY_REVISION:
+            _TOKEN_ISSUE_POLICY_REVISION[key] = 0
+        for key in _TOKEN_ISSUE_POLICY_LOAD:
+            _TOKEN_ISSUE_POLICY_LOAD[key] = 0
+        for key in _TOKEN_ISSUE_POLICY_MISMATCH:
+            _TOKEN_ISSUE_POLICY_MISMATCH[key] = 0
+        for key in _TOKEN_ISSUE_DENIED:
+            _TOKEN_ISSUE_DENIED[key] = 0
+        _LEGACY_POLICY_FALLBACK = 0

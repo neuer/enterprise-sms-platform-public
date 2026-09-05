@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.88  2026-09-05
+-- v1.6.88：AD Token 签发绑定 auth_session_policy.revision，最低接受世代
+--          min_accepted_policy_revision 拒绝修复前回退 480/revision=1 的会话。
 -- v1.6.87  2026-09-05
 -- v1.6.87：send_inflight_balance = SUM(active reservations)；明细与聚合必须
 --          同事务更新，COMMIT 时由延迟约束触发器校验，对账按公式修复漂移。
@@ -2494,17 +2497,24 @@ CHECK (
   OR value LIKE 'sealed:v1:%'
 );
 
--- v1.6.83：AD 会话策略权威行。revision 只在管理员配置事务内递增。
+-- v1.6.83 / v1.6.88：AD 会话策略权威行。revision 只在管理员配置事务内递增；
+-- min_accepted_policy_revision 只升不降，用于作废修复前错误签发世代。
 CREATE TABLE auth_session_policy (
     id SMALLINT PRIMARY KEY CHECK (id = 1),
     revision BIGINT NOT NULL CHECK (revision >= 1),
     ad_session_max_age_minutes INTEGER NOT NULL
         CHECK (ad_session_max_age_minutes BETWEEN 15 AND 10080),
+    min_accepted_policy_revision BIGINT NOT NULL DEFAULT 1,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_by VARCHAR(64)
+    updated_by VARCHAR(64),
+    CONSTRAINT ck_auth_session_policy_min_accepted
+        CHECK (min_accepted_policy_revision >= 1
+           AND min_accepted_policy_revision <= revision)
 );
-INSERT INTO auth_session_policy (id, revision, ad_session_max_age_minutes)
-SELECT 1, 1, CAST(value AS INTEGER)
+INSERT INTO auth_session_policy (
+    id, revision, ad_session_max_age_minutes, min_accepted_policy_revision
+)
+SELECT 1, 1, CAST(value AS INTEGER), 1
 FROM sys_config
 WHERE key = 'ad_session_max_age_minutes';
 
@@ -3099,7 +3109,8 @@ GRANT SELECT (queue, state, created_at)
     ON outbox_event TO sms_metrics;
 GRANT SELECT (outcome, created_at)
     ON sms_vendor_attempt TO sms_metrics;
-GRANT SELECT (id, revision, ad_session_max_age_minutes, updated_at)
+GRANT SELECT (id, revision, ad_session_max_age_minutes, updated_at,
+              min_accepted_policy_revision)
     ON auth_session_policy TO sms_metrics;
 GRANT SELECT (app_id, reserved_chunks, conservation_blocked_at)
     ON send_inflight_balance TO sms_metrics;

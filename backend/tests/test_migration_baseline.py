@@ -1001,6 +1001,23 @@ def test_idempotency_claim_lease_lifecycle_is_expand_only() -> None:
     assert source.split("def downgrade")[0].count("UPDATE ") == 0
 
 
+def test_auth_issue_policy_generation_revokes_pre_fix_ad_sessions() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0102_auth_issue_policy_generation.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.88：" in schema
+    for contract in (schema, source):
+        assert "min_accepted_policy_revision" in contract
+        assert "ck_auth_session_policy_min_accepted" in contract
+    assert 'revision = "0102_auth_issue_policy_generation"' in source
+    assert 'down_revision = "0101_inflight_balance_conservation"' in source
+    assert "security_version = ua.security_version + 1" in source
+    assert "ap.code = 'ad'" in source
+    assert "DELETE FROM" not in source
+    assert "return" in source.split("def downgrade", 1)[1]
+
+
 def test_auth_session_policy_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0097_auth_session_policy.py"
