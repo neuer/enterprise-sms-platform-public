@@ -1438,6 +1438,11 @@
   `reserved_chunks >= COUNT(occupying chunks)`，且同一 parent/generation
   的 child 数只能是 0 或 2。占用数高于 materialized reservation 时只扩不缩。
   过程计数器不新增 Prometheus 族（D020/D102–D105），事实在 chunk/reservation 行上。
+  0001 装入当前 schema 后，0065 回填 sms_chunk 必须先
+  `SET CONSTRAINTS ALL IMMEDIATE` 再 ALTER（同 0100）。
+  0001 装入当前 schema 的占用延迟触发器后，0065 回填与 0102 ALTER `sms_chunk`
+  之前必须 `SET CONSTRAINTS ALL IMMEDIATE`，否则同事务 ADD CONSTRAINT 会碰到
+  pending trigger events。禁止用 `transaction_per_migration` 绕过。
 - 原因：只拆分 chunk 不扩 reservation 会让真实在途超过 `max_in_flight_chunks`。
 - 影响：schema v1.6.88/0102、`send_inflight.py`、`send_repository.py`、
   `send.py`、`deploy/failover.md`。

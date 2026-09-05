@@ -11,6 +11,9 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # 0001 已装入占用延迟触发器时，同事务里对 sms_chunk 的回填会留下
+    # pending trigger events；先立即校验再 ALTER。
+    op.execute("SET CONSTRAINTS ALL IMMEDIATE")
     op.execute(
         """
         ALTER TABLE sms_chunk

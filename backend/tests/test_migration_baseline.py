@@ -999,6 +999,7 @@ def test_inflight_split_capacity_is_expand_only() -> None:
         assert "child_ordinal" in contract
     assert 'revision = "0102_inflight_split_capacity"' in source
     assert 'down_revision = "0101_inflight_balance_conservation"' in source
+    assert "SET CONSTRAINTS ALL IMMEDIATE" in source
     for contract in (schema, source):
         assert "check_send_inflight_chunk_occupancy" in contract
         assert "check_sms_chunk_split_children_complete" in contract
@@ -1489,6 +1490,7 @@ def test_round4_migration_pseudonymizes_vendor_metadata_and_guards_raw_index(
     ):
         assert fragment in schema
         assert fragment in source
+    assert "SET CONSTRAINTS ALL IMMEDIATE" in source
 
     spec = importlib.util.spec_from_file_location("round4_revision", revision)
     assert spec is not None and spec.loader is not None
