@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+
 from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
 from app.services.outbox import OutboxEventSpec
 from app.services.pipeline import SendRequest
@@ -515,8 +516,9 @@ def test_subject_errors_are_manual_and_unavailable_is_retryable() -> None:
 
 
 def test_http_send_model_rejects_usage_subject() -> None:
-    from app.api.messages import SendRequestModel
     from pydantic import ValidationError
+
+    from app.api.messages import SendRequestModel
 
     with pytest.raises(ValidationError):
         SendRequestModel.model_validate(

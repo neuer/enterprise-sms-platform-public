@@ -270,8 +270,8 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
             continue
         channel_label = channel if channel in UNCERTAIN_EFFECT_CHANNELS else "other"
         result_label = result if result in UNCERTAIN_EFFECT_RESULTS else "other"
-        key = (channel_label, action, result_label)
-        effect_values[key] = effect_values.get(key, 0.0) + float(count)
+        effect_key = (channel_label, action, result_label)
+        effect_values[effect_key] = effect_values.get(effect_key, 0.0) + float(count)
     for channel in UNCERTAIN_EFFECT_CHANNELS:
         for action in UNCERTAIN_EFFECT_ACTIONS:
             for result in UNCERTAIN_EFFECT_RESULTS:

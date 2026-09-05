@@ -9,6 +9,11 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from redis.asyncio import Redis
+from sqlalchemy import event, text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import create_async_engine
+
 from app.core.apikey import SqlApiKeyRepository
 from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
 from app.core.auth.principal_context import audit_principal_scope
@@ -24,11 +29,7 @@ from app.services.pipeline_repository import SqlPipelineStore
 from app.services.uncertain_resolution import UncertainResolutionService
 from app.services.usage_ledger import UsageLedgerService
 from app.services.usage_subject import SYSTEM_UNCERTAIN_RESEND_APP_NAME
-from redis.asyncio import Redis
 from scripts_support.maintain_partitions import maintain
-from sqlalchemy import event, text
-from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import create_async_engine
 from tests.integration.test_usage_ledger_postgres import ProjectionRedis
 
 pytestmark = pytest.mark.skipif(

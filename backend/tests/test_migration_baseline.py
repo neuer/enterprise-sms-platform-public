@@ -10,8 +10,9 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from app.services.crypto import CryptoService, EncryptionContext
 from sqlalchemy.schema import ExecutableDDLElement
+
+from app.services.crypto import CryptoService, EncryptionContext
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"

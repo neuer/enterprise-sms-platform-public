@@ -614,9 +614,13 @@ async def _load_resend_context(
     """锁定已批准 resolution 后构造不可伪造的内部重发上下文。"""
 
     await _require_active_dual_control(connection, current)
+    confirmer_id = current.confirmer_account_id
+    if confirmer_id is None:
+        raise UncertainResolutionConflict("重发缺少确认人")
     source_dept = _resolution_source_dept(current)
     source_channel = str(current.source_channel or "")
     source_category = str(current.source_category or "")
+    source_app_id: int | None
     if source_category not in {"verify", "notice", "market"}:
         raise UncertainResolutionConflict("源类别无法恢复")
     if source_channel == "api":
@@ -685,7 +689,7 @@ async def _load_resend_context(
             resolution_id=current.id,
             effect_generation=current.effect_generation,
             proposer_account_id=current.proposer_account_id,
-            confirmer_account_id=int(current.confirmer_account_id),
+            confirmer_account_id=int(confirmer_id),
             source_batch_id=current.batch_id,
             source_chunk_id=current.chunk_id,
             source_channel=source_channel,

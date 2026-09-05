@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
+
 from app.services.metrics import MetricsFacts
 from app.services.metrics_repository import SqlMetricsRepository
 
