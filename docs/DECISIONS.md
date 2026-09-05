@@ -1485,3 +1485,15 @@
   双人审批后的 Web 重发无法创建 child。
 - 影响：schema v1.6.90/0104、`usage_subject.py`、`uncertain_resolution.py`、
   `pipeline.py`、`usage_ledger.py`、OpenAPI 与运维页说明。
+
+## D109 Admission 心跳按发送 lane 隔离，禁止汇总成全局 CLOSED
+
+- 决策：`SendAdmissionFacts` 拆成 `realtime_heartbeat_stale` /
+  `bulk_heartbeat_stale` / `dispatcher_heartbeat_stale`。全局容量只把
+  dispatcher 缺失或两条发送 lane 同时缺失视为 CLOSED。单 lane 缺失留在
+  同一快照的 facts 上，`authorize` 时再叠加，避免二次查库时间撕裂。
+  `/readyz` 不因单 lane 缺失摘掉 API。
+- 原因：bulk worker 单独故障时不应关掉验证码/通知；realtime 故障也不应
+  无关关闭健康的营销 lane。
+- 影响：`send_admission.py`、`send_admission_repository.py`、
+  `docs/runbooks/send-admission-lanes.md`。

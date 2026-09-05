@@ -66,17 +66,21 @@ class SqlSendAdmissionRepository:
                         uncertain_overdue,
                       (SELECT count(*) FROM callback_task
                        WHERE status='dead') callback_dead,
-                      (SELECT EXISTS (
-                         SELECT 1 FROM (
-                           VALUES ('send-realtime'),('send-bulk'),
-                                  ('outbox-dispatcher')
-                         ) AS required(component)
-                         WHERE NOT EXISTS (
-                           SELECT 1 FROM send_runtime_heartbeat h
-                           WHERE h.component=required.component
-                             AND h.lease_until >= now()
-                         )
-                       )) heartbeat_stale
+                      (SELECT NOT EXISTS (
+                         SELECT 1 FROM send_runtime_heartbeat h
+                         WHERE h.component='send-realtime'
+                           AND h.lease_until >= now()
+                       )) realtime_heartbeat_stale,
+                      (SELECT NOT EXISTS (
+                         SELECT 1 FROM send_runtime_heartbeat h
+                         WHERE h.component='send-bulk'
+                           AND h.lease_until >= now()
+                       )) bulk_heartbeat_stale,
+                      (SELECT NOT EXISTS (
+                         SELECT 1 FROM send_runtime_heartbeat h
+                         WHERE h.component='outbox-dispatcher'
+                           AND h.lease_until >= now()
+                       )) dispatcher_heartbeat_stale
                     """
                 )
             )
@@ -95,6 +99,7 @@ class SqlSendAdmissionRepository:
         if failures < 0:
             raise ValueError("vendor failure counter is invalid")
         oldest = row["outbox_oldest_age_s"]
+        enforce_heartbeat = bool(getattr(self.settings, "is_production", False))
         return SendAdmissionFacts(
             outbox_active=max(0, int(row["outbox_active"] or 0)),
             outbox_oldest_age_s=max(0, int(oldest or 0)),
@@ -104,9 +109,14 @@ class SqlSendAdmissionRepository:
             realtime_paused=bool(values[0]),
             bulk_paused=bool(values[1]),
             vendor_failures=failures,
-            heartbeat_stale=(
-                bool(getattr(self.settings, "is_production", False))
-                and int(row["heartbeat_stale"] or 0) > 0
+            realtime_heartbeat_stale=(
+                enforce_heartbeat and int(row["realtime_heartbeat_stale"] or 0) > 0
+            ),
+            bulk_heartbeat_stale=(
+                enforce_heartbeat and int(row["bulk_heartbeat_stale"] or 0) > 0
+            ),
+            dispatcher_heartbeat_stale=(
+                enforce_heartbeat and int(row["dispatcher_heartbeat_stale"] or 0) > 0
             ),
         )
 
@@ -240,6 +250,12 @@ class SqlSendAdmissionRepository:
             "degraded": "发送通道已降级",
             "open": "发送通道已恢复",
         }
+        reason_titles = {
+            "dispatcher_heartbeat_stale": "outbox dispatcher stale",
+            "send_lanes_heartbeat_stale": "send lanes heartbeat stale",
+            "realtime_heartbeat_stale": "realtime sender stale",
+            "bulk_heartbeat_stale": "bulk sender stale",
+        }
         engine = self._engine()
         async with engine.begin() as connection:
             await connection.execute(
@@ -260,7 +276,7 @@ class SqlSendAdmissionRepository:
                 ),
                 {
                     "level": level,
-                    "title": titles.get(state, "发送通道状态变化"),
+                    "title": reason_titles.get(reason, titles.get(state, "发送通道状态变化")),
                     "detail": json.dumps(
                         {
                             "previous": previous,
@@ -275,6 +291,9 @@ class SqlSendAdmissionRepository:
                             "realtime_paused": facts.realtime_paused,
                             "bulk_paused": facts.bulk_paused,
                             "vendor_failures": facts.vendor_failures,
+                            "realtime_heartbeat_stale": facts.realtime_heartbeat_stale,
+                            "bulk_heartbeat_stale": facts.bulk_heartbeat_stale,
+                            "dispatcher_heartbeat_stale": facts.dispatcher_heartbeat_stale,
                         },
                         ensure_ascii=False,
                         sort_keys=True,
