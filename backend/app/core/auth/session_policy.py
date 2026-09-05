@@ -231,7 +231,11 @@ def eval_memory_session_policy(
     """与 Lua 相同的内存语义，供测试 Fake Redis 复用。"""
 
     if "auth-session-policy-cas-v1" in script:
-        incoming = AuthSessionPolicy(int(args[1]), int(args[2]), int(args[3]))
+        incoming = AuthSessionPolicy(
+            int(_text(args[1])),
+            int(_text(args[2])),
+            int(_text(args[3])),
+        )
         key = str(args[0])
         current_raw = values.get(key)
         current = None

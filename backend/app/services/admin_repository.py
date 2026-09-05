@@ -203,6 +203,8 @@ class SqlAdminRepository:
                         for item in updates
                         if item.key == "ad_session_max_age_minutes"
                     )
+                    if minutes is None:
+                        raise InvalidAdminQuery("认证会话策略缺少最大认证年龄")
                     bumped = await connection.execute(
                         text(
                             """
