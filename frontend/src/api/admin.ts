@@ -1,6 +1,6 @@
 import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS, type UserRole } from "./auth"
 import type { VendorCredentialEnvelope, VendorSealSession } from "../lib/vendorSeal"
-import { apiRequest, authorizedFetch } from "./client"
+import { apiRequest, authorizedJsonResult } from "./client"
 import type { BillingPreview } from "./webMessages"
 
 export interface AuditItem {
@@ -292,24 +292,27 @@ async function vendorRequest<T>(
   init: RequestInit,
   timeoutMs?: number,
 ): Promise<T> {
-  const response = await authorizedFetch(
+  const result = await authorizedJsonResult<T>(
     `/api/v1/web/admin/vendor-test${path}`,
     init,
     timeoutMs,
   )
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as VendorApiErrorBody
+  if (!result.ok) {
+    const body = (result.body ?? {}) as VendorApiErrorBody
     throw new VendorRequestError(
-      response.status,
-      body.code || `HTTP_${response.status}`,
-      body.message || body.code || `请求失败（${response.status}）`,
+      result.status,
+      body.code || `HTTP_${result.status}`,
+      body.message || body.code || `请求失败（${result.status}）`,
     )
   }
-  const cacheControl = response.headers.get("cache-control")?.toLowerCase() || ""
+  const cacheControl = result.headers.get("cache-control")?.toLowerCase() || ""
   if (!cacheControl.split(",").some((value) => value.trim() === "no-store")) {
     throw new Error("真实联调响应缓存策略无效")
   }
-  return (await response.json()) as T
+  if (result.body == null) {
+    throw new VendorRequestError(result.status, "INVALID_JSON_RESPONSE", "响应不是有效 JSON")
+  }
+  return result.body as T
 }
 
 function jsonRequest(method: string, body?: unknown): RequestInit {
