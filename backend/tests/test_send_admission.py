@@ -1082,14 +1082,14 @@ async def test_recovery_budget_is_shared_and_bound_to_epoch() -> None:
 @pytest.mark.asyncio
 async def test_recovery_budget_fail_closes_when_control_plane_down() -> None:
     repo = RecoveryBudgetFacts(error=RuntimeError("control redis down"))
-    with pytest.raises(SendAdmissionUnavailable) as error:
+    with pytest.raises(SendAdmissionRejected) as error:
         await SendAdmissionGuard(repo).authorize(
             category="notice",
             channel="api",
             recipient_count=1,
             estimated_segments=1,
         )
-    assert error.value.reason == "snapshot_unavailable"
+    assert error.value.reason == "recovery_rate"
 
     class PersistOnly(FakeFacts):
         def __init__(self) -> None:
@@ -1183,7 +1183,7 @@ async def test_repository_recovery_budget_uses_epoch_key() -> None:
         )(),
         redis=BoomRedis(),
     )
-    with pytest.raises(SendAdmissionUnavailable):
+    with pytest.raises(RuntimeError, match="recovery budget control plane"):
         await boom.consume_recovery_budget(
             epoch=4,
             batches=1,

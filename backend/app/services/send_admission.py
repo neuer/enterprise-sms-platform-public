@@ -652,10 +652,8 @@ class SendAdmissionGuard:
                 segments=max(1, int(estimated_segments)),
                 limits=self.limits,
             )
-        except SendAdmissionUnavailable:
-            raise
         except Exception as exc:
-            raise SendAdmissionUnavailable() from exc
+            raise SendAdmissionRejected("degraded", "recovery_rate", 1) from exc
         if not allowed:
             raise SendAdmissionRejected("degraded", "recovery_rate", 1)
 
