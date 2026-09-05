@@ -33,9 +33,18 @@ def run_migrations_offline() -> None:
 
 
 def do_run_migrations(connection: Connection) -> None:
-    """在同步桥接连接上执行迁移。"""
+    """在同步桥接连接上执行迁移。
 
-    context.configure(connection=connection, target_metadata=target_metadata)
+    每条 revision 单独提交。0001 会装入当前 schema.sql 里的 DEFERRABLE
+    守恒触发器；若整列 upgrade 共一个事务，后续 revision 对
+    send_inflight_reservation 的 INSERT/ALTER 会碰到 pending trigger events。
+    """
+
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        transaction_per_migration=True,
+    )
     with context.begin_transaction():
         context.run_migrations()
 
