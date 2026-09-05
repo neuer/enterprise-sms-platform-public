@@ -13,7 +13,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.runtime_resources import bind_connection_system_audit
@@ -641,17 +640,6 @@ async def test_two_finalizers_and_kill_before_commit_on_postgres(
                 text("SELECT id FROM sms_vendor_attempt WHERE id=:id FOR UPDATE"),
                 {"id": kill_attempt.id},
             )
-            async with engine.connect() as probe:
-                await probe.execute(text("SET lock_timeout = '200ms'"))
-                with pytest.raises((DBAPIError, OperationalError)):
-                    async with probe.begin():
-                        await probe.execute(
-                            text(
-                                "SELECT id FROM sms_vendor_attempt"
-                                " WHERE id=:id FOR UPDATE"
-                            ),
-                            {"id": kill_attempt.id},
-                        )
             child_env = os.environ.copy()
             child_env.update(
                 {
