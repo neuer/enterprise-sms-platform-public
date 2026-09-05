@@ -103,6 +103,8 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     jobs = workflow["jobs"]
     assert set(jobs) == {
         "changes",
+        "backend-vendor-lint",
+        "backend-coverage",
         "backend",
         "frontend",
         "security",
@@ -169,7 +171,9 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         in changes["if"]
     )
 
-    backend_commands = job_commands(jobs["backend"])
+    vendor_lint_commands = job_commands(jobs["backend-vendor-lint"])
+    coverage_commands = job_commands(jobs["backend-coverage"])
+    backend_commands = "\n".join((vendor_lint_commands, coverage_commands))
     for command in (
         "scripts/local_test.sh prepare",
         "npm audit --prefix frontend --audit-level=high",
@@ -186,9 +190,49 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "--cov-append",
     ):
         assert command in backend_commands
-    assert jobs["backend"]["needs"] == "changes"
-    assert "needs.changes.outputs.backend == 'true'" in jobs["backend"]["if"]
-    for job_name in ("backend", "frontend", "security", "g2", "ci-gate"):
+    vendor_live_step = next(
+        step
+        for step in jobs["backend-vendor-lint"]["steps"]
+        if step.get("name") == "Verify controlled vendor-live safety"
+    )
+    assert vendor_live_step["env"] == {"SMS_SKIP_VENDOR_POSTGRES_RECOVERY": "1"}
+    assert "verify_vendor_postgres_recovery.sh" not in vendor_lint_commands
+    assert vendor_lint_commands.count("verify_vendor_live_test.sh") == 1
+    assert coverage_commands.count(
+        "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh"
+    ) == 1
+    assert coverage_commands.count("verify_vendor_postgres_recovery.sh") == 1
+    assert "pytest-xdist" not in backend_commands
+    assert "-n auto" not in backend_commands
+    assert jobs["backend-vendor-lint"]["needs"] == "changes"
+    assert jobs["backend-coverage"]["needs"] == "changes"
+    assert jobs["backend"]["needs"] == [
+        "changes",
+        "backend-vendor-lint",
+        "backend-coverage",
+    ]
+    assert jobs["backend"]["name"] == "backend"
+    for job_name in ("backend-vendor-lint", "backend-coverage"):
+        assert "needs.changes.outputs.backend == 'true'" in jobs[job_name]["if"]
+    for token in (
+        "!cancelled()",
+        "needs.changes.result == 'success'",
+        "needs.changes.outputs.backend == 'true'",
+    ):
+        assert token in jobs["backend"]["if"]
+    aggregator_commands = job_commands(jobs["backend"])
+    assert 'needs.backend-vendor-lint.result' in aggregator_commands
+    assert 'needs.backend-coverage.result' in aggregator_commands
+    assert "pytest -q" not in aggregator_commands
+    for job_name in (
+        "backend-vendor-lint",
+        "backend-coverage",
+        "backend",
+        "frontend",
+        "security",
+        "g2",
+        "ci-gate",
+    ):
         job_checkout = next(
             step
             for step in jobs[job_name]["steps"]
@@ -279,6 +323,11 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     source = CI_WORKFLOW.read_text(encoding="utf-8")
     assert "secrets." not in source
     assert "upload-artifact" not in source
+    assert "pytest-xdist" not in source
+    assert source.count("verify_vendor_postgres_recovery.sh") == 1
+    assert source.count(
+        "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh"
+    ) == 1
     assert "ref: ${{ needs.changes.outputs.candidate_sha }}" not in source
     assert "ref: ${{ steps.dispatch.outputs.candidate }}" not in source
 

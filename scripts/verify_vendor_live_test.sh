@@ -71,7 +71,9 @@ python3 scripts/check_invariants.py
       tests/test_sms_compose_vendor_test.py
 )
 
-bash scripts/verify_vendor_postgres_recovery.sh
+if [[ "${SMS_SKIP_VENDOR_POSTGRES_RECOVERY:-0}" != "1" ]]; then
+  bash scripts/verify_vendor_postgres_recovery.sh
+fi
 
 docker_args=(run --rm -v "$ROOT/frontend:/app" -v /app/node_modules -w /app)
 if [ -n "${G2_NPM_CACHE_DIR:-}" ]; then
