@@ -330,6 +330,33 @@ def verify_outbox_privileges(container: str, database: str) -> None:
         raise RuntimeError("transactional outbox privileges are unsafe")
 
 
+def verify_auth_session_policy_privileges(container: str, database: str) -> None:
+    """受理角色可推进权威策略行；其他运行角色不得写入或截断。"""
+
+    result = docker_psql(
+        container,
+        database,
+        """
+        SELECT
+          has_table_privilege('sms_accept','auth_session_policy','SELECT')::int,
+          has_table_privilege('sms_accept','auth_session_policy','INSERT')::int,
+          has_table_privilege('sms_accept','auth_session_policy','UPDATE')::int,
+          (NOT has_table_privilege('sms_accept','auth_session_policy','DELETE'))::int,
+          (NOT has_table_privilege('sms_accept','auth_session_policy','TRUNCATE'))::int,
+          (NOT has_table_privilege('sms_auth','auth_session_policy','INSERT')
+           AND NOT has_table_privilege('sms_auth','auth_session_policy','UPDATE')
+           AND NOT has_table_privilege('sms_auth','auth_session_policy','DELETE'))::int,
+          (NOT has_table_privilege('sms_send','auth_session_policy','SELECT')
+           AND NOT has_table_privilege('sms_scheduler','auth_session_policy','UPDATE'))::int,
+          has_column_privilege(
+            'sms_metrics','auth_session_policy','revision','SELECT')::int,
+          (NOT has_table_privilege('sms_metrics','auth_session_policy','UPDATE'))::int
+        """,
+    ).strip()
+    if result != "1|1|1|1|1|1|1|1|1":
+        raise RuntimeError("auth session policy privileges are unsafe")
+
+
 def verify_audit_payload_guard(container: str, database: str) -> None:
     """数据库层必须拒绝手机号、密文/HMAC 列表、token、secret 与请求正文。"""
 
@@ -1206,6 +1233,7 @@ def run_check() -> None:
             verify_vendor_test_budget_privileges(container, database)
             verify_vendor_test_console_privileges(container, database)
             verify_outbox_privileges(container, database)
+            verify_auth_session_policy_privileges(container, database)
             verify_worker_lease_privileges(container, database)
             verify_vendor_event_privileges(container, database)
             verify_callback_revocation_boundary(container, database)

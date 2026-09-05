@@ -18,6 +18,7 @@ from sqlalchemy import text
 
 from app.core.apikey import require_api_key_pepper_keyring
 from app.core.audit_context import decode_audit_context_key
+from app.core.auth.session_policy_sync import AuthSessionPolicyReconciler
 from app.core.bounded_executor import run_bounded
 from app.core.runtime_resources import database_engine, redis_client
 from app.services.crypto import CryptoService
@@ -217,6 +218,21 @@ class ApiKeyPepperReferenceCheck:
                 raise RuntimeError("unclassified api key digests are present")
 
 
+class AuthSessionPolicyReadinessCheck:
+    """PostgreSQL 权威策略与 Redis 快照必须可收敛；超前或冲突失败关闭。"""
+
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        reconciler: AuthSessionPolicyReconciler | None = None,
+    ) -> None:
+        self.reconciler = reconciler or AuthSessionPolicyReconciler(settings)
+
+    async def __call__(self) -> None:
+        await self.reconciler.ensure_ready()
+
+
 class RedisReadinessCheck:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -335,6 +351,7 @@ def create_readiness_probe(
             DatabaseReadinessCheck(settings),
             ApiKeyPepperReferenceCheck(settings),
             RedisReadinessCheck(settings),
+            AuthSessionPolicyReadinessCheck(settings),
             startup_check,
         ),
         timeout_seconds=settings.readiness_timeout_seconds,

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.backends import SessionStateUnavailable
+from app.core.auth.session_policy import AuthSessionPolicy
 from app.services.alert import validate_alert_destinations
 from app.services.runtime_policy import (
     BEAT_STARTUP_ONLY_KEYS,
@@ -106,6 +110,8 @@ class AdminRepository(Protocol):
 
     async def list_audit_actions(self) -> tuple[str, ...]: ...
 
+    async def load_auth_session_policy(self) -> AuthSessionPolicy: ...
+
 
 SENSITIVE_CONFIG_KEYS = frozenset({"alert_wecom_webhook", "security_daily_resend_api_key"})
 UI_ONLY_CONFIG_KEYS = frozenset(
@@ -132,6 +138,7 @@ class AdminService:
         *,
         allowed_smtp_hosts: set[str] | frozenset[str] | None = None,
         callback_egress_networks: tuple[Any, ...] | None = None,
+        session_policy_publisher: Callable[[AuthSessionPolicy], Awaitable[None]] | None = None,
     ) -> None:
         self.repository = repository
         if allowed_smtp_hosts is None or callback_egress_networks is None:
@@ -144,6 +151,7 @@ class AdminService:
                 callback_egress_networks = settings.callback_egress_networks
         self.allowed_smtp_hosts = frozenset(allowed_smtp_hosts)
         self.callback_egress_networks = tuple(callback_egress_networks)
+        self.session_policy_publisher = session_policy_publisher
 
     @staticmethod
     def _item(row: ConfigRow) -> ConfigItem:
@@ -253,6 +261,14 @@ class AdminService:
             principal=principal,
             ip=ip,
         )
+        if (
+            self.session_policy_publisher is not None
+            and any(item.key == "ad_session_max_age_minutes" for item in normalized)
+        ):
+            policy = await self.repository.load_auth_session_policy()
+            with suppress(SessionStateUnavailable):
+                # PostgreSQL 权威行已提交；API 对账会在 Redis 恢复后补齐。
+                await self.session_policy_publisher(policy)
         return tuple(self._item(row) for row in changed)
 
     async def list_audits(

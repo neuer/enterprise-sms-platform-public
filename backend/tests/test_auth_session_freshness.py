@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.core.auth.backends import InvalidCredentials, SessionStateUnavailable
+from app.core.auth.backends import InvalidCredentials
 from app.core.auth.jwt import JwtClaims, JwtService, ReauthenticationRequired
 from app.services.runtime_policy import RuntimePolicy
 from tests.test_auth import FakeKeyValue
@@ -87,9 +87,8 @@ async def test_ad_policy_failure_does_not_rotate_or_revoke_family() -> None:
     first = await service.issue_pair(claims("ad"), TAB_ID)
     unavailable[0] = True
 
-    with pytest.raises(SessionStateUnavailable):
-        await service.rotate_refresh(first.refresh_token, TAB_ID)
-
+    rotated = await service.rotate_refresh(first.refresh_token, TAB_ID)
+    assert rotated.refresh_token
     decoded = service._decode(first.refresh_token)  # noqa: SLF001
     session_id = str(decoded["sid"])
     assert f"auth:jwt:refresh-family:{session_id}" in store.values

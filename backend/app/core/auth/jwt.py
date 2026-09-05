@@ -21,6 +21,13 @@ from app.core.auth.accounts import PlatformAccount, SecurityPrincipal
 from app.core.auth.backends import InvalidCredentials, SessionStateUnavailable
 from app.core.auth.roles import Role
 from app.core.auth.service import AsyncKeyValue
+from app.core.auth.session_policy import (
+    AuthSessionPolicy,
+    AuthSessionPolicyConflict,
+    effective_ad_deadline,
+    load_auth_session_policy,
+    publish_auth_session_policy,
+)
 from app.services.runtime_policy import RuntimePolicy
 
 ACCESS_TOKEN_TYPE = "access"
@@ -35,7 +42,6 @@ JWT_AUDIENCE = "sms-platform-api"
 JWT_KEY_VERSION_BYTES = 2
 REFRESH_TAB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 DEFAULT_AD_SESSION_MAX_AGE_MINUTES = 480
-AD_SESSION_POLICY_KEY = "auth:ad:session-policy"
 
 LOGGER = logging.getLogger(__name__)
 
@@ -457,33 +463,38 @@ class JwtService:
         )
 
     async def publish_ad_session_policy(self, max_age_minutes: int, version: int = 1) -> None:
-        """发布当前 AD 最大年龄；缩短后既有会话按 auth_time 立即受新上限约束。"""
+        """按 PostgreSQL revision 单调发布；旧 revision 不能覆盖新值。"""
 
-        if max_age_minutes < 1 or version < 1:
-            raise ValueError("AD session policy is invalid")
-        await self.store.set(
-            AD_SESSION_POLICY_KEY,
-            f"{int(version)}:{int(max_age_minutes)}",
-            ex=30 * 86400,
+        await publish_auth_session_policy(
+            self.store,
+            AuthSessionPolicy(
+                int(version),
+                int(max_age_minutes),
+                int(self.clock().timestamp()),
+            ),
         )
 
-    async def _published_ad_max_age_minutes(self) -> int | None:
-        raw = await self.store.get(AD_SESSION_POLICY_KEY)
-        if raw is None:
-            return None
+    async def _current_ad_session_policy(self) -> AuthSessionPolicy:
+        """Access 与 Refresh 共用的 Redis 策略快照；缺失即失败关闭。"""
+
         try:
-            _version, minutes = str(raw).split(":", 1)
-            parsed = int(minutes)
-        except (TypeError, ValueError):
+            return await load_auth_session_policy(self.store)
+        except SessionStateUnavailable:
+            raise
+        except Exception:
             raise SessionStateUnavailable("AD session policy unavailable") from None
-        if parsed < 1:
-            raise SessionStateUnavailable("AD session policy unavailable")
-        return parsed
+
+    async def _publish_bound_ad_policy(self, claims: JwtClaims, max_age_minutes: int) -> None:
+        try:
+            await self.publish_ad_session_policy(
+                max_age_minutes,
+                claims.auth_policy_version or 1,
+            )
+        except AuthSessionPolicyConflict:
+            return
 
     async def _bind_ad_deadline(self, claims: JwtClaims) -> JwtClaims:
         if claims.provider_code != "ad":
-            return claims
-        if claims.auth_time is not None and claims.reauth_deadline is not None:
             return claims
         try:
             max_age = (
@@ -491,11 +502,14 @@ class JwtService:
                 if self.runtime_policy_loader is not None
                 else DEFAULT_AD_SESSION_MAX_AGE_MINUTES
             )
-            await self.publish_ad_session_policy(max_age, claims.auth_policy_version or 1)
         except SessionStateUnavailable:
             raise
         except Exception:
-            raise SessionStateUnavailable("AD session policy unavailable") from None
+            max_age = DEFAULT_AD_SESSION_MAX_AGE_MINUTES
+        if claims.auth_time is not None and claims.reauth_deadline is not None:
+            await self._publish_bound_ad_policy(claims, max_age)
+            return claims
+        await self._publish_bound_ad_policy(claims, max_age)
         auth_time = claims.auth_time or self.clock().timestamp()
         return JwtClaims(
             account_id=claims.account_id,
@@ -510,7 +524,7 @@ class JwtService:
             session_id=claims.session_id,
             auth_time=auth_time,
             reauth_deadline=auth_time + max_age * 60,
-            auth_policy_version=1,
+            auth_policy_version=claims.auth_policy_version or 1,
         )
 
     def _reject_expired_access(self, payload: dict[str, Any]) -> None:
@@ -532,15 +546,12 @@ class JwtService:
             return
         if claims.auth_time is None or claims.reauth_deadline is None:
             raise ReauthenticationRequired("AD 会话已到期，请重新登录")
-        try:
-            published = await self._published_ad_max_age_minutes()
-        except SessionStateUnavailable:
-            raise
-        except Exception:
-            raise SessionStateUnavailable("AD session revocation unavailable") from None
-        deadline = float(claims.reauth_deadline)
-        if published is not None:
-            deadline = min(deadline, float(claims.auth_time) + published * 60)
+        policy = await self._current_ad_session_policy()
+        deadline = effective_ad_deadline(
+            float(claims.auth_time),
+            float(claims.reauth_deadline),
+            policy,
+        )
         if self.clock().timestamp() < deadline:
             return
         remaining = max(1, int(payload.get("exp", 0)) - int(self.clock().timestamp()))
@@ -1003,16 +1014,15 @@ class JwtService:
 
         if claims.provider_code != "ad":
             return
-        try:
-            max_age_minutes = (
-                (await self.runtime_policy_loader()).ad_session_max_age_minutes
-                if self.runtime_policy_loader is not None
-                else DEFAULT_AD_SESSION_MAX_AGE_MINUTES
-            )
-            issued_at = float(payload["iat"])
-        except Exception:
-            raise SessionStateUnavailable("AD session policy unavailable") from None
-        if self.clock().timestamp() < issued_at + max_age_minutes * 60:
+        if claims.auth_time is None or claims.reauth_deadline is None:
+            raise ReauthenticationRequired("AD 会话已到期，请重新登录")
+        policy = await self._current_ad_session_policy()
+        deadline = effective_ad_deadline(
+            float(claims.auth_time),
+            float(claims.reauth_deadline),
+            policy,
+        )
+        if self.clock().timestamp() < deadline:
             return
         try:
             await self.store.eval(

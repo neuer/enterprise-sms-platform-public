@@ -34,6 +34,7 @@ from app.api.users import router as users_router
 from app.api.vendor_test import router as vendor_test_router
 from app.api.web_messages import router as web_messages_router
 from app.build_info import APP_VERSION
+from app.core.auth.session_policy_sync import create_auth_session_policy_reconciler
 from app.core.auth.transition_sync import (
     create_auth_transition_reconciler,
     require_writer_lease_budget,
@@ -94,6 +95,7 @@ def create_lifespan(
         require_writer_lease_budget(selected)
         heartbeat = None
         runtime_monitor = None
+        session_policy = None
         transition_audit = None
         try:
             register_task_modules()
@@ -107,15 +109,20 @@ def create_lifespan(
                 )
             heartbeat = create_default_heartbeat_service()
             runtime_monitor = create_runtime_monitor()
+            session_policy = create_auth_session_policy_reconciler(selected)
             transition_audit = create_auth_transition_reconciler(selected)
             application.state.job_heartbeat = heartbeat
             application.state.runtime_monitor = runtime_monitor
+            application.state.auth_session_policy_reconciler = session_policy
             application.state.auth_transition_reconciler = transition_audit
             heartbeat.start()
             runtime_monitor.start()
+            session_policy.start()
             transition_audit.start()
             yield
         finally:
+            if session_policy is not None:
+                await session_policy.stop()
             if transition_audit is not None:
                 await transition_audit.stop()
             if runtime_monitor is not None:

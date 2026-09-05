@@ -928,6 +928,21 @@ def test_idempotency_claim_generation_is_expand_only() -> None:
     assert "DELETE FROM" not in source
 
 
+def test_auth_session_policy_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0097_auth_session_policy.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.83：" in schema
+    for contract in (schema, source):
+        assert "auth_session_policy" in contract
+        assert "ad_session_max_age_minutes" in contract
+        assert "revision" in contract
+    assert 'revision = "0097_auth_session_policy"' in source
+    assert 'down_revision = "0096_idempotency_claim_generation"' in source
+    assert "DELETE FROM" not in source
+
+
 def test_vendor_routing_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0090_vendor_routing.py"

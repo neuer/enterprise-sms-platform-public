@@ -767,26 +767,23 @@ def test_redis_domain_runtime_enforces_aof_noeviction_and_bounded_memory() -> No
         assert token in entrypoint
 
 
-def test_auth_redis_acl_allows_only_the_login_guard_lua_primitives() -> None:
+def test_auth_redis_acl_allows_auth_lua_primitives() -> None:
+    from app.core.auth.session_policy import POLICY_CAS_LUA, POLICY_LOAD_LUA
+
     entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
         encoding="utf-8"
     )
     auth_block = entrypoint.split("  auth)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
-
-    for command in (
-        "+get",
-        "+set",
-        "+incr",
-        "+expire",
-        "+pexpire",
-        "+ttl",
-        "+pttl",
-        "+hset",
-        "+hmget",
-        "+time",
-        "+eval",
-        "+evalsha",
-    ):
+    service = (ROOT / "backend/app/core/auth/service.py").read_text(encoding="utf-8")
+    required = {
+        f"+{name.lower()}"
+        for name in re.findall(
+            r"redis\.call\('([A-Z]+)'",
+            POLICY_CAS_LUA + POLICY_LOAD_LUA + service,
+        )
+    }
+    assert {"+type", "+hgetall", "+persist", "+zrangebyscore", "+time"} <= required
+    for command in sorted(required | {"+eval", "+evalsha", "+ping"}):
         assert command in auth_block
     for forbidden in ("+keys", "+scan", "+flushall", "+config", "+script|load"):
         assert forbidden not in auth_block

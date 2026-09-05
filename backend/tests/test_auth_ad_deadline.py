@@ -259,7 +259,9 @@ async def test_policy_increase_does_not_extend_existing_deadline() -> None:
 @pytest.mark.asyncio
 async def test_legacy_ad_session_migration_or_forced_reauth_contract() -> None:
     started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
-    service = JwtService(SECRET, FakeKeyValue(), clock=lambda: started)
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: started)
+    await service.publish_ad_session_policy(480, version=1)
     token = jwt.encode(
         {
             "iss": JWT_ISSUER,
@@ -365,11 +367,13 @@ async def test_ad_reauth_deadline_takes_precedence_when_exp_and_deadline_both_el
 @pytest.mark.asyncio
 async def test_expired_legacy_ad_access_is_never_reactivated() -> None:
     started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
+    store = FakeKeyValue()
     service = JwtService(
         SECRET,
-        FakeKeyValue(),
+        store,
         clock=lambda: started + timedelta(minutes=16),
     )
+    await service.publish_ad_session_policy(480, version=1)
     token = jwt.encode(
         {
             "iss": JWT_ISSUER,
@@ -399,7 +403,9 @@ async def test_expired_legacy_ad_access_is_never_reactivated() -> None:
 @pytest.mark.asyncio
 async def test_unexpired_legacy_ad_access_follows_documented_migration_contract() -> None:
     started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
-    service = JwtService(SECRET, FakeKeyValue(), clock=lambda: started)
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: started)
+    await service.publish_ad_session_policy(480, version=1)
     token = jwt.encode(
         {
             "iss": JWT_ISSUER,
