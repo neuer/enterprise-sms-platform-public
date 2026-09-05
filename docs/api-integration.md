@@ -204,6 +204,9 @@ Content-Type: application/json
 
 同键同指纹重放返回原批次且 `idempotent: true`；同键不同指纹立即 409，即使首请求仍在处理中。
 首请求处理中的追随请求不消耗新发送额度，等待超时返回 503 与 `Retry-After`，调用方应继续使用原 `biz_id`。
+服务端 Claim 租约固定 30 秒，由 heartbeat 同时续 PostgreSQL 与 Redis；合法受理可以超过
+30/60/90/120 秒。客户端不得据此更换 `biz_id`。HTTP 超时后用原键重试：若 Claim 已
+`completed` 并绑定 `batch_id`，平台返回同一批次。
 
 推荐的重试模式：
 

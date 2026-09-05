@@ -4,12 +4,15 @@ from typing import Any, TypedDict, cast
 
 import pytest
 
+from app.services.app_ratelimit import ControlPlaneUnavailable
 from app.services.idempotency import (
+    CLAIM_PROJECT_LUA,
     CLAIM_RELEASE_LUA,
     CLAIM_RENEW_LUA,
     IDEMPOTENCY_WAIT_MARGIN_S,
     IdempotencyCoordinator,
     IdempotencyScope,
+    parse_claim_payload,
 )
 from app.services.quota import (
     REFUND_LUA,
@@ -71,6 +74,23 @@ class FakeRedis:
             token = str(args[3])
             current = self.values.get(key)
             return int(current == token)
+        if args and args[0] == CLAIM_PROJECT_LUA:
+            key = str(args[2])
+            payload = str(args[3])
+            new_gen = int(args[5])
+            current = self.values.get(key)
+            if current is None:
+                self.values[key] = payload
+                return 1
+            if current == payload:
+                return 1
+            viewed = parse_claim_payload(current)
+            if viewed.generation < new_gen:
+                self.values[key] = payload
+                return 1
+            if viewed.generation > new_gen:
+                return 0
+            return -2
         return self.eval_result
 
 
@@ -99,6 +119,114 @@ class FakeIdemRepository:
         self, scope: IdempotencyScope, biz_id: str
     ) -> bool:
         return False
+
+
+class FakeClaimRepository(FakeIdemRepository):
+    """补充权威 Claim 状态机，供双写路径单测。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+        self.renew_ok = True
+        self.release_calls = 0
+
+    def _key(self, scope: IdempotencyScope, biz_id: str) -> tuple[str, str, str]:
+        return (scope.kind, scope.id, biz_id)
+
+    async def reserve_idempotency_claim(
+        self,
+        scope: IdempotencyScope,
+        biz_id: str,
+        *,
+        token: str,
+        fingerprint: str,
+        ttl_s: int,
+    ) -> int | None:
+        key = self._key(scope, biz_id)
+        current = self.rows.get(key)
+        if current is None:
+            self.rows[key] = {
+                "token": token,
+                "fingerprint": fingerprint,
+                "generation": 1,
+                "state": "active",
+                "lease_valid": True,
+                "batch_id": None,
+            }
+            return 1
+        if current["state"] == "completed" or (
+            current["state"] == "active" and current["lease_valid"]
+        ):
+            return None
+        current["generation"] = int(current["generation"]) + 1
+        current["token"] = token
+        current["fingerprint"] = fingerprint
+        current["state"] = "active"
+        current["lease_valid"] = True
+        current["batch_id"] = None
+        return int(current["generation"])
+
+    async def renew_idempotency_claim(
+        self,
+        scope: IdempotencyScope,
+        biz_id: str,
+        *,
+        token: str,
+        fingerprint: str,
+        generation: int,
+        ttl_s: int,
+        clock_margin_s: int = 1,
+    ) -> bool:
+        if not self.renew_ok:
+            return False
+        current = self.rows.get(self._key(scope, biz_id))
+        return (
+            current is not None
+            and current["state"] == "active"
+            and current["lease_valid"]
+            and current["token"] == token
+            and current["fingerprint"] == fingerprint
+            and int(current["generation"]) == generation
+        )
+
+    async def release_idempotency_claim(
+        self,
+        scope: IdempotencyScope,
+        biz_id: str,
+        *,
+        token: str,
+        generation: int,
+        reason: str = "abandoned",
+    ) -> bool:
+        self.release_calls += 1
+        current = self.rows.get(self._key(scope, biz_id))
+        if (
+            current is None
+            or current["state"] != "active"
+            or current["token"] != token
+            or int(current["generation"]) != generation
+            or current["batch_id"] is not None
+        ):
+            return False
+        current["state"] = "released"
+        current["lease_valid"] = False
+        return True
+
+    async def load_idempotency_claim(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> dict[str, Any] | None:
+        current = self.rows.get(self._key(scope, biz_id))
+        return dict(current) if current is not None else None
+
+    async def live_idempotency_claim(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> bool:
+        current = self.rows.get(self._key(scope, biz_id))
+        return bool(
+            current is not None
+            and current["state"] == "active"
+            and current["lease_valid"]
+        )
 
 
 @pytest.mark.asyncio
@@ -264,6 +392,102 @@ async def test_claim_renew_requires_owner_token_and_default_wait_covers_lease() 
     stale_payload = f"{token}::{1}"
     redis.values[coordinator.claim_key(scope, "biz-renew")] = stale_payload
     assert await coordinator.renew(scope, "biz-renew", token2) is False
+
+
+@pytest.mark.asyncio
+async def test_db_claim_projects_over_stale_redis_generation() -> None:
+    redis = FakeRedis()
+    repo = FakeClaimRepository()
+    coordinator = IdempotencyCoordinator(redis, repo)
+    scope = IdempotencyScope("app", "7")
+    redis.values["idem:claim:app:7:biz-project"] = "old-token::1"
+    token = await coordinator.claim(scope, "biz-project", fingerprint="fp")
+    assert token is not None
+    viewed = await coordinator.inspect(scope, "biz-project")
+    assert viewed is not None
+    assert viewed.generation == 1
+    assert viewed.token == token
+    assert redis.values["idem:claim:app:7:biz-project"].endswith(":1")
+    assert "current_gen < new_gen" in CLAIM_PROJECT_LUA
+
+
+@pytest.mark.asyncio
+async def test_db_renew_failure_keeps_redis_and_marks_lost() -> None:
+    redis = FakeRedis()
+    repo = FakeClaimRepository()
+    coordinator = IdempotencyCoordinator(redis, repo)
+    scope = IdempotencyScope("app", "7")
+    token = await coordinator.claim(scope, "biz-db-renew")
+    assert token is not None
+    payload = redis.values["idem:claim:app:7:biz-db-renew"]
+    repo.renew_ok = False
+    assert await coordinator.renew(scope, "biz-db-renew", token) is False
+    assert redis.values["idem:claim:app:7:biz-db-renew"] == payload
+
+
+@pytest.mark.asyncio
+async def test_db_renew_success_redis_failure_fails_closed() -> None:
+    redis = FakeRedis()
+    repo = FakeClaimRepository()
+    coordinator = IdempotencyCoordinator(redis, repo)
+    scope = IdempotencyScope("app", "7")
+    token = await coordinator.claim(scope, "biz-redis-renew")
+    assert token is not None
+
+    async def boom(*_args: Any) -> Any:
+        raise RuntimeError("redis down")
+
+    redis.eval = boom  # type: ignore[method-assign]
+    with pytest.raises(ControlPlaneUnavailable):
+        await coordinator.renew(scope, "biz-redis-renew", token)
+    assert repo.rows[("app", "7", "biz-redis-renew")]["state"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_db_claim_redis_write_failure_keeps_authoritative_row() -> None:
+    redis = FakeRedis()
+    repo = FakeClaimRepository()
+    coordinator = IdempotencyCoordinator(redis, repo)
+    scope = IdempotencyScope("app", "7")
+
+    async def boom(*_args: Any) -> Any:
+        raise RuntimeError("redis down")
+
+    redis.eval = boom  # type: ignore[method-assign]
+    with pytest.raises(ControlPlaneUnavailable):
+        await coordinator.claim(scope, "biz-ghost")
+    row = repo.rows[("app", "7", "biz-ghost")]
+    assert row["state"] == "active"
+    assert row["generation"] == 1
+
+
+@pytest.mark.asyncio
+async def test_inspect_rebuilds_active_owner_after_redis_flush() -> None:
+    redis = FakeRedis()
+    repo = FakeClaimRepository()
+    coordinator = IdempotencyCoordinator(redis, repo)
+    scope = IdempotencyScope("app", "7")
+    token = await coordinator.claim(scope, "biz-flush", fingerprint="fp")
+    assert token is not None
+    redis.values.clear()
+    viewed = await coordinator.inspect(scope, "biz-flush")
+    assert viewed is not None
+    assert viewed.token == token
+    assert redis.values["idem:claim:app:7:biz-flush"].startswith(f"{token}:")
+
+
+@pytest.mark.asyncio
+async def test_release_updates_postgres_state_not_only_redis() -> None:
+    redis = FakeRedis()
+    repo = FakeClaimRepository()
+    coordinator = IdempotencyCoordinator(redis, repo)
+    scope = IdempotencyScope("app", "7")
+    token = await coordinator.claim(scope, "biz-release")
+    assert token is not None
+    await coordinator.release(scope, "biz-release", token)
+    assert repo.release_calls == 1
+    assert repo.rows[("app", "7", "biz-release")]["state"] == "released"
+    assert "idem:claim:app:7:biz-release" not in redis.values
 
 
 @pytest.mark.asyncio

@@ -1311,6 +1311,7 @@ class SendPipeline:
                 ) = await self._protect_plain_phones_batched(
                     unique_phones,
                     blacklist_required=policy.blacklist_required,
+                    ownership_check=ownership_check,
                 )
             blocked_candidates = (
                 await self.store.blacklisted(
@@ -1694,6 +1695,7 @@ class SendPipeline:
         phones: Sequence[str],
         *,
         blacklist_required: bool,
+        ownership_check: Callable[[], Awaitable[None]] | None = None,
     ) -> tuple[
         list[ProtectedPhone],
         dict[str, frozenset[str]],
@@ -1718,6 +1720,8 @@ class SendPipeline:
         frequency_aliases_by_active: dict[str, dict[int, str]] = {}
         wave = 4
         for start in range(0, len(chunks), wave):
+            if ownership_check is not None and start > 0:
+                await ownership_check()
             parts = await asyncio.gather(
                 *[
                     run_bounded(

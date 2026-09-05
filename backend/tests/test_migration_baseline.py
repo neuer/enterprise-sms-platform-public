@@ -943,6 +943,23 @@ def test_vendor_attempt_atomic_finalize_is_expand_only() -> None:
     assert source.split("def downgrade")[0].count("UPDATE ") == 0
 
 
+def test_idempotency_claim_lease_lifecycle_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0099_idempotency_claim_lease_lifecycle.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.85：" in schema
+    for contract in (schema, source):
+        assert "idempotency_claim" in contract
+        assert "ck_idempotency_claim_state" in contract
+        assert "completed" in contract
+        assert "released" in contract
+    assert 'revision = "0099_idempotency_claim_lease_lifecycle"' in source
+    assert 'down_revision = "0098_vendor_attempt_atomic_finalize"' in source
+    assert "DELETE FROM" not in source
+    assert source.split("def downgrade")[0].count("UPDATE ") == 0
+
+
 def test_auth_session_policy_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0097_auth_session_policy.py"

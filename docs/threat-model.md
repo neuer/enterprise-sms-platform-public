@@ -63,6 +63,8 @@ secret。每个系统只能消费自己服务商的 GetReport/GetReply。
 
 1. auth 域不可确认时登录、JWT 校验、refresh、step-up 全部 fail closed。
 2. control 域不可确认时配额、频控、幂等或业务锁相关写路径返回 503，不把缺失投影当零。
+   Redis flush 或旧主低 generation 复活时，幂等 Claim 必须按 PostgreSQL
+   `active/completed/released` 与租约重建投影，不得把缺失 Redis key 当成无 owner。
 3. 整机故障期间服务停止；从合格备份恢复 PostgreSQL 后，broker 事件继续以恢复出的 Outbox
    为事实，并按稳定 event ID 投递。旧系统切回不能替代新平台数据库恢复。
 4. 不得把三个 standalone 交叉复用、临时启用 default 用户，或把单机形态标记为

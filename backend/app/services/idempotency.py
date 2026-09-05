@@ -94,6 +94,63 @@ end
 return 0
 """
 
+CLAIM_PROJECT_LUA = """
+local current = redis.call('GET', KEYS[1])
+local payload = ARGV[1]
+local ttl = tonumber(ARGV[2])
+local new_gen = tonumber(ARGV[3])
+if current == false then
+  redis.call('SET', KEYS[1], payload, 'EX', ttl)
+  return 1
+end
+if current == payload then
+  redis.call('EXPIRE', KEYS[1], ttl)
+  return 1
+end
+local sep1 = string.find(current, ':', 1, true)
+if not sep1 then
+  redis.call('SET', KEYS[1], payload, 'EX', ttl)
+  return 1
+end
+local sep2 = string.find(current, ':', sep1 + 1, true)
+if not sep2 then
+  redis.call('SET', KEYS[1], payload, 'EX', ttl)
+  return 1
+end
+local current_gen = tonumber(string.sub(current, sep2 + 1))
+if current_gen == nil or current_gen < new_gen then
+  redis.call('SET', KEYS[1], payload, 'EX', ttl)
+  return 1
+end
+if current_gen > new_gen then
+  return 0
+end
+return -2
+"""
+
+
+def parse_claim_payload(raw: str) -> IdempotencyClaimView:
+    parts = str(raw).split(":", 2)
+    if len(parts) < 3:
+        return IdempotencyClaimView(str(raw), "", 1)
+    return IdempotencyClaimView(parts[0], parts[1], int(parts[2]))
+
+
+def claim_payload(view: IdempotencyClaimView) -> str:
+    return f"{view.token}:{view.fingerprint}:{view.generation}"
+
+
+def claim_view_from_row(row: dict[str, Any]) -> IdempotencyClaimView:
+    return IdempotencyClaimView(
+        str(row["token"]).strip(),
+        str(row.get("fingerprint") or ""),
+        int(row["generation"]),
+    )
+
+
+def claim_row_is_live(row: dict[str, Any]) -> bool:
+    return str(row["state"]) == "active" and bool(row["lease_valid"])
+
 
 class IdempotencyRedis(Protocol):
     async def get(self, key: str) -> str | None: ...
@@ -233,12 +290,20 @@ class IdempotencyCoordinator:
             raw = await self.redis.get(self.claim_key(scope, biz_id))
         except Exception as exc:
             raise ControlPlaneUnavailable("幂等控制面不可用") from exc
-        if not raw:
+        viewed = parse_claim_payload(str(raw)) if raw else None
+        authority = await self._authority(scope, biz_id)
+        if authority is None:
+            return viewed
+        if str(authority["state"]) == "completed" or not claim_row_is_live(authority):
             return None
-        parts = str(raw).split(":", 2)
-        if len(parts) < 3:
-            return IdempotencyClaimView(str(raw), "", 1)
-        return IdempotencyClaimView(parts[0], parts[1], int(parts[2]))
+        official = claim_view_from_row(authority)
+        if (
+            viewed is None
+            or viewed.generation < official.generation
+            or viewed.token != official.token
+        ) and await self._project_view(scope, biz_id, official) == 0:
+            return None
+        return official
 
     def _payload_for(self, scope: IdempotencyScope, biz_id: str, token: str) -> str | None:
         key = self.claim_key(scope, biz_id)
@@ -246,6 +311,47 @@ class IdempotencyCoordinator:
         if payload is not None and payload.startswith(f"{token}:"):
             return payload
         return None
+
+    async def _authority(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> dict[str, Any] | None:
+        loader = getattr(self.repository, "load_idempotency_claim", None)
+        if loader is None:
+            return None
+        loaded = await loader(scope, biz_id)
+        return dict(loaded) if loaded is not None else None
+
+    async def _project_view(
+        self,
+        scope: IdempotencyScope,
+        biz_id: str,
+        viewed: IdempotencyClaimView,
+    ) -> int:
+        payload = claim_payload(viewed)
+        try:
+            projected = int(
+                await self.redis.eval(
+                    CLAIM_PROJECT_LUA,
+                    1,
+                    self.claim_key(scope, biz_id),
+                    payload,
+                    self.claim_ttl_s,
+                    viewed.generation,
+                )
+            )
+        except Exception as exc:
+            raise ControlPlaneUnavailable("幂等控制面不可用") from exc
+        if projected == -2:
+            try:
+                await self.redis.set(
+                    self.claim_key(scope, biz_id),
+                    payload,
+                    ex=self.claim_ttl_s,
+                )
+            except Exception as exc:
+                raise ControlPlaneUnavailable("幂等控制面不可用") from exc
+            return 1
+        return projected
 
     async def claim(
         self,
@@ -267,9 +373,13 @@ class IdempotencyCoordinator:
             )
             if generation is None:
                 return None
-        else:
-            generation = self._local_generations.get(claim_key, 0) + 1
-            self._local_generations[claim_key] = generation
+            viewed = IdempotencyClaimView(token, fingerprint, int(generation))
+            if await self._project_view(scope, biz_id, viewed) != 1:
+                return None
+            self._payloads[claim_key] = claim_payload(viewed)
+            return token
+        generation = self._local_generations.get(claim_key, 0) + 1
+        self._local_generations[claim_key] = generation
         payload = f"{token}:{fingerprint}:{generation}"
         try:
             acquired = await self.redis.set(
@@ -288,6 +398,14 @@ class IdempotencyCoordinator:
     async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         claim_key = self.claim_key(scope, biz_id)
         live_checker = getattr(self.repository, "live_idempotency_claim", None)
+        authority = await self._authority(scope, biz_id)
+        if authority is not None and str(authority["state"]) == "completed":
+            batch_no = await self.repository.find_existing(scope, biz_id)
+            if batch_no is not None:
+                await self.remember(scope, biz_id, batch_no)
+                return batch_no
+        if authority is not None and claim_row_is_live(authority):
+            await self._project_view(scope, biz_id, claim_view_from_row(authority))
         for attempt in range(self.wait_attempts):
             owned = await self.redis.get(claim_key)
             if owned is None:
@@ -296,6 +414,10 @@ class IdempotencyCoordinator:
                     await self.remember(scope, biz_id, batch_no)
                     return batch_no
                 if live_checker is not None and await live_checker(scope, biz_id):
+                    if attempt + 1 < self.wait_attempts:
+                        await self.sleeper(self.wait_interval_s)
+                    continue
+                if authority is not None and claim_row_is_live(authority):
                     if attempt + 1 < self.wait_attempts:
                         await self.sleeper(self.wait_interval_s)
                     continue
@@ -310,6 +432,8 @@ class IdempotencyCoordinator:
             raise IdempotencyCoordinationTimeout("idempotency wait timed out")
         if live_checker is not None and await live_checker(scope, biz_id):
             raise IdempotencyCoordinationTimeout("idempotency wait timed out")
+        if authority is not None and claim_row_is_live(authority):
+            raise IdempotencyCoordinationTimeout("idempotency wait timed out")
         return None
 
     async def renew(
@@ -320,7 +444,33 @@ class IdempotencyCoordinator:
             viewed = await self.inspect(scope, biz_id)
             if viewed is None or viewed.token != token:
                 return False
-            payload = f"{viewed.token}:{viewed.fingerprint}:{viewed.generation}"
+            payload = claim_payload(viewed)
+        viewed = parse_claim_payload(payload)
+        renewer = getattr(self.repository, "renew_idempotency_claim", None)
+        if renewer is not None:
+            renewed = await renewer(
+                scope,
+                biz_id,
+                token=token,
+                fingerprint=viewed.fingerprint,
+                generation=viewed.generation,
+                ttl_s=self.claim_ttl_s,
+            )
+            if not renewed:
+                return False
+            try:
+                redis_ok = await self.redis.eval(
+                    CLAIM_RENEW_LUA,
+                    1,
+                    self.claim_key(scope, biz_id),
+                    payload,
+                    self.claim_ttl_s,
+                )
+            except Exception as exc:
+                raise ControlPlaneUnavailable("幂等控制面不可用") from exc
+            if not redis_ok and await self._project_view(scope, biz_id, viewed) != 1:
+                raise ControlPlaneUnavailable("幂等投影续租失败")
+            return True
         renewed = await self.redis.eval(
             CLAIM_RENEW_LUA,
             1,
@@ -357,7 +507,17 @@ class IdempotencyCoordinator:
             viewed = await self.inspect(scope, biz_id)
             if viewed is None or viewed.token != token:
                 return
-            payload = f"{viewed.token}:{viewed.fingerprint}:{viewed.generation}"
+            payload = claim_payload(viewed)
+        releaser = getattr(self.repository, "release_idempotency_claim", None)
+        if releaser is not None:
+            viewed = parse_claim_payload(payload)
+            await releaser(
+                scope,
+                biz_id,
+                token=token,
+                generation=viewed.generation,
+                reason="abandoned",
+            )
         await self.redis.eval(
             CLAIM_RELEASE_LUA,
             1,

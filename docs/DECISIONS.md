@@ -1357,3 +1357,20 @@
   已提交短信，进而触发错误的人工重发。
 - 影响：schema v1.6.84/0098、`send.py` / `send_repository.py`、`reconcile_repository.py`。
   #628/#630 仍独立；本决策不解决 COMMIT 响应丢失或 Claim 租约续期。
+
+## D103 幂等 Claim 以 PostgreSQL 租约与状态机为权威，heartbeat 必须双写续租
+
+- 决策：`idempotency_claim` 增加 `active/completed/released/expired` 状态机；`expires_at`
+  即权威租约。heartbeat/`renew()` 先 CAS 续 PostgreSQL，再续 Redis 投影。`save()` 在同一
+  事务把 Claim 标为 `completed` 并绑定 `batch_id`。显式 `release` 只允许仍 active、未绑定
+  批次且无未过期 `idempotency_record` 的行。Redis 写入改为 generation-aware CAS；key 缺失
+  或旧主低 generation 必须回查 PostgreSQL 后收敛。不把 30 秒 TTL 改成更长的固定值。
+- 读时把 `active AND expires_at < now()` 视为可抢占过期，0099 只做 expand-only 加列，
+  不回填 UPDATE。completed 行保留到幂等结果窗口，禁止抢占。Redis 故障时保留 DB owner 并
+  失败关闭；投影可从 PostgreSQL 重建。过程计数器不新增 Prometheus 族（与 D102 相同，
+  事实在 `idempotency_claim` 行上）。新旧 API 混跑时旧路径若只续 Redis，超过租约后无法
+  `save()`，且不得用低 generation 覆盖新 owner。
+- 原因：只续 Redis 会让合法长受理在 30 秒后保存失败，PostgreSQL 抢占加 Redis `SET NX`
+  会留下无 Redis owner 的幽灵 generation。
+- 影响：schema v1.6.85/0099、`idempotency.py`、`pipeline_repository.py`、`pipeline.py`、
+  `docs/api-integration.md`、`deploy/redis-ha.md`、`deploy/failover.md`。#628 仍独立。
