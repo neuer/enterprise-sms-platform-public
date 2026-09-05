@@ -88,6 +88,3 @@
 [data-theme="light"] .security-daily-state {
   background: linear-gradient(90deg, color-mix(in srgb, var(--verdi) 10%, #ffffff), color-mix(in srgb, var(--verdi) 6%, #ffffff));
 }
-
-/* 空态三色尺的中间蓝钉死了深色值 #35618f，亮色跟随 --slate 令牌。 */
-[data-theme="light"] .empty-rule { background: linear-gradient(90deg, var(--verdi) 0 33%, var(--slate) 33% 66%, var(--amber) 66%); }
