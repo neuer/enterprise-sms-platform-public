@@ -211,9 +211,16 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "npm ci",
         "npm audit --audit-level=high",
         "npm run build",
+        "npm run lint",
+        "npm run format:check",
         "npm test",
     ):
         assert command in frontend_commands
+    # lint/format 先于组件测试（失败早报错），typecheck 仍只由 build 承载一次
+    assert frontend_commands.index("npm run lint") < frontend_commands.index("npm test")
+    assert frontend_commands.index("npm run format:check") < frontend_commands.index(
+        "npm test"
+    )
     assert "npm run typecheck" not in frontend_commands
     assert jobs["frontend"]["needs"] == "changes"
     assert "needs.changes.outputs.frontend == 'true'" in jobs["frontend"]["if"]

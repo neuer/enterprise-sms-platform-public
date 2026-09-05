@@ -64,6 +64,9 @@ run_backend() {
 run_frontend() {
   (
     cd frontend
+    # lint/format 快于组件测试，失败早报错
+    npm run lint
+    npm run format:check
     npm test
     npm run build
   )
