@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import jwt
@@ -298,3 +299,176 @@ async def test_deadline_boundary_with_clock_skew_and_clock_rollback() -> None:
     current[0] = started + timedelta(seconds=60)
     with pytest.raises(ReauthenticationRequired):
         await service.verify(pair.token)
+
+
+@pytest.mark.asyncio
+async def test_ad_access_is_valid_at_exp_minus_one_second() -> None:
+    started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
+    current = [started]
+    service = JwtService(SECRET, FakeKeyValue(), clock=lambda: current[0])
+    pair = await service.issue_pair(ad_claims(now=started, deadline_s=8 * 3600), TAB_ID)
+    current[0] = started + timedelta(minutes=15) - timedelta(seconds=1)
+    assert await service.verify(pair.token)
+
+
+@pytest.mark.asyncio
+async def test_ad_access_is_rejected_at_exact_exp_before_reauth_deadline() -> None:
+    started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
+    current = [started]
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: current[0])
+    pair = await service.issue_pair(ad_claims(now=started, deadline_s=8 * 3600), TAB_ID)
+    current[0] = started + timedelta(minutes=15)
+    with pytest.raises(InvalidCredentials):
+        await service.verify(pair.token)
+    rotated = await service.rotate_refresh(pair.refresh_token, TAB_ID)
+    assert rotated.token
+
+
+@pytest.mark.asyncio
+async def test_ad_access_is_rejected_after_exp_before_reauth_deadline() -> None:
+    started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
+    current = [started]
+    service = JwtService(SECRET, FakeKeyValue(), clock=lambda: current[0])
+    pair = await service.issue_pair(ad_claims(now=started, deadline_s=8 * 3600), TAB_ID)
+    current[0] = started + timedelta(minutes=15, seconds=1)
+    with pytest.raises(InvalidCredentials):
+        await service.verify(pair.token)
+
+
+@pytest.mark.asyncio
+async def test_expired_ad_access_maps_to_unauthorized_and_can_refresh() -> None:
+    started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
+    current = [started]
+    service = JwtService(SECRET, FakeKeyValue(), clock=lambda: current[0])
+    pair = await service.issue_pair(ad_claims(now=started, deadline_s=8 * 3600), TAB_ID)
+    current[0] = started + timedelta(minutes=15)
+    with pytest.raises(InvalidCredentials, match="无效或已吊销的令牌"):
+        await service.verify(pair.token)
+    rotated = await service.rotate_refresh(pair.refresh_token, TAB_ID)
+    access = decode(rotated.token)
+    assert int(access["exp"]) > int(current[0].timestamp())
+    assert access["reauth_deadline"] == started.timestamp() + 8 * 3600
+
+
+@pytest.mark.asyncio
+async def test_ad_reauth_deadline_takes_precedence_when_exp_and_deadline_both_elapsed() -> None:
+    started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
+    current = [started]
+    service = JwtService(SECRET, FakeKeyValue(), clock=lambda: current[0])
+    pair = await service.issue_pair(ad_claims(now=started, deadline_s=60), TAB_ID)
+    current[0] = started + timedelta(seconds=120)
+    with pytest.raises(ReauthenticationRequired):
+        await service.verify(pair.token)
+
+
+@pytest.mark.asyncio
+async def test_expired_legacy_ad_access_is_never_reactivated() -> None:
+    started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
+    service = JwtService(
+        SECRET,
+        FakeKeyValue(),
+        clock=lambda: started + timedelta(minutes=16),
+    )
+    token = jwt.encode(
+        {
+            "iss": JWT_ISSUER,
+            "aud": JWT_AUDIENCE,
+            "sub": "8",
+            "identity_id": 18,
+            "provider_code": "ad",
+            "login_name": "ad.user",
+            "display_name": "目录用户",
+            "dept": "研发部",
+            "role": "operator",
+            "security_version": 1,
+            "token_type": ACCESS_TOKEN_TYPE,
+            "sid": "s" * 32,
+            "jti": "j" * 32,
+            "iat": started.timestamp(),
+            "exp": int((started + timedelta(minutes=15)).timestamp()),
+        },
+        SECRET,
+        algorithm="HS256",
+        headers={"kid": "1"},
+    )
+    with pytest.raises(InvalidCredentials):
+        await service.verify(token)
+
+
+@pytest.mark.asyncio
+async def test_unexpired_legacy_ad_access_follows_documented_migration_contract() -> None:
+    started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
+    service = JwtService(SECRET, FakeKeyValue(), clock=lambda: started)
+    token = jwt.encode(
+        {
+            "iss": JWT_ISSUER,
+            "aud": JWT_AUDIENCE,
+            "sub": "8",
+            "identity_id": 18,
+            "provider_code": "ad",
+            "login_name": "ad.user",
+            "display_name": "目录用户",
+            "dept": "研发部",
+            "role": "operator",
+            "security_version": 1,
+            "token_type": ACCESS_TOKEN_TYPE,
+            "sid": "s" * 32,
+            "jti": "j" * 32,
+            "iat": started.timestamp(),
+            "exp": int((started + timedelta(minutes=15)).timestamp()),
+        },
+        SECRET,
+        algorithm="HS256",
+        headers={"kid": "1"},
+    )
+    claims = await service.verify(token)
+    assert claims.auth_time == started.timestamp()
+    assert claims.reauth_deadline == started.timestamp() + 480 * 60
+
+
+@pytest.mark.asyncio
+async def test_local_access_expiry_semantics_are_unchanged() -> None:
+    started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
+    current = [started]
+    service = JwtService(SECRET, FakeKeyValue(), clock=lambda: current[0])
+    pair = await service.issue_pair(local_claims(), TAB_ID)
+    current[0] = started + timedelta(minutes=15) - timedelta(seconds=1)
+    assert await service.verify(pair.token)
+    current[0] = started + timedelta(minutes=15)
+    with pytest.raises(InvalidCredentials):
+        await service.verify(pair.token)
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_family_expiry_semantics_are_unchanged() -> None:
+    started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
+    current = [started]
+    service = JwtService(SECRET, FakeKeyValue(), clock=lambda: current[0])
+    pair = await service.issue_pair(local_claims(), TAB_ID)
+    current[0] = started + timedelta(days=7) - timedelta(seconds=1)
+    rotated = await service.rotate_refresh(pair.refresh_token, TAB_ID)
+    assert rotated.refresh_token
+    current[0] = started + timedelta(days=7)
+    with pytest.raises(InvalidCredentials):
+        await service.rotate_refresh(rotated.refresh_token, TAB_ID)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_expired_access_requests_do_not_corrupt_revocation_state() -> None:
+    started = datetime(2026, 9, 4, 8, 0, tzinfo=UTC)
+    current = [started]
+    store = FakeKeyValue()
+    service = JwtService(SECRET, store, clock=lambda: current[0])
+    pair = await service.issue_pair(ad_claims(now=started, deadline_s=8 * 3600), TAB_ID)
+    current[0] = started + timedelta(minutes=15)
+
+    results = await asyncio.gather(
+        service.verify(pair.token),
+        service.verify(pair.token),
+        return_exceptions=True,
+    )
+    assert all(isinstance(item, InvalidCredentials) for item in results)
+    rotated = await service.rotate_refresh(pair.refresh_token, TAB_ID)
+    assert await service.verify(rotated.token)
+

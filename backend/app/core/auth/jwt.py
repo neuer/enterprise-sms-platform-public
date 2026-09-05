@@ -513,6 +513,16 @@ class JwtService:
             auth_policy_version=1,
         )
 
+    def _reject_expired_access(self, payload: dict[str, Any]) -> None:
+        """所有 Access Token 在 now >= exp 时失效；AD 截止优先在此之前判定。"""
+
+        try:
+            expires_at = int(payload["exp"])
+        except (KeyError, TypeError, ValueError):
+            raise InvalidCredentials("无效或已吊销的令牌") from None
+        if expires_at <= int(self.clock().timestamp()):
+            raise InvalidCredentials("无效或已吊销的令牌")
+
     async def _enforce_ad_access_deadline(
         self,
         claims: JwtClaims,
@@ -656,10 +666,11 @@ class JwtService:
             expires_at = int(payload["exp"])
         except (TypeError, ValueError):
             raise InvalidCredentials("无效或已吊销的令牌") from None
+        # Access 过期交给 verify()：AD 完整重认证截止必须优先于普通 exp。
         if (
             not allow_expired
             and expires_at <= int(self.clock().timestamp())
-            and payload.get("provider_code") != "ad"
+            and payload.get("token_type") != ACCESS_TOKEN_TYPE
         ):
             raise InvalidCredentials("无效或已吊销的令牌")
         return payload
@@ -825,6 +836,7 @@ class JwtService:
             raise InvalidCredentials("无效或已吊销的令牌")
         claims = self._claims(payload)
         await self._enforce_ad_access_deadline(claims, payload)
+        self._reject_expired_access(payload)
         try:
             if await self.store.get(f"auth:jwt:revoked:{claims.jti}") is not None:
                 raise InvalidCredentials("无效或已吊销的令牌")
