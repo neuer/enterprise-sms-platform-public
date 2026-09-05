@@ -179,17 +179,32 @@ def test_degraded_allows_small_notice_but_rejects_market_and_bulk() -> None:
     assert large.reason == "degraded_volume"
 
 
-def test_recovery_hold_allows_large_realtime_but_not_market() -> None:
+def test_recovery_hold_uses_same_recipient_cap_as_degraded() -> None:
     recovering = facts(outbox_active=120)
+    small = decide(
+        recovering,
+        category="verify",
+        recipient_count=20,
+        previous_state="closed",
+    )
+    assert small.allowed is True
+    assert small.state == "degraded"
+    over = decide(
+        recovering,
+        category="verify",
+        recipient_count=21,
+        previous_state="closed",
+    )
+    assert over.allowed is False
+    assert over.reason == "degraded_volume"
     large = decide(
         recovering,
         category="verify",
         recipient_count=500,
         previous_state="closed",
     )
-    assert large.allowed is True
-    assert large.state == "degraded"
-    assert large.reason == "recovery_hold"
+    assert large.allowed is False
+    assert large.reason == "degraded_volume"
     market = decide(
         recovering,
         category="market",
@@ -794,9 +809,12 @@ async def test_authorize_keeps_recovery_hold_from_snapshot() -> None:
     assert notice.allowed is True
     assert notice.state == "degraded"
     assert notice.reason == "recovery_hold"
-    oversized = authorize_from_snapshot(snap, category="notice", recipient_count=500)
-    assert oversized.allowed is True
-    assert oversized.reason == "recovery_hold"
+    oversized = authorize_from_snapshot(snap, category="notice", recipient_count=21)
+    assert oversized.allowed is False
+    assert oversized.reason == "degraded_volume"
+    huge = authorize_from_snapshot(snap, category="notice", recipient_count=500)
+    assert huge.allowed is False
+    assert huge.reason == "degraded_volume"
     market = authorize_from_snapshot(snap, category="market", recipient_count=1)
     assert market.allowed is False
     assert market.reason == "degraded_bulk"

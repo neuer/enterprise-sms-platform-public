@@ -1509,3 +1509,11 @@
 - 原因：旧代码先算出 OPEN 再写 future hold，当前请求立即全量放行，
   下一轮 previous=OPEN 使 hold 永不生效。
 - 影响：schema v1.6.91/0105、`send_admission.py`、`send_admission_repository.py`。
+
+## D111 recovery_hold 不再豁免收件人上限
+
+- 决策：`degraded` 下 `recovery_hold` 与普通降级共用 `degraded_max_recipients`
+  （默认 20）。超限 reason 仍为 `degraded_volume`，营销仍为 `degraded_bulk`。
+  本期不另开 recovery generation 令牌桶或独立 `recovery_max_recipients`。
+- 原因：恢复保持期比普通降级更宽松会在下游刚回落时注入大请求洪峰。
+- 影响：`send_admission.py`、`docs/runbooks/send-admission-lanes.md`。

@@ -278,7 +278,7 @@ def _apply_lane_and_request(
     if state == "degraded":
         if category == "market":
             return SendAdmissionDecision(state, "degraded_bulk", False, 30)
-        if reason != "recovery_hold" and recipient_count > limits.degraded_max_recipients:
+        if recipient_count > limits.degraded_max_recipients:
             return SendAdmissionDecision(state, "degraded_volume", False, 30)
     return SendAdmissionDecision(state, reason, True, 0)
 
@@ -291,7 +291,7 @@ def decide(
     previous_state: str | None = None,
     limits: SendAdmissionLimits | None = None,
 ) -> SendAdmissionDecision:
-    """把容量带叠到类别/规模：真实降级只放行少量 verify/notice；recovery_hold 仍拒营销。"""
+    """把容量带叠到类别/规模：degraded 与 recovery_hold 都只放行少量 verify/notice。"""
 
     selected = limits or SendAdmissionLimits()
     state, reason = evaluate_capacity(
