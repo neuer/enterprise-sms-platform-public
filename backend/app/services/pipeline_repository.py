@@ -11,7 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
 from app.core.runtime_resources import database_engine, redis_client
 from app.services.approval_repository import record_pending_approval_alert
 from app.services.blacklist import RedisBlacklistCache
@@ -149,10 +149,11 @@ class SqlPipelineStore:
         app_id: int,
         estimated: int,
         limit: int,
-    ) -> None:
+    ) -> Any:
         if estimated < 1 or limit < 1:
             raise ValueError("in-flight reservation bounds invalid")
         from app.services.pipeline import InFlightLimitExceeded
+        from app.services.send_inflight import InFlightReservation
 
         async with self._engine().begin() as connection:
             await connection.execute(
@@ -184,6 +185,43 @@ class SqlPipelineStore:
             )
             if updated.scalar_one_or_none() is None:
                 raise InFlightLimitExceeded("应用在途分片已达上限")
+            created = (
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO send_inflight_reservation (
+                          app_id, reserved_chunks, state, generation, expires_at
+                        ) VALUES (
+                          :app_id, :estimated, 'reserved', 1,
+                          now() + interval '15 minutes'
+                        )
+                        RETURNING id, generation, reserved_chunks
+                        """
+                    ),
+                    {"app_id": app_id, "estimated": estimated},
+                )
+            ).mappings().one()
+            return InFlightReservation(
+                int(created["id"]),
+                int(created["generation"]),
+                int(created["reserved_chunks"]),
+            )
+
+    async def release_in_flight_reservation(
+        self,
+        reservation_id: int,
+        generation: int,
+        reason: str,
+    ) -> bool:
+        from app.services.send_inflight import release_in_flight_reservation
+
+        async with self._engine().begin() as connection:
+            return await release_in_flight_reservation(
+                connection,
+                reservation_id=reservation_id,
+                generation=generation,
+                reason=reason,
+            )
 
     async def blacklisted(self, phone_hmacs: set[str]) -> set[str]:
         if not phone_hmacs:
@@ -235,6 +273,110 @@ class SqlPipelineStore:
                     "hit_count": hit_count,
                 },
             )
+
+    async def reserve_idempotency_claim(
+        self,
+        scope: IdempotencyScope,
+        biz_id: str,
+        *,
+        token: str,
+        fingerprint: str,
+        ttl_s: int,
+    ) -> int | None:
+        """以 PostgreSQL 单调 generation 占用 claim；未过期占用返回 None。"""
+
+        async with self._engine().begin() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO idempotency_claim (
+                          scope_kind, scope_id, biz_id, token, fingerprint,
+                          generation, expires_at
+                        ) VALUES (
+                          :scope_kind, :scope_id, :biz_id, :token, :fingerprint,
+                          1, now() + make_interval(secs => :ttl_s)
+                        )
+                        ON CONFLICT (scope_kind, scope_id, biz_id)
+                        DO UPDATE SET
+                          generation = idempotency_claim.generation + 1,
+                          token = EXCLUDED.token,
+                          fingerprint = EXCLUDED.fingerprint,
+                          expires_at = EXCLUDED.expires_at,
+                          updated_at = now()
+                        WHERE idempotency_claim.expires_at < now()
+                        RETURNING generation
+                        """
+                    ),
+                    {
+                        "scope_kind": scope.kind,
+                        "scope_id": scope.id,
+                        "biz_id": biz_id,
+                        "token": token,
+                        "fingerprint": fingerprint,
+                        "ttl_s": ttl_s,
+                    },
+                )
+            ).scalar_one_or_none()
+        return int(row) if row is not None else None
+
+    async def live_idempotency_claim(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> bool:
+        async with self._engine().connect() as connection:
+            exists = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT 1 FROM idempotency_claim
+                        WHERE scope_kind=:scope_kind AND scope_id=:scope_id
+                          AND biz_id=:biz_id AND expires_at > now()
+                        """
+                    ),
+                    {
+                        "scope_kind": scope.kind,
+                        "scope_id": scope.id,
+                        "biz_id": biz_id,
+                    },
+                )
+            ).scalar_one_or_none()
+        return exists is not None
+
+    async def verify_uncertain_effect(
+        self, principal: UncertainEffectPrincipal
+    ) -> None:
+        """仅接受数据库中仍有效的双人处置 generation，禁止伪造系统主体。"""
+
+        async with self._engine().connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT 1
+                        FROM sms_uncertain_resolution r
+                        JOIN sms_chunk c ON c.id=r.chunk_id
+                        WHERE r.id=:resolution_id
+                          AND r.effect_generation=:generation
+                          AND r.proposer_account_id=:proposer
+                          AND r.confirmer_account_id=:confirmer
+                          AND r.proposer_account_id <> r.confirmer_account_id
+                          AND r.state IN (
+                            'approved','effect_pending','applying',
+                            'retryable_effect_error'
+                          )
+                          AND c.status='unknown_terminal'
+                        """
+                    ),
+                    {
+                        "resolution_id": principal.resolution_id,
+                        "generation": principal.effect_generation,
+                        "proposer": principal.proposer_account_id,
+                        "confirmer": principal.confirmer_account_id,
+                    },
+                )
+            ).scalar_one_or_none()
+        if row is None:
+            raise ValueError("system resend principal is not forgeable")
 
     async def exists(
         self, scope: IdempotencyScope, biz_id: str, batch_no: str
@@ -377,7 +519,10 @@ class SqlPipelineStore:
                 ),
                 "creator_account_id": (
                     command.principal.account_id
-                    if isinstance(command.principal, SecurityPrincipal)
+                    if isinstance(
+                        command.principal,
+                        (SecurityPrincipal, UncertainEffectPrincipal),
+                    )
                     else None
                 ),
                 "creator_identity_id": (
@@ -428,6 +573,18 @@ class SqlPipelineStore:
                 reservation_id=command.usage_reservation_id,
                 batch_id=batch_id,
             )
+        if command.inflight_reservation_id is not None:
+            from app.services.send_inflight import bind_in_flight_reservation
+
+            if command.inflight_reservation_generation is None:
+                raise ValueError("in-flight reservation generation missing")
+            await bind_in_flight_reservation(
+                connection,
+                reservation_id=command.inflight_reservation_id,
+                generation=command.inflight_reservation_generation,
+                batch_id=batch_id,
+                app_id=int(command.app_id or 0),
+            )
         await connection.execute(
             text(
                 """
@@ -450,6 +607,36 @@ class SqlPipelineStore:
             ],
         )
         if command.biz_id:
+            if (
+                command.idempotency_claim_token
+                and command.idempotency_claim_generation is not None
+            ):
+                claimed = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT token, generation
+                            FROM idempotency_claim
+                            WHERE scope_kind=:scope_kind
+                              AND scope_id=:scope_id
+                              AND biz_id=:biz_id
+                              AND expires_at > now()
+                            FOR UPDATE
+                            """
+                        ),
+                        {
+                            "scope_kind": command.scope_kind,
+                            "scope_id": command.scope_id,
+                            "biz_id": command.biz_id,
+                        },
+                    )
+                ).mappings().one_or_none()
+                if (
+                    claimed is None
+                    or str(claimed["token"]).strip() != command.idempotency_claim_token
+                    or int(claimed["generation"]) != command.idempotency_claim_generation
+                ):
+                    raise RuntimeError("idempotency claim lost")
             await connection.execute(
                 text(
                     """

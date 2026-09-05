@@ -9,7 +9,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.apikey import ApiAppContext
-from app.core.auth.accounts import ActorPrincipal, SecurityPrincipal
+from app.core.auth.accounts import (
+    ActorPrincipal,
+    SecurityPrincipal,
+    UncertainEffectPrincipal,
+)
 from app.core.runtime_resources import database_engine
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.outbox import OutboxEventSpec
@@ -325,7 +329,7 @@ class UncertainResolutionService:
                         chunk_id=current.chunk_id,
                         resolution_id=current.id,
                         generation=current.effect_generation,
-                        actor=None,
+                        actor=_effect_principal(current),
                     )
                 else:
                     app_ctx = None
@@ -481,7 +485,7 @@ class UncertainResolutionService:
             chunk_id=int(current["chunk_id"]),
             resolution_id=int(current["id"]),
             generation=int(current["effect_generation"]),
-            actor=None,
+            actor=_effect_principal(current),
         )
         from app.api.messages import _pipeline
 
@@ -504,7 +508,7 @@ class UncertainResolutionService:
         chunk_id: int,
         resolution_id: int,
         generation: int,
-        actor: ActorPrincipal | None,
+        actor: UncertainEffectPrincipal,
     ) -> SendRequest:
         batch = (
             await connection.execute(
@@ -552,6 +556,15 @@ class UncertainResolutionService:
                 object_id=str(batch["batch_no"]),
             ),
         )
+        bound = UncertainEffectPrincipal(
+            resolution_id=actor.resolution_id,
+            proposer_account_id=actor.proposer_account_id,
+            confirmer_account_id=actor.confirmer_account_id,
+            effect_generation=actor.effect_generation,
+            dept=str(batch["dept"])[:128],
+        )
+        if bound.resolution_id != resolution_id or bound.effect_generation != generation:
+            raise UncertainResolutionConflict("处置 generation 已变化")
         return SendRequest(
             category=str(batch["category"]),
             mobiles=mobiles,
@@ -559,11 +572,35 @@ class UncertainResolutionService:
             sign_name=str(batch["sign_name"]) if batch["sign_name"] is not None else None,
             channel=str(batch["channel"]),
             consent_confirmed=bool(batch["consent_confirmed"]),
-            actor=actor,
+            actor=bound,
             biz_id=f"manual-resend:{resolution_id}:{generation}"[:32],
             is_test=bool(batch["is_test"]),
             resend_dept=str(batch["dept"]),
         )
+
+
+def _effect_principal(current: Any) -> UncertainEffectPrincipal:
+    if isinstance(current, UncertainResolution):
+        confirmer = current.confirmer_account_id
+        proposer = current.proposer_account_id
+        resolution_id = current.id
+        generation = current.effect_generation
+        dept = current.source_category or "ops"
+    else:
+        confirmer = current.get("confirmer_account_id")
+        proposer = current.get("proposer_account_id")
+        resolution_id = int(current["id"])
+        generation = int(current.get("effect_generation") or 1)
+        dept = str(current.get("source_dept") or current.get("dept") or "ops")
+    if confirmer is None:
+        raise UncertainResolutionConflict("重发缺少确认人")
+    return UncertainEffectPrincipal(
+        resolution_id=int(resolution_id),
+        proposer_account_id=int(proposer),
+        confirmer_account_id=int(confirmer),
+        effect_generation=int(generation),
+        dept=str(dept)[:128] or "ops",
+    )
 
 
 async def _source_app_context(

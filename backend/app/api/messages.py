@@ -30,7 +30,6 @@ from app.services.crypto import CryptoService, ProtectedPhone
 from app.services.freq import FrequencyFenceLost, FrequencyLimiter
 from app.services.idempotency import IdempotencyCoordinationTimeout, IdempotencyCoordinator
 from app.services.pipeline import (
-    AcceptancePreauthorization,
     AllFiltered,
     BatchResponse,
     ConsentRequired,
@@ -310,6 +309,7 @@ async def _pipeline(app: ApiAppContext) -> SendPipeline:
             market_approval_threshold=policy.market_approval_threshold,
             approval_expire_hours=policy.approval_expire_hours,
             test_send_max=policy.test_send_max,
+            vendor_batch_size=max(1, int(config.get("vendor_batch_size", "500"))),
         ),
     )
 
@@ -574,18 +574,30 @@ async def send_vendor_test_api_uat(
     app: Annotated[ApiAppContext, Depends(require_api_app)],
 ) -> BatchResponse:
     pipeline = await _pipeline(app)
+    replay_request = SendRequest(
+        category=payload.category,
+        mobiles=payload.mobiles,
+        content=payload.content,
+        template_id=payload.template_id,
+        template_params=payload.template_params,
+        sign_name=payload.sign_name,
+        biz_id=payload.biz_id,
+        channel="api",
+        actor=ApplicationPrincipal(app.app_id, app.name, app.dept),
+        is_test=True,
+        vendor_test_uat=True,
+    )
     try:
-        preauthorization: AcceptancePreauthorization = await pipeline.preauthorize(
-            app,
-            payload.category,
-        )
+        replayed = await pipeline.replay_if_present(app, replay_request)
     except (
         CategoryNotAllowed,
         ApplicationRateLimitExceeded,
-        SendAdmissionRejected,
+        IdempotencyConflict,
         ValueError,
     ) as error:
         raise _error(error) from None
+    if replayed is not None:
+        return replayed
     await _require_vendor_test_api_ready()
     try:
         recipient = await _resolve_vendor_test_api_recipient(payload.mobiles[0])
@@ -628,7 +640,6 @@ async def send_vendor_test_api_uat(
                 protected_hmac_candidates=recipient.hmac_candidates,
                 vendor_test_uat=True,
             ),
-            preauthorization=preauthorization,
         )
     except (
         AllFiltered,

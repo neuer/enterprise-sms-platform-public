@@ -881,6 +881,53 @@ def test_auth_r2_credential_version_is_expand_only() -> None:
     assert "ADD COLUMN IF NOT EXISTS" in source
 
 
+def test_send_inflight_reservation_lifecycle_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0094_send_inflight_reservation_lifecycle.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.80：" in schema
+    for contract in (schema, source):
+        assert "batch_bound" in contract
+        assert "send_inflight_reservation_id" in contract
+        assert "ck_inflight_released_pair" in contract
+        assert "uk_sms_batch_send_inflight_reservation" in contract
+    assert 'revision = "0094_send_inflight_reservation_lifecycle"' in source
+    assert 'down_revision = "0093_auth_r2_credential_version"' in source
+    assert "DELETE FROM" not in source
+    assert "ADD COLUMN IF NOT EXISTS" in source
+
+
+def test_vendor_attempt_generation_machine_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0095_vendor_attempt_generation_machine.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.81：" in schema
+    for contract in (schema, source):
+        assert "invoking" in contract
+        assert "uk_sms_vendor_attempt_generation" in contract
+        assert "invoke_started_at" in contract
+    assert 'revision = "0095_vendor_attempt_generation_machine"' in source
+    assert 'down_revision = "0094_send_inflight_reservation_lifecycle"' in source
+    assert "DELETE FROM" not in source
+    assert "ON CONFLICT DO NOTHING" not in source
+
+
+def test_idempotency_claim_generation_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0096_idempotency_claim_generation.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.82：" in schema
+    for contract in (schema, source):
+        assert "idempotency_claim" in contract
+        assert "uk_idempotency_claim_scope" in contract
+    assert 'revision = "0096_idempotency_claim_generation"' in source
+    assert 'down_revision = "0095_vendor_attempt_generation_machine"' in source
+    assert "DELETE FROM" not in source
+
+
 def test_vendor_routing_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0090_vendor_routing.py"

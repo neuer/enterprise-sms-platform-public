@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.core.apikey import ApiAppContext
-from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
 from app.services.app_ratelimit import ApplicationRateLimitExceeded
 from app.services.category import CategoryNotAllowed, policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
@@ -1109,6 +1109,45 @@ async def test_in_flight_query_failure_fails_closed() -> None:
             ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
             SendRequest("notice", ["13800138000"], content="通知", biz_id="busy-2"),
         )
+
+
+@pytest.mark.asyncio
+async def test_unbound_inflight_reservation_releases_on_accept_failure() -> None:
+    class TrackingStore(FailingStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.releases: list[tuple[int, int, str]] = []
+
+        async def reserve_in_flight_chunks(
+            self, app_id: int, estimated: int, limit: int
+        ) -> object:
+            assert app_id == 7
+            assert estimated == 1
+            assert limit >= 1
+            return type("Reservation", (), {"id": 41, "generation": 1})()
+
+        async def release_in_flight_reservation(
+            self, reservation_id: int, generation: int, reason: str
+        ) -> bool:
+            self.releases.append((reservation_id, generation, reason))
+            return True
+
+    store = TrackingStore()
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="inflight-1"),
+        )
+    assert store.releases == [(41, 1, "acceptance-failed")]
 
 
 @pytest.mark.asyncio
@@ -2485,3 +2524,301 @@ async def test_web_channel_skips_application_rate_limiter() -> None:
         ),
     )
     assert result.batch_no == "new-batch"
+
+@pytest.mark.asyncio
+async def test_uncertain_effect_principal_requires_verified_resolution() -> None:
+    class ClosedStore(FakeStore):
+        async def verify_uncertain_effect(self, principal: UncertainEffectPrincipal) -> None:
+            raise ValueError("system resend principal is not forgeable")
+
+    pipeline = SendPipeline(
+        store=ClosedStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(ValueError, match="system resend principal is not forgeable"):
+        await pipeline.accept(
+            ApiAppContext(0, "web", "平台部", frozenset({"notice"})),
+            SendRequest(
+                "notice",
+                ["13800138000"],
+                content="维护通知",
+                biz_id="manual-resend:4:2",
+                channel="web",
+                actor=UncertainEffectPrincipal(4, 1, 2, 2, "平台部"),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_uncertain_effect_principal_creates_child_after_verify() -> None:
+    class OpenStore(FakeStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.verified: list[UncertainEffectPrincipal] = []
+
+        async def verify_uncertain_effect(self, principal: UncertainEffectPrincipal) -> None:
+            self.verified.append(principal)
+
+    store = OpenStore()
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    result = await pipeline.accept(
+        ApiAppContext(0, "web", "平台部", frozenset({"notice"})),
+        SendRequest(
+            "notice",
+            ["13800138000"],
+            content="维护通知",
+            biz_id="manual-resend:4:2",
+            channel="web",
+            actor=UncertainEffectPrincipal(4, 1, 2, 2, "平台部"),
+        ),
+    )
+    assert result.batch_no == "new-batch"
+    assert store.verified[0].resolution_id == 4
+    assert store.commands[0].principal.actor_name == "system_resend:4"
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_returns_existing_without_admission() -> None:
+    class BoomAdmission:
+        async def authorize(self, **_values: object) -> None:
+            raise AssertionError("replay must not authorize new send")
+
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13800138000"],
+        content="通知",
+        biz_id="replay-1",
+    )
+    idempotency = FakeIdempotency(existing="existing")
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=idempotency,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        admission_guard=BoomAdmission(),  # type: ignore[arg-type]
+    )
+    policy = policy_for_category("notice", app.allowed_categories)
+    idempotency.stored_request_hash = pipeline._request_hash(
+        request, app, policy, key_version=1
+    )
+    empty = await pipeline.replay_if_present(
+        app,
+        SendRequest("notice", ["13800138000"], content="通知"),
+    )
+    assert empty is None
+    replayed = await pipeline.replay_if_present(app, request)
+    assert replayed is not None
+    assert replayed.batch_no == "existing"
+    assert replayed.idempotent is True
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_rejects_fingerprint_mismatch() -> None:
+    idempotency = FakeIdempotency()
+    idempotency.inspect_view = SimpleNamespace(fingerprint="other-hash")
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=idempotency,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(IdempotencyConflict):
+        await pipeline.replay_if_present(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest(
+                "notice",
+                ["13800138000"],
+                content="通知",
+                biz_id="replay-conflict",
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_waits_for_in_flight_claim() -> None:
+    class WaitIdempotency(FakeIdempotency):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inspect_view = SimpleNamespace(fingerprint="")
+
+        async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+            return None
+
+        async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+            return "existing"
+
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13800138000"],
+        content="通知",
+        biz_id="replay-wait",
+    )
+    idempotency = WaitIdempotency()
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=idempotency,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    policy = policy_for_category("notice", app.allowed_categories)
+    idempotency.stored_request_hash = pipeline._request_hash(
+        request, app, policy, key_version=1
+    )
+    replayed = await pipeline.replay_if_present(app, request)
+    assert replayed is not None
+    assert replayed.batch_no == "existing"
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_returns_none_when_inspect_empty() -> None:
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    missing = await pipeline.replay_if_present(
+        ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+        SendRequest(
+            "notice",
+            ["13800138000"],
+            content="通知",
+            biz_id="replay-miss",
+        ),
+    )
+    assert missing is None
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_returns_none_when_wait_times_out() -> None:
+    class TimeoutIdempotency(FakeIdempotency):
+        def __init__(self) -> None:
+            super().__init__()
+            self.inspect_view = SimpleNamespace(fingerprint="")
+
+        async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+            return None
+
+        async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+            return None
+
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=TimeoutIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    missing = await pipeline.replay_if_present(
+        ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+        SendRequest(
+            "notice",
+            ["13800138000"],
+            content="通知",
+            biz_id="replay-timeout",
+        ),
+    )
+    assert missing is None
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_consumes_replay_limit_only() -> None:
+    class ReplayLimiter:
+        def __init__(self) -> None:
+            self.checked = 0
+            self.replayed = 0
+
+        async def check(self, **_values: object) -> None:
+            self.checked += 1
+
+        async def check_replay(self, **_values: object) -> None:
+            self.replayed += 1
+
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13800138000"],
+        content="通知",
+        biz_id="replay-limit",
+    )
+    limiter = ReplayLimiter()
+    idempotency = FakeIdempotency(existing="existing")
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=idempotency,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        acceptance_limiter=limiter,  # type: ignore[arg-type]
+    )
+    policy = policy_for_category("notice", app.allowed_categories)
+    idempotency.stored_request_hash = pipeline._request_hash(
+        request, app, policy, key_version=1
+    )
+    replayed = await pipeline.replay_if_present(app, request)
+    assert replayed is not None
+    assert limiter.replayed == 1
+    assert limiter.checked == 0
+
+
+@pytest.mark.asyncio
+async def test_replay_if_present_rewrites_uat_plaintext_identity() -> None:
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        ["13800138000"],
+        content="通知",
+        biz_id="replay-uat",
+        vendor_test_uat=True,
+    )
+    idempotency = FakeIdempotency(existing="existing")
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=idempotency,
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    rewritten = pipeline._with_uat_replay_identity(request)
+    policy = policy_for_category("notice", app.allowed_categories)
+    idempotency.stored_request_hash = pipeline._request_hash(
+        rewritten, app, policy, key_version=1
+    )
+    replayed = await pipeline.replay_if_present(app, request)
+    assert replayed is not None
+    assert rewritten.protected_mobiles
+    assert rewritten.mobiles == ()
+

@@ -80,8 +80,7 @@ class IdempotencyClaimView:
 
 CLAIM_RELEASE_LUA = """
 local current = redis.call('GET', KEYS[1])
-if not current then return 0 end
-if current == ARGV[1] or string.sub(current, 1, string.len(ARGV[1]) + 1) == ARGV[1] .. ':' then
+if current == ARGV[1] then
   return redis.call('DEL', KEYS[1])
 end
 return 0
@@ -89,8 +88,7 @@ return 0
 
 CLAIM_RENEW_LUA = """
 local current = redis.call('GET', KEYS[1])
-if not current then return 0 end
-if current == ARGV[1] or string.sub(current, 1, string.len(ARGV[1]) + 1) == ARGV[1] .. ':' then
+if current == ARGV[1] then
   return redis.call('EXPIRE', KEYS[1], ARGV[2])
 end
 return 0
@@ -162,6 +160,8 @@ class IdempotencyCoordinator:
         self.wait_attempts = wait_attempts
         self.wait_interval_s = wait_interval_s
         self.sleeper = sleeper
+        self._payloads: dict[str, str] = {}
+        self._local_generations: dict[str, int] = {}
 
     @staticmethod
     def key(scope: IdempotencyScope, biz_id: str) -> str:
@@ -240,6 +240,13 @@ class IdempotencyCoordinator:
             return IdempotencyClaimView(str(raw), "", 1)
         return IdempotencyClaimView(parts[0], parts[1], int(parts[2]))
 
+    def _payload_for(self, scope: IdempotencyScope, biz_id: str, token: str) -> str | None:
+        key = self.claim_key(scope, biz_id)
+        payload = self._payloads.get(key)
+        if payload is not None and payload.startswith(f"{token}:"):
+            return payload
+        return None
+
     async def claim(
         self,
         scope: IdempotencyScope,
@@ -248,42 +255,77 @@ class IdempotencyCoordinator:
         fingerprint: str = "",
     ) -> str | None:
         token = uuid4().hex
-        payload = f"{token}:{fingerprint}:1" if fingerprint else token
+        claim_key = self.claim_key(scope, biz_id)
+        reserver = getattr(self.repository, "reserve_idempotency_claim", None)
+        if reserver is not None:
+            generation = await reserver(
+                scope,
+                biz_id,
+                token=token,
+                fingerprint=fingerprint,
+                ttl_s=self.claim_ttl_s,
+            )
+            if generation is None:
+                return None
+        else:
+            generation = self._local_generations.get(claim_key, 0) + 1
+            self._local_generations[claim_key] = generation
+        payload = f"{token}:{fingerprint}:{generation}"
         try:
             acquired = await self.redis.set(
-                self.claim_key(scope, biz_id),
+                claim_key,
                 payload,
                 nx=True,
                 ex=self.claim_ttl_s,
             )
         except Exception as exc:
             raise ControlPlaneUnavailable("幂等控制面不可用") from exc
-        return token if acquired else None
+        if not acquired:
+            return None
+        self._payloads[claim_key] = payload
+        return token
 
     async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         claim_key = self.claim_key(scope, biz_id)
+        live_checker = getattr(self.repository, "live_idempotency_claim", None)
         for attempt in range(self.wait_attempts):
-            if await self.redis.get(claim_key) is None:
+            owned = await self.redis.get(claim_key)
+            if owned is None:
                 batch_no = await self.repository.find_existing(scope, biz_id)
                 if batch_no is not None:
                     await self.remember(scope, biz_id, batch_no)
-                return batch_no
+                    return batch_no
+                if live_checker is not None and await live_checker(scope, biz_id):
+                    if attempt + 1 < self.wait_attempts:
+                        await self.sleeper(self.wait_interval_s)
+                    continue
+                return None
             if attempt + 1 < self.wait_attempts:
                 await self.sleeper(self.wait_interval_s)
         batch_no = await self.repository.find_existing(scope, biz_id)
         if batch_no is not None:
             await self.remember(scope, biz_id, batch_no)
             return batch_no
-        raise IdempotencyCoordinationTimeout("idempotency wait timed out")
+        if await self.redis.get(claim_key) is not None:
+            raise IdempotencyCoordinationTimeout("idempotency wait timed out")
+        if live_checker is not None and await live_checker(scope, biz_id):
+            raise IdempotencyCoordinationTimeout("idempotency wait timed out")
+        return None
 
     async def renew(
         self, scope: IdempotencyScope, biz_id: str, token: str
     ) -> bool:
+        payload = self._payload_for(scope, biz_id, token)
+        if payload is None:
+            viewed = await self.inspect(scope, biz_id)
+            if viewed is None or viewed.token != token:
+                return False
+            payload = f"{viewed.token}:{viewed.fingerprint}:{viewed.generation}"
         renewed = await self.redis.eval(
             CLAIM_RENEW_LUA,
             1,
             self.claim_key(scope, biz_id),
-            token,
+            payload,
             self.claim_ttl_s,
         )
         return bool(renewed)
@@ -310,9 +352,16 @@ class IdempotencyCoordinator:
     async def release(
         self, scope: IdempotencyScope, biz_id: str, token: str
     ) -> None:
+        payload = self._payload_for(scope, biz_id, token)
+        if payload is None:
+            viewed = await self.inspect(scope, biz_id)
+            if viewed is None or viewed.token != token:
+                return
+            payload = f"{viewed.token}:{viewed.fingerprint}:{viewed.generation}"
         await self.redis.eval(
             CLAIM_RELEASE_LUA,
             1,
             self.claim_key(scope, biz_id),
-            token,
+            payload,
         )
+        self._payloads.pop(self.claim_key(scope, biz_id), None)

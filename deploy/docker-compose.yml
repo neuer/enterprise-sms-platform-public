@@ -217,6 +217,7 @@ services:
       - { source: data_aes_key, target: data_aes_key }
       - { source: data_hmac_key, target: data_hmac_key }
       - { source: api_key_pepper_key, target: api_key_pepper_key }
+      - { source: api_key_legacy_hmac_pepper, target: api_key_legacy_hmac_pepper }
       - { source: audit_context_key, target: audit_context_key }
       - { source: audit_system_api_context_key, target: audit_system_api_context_key }
       - { source: alert_credential_public_key, target: alert_credential_public_key }
@@ -267,6 +268,7 @@ services:
     environment:
       <<: *backend-environment
       SMS_COMPONENT: worker
+      SMS_RUNTIME_HEARTBEAT_COMPONENTS: send-realtime
       DB_RUNTIME_ROLE: send
       AUDIT_PRODUCER_DOMAIN: realtime
     secrets:
@@ -296,6 +298,7 @@ services:
     environment:
       <<: *backend-environment
       SMS_COMPONENT: worker
+      SMS_RUNTIME_HEARTBEAT_COMPONENTS: none
       DB_RUNTIME_ROLE: send
       DB_WORKER_POOL_SIZE: "2"
       DB_WORKER_MAX_OVERFLOW: "0"
@@ -323,6 +326,7 @@ services:
     environment:
       <<: *backend-environment
       SMS_COMPONENT: worker
+      SMS_RUNTIME_HEARTBEAT_COMPONENTS: send-bulk
       DB_RUNTIME_ROLE: send
       AUDIT_PRODUCER_DOMAIN: bulk
     secrets:
@@ -353,6 +357,7 @@ services:
     environment:
       <<: *backend-environment
       SMS_COMPONENT: worker
+      SMS_RUNTIME_HEARTBEAT_COMPONENTS: none
       DB_RUNTIME_ROLE: callback
     secrets:
       - { source: data_aes_key, target: data_aes_key }
@@ -372,6 +377,7 @@ services:
     environment:
       <<: *backend-environment
       SMS_COMPONENT: beat
+      SMS_RUNTIME_HEARTBEAT_COMPONENTS: none
       DB_RUNTIME_ROLE: scheduler
     secrets:
       - { source: db_scheduler_password, target: db_scheduler_password }
@@ -393,6 +399,7 @@ services:
     environment:
       <<: *backend-environment
       SMS_COMPONENT: background
+      SMS_RUNTIME_HEARTBEAT_COMPONENTS: outbox-dispatcher
       DB_RUNTIME_ROLE: scheduler
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -491,6 +498,8 @@ secrets:
     file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/data_hmac_key
   api_key_pepper_key:
     file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/api_key_pepper_key
+  api_key_legacy_hmac_pepper:
+    file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/api_key_legacy_hmac_pepper
   audit_context_key:
     file: ${SMS_RUNTIME_SECRETS_DIR:-/run/sms-platform/secrets/current}/backend/audit_context_key
   audit_system_api_context_key:

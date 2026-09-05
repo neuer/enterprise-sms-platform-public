@@ -134,9 +134,16 @@ class Bucket(Protocol):
         vendor_qps: int,
         reserved_realtime_qps: int,
         now_ms: int | None = None,
+        vendor_id: str | None = None,
     ) -> int | None: ...
 
-    async def refund(self, *, vendor_qps: int, lease_epoch: int) -> None: ...
+    async def refund(
+        self,
+        *,
+        vendor_qps: int,
+        lease_epoch: int,
+        vendor_id: str | None = None,
+    ) -> None: ...
 
 
 class ChunkStore(Protocol):
@@ -283,13 +290,25 @@ class SendWorker:
                 extra={"error_type": type(exc).__name__},
             )
 
-    async def _token(self, lane: Literal["realtime", "bulk"]) -> int | None:
+    async def _token(
+        self,
+        lane: Literal["realtime", "bulk"],
+        vendor_id: str = PRIMARY_VENDOR_ID,
+    ) -> int | None:
         while True:
-            lease_epoch = await self.bucket.acquire(
-                lane=lane,
-                vendor_qps=self.vendor_qps,
-                reserved_realtime_qps=self.reserved_realtime_qps,
-            )
+            try:
+                lease_epoch = await self.bucket.acquire(
+                    lane=lane,
+                    vendor_qps=self.vendor_qps,
+                    reserved_realtime_qps=self.reserved_realtime_qps,
+                    vendor_id=vendor_id,
+                )
+            except TypeError:
+                lease_epoch = await self.bucket.acquire(
+                    lane=lane,
+                    vendor_qps=self.vendor_qps,
+                    reserved_realtime_qps=self.reserved_realtime_qps,
+                )
             if lease_epoch is not None:
                 return lease_epoch
             # 等令牌期间可能发生熔断暂停；每轮复查，暂停即停发（#349）。
@@ -297,12 +316,23 @@ class SendWorker:
                 return None
             await self.sleeper(0.05)
 
-    async def _refund_token(self, lease_epoch: int) -> None:
+    async def _refund_token(
+        self,
+        lease_epoch: int,
+        vendor_id: str = PRIMARY_VENDOR_ID,
+    ) -> None:
         try:
-            await self.bucket.refund(
-                vendor_qps=self.vendor_qps,
-                lease_epoch=lease_epoch,
-            )
+            try:
+                await self.bucket.refund(
+                    vendor_qps=self.vendor_qps,
+                    lease_epoch=lease_epoch,
+                    vendor_id=vendor_id,
+                )
+            except TypeError:
+                await self.bucket.refund(
+                    vendor_qps=self.vendor_qps,
+                    lease_epoch=lease_epoch,
+                )
         except Exception as exc:
             LOGGER.error(
                 "vendor token refund unavailable",
@@ -334,6 +364,7 @@ class SendWorker:
         *,
         claimed: bool,
         lease_epoch: int | None = None,
+        vendor_id: str = PRIMARY_VENDOR_ID,
     ) -> bool:
         if self.control_guard is None:
             return True
@@ -351,7 +382,7 @@ class SendWorker:
                     await self.store.release_control_claim(chunk.chunk_id)
             finally:
                 if lease_epoch is not None:
-                    await self._refund_token(lease_epoch)
+                    await self._refund_token(lease_epoch, vendor_id)
             if pause_error is not None:
                 raise pause_error from None
             return False
@@ -363,6 +394,7 @@ class SendWorker:
         lane: Literal["realtime", "bulk"],
         retry_index: int,
         lease_epoch: int,
+        vendor_id: str = PRIMARY_VENDOR_ID,
     ) -> SubmissionClaimStatus:
         segments = calculate_quota_cost(
             f"{chunk.sign_name}{chunk.content}",
@@ -376,7 +408,7 @@ class SendWorker:
         )
         if claim.status is SubmissionClaimStatus.CLAIMED:
             return claim.status
-        await self._refund_token(lease_epoch)
+        await self._refund_token(lease_epoch, vendor_id)
         if claim.status is SubmissionClaimStatus.DAILY_LIMIT:
             if claim.reset_at is None:
                 raise RuntimeError("daily-limit claim missing reset_at")
@@ -385,7 +417,18 @@ class SendWorker:
         return claim.status
 
     def _gateway_for(self, vendor_id: str) -> Gateway:
-        return self.gateways.get(vendor_id, self.gateway)
+        mapped = self.gateways.get(vendor_id)
+        if mapped is not None:
+            return mapped
+        if vendor_id == PRIMARY_VENDOR_ID:
+            return self.gateway
+        raise LookupError(vendor_id)
+
+    async def _load_attempts(self, chunk: ChunkPayload) -> tuple[VendorAttempt, ...]:
+        loader = getattr(self.store, "list_vendor_attempts", None)
+        if loader is None:
+            return ()
+        return tuple(await loader(chunk.chunk_id))
 
     async def _health_snapshot(self, *, platform_paused: bool) -> tuple[VendorHealth, ...]:
         if self.health is not None:
@@ -457,6 +500,35 @@ class SendWorker:
         await self._record_failure(chunk, error.code)
         return SubmitOutcome.FAILED
 
+    async def _persist_attempt(
+        self,
+        chunk: ChunkPayload,
+        *,
+        vendor_id: str,
+        generation: int,
+        outcome: str,
+        attempt_id: int | None = None,
+        safe_to_failover: bool = False,
+        vendor_code: int | None = None,
+    ) -> None:
+        completer = getattr(self.store, "complete_vendor_attempt", None)
+        if attempt_id is not None and completer is not None:
+            await completer(
+                attempt_id,
+                outcome=outcome,
+                safe_to_failover=safe_to_failover,
+                vendor_code=vendor_code,
+            )
+            return
+        await self._record_attempt(
+            chunk,
+            vendor_id=vendor_id,
+            generation=generation,
+            outcome=outcome,
+            safe_to_failover=safe_to_failover,
+            vendor_code=vendor_code,
+        )
+
     async def submit(
         self,
         chunk: ChunkPayload,
@@ -465,11 +537,10 @@ class SendWorker:
         allow_split: bool = True,
     ) -> SubmitOutcome:
         retry_index = chunk.retry_count
-        vendor_id = chunk.selected_vendor or PRIMARY_VENDOR_ID
-        generation = max(1, chunk.route_generation)
-        attempts: list[VendorAttempt] = []
+        attempts = list(await self._load_attempts(chunk))
         claimed = False
         lease_epoch: int | None = None
+        lease_vendor = PRIMARY_VENDOR_ID
         while True:
             platform_paused = await self.store.is_paused(lane)
             health = await self._health_snapshot(platform_paused=platform_paused)
@@ -480,21 +551,33 @@ class SendWorker:
                     health=health,
                 )
             )
-            if decision.action == "invoke" and decision.vendor_id is not None:
-                vendor_id = decision.vendor_id
-                generation = decision.generation
-            elif not claimed:
-                if decision.action == "terminal_uncertain":
-                    return SubmitOutcome.UNCERTAIN
-                if platform_paused or decision.action in {"hold", "exhausted"}:
-                    return SubmitOutcome.PAUSED
+            if decision.action == "terminal_uncertain":
+                return SubmitOutcome.UNCERTAIN
+            if decision.action != "invoke" or decision.vendor_id is None:
+                if not claimed:
+                    if platform_paused or decision.action in {"hold", "exhausted"}:
+                        return SubmitOutcome.PAUSED
+                    return SubmitOutcome.FAILED
+                return SubmitOutcome.FAILED
+            vendor_id = decision.vendor_id
+            generation = decision.generation
+            try:
+                gateway = self._gateway_for(vendor_id)
+            except LookupError:
+                await self._record_attempt(
+                    chunk,
+                    vendor_id=vendor_id,
+                    generation=generation,
+                    outcome="cancelled_before_invoke",
+                )
                 return SubmitOutcome.FAILED
             if not claimed:
                 if not await self._guard_chunk(chunk):
                     return SubmitOutcome.REJECTED
                 if not await self._control_ready(chunk, claimed=False):
                     return SubmitOutcome.PAUSED
-                lease_epoch = await self._token(lane)
+                lease_epoch = await self._token(lane, vendor_id)
+                lease_vendor = vendor_id
                 if lease_epoch is None:
                     return SubmitOutcome.PAUSED
                 claim_status = await self._claim_after_token(
@@ -502,6 +585,7 @@ class SendWorker:
                     lane,
                     retry_index,
                     lease_epoch,
+                    vendor_id,
                 )
                 if claim_status is not SubmissionClaimStatus.CLAIMED:
                     if claim_status is SubmissionClaimStatus.DAILY_LIMIT:
@@ -512,12 +596,31 @@ class SendWorker:
                     chunk,
                     claimed=True,
                     lease_epoch=lease_epoch,
+                    vendor_id=vendor_id,
                 ):
                     return SubmitOutcome.PAUSED
+            begin = getattr(self.store, "begin_vendor_invoke", None)
+            attempt_id: int | None = None
             vendor_invoked = False
+            if begin is not None:
+                try:
+                    started = await begin(
+                        chunk.chunk_id,
+                        vendor_id=vendor_id,
+                        adapter_id=vendor_id,
+                        reason=decision.reason,
+                    )
+                except RuntimeError:
+                    return SubmitOutcome.UNCERTAIN
+                attempt_id = int(started["id"]) if isinstance(started, dict) else int(started.id)
+                generation = (
+                    int(started["generation"])
+                    if isinstance(started, dict)
+                    else int(started.generation)
+                )
             try:
                 vendor_invoked = True
-                task_id = await self._gateway_for(vendor_id).send(
+                task_id = await gateway.send(
                     chunk.phones,
                     chunk.content,
                     template_id=chunk.template_id,
@@ -525,11 +628,12 @@ class SendWorker:
                     custom_id=chunk.custom_id,
                 )
             except (VendorTransportError, VendorProtocolError):
-                await self._record_attempt(
+                await self._persist_attempt(
                     chunk,
                     vendor_id=vendor_id,
                     generation=generation,
                     outcome="uncertain",
+                    attempt_id=attempt_id,
                 )
                 await self.store.mark_uncertain(chunk.chunk_id)
                 return SubmitOutcome.UNCERTAIN
@@ -544,11 +648,12 @@ class SendWorker:
                         delay,
                     ):
                         return SubmitOutcome.STALE
-                    await self._record_attempt(
+                    await self._persist_attempt(
                         chunk,
                         vendor_id=vendor_id,
                         generation=generation,
                         outcome="retry_scheduled",
+                        attempt_id=attempt_id,
                         vendor_code=error.code,
                     )
                     return SubmitOutcome.RETRY_SCHEDULED
@@ -560,22 +665,27 @@ class SendWorker:
                         return SubmitOutcome.SPLIT
                 if policy.delay_s is not None:
                     await self.store.delay(chunk.chunk_id, error.code, policy.delay_s)
-                    await self._record_attempt(
+                    await self._persist_attempt(
                         chunk,
                         vendor_id=vendor_id,
                         generation=generation,
                         outcome="delayed",
+                        attempt_id=attempt_id,
                         vendor_code=error.code,
                     )
                     return SubmitOutcome.DELAYED
-                await self._record_attempt(
+                hold_like = policy.balance_blocked or policy.pause_queues
+                await self._persist_attempt(
                     chunk,
                     vendor_id=vendor_id,
                     generation=generation,
-                    outcome="rejected",
+                    outcome="paused" if hold_like else "rejected",
+                    attempt_id=attempt_id,
                     safe_to_failover=policy.safe_to_failover,
                     vendor_code=error.code,
                 )
+                if hold_like:
+                    return await self._apply_terminal_api_error(chunk, error)
                 attempts.append(
                     VendorAttempt(
                         vendor_id,
@@ -598,44 +708,48 @@ class SendWorker:
                         and failover.vendor_id is not None
                         and failover.vendor_id != vendor_id
                     ):
-                        if lease_epoch is not None:
-                            await self._refund_token(lease_epoch)
                         vendor_id = failover.vendor_id
                         generation = failover.generation
-                        lease_epoch = await self._token(lane)
+                        lease_epoch = await self._token(lane, vendor_id)
+                        lease_vendor = vendor_id
                         if lease_epoch is None:
                             return await self._apply_terminal_api_error(chunk, error)
                         continue
                 return await self._apply_terminal_api_error(chunk, error)
             except Exception:
                 if vendor_invoked:
-                    await self._record_attempt(
+                    await self._persist_attempt(
                         chunk,
                         vendor_id=vendor_id,
                         generation=generation,
                         outcome="uncertain",
+                        attempt_id=attempt_id,
                     )
                     await self.store.mark_uncertain(chunk.chunk_id)
                 else:
                     await self.store.release_unsent(chunk.chunk_id)
+                    if lease_epoch is not None:
+                        await self._refund_token(lease_epoch, lease_vendor)
                 raise
             else:
                 try:
                     await self.store.mark_submitted(chunk.chunk_id, task_id)
                 except Exception:
-                    await self._record_attempt(
+                    await self._persist_attempt(
                         chunk,
                         vendor_id=vendor_id,
                         generation=generation,
                         outcome="uncertain",
+                        attempt_id=attempt_id,
                     )
                     await self.store.mark_uncertain(chunk.chunk_id)
                     return SubmitOutcome.UNCERTAIN
-                await self._record_attempt(
+                await self._persist_attempt(
                     chunk,
                     vendor_id=vendor_id,
                     generation=generation,
                     outcome="submitted",
+                    attempt_id=attempt_id,
                 )
                 await self._record_success()
                 return SubmitOutcome.SUBMITTED
@@ -670,6 +784,7 @@ async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
         enforce_live_test_recipients=settings.vendor_live_test,
         vendor_qps=vendor_qps,
         reserved_realtime_qps=reserved,
+        gateways={PRIMARY_VENDOR_ID: gateway},
     )
     return worker, store, gateway, batch_size
 

@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 
-from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
 from app.services.outbox import OutboxEventSpec
 from app.services.uncertain_resolution import (
     UncertainResolutionConflict,
@@ -317,11 +317,19 @@ async def test_resend_builds_resolution_scoped_biz_id(
         chunk_id=9,
         resolution_id=4,
         generation=2,
-        actor=None,
+        actor=UncertainEffectPrincipal(
+            resolution_id=4,
+            proposer_account_id=1,
+            confirmer_account_id=2,
+            effect_generation=2,
+            dept="平台部",
+        ),
     )
     assert request.biz_id == "manual-resend:4:2"
     assert request.resend_of is None
     assert request.mobiles == ("13800138000",)
+    assert isinstance(request.actor, UncertainEffectPrincipal)
+    assert request.actor.confirmer_account_id == 2
     sql = "\n".join(call[0] for call in connection.calls)
     assert "SET status='pending'" not in sql
     assert "unknown_terminal" in sql

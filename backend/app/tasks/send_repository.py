@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -34,8 +35,17 @@ from app.settings import Settings, get_settings
 from app.tasks import celery_app
 from app.tasks.send import ChunkPayload
 from app.vendor.identifiers import vendor_identifier_pseudonym
+from app.vendor.routing import VendorAttempt
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class VendorAttemptRow:
+    id: int
+    generation: int
+    vendor_id: str
+    outcome: str
 
 _VENDOR_CRITICAL_PAUSE_SCRIPT = """
 local gen = redis.call('INCR', 'ratelimit:queue:paused:generation')
@@ -493,6 +503,35 @@ class SqlChunkStore:
                         text("UPDATE sms_batch SET status='sending',updated_at=now() WHERE id=:id"),
                         {"id": batch_id},
                     )
+                    from app.services.send_inflight import materialize_in_flight_reservation
+
+                    actual_chunks = int(
+                        (
+                            await connection.execute(
+                                text(
+                                    "SELECT count(*) FROM sms_chunk WHERE batch_id=:batch_id"
+                                ),
+                                {"batch_id": batch_id},
+                            )
+                        ).scalar_one()
+                    )
+                    app_limit = 200
+                    if batch["app_id"] is not None:
+                        limit_row = await connection.execute(
+                            text(
+                                "SELECT max_in_flight_chunks FROM app WHERE id=:app_id"
+                            ),
+                            {"app_id": batch["app_id"]},
+                        )
+                        loaded_limit = limit_row.scalar_one_or_none()
+                        if loaded_limit is not None:
+                            app_limit = max(1, int(loaded_limit))
+                    await materialize_in_flight_reservation(
+                        connection,
+                        batch_id=batch_id,
+                        actual_chunks=actual_chunks,
+                        limit=app_limit,
+                    )
                 elif str(batch["status"]) == "queued":
                     await connection.execute(
                         text(
@@ -725,6 +764,13 @@ class SqlChunkStore:
         batch = aggregate.mappings().one()
         if str(batch["status"]) == "completed":
             await enqueue_batch_finished(connection, int(batch["id"]))
+            from app.services.send_inflight import request_inflight_release_for_batch
+
+            await request_inflight_release_for_batch(
+                connection,
+                batch_id=int(batch["id"]),
+                reason="batch-completed",
+            )
 
     async def mark_failed(self, chunk_id: int, code: int, message: str) -> None:
         engine = self._engine()
@@ -1097,6 +1143,165 @@ class SqlChunkStore:
                     children.append(await self._payload(connection, child_id))
                     next_no += 1
                 return children
+        finally:
+            await engine.dispose()
+
+    async def list_vendor_attempts(self, chunk_id: int) -> tuple[VendorAttempt, ...]:
+        """按 generation 加载完整 attempt 历史，供跨任务路由。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                rows = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT vendor_id, generation, outcome,
+                                   safe_to_failover, vendor_code
+                            FROM sms_vendor_attempt
+                            WHERE chunk_id=:chunk_id
+                            ORDER BY generation
+                            """
+                        ),
+                        {"chunk_id": chunk_id},
+                    )
+                ).mappings()
+                return tuple(
+                    VendorAttempt(
+                        str(row["vendor_id"]),
+                        int(row["generation"]),
+                        str(row["outcome"]),
+                        bool(row["safe_to_failover"]),
+                        int(row["vendor_code"])
+                        if row["vendor_code"] is not None
+                        else None,
+                    )
+                    for row in rows
+                )
+        finally:
+            await engine.dispose()
+
+    async def begin_vendor_invoke(
+        self,
+        chunk_id: int,
+        *,
+        vendor_id: str,
+        adapter_id: str,
+        reason: str,
+    ) -> VendorAttemptRow:
+        """在 HTTP 之前原子分配 generation 并写入 invoking。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("SELECT id FROM sms_chunk WHERE id=:id FOR UPDATE"),
+                    {"id": chunk_id},
+                )
+                history = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT id, generation, outcome
+                            FROM sms_vendor_attempt
+                            WHERE chunk_id=:chunk_id
+                            ORDER BY generation
+                            FOR UPDATE
+                            """
+                        ),
+                        {"chunk_id": chunk_id},
+                    )
+                ).mappings().all()
+                if any(
+                    str(row["outcome"]) in {"submitted", "uncertain", "invoking"}
+                    for row in history
+                ):
+                    raise RuntimeError("vendor attempt already irreversible")
+                next_generation = (
+                    max((int(row["generation"]) for row in history), default=0) + 1
+                )
+                inserted = (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO sms_vendor_attempt (
+                              chunk_id, vendor_id, generation, outcome,
+                              adapter_id, routing_reason, invoke_started_at
+                            ) VALUES (
+                              :chunk_id, :vendor_id, :generation, 'invoking',
+                              :adapter_id, :reason, now()
+                            )
+                            RETURNING id, generation, vendor_id, outcome
+                            """
+                        ),
+                        {
+                            "chunk_id": chunk_id,
+                            "vendor_id": vendor_id,
+                            "generation": next_generation,
+                            "adapter_id": adapter_id,
+                            "reason": reason[:64],
+                        },
+                    )
+                ).mappings().one()
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE sms_chunk SET
+                          selected_vendor=:vendor_id,
+                          route_generation=:generation
+                        WHERE id=:chunk_id
+                        """
+                    ),
+                    {
+                        "chunk_id": chunk_id,
+                        "vendor_id": vendor_id,
+                        "generation": next_generation,
+                    },
+                )
+                return VendorAttemptRow(
+                    int(inserted["id"]),
+                    int(inserted["generation"]),
+                    str(inserted["vendor_id"]),
+                    str(inserted["outcome"]),
+                )
+        finally:
+            await engine.dispose()
+
+    async def complete_vendor_attempt(
+        self,
+        attempt_id: int,
+        *,
+        outcome: str,
+        safe_to_failover: bool = False,
+        vendor_code: int | None = None,
+    ) -> bool:
+        """把 invoking 行 CAS 到终态；败者不得再次调用供应商。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                updated = (
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE sms_vendor_attempt
+                            SET outcome=:outcome,
+                                safe_to_failover=:safe_to_failover,
+                                vendor_code=:vendor_code,
+                                updated_at=now()
+                            WHERE id=:id AND outcome='invoking'
+                            RETURNING id
+                            """
+                        ),
+                        {
+                            "id": attempt_id,
+                            "outcome": outcome,
+                            "safe_to_failover": safe_to_failover,
+                            "vendor_code": vendor_code,
+                        },
+                    )
+                ).scalar_one_or_none()
+                return updated is not None
         finally:
             await engine.dispose()
 
