@@ -52,6 +52,15 @@ class VendorAttemptRow:
     vendor_id: str
     outcome: str
 
+
+class _FinalizeRollback(Exception):
+    """chunk CAS 失败时回滚已写入的 attempt，禁止提交半成品。"""
+
+    def __init__(self, report: FinalizeReport) -> None:
+        super().__init__(report.kind.value)
+        self.report = report
+
+
 _VENDOR_CRITICAL_PAUSE_SCRIPT = """
 local gen = redis.call('INCR', 'ratelimit:queue:paused:generation')
 redis.call('SET', KEYS[1], ARGV[1] .. ':' .. gen)
@@ -1421,7 +1430,7 @@ class SqlChunkStore:
                         {"id": chunk_id, "task_id": task_pseudonym},
                     )
                     if submitted.scalar_one_or_none() is None:
-                        return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                        raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
                     await settle_live_test_attempt(connection, chunk_id, "confirmed")
                     await connection.execute(
                         text("UPDATE sms_message SET status='sent' WHERE chunk_id=:id"),
@@ -1438,7 +1447,7 @@ class SqlChunkStore:
                         {"id": chunk_id},
                     )
                     if transitioned.scalar_one_or_none() is None:
-                        return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                        raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
                     await settle_live_test_attempt(connection, chunk_id, "uncertain")
                 elif result in {"retry_scheduled", "delayed"}:
                     delay_s = int(retry_delay_s or 1)
@@ -1480,7 +1489,7 @@ class SqlChunkStore:
                         )
                     category = changed.scalar_one_or_none()
                     if category is None:
-                        return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                        raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
                     await settle_live_test_attempt(connection, chunk_id, "released")
                     enqueue = (chunk_id, str(category), delay_s)
                 elif result == "paused":
@@ -1494,7 +1503,7 @@ class SqlChunkStore:
                             {"id": chunk_id},
                         )
                         if transitioned.scalar_one_or_none() is None:
-                            return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                            raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
                         await settle_live_test_attempt(connection, chunk_id, "released")
                         await connection.execute(
                             text(
@@ -1512,7 +1521,7 @@ class SqlChunkStore:
                             {"id": chunk_id, "code": vendor_code},
                         )
                         if transitioned.scalar_one_or_none() is None:
-                            return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                            raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
                         await settle_live_test_attempt(connection, chunk_id, "released")
                 elif result in {"rejected", "failed"} and not safe_to_failover:
                     failed = await connection.execute(
@@ -1533,7 +1542,7 @@ class SqlChunkStore:
                     )
                     transitioned_batch_id = failed.scalar_one_or_none()
                     if transitioned_batch_id is None:
-                        return FinalizeReport(FinalizeKind.LOST_CAS, result)
+                        raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
                     await settle_live_test_attempt(connection, chunk_id, "released")
                     await self._finalize_failed_messages(
                         connection,
@@ -1541,6 +1550,8 @@ class SqlChunkStore:
                         int(transitioned_batch_id),
                     )
                 report = FinalizeReport(FinalizeKind.APPLIED, result)
+        except _FinalizeRollback as exc:
+            report = exc.report
         finally:
             await engine.dispose()
         if enqueue is not None and report.kind is FinalizeKind.APPLIED:

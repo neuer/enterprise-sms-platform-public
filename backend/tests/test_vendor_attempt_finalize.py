@@ -176,5 +176,41 @@ async def test_finalize_conflict_does_not_mark_messages_sent(
     assert not any("sms_message" in sql for sql, _params in connection.calls)
 
 
+@pytest.mark.asyncio
+async def test_finalize_lost_cas_does_not_keep_attempt_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = chunk_store()
+    connection = SequenceConnection(
+        [
+            FakeResult(row={"id": 9, "chunk_id": 7, "generation": 2, "outcome": "invoking"}),
+            FakeResult(
+                row={
+                    "id": 7,
+                    "status": "failed",
+                    "batch_id": 3,
+                    "route_generation": 2,
+                    "category": "notice",
+                }
+            ),
+            FakeResult(),
+            FakeResult(scalar=9),
+            FakeResult(scalar=None),
+        ]
+    )
+    monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
+
+    report = await store.finalize_vendor_attempt(
+        9,
+        7,
+        expected_generation=2,
+        result="submitted",
+        vendor_task_id="task-1",
+    )
+
+    assert report.kind is FinalizeKind.LOST_CAS
+    assert not any("sms_message" in sql for sql, _params in connection.calls)
+
+
 def test_sql_chunk_store_exposes_atomic_finalize() -> None:
     assert hasattr(SqlChunkStore, "finalize_vendor_attempt")
