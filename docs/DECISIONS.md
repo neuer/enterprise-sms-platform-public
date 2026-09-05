@@ -1526,3 +1526,20 @@
   仅按收件人数不够限制长短信，仅单实例上限挡不住多 API 并发。
 - 影响：`send_admission.py`、`send_admission_repository.py`、`pipeline.py`、
   `docs/runbooks/send-admission-lanes.md`。
+
+## D112 应用成本限流 v1 buckets → v2 环形槽必须双读合并
+
+- 决策：`consume_send_cost` 在同一 Lua 内用 Redis TIME 读取
+  `ratelimit:app:{id}:recipients|segments:buckets`（#606 前的 v1 Hash）与
+  `:v2` 环形槽，有效用量取 max 而非相加，只写 v2。首次放行把
+  `v1-v2` 差额写入当前环形槽，避免只加新请求权重时 max(v1,v2增长)
+  再放出一整份额度。v1 畸形、非 Hash 或
+  窗口内未来字段失败关闭。首次成功写入 `cost:mig` marker
+  （schema_version/cutover_epoch/generation/state=active），不 `DEL` 活动
+  v1。control ACL 增加 `+type`，不增加 `KEYS/FLUSH*`。
+- 原因：直接切 v2 会把空环形槽当零，滚动升级时同一窗口获得第二份额度。
+- 影响：`app_ratelimit.py`、control Redis ACL、
+  `docs/runbooks/app-rate-limit-cutover.md`。
+  本期不做新旧二进制混跑拓扑、Redis failover 旧主复活、readiness
+  `minimum_writer_version` 或新 Prometheus 家族。旧实例仍只写 v1，新实例
+  双读可继承；旧实例本身仍可能超发，需尽快抽干。

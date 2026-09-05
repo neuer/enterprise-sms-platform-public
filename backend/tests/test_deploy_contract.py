@@ -824,6 +824,7 @@ def test_control_redis_acl_allows_weighted_send_cost_lua() -> None:
         )
     }
     assert "+hincrby" in required
+    assert "+type" in required
     for command in sorted(required | {"+eval"}):
         assert command in control_block
     for forbidden in ("+keys", "+flushall", "+config"):
