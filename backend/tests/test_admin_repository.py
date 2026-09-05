@@ -271,3 +271,51 @@ async def test_transaction_final_gate_rejects_public_callback_allowlist() -> Non
         )
 
     assert len(connection.calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_ad_session_policy_revision_bumps_with_config_and_audit() -> None:
+    before = [
+        config_row("ad_session_max_age_minutes", "480", "int"),
+        config_row("vendor_qps", "5", "int"),
+    ]
+    after = [
+        config_row("ad_session_max_age_minutes", "60", "int"),
+        config_row("vendor_qps", "5", "int"),
+    ]
+    repo, connection = repository(
+        [
+            FakeResult([{"database_user": "sms_accept", "txid": 79}]),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(before),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(
+                [
+                    {
+                        "revision": 2,
+                        "ad_session_max_age_minutes": 60,
+                        "updated_at_epoch": 1,
+                    }
+                ]
+            ),
+            FakeResult(after),
+        ]
+    )
+
+    result = await repo.update_configs(
+        (ConfigUpdate("ad_session_max_age_minutes", "60"),),
+        principal=ADMIN,
+        ip="10.0.0.8",
+    )
+
+    assert result[0].value == "60"
+    sqls = [sql for sql, _ in connection.calls]
+    assert any("UPDATE auth_session_policy" in sql for sql in sqls)
+    assert any("INSERT INTO audit_log" in sql for sql in sqls)
+    policy_params = next(
+        params for sql, params in connection.calls if "UPDATE auth_session_policy" in sql
+    )
+    assert policy_params["minutes"] == 60
+    assert policy_params["actor"] == "admin01"

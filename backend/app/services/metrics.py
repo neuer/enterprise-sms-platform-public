@@ -491,5 +491,50 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         registry=registry,
     )
     guard_queries.set(auth.guard_db_queries)
+    session_revision = Gauge(
+        "auth_session_policy_revision",
+        "Authoritative AD session policy revision by source.",
+        ("source",),
+        registry=registry,
+    )
+    for source, value in auth.session_policy_revision:
+        if source in {"postgres", "redis"}:
+            session_revision.labels(source=source).set(value)
+    session_publish = Gauge(
+        "auth_session_policy_publish_total",
+        "AD session policy Redis CAS publish outcomes.",
+        ("outcome",),
+        registry=registry,
+    )
+    for outcome, value in auth.session_policy_publish:
+        session_publish.labels(outcome=outcome).set(value)
+    session_reconcile = Gauge(
+        "auth_session_policy_reconcile_total",
+        "AD session policy reconciler outcomes.",
+        ("outcome",),
+        registry=registry,
+    )
+    for outcome, value in auth.session_policy_reconcile:
+        session_reconcile.labels(outcome=outcome).set(value)
+    session_conflict = Gauge(
+        "auth_session_policy_conflict_total",
+        "AD session policy version conflicts.",
+        ("type",),
+        registry=registry,
+    )
+    for conflict_type, value in auth.session_policy_conflict:
+        session_conflict.labels(type=conflict_type).set(value)
+    session_age = Gauge(
+        "auth_session_policy_snapshot_age_seconds",
+        "Age of the last usable AD session policy Redis snapshot.",
+        registry=registry,
+    )
+    session_age.set(auth.session_policy_snapshot_age_seconds)
+    session_lag = Gauge(
+        "auth_session_policy_publish_lag_seconds",
+        "PostgreSQL minus Redis AD session policy revision lag.",
+        registry=registry,
+    )
+    session_lag.set(auth.session_policy_publish_lag_seconds)
 
     return generate_latest(registry)

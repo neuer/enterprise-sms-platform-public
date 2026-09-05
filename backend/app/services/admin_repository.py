@@ -9,6 +9,8 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.session_policy import AuthSessionPolicy
+from app.core.auth.session_policy_sync import POLICY_SELECT, policy_from_mapping
 from app.core.runtime_resources import bind_connection_audit_subject, database_engine
 from app.services.admin import (
     SENSITIVE_CONFIG_KEYS,
@@ -195,10 +197,47 @@ class SqlAdminRepository:
                             "after": json.dumps(after_payload, ensure_ascii=False),
                         },
                     )
+                if any(item.key == "ad_session_max_age_minutes" for item in updates):
+                    minutes = next(
+                        item.value
+                        for item in updates
+                        if item.key == "ad_session_max_age_minutes"
+                    )
+                    bumped = await connection.execute(
+                        text(
+                            """
+                            UPDATE auth_session_policy
+                            SET revision = revision + 1,
+                                ad_session_max_age_minutes = :minutes,
+                                updated_by = :actor,
+                                updated_at = now()
+                            WHERE id = 1
+                            RETURNING revision, ad_session_max_age_minutes,
+                              EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at_epoch
+                            """
+                        ),
+                        {"minutes": int(minutes), "actor": principal.login_name},
+                    )
+                    if next(iter(bumped.mappings()), None) is None:
+                        raise InvalidAdminQuery("认证会话策略权威行不存在")
                 result = await connection.execute(text(CONFIG_SELECT))
                 return tuple(self._config(row) for row in result.mappings())
         finally:
             await engine.dispose()
+
+    async def load_auth_session_policy(self) -> AuthSessionPolicy:
+        """读取权威 AD 会话策略行，供提交后 CAS 发布。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(text(POLICY_SELECT))
+                row = next(iter(result.mappings()), None)
+        finally:
+            await engine.dispose()
+        if row is None:
+            raise InvalidAdminQuery("认证会话策略权威行不存在")
+        return policy_from_mapping(row)
 
     async def list_audits(
         self,

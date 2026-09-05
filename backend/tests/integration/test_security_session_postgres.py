@@ -47,8 +47,12 @@ class MemoryStore:
         self.values[key] = value
         return value
 
-    async def eval(self, script: str, numkeys: int, *args: Any) -> int:
-        del script
+    async def eval(self, script: str, numkeys: int, *args: Any) -> object:
+        from app.core.auth.session_policy import eval_memory_session_policy
+
+        policy_result = eval_memory_session_policy(self.values, script, args)
+        if policy_result is not None or "auth-session-policy-" in script:
+            return policy_result
         assert numkeys == 2
         key, revoked_session, expected, replacement, _ttl, session_ttl = args
         current = self.values.get(str(key))

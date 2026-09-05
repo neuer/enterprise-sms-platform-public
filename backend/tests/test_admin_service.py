@@ -70,6 +70,11 @@ class FakeRepository:
     async def list_audit_actions(self) -> tuple[str, ...]:
         return ("config_update", "user_create")
 
+    async def load_auth_session_policy(self):
+        from app.core.auth.session_policy import AuthSessionPolicy
+
+        return AuthSessionPolicy(1, 480)
+
 
 @pytest.mark.asyncio
 async def test_configs_are_grouped_and_sensitive_value_is_never_returned() -> None:

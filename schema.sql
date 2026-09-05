@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.83  2026-09-05
+-- v1.6.83：AD 会话策略以 auth_session_policy 单行 revision 为权威围栏，
+--          Redis 只接受单调 CAS；认证热路径不回退默认 480。
 -- v1.6.82  2026-09-04
 -- v1.6.82：幂等 Claim 以 PostgreSQL generation 为权威围栏，Redis 只保存
 --          token:fingerprint:generation 精确载荷。
@@ -2264,6 +2267,20 @@ CHECK (
   OR value LIKE 'sealed:v1:%'
 );
 
+-- v1.6.83：AD 会话策略权威行。revision 只在管理员配置事务内递增。
+CREATE TABLE auth_session_policy (
+    id SMALLINT PRIMARY KEY CHECK (id = 1),
+    revision BIGINT NOT NULL CHECK (revision >= 1),
+    ad_session_max_age_minutes INTEGER NOT NULL
+        CHECK (ad_session_max_age_minutes BETWEEN 15 AND 10080),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by VARCHAR(64)
+);
+INSERT INTO auth_session_policy (id, revision, ad_session_max_age_minutes)
+SELECT 1, 1, CAST(value AS INTEGER)
+FROM sys_config
+WHERE key = 'ad_session_max_age_minutes';
+
 -- v1.6.46：两类 reusable notification credential 不再随 sys_config 全表权限横向暴露。
 ALTER TABLE sys_config ENABLE ROW LEVEL SECURITY;
 CREATE POLICY sys_config_accept_all ON sys_config
@@ -2669,7 +2686,8 @@ GRANT SELECT ON
     sms_uncertain_resolution, sms_uncertain_child,
     usage_chunk_allocation, usage_chunk_release,
     send_inflight_balance, send_inflight_reservation,
-    send_admission_state, send_runtime_heartbeat
+    send_admission_state, send_runtime_heartbeat,
+    auth_session_policy
 TO sms_accept;
 GRANT INSERT, UPDATE, DELETE ON
     app, dept_quota, sms_batch, idempotency_record, idempotency_claim, sms_message,
@@ -2683,7 +2701,8 @@ GRANT INSERT, UPDATE ON
     sms_uncertain_resolution, sms_uncertain_child,
     usage_chunk_allocation, usage_chunk_release,
     send_inflight_balance, send_inflight_reservation,
-    send_admission_state, send_runtime_heartbeat
+    send_admission_state, send_runtime_heartbeat,
+    auth_session_policy
 TO sms_accept;
 GRANT INSERT ON sms_resend_action TO sms_accept;
 GRANT SELECT, INSERT ON stat_dirty_date TO sms_accept;
@@ -2848,6 +2867,8 @@ GRANT SELECT (queue, state, created_at)
     ON outbox_event TO sms_metrics;
 GRANT SELECT (outcome, created_at)
     ON sms_vendor_attempt TO sms_metrics;
+GRANT SELECT (id, revision, ad_session_max_age_minutes, updated_at)
+    ON auth_session_policy TO sms_metrics;
 GRANT SELECT (replay_eligibility, processing_lease_epoch, processing_lease_expires_at,
               system_replay_audit_state)
     ON raw_vendor_log TO sms_metrics;

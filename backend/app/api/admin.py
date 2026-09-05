@@ -14,6 +14,7 @@ from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.auth.session_policy import AuthSessionPolicy
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.admin import (
@@ -80,9 +81,18 @@ class ConfigBatchUpdateModel(BaseModel):
 
 def get_admin_service() -> AdminService:
     settings = get_settings()
+    facade = get_auth_facade()
+
+    async def publish_session_policy(policy: AuthSessionPolicy) -> None:
+        await facade.tokens.publish_ad_session_policy(
+            policy.ad_session_max_age_minutes,
+            policy.revision,
+        )
+
     return AdminService(
         SqlAdminRepository(settings),
         allowed_smtp_hosts=settings.alert_smtp_allowed_host_set,
+        session_policy_publisher=publish_session_policy,
     )
 
 

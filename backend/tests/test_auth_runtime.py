@@ -73,8 +73,12 @@ class FakeKeyValue:
         self.values[key] = value
         return value
 
-    async def eval(self, script: str, numkeys: int, *args: object) -> int:
-        del script
+    async def eval(self, script: str, numkeys: int, *args: object) -> object:
+        from app.core.auth.session_policy import eval_memory_session_policy
+
+        policy_result = eval_memory_session_policy(self.values, script, args)
+        if policy_result is not None or "auth-session-policy-" in script:
+            return policy_result
         if numkeys == 3:
             revoked_jti, revoked_session, refresh_family, _jti_ttl, _session_ttl = args
             self.values[str(revoked_jti)] = "1"
@@ -653,7 +657,7 @@ async def test_prior_family_revoke_unavailability_fail_closes_without_new_pair()
     users = FakeUserRepository(value)
 
     class RevokeUnavailable(FakeKeyValue):
-        async def eval(self, script: str, numkeys: int, *args: object) -> int:
+        async def eval(self, script: str, numkeys: int, *args: object) -> object:
             if numkeys == 3:
                 raise RuntimeError("redis unavailable")
             return await super().eval(script, numkeys, *args)

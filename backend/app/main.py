@@ -34,6 +34,7 @@ from app.api.users import router as users_router
 from app.api.vendor_test import router as vendor_test_router
 from app.api.web_messages import router as web_messages_router
 from app.build_info import APP_VERSION
+from app.core.auth.session_policy_sync import create_auth_session_policy_reconciler
 from app.core.bounded_executor import close_bounded_executor
 from app.core.correlation import CorrelationIdMiddleware
 from app.core.errors import (
@@ -89,6 +90,7 @@ def create_lifespan(
         configure_runtime_resources(selected, component="api")
         heartbeat = None
         runtime_monitor = None
+        session_policy = None
         try:
             register_task_modules()
             startup_gate: StartupConfigGate = application.state.startup_config_gate
@@ -101,12 +103,17 @@ def create_lifespan(
                 )
             heartbeat = create_default_heartbeat_service()
             runtime_monitor = create_runtime_monitor()
+            session_policy = create_auth_session_policy_reconciler(selected)
             application.state.job_heartbeat = heartbeat
             application.state.runtime_monitor = runtime_monitor
+            application.state.auth_session_policy_reconciler = session_policy
             heartbeat.start()
             runtime_monitor.start()
+            session_policy.start()
             yield
         finally:
+            if session_policy is not None:
+                await session_policy.stop()
             if runtime_monitor is not None:
                 await runtime_monitor.stop()
             if heartbeat is not None:

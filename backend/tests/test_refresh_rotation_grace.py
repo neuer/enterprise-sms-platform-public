@@ -51,6 +51,11 @@ class FakeAtomicStore:
         self.values.pop(key, None)
 
     async def eval(self, script: str, numkeys: int, *args: object) -> object:
+        from app.core.auth.session_policy import eval_memory_session_policy
+
+        policy_result = eval_memory_session_policy(self.values, script, args)
+        if policy_result is not None or "auth-session-policy-" in script:
+            return policy_result
         if script != _ROTATE_REFRESH_LUA:
             raise AssertionError("unexpected Lua script")
         assert numkeys == 2
