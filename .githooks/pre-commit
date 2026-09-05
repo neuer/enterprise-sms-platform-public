@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Main local gate for `git commit`. Enable with: scripts/install_git_hooks.sh
+# Path-based checks: scripts/check_pre_vcs_gates.py --git-hook commit
+# `git commit --no-verify` bypasses this hook; Cursor only blocks that bypass.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel)"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "pre-commit: python3 is required for pre-vcs gates" >&2
+  exit 1
+fi
+exec python3 "$ROOT/scripts/check_pre_vcs_gates.py" --git-hook commit

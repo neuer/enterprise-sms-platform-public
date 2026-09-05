@@ -109,9 +109,11 @@ The script permits only development settings with mock authentication and a mock
 
 ## Verification
 
-Run the change-aware development gate before committing:
+Enable this repo's git pre-commit / pre-push hooks once, then run the
+change-aware development gate before committing:
 
 ```bash
+scripts/install_git_hooks.sh
 scripts/dev_check.sh --changed
 ```
 

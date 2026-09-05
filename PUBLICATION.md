@@ -18,8 +18,8 @@ cherry-pick 或推送其中的任何 Git 对象。
 ## 日常流程
 
 1. 从最新 `main` 创建短生命周期分支。
-2. 首次克隆执行 `scripts/install_git_hooks.sh`；正常开发后运行
-   `scripts/dev_check.sh --changed`。
+2. 首次克隆执行 `scripts/install_git_hooks.sh`（启用 git pre-commit/pre-push）；
+   正常开发后运行 `scripts/dev_check.sh --changed`。
 3. 推送分支；版本化 Hook 同时扫描工作区与新增提交，安全内容无需人工解锁。
 4. owner 分支自动创建 Draft PR；精确 push CI 成功后，自动化将同一 SHA 的 PR 改为
    Ready 并请求 squash merge，不使用管理员绕过。
