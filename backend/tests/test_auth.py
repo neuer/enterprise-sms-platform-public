@@ -62,12 +62,29 @@ class FakeKeyValue:
     def _now_ms(self) -> int:
         return int(self.values.get("__now_ms", 0))
 
-    def _claim_write(self, transition_id: str, lease_id: str) -> tuple[str, str]:
+    def _due(self) -> dict[str, int]:
+        from app.core.auth.service import AUDIT_DUE_KEY
+
+        current = self.values.get(AUDIT_DUE_KEY)
+        if not isinstance(current, dict):
+            current = {}
+            self.values[AUDIT_DUE_KEY] = current
+        return current
+
+    def _claim_write(
+        self,
+        transition_id: str,
+        lease_id: str,
+        *,
+        action: str = "",
+    ) -> tuple[str, str]:
+        from app.core.auth.service import WRITER_LEASE_MS
+
         key = self._audit_key(transition_id)
         current = self.values.get(key)
         now = self._now_ms()
-        if isinstance(current, dict) and current.get("state") == "audited":
-            return "", "audited"
+        if isinstance(current, dict) and current.get("state") in {"audited", "dead"}:
+            return "", str(current.get("state"))
         if isinstance(current, dict) and current.get("state") == "writing":
             expires = int(current.get("lease_expires_ms", 0))
             if expires > now:
@@ -77,15 +94,25 @@ class FakeKeyValue:
             if retry_at > now:
                 return "", "pending"
         attempts = int(current.get("attempts", 0)) if isinstance(current, dict) else 0
-        self.values[key] = {
-            "state": "writing",
-            "lease_id": lease_id,
-            "attempts": attempts,
-            "lease_expires_ms": now + 5_000,
-        }
+        updated = dict(current) if isinstance(current, dict) else {}
+        updated.update(
+            {
+                "state": "writing",
+                "lease_id": lease_id,
+                "attempts": attempts,
+                "lease_expires_ms": now + WRITER_LEASE_MS,
+            }
+        )
+        updated.setdefault("created_at_ms", now)
+        if action:
+            updated.setdefault("action", action)
+        self.values[key] = updated
+        self._due()[str(transition_id)] = now + WRITER_LEASE_MS
         return lease_id, "writing"
 
     async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
+        from app.core.auth.service import MAX_TRANSITION_ATTEMPTS, MAX_TRANSITION_RECOVERY_MS
+
         if "auth-audit-ack-v1" in script:
             key = str(args[0])
             lease_id = str(args[1])
@@ -95,6 +122,7 @@ class FakeKeyValue:
                 current.pop("lease_id", None)
                 current.pop("lease_expires_ms", None)
                 current.pop("next_retry_at_ms", None)
+                self._due().pop(key.rsplit(":", 1)[-1], None)
                 return 1
             return 0
         if "auth-audit-fail-v1" in script:
@@ -105,13 +133,77 @@ class FakeKeyValue:
                 attempts = int(current.get("attempts", 0)) + 1
                 delays = (1000, 2000, 5000, 10000, 30000)
                 delay = delays[min(attempts, len(delays)) - 1]
-                current["state"] = "pending"
-                current["attempts"] = attempts
-                current["next_retry_at_ms"] = self._now_ms() + delay
+                now = self._now_ms()
+                created = int(current.get("created_at_ms", now))
+                max_attempts = int(args[3]) if len(args) > 3 else MAX_TRANSITION_ATTEMPTS
+                max_recovery = int(args[4]) if len(args) > 4 else MAX_TRANSITION_RECOVERY_MS
+                transition_id = key.rsplit(":", 1)[-1]
                 current.pop("lease_id", None)
                 current.pop("lease_expires_ms", None)
+                if attempts >= max_attempts or (now - created) >= max_recovery:
+                    current["state"] = "dead"
+                    current["attempts"] = attempts
+                    current.pop("next_retry_at_ms", None)
+                    self._due().pop(transition_id, None)
+                    return -1
+                current["state"] = "pending"
+                current["attempts"] = attempts
+                current["next_retry_at_ms"] = now + delay
+                self._due()[transition_id] = now + delay
                 return attempts
             return 0
+        if "auth-audit-bind-v1" in script:
+            key = str(args[0])
+            current = self.values.get(key)
+            if not isinstance(current, dict):
+                return 0
+            for index, field in enumerate(
+                (
+                    "provider_code",
+                    "result_code",
+                    "count",
+                    "remaining_ttl_seconds",
+                    "ip",
+                    "action",
+                )
+            ):
+                current.setdefault(field, str(args[index + 1]))
+            return 1
+        if "auth-audit-due-scan-v1" in script:
+            now = self._now_ms()
+            limit = int(args[1]) if len(args) > 1 else 20
+            due = [
+                tid
+                for tid, score in sorted(self._due().items(), key=lambda item: int(item[1]))
+                if int(score) <= now
+            ]
+            return due[:limit]
+        if "auth-audit-due-stats-v1" in script:
+            due = self._due()
+            if not due:
+                return [0, 0]
+            oldest = min(int(score) for score in due.values())
+            return [len(due), max(0, self._now_ms() - oldest) // 1000]
+        if "auth-audit-reconcile-claim-v1" in script:
+            transition_id = str(args[0])
+            lease_id = str(args[1])
+            current = self.values.get(self._audit_key(transition_id))
+            previous = str(current.get("state", "")) if isinstance(current, dict) else ""
+            action = str(current.get("action", "")) if isinstance(current, dict) else ""
+            lease, state = self._claim_write(transition_id, lease_id, action=action)
+            mapping = self.values.get(self._audit_key(transition_id))
+            fields = mapping if isinstance(mapping, dict) else {}
+            return [
+                lease,
+                state,
+                fields.get("action", action),
+                fields.get("provider_code", ""),
+                fields.get("result_code", ""),
+                fields.get("count", "0"),
+                fields.get("remaining_ttl_seconds", "0"),
+                fields.get("ip", ""),
+                previous,
+            ]
         if "auth-admit-v2" in script:
             assert numkeys == 4
             ban_key, ip_fail_key, bucket_key, window_key = map(str, args[:4])
@@ -125,7 +217,9 @@ class FakeKeyValue:
                 if ban == "1":
                     ban = ban_transition
                     self.values[ban_key] = ban
-                claimed, state = self._claim_write(str(ban), lease_id)
+                claimed, state = self._claim_write(
+                    str(ban), lease_id, action="auth_ip_banned"
+                )
                 return [
                     2,
                     "",
@@ -160,7 +254,9 @@ class FakeKeyValue:
             ban_lease = str(values[10]) if len(values) > 10 else ban_transition
             existing_ban = self.values.get(ban_key)
             if existing_ban is not None:
-                claimed, state = self._claim_write(str(existing_ban), ban_lease)
+                claimed, state = self._claim_write(
+                    str(existing_ban), ban_lease, action="auth_ip_banned"
+                )
                 return [
                     2,
                     "",
@@ -192,9 +288,13 @@ class FakeKeyValue:
             lock_claimed, lock_state = ("", "")
             ban_claimed, ban_state = ("", "")
             if lock:
-                lock_claimed, lock_state = self._claim_write(str(lock), lock_lease)
+                lock_claimed, lock_state = self._claim_write(
+                    str(lock), lock_lease, action="auth_account_locked"
+                )
             if ban:
-                ban_claimed, ban_state = self._claim_write(str(ban), ban_lease)
+                ban_claimed, ban_state = self._claim_write(
+                    str(ban), ban_lease, action="auth_ip_banned"
+                )
             if ban is not None:
                 return [
                     2,

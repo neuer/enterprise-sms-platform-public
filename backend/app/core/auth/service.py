@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Awaitable, Callable
-from time import time
+from time import monotonic
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
@@ -20,7 +21,15 @@ from app.core.auth.backends import (
 )
 from app.core.auth.guard_policy import AuthGuardPolicy
 from app.core.auth.identity import normalize_login_name
-from app.core.auth.observability import observe_admit
+from app.core.auth.observability import (
+    TransitionErrorClass,
+    TransitionOwner,
+    observe_admit,
+    observe_transition_claim,
+    observe_transition_database_duration,
+    observe_transition_dead,
+    observe_transition_retry,
+)
 from app.core.auth.providers import AuthProviderRegistry
 from app.core.auth.security_events import (
     AuthSecurityEventWriter,
@@ -35,14 +44,46 @@ PREHASH_BURST_CAPACITY = 5
 PREHASH_REFILL_MS = 15_000
 PREHASH_WINDOW_LIMIT = 20
 PREHASH_WINDOW_S = 5 * 60
-WRITER_LEASE_MS = 5_000
+LEASE_SAFETY_MARGIN_S = 5.0
+AUDIT_DUE_KEY = "auth:audit:due"
+AUDIT_RECOVERY_TTL_S = 24 * 60 * 60
+MAX_TRANSITION_ATTEMPTS = 20
+MAX_TRANSITION_RECOVERY_MS = AUDIT_RECOVERY_TTL_S * 1000
 _SAFE_PROVIDER_CODE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
+LOGGER = logging.getLogger(__name__)
+
+
+def writer_lease_ms(settings: Any | None = None) -> int:
+    """Writer Lease 必须覆盖 pool + connect + statement 最坏耗时。"""
+
+    pool_s = 3.0
+    connect_s = 3.0
+    statement_ms = 15_000
+    if settings is not None:
+        pool_s = float(settings.db_pool_timeout_seconds)
+        connect_s = float(settings.db_connect_timeout_seconds)
+        statement_ms = int(settings.db_api_statement_timeout_ms)
+    seconds = pool_s + connect_s + statement_ms / 1000.0 + LEASE_SAFETY_MARGIN_S
+    return max(1, int(seconds * 1000))
+
+
+WRITER_LEASE_MS = writer_lease_ms()
+
+
+def _error_class(error: BaseException) -> TransitionErrorClass:
+    name = type(error).__name__.casefold()
+    if "timeout" in name:
+        return "timeout"
+    return "unavailable"
+
+
 _CLAIM_LUA = """
-local function claim_write(audit_key, action, lease_id, now_ms, lease_ms, ttl_s)
-  if ttl_s < 1 then ttl_s = 1 end
+local function claim_write(audit_key, action, lease_id, now_ms, lease_ms,
+  recovery_ttl_s, transition_id)
+  if recovery_ttl_s < 1 then recovery_ttl_s = 1 end
   local state = redis.call('HGET', audit_key, 'state')
-  if state == 'audited' then
-    return '', 'audited'
+  if state == 'audited' or state == 'dead' then
+    return '', state
   end
   if state == 'writing' then
     local expires = tonumber(redis.call('HGET', audit_key, 'lease_expires_ms') or '0')
@@ -58,7 +99,9 @@ local function claim_write(audit_key, action, lease_id, now_ms, lease_ms, ttl_s)
   end
   redis.call('HSET', audit_key, 'state', 'writing', 'lease_id', lease_id,
     'lease_expires_ms', now_ms + lease_ms, 'action', action)
-  redis.call('EXPIRE', audit_key, ttl_s)
+  redis.call('HSETNX', audit_key, 'created_at_ms', tostring(now_ms))
+  redis.call('EXPIRE', audit_key, recovery_ttl_s)
+  redis.call('ZADD', 'auth:audit:due', now_ms + lease_ms, transition_id)
   return lease_id, 'writing'
 end
 """
@@ -143,6 +186,8 @@ class LoginGuard:
     if lease and lease == ARGV[1] then
       redis.call('HSET', KEYS[1], 'state', 'audited')
       redis.call('HDEL', KEYS[1], 'lease_id', 'lease_expires_ms', 'next_retry_at_ms')
+      local prefix = 'auth:audit:transition:'
+      redis.call('ZREM', 'auth:audit:due', string.sub(KEYS[1], #prefix + 1))
       local ttl = tonumber(ARGV[2])
       if ttl and ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
       return 1
@@ -152,19 +197,89 @@ class LoginGuard:
 
     _FAIL_LUA = """
     -- auth-audit-fail-v1
+    local now = redis.call('TIME')
+    local now_ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
     local lease = redis.call('HGET', KEYS[1], 'lease_id')
     if lease and lease == ARGV[1] then
       local attempts = tonumber(redis.call('HGET', KEYS[1], 'attempts') or '0') + 1
+      local created = tonumber(redis.call('HGET', KEYS[1], 'created_at_ms') or now_ms)
       local delays = {1000, 2000, 5000, 10000, 30000}
       local delay = delays[math.min(attempts, #delays)]
+      local prefix = 'auth:audit:transition:'
+      local transition_id = string.sub(KEYS[1], #prefix + 1)
+      local recovery_ttl = tonumber(ARGV[2])
+      if recovery_ttl < 1 then recovery_ttl = 1 end
+      if attempts >= tonumber(ARGV[3]) or (now_ms - created) >= tonumber(ARGV[4]) then
+        redis.call('HSET', KEYS[1], 'state', 'dead', 'attempts', tostring(attempts))
+        redis.call('HDEL', KEYS[1], 'lease_id', 'lease_expires_ms', 'next_retry_at_ms')
+        redis.call('ZREM', 'auth:audit:due', transition_id)
+        redis.call('EXPIRE', KEYS[1], recovery_ttl)
+        return -1
+      end
       redis.call('HSET', KEYS[1], 'state', 'pending', 'attempts', tostring(attempts),
-        'next_retry_at_ms', tonumber(ARGV[2]) + delay)
+        'next_retry_at_ms', now_ms + delay)
       redis.call('HDEL', KEYS[1], 'lease_id', 'lease_expires_ms')
-      local ttl = tonumber(ARGV[3])
-      if ttl and ttl > 0 then redis.call('EXPIRE', KEYS[1], ttl) end
+      redis.call('ZADD', 'auth:audit:due', now_ms + delay, transition_id)
+      redis.call('EXPIRE', KEYS[1], recovery_ttl)
       return attempts
     end
     return 0
+    """
+
+    _BIND_LUA = """
+    -- auth-audit-bind-v1
+    if redis.call('EXISTS', KEYS[1]) == 0 then return 0 end
+    redis.call('HSETNX', KEYS[1], 'provider_code', ARGV[1])
+    redis.call('HSETNX', KEYS[1], 'result_code', ARGV[2])
+    redis.call('HSETNX', KEYS[1], 'count', ARGV[3])
+    redis.call('HSETNX', KEYS[1], 'remaining_ttl_seconds', ARGV[4])
+    redis.call('HSETNX', KEYS[1], 'ip', ARGV[5])
+    redis.call('HSETNX', KEYS[1], 'action', ARGV[6])
+    return 1
+    """
+
+    _SCAN_DUE_LUA = """
+    -- auth-audit-due-scan-v1
+    local now = redis.call('TIME')
+    local now_ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+    return redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now_ms, 'LIMIT', 0, tonumber(ARGV[1]))
+    """
+
+    _RECONCILE_CLAIM_LUA = _CLAIM_LUA + """
+    -- auth-audit-reconcile-claim-v1
+    local now = redis.call('TIME')
+    local now_ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+    local transition_id = ARGV[1]
+    local audit_key = 'auth:audit:transition:' .. transition_id
+    local action = redis.call('HGET', audit_key, 'action') or ''
+    local previous = redis.call('HGET', audit_key, 'state') or ''
+    local lease, state = claim_write(
+      audit_key, action, ARGV[2], now_ms, tonumber(ARGV[3]), tonumber(ARGV[4]),
+      transition_id
+    )
+    return {
+      lease, state, action,
+      redis.call('HGET', audit_key, 'provider_code') or '',
+      redis.call('HGET', audit_key, 'result_code') or '',
+      redis.call('HGET', audit_key, 'count') or '0',
+      redis.call('HGET', audit_key, 'remaining_ttl_seconds') or '0',
+      redis.call('HGET', audit_key, 'ip') or '',
+      previous
+    }
+    """
+
+    _DUE_STATS_LUA = """
+    -- auth-audit-due-stats-v1
+    local now = redis.call('TIME')
+    local now_ms = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+    local count = tonumber(redis.call('ZCARD', KEYS[1])) or 0
+    local oldest = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+    if count == 0 or oldest == nil or #oldest < 2 then
+      return {count, 0}
+    end
+    local age_ms = now_ms - tonumber(oldest[2])
+    if age_ms < 0 then age_ms = 0 end
+    return {count, math.floor(age_ms / 1000)}
     """
 
     _ADMIT_LUA = _CLAIM_LUA + """
@@ -180,7 +295,7 @@ class LoginGuard:
       local ttl = tonumber(redis.call('TTL', KEYS[1])) or 0
       local lease, state = claim_write(
         'auth:audit:transition:' .. ban, 'auth_ip_banned', ARGV[7], now_ms,
-        tonumber(ARGV[8]), ttl
+        tonumber(ARGV[8]), tonumber(ARGV[9]), ban
       )
       return {
         2, '', 0, ban, tonumber(redis.call('GET', KEYS[2]) or '0'),
@@ -231,7 +346,7 @@ class LoginGuard:
       local ttl = tonumber(redis.call('TTL', KEYS[4])) or 0
       local lease, state = claim_write(
         'auth:audit:transition:' .. existing_ban, 'auth_ip_banned', ARGV[9],
-        now_ms, tonumber(ARGV[10]), ttl
+        now_ms, tonumber(ARGV[10]), tonumber(ARGV[12]), existing_ban
       )
       return {2, '', 0, existing_ban, 0, 0, ttl, '', lease, '', state}
     end
@@ -259,13 +374,13 @@ class LoginGuard:
     if lock and lock ~= '' then
       lock_lease, lock_state = claim_write(
         'auth:audit:transition:' .. lock, 'auth_account_locked', ARGV[9],
-        now_ms, tonumber(ARGV[10]), tonumber(redis.call('TTL', KEYS[3])) or 0
+        now_ms, tonumber(ARGV[10]), tonumber(ARGV[12]), lock
       )
     end
     if ban and ban ~= '' then
       ban_lease, ban_state = claim_write(
         'auth:audit:transition:' .. ban, 'auth_ip_banned', ARGV[11],
-        now_ms, tonumber(ARGV[10]), tonumber(redis.call('TTL', KEYS[4])) or 0
+        now_ms, tonumber(ARGV[10]), tonumber(ARGV[12]), ban
       )
     end
     if ban then
@@ -292,10 +407,14 @@ class LoginGuard:
         *,
         policy_loader: Callable[[], Awaitable[AuthGuardPolicy]] | None = None,
         security_events: AuthSecurityEventWriter | None = None,
+        lease_ms: int | None = None,
+        owner: TransitionOwner = "api",
     ) -> None:
         self.store = store
         self.policy_loader = policy_loader
         self.security_events = security_events
+        self.lease_ms = writer_lease_ms() if lease_ms is None else lease_ms
+        self.owner = owner
 
     async def snapshot(self) -> AuthGuardPolicy:
         """仅在凭据失败后取得阈值快照；准入路径不得调用。"""
@@ -334,7 +453,8 @@ class LoginGuard:
             str(PREHASH_WINDOW_LIMIT),
             str(PREHASH_WINDOW_S),
             str(uuid4()),
-            str(WRITER_LEASE_MS),
+            str(self.lease_ms),
+            str(AUDIT_RECOVERY_TTL_S),
         )
         await self._enforce_result(result, provider_code=provider_code, ip=ip)
 
@@ -382,8 +502,9 @@ class LoginGuard:
             str(uuid4()),
             str(uuid4()),
             str(uuid4()),
-            str(WRITER_LEASE_MS),
+            str(self.lease_ms),
             str(uuid4()),
+            str(AUDIT_RECOVERY_TTL_S),
         )
         await self._enforce_result(result, provider_code=provider_code, ip=ip)
 
@@ -403,8 +524,9 @@ class LoginGuard:
             if _SAFE_PROVIDER_CODE.fullmatch(normalized_provider) is not None
             else "invalid"
         )
+        errors: list[BaseException] = []
         if lock_transition:
-            await self._commit_transition(
+            error = await self._settle_transition(
                 action="auth_account_locked",
                 transition_id=lock_transition,
                 lease_id=lock_lease,
@@ -415,8 +537,10 @@ class LoginGuard:
                 remaining_ttl_seconds=max(1, lock_ttl),
                 ip=ip,
             )
+            if error is not None:
+                errors.append(error)
         if ban_transition:
-            await self._commit_transition(
+            error = await self._settle_transition(
                 action="auth_ip_banned",
                 transition_id=ban_transition,
                 lease_id=ban_lease,
@@ -427,6 +551,13 @@ class LoginGuard:
                 remaining_ttl_seconds=max(1, ban_ttl),
                 ip=ip,
             )
+            if error is not None:
+                errors.append(error)
+        if errors:
+            for error in errors:
+                if isinstance(error, SessionStateUnavailable):
+                    raise error
+            raise errors[0]
         if code == 1:
             observe_admit("banned")
             raise AccountLocked("账号失败次数已达阈值，请使用正确凭据重试")
@@ -480,6 +611,35 @@ class LoginGuard:
             str(raw[10]),
         )
 
+    async def _settle_transition(
+        self,
+        *,
+        action: str,
+        transition_id: str,
+        lease_id: str,
+        audit_state: str,
+        provider_code: str,
+        result_code: str,
+        count: int,
+        remaining_ttl_seconds: int,
+        ip: str,
+    ) -> BaseException | None:
+        try:
+            await self._commit_transition(
+                action=action,
+                transition_id=transition_id,
+                lease_id=lease_id,
+                audit_state=audit_state,
+                provider_code=provider_code,
+                result_code=result_code,
+                count=count,
+                remaining_ttl_seconds=remaining_ttl_seconds,
+                ip=ip,
+            )
+        except BaseException as error:
+            return error
+        return None
+
     async def _commit_transition(
         self,
         *,
@@ -499,6 +659,20 @@ class LoginGuard:
             if audit_state == "audited":
                 return
             raise SessionStateUnavailable("auth security audit pending")
+        if audit_state == "writing":
+            observe_transition_claim(action, self.owner)  # type: ignore[arg-type]
+        await self.store.eval(
+            self._BIND_LUA,
+            1,
+            f"auth:audit:transition:{transition_id}",
+            provider_code,
+            result_code,
+            str(max(1, count)),
+            str(max(1, remaining_ttl_seconds)),
+            ip,
+            action,
+        )
+        started = monotonic()
         try:
             await self.security_events.ensure_transition(
                 AuthSecurityTransition(
@@ -511,13 +685,15 @@ class LoginGuard:
                     ip=ip,
                 )
             )
-        except Exception:
-            await self._mark_transition_retry(
-                transition_id,
-                lease_id,
-                remaining_ttl_seconds,
-            )
+        except Exception as error:
+            observe_transition_database_duration(action, monotonic() - started)  # type: ignore[arg-type]
+            outcome = await self._mark_transition_retry(transition_id, lease_id)
+            observe_transition_retry(action, _error_class(error))  # type: ignore[arg-type]
+            if outcome < 0:
+                observe_transition_dead(action)  # type: ignore[arg-type]
+                LOGGER.critical("auth transition audit entered dead state")
             raise
+        observe_transition_database_duration(action, monotonic() - started)  # type: ignore[arg-type]
         await self.store.eval(
             self._ACK_LUA,
             1,
@@ -526,20 +702,72 @@ class LoginGuard:
             str(max(1, remaining_ttl_seconds)),
         )
 
-    async def _mark_transition_retry(
-        self,
-        transition_id: str,
-        lease_id: str,
-        remaining_ttl_seconds: int,
-    ) -> None:
-        await self.store.eval(
+    async def _mark_transition_retry(self, transition_id: str, lease_id: str) -> int:
+        raw = await self.store.eval(
             self._FAIL_LUA,
             1,
             f"auth:audit:transition:{transition_id}",
             lease_id,
-            str(int(time() * 1000)),
-            str(max(1, remaining_ttl_seconds)),
+            str(AUDIT_RECOVERY_TTL_S),
+            str(MAX_TRANSITION_ATTEMPTS),
+            str(MAX_TRANSITION_RECOVERY_MS),
         )
+        return int(raw or 0)
+
+    async def scan_due_transitions(self, limit: int = 20) -> tuple[str, ...]:
+        raw = await self.store.eval(self._SCAN_DUE_LUA, 1, AUDIT_DUE_KEY, str(limit))
+        if raw is None:
+            return ()
+        if isinstance(raw, (bytes, str)):
+            text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+            return (text,) if text else ()
+        return tuple(str(item) for item in raw if item)
+
+    async def claim_due_transition(self, transition_id: str) -> tuple[str, ...]:
+        raw = await self.store.eval(
+            self._RECONCILE_CLAIM_LUA,
+            0,
+            transition_id,
+            str(uuid4()),
+            str(self.lease_ms),
+            str(AUDIT_RECOVERY_TTL_S),
+        )
+        if not isinstance(raw, (list, tuple)) or len(raw) < 8:
+            raise SessionStateUnavailable("auth transition claim unavailable")
+        return tuple("" if item is None else str(item) for item in raw[:9])
+
+    async def persist_claimed_transition(
+        self,
+        *,
+        action: str,
+        transition_id: str,
+        lease_id: str,
+        audit_state: str,
+        provider_code: str,
+        result_code: str,
+        count: int,
+        remaining_ttl_seconds: int,
+        ip: str,
+    ) -> None:
+        """Reconciler 与请求路径共用同一 ACK/FAIL 合同。"""
+
+        await self._commit_transition(
+            action=action,
+            transition_id=transition_id,
+            lease_id=lease_id,
+            audit_state=audit_state,
+            provider_code=provider_code,
+            result_code=result_code,
+            count=count,
+            remaining_ttl_seconds=remaining_ttl_seconds,
+            ip=ip,
+        )
+
+    async def due_stats(self) -> tuple[int, int]:
+        raw = await self.store.eval(self._DUE_STATS_LUA, 1, AUDIT_DUE_KEY)
+        if not isinstance(raw, (list, tuple)) or len(raw) < 2:
+            return 0, 0
+        return int(raw[0] or 0), int(raw[1] or 0)
 
     async def record_bound_success(self, username: str) -> None:
         """仅在权威账号/身份归属确认后清除主体失败状态。"""
