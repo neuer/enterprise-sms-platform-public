@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.runtime_resources import bind_connection_system_audit
@@ -46,6 +47,8 @@ def _store(database_url: Any) -> SqlChunkStore:
 
 def child_finalize() -> None:
     """独立进程调用原子终结，供父进程在锁等待中 SIGKILL。"""
+
+    Path(os.environ["SMS_FINALIZE_READY"]).write_text("ready", encoding="utf-8")
 
     async def _run() -> None:
         database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
@@ -561,7 +564,9 @@ async def test_reconcile_repairs_or_isolates_submitted_invoking_on_postgres() ->
 
 
 @pytest.mark.asyncio
-async def test_two_finalizers_and_kill_before_commit_on_postgres() -> None:
+async def test_two_finalizers_and_kill_before_commit_on_postgres(
+    tmp_path: Path,
+) -> None:
     database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
     engine = create_async_engine(database_url)
     nonce = uuid4().hex
@@ -628,55 +633,63 @@ async def test_two_finalizers_and_kill_before_commit_on_postgres() -> None:
         kill_attempt = await store.begin_vendor_invoke(
             kill_id, vendor_id="zhihui", adapter_id="zhihui", reason="primary"
         )
+        ready = tmp_path / "finalize-ready"
+        proc: asyncio.subprocess.Process | None = None
         async with engine.connect() as locker:
             trans = await locker.begin()
             await locker.execute(
                 text("SELECT id FROM sms_vendor_attempt WHERE id=:id FOR UPDATE"),
                 {"id": kill_attempt.id},
             )
+            async with engine.connect() as probe:
+                await probe.execute(text("SET lock_timeout = '200ms'"))
+                with pytest.raises((DBAPIError, OperationalError)):
+                    async with probe.begin():
+                        await probe.execute(
+                            text(
+                                "SELECT id FROM sms_vendor_attempt"
+                                " WHERE id=:id FOR UPDATE"
+                            ),
+                            {"id": kill_attempt.id},
+                        )
             child_env = os.environ.copy()
             child_env.update(
                 {
                     "SMS_FINALIZE_ATTEMPT_ID": str(kill_attempt.id),
                     "SMS_FINALIZE_CHUNK_ID": str(kill_id),
                     "SMS_FINALIZE_GENERATION": str(kill_attempt.generation),
+                    "SMS_FINALIZE_READY": str(ready),
                 }
             )
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable,
-                "-c",
-                (
-                    "from tests.integration.test_vendor_attempt_finalize_postgres "
-                    "import child_finalize; child_finalize()"
-                ),
-                cwd=str(_BACKEND_ROOT),
-                env=child_env,
-            )
-            waiting = False
-            for _ in range(40):
-                if proc.returncode is not None:
-                    stdout, stderr = await proc.communicate()
-                    raise AssertionError(
-                        f"finalize child exited early: {proc.returncode} {stderr!r}"
-                    )
-                waiting = bool(
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-c",
                     (
-                        await locker.execute(
-                            text(
-                                """
-                                SELECT count(*) FROM pg_stat_activity
-                                WHERE wait_event_type='Lock' AND state='active'
-                                """
-                            )
-                        )
-                    ).scalar_one()
+                        "from tests.integration.test_vendor_attempt_finalize_postgres "
+                        "import child_finalize; child_finalize()"
+                    ),
+                    cwd=str(_BACKEND_ROOT),
+                    env=child_env,
                 )
-                if waiting:
-                    break
-                await asyncio.sleep(0.1)
-            assert waiting
-            proc.send_signal(signal.SIGKILL)
-            await proc.wait()
+                for _ in range(200):
+                    if ready.exists():
+                        break
+                    if proc.returncode is not None:
+                        _stdout, stderr = await proc.communicate()
+                        raise AssertionError(
+                            f"finalize child exited early: {proc.returncode} {stderr!r}"
+                        )
+                    await asyncio.sleep(0.05)
+                assert ready.exists()
+                await asyncio.sleep(0.5)
+                assert proc.returncode is None
+                proc.send_signal(signal.SIGKILL)
+                await proc.wait()
+            finally:
+                if proc is not None and proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
             await trans.rollback()
 
         killed = await _snapshot(engine, kill_id)
