@@ -46,7 +46,8 @@ class _AuthRedis:
 
 POLICY_SELECT = """
 SELECT revision, ad_session_max_age_minutes,
-       EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at_epoch
+       EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at_epoch,
+       min_accepted_policy_revision
 FROM auth_session_policy
 WHERE id = 1
 """
@@ -57,6 +58,7 @@ def policy_from_mapping(row: Any) -> AuthSessionPolicy:
         int(row["revision"]),
         int(row["ad_session_max_age_minutes"]),
         int(row["updated_at_epoch"] or 0),
+        int(row.get("min_accepted_policy_revision") or 1),
     )
 
 
@@ -170,3 +172,29 @@ def create_auth_session_policy_reconciler(
     settings: Settings | None = None,
 ) -> AuthSessionPolicyReconciler:
     return AuthSessionPolicyReconciler(settings)
+
+
+class AlignedAuthSessionPolicyLoader:
+    """只比较 PostgreSQL 与 Redis，对齐才返回快照；从不发布或修复策略。"""
+
+    def __init__(
+        self,
+        store: Any,
+        *,
+        postgres_loader: Callable[[], Awaitable[AuthSessionPolicy]] | None = None,
+        settings: Settings | None = None,
+    ) -> None:
+        self.store = store
+        self.postgres_loader = postgres_loader
+        self.settings = settings
+
+    async def load(self) -> AuthSessionPolicy:
+        if self.postgres_loader is not None:
+            postgres = await self.postgres_loader()
+        else:
+            postgres = await load_postgres_session_policy(self.settings)
+        redis = await load_redis_session_policy(self.store)
+        outcome = compare_authoritative_policy(postgres, redis)
+        if outcome != "aligned" or redis is None:
+            raise SessionStateUnavailable(f"AD session policy {outcome}")
+        return redis

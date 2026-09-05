@@ -215,7 +215,8 @@ class SqlAdminRepository:
                                 updated_at = now()
                             WHERE id = 1
                             RETURNING revision, ad_session_max_age_minutes,
-                              EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at_epoch
+                              EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at_epoch,
+                              min_accepted_policy_revision
                             """
                         ),
                         {"minutes": int(minutes), "actor": principal.login_name},

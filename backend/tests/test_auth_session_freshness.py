@@ -6,7 +6,6 @@ import pytest
 
 from app.core.auth.backends import InvalidCredentials
 from app.core.auth.jwt import JwtClaims, JwtService, ReauthenticationRequired
-from app.services.runtime_policy import RuntimePolicy
 from tests.test_auth import FakeKeyValue
 
 SECRET = "a-jwt-secret-that-is-long-enough-for-hs256-tests"
@@ -30,18 +29,13 @@ def claims(provider_code: str) -> JwtClaims:
 async def test_ad_family_uses_original_auth_time_and_revokes_at_exact_boundary() -> None:
     issued_at = datetime(2026, 9, 1, 8, tzinfo=UTC)
     moments = [issued_at]
-    values = {"ad_session_max_age_minutes": "480"}
-
-    async def policy() -> RuntimePolicy:
-        return RuntimePolicy.from_mapping(values)
-
     store = FakeKeyValue()
     service = JwtService(
         SECRET,
         store,
         clock=lambda: moments[0],
-        runtime_policy_loader=policy,
     )
+    await service.publish_ad_session_policy(480, version=1)
     first = await service.issue_pair(claims("ad"), TAB_ID)
     moments[0] = issued_at + timedelta(minutes=479, seconds=59)
     second = await service.rotate_refresh(first.refresh_token, TAB_ID)
@@ -55,7 +49,7 @@ async def test_ad_family_uses_original_auth_time_and_revokes_at_exact_boundary()
     assert f"auth:jwt:refresh-family:{session_id}" not in store.values
     assert store.values[f"auth:jwt:session-revoked:{session_id}"] == "1"
 
-    values["ad_session_max_age_minutes"] = "10080"
+    await service.publish_ad_session_policy(10080, version=2)
     with pytest.raises(InvalidCredentials):
         await service.rotate_refresh(second.refresh_token, TAB_ID)
 
@@ -76,16 +70,9 @@ async def test_local_refresh_family_is_not_limited_by_ad_max_age() -> None:
 @pytest.mark.asyncio
 async def test_ad_policy_failure_does_not_rotate_or_revoke_family() -> None:
     store = FakeKeyValue()
-    unavailable = [False]
-
-    async def policy() -> RuntimePolicy:
-        if unavailable[0]:
-            raise OSError("database unavailable")
-        return RuntimePolicy.from_mapping({})
-
-    service = JwtService(SECRET, store, runtime_policy_loader=policy)
+    service = JwtService(SECRET, store)
+    await service.publish_ad_session_policy(480, version=1)
     first = await service.issue_pair(claims("ad"), TAB_ID)
-    unavailable[0] = True
 
     rotated = await service.rotate_refresh(first.refresh_token, TAB_ID)
     assert rotated.refresh_token

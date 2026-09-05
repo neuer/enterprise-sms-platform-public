@@ -1417,3 +1417,22 @@
   聚合未同步”，之后重复 release 也无法自愈。
 - 影响：schema v1.6.87/0101、`send_inflight.py`、`pipeline.py`、
   `pipeline_repository.py`、`deploy/failover.md`。#631 动态 split 必须复用该原语。
+
+## D106 AD Token 签发必须绑定 AuthSessionPolicy，禁止回退 480
+
+- 决策：首次 AD 登录签发、Access 验证与 Refresh 验证共用
+  `AuthSessionPolicyLoader.load()`，只消费 `revision` /
+  `ad_session_max_age_minutes` / `updated_at` / `min_accepted_policy_revision`。
+  签发不得读取完整 `RuntimePolicy` 或 `sys_config`，不得把缺失策略回退为 480
+  分钟或 `auth_policy_version=1`。策略不可用、Redis 超前或同版本冲突时返回
+  `AUTH_SESSION_UNAVAILABLE`/503，且不写 Access/Refresh/Family/Cookie。
+  策略发布只允许 PostgreSQL 权威事务 → Outbox → Publisher/Reconciler → Redis
+  CAS；登录请求不是发布者。
+- 修复发布：0102 递增 `auth_session_policy.revision` 与
+  `min_accepted_policy_revision`，并递增全部 AD 账号 `security_version`。
+  缺失 revision、回退为 1、或低于最低接受世代的既有 AD Token 必须重新完成
+  密码认证。策略延长只影响下一次完整 AD 登录。
+- 原因：第三轮已让验证消费单调 Redis 快照，但签发仍 Fail-Open 到 480，使更
+  严格策略下创建的会话在后续放宽时被延长。
+- 影响：schema v1.6.88/0102、`jwt.py`、`session_policy.py`、认证装配、OpenAPI
+  与 #645。`auth_legacy_policy_fallback_total` 必须保持 0。

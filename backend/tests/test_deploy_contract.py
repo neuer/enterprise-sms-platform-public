@@ -768,7 +768,11 @@ def test_redis_domain_runtime_enforces_aof_noeviction_and_bounded_memory() -> No
 
 
 def test_auth_redis_acl_allows_auth_lua_primitives() -> None:
-    from app.core.auth.session_policy import POLICY_CAS_LUA, POLICY_LOAD_LUA
+    from app.core.auth.session_policy import (
+        POLICY_CAS_LUA,
+        POLICY_LOAD_LUA,
+        POLICY_MIN_ACCEPTED_LUA,
+    )
 
     entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
         encoding="utf-8"
@@ -779,7 +783,7 @@ def test_auth_redis_acl_allows_auth_lua_primitives() -> None:
         f"+{name.lower()}"
         for name in re.findall(
             r"redis\.call\('([A-Z]+)'",
-            POLICY_CAS_LUA + POLICY_LOAD_LUA + service,
+            POLICY_CAS_LUA + POLICY_LOAD_LUA + POLICY_MIN_ACCEPTED_LUA + service,
         )
     }
     assert {"+type", "+hgetall", "+persist", "+zrangebyscore", "+time"} <= required
