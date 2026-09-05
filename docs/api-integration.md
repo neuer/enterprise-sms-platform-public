@@ -206,7 +206,10 @@ Content-Type: application/json
 首请求处理中的追随请求不消耗新发送额度，等待超时返回 503 与 `Retry-After`，调用方应继续使用原 `biz_id`。
 服务端 Claim 租约固定 30 秒，由 heartbeat 同时续 PostgreSQL 与 Redis；合法受理可以超过
 30/60/90/120 秒。客户端不得据此更换 `biz_id`。HTTP 超时后用原键重试：若 Claim 已
-`completed` 并绑定 `batch_id`，平台返回同一批次。
+`completed` 并绑定 `batch_id`，平台返回同一批次。COMMIT 成功但响应丢失时，已绑定的
+在途预留不会被 `acceptance-failed` 释放；若平台暂时无法确认提交结果，返回 503
+`DEPENDENCY_UNAVAILABLE`，调用方必须用原 `biz_id` 查询或重试，禁止换键。预留已绑定
+不一致批次时返回 409 `STATE_CONFLICT`，同样不得换键重发。
 
 推荐的重试模式：
 
@@ -384,13 +387,14 @@ const data = await response.json();
 | `IP_NOT_ALLOWED` | 403 | 来源 IP 不在应用白名单（检查出口 IP 是否变化） |
 | `VENDOR_TEST_CONSOLE_ONLY` | 403 | 受控真实联调环境下的普通发送保护，仅测试环境出现 |
 | `NOT_FOUND` | 404 | 批次不存在或不属于本应用 |
-| `STATE_CONFLICT` | 409 | 状态机非法流转（如取消已发送批次） |
+| `STATE_CONFLICT` | 409 | 状态机非法流转，或受理预留已绑定不一致批次 |
 | `IDEMPOTENCY_CONFLICT` | 409 | 同一幂等键已用于不同请求，更换 biz_id 或复用原请求 |
 | `SENSITIVE_WORD` | 422 | 内容命中敏感词 |
 | `TEMPLATE_PARAM_MISMATCH` | 422 | 模板参数个数不符或超长 |
 | `ALL_FILTERED` | 422 | 号码全部被去重/黑名单/频控剔除 |
 | `QUOTA_EXCEEDED` | 429 | 日配额不足 |
 | `RATE_LIMITED` | 429 | 请求频率超限 |
+| `DEPENDENCY_UNAVAILABLE` | 503 | 依赖或 COMMIT 结果暂不可确认，用原 `biz_id` 查询后重试 |
 | `USAGE_PROJECTION_UNAVAILABLE` | 503 | 配额账本暂不可用，请稍后重试（不要立即重试） |
 | `BALANCE_BLOCKED` | 503 | 余额不足，平台队列暂停 |
 | `VENDOR_ERROR` | 502 | 厂商侧错误（detail 仅含数值 code 与平台本地映射描述，不回传厂商原始 msg） |

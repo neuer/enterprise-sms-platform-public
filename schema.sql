@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.86  2026-09-05
+-- v1.6.86：acceptance-failed 只能释放 reserved 且未绑定批次的在途预留；
+--          已绑定/materialized 行由触发器与 CHECK 拒绝，对账可恢复误释放。
 -- v1.6.85  2026-09-05
 -- v1.6.85：idempotency_claim 增加 active/completed/released/expired 状态机，
 --          expires_at 为 PostgreSQL 权威租约；完成态与 batch 同事务绑定。
@@ -802,9 +805,41 @@ CREATE TABLE send_inflight_reservation (
       (state = 'released') = (released_at IS NOT NULL AND release_reason IS NOT NULL)
     )
 );
+ALTER TABLE send_inflight_reservation
+  ADD CONSTRAINT ck_send_inflight_acceptance_failed_unbound
+  CHECK (
+    release_reason IS DISTINCT FROM 'acceptance-failed'
+    OR batch_id IS NULL
+  ) NOT VALID;
+CREATE OR REPLACE FUNCTION reject_bound_acceptance_failed()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.release_reason IS NOT DISTINCT FROM 'acceptance-failed'
+     AND (
+       NEW.batch_id IS NOT NULL
+       OR OLD.batch_id IS NOT NULL
+       OR OLD.state IN ('batch_bound', 'materialized')
+     ) THEN
+    RAISE EXCEPTION
+      'acceptance-failed cannot release a bound reservation'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+REVOKE ALL ON FUNCTION reject_bound_acceptance_failed() FROM PUBLIC;
+CREATE TRIGGER trg_send_inflight_reject_bound_acceptance_failed
+BEFORE UPDATE ON send_inflight_reservation
+FOR EACH ROW
+EXECUTE FUNCTION reject_bound_acceptance_failed();
 CREATE INDEX idx_send_inflight_reservation_active
     ON send_inflight_reservation(app_id, state, expires_at)
     WHERE state <> 'released';
+CREATE INDEX idx_send_inflight_misreleased_acceptance
+    ON send_inflight_reservation (app_id)
+    WHERE state='released'
+      AND release_reason='acceptance-failed'
+      AND batch_id IS NOT NULL;
 CREATE TABLE send_admission_state (
     scope VARCHAR(16) PRIMARY KEY,
     state VARCHAR(16) NOT NULL CHECK (state IN ('open','degraded','closed')),

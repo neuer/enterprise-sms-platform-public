@@ -99,6 +99,14 @@ class InFlightQueryUnavailable(RuntimeError):
     """在途分片查询失败，必须失败关闭。"""
 
 
+class AcceptCommitUnknown(RuntimeError):
+    """COMMIT 结果无法确认，对应 DEPENDENCY_UNAVAILABLE/503。"""
+
+
+class AcceptCommitConflict(RuntimeError):
+    """reservation 已绑定不一致批次，对应 STATE_CONFLICT/409。"""
+
+
 class QuotaExemptionExpired(RuntimeError):
     """无限额度豁免已到期，不得把 daily_quota=0 继续当作无限。"""
 
@@ -297,6 +305,25 @@ class PipelineStore(Protocol):
         generation: int,
         reason: str,
     ) -> bool: ...
+
+    async def release_unbound_acceptance_reservation(
+        self,
+        reservation_id: int,
+        generation: int,
+        app_id: int,
+    ) -> bool: ...
+
+    async def resolve_ambiguous_acceptance_commit(
+        self,
+        *,
+        reservation_id: int,
+        generation: int,
+        app_id: int,
+        scope_kind: str,
+        scope_id: str,
+        biz_id: str,
+        request_hash: str,
+    ) -> object: ...
 
 
 class IdempotencyPort(Protocol):
@@ -816,6 +843,69 @@ class SendPipeline:
             "同一幂等键已用于不同请求，请更换 biz_id 或复用原请求"
         )
 
+    async def _resolve_acceptance_commit(
+        self,
+        *,
+        app: ApiAppContext,
+        request: SendRequest,
+        command: BatchCommand,
+        idem_scope: IdempotencyScope | None,
+        inflight: Any,
+        preauthorization: AcceptancePreauthorization | None,
+    ) -> Any:
+        """用数据库 reservation 事实解析 COMMIT 边界；无解析器时回退查找。"""
+
+        from app.services.send_inflight import AcceptCommitResolution
+
+        resolver = getattr(self.store, "resolve_ambiguous_acceptance_commit", None)
+        reservation_id = getattr(inflight, "id", None)
+        generation = getattr(inflight, "generation", None)
+        if (
+            resolver is not None
+            and reservation_id is not None
+            and generation is not None
+        ):
+            scope = idem_scope or IdempotencyScope(
+                command.scope_kind,
+                command.scope_id,
+            )
+            try:
+                return await resolver(
+                    reservation_id=int(reservation_id),
+                    generation=int(generation),
+                    app_id=app.app_id,
+                    scope_kind=scope.kind,
+                    scope_id=scope.id,
+                    biz_id=command.biz_id or "",
+                    request_hash=command.request_hash or "",
+                )
+            except Exception:
+                return AcceptCommitResolution("UNKNOWN")
+        if request.biz_id and idem_scope is not None:
+            try:
+                existing = await self.idempotency.lookup(idem_scope, request.biz_id)
+            except Exception:
+                if reservation_id is None:
+                    return AcceptCommitResolution("UNBOUND")
+                return AcceptCommitResolution("UNKNOWN")
+            if existing is not None:
+                try:
+                    policy = self._resolve_policy(app, request, preauthorization)
+                    await self._ensure_same_request(
+                        idem_scope,
+                        request.biz_id,
+                        request,
+                        app,
+                        policy,
+                    )
+                except IdempotencyConflict:
+                    return AcceptCommitResolution("UNBOUND")
+                return AcceptCommitResolution(
+                    "BOUND_TO_EXPECTED_BATCH",
+                    batch_no=existing,
+                )
+        return AcceptCommitResolution("UNBOUND")
+
     @staticmethod
     def _quota_clock(now: datetime) -> tuple[str, int]:
         local = now.astimezone(SHANGHAI)
@@ -1227,15 +1317,22 @@ class SendPipeline:
             app, request, recipient_count=recipient_count
         )
         inflight_bound = False
+        allow_unbound_release = True
 
         async def release_inflight(reason: str) -> None:
-            releaser = getattr(self.store, "release_in_flight_reservation", None)
             reservation_id = getattr(inflight, "id", None)
             generation = getattr(inflight, "generation", None)
-            if releaser is None or reservation_id is None or generation is None:
+            if reservation_id is None or generation is None:
                 return
+            narrow = getattr(self.store, "release_unbound_acceptance_reservation", None)
+            wide = getattr(self.store, "release_in_flight_reservation", None)
             try:
-                await releaser(int(reservation_id), int(generation), reason)
+                if reason == "acceptance-failed" and narrow is not None:
+                    await narrow(int(reservation_id), int(generation), app.app_id)
+                    return
+                if wide is None:
+                    return
+                await wide(int(reservation_id), int(generation), reason)
             except Exception as exc:
                 LOGGER.error(
                     "in-flight reservation release unavailable",
@@ -1613,29 +1710,63 @@ class SendPipeline:
                 save_attempted = True
                 stored = await self.store.save(command)
             except Exception as original:
-                if save_attempted and request.biz_id:
-                    assert idem_scope is not None
-                    try:
-                        existing = await self.idempotency.lookup(idem_scope, request.biz_id)
-                    except Exception:
-                        await compensate_reservation()
-                        raise original from None
-                    if existing is not None:
+                if save_attempted:
+                    resolution = await self._resolve_acceptance_commit(
+                        app=app,
+                        request=request,
+                        command=command,
+                        idem_scope=idem_scope,
+                        inflight=inflight,
+                        preauthorization=preauthorization,
+                    )
+                    if resolution.kind == "BOUND_TO_EXPECTED_BATCH":
+                        inflight_bound = True
+                        allow_unbound_release = False
+                        if not usage_reservation_reused:
+                            await release_usage("idempotent-reuse")
+                        return await self.store.response_for(
+                            resolution.batch_no or command.batch_no
+                        )
+                    if resolution.kind == "BOUND_TO_CONFLICTING_BATCH":
+                        allow_unbound_release = False
+                        raise AcceptCommitConflict(
+                            "在途预留已绑定不一致批次，禁止释放或重发"
+                        ) from original
+                    if resolution.kind == "UNKNOWN":
+                        allow_unbound_release = False
+                        raise AcceptCommitUnknown(
+                            "受理提交结果尚未确认，请查询原批次状态后重试"
+                        ) from original
+                    if request.biz_id:
+                        assert idem_scope is not None
                         try:
-                            policy = self._resolve_policy(app, request, preauthorization)
-                            await self._ensure_same_request(
+                            existing = await self.idempotency.lookup(
                                 idem_scope,
                                 request.biz_id,
-                                request,
-                                app,
-                                policy,
                             )
                         except Exception:
                             await compensate_reservation()
-                            raise
-                        if not usage_reservation_reused:
-                            await release_usage("idempotent-reuse")
-                        return await self.store.response_for(existing)
+                            raise original from None
+                        if existing is not None:
+                            try:
+                                policy = self._resolve_policy(
+                                    app,
+                                    request,
+                                    preauthorization,
+                                )
+                                await self._ensure_same_request(
+                                    idem_scope,
+                                    request.biz_id,
+                                    request,
+                                    app,
+                                    policy,
+                                )
+                            except Exception:
+                                await compensate_reservation()
+                                raise
+                            if not usage_reservation_reused:
+                                await release_usage("idempotent-reuse")
+                            return await self.store.response_for(existing)
                 await compensate_reservation()
                 raise
             if stored.idempotent:
@@ -1658,6 +1789,7 @@ class SendPipeline:
                     elif not reservation_reused:
                         await compensate_reservation()
             inflight_bound = True
+            allow_unbound_release = False
             if request.biz_id:
                 assert idem_scope is not None
                 await self.idempotency.remember(idem_scope, request.biz_id, stored.batch_no)
@@ -1687,7 +1819,7 @@ class SendPipeline:
                 expires_at,
             )
         finally:
-            if not inflight_bound:
+            if allow_unbound_release and not inflight_bound:
                 await release_inflight("acceptance-failed")
 
     async def _protect_plain_phones_batched(

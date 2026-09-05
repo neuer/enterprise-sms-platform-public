@@ -1373,4 +1373,21 @@
 - 原因：只续 Redis 会让合法长受理在 30 秒后保存失败，PostgreSQL 抢占加 Redis `SET NX`
   会留下无 Redis owner 的幽灵 generation。
 - 影响：schema v1.6.85/0099、`idempotency.py`、`pipeline_repository.py`、`pipeline.py`、
-  `docs/api-integration.md`、`deploy/redis-ha.md`、`deploy/failover.md`。#628 仍独立。
+  `docs/api-integration.md`、`deploy/redis-ha.md`、`deploy/failover.md`。#628 已由 D104 闭合。
+
+## D104 受理 COMMIT 结果不确定时不得释放已绑定在途预留
+
+- 决策：`acceptance-failed` 只允许 CAS 释放 `reserved AND batch_id IS NULL` 的
+  reservation。`store.save()` 在 COMMIT 边界抛错后必须先解析 PostgreSQL 事实：
+  UNBOUND 才补偿，BOUND_TO_EXPECTED_BATCH 视为提交成功并保持占用，
+  BOUND_TO_CONFLICTING_BATCH 返回 409，UNKNOWN 返回 503 且不释放。数据库用
+  CHECK + BEFORE UPDATE 触发器拒绝把已绑定行标成 `acceptance-failed`；新旧 API
+  混跑时旧的宽泛 UPDATE 也被拒绝。对账恢复“活跃批次 + acceptance-failed 误释放”
+  时必须锁定 balance/reservation/batch，确认没有第二份活动预留后再加回占用。
+- 0100 只做 expand-only 约束/触发器/索引，不对历史行 UPDATE；存量违例靠部分
+  CHECK `NOT VALID` 与对账修复。回滚不得删除该防线。过程计数器不新增 Prometheus
+  族，事实留在 reservation 行上。
+- 原因：客户端把“save() 是否返回”当成是否已绑定，COMMIT ACK 丢失后会释放已经
+  属于正式批次的容量，造成系统性低估。
+- 影响：schema v1.6.86/0100、`send_inflight.py`、`pipeline.py`、
+  `pipeline_repository.py`、`deploy/failover.md`。

@@ -943,6 +943,24 @@ def test_vendor_attempt_atomic_finalize_is_expand_only() -> None:
     assert source.split("def downgrade")[0].count("UPDATE ") == 0
 
 
+def test_inflight_acceptance_failed_guard_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0100_inflight_acceptance_failed_guard.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.86：" in schema
+    for contract in (schema, source):
+        assert "ck_send_inflight_acceptance_failed_unbound" in contract
+        assert "reject_bound_acceptance_failed" in contract
+        assert "acceptance-failed" in contract
+    assert 'revision = "0100_inflight_acceptance_failed_guard"' in source
+    assert 'down_revision = "0099_idempotency_claim_lease_lifecycle"' in source
+    assert "DELETE FROM" not in source
+    upgrade = source.split("def downgrade")[0]
+    assert upgrade.count("UPDATE ") == upgrade.count("BEFORE UPDATE")
+    assert "return" in source.split("def downgrade", 1)[1]
+
+
 def test_idempotency_claim_lease_lifecycle_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0099_idempotency_claim_lease_lifecycle.py"
