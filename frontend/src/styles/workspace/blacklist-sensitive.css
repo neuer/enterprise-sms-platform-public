@@ -658,10 +658,6 @@
     display: none;
   }
 
-  .channel-strip {
-    justify-self: start;
-  }
-
   .send-workbench {
     grid-template-columns: 1fr;
   }
@@ -677,15 +673,6 @@
   }
 
   .operator-name {
-    display: none;
-  }
-
-  .channel-strip {
-    gap: 6px;
-  }
-
-  .lane-track,
-  .tokens {
     display: none;
   }
 
@@ -784,7 +771,6 @@
     white-space: normal;
   }
 
-  .approval-detail-grid,
   .approval-facts {
     grid-template-columns: 1fr;
   }
