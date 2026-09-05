@@ -795,9 +795,9 @@ class UatSuite:
             self.api_send(
                 case_id,
                 app="app-iam",
-                category="notice",
+                category="verify",
                 mobiles=[self.phone(int(case_id), 99)],
-                content="恢复保持探测",
+                content="验证码000000",
                 biz_suffix="adm-open",
             ),
             200,

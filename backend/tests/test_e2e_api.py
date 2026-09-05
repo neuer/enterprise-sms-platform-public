@@ -545,6 +545,8 @@ def test_volume_case_waits_for_open_or_expired_recovery_hold() -> None:
     ]
     assert "reason_code='recovery_hold'" in helper
     assert "FROM send_admission_state WHERE scope='send'" in helper
+    assert 'category="verify"' in helper
+    assert 'category="notice"' not in helper
     assert 'self._wait_admission_ready_for_volume("26")' in source
     assert 'self._wait_admission_ready_for_volume("18")' in source
     assert 'self._force_resume_and_verify_unpaused("18")' in source
