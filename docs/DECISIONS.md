@@ -1531,7 +1531,9 @@
 
 - 决策：`consume_send_cost` 在同一 Lua 内用 Redis TIME 读取
   `ratelimit:app:{id}:recipients|segments:buckets`（#606 前的 v1 Hash）与
-  `:v2` 环形槽，有效用量取 max 而非相加，只写 v2。v1 畸形、非 Hash 或
+  `:v2` 环形槽，有效用量取 max 而非相加，只写 v2。首次放行把
+  `v1-v2` 差额写入当前环形槽，避免只加新请求权重时 max(v1,v2增长)
+  再放出一整份额度。v1 畸形、非 Hash 或
   窗口内未来字段失败关闭。首次成功写入 `cost:mig` marker
   （schema_version/cutover_epoch/generation/state=active），不 `DEL` 活动
   v1。control ACL 增加 `+type`，不增加 `KEYS/FLUSH*`。

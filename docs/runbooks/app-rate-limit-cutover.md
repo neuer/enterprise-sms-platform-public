@@ -9,6 +9,7 @@
 
 1. 发布本版本 API。不要先 `DEL` 仍在 60 秒窗口内的 v1 键。
 2. 新实例用 Redis TIME 读 v1 活动窗口与 v2 环形槽；判定取 max。
+   首次放行把 `v1-v2` 差额写入当前 v2 槽，之后只递增新请求权重。
 3. 首次成功消耗写入 `ratelimit:app:{id}:cost:mig`
    （`schema_version=2`、`state=active`、`generation=1`）。
 4. 抽干只写 v1 的旧 API 实例。旧实例看不到 v2，仍可能单独放行。
