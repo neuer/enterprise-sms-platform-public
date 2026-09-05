@@ -44,7 +44,7 @@ case "$domain" in
     ;;
   control)
     maxmemory='192mb'
-    key_rules='~acceptance:* ~alert:* ~anomaly:* ~app:* ~approval:* ~batch:* ~blacklist:* ~callback:* ~dept:* ~freq:* ~idem:* ~lock:* ~queue:paused:* ~quota:* ~ratelimit:* ~scheduled:* ~sms-platform:* ~uat:* ~usage:* ~vuat:*'
+    key_rules='~acceptance:* ~admission:* ~alert:* ~anomaly:* ~app:* ~approval:* ~batch:* ~blacklist:* ~callback:* ~dept:* ~freq:* ~idem:* ~lock:* ~queue:paused:* ~quota:* ~ratelimit:* ~scheduled:* ~sms-platform:* ~uat:* ~usage:* ~vuat:*'
     command_rules='+ping +get +set +del +mget +exists +incr +incrby +expire +pexpire +pexpireat +ttl +pttl +hget +hset +hincrby +hdel +hgetall +hmget +sadd +srem +smembers +smismember +zadd +zcard +zrange +zrem +zremrangebyscore +time +eval +evalsha +script|load +multi +exec +discard +watch +unwatch +scan'
     ;;
 esac
