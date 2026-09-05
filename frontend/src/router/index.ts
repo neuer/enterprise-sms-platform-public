@@ -29,6 +29,7 @@ export function installAuthGuard(target: Router, pinia: Pinia, sessionReady?: Pr
   target.beforeEach(async (to) => {
     // 整页刷新后 access token 只在内存中，必须等 Cookie 会话恢复尝试结束再判定，
     // 否则持有有效 refresh 会话的用户会被误判未登录而滞留在登录页。
+    // 无 Web Locks 时 restoreFromCookie 立即失败关闭，不会用 Cookie 复活会话。
     if (sessionReady) await sessionReady
     const session = useSessionStore(pinia)
     return resolveRouteAccess(

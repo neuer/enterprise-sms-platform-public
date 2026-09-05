@@ -1,6 +1,7 @@
 // Access Token 与用户快照的仅内存会话；不再写入 Web Storage。
 
 import type { PlatformUser } from "./auth"
+import { isSafeSingleTabMode } from "./refreshLock"
 
 /** 历史 Web Storage 凭据键（规则 26 一次性迁移 + 清除的唯一事实源）。 */
 export const LEGACY_TOKEN_KEY = "sms_token"
@@ -22,6 +23,10 @@ function newRefreshTabId(): string {
 
 export function beginRefreshTabBinding(): string {
   refreshTabId = newRefreshTabId()
+  if (isSafeSingleTabMode()) {
+    // 安全单标签页：绑定只活在当前页内存，刷新后必须重新登录。
+    return refreshTabId
+  }
   try {
     sessionStorage.setItem(REFRESH_TAB_ID_KEY, refreshTabId)
   } catch {
@@ -32,6 +37,7 @@ export function beginRefreshTabBinding(): string {
 
 export function getRefreshTabBinding(): string | null {
   if (refreshTabId && REFRESH_TAB_ID_PATTERN.test(refreshTabId)) return refreshTabId
+  if (isSafeSingleTabMode()) return null
   try {
     const stored = sessionStorage.getItem(REFRESH_TAB_ID_KEY)
     if (stored && REFRESH_TAB_ID_PATTERN.test(stored)) {

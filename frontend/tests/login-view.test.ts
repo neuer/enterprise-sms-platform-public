@@ -257,4 +257,28 @@ describe("登录页", () => {
     expect(wrapper.get("[role='alert']").text()).toContain("账号已锁定，请稍后重试")
     expect(wrapper.get("[data-testid='login-password']").element).toHaveProperty("value", "")
   })
+
+  it("无 Web Locks 时提示仅允许单标签页", async () => {
+    vi.stubGlobal("navigator", {})
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider])))
+
+    const { wrapper } = await mountLogin()
+
+    expect(wrapper.get("[data-testid='login-safe-single-tab']").text()).toContain(
+      "仅允许单标签页登录",
+    )
+  })
+
+  it("具备 Web Locks 时不显示单标签页提示", async () => {
+    vi.stubGlobal("navigator", {
+      locks: {
+        request: async (_name: string, callback: () => Promise<unknown>) => callback(),
+      },
+    })
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider])))
+
+    const { wrapper } = await mountLogin()
+
+    expect(wrapper.find("[data-testid='login-safe-single-tab']").exists()).toBe(false)
+  })
 })
