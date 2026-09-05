@@ -198,17 +198,21 @@ async def _save(
 async def _reservation(engine: Any, reservation_id: int) -> dict[str, Any]:
     async with engine.connect() as connection:
         row = (
-            await connection.execute(
-                text(
-                    """
+            (
+                await connection.execute(
+                    text(
+                        """
                     SELECT state, generation, batch_id, release_reason, reserved_chunks
                     FROM send_inflight_reservation
                     WHERE id=:id
                     """
-                ),
-                {"id": reservation_id},
+                    ),
+                    {"id": reservation_id},
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     return dict(row)
 
 
@@ -344,18 +348,29 @@ async def test_commit_ack_loss_resolves_to_expected_batch(
 async def test_unknown_commit_when_database_is_closed(
     inflight_env: tuple[Any, SqlPipelineStore, int],
 ) -> None:
-    engine, store, app_id = inflight_env
+    engine, raw_store, app_id = inflight_env
+    store = cast(EngineBoundStore, raw_store)
     reserved = await store.reserve_in_flight_chunks(app_id, 1, 200)
-    await engine.dispose()
-    resolution = await store.resolve_ambiguous_acceptance_commit(
-        reservation_id=reserved.id,
-        generation=reserved.generation,
-        app_id=app_id,
-        scope_kind="app",
-        scope_id=str(app_id),
-        biz_id="gone",
-        request_hash="c" * 64,
+    # dispose() 会重建连接池，不能模拟“暂时不可查询”。
+    unreachable = create_async_engine(
+        "postgresql+asyncpg://sms_accept:invalid@127.0.0.1:1/sms",
+        hide_parameters=True,
+        connect_args={"timeout": 1},
     )
+    store._bound_engine = unreachable
+    try:
+        resolution = await store.resolve_ambiguous_acceptance_commit(
+            reservation_id=reserved.id,
+            generation=reserved.generation,
+            app_id=app_id,
+            scope_kind="app",
+            scope_id=str(app_id),
+            biz_id="gone",
+            request_hash="c" * 64,
+        )
+    finally:
+        await unreachable.dispose()
+        store._bound_engine = engine
     assert resolution.kind == "UNKNOWN"
 
 
@@ -602,9 +617,10 @@ async def test_pipeline_commit_ack_loss_keeps_capacity(
     assert result.accepted == 1
     async with engine.connect() as connection:
         row = (
-            await connection.execute(
-                text(
-                    """
+            (
+                await connection.execute(
+                    text(
+                        """
                     SELECT r.state, r.batch_id, b.reserved_chunks
                     FROM send_inflight_reservation r
                     JOIN send_inflight_balance b ON b.app_id=r.app_id
@@ -612,10 +628,13 @@ async def test_pipeline_commit_ack_loss_keeps_capacity(
                     ORDER BY r.id DESC
                     LIMIT 1
                     """
-                ),
-                {"app_id": app_id},
+                    ),
+                    {"app_id": app_id},
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     assert row["state"] == "batch_bound"
     assert row["batch_id"] is not None
     assert int(row["reserved_chunks"]) == 1
