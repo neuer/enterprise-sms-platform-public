@@ -114,6 +114,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0099_idempotency_claim_lease_lifecycle",
         "0100_inflight_acceptance_failed_guard",
         "0101_inflight_balance_conservation",
+        "0102_inflight_split_capacity",
     ]
 
 

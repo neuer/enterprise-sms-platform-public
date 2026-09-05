@@ -9,6 +9,16 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, OperationalError
 
 ACTIVE_INFLIGHT_STATES = frozenset({"reserved", "batch_bound", "materialized"})
+OCCUPYING_CHUNK_STATES = frozenset(
+    {
+        "pending",
+        "submitting",
+        "retrying",
+        "submitted",
+        "uncertain",
+        "split_capacity_blocked",
+    }
+)
 InFlightDeltaOperation = Literal[
     "reserve",
     "release",
@@ -629,6 +639,110 @@ async def materialize_in_flight_reservation(
     )
 
 
+async def expand_in_flight_for_split(
+    connection: Any,
+    *,
+    batch_id: int,
+    delta: int,
+    limit: int,
+) -> bool:
+    """运行期拆分：与创建子分片同一事务把 reservation/balance 净增加 delta。"""
+
+    if delta < 1:
+        raise ValueError("split expansion must be positive")
+    current = (
+        (
+            await connection.execute(
+                text(
+                    """
+                SELECT id, generation, app_id, reserved_chunks, materialized_chunks, state
+                FROM send_inflight_reservation
+                WHERE batch_id=:batch_id AND state IN ('batch_bound','materialized')
+                FOR UPDATE
+                """
+                ),
+                {"batch_id": batch_id},
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if current is None:
+        raise InFlightInvariantViolation("split", "reservation missing")
+    occupancy = int(current["reserved_chunks"]) + delta
+    materialized = (
+        int(current["materialized_chunks"] or current["reserved_chunks"]) + delta
+    )
+    changed = await apply_inflight_delta(
+        connection,
+        operation="split",
+        app_id=int(current["app_id"]),
+        delta=delta,
+        reservation_id=int(current["id"]),
+        generation=int(current["generation"]),
+        expected_states=frozenset({"batch_bound", "materialized"}),
+        next_reserved_chunks=occupancy,
+        materialized_chunks=materialized,
+        limit=limit,
+    )
+    return bool(changed)
+
+
+async def reconcile_split_occupancy_drift(
+    connection: Any,
+    *,
+    limit: int = 100,
+) -> int:
+    """把低估的 materialized 预留补到当前占用分片数；只扩不缩。"""
+
+    rows = (
+        await connection.execute(
+            text(
+                """
+                SELECT r.id, r.generation, r.app_id, r.reserved_chunks, r.batch_id
+                FROM send_inflight_reservation r
+                WHERE r.state='materialized'
+                  AND r.batch_id IS NOT NULL
+                ORDER BY r.id
+                LIMIT :limit
+                """
+            ),
+            {"limit": limit},
+        )
+    ).mappings()
+    repaired = 0
+    for row in rows:
+        occupying = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT COUNT(*)::integer
+                    FROM sms_chunk
+                    WHERE batch_id=:batch_id
+                      AND status = ANY (send_chunk_occupying_states())
+                    """
+                ),
+                {"batch_id": int(row["batch_id"])},
+            )
+        ).scalar_one()
+        gap = int(occupying) - int(row["reserved_chunks"])
+        if gap < 1:
+            continue
+        await apply_inflight_delta(
+            connection,
+            operation="repair",
+            app_id=int(row["app_id"]),
+            delta=gap,
+            reservation_id=int(row["id"]),
+            generation=int(row["generation"]),
+            expected_states=frozenset({"materialized"}),
+            next_reserved_chunks=int(row["reserved_chunks"]) + gap,
+            materialized_chunks=int(row["reserved_chunks"]) + gap,
+        )
+        repaired += 1
+    return repaired
+
+
 async def resolve_ambiguous_acceptance_commit(
     connection: Any,
     *,
@@ -992,6 +1106,10 @@ async def reconcile_in_flight_reservations(connection: Any, *, limit: int = 100)
         connection,
         limit=limit,
     )
+    repaired += await reconcile_split_occupancy_drift(connection, limit=limit)
+    from app.tasks.send_repository import retry_capacity_blocked_splits
+
+    repaired += await retry_capacity_blocked_splits(connection, limit=limit)
     repaired += await reconcile_inflight_balance_conservation(
         connection,
         limit=limit,

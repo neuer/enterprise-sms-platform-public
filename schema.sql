@@ -1,5 +1,9 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.88  2026-09-05
+-- v1.6.88：供应商动态拆分必须同步扩充在途预留；占用态由
+--          send_chunk_occupying_states() 定义，容量不足进入
+--          split_capacity_blocked，子分片以 parent/generation/ordinal 幂等。
 -- v1.6.87  2026-09-05
 -- v1.6.87：send_inflight_balance = SUM(active reservations)；明细与聚合必须
 --          同事务更新，COMMIT 时由延迟约束触发器校验，对账按公式修复漂移。
@@ -692,10 +696,10 @@ CREATE TABLE sms_chunk (
     custom_id      CHAR(32)    NOT NULL UNIQUE,           -- 批次前缀24+序号8
     vendor_task_id VARCHAR(64),
     phone_count    INTEGER     NOT NULL,
-    status         VARCHAR(16) NOT NULL DEFAULT 'pending'
+    status         VARCHAR(32) NOT NULL DEFAULT 'pending'
         CHECK (status IN (
           'pending','submitting','submitted','failed','retrying',
-          'uncertain','unknown_terminal'
+          'uncertain','unknown_terminal','split_capacity_blocked'
         )),
     vendor_code    INTEGER,
     vendor_msg     VARCHAR(256),
@@ -717,12 +721,38 @@ CREATE TABLE sms_chunk (
     CONSTRAINT ck_sms_chunk_route_generation CHECK (route_generation >= 1),
     CONSTRAINT ck_sms_chunk_vendor_task_pseudonym CHECK (
       vendor_task_id IS NULL OR vendor_task_id ~ '^[0-9a-f]{64}$'
+    ),
+    parent_chunk_id BIGINT REFERENCES sms_chunk(id) ON DELETE RESTRICT,
+    split_generation INTEGER,
+    child_ordinal SMALLINT,
+    CONSTRAINT ck_sms_chunk_split_identity CHECK (
+      (
+        parent_chunk_id IS NULL
+        AND split_generation IS NULL
+        AND child_ordinal IS NULL
+      ) OR (
+        parent_chunk_id IS NOT NULL
+        AND split_generation >= 1
+        AND child_ordinal IN (1, 2)
+      )
     )
 );
 CREATE INDEX idx_chunk_taskid    ON sms_chunk(vendor_task_id);
 CREATE INDEX idx_chunk_retry_due ON sms_chunk(retry_not_before) WHERE status = 'retrying';
 CREATE INDEX idx_chunk_unknown_terminal
     ON sms_chunk(unknown_terminal_at) WHERE status = 'unknown_terminal';
+CREATE UNIQUE INDEX uk_sms_chunk_split_child
+    ON sms_chunk(parent_chunk_id, split_generation, child_ordinal)
+    WHERE parent_chunk_id IS NOT NULL;
+CREATE INDEX idx_chunk_split_capacity_blocked
+    ON sms_chunk(id) WHERE status = 'split_capacity_blocked';
+CREATE OR REPLACE FUNCTION send_chunk_occupying_states()
+RETURNS TEXT[] LANGUAGE sql IMMUTABLE AS $$
+  SELECT ARRAY[
+    'pending','submitting','retrying','submitted',
+    'uncertain','split_capacity_blocked'
+  ]::text[];
+$$;
 
 -- uncertain 保守终态后的双人处置；禁止把旧分片改回 pending。
 CREATE TABLE sms_uncertain_resolution (
@@ -3110,6 +3140,8 @@ GRANT SELECT (replay_eligibility, processing_lease_epoch, processing_lease_expir
               system_replay_audit_state)
     ON raw_vendor_log TO sms_metrics;
 GRANT EXECUTE ON FUNCTION send_inflight_active_states()
+    TO sms_accept, sms_send, sms_scheduler, sms_metrics;
+GRANT EXECUTE ON FUNCTION send_chunk_occupying_states()
     TO sms_accept, sms_send, sms_scheduler, sms_metrics;
 GRANT EXECUTE ON FUNCTION reconcile_send_inflight_app(BIGINT)
     TO sms_accept, sms_send;

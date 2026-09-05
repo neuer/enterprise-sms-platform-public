@@ -39,7 +39,8 @@ IDEMPOTENCY_LIVE_SQL = """
     SELECT 1 FROM sms_chunk c
     WHERE c.batch_id=b.id
       AND c.status IN (
-        'uncertain','unknown_terminal','submitting','retrying','pending'
+        'uncertain','unknown_terminal','submitting','retrying','pending',
+        'split_capacity_blocked'
       )
   )
   OR EXISTS (

@@ -54,7 +54,7 @@ deploy/
 8. 手机号校验统一 `^1\d{10}$`（11 位）
 9. 状态机：
    - batch: pending_approval→(queued|scheduled|rejected|expired)；scheduled→(queued|cancelled)；queued→sending→completed；sending→completed_unknown(uncertain 保守终态)；sending→balance_blocked→queued(人工恢复)
-   - chunk: pending→submitting→(submitted|failed|uncertain)；retrying→submitting；uncertain→submitted(仅 reconcile 证据)或 unknown_terminal(超过 uncertain_max_lifetime_hours)；禁止自动重发，禁止把旧 uncertain 改回 pending，禁止 uncertain 后自动切换供应商
+   - chunk: pending→submitting→(submitted|failed|uncertain|split_capacity_blocked)；retrying→submitting；submitting|split_capacity_blocked→failed（仅供应商 1006 原子拆分成功）；split_capacity_blocked 不得回呼厂商，由 reconcile 在有余量后重试同一 split generation；uncertain→submitted(仅 reconcile 证据)或 unknown_terminal(超过 uncertain_max_lifetime_hours)；禁止自动重发，禁止把旧 uncertain 改回 pending，禁止 uncertain 后自动切换供应商
    - 非法流转抛 409 STATE_CONFLICT
 10. 类别策略集中在 `services/category.py` 单点实现（队列路由/时间窗/黑名单开关/审批阈值/QPS 预留），禁止散落 if-else
 11. **配额/频控事实账本（v1.6.5）**：PostgreSQL `usage_reservation` 与明细表是唯一事实源，状态至少覆盖 reserved/committed/release_requested/released/uncertain；同一稳定请求、释放事件和投影版本必须受唯一约束。Redis 只保存带版本的绝对值投影，可从事实重建；marker 缺失、重建中或 Redis 不可确认时发送入口必须 503 失败关闭，禁止把缺失计数当零。驳回/过期/取消/全量剔除/入库失败/幂等复用统一以事务性 Outbox 请求释放，重复消费不得二次回补；号码频控仅 counted=true 的已接受号码计数，HMAC 轮换通过不可逆 alias 归并同一主体
