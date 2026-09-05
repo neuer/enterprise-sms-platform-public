@@ -1402,6 +1402,8 @@
   RETURNING 都必须命中一行，否则抛 `InFlightInvariantViolation` 并回滚。
   缺失 balance 只允许 reserve 与对账修复创建；release/materialize 不得静默建行。
 - COMMIT 用 DEFERRABLE 约束触发器复核公式，旧 API 只改一侧也会在提交时失败。
+  0100 在 ALTER reservation 前执行 `SET CONSTRAINTS ALL IMMEDIATE`，消化
+  0001 装入的延迟触发器与 0094 回填留下的 pending events。
   0101 只安装函数/触发器/事实表，不在迁移里改写业务行；启动后由同一
   `reconcile_send_inflight_app` 按求和修复聚合（禁止清零）。漂移写入
   `send_inflight_reconcile_fact`（仅内部 ID 与计数）；
@@ -1409,9 +1411,7 @@
   `conservation_blocked_at` 使新 reserve 返回 503；仅改该标记或 `updated_at`、不改
   `reserved_chunks` 的 balance UPDATE 不触发守恒复核，否则已漂移行无法失败关闭。
   对账锁使用 `pg_advisory_xact_lock(hashtextextended(app_id::text, 868632))`，
-  因为双参数形式只接受 `(int, int)`。Alembic `env.py` 按 revision 提交，避免
-  0001 装入延迟触发器后，同一事务里的 0094/0100 对 reservation 做 INSERT/ALTER
-  时出现 pending trigger events。过程计数器不新增 Prometheus
+  因为双参数形式只接受 `(int, int)`。过程计数器不新增 Prometheus
   族（D020/D102–D104），事实在 balance/fact 行上由 `/metrics` 抓取。
 - 原因：先改明细再改聚合且不检查 rowcount 会提交“已 released/materialized 但
   聚合未同步”，之后重复 release 也无法自愈。

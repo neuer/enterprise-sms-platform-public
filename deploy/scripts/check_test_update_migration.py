@@ -298,6 +298,7 @@ def _check_raw_sql(
             "CREATE CONSTRAINT TRIGGER ",
             "CREATE OR REPLACE VIEW ",
             "CREATE VIEW ",
+            "SET CONSTRAINTS ALL IMMEDIATE",
         )
     ):
         return
