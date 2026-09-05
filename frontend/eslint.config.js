@@ -108,8 +108,8 @@ export default tseslint.config(
     },
   },
   {
-    // fetch 单点的两个例外实现
-    files: ["src/api/client.ts", "src/api/auth.ts"],
+    // fetch 单点的请求基建例外：client / auth / 二者共用的 Deadline 原语
+    files: ["src/api/client.ts", "src/api/auth.ts", "src/api/httpDeadline.ts"],
     rules: {
       "no-restricted-syntax": "off",
     },
