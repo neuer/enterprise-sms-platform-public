@@ -1,0 +1,519 @@
+/* 统计报表：筛选条 / 导出条 / KPI / 趋势与排行 / 明细表。 */
+.report-heading {
+  margin-bottom: 18px;
+}
+
+.report-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--tx-2);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.report-scope i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--verdi-l);
+}
+
+.report-filter-bar,
+.report-error,
+.report-kpis,
+.report-main-grid,
+.report-table-card,
+.export-strip {
+  margin-bottom: 14px;
+}
+
+.report-filter-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 11px 16px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.report-fld {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.report-fld > span {
+  color: var(--tx-3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.report-seg {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+}
+
+.report-seg button {
+  padding: 4px 13px;
+  color: var(--tx-2);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 400;
+  background: var(--sink);
+  border: 0;
+  cursor: pointer;
+}
+
+.report-seg button.on {
+  color: #eaf1ed;
+  background: var(--verdi);
+}
+
+.report-pill-select {
+  width: 118px;
+}
+
+.report-filter-bar .el-date-editor.el-input__wrapper,
+.report-filter-bar .el-date-editor {
+  --el-date-editor-width: 240px;
+}
+
+.report-filter-go {
+  margin-left: auto;
+}
+
+.report-decrypted {
+  margin-left: 0;
+  white-space: nowrap;
+}
+
+.report-dirty-hint {
+  margin: -8px 4px 12px;
+  color: var(--amber);
+  font-size: 11px;
+}
+
+/* 导出状态条：内联跟随筛选条，仅有任务时出现 */
+.export-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 16px;
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+  font-size: 11.5px;
+  color: var(--tx-2);
+}
+
+/* 导出状态徽章：rgba 底即深色 --amber/--verdi-l/--verm 同值透明度，就地令牌化后亮色随令牌跟随；
+   done 文字 #71c4ad 即深色 --verdi-text。 */
+.export-tag {
+  padding: 0 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--amber) 14%, transparent);
+  color: var(--amber);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9.5px;
+  line-height: 1.8;
+}
+
+.export-tag.done {
+  background: color-mix(in srgb, var(--verdi-l) 14%, transparent);
+  color: var(--verdi-text);
+}
+
+.export-tag.failed {
+  background: color-mix(in srgb, var(--verm) 13%, transparent);
+  color: var(--el-color-danger);
+}
+
+.export-strip .export-id,
+.export-strip strong,
+.export-strip small {
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.export-strip .export-id {
+  color: var(--tx-3);
+}
+
+.export-strip .export-mode {
+  font-size: 10px;
+  color: var(--tx-3);
+  border: 1px dashed var(--line);
+  border-radius: 5px;
+  padding: 1px 7px;
+}
+
+.export-strip .export-download {
+  margin-left: auto;
+}
+
+.export-strip .export-strip-error {
+  flex: 1;
+}
+
+/* KPI 总览：消息数 / 计费条 / 成功率拆解 / 结果构成 */
+.report-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.report-kpi .el-card__body > span {
+  display: block;
+  color: var(--tx-2);
+  font-size: 11.5px;
+}
+
+.report-kpi .el-card__body > small {
+  display: block;
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.report-kpi strong {
+  display: block;
+  margin: 1px 0 0;
+  color: var(--tx-hi);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-kpi .strong-note {
+  display: inline;
+  margin-left: 7px;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.report-kpi .kpi-foot {
+  margin: 8px 0 0;
+  color: var(--tx-2);
+  font-size: 10.5px;
+}
+
+.report-kpi .kpi-kv {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  color: var(--tx-2);
+  font-size: 10.5px;
+}
+
+.report-kpi .kpi-kv b {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.report-kpi .kpi-kv b.neg {
+  color: var(--el-color-danger);
+}
+
+.compose-strip {
+  display: flex;
+  gap: 1px;
+  height: 6px;
+  margin-top: 10px;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.compose-strip i {
+  display: block;
+  height: 100%;
+}
+
+.compose-strip .d {
+  background: var(--verdi-l);
+}
+
+.compose-strip .f {
+  background: var(--el-color-danger);
+}
+
+.compose-strip .u {
+  background: var(--tx-3);
+}
+
+/* 类名不得用裸 .compose：批次页的 .compose 横条组件（height:5px; overflow:hidden）会误命中本元素 */
+.kpi-kv.compose-shares {
+  justify-content: space-between;
+}
+
+/* 趋势 + 维度排行 */
+.report-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.report-main-grid .report-chart-card,
+.report-main-grid .report-rank-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-bottom: 0;
+}
+
+.report-chart-card .el-card__body,
+.report-rank-card .el-card__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.metric-switch {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+}
+
+.metric-switch button {
+  padding: 2px 10px;
+  color: var(--tx-3);
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 400;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.metric-switch button.on {
+  color: var(--tx-hi);
+  background: var(--sink);
+}
+
+.report-chart-card .trend-legend {
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.report-chart-card .trend-legend em {
+  margin-left: auto;
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  font-style: normal;
+}
+
+.rank-list {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rank-list li {
+  display: grid;
+  grid-template-columns: minmax(72px, auto) minmax(40px, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.rank-list li:first-child {
+  border-top: 0;
+  padding-top: 2px;
+}
+
+.rank-name {
+  overflow: hidden;
+  color: var(--tx);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rank-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.rank-track i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--verdi-l);
+}
+
+.rank-num {
+  text-align: right;
+}
+
+.rank-num b {
+  display: block;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.rank-num small {
+  display: block;
+  color: var(--tx-3);
+  font-size: 9.5px;
+}
+
+.rate-chip {
+  display: inline-block;
+  padding: 0 7px;
+  border-radius: 5px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  line-height: 1.8;
+  white-space: nowrap;
+}
+
+/* 成功率徽章：同 export-tag 的归类——底色按深色令牌同值就地令牌化，g 文字用 --verdi-text。 */
+.rate-chip.g {
+  background: color-mix(in srgb, var(--verdi-l) 13%, transparent);
+  color: var(--verdi-text);
+}
+
+.rate-chip.y {
+  background: color-mix(in srgb, var(--amber) 13%, transparent);
+  color: var(--amber);
+}
+
+.rate-chip.r {
+  background: color-mix(in srgb, var(--verm) 13%, transparent);
+  color: var(--el-color-danger);
+}
+
+.rank-note {
+  margin: 10px 0 0;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.report-pager {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 14px;
+}
+
+.report-trend-chart {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 170px;
+}
+
+.report-table-card .el-card__body {
+  padding: 0;
+}
+
+.report-table-card .el-card__header {
+  padding: 12px 18px;
+}
+
+.report-table-card .report-table,
+.report-table-card .report-pager {
+  margin: 0 6px;
+}
+
+.report-table-card .report-table {
+  width: calc(100% - 12px);
+}
+
+.report-mobile-list {
+  display: none;
+}
+
+@media (max-width: 1100px) {
+  .report-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .report-main-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .report-kpis {
+    grid-template-columns: 1fr;
+  }
+
+  .report-filter-go {
+    margin-left: 0;
+  }
+
+  .report-filter-bar .el-button {
+    flex: 1 1 auto;
+  }
+
+  .export-strip .export-download {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .report-table {
+    display: none;
+  }
+
+  .report-mobile-list {
+    display: block;
+    padding: 4px 14px;
+  }
+
+  .report-mobile-list article {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .report-mobile-list header {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .report-mobile-list time,
+  .report-mobile-list dd {
+    font-family: "IBM Plex Mono", monospace;
+  }
+
+  .report-mobile-list dl {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    margin: 10px 0;
+  }
+
+  .report-mobile-list dt {
+    color: var(--tx-3);
+    font-size: 9px;
+  }
+
+  .report-mobile-list dd {
+    margin: 0;
+  }
+
+  .report-mobile-list p {
+    margin: 0;
+    color: var(--tx-2);
+    font-size: 10px;
+  }
+}

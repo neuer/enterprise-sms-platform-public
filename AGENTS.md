@@ -96,7 +96,7 @@ deploy/
 - 手机号展示统一 `<PhoneMask>` 组件（默认 mask）；授权解密统一 `<PhoneReveal>` 组件（「授权查看」入口，成功提示记审计，明文只存组件易失状态）
 - 状态用 `el-tag` 色彩语义：queued/sending=info、completed/delivered=success、failed/rejected=danger、pending_approval/scheduled=warning、balance_blocked/uncertain=danger 深色
 - 图表 ECharts；时间显示本地 +08:00 `YYYY-MM-DD HH:mm:ss`；全站中文文案；空态/加载用 Element 内置组件，不引第三方 UI 库
-- 前端共享单点：时间格式化 `src/lib/time.ts`；手机号正则/掩码 `src/lib/phone.ts`；类别/角色/状态/厂商审核文案与默认分页 `src/lib/labels.ts`；请求基建 `src/api/client.ts`（`auth.ts` 为 pre-auth 例外）；剪贴板 `src/lib/clipboard.ts`；ECharts 装配 `src/composables/useChart.ts`；壳样式只在 `workspace.css`（由 `App.vue` 全局引入，视图不重复 import），`theme.css` 只留 token、登录页与 Element 覆写。新增同关注点逻辑一律进单点，禁止页面级拷贝
+- 前端共享单点：时间格式化 `src/lib/time.ts`；手机号正则/掩码 `src/lib/phone.ts`；类别/角色/状态/厂商审核文案与默认分页 `src/lib/labels.ts`；请求基建 `src/api/client.ts`（`auth.ts` 为 pre-auth 例外）；剪贴板 `src/lib/clipboard.ts`；ECharts 装配 `src/composables/useChart.ts`；壳样式只在 `workspace.css` 聚合入口（由 `App.vue` 全局引入，视图不重复 import），规则本体按主题分片在 `src/styles/workspace/`（@import 顺序即级联顺序，`overrides-light.css` 明亮覆写层必须末位；新增壳样式进对应分片，禁止另起新文件或页面级拷贝），`theme.css` 只留 token、登录页与 Element 覆写。新增同关注点逻辑一律进单点，禁止页面级拷贝
 
 ## 平台错误码
 

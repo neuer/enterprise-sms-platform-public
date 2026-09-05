@@ -1,8 +1,10 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { readWorkspaceCss } from "./workspace-css"
+
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
-const css = read("src/styles/workspace.css")
+const css = readWorkspaceCss()
 const messageView = read("src/views/MessageView.vue")
 const replyView = read("src/views/ReplyView.vue")
 const auditView = read("src/views/AuditView.vue")

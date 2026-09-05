@@ -1,11 +1,13 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { readWorkspaceCss } from "./workspace-css"
+
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 
 describe("深色主题一致性守卫（前端打磨回归）", () => {
   it("深色层收编按卡片定制的浅色表头变量", () => {
-    const workspace = source("src/styles/workspace.css")
+    const workspace = readWorkspaceCss()
     const darkLayer = workspace.slice(workspace.indexOf("青鸾 Console 深色监视台"))
     expect(darkLayer).toMatch(
       /\.sign-table(?:\.el-table)?\s*\{[^}]*--el-table-header-bg-color:\s*var\(--panel-2\)/s,

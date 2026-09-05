@@ -1,12 +1,10 @@
-import { existsSync, readFileSync } from "node:fs"
+import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { readWorkspaceCss } from "./workspace-css"
+
 const themePath = resolve(process.cwd(), "src/styles/theme.css")
-const workspacePath = resolve(process.cwd(), "src/styles/workspace.css")
-const css = [
-  readFileSync(themePath, "utf8"),
-  existsSync(workspacePath) ? readFileSync(workspacePath, "utf8") : "",
-].join("\n")
+const css = [readFileSync(themePath, "utf8"), readWorkspaceCss()].join("\n")
 const datePickerViews = [
   "BatchView.vue",
   "ReportView.vue",
