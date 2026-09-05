@@ -80,7 +80,27 @@ class SendAdmissionLimits:
     closed_callback_dead: int = 200
     degraded_vendor_failures: int = 3
     degraded_max_recipients: int = 20
+    recovery_max_recipients: int = 20
+    recovery_max_segments: int = 20
+    recovery_max_chunks: int = 1
+    recovery_accept_batches_per_second: int = 5
+    recovery_accept_recipients_per_second: int = 20
+    recovery_accept_segments_per_second: int = 20
     snapshot_ttl_s: float = 5.0
+
+    def __post_init__(self) -> None:
+        if self.degraded_max_recipients < 1 or self.recovery_max_recipients < 1:
+            raise ValueError("recipient caps must be positive")
+        if self.recovery_max_recipients > self.degraded_max_recipients:
+            raise ValueError("recovery_max_recipients cannot exceed degraded_max_recipients")
+        if (
+            self.recovery_max_segments < 1
+            or self.recovery_max_chunks < 1
+            or self.recovery_accept_batches_per_second < 1
+            or self.recovery_accept_recipients_per_second < 1
+            or self.recovery_accept_segments_per_second < 1
+        ):
+            raise ValueError("recovery limits must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +122,7 @@ class SendAdmissionSnapshot:
     facts: SendAdmissionFacts
     state: AdmissionState
     reason: str
+    state_epoch: int = 1
 
 
 class SendAdmissionFactsPort(Protocol):
@@ -253,6 +274,12 @@ def _lane_for_category(category: str) -> Literal["realtime", "bulk"]:
     return "bulk" if category == "market" else "realtime"
 
 
+def _positive_cost(value: int | None) -> int | None:
+    if value is None:
+        return None
+    return max(1, int(value))
+
+
 def _apply_lane_and_request(
     facts: SendAdmissionFacts,
     *,
@@ -261,6 +288,8 @@ def _apply_lane_and_request(
     state: AdmissionState,
     reason: str,
     limits: SendAdmissionLimits,
+    estimated_segments: int | None = None,
+    estimated_chunks: int | None = None,
 ) -> SendAdmissionDecision:
     """全局容量带确定后再叠加 lane 心跳/暂停与请求规模，禁止二次查库。"""
 
@@ -278,8 +307,20 @@ def _apply_lane_and_request(
     if state == "degraded":
         if category == "market":
             return SendAdmissionDecision(state, "degraded_bulk", False, 30)
-        if recipient_count > limits.degraded_max_recipients:
-            return SendAdmissionDecision(state, "degraded_volume", False, 30)
+        recovering = reason == "recovery_hold"
+        recipient_cap = (
+            limits.recovery_max_recipients if recovering else limits.degraded_max_recipients
+        )
+        if recipient_count > recipient_cap:
+            volume_reason = "recovery_volume" if recovering else "degraded_volume"
+            return SendAdmissionDecision(state, volume_reason, False, 30)
+        if recovering:
+            segments = _positive_cost(estimated_segments)
+            chunks = _positive_cost(estimated_chunks)
+            if segments is not None and segments > limits.recovery_max_segments:
+                return SendAdmissionDecision(state, "recovery_segment_cost", False, 30)
+            if chunks is not None and chunks > limits.recovery_max_chunks:
+                return SendAdmissionDecision(state, "recovery_segment_cost", False, 30)
     return SendAdmissionDecision(state, reason, True, 0)
 
 
@@ -290,6 +331,8 @@ def decide(
     recipient_count: int,
     previous_state: str | None = None,
     limits: SendAdmissionLimits | None = None,
+    estimated_segments: int | None = None,
+    estimated_chunks: int | None = None,
 ) -> SendAdmissionDecision:
     """把容量带叠到类别/规模：degraded 与 recovery_hold 都只放行少量 verify/notice。"""
 
@@ -306,6 +349,8 @@ def decide(
         state=state,
         reason=reason,
         limits=selected,
+        estimated_segments=estimated_segments,
+        estimated_chunks=estimated_chunks,
     )
 
 
@@ -315,6 +360,8 @@ def authorize_from_snapshot(
     category: str,
     recipient_count: int,
     limits: SendAdmissionLimits | None = None,
+    estimated_segments: int | None = None,
+    estimated_chunks: int | None = None,
 ) -> SendAdmissionDecision:
     """只在权威快照上叠加请求级约束，禁止再次评估全局容量。"""
 
@@ -326,6 +373,8 @@ def authorize_from_snapshot(
         state=snapshot.state,
         reason=snapshot.reason,
         limits=selected,
+        estimated_segments=estimated_segments,
+        estimated_chunks=estimated_chunks,
     )
 
 
@@ -374,7 +423,7 @@ class SendAdmissionGuard:
                 raise SendAdmissionUnavailable() from exc
             load_control = getattr(self.repository, "load_control_state", None)
             save_control = getattr(self.repository, "save_control_state", None)
-            state, reason = await self._persist_control_state(
+            state, reason, epoch = await self._persist_control_state(
                 facts,
                 load_control=load_control,
                 save_control=save_control,
@@ -386,6 +435,7 @@ class SendAdmissionGuard:
                 facts,
                 state,
                 reason,
+                epoch,
             )
             if (
                 self._snapshot is None
@@ -490,16 +540,23 @@ class SendAdmissionGuard:
             return True
         return _state_rank(winner_state) >= _state_rank(candidate_state)
 
+    @staticmethod
+    def _control_epoch(row: dict[str, object], default: int) -> int:
+        raw = row.get("state_epoch")
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1:
+            return raw
+        return default
+
     async def _persist_control_state(
         self,
         facts: SendAdmissionFacts,
         *,
         load_control: Callable[..., Awaitable[object]] | None,
         save_control: Callable[..., Awaitable[object]] | None,
-    ) -> tuple[AdmissionState, str]:
+    ) -> tuple[AdmissionState, str, int]:
         if load_control is None and save_control is None:
             state, reason = evaluate_capacity(facts, limits=self.limits)
-            return state, reason
+            return state, reason, 1
         last_error: Exception | None = None
         for _ in range(_CONTROL_CAS_ATTEMPTS):
             try:
@@ -515,7 +572,7 @@ class SendAdmissionGuard:
                 persisted if isinstance(persisted, dict) else None,
             )
             if save_control is None:
-                return state, reason
+                return state, reason, epoch
             try:
                 saved = await save_control(
                     state=state,
@@ -533,7 +590,7 @@ class SendAdmissionGuard:
                             winner.get("reason_code") or winner.get("reason") or reason
                         )
                         if adopted in ADMISSION_STATES:
-                            return adopted, adopted_reason
+                            return adopted, adopted_reason, self._control_epoch(winner, epoch)
                     continue
                 self._snapshot = None
                 raise SendAdmissionUnavailable() from exc
@@ -546,8 +603,8 @@ class SendAdmissionGuard:
                 if outcome == "adopted" and not self._can_adopt(state, reason, saved):
                     continue
                 if saved_state in ADMISSION_STATES:
-                    return saved_state, saved_reason
-            return state, reason
+                    return saved_state, saved_reason, self._control_epoch(saved, epoch)
+            return state, reason, epoch
         self._snapshot = None
         raise SendAdmissionUnavailable() from last_error
 
@@ -557,24 +614,47 @@ class SendAdmissionGuard:
         category: str,
         channel: str,
         recipient_count: int,
+        estimated_segments: int | None = None,
+        estimated_chunks: int | None = None,
     ) -> None:
         """仅约束新发送。channel 只作无 PII 决策上下文，Web 与 API 同等积压。"""
 
         del channel
         snap = await self.snapshot()
+        recipients = max(1, int(recipient_count))
         decision = authorize_from_snapshot(
             snap,
             category=category,
-            recipient_count=max(1, int(recipient_count)),
+            recipient_count=recipients,
+            estimated_segments=estimated_segments,
+            estimated_chunks=estimated_chunks,
             limits=self.limits,
         )
-        if decision.allowed:
+        if not decision.allowed:
+            raise SendAdmissionRejected(
+                decision.state,
+                decision.reason,
+                decision.retry_after_s,
+            )
+        if snap.reason != "recovery_hold" or estimated_segments is None:
             return
-        raise SendAdmissionRejected(
-            decision.state,
-            decision.reason,
-            decision.retry_after_s,
-        )
+        consume = getattr(self.repository, "consume_recovery_budget", None)
+        if consume is None:
+            raise SendAdmissionUnavailable()
+        try:
+            allowed = await consume(
+                epoch=snap.state_epoch,
+                batches=1,
+                recipients=recipients,
+                segments=max(1, int(estimated_segments)),
+                limits=self.limits,
+            )
+        except SendAdmissionUnavailable:
+            raise
+        except Exception as exc:
+            raise SendAdmissionUnavailable() from exc
+        if not allowed:
+            raise SendAdmissionRejected("degraded", "recovery_rate", 1)
 
 
 @lru_cache(maxsize=1)

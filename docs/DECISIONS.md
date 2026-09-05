@@ -1510,10 +1510,17 @@
   下一轮 previous=OPEN 使 hold 永不生效。
 - 影响：schema v1.6.91/0105、`send_admission.py`、`send_admission_repository.py`。
 
-## D111 recovery_hold 不再豁免收件人上限
+## D111 recovery_hold 与普通降级同等或更严，并共享 generation 速率预算
 
-- 决策：`degraded` 下 `recovery_hold` 与普通降级共用 `degraded_max_recipients`
-  （默认 20）。超限 reason 仍为 `degraded_volume`，营销仍为 `degraded_bulk`。
-  本期不另开 recovery generation 令牌桶或独立 `recovery_max_recipients`。
-- 原因：恢复保持期比普通降级更宽松会在下游刚回落时注入大请求洪峰。
-- 影响：`send_admission.py`、`docs/runbooks/send-admission-lanes.md`。
+- 决策：`recovery_hold` 删除大请求豁免。单请求上限为
+  `recovery_max_recipients <= degraded_max_recipients`（默认都是 20），
+  另限 `recovery_max_segments`（默认 20）与 `recovery_max_chunks`（默认 1）。
+  超限 reason 为 `recovery_volume` / `recovery_segment_cost`；营销仍是
+  `degraded_bulk`。内容渲染后 Pipeline 再带预计条数/分片二次授权。
+  control Redis 按 `state_epoch` 共享每秒批次/收件人/计费条预算，
+  键 `admission:recovery:{epoch}`，TIME 取秒；control 不可用失败关闭。
+  本期不拆 RECOVERY_1/2 阶段，也不新增 Prometheus 家族。
+- 原因：恢复保持期比普通降级更宽松会在下游刚回落时注入大请求洪峰；
+  仅按收件人数不够限制长短信，仅单实例上限挡不住多 API 并发。
+- 影响：`send_admission.py`、`send_admission_repository.py`、`pipeline.py`、
+  `docs/runbooks/send-admission-lanes.md`。

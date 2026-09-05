@@ -34,5 +34,14 @@ queue pause 使用同一映射：`realtime_paused` 只关 realtime，`bulk_pause
 facts 时，本次快照必须是 `degraded/recovery_hold`，并在同一行写入
 `hold_until`。迁移初始化的 `closed/bootstrap` 是一次性标记，全新部署
 首次健康可进入 OPEN 且不建 hold。`state=open` 且带 hold 是非法组合，
-数据库 CHECK 会拒绝。hold 到期前营销仍拒绝；verify/notice 使用与普通
-degraded 相同的收件人上限（默认 20），不得因 `recovery_hold` 放行大请求。
+数据库 CHECK 会拒绝。hold 到期前营销仍拒绝。verify/notice 使用
+`recovery_max_recipients`（默认 20，不得高于普通 degraded 上限），
+以及预计计费条/分片上限。超出返回稳定 reason：
+
+- `recovery_volume`
+- `recovery_segment_cost`
+- `recovery_rate`
+
+均为 `503 DEPENDENCY_UNAVAILABLE` + `Retry-After`，不要把积压数量或阈值
+写进响应。多 API 实例共享 `admission:recovery:{state_epoch}` 每秒预算；
+control Redis 不可用时失败关闭。旧 generation 的令牌不得复用。

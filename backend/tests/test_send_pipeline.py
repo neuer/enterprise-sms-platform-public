@@ -968,6 +968,38 @@ async def test_new_send_is_rejected_by_admission_before_request_limiter() -> Non
 
 
 @pytest.mark.asyncio
+async def test_accept_reauthorizes_admission_with_rendered_segment_cost() -> None:
+    class RecordingGuard:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def authorize(self, **values: object) -> None:
+            self.calls.append(values)
+
+    guard = RecordingGuard()
+    pipeline = SendPipeline(
+        store=FakeStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        admission_guard=guard,
+    )
+    long_content = "通知" * 80
+    await pipeline.accept(
+        ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
+        SendRequest("notice", ["13800138000"], content=long_content, biz_id="seg-1"),
+    )
+    assert len(guard.calls) == 2
+    assert guard.calls[0]["estimated_segments"] is None
+    assert guard.calls[0]["recipient_count"] == 1
+    assert int(guard.calls[1]["estimated_segments"] or 0) >= 2
+    assert guard.calls[1]["estimated_chunks"] == 1
+
+
+@pytest.mark.asyncio
 async def test_active_claim_with_different_fingerprint_conflicts_before_admission() -> None:
     from app.services.idempotency import IdempotencyClaimView
 

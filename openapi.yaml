@@ -150,7 +150,9 @@ paths:
         balance_blocked。completed_unknown 表示批次已结束自动处理但仍有未知结果，
         禁止自动重发，调用方应继续使用原 biz_id 查询或等待人工处置。
         新发送受 Outbox 积压准入：积压或双队列暂停时返回 503 DEPENDENCY_UNAVAILABLE 与
-        Retry-After；降级时仅允许少量 verify/notice。同 biz_id 幂等重放与批次查询不受影响。
+        Retry-After；降级与 recovery_hold 仅允许少量 verify/notice。recovery_hold 超限
+        detail.reason 为 recovery_volume、recovery_segment_cost 或 recovery_rate，
+        不暴露内部阈值。同 biz_id 幂等重放与批次查询不受影响。
         生产当前只注册智慧信息供应商。超时或连接中断后 chunk 进入 uncertain，禁止自动切换
         任何其他供应商；只有调用前确定性不可用或协议明确拒绝且未受理时才允许安全改路。
         类别策略：verify 不查黑名单走 realtime 队列；notice 走 realtime；market 走 bulk 且受发送时间窗约束，

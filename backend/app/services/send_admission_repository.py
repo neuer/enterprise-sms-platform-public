@@ -9,8 +9,33 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine, redis_client
-from app.services.send_admission import SendAdmissionFacts
+from app.services.send_admission import (
+    SendAdmissionFacts,
+    SendAdmissionLimits,
+    SendAdmissionUnavailable,
+)
 from app.settings import Settings, get_settings
+
+RECOVERY_BUDGET_LUA = """
+local t = redis.call('TIME')
+local now_sec = tonumber(t[1])
+local last = tonumber(redis.call('HGET', KEYS[1], 'sec'))
+if last ~= nil and now_sec < last then
+  return 0
+end
+if last == nil or last ~= now_sec then
+  redis.call('HSET', KEYS[1], 'sec', now_sec, 'b', 0, 'r', 0, 's', 0)
+end
+local b = tonumber(redis.call('HGET', KEYS[1], 'b')) + tonumber(ARGV[1])
+local r = tonumber(redis.call('HGET', KEYS[1], 'r')) + tonumber(ARGV[2])
+local s = tonumber(redis.call('HGET', KEYS[1], 's')) + tonumber(ARGV[3])
+if b > tonumber(ARGV[4]) or r > tonumber(ARGV[5]) or s > tonumber(ARGV[6]) then
+  return 0
+end
+redis.call('HSET', KEYS[1], 'b', b, 'r', r, 's', s)
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[7]))
+return 1
+"""
 
 
 class AdmissionControlConflict(RuntimeError):
@@ -236,6 +261,37 @@ class SqlSendAdmissionRepository:
         winner = dict(winner_row)
         winner["outcome"] = "adopted"
         raise AdmissionControlConflict(winner)
+
+    async def consume_recovery_budget(
+        self,
+        *,
+        epoch: int,
+        batches: int,
+        recipients: int,
+        segments: int,
+        limits: SendAdmissionLimits,
+    ) -> bool:
+        """按当前 state_epoch 消费共享恢复预算；旧 generation 键不可复用。"""
+
+        if epoch < 1 or batches < 1 or recipients < 1 or segments < 1:
+            raise ValueError("recovery budget inputs must be positive")
+        try:
+            async with asyncio.timeout(self.control_timeout_s):
+                allowed = await self.redis.eval(
+                    RECOVERY_BUDGET_LUA,
+                    1,
+                    f"admission:recovery:{epoch}",
+                    str(batches),
+                    str(recipients),
+                    str(segments),
+                    str(limits.recovery_accept_batches_per_second),
+                    str(limits.recovery_accept_recipients_per_second),
+                    str(limits.recovery_accept_segments_per_second),
+                    "3",
+                )
+        except Exception as exc:
+            raise SendAdmissionUnavailable() from exc
+        return bool(int(allowed))
 
     async def record_transition(
         self,
