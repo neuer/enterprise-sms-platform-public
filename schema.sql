@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.91  2026-09-06
+-- v1.6.91：send_admission_state 禁止 open+hold，recovery_hold 只能是 degraded。
 -- v1.6.90  2026-09-05
 -- v1.6.90：Web unknown 人工重发使用受控 system_effect 主体与源批次
 --          dept，禁止 app_id=-1 / 固定部门 web；usage_reservation
@@ -1163,7 +1165,11 @@ CREATE TABLE send_admission_state (
     hold_until TIMESTAMPTZ,
     valid_until TIMESTAMPTZ NOT NULL,
     observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_send_admission_open_without_hold
+      CHECK (state <> 'open' OR hold_until IS NULL),
+    CONSTRAINT ck_send_admission_recovery_hold_state
+      CHECK (reason_code <> 'recovery_hold' OR state = 'degraded')
 );
 CREATE TABLE send_runtime_heartbeat (
     component VARCHAR(32) PRIMARY KEY,

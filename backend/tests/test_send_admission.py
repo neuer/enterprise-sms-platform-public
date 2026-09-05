@@ -13,6 +13,7 @@ from app.services.send_admission import (
     authorize_from_snapshot,
     decide,
     evaluate_capacity,
+    transition_admission_state,
 )
 from app.services.send_admission_repository import SqlSendAdmissionRepository
 
@@ -58,6 +59,92 @@ def test_capacity_bands_use_outbox_not_broker() -> None:
     assert evaluate_capacity(
         facts(realtime_heartbeat_stale=True, bulk_heartbeat_stale=True)
     ) == ("closed", "send_lanes_heartbeat_stale")
+
+
+def test_closed_recovery_creates_hold_and_returns_degraded() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 9, 5, 16, 0, tzinfo=UTC)
+    state, reason, hold = transition_admission_state(
+        previous="closed",
+        raw_state="open",
+        raw_reason="ok",
+        db_now=now,
+        hold_until=None,
+    )
+    assert (state, reason) == ("degraded", "recovery_hold")
+    assert hold == now + timedelta(seconds=60)
+
+    kept, kept_reason, still = transition_admission_state(
+        previous="degraded",
+        raw_state="open",
+        raw_reason="ok",
+        db_now=now,
+        hold_until=now + timedelta(seconds=30),
+    )
+    assert (kept, kept_reason, still) == (
+        "degraded",
+        "recovery_hold",
+        now + timedelta(seconds=30),
+    )
+
+    opened, opened_reason, cleared = transition_admission_state(
+        previous="degraded",
+        raw_state="open",
+        raw_reason="ok",
+        db_now=now,
+        hold_until=now - timedelta(seconds=1),
+    )
+    assert (opened, opened_reason, cleared) == ("open", "ok", None)
+
+    closed, closed_reason, closed_hold = transition_admission_state(
+        previous="degraded",
+        raw_state="closed",
+        raw_reason="outbox_backlog",
+        db_now=now,
+        hold_until=now + timedelta(seconds=30),
+    )
+    assert (closed, closed_reason, closed_hold) == ("closed", "outbox_backlog", None)
+
+    leftover, leftover_reason, leftover_hold = transition_admission_state(
+        previous="open",
+        raw_state="open",
+        raw_reason="ok",
+        db_now=now,
+        hold_until=now + timedelta(seconds=40),
+    )
+    assert (leftover, leftover_reason) == ("degraded", "recovery_hold")
+    assert leftover_hold == now + timedelta(seconds=40)
+
+    bootstrapped, boot_reason, boot_hold = transition_admission_state(
+        previous=None,
+        raw_state="open",
+        raw_reason="ok",
+        db_now=now,
+        hold_until=None,
+    )
+    assert (bootstrapped, boot_reason) == ("degraded", "recovery_hold")
+    assert boot_hold == now + timedelta(seconds=60)
+
+    degraded_raw, degraded_reason, degraded_hold = transition_admission_state(
+        previous="closed",
+        raw_state="degraded",
+        raw_reason="vendor_failures",
+        db_now=now,
+        hold_until=None,
+    )
+    assert (degraded_raw, degraded_reason) == ("degraded", "recovery_hold")
+    assert degraded_hold == now + timedelta(seconds=60)
+
+    marked, marked_reason, marked_hold = transition_admission_state(
+        previous="closed",
+        raw_state="open",
+        raw_reason="ok",
+        db_now=now,
+        hold_until=None,
+        previous_reason="bootstrap",
+    )
+    assert (marked, marked_reason, marked_hold) == ("open", "ok", None)
 
 
 def test_recovery_hysteresis_holds_closed_then_degraded() -> None:
@@ -444,6 +531,178 @@ async def test_repository_records_transition_without_pii() -> None:
     assert "phone" not in params["detail"]
     assert "138" not in params["detail"]
     assert "outbox_active" in params["detail"]
+
+
+@pytest.mark.asyncio
+async def test_first_closed_recovery_saves_degraded_hold_not_open() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    class PersistingFacts(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+            self.saved: list[dict[str, object]] = []
+
+        async def load_control_state(self) -> dict[str, object]:
+            now = datetime.now(UTC)
+            return {
+                "state": "closed",
+                "reason_code": "outbox_backlog",
+                "state_epoch": 1,
+                "hold_until": None,
+                "valid_until": now + timedelta(seconds=10),
+                "db_now": now,
+            }
+
+        async def save_control_state(self, **values: object) -> None:
+            self.saved.append(values)
+
+    repo = PersistingFacts()
+    guard = SendAdmissionGuard(repo)
+    snap = await guard.snapshot()
+    assert snap.state == "degraded"
+    assert snap.reason == "recovery_hold"
+    assert repo.saved[0]["state"] == "degraded"
+    assert repo.saved[0]["reason"] == "recovery_hold"
+    assert repo.saved[0]["hold_until"] is not None
+
+
+@pytest.mark.asyncio
+async def test_open_plus_future_hold_is_reread_as_recovery_hold() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+
+    class LeftoverOpenHold(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+            self.saved: list[dict[str, object]] = []
+
+        async def load_control_state(self) -> dict[str, object]:
+            return {
+                "state": "open",
+                "reason_code": "ok",
+                "state_epoch": 2,
+                "hold_until": now + timedelta(seconds=45),
+                "valid_until": now + timedelta(seconds=10),
+                "db_now": now,
+            }
+
+        async def save_control_state(self, **values: object) -> None:
+            self.saved.append(values)
+
+    repo = LeftoverOpenHold()
+    snap = await SendAdmissionGuard(repo).snapshot()
+    assert snap.state == "degraded"
+    assert snap.reason == "recovery_hold"
+    assert repo.saved[0]["state"] == "degraded"
+    assert repo.saved[0]["reason"] == "recovery_hold"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_and_expired_state_enter_recovery_hold() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+
+    class MissingRow(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+            self.saved: list[dict[str, object]] = []
+
+        async def load_control_state(self) -> None:
+            return None
+
+        async def save_control_state(self, **values: object) -> None:
+            self.saved.append(values)
+
+    missing = MissingRow()
+    snap = await SendAdmissionGuard(missing).snapshot()
+    assert snap.state == "degraded"
+    assert snap.reason == "recovery_hold"
+    assert missing.saved[0]["hold_until"] is not None
+
+    class ExpiredRow(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+            self.saved: list[dict[str, object]] = []
+
+        async def load_control_state(self) -> dict[str, object]:
+            return {
+                "state": "open",
+                "reason_code": "ok",
+                "state_epoch": 5,
+                "hold_until": None,
+                "valid_until": now - timedelta(seconds=1),
+                "db_now": now,
+            }
+
+        async def save_control_state(self, **values: object) -> None:
+            self.saved.append(values)
+
+    expired = ExpiredRow()
+    expired_snap = await SendAdmissionGuard(expired).snapshot()
+    assert expired_snap.state == "degraded"
+    assert expired_snap.reason == "recovery_hold"
+
+
+@pytest.mark.asyncio
+async def test_migration_bootstrap_marker_opens_without_hold() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime.now(UTC)
+
+    class BootstrapRow(FakeFacts):
+        def __init__(self) -> None:
+            super().__init__(facts())
+            self.saved: list[dict[str, object]] = []
+
+        async def load_control_state(self) -> dict[str, object]:
+            return {
+                "state": "closed",
+                "reason_code": "bootstrap",
+                "state_epoch": 1,
+                "hold_until": None,
+                "valid_until": now + timedelta(seconds=10),
+                "db_now": now,
+            }
+
+        async def save_control_state(self, **values: object) -> None:
+            self.saved.append(values)
+
+    repo = BootstrapRow()
+    snap = await SendAdmissionGuard(repo).snapshot()
+    assert snap.state == "open"
+    assert snap.reason == "ok"
+    assert repo.saved[0]["state"] == "open"
+    assert repo.saved[0]["hold_until"] is None
+
+
+@pytest.mark.asyncio
+async def test_repository_rejects_open_with_hold() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    repository = SqlSendAdmissionRepository(
+        settings=type(
+            "S",
+            (),
+            {"database_url": "postgresql+asyncpg://x", "redis_control_url": "redis://x"},
+        )(),
+        redis=FakeRedis([]),
+    )
+    with pytest.raises(ValueError, match="open admission state cannot carry"):
+        await repository.save_control_state(
+            state="open",
+            reason="ok",
+            hold_until=datetime.now(UTC) + timedelta(seconds=60),
+            epoch=1,
+        )
+    with pytest.raises(ValueError, match="recovery_hold must be a degraded"):
+        await repository.save_control_state(
+            state="closed",
+            reason="recovery_hold",
+            hold_until=None,
+            epoch=1,
+        )
 
 
 @pytest.mark.asyncio

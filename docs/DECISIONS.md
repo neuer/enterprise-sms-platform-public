@@ -1497,3 +1497,15 @@
   无关关闭健康的营销 lane。
 - 影响：`send_admission.py`、`send_admission_repository.py`、
   `docs/runbooks/send-admission-lanes.md`。
+
+## D110 CLOSED 首次恢复必须立即进入 degraded/recovery_hold
+
+- 决策：创建 `hold_until=now()+60s` 的同一次转换必须返回
+  `degraded/recovery_hold`，禁止保存 `open + future hold`。`valid_until`
+  过期与缺行视为 previous=CLOSED。唯一例外是迁移写入的一次性
+  `reason_code=bootstrap`：首次健康 facts 可进入 raw 状态且不建 hold，
+  标记随写入被消费。hold 期内 raw=OPEN 仍保持 recovery_hold；raw=CLOSED
+  立即关闭并清空 hold。0105 先修复存量再加 CHECK。
+- 原因：旧代码先算出 OPEN 再写 future hold，当前请求立即全量放行，
+  下一轮 previous=OPEN 使 hold 永不生效。
+- 影响：schema v1.6.91/0105、`send_admission.py`、`send_admission_repository.py`。
