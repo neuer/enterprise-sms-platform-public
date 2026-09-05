@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from functools import lru_cache
 from time import monotonic
 from typing import Literal, Protocol
@@ -217,6 +217,35 @@ def evaluate_capacity(
     return raw_state, reason
 
 
+RECOVERY_HOLD_SECONDS = 60
+
+
+def transition_admission_state(
+    *,
+    previous: str | None,
+    raw_state: AdmissionState,
+    raw_reason: str,
+    db_now: datetime,
+    hold_until: datetime | None,
+) -> tuple[AdmissionState, str, datetime | None]:
+    """把 raw 容量与持久 previous/hold 收成可保存的 state/reason/hold。"""
+
+    if raw_state == "closed":
+        return "closed", raw_reason, None
+    previous_state = previous if previous in ADMISSION_STATES else "closed"
+    active_hold = hold_until if hold_until is not None and hold_until > db_now else None
+    if previous_state == "closed":
+        new_hold = db_now + timedelta(seconds=RECOVERY_HOLD_SECONDS)
+        if active_hold is not None and active_hold > new_hold:
+            new_hold = active_hold
+        return "degraded", "recovery_hold", new_hold
+    if active_hold is not None and raw_state == "open":
+        return "degraded", "recovery_hold", active_hold
+    if active_hold is not None:
+        return raw_state, raw_reason, active_hold
+    return raw_state, raw_reason, None
+
+
 def _lane_for_category(category: str) -> Literal["realtime", "bulk"]:
     return "bulk" if category == "market" else "realtime"
 
@@ -383,7 +412,7 @@ class SendAdmissionGuard:
         facts: SendAdmissionFacts,
         persisted: dict[str, object] | None,
     ) -> tuple[AdmissionState, str, int, object]:
-        from datetime import UTC, datetime, timedelta
+        from datetime import UTC, datetime
 
         previous = None if self._snapshot is None else self._snapshot.state
         epoch = 1
@@ -410,21 +439,20 @@ class SendAdmissionGuard:
             else:
                 raise SendAdmissionUnavailable()
             now_utc = db_now
+        if persisted is None:
+            previous = previous or "closed"
         state, reason = evaluate_capacity(
             facts,
             limits=self.limits,
             previous_state=previous,
         )
-        if (
-            hold_until is not None
-            and previous == "closed"
-            and state == "open"
-            and hold_until > now_utc
-        ):
-            state, reason = "degraded", "recovery_hold"
-        hold = hold_until
-        if previous == "closed" and state != "closed":
-            hold = now_utc + timedelta(seconds=60)
+        state, reason, hold = transition_admission_state(
+            previous=previous,
+            raw_state=state,
+            raw_reason=reason,
+            db_now=now_utc,
+            hold_until=hold_until,
+        )
         return state, reason, epoch, hold
 
     @staticmethod

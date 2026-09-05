@@ -27,3 +27,10 @@ queue pause 使用同一映射：`realtime_paused` 只关 realtime，`bulk_pause
 
 不要用容器 ID、hostname 或 PID 当标签。生产才把缺失心跳当成 CLOSED；
 开发/测试环境不会因空心跳表关发送。
+
+## Recovery hold
+
+`CLOSED` 或过期控制面首次回到健康 facts 时，本次快照必须是
+`degraded/recovery_hold`，并在同一行写入 `hold_until`。`state=open` 且
+带 hold 是非法组合，数据库 CHECK 会拒绝。hold 到期前营销仍拒绝；
+verify/notice 可按降级规则放行。

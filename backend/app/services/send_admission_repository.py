@@ -144,6 +144,10 @@ class SqlSendAdmissionRepository:
         hold_until: Any,
         epoch: int,
     ) -> dict[str, Any]:
+        if state == "open" and hold_until is not None:
+            raise ValueError("open admission state cannot carry a recovery hold")
+        if reason == "recovery_hold" and state != "degraded":
+            raise ValueError("recovery_hold must be a degraded admission state")
         engine = self._engine()
         async with engine.begin() as connection:
             updated = await connection.execute(
