@@ -36,6 +36,7 @@ Celery beat 的 PersistentScheduler 状态只保存可重建的调度元数据�
 - [controlled-real-vendor-test.md](../docs/runbooks/controlled-real-vendor-test.md)：开发测试环境使用正式 Key 的受控真实联调、100 计费条上限与停发规则。
 - [test-fast-update.md](../docs/runbooks/test-fast-update.md)：真实联调期间的安全快速更新范围、固定命令和失败关闭流程。
 - [usage-ledger-recovery.md](../docs/runbooks/usage-ledger-recovery.md)：配额/频控事实解释、Redis 投影漂移复核与安全重建。
+- [uncertain-web-resend.md](../docs/runbooks/uncertain-web-resend.md)：Web unknown 人工重发使用受控 system_effect 主体与源批次部门。
 - [redis-ha.md](redis-ha.md)：broker/auth/control 故障域、ACL、托管高可用、切换恢复和密码轮换。
 - [database-pool-recovery.md](../docs/runbooks/database-pool-recovery.md)：分进程连接预算、指标、故障恢复与 24 小时混合负载留证。
 - [prometheus.example.yml](prometheus.example.yml)：内网 Prometheus scrape 样例。
@@ -1193,6 +1194,10 @@ Docker unit 的固定 `journal` 事件只提供信号，外部采集/告警链�
 - `sms_send_admission`
 - `sms_outbox_oldest_age_seconds`
 - `sms_send_submit_outcome`
+- `sms_uncertain_effect`
+- `sms_uncertain_effect_usage_subject_error`
+- `sms_uncertain_effect_oldest_pending_seconds`
+- `sms_uncertain_effect_child_recovered`
 
 `up == 0`、抓取超时或任一关键 family 消失均视为监控故障，不得用缓存旧值伪装健康。
 

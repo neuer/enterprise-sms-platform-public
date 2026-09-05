@@ -1,5 +1,9 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.90  2026-09-05
+-- v1.6.90：Web unknown 人工重发使用受控 system_effect 主体与源批次
+--          dept，禁止 app_id=-1 / 固定部门 web；usage_reservation
+--          记录 subject_kind，存量缺 dept 的 Web 处置转入人工介入。
 -- v1.6.89  2026-09-05
 -- v1.6.89：供应商动态拆分必须同步扩充在途预留；占用态由
 --          send_chunk_occupying_states() 定义，容量不足进入
@@ -474,6 +478,7 @@ CREATE TABLE app (
     ip_allowlist_exempt_until TIMESTAMPTZ,
     unlimited_quota_exempt_until TIMESTAMPTZ,
     admission_exempt_note VARCHAR(200),
+    usage_subject_kind   VARCHAR(16)  NOT NULL DEFAULT 'api_app',
     callback_url         VARCHAR(256),                    -- 结果回调(内网CIDR白名单校验)
     callback_secret_enc  BYTEA,                           -- 回调签名密钥(加密存储)
     callback_report_enabled BOOLEAN   NOT NULL DEFAULT FALSE, -- 明细级回调开关
@@ -521,11 +526,39 @@ CREATE TABLE app (
     CONSTRAINT ck_app_segment_limit_per_min
       CHECK (segment_limit_per_min BETWEEN 1 AND 100000000),
     CONSTRAINT ck_app_max_in_flight_chunks
-      CHECK (max_in_flight_chunks BETWEEN 1 AND 100000)
+      CHECK (max_in_flight_chunks BETWEEN 1 AND 100000),
+    CONSTRAINT ck_app_usage_subject_kind
+      CHECK (usage_subject_kind IN ('api_app','system_effect')),
+    CONSTRAINT ck_app_system_effect_quota
+      CHECK (usage_subject_kind <> 'system_effect' OR daily_quota > 0)
 );
 CREATE INDEX idx_app_key_prefix      ON app(api_key_prefix);
 CREATE INDEX idx_app_prev_key_prefix ON app(api_key_prev_prefix)
     WHERE api_key_prev_prefix IS NOT NULL;
+CREATE INDEX idx_app_usage_subject_kind ON app(usage_subject_kind)
+    WHERE usage_subject_kind = 'system_effect';
+
+-- 内部 uncertain 重发计费主体：合法正数 ID、有限配额、不可 API Key 外呼。
+-- 固定高位 ID，避免占用 BIGSERIAL 的 1 与迁移探针/存量业务行冲突。
+INSERT INTO app (
+    id, name, dept, api_key_hash, api_key_prefix, allowed_categories,
+    daily_quota, rate_limit_per_min, max_in_flight_chunks,
+    blacklist_check, allowed_ips, usage_subject_kind, created_by
+) VALUES (
+    1000000001,
+    'system-uncertain-resend',
+    'system',
+    '0000000000000000000000000000000000000000000000000000000000000000',
+    'sysresnd',
+    'verify,notice,market',
+    10000,
+    60,
+    200,
+    TRUE,
+    '{}',
+    'system_effect',
+    'system'
+);
 
 CREATE TABLE dept_quota (
     dept        VARCHAR(128) PRIMARY KEY,
@@ -784,6 +817,7 @@ CREATE TABLE sms_uncertain_resolution (
     source_app_id        BIGINT      REFERENCES app(id),
     source_channel       VARCHAR(8),
     source_category      VARCHAR(16),
+    source_dept          VARCHAR(128),
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     confirmed_at         TIMESTAMPTZ,
     approved_at          TIMESTAMPTZ,
@@ -811,6 +845,7 @@ CREATE TABLE sms_uncertain_child (
     child_batch_id BIGINT NOT NULL UNIQUE
       REFERENCES sms_batch(id) ON DELETE RESTRICT,
     generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+    recovered BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE send_inflight_balance (
@@ -2244,6 +2279,7 @@ CREATE TABLE usage_reservation (
     id              UUID PRIMARY KEY,
     request_key     VARCHAR(192) NOT NULL,
     app_id          BIGINT NOT NULL CHECK (app_id>=0),
+    subject_kind    VARCHAR(16) NOT NULL DEFAULT 'api_app',
     dept            VARCHAR(128) NOT NULL,
     category        VARCHAR(8) NOT NULL
                     CHECK (category IN ('verify','notice','market')),
@@ -2263,6 +2299,10 @@ CREATE TABLE usage_reservation (
     release_requested_at TIMESTAMPTZ,
     released_at     TIMESTAMPTZ,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT ck_usage_reservation_subject_kind
+      CHECK (subject_kind IN ('api_app','system_effect')),
+    CONSTRAINT ck_usage_reservation_system_effect_app
+      CHECK (subject_kind <> 'system_effect' OR app_id >= 1),
     CONSTRAINT ck_usage_request_key_no_pii CHECK (
       request_key ~ (
         '^(acceptance[:](v2[:][0-9a-f]{64}[:][0-9]{8}|'
@@ -3215,7 +3255,11 @@ GRANT SELECT (id, category, created_at, removed_freq) ON sms_batch TO sms_metric
 GRANT SELECT (batch_id, phone_count, submitted_at, vendor_code, status,
               uncertain_since, late_evidence_at)
     ON sms_chunk TO sms_metrics;
-GRANT SELECT (state) ON sms_uncertain_resolution TO sms_metrics;
+GRANT SELECT (state, action, source_channel, confirmed_at, approved_at,
+               effect_error)
+    ON sms_uncertain_resolution TO sms_metrics;
+GRANT SELECT (generation, recovered, created_at)
+    ON sms_uncertain_child TO sms_metrics;
 GRANT SELECT (state, state_epoch, hold_until, valid_until)
     ON send_admission_state TO sms_metrics;
 GRANT SELECT (component, last_heartbeat_at, last_success_at)

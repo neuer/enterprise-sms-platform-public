@@ -11,7 +11,6 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
-
 from app.core.apikey import ApiAppContext
 from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
 from app.services.app_ratelimit import ApplicationRateLimitExceeded
@@ -58,10 +57,19 @@ from app.services.send_inflight import (
     release_unbound_acceptance_reservation,
     reserve_in_flight_chunks,
 )
+from app.services.usage_subject import UsageSubject
 from app.services.vendor_test_guard import VendorTestRecipientDenied
 
 ADMIN = SecurityPrincipal(1, 10, "admin", "平台部", "admin")
 OPERATOR = SecurityPrincipal(2, 20, "operator01", "平台部", "operator")
+SYSTEM_RESEND_SUBJECT = UsageSubject(
+    kind="system_effect",
+    app_id=88,
+    dept="平台部",
+    category="notice",
+    resolution_id=4,
+    effect_generation=2,
+)
 
 
 def _claim_owned(current: str | None, token: str) -> bool:
@@ -2751,6 +2759,47 @@ async def test_web_channel_skips_application_rate_limiter() -> None:
 
 
 @pytest.mark.asyncio
+async def test_system_resend_hits_application_rate_limiter() -> None:
+    class BoomLimiter:
+        async def check(self, **_values: object) -> None:
+            raise ApplicationRateLimitExceeded("应用请求频率超限")
+
+    class OpenStore(FakeStore):
+        async def verify_uncertain_effect(self, principal: UncertainEffectPrincipal) -> None:
+            return None
+
+    pipeline = SendPipeline(
+        store=OpenStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        acceptance_limiter=BoomLimiter(),  # type: ignore[arg-type]
+    )
+    with pytest.raises(ApplicationRateLimitExceeded):
+        await pipeline.accept(
+            ApiAppContext(
+                88,
+                "system-uncertain-resend",
+                "平台部",
+                frozenset({"notice"}),
+                rate_limit_per_min=60,
+            ),
+            SendRequest(
+                "notice",
+                ["13800138000"],
+                content="维护通知",
+                biz_id="manual-resend:4:2",
+                channel="web",
+                actor=UncertainEffectPrincipal(4, 1, 2, 2, "平台部"),
+                usage_subject=SYSTEM_RESEND_SUBJECT,
+            ),
+        )
+
+
+@pytest.mark.asyncio
 async def test_uncertain_effect_principal_requires_verified_resolution() -> None:
     class ClosedStore(FakeStore):
         async def verify_uncertain_effect(self, principal: UncertainEffectPrincipal) -> None:
@@ -2767,7 +2816,7 @@ async def test_uncertain_effect_principal_requires_verified_resolution() -> None
     )
     with pytest.raises(ValueError, match="system resend principal is not forgeable"):
         await pipeline.accept(
-            ApiAppContext(0, "web", "平台部", frozenset({"notice"})),
+            ApiAppContext(88, "system-uncertain-resend", "平台部", frozenset({"notice"})),
             SendRequest(
                 "notice",
                 ["13800138000"],
@@ -2775,6 +2824,7 @@ async def test_uncertain_effect_principal_requires_verified_resolution() -> None
                 biz_id="manual-resend:4:2",
                 channel="web",
                 actor=UncertainEffectPrincipal(4, 1, 2, 2, "平台部"),
+                usage_subject=SYSTEM_RESEND_SUBJECT,
             ),
         )
 
@@ -2800,7 +2850,7 @@ async def test_uncertain_effect_principal_creates_child_after_verify() -> None:
         config=PipelineConfig(),
     )
     result = await pipeline.accept(
-        ApiAppContext(0, "web", "平台部", frozenset({"notice"})),
+        ApiAppContext(88, "system-uncertain-resend", "平台部", frozenset({"notice"})),
         SendRequest(
             "notice",
             ["13800138000"],
@@ -2808,11 +2858,14 @@ async def test_uncertain_effect_principal_creates_child_after_verify() -> None:
             biz_id="manual-resend:4:2",
             channel="web",
             actor=UncertainEffectPrincipal(4, 1, 2, 2, "平台部"),
+            usage_subject=SYSTEM_RESEND_SUBJECT,
         ),
     )
     assert result.batch_no == "new-batch"
     assert store.verified[0].resolution_id == 4
     assert store.commands[0].principal.actor_name == "system_resend:4"
+    assert store.commands[0].app_id == 88
+    assert store.commands[0].dept == "平台部"
 
 
 @pytest.mark.asyncio

@@ -116,6 +116,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0101_inflight_balance_conservation",
         "0102_auth_issue_policy_generation",
         "0103_inflight_split_capacity",
+        "0104_uncertain_web_usage_subject",
     ]
 
 

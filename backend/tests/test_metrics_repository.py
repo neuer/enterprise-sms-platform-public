@@ -4,7 +4,6 @@ from collections.abc import Iterator
 from typing import Any
 
 import pytest
-
 from app.services.metrics import MetricsFacts
 from app.services.metrics_repository import SqlMetricsRepository
 
@@ -135,6 +134,19 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
                 ]
             ),
             FakeResult([{"count": 0}]),
+            FakeResult(
+                [
+                    {
+                        "source_channel": "web",
+                        "action": "resend_new_batch",
+                        "result": "applied",
+                        "count": 2,
+                    }
+                ]
+            ),
+            FakeResult([{"kind": "usage_subject_invalid", "count": 1}]),
+            FakeResult([{"oldest": 12.0}]),
+            FakeResult([{"count": 3}]),
         ]
     )
     engine = FakeEngine(connection)
@@ -171,6 +183,10 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
             ("never", 7),
         ),
         send_submit_outcomes=(("submitted", 4), ("uncertain", 1)),
+        uncertain_effects=(("web", "resend_new_batch", "applied", 2),),
+        uncertain_effect_usage_subject_errors=(("usage_subject_invalid", 1),),
+        uncertain_effect_oldest_pending_seconds=12.0,
+        uncertain_effect_child_recovered=3,
     )
     assert not engine.disposed
     sql = "\n".join(call[0] for call in connection.calls).casefold()
@@ -193,6 +209,8 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
     assert "replay_eligibility" in sql and "count(replay_eligibility)" in sql
     assert "system_replay_audit_state" in sql
     assert "sms_vendor_attempt" in sql and "outcome" in sql
+    assert "sms_uncertain_child" in sql and "recovered" in sql
+    assert "source_channel" in sql and "effect_error" in sql
     for forbidden in ("phone_enc", "phone_hmac", "phone_mask", "vendor_msg", "content"):
         assert forbidden not in sql
 
@@ -239,6 +257,10 @@ async def test_repository_clamps_clock_skew_and_orders_labels() -> None:
             FakeResult([]),
             FakeResult([]),
             FakeResult([]),
+            FakeResult([{"count": 0}]),
+            FakeResult([]),
+            FakeResult([]),
+            FakeResult([{"oldest": 0}]),
             FakeResult([{"count": 0}]),
         ]
     )

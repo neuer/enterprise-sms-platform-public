@@ -50,6 +50,23 @@ LEASE_EVENT_LABELS = frozenset(
         "dead",
     }
 )
+UNCERTAIN_EFFECT_CHANNELS = ("api", "web", "other")
+UNCERTAIN_EFFECT_ACTIONS = (
+    "confirm_accepted",
+    "confirm_not_accepted",
+    "keep_unknown",
+    "resend_new_batch",
+)
+UNCERTAIN_EFFECT_RESULTS = ("applied", "retryable", "manual", "pending", "other")
+UNCERTAIN_EFFECT_ERROR_KINDS = (
+    "source_context_invalid",
+    "usage_subject_invalid",
+    "source_app_invalid",
+    "source_category_invalid",
+    "generation_mismatch",
+    "actor_invalid",
+    "other",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +90,10 @@ class MetricsFacts:
     send_admission_state: str = "open"
     outbox_oldest_age_seconds: float = 0.0
     send_submit_outcomes: tuple[tuple[str, int], ...] = ()
+    uncertain_effects: tuple[tuple[str, str, str, int], ...] = ()
+    uncertain_effect_usage_subject_errors: tuple[tuple[str, int], ...] = ()
+    uncertain_effect_oldest_pending_seconds: float = 0.0
+    uncertain_effect_child_recovered: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +257,53 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
     lifecycle_values = _values(snapshot.facts.uncertain_lifecycle)
     for state in UNCERTAIN_LIFECYCLE_STATES:
         lifecycle.labels(state=state).set(lifecycle_values.get(state, 0.0))
+
+    uncertain_effect = Gauge(
+        "sms_uncertain_effect",
+        "Uncertain dual-control effect counts by source channel, action and result.",
+        ("source_channel", "action", "result"),
+        registry=registry,
+    )
+    effect_values: dict[tuple[str, str, str], float] = {}
+    for channel, action, result, count in snapshot.facts.uncertain_effects:
+        if action not in UNCERTAIN_EFFECT_ACTIONS:
+            continue
+        channel_label = channel if channel in UNCERTAIN_EFFECT_CHANNELS else "other"
+        result_label = result if result in UNCERTAIN_EFFECT_RESULTS else "other"
+        key = (channel_label, action, result_label)
+        effect_values[key] = effect_values.get(key, 0.0) + float(count)
+    for channel in UNCERTAIN_EFFECT_CHANNELS:
+        for action in UNCERTAIN_EFFECT_ACTIONS:
+            for result in UNCERTAIN_EFFECT_RESULTS:
+                uncertain_effect.labels(
+                    source_channel=channel,
+                    action=action,
+                    result=result,
+                ).set(effect_values.get((channel, action, result), 0.0))
+
+    subject_errors = Gauge(
+        "sms_uncertain_effect_usage_subject_error",
+        "Manual intervention counts caused by unrecoverable usage subject errors.",
+        ("kind",),
+        registry=registry,
+    )
+    error_values = _values(snapshot.facts.uncertain_effect_usage_subject_errors)
+    for kind in UNCERTAIN_EFFECT_ERROR_KINDS:
+        subject_errors.labels(kind=kind).set(error_values.get(kind, 0.0))
+
+    oldest_pending = Gauge(
+        "sms_uncertain_effect_oldest_pending_seconds",
+        "Age in seconds of the oldest pending uncertain effect.",
+        registry=registry,
+    )
+    oldest_pending.set(max(0.0, snapshot.facts.uncertain_effect_oldest_pending_seconds))
+
+    child_recovered = Gauge(
+        "sms_uncertain_effect_child_recovered",
+        "Uncertain resend child batches recovered by biz_id after worker crash.",
+        registry=registry,
+    )
+    child_recovered.set(max(0, snapshot.facts.uncertain_effect_child_recovered))
 
     callback_failures = Gauge(
         "sms_callback_failures",

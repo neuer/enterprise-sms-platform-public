@@ -1467,3 +1467,21 @@
 - 原因：只拆分 chunk 不扩 reservation 会让真实在途超过 `max_in_flight_chunks`。
 - 影响：schema v1.6.89/0103、`send_inflight.py`、`send_repository.py`、
   `send.py`、`deploy/failover.md`。
+
+## D108 Web unknown 重发使用受控 system_effect 主体，禁止 app_id=-1
+
+- 决策：不把 Usage Ledger 改写成通用 `human_account` 三维主体模型。Web
+  unknown 人工重发使用数据库内正式 system app `system-uncertain-resend`
+  （`usage_subject_kind=system_effect`、固定正数 ID `1000000001`、日配额
+  10000）。API Key
+  候选查询排除 `system_effect`，禁止外呼。`UncertainResendContext` /
+  `UsageSubject` 只能由 Outbox worker 在
+  锁定已批准 resolution 后构造；`SendRequest.usage_subject` 不得由 HTTP/API
+  传入。API 来源继续扣真实 source app；部门额度始终用源批次 `dept`，禁止
+  固定 `'web'`。不可恢复的主体/source 错误进入
+  `manual_intervention_required`；PG/Redis/锁超时才 `retryable_effect_error`。
+  存量缺 dept 的 Web 处置转入人工介入，不猜测部门。
+- 原因：`ApiAppContext(app_id=-1, dept='web')` 被账本 `app_id<0` 稳定拒绝，
+  双人审批后的 Web 重发无法创建 child。
+- 影响：schema v1.6.90/0104、`usage_subject.py`、`uncertain_resolution.py`、
+  `pipeline.py`、`usage_ledger.py`、OpenAPI 与运维页说明。

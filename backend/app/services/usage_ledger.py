@@ -1668,12 +1668,19 @@ class UsageLedgerService:
         dept: str,
         category: str,
         now: datetime | None = None,
+        subject_kind: str = "api_app",
     ) -> UsageReservation:
         current = now or self.clock()
         await self.ensure_ready(current)
         request_key = _safe_request_key(request_key)
         _, usage_date, _ = shanghai_day(current)
-        if app_id < 0 or not dept or category not in {"verify", "notice", "market"}:
+        if (
+            app_id < 0
+            or not dept
+            or category not in {"verify", "notice", "market"}
+            or subject_kind not in {"api_app", "system_effect"}
+            or (subject_kind == "system_effect" and app_id < 1)
+        ):
             raise ValueError("invalid usage reservation")
         engine = self._engine()
         # uncertain 复用最多释放一次旧行后重建；有界循环替代递归，
@@ -1685,29 +1692,33 @@ class UsageLedgerService:
                     text(
                         """
                         INSERT INTO usage_reservation(
-                          id,request_key,app_id,dept,category,usage_date,state
+                          id,request_key,app_id,subject_kind,dept,category,
+                          usage_date,state
                         ) VALUES(
-                          :id,:request_key,:app_id,:dept,:category,:usage_date,'reserved'
+                          :id,:request_key,:app_id,:subject_kind,:dept,:category,
+                          :usage_date,'reserved'
                         )
                         ON CONFLICT(request_key)
                         WHERE state NOT IN ('released','release_requested')
                         DO UPDATE SET request_key=EXCLUDED.request_key
-                        RETURNING id,app_id,dept,category,usage_date,state
+                        RETURNING id,app_id,subject_kind,dept,category,usage_date,state
                         """
                     ),
                     {
                         "id": reservation_id,
                         "request_key": request_key,
                         "app_id": app_id,
+                        "subject_kind": subject_kind,
                         "dept": dept,
                         "category": category,
                         "usage_date": usage_date,
                     },
                 )
                 row = result.mappings().one()
-                expected = (app_id, dept, category, usage_date)
+                expected = (app_id, subject_kind, dept, category, usage_date)
                 persisted = (
                     int(row["app_id"]),
+                    str(row["subject_kind"]),
                     str(row["dept"]),
                     str(row["category"]),
                     row["usage_date"],

@@ -39,6 +39,7 @@ from app.services.idempotency import (
 from app.services.masking import mask_phone_text, mask_verify_otp
 from app.services.send_inflight import InFlightInvariantViolation as InFlightInvariantViolation
 from app.services.usage_ledger import FrequencyDecisionItem
+from app.services.usage_subject import UsageSubject
 from app.settings import get_settings
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -187,6 +188,7 @@ class SendRequest:
     protected_hmac_candidates: Sequence[tuple[int, str]] = ()
     vendor_test_uat: bool = False
     import_reservation_id: UUID | None = None
+    usage_subject: UsageSubject | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +429,7 @@ class UsageLedgerPort(Protocol):
         dept: str,
         category: str,
         now: datetime | None = None,
+        subject_kind: str = "api_app",
     ) -> Any: ...
 
     async def allow_frequency(
@@ -683,6 +686,11 @@ class SendPipeline:
             "vendor_test_uat": request.vendor_test_uat,
             "resend_of": request.resend_of,
             "resend_dept": request.resend_dept,
+            "usage_subject": (
+                request.usage_subject.fingerprint()
+                if request.usage_subject is not None
+                else None
+            ),
             "policy": {
                 "queue": policy.queue,
                 "blacklist_required": policy.blacklist_required,
@@ -878,6 +886,39 @@ class SendPipeline:
         return AcceptCommitResolution("UNBOUND")
 
     @staticmethod
+    def _is_system_resend(request: SendRequest) -> bool:
+        return isinstance(request.actor, UncertainEffectPrincipal)
+
+    @staticmethod
+    def _usage_app_id(app: ApiAppContext, request: SendRequest) -> int:
+        if request.usage_subject is not None:
+            return request.usage_subject.app_id
+        return app.app_id
+
+    @staticmethod
+    def _usage_dept(app: ApiAppContext, request: SendRequest) -> str:
+        if request.usage_subject is not None:
+            return request.usage_subject.dept
+        return app.dept
+
+    @staticmethod
+    def _usage_subject_kind(request: SendRequest) -> str:
+        if request.usage_subject is not None:
+            return request.usage_subject.kind
+        return "api_app"
+
+    @staticmethod
+    def _validate_usage_subject(request: SendRequest) -> None:
+        if request.usage_subject is None:
+            if isinstance(request.actor, UncertainEffectPrincipal):
+                raise ValueError("system resend requires usage subject")
+            return
+        if not isinstance(request.actor, UncertainEffectPrincipal):
+            raise ValueError("usage subject is not forgeable")
+        if request.usage_subject.app_id < 1:
+            raise ValueError("usage subject app_id must be a positive id")
+
+    @staticmethod
     def _quota_clock(now: datetime) -> tuple[str, int]:
         local = now.astimezone(SHANGHAI)
         next_day = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -902,7 +943,7 @@ class SendPipeline:
         preauthorization: AcceptancePreauthorization | None,
     ) -> None:
         if (
-            request.channel != "web"
+            (request.channel != "web" or self._is_system_resend(request))
             and preauthorization is None
             and self.acceptance_limiter is not None
         ):
@@ -927,7 +968,9 @@ class SendPipeline:
         recipient_count: int,
         segment_count: int,
     ) -> None:
-        if request.channel == "web" or self.acceptance_limiter is None:
+        if (
+            request.channel == "web" and not self._is_system_resend(request)
+        ) or self.acceptance_limiter is None:
             return
         consume = getattr(self.acceptance_limiter, "consume_send_cost", None)
         if consume is None:
@@ -941,7 +984,7 @@ class SendPipeline:
         )
 
     def _enforce_quota_exemption(self, app: ApiAppContext, request: SendRequest) -> None:
-        if request.channel == "web":
+        if request.channel == "web" and not self._is_system_resend(request):
             return
         if app.daily_quota != 0:
             return
@@ -958,7 +1001,7 @@ class SendPipeline:
         *,
         recipient_count: int,
     ) -> Any:
-        if request.channel == "web":
+        if request.channel == "web" and not self._is_system_resend(request):
             return None
         batch_size = max(1, int(getattr(self.config, "vendor_batch_size", 500) or 500))
         estimated = max(1, ceil(recipient_count / batch_size))
@@ -1093,6 +1136,7 @@ class SendPipeline:
     ) -> BatchResponse:
         if self.vendor_test_console_only and not request.vendor_test_uat:
             raise VendorTestConsoleOnly
+        self._validate_usage_subject(request)
         biz_id = request.biz_id
         if not biz_id:
             return await self._accept_claimed(
@@ -1209,6 +1253,7 @@ class SendPipeline:
         request_hash_key_version: int | None = None,
     ) -> BatchResponse:
         reject_phone_in_text(request.remark, field_name="remark")
+        self._validate_usage_subject(request)
         if ownership_check is not None:
             await ownership_check()
         if idem_scope is None and request.biz_id:
@@ -1249,7 +1294,7 @@ class SendPipeline:
             self.recipient_guard.require_allowed(request.mobiles)
         self._enforce_market_api_bulk(app, request, recipient_count)
         if (
-            request.channel != "web"
+            (request.channel != "web" or self._is_system_resend(request))
             and preauthorization is None
             and self.acceptance_limiter is not None
             and not request.biz_id
@@ -1259,7 +1304,7 @@ class SendPipeline:
                 limit_per_minute=app.rate_limit_per_min,
             )
         policy = self._resolve_policy(app, request, preauthorization)
-        rendered = await self._render(request, app.dept)
+        rendered = await self._render(request, self._usage_dept(app, request))
         sign_name = request.sign_name or app.default_sign
         if sign_name is not None and self.signs is not None:
             sign_name = await self.signs.resolve(sign_name)
@@ -1401,10 +1446,11 @@ class SendPipeline:
                 )
                 usage_reservation = await self.usage_ledger.start_reservation(
                     request_key=request_key,
-                    app_id=app.app_id,
-                    dept=app.dept,
+                    app_id=self._usage_app_id(app, request),
+                    dept=self._usage_dept(app, request),
                     category=request.category,
                     now=now,
+                    subject_kind=self._usage_subject_kind(request),
                 )
                 usage_reservation_id = UUID(str(usage_reservation.reservation_id))
                 usage_reservation_reused = bool(getattr(usage_reservation, "reused", False))
@@ -1440,7 +1486,7 @@ class SendPipeline:
                         decisions = await self.usage_ledger.allow_frequency_many(
                             usage_reservation_id,
                             request.category,
-                            app_id=app.app_id,
+                            app_id=self._usage_app_id(app, request),
                             items=tuple(
                                 FrequencyDecisionItem(
                                     phone_hmac=frequency_hmac_by_active[item.phone_hmac],
@@ -1459,7 +1505,7 @@ class SendPipeline:
                             decisions.append(
                                 await self.frequency.allow(
                                     request.category,
-                                    app_id=app.app_id,
+                                    app_id=self._usage_app_id(app, request),
                                     phone_hmac=frequency_hmac_by_active[item.phone_hmac],
                                     limits=limits,
                                     claim_key=claim_key,
@@ -1496,8 +1542,8 @@ class SendPipeline:
                     )
                     await self.usage_ledger.reserve_quota(
                         usage_reservation_id,
-                        app_id=app.app_id,
-                        dept=app.dept,
+                        app_id=self._usage_app_id(app, request),
+                        dept=self._usage_dept(app, request),
                         category=request.category,
                         date_key=date_key,
                         cost=quota_cost,
@@ -1508,8 +1554,8 @@ class SendPipeline:
                     reservation_reused = usage_reservation_reused
                 else:
                     reservation = await self.quota.reserve(
-                        app_id=app.app_id,
-                        dept=app.dept,
+                        app_id=self._usage_app_id(app, request),
+                        dept=self._usage_dept(app, request),
                         category=request.category,
                         date_key=date_key,
                         cost=quota_cost,
@@ -1532,8 +1578,8 @@ class SendPipeline:
                 try:
                     if quota_reservation_key is not None:
                         await self.quota.refund_reservation(
-                            app_id=app.app_id,
-                            dept=app.dept,
+                            app_id=self._usage_app_id(app, request),
+                            dept=self._usage_dept(app, request),
                             category=request.category,
                             date_key=date_key,
                             cost=quota_cost,
@@ -1541,8 +1587,8 @@ class SendPipeline:
                         )
                     else:
                         await self.quota.refund(
-                            app_id=app.app_id,
-                            dept=app.dept,
+                            app_id=self._usage_app_id(app, request),
+                            dept=self._usage_dept(app, request),
                             category=request.category,
                             date_key=date_key,
                             cost=quota_cost,
@@ -1604,9 +1650,13 @@ class SendPipeline:
                 command = BatchCommand(
                     batch_no=batch_no,
                     app_id=(
-                        app.app_id if request.channel != "web" or request.vendor_test_uat else None
+                        self._usage_app_id(app, request)
+                        if request.channel != "web"
+                        or request.vendor_test_uat
+                        or self._is_system_resend(request)
+                        else None
                     ),
-                    dept=app.dept,
+                    dept=self._usage_dept(app, request),
                     category=request.category,
                     channel=request.channel,
                     display_content_enc=self.crypto.encrypt_bound_packed_text(

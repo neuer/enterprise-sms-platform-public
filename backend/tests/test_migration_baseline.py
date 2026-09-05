@@ -10,9 +10,8 @@ from types import ModuleType
 from typing import Any
 
 import pytest
-from sqlalchemy.schema import ExecutableDDLElement
-
 from app.services.crypto import CryptoService, EncryptionContext
+from sqlalchemy.schema import ExecutableDDLElement
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
@@ -1008,6 +1007,27 @@ def test_inflight_split_capacity_is_expand_only() -> None:
         assert "search_path=pg_catalog,public" in contract
     assert "DELETE FROM" not in source
     assert "reserved_chunks = 0" not in source
+    assert "return" in source.split("def downgrade", 1)[1]
+
+
+def test_uncertain_web_usage_subject_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0104_uncertain_web_usage_subject.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.90：" in schema
+    for contract in (schema, source):
+        assert "usage_subject_kind" in contract
+        assert "system_effect" in contract
+        assert "system-uncertain-resend" in contract
+        assert "1000000001" in contract
+        assert "source_dept" in contract
+        assert "ck_usage_reservation_system_effect_app" in contract
+        assert "ck_app_system_effect_quota" in contract
+    assert 'revision = "0104_uncertain_web_usage_subject"' in source
+    assert 'down_revision = "0103_inflight_split_capacity"' in source
+    assert "app_id=-1" not in source
+    assert "DELETE FROM" not in source
     assert "return" in source.split("def downgrade", 1)[1]
 
 

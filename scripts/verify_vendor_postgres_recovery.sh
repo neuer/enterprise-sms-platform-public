@@ -193,6 +193,8 @@ SQL
       tests/integration/test_import_reservation_postgres.py \
       tests/integration/test_async_import_postgres.py \
       tests/integration/test_usage_ledger_postgres.py \
+      tests/integration/test_uncertain_web_resend_postgres.py \
+      tests/integration/test_uncertain_web_usage_subject_postgres.py \
       tests/integration/test_raw_capture_legacy_postgres.py \
       tests/integration/test_raw_replay_eligibility_postgres.py \
       tests/integration/test_raw_replay_fencing_postgres.py \

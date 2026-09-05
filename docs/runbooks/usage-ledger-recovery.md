@@ -73,3 +73,11 @@ uv run python -m app.cli usage-projection-rebuild
 ## 保留与降级
 
 `usage_ledger_retention_days` 默认 90 天。housekeeping 仅删除超过保留期、窗口已过期且状态为 `released/committed` 的事实，并清理无引用频控主体；活动预留和释放中的事实不会删除。降级 0028 前必须没有未释放事实和 `usage.release` 事件，否则迁移拒绝执行。
+
+## Web unknown 人工重发主体
+
+Web 来源 `unknown_terminal` 经双人批准后的重发不得使用 `app_id=-1` 或固定部门
+`web`。计费走受控 system app `system-uncertain-resend`（`system_effect`），部门
+额度使用源批次真实 `dept`。缺 dept 或无法重建主体的存量处置进入
+`manual_intervention_required` / `source_context_invalid`，不得猜测部门后重试。
+详见 `docs/runbooks/uncertain-web-resend.md`。

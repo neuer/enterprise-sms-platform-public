@@ -83,6 +83,10 @@ METRIC_FAMILIES = {
     "sms_send_admission",
     "sms_outbox_oldest_age_seconds",
     "sms_send_submit_outcome",
+    "sms_uncertain_effect",
+    "sms_uncertain_effect_usage_subject_error",
+    "sms_uncertain_effect_oldest_pending_seconds",
+    "sms_uncertain_effect_child_recovered",
 }
 
 
