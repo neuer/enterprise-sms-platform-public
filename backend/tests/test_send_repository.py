@@ -12,6 +12,7 @@ import pytest
 
 import app.tasks.send_repository as send_repository_module
 from app.services.pipeline import InFlightLimitExceeded
+from app.services.send_inflight import InFlightInvariantViolation
 from app.services.vendor_test_budget import SubmissionClaimStatus
 from app.tasks import celery_app
 from app.tasks.send import ChunkPayload
@@ -1257,6 +1258,7 @@ async def test_split_releases_parent_and_preserves_attempt_evidence(
             FakeResult(scalar=200),
             FakeResult(scalar=7),
             FakeResult(rowcount=1),
+            FakeResult(),
             FakeResult(
                 rows=[
                     {"id": 1, "created_at": "a"},
@@ -1278,6 +1280,7 @@ async def test_split_releases_parent_and_preserves_attempt_evidence(
             FakeResult(),
             FakeResult(),
             FakeResult(scalar=21),
+            FakeResult(),
             FakeResult(),
             FakeResult(),
         ]
@@ -1324,6 +1327,8 @@ async def test_split_releases_parent_and_preserves_attempt_evidence(
     )
     assert first_insert > failed_index
     assert "parent_chunk_id" in statements[first_insert]
+    assert any("outcome='rejected'" in sql for sql in statements)
+    assert any("recipient_count=0" in sql for sql in statements)
 
 
 @pytest.mark.asyncio
@@ -1339,6 +1344,7 @@ async def test_split_blocks_when_inflight_limit_reached(
             FakeResult(scalar=1),
             FakeResult(scalar=7),
             FakeResult(rowcount=1),
+            FakeResult(),
         ]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
@@ -1391,6 +1397,32 @@ async def test_split_replay_returns_existing_children_without_expanding(
 
     assert [child.chunk_id for child in children] == [20, 21]
     assert not any("INSERT INTO sms_chunk" in sql for sql, _ in connection.calls)
+
+
+@pytest.mark.asyncio
+async def test_split_incomplete_children_fail_closed_without_expanding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = chunk_store()
+    connection = SequenceConnection(
+        [
+            FakeResult(),
+            FakeResult(scalars=[20]),
+        ]
+    )
+    monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
+
+    async def unexpected_expand(*_args: object, **_kwargs: object) -> bool:
+        raise AssertionError("incomplete children must not expand again")
+
+    monkeypatch.setattr(
+        "app.services.send_inflight.expand_in_flight_for_split",
+        unexpected_expand,
+    )
+    parent = ChunkPayload(7, 3, "parent", ("a", "b", "c", "d"), "通知", "", "", 0)
+
+    with pytest.raises(InFlightInvariantViolation, match="incomplete children"):
+        await store.split_once(parent)
 
 
 @pytest.mark.asyncio

@@ -42,7 +42,7 @@ from app.services.pipeline import (
     StoredBatch,
     VendorTestConsoleOnly,
 )
-from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL
+from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL, SqlPipelineStore
 from app.services.quota import QuotaFenceLost
 from app.services.send_admission import SendAdmissionRejected
 from app.services.send_inflight import (
@@ -110,6 +110,18 @@ def test_inflight_mutations_use_conservation_primitive() -> None:
             "split_capacity_blocked",
         }
     ) == OCCUPYING_CHUNK_STATES
+
+
+def test_split_expand_does_not_lock_reservation_before_balance() -> None:
+    source = inspect.getsource(expand_in_flight_for_split)
+    assert "FOR UPDATE" not in source
+    assert "apply_inflight_delta" in source
+
+
+def test_count_in_flight_chunks_uses_occupying_states() -> None:
+    source = inspect.getsource(SqlPipelineStore.count_in_flight_chunks)
+    assert "send_chunk_occupying_states()" in source
+    assert "'pending', 'submitting', 'retrying', 'uncertain'" not in source
 
 
 def crypto() -> CryptoService:

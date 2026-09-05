@@ -1415,23 +1415,29 @@
   族（D020/D102–D104），事实在 balance/fact 行上由 `/metrics` 抓取。
 - 原因：先改明细再改聚合且不检查 rowcount 会提交“已 released/materialized 但
   聚合未同步”，之后重复 release 也无法自愈。
--   影响：schema v1.6.87/0101、`send_inflight.py`、`pipeline.py`、
+- 影响：schema v1.6.87/0101、`send_inflight.py`、`pipeline.py`、
   `pipeline_repository.py`、`deploy/failover.md`。#631 动态 split 必须复用该原语。
 
 ## D106 供应商动态拆分必须同步扩充在途预留
 
 - 决策：`split_once` 在批次 advisory lock 的同一事务中先
-  `apply_inflight_delta(operation="split", delta=1)`，再把父分片标 failed、
-  创建两个带 `parent_chunk_id/split_generation/child_ordinal` 身份的子分片，
-  并写入 child `usage_chunk_allocation`（request_count=0，父 allocation 保留）
-  与 `chunk.ready` Outbox。占用态权威集合是
+  `apply_inflight_delta(operation="split", delta=1)`（先锁 balance 再锁
+  reservation，禁止在 delta 前 `FOR UPDATE` reservation），再把父分片标
+  failed、创建两个带 `parent_chunk_id/split_generation/child_ordinal` 身份的
+  子分片。父 `usage_chunk_allocation` 保留身份与 `request_count`，
+  `recipient_count`/`segment_count` 转到 child（child `request_count=0`），
+  同事务写 `chunk.ready` Outbox。父分片上仍为 `invoking` 的
+  `sms_vendor_attempt` CAS 为 `rejected`/`vendor_code=1006`，禁止走完整
+  `finalize_vendor_attempt`。占用态权威集合是
   `send_chunk_occupying_states()` / `OCCUPYING_CHUNK_STATES`：
   `pending|submitting|retrying|submitted|uncertain|split_capacity_blocked`。
   `failed` 与 `unknown_terminal` 不占容量。容量不足时父分片进入
   `split_capacity_blocked`，不创建部分 child，也不再次调用供应商；
-  对账在有余量后重试同一 generation。重复投递只返回已有 child，不再扩容。
-  占用数高于 materialized reservation 时只扩不缩。过程计数器不新增
-  Prometheus 族（D020/D102–D105），事实在 chunk/reservation 行上。
+  对账在有余量后重试同一 generation。重复投递只在已有恰好 2 个 child 时
+  返回，不再扩容。COMMIT 用延迟约束触发器保证：有活动 reservation 时
+  `reserved_chunks >= COUNT(occupying chunks)`，且同一 parent/generation
+  的 child 数只能是 0 或 2。占用数高于 materialized reservation 时只扩不缩。
+  过程计数器不新增 Prometheus 族（D020/D102–D105），事实在 chunk/reservation 行上。
 - 原因：只拆分 chunk 不扩 reservation 会让真实在途超过 `max_in_flight_chunks`。
 - 影响：schema v1.6.88/0102、`send_inflight.py`、`send_repository.py`、
   `send.py`、`deploy/failover.md`。

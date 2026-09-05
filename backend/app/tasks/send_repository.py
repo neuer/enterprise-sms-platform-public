@@ -1620,8 +1620,12 @@ async def complete_vendor_split(
         {"batch": int(chunk.batch_id)},
     )
     existing = await _existing_split_children(connection, chunk.chunk_id)
-    if existing:
+    if len(existing) == 2:
         return existing
+    if existing:
+        from app.services.send_inflight import InFlightInvariantViolation
+
+        raise InFlightInvariantViolation("split", "incomplete children")
     parent_status = (
         await connection.execute(
             text("SELECT status FROM sms_chunk WHERE id=:id FOR UPDATE"),
@@ -1740,6 +1744,24 @@ async def _split_app_limit(connection: AsyncConnection, batch_id: int) -> int | 
     return max(1, int(row))
 
 
+async def _settle_split_vendor_attempt(
+    connection: AsyncConnection,
+    chunk_id: int,
+) -> None:
+    """把父分片上仍 invoking 的 attempt CAS 为 rejected，避免恢复器标 inconsistent。"""
+
+    await connection.execute(
+        text(
+            """
+            UPDATE sms_vendor_attempt
+            SET outcome='rejected', vendor_code=1006, updated_at=now()
+            WHERE chunk_id=:chunk_id AND outcome='invoking'
+            """
+        ),
+        {"chunk_id": chunk_id},
+    )
+
+
 async def _mark_split_capacity_blocked(
     connection: AsyncConnection,
     chunk_id: int,
@@ -1761,6 +1783,7 @@ async def _mark_split_capacity_blocked(
     )
     if blocked.scalar_one_or_none() is not None:
         await settle_live_test_attempt(connection, chunk_id, "released")
+        await _settle_split_vendor_attempt(connection, chunk_id)
 
 
 async def _create_split_children(
@@ -1784,6 +1807,7 @@ async def _create_split_children(
     if parent.scalar_one_or_none() is None:
         raise InFlightInvariantViolation("split", "parent cas missed")
     await settle_live_test_attempt(connection, chunk.chunk_id, "released")
+    await _settle_split_vendor_attempt(connection, chunk.chunk_id)
     messages = list(
         (
             await connection.execute(
@@ -1884,6 +1908,16 @@ async def _create_split_children(
         )
         child_ids.append(child_id)
         next_no += 1
+    await connection.execute(
+        text(
+            """
+            UPDATE usage_chunk_allocation
+            SET recipient_count=0, segment_count=0
+            WHERE chunk_id=:parent_id
+            """
+        ),
+        {"parent_id": chunk.chunk_id},
+    )
     await SqlChunkStore._enqueue_chunk_ready(
         connection,
         child_ids,

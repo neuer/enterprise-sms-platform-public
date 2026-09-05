@@ -999,7 +999,14 @@ def test_inflight_split_capacity_is_expand_only() -> None:
         assert "child_ordinal" in contract
     assert 'revision = "0102_inflight_split_capacity"' in source
     assert 'down_revision = "0101_inflight_balance_conservation"' in source
+    for contract in (schema, source):
+        assert "check_send_inflight_chunk_occupancy" in contract
+        assert "check_sms_chunk_split_children_complete" in contract
+        assert "trg_sms_chunk_inflight_occupancy" in contract
+        assert "SECURITY DEFINER" in contract
+        assert "search_path=pg_catalog,public" in contract
     assert "DELETE FROM" not in source
+    assert "reserved_chunks = 0" not in source
     assert "return" in source.split("def downgrade", 1)[1]
 
 

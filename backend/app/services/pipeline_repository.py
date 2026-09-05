@@ -126,7 +126,7 @@ class SqlPipelineStore:
             )
 
     async def count_in_flight_chunks(self, app_id: int) -> int:
-        """统计该应用仍占用系统容量的分片：pending/submitting/retrying/uncertain。"""
+        """统计该应用仍占用系统容量的分片；状态集与 send_chunk_occupying_states() 对齐。"""
 
         async with self._engine().connect() as connection:
             value = await connection.scalar(
@@ -136,9 +136,7 @@ class SqlPipelineStore:
                     FROM sms_chunk AS chunk
                     JOIN sms_batch AS batch ON batch.id = chunk.batch_id
                     WHERE batch.app_id = :app_id
-                      AND chunk.status IN (
-                        'pending', 'submitting', 'retrying', 'uncertain'
-                      )
+                      AND chunk.status = ANY (send_chunk_occupying_states())
                     """
                 ),
                 {"app_id": app_id},

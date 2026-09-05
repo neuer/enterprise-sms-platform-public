@@ -658,7 +658,6 @@ async def expand_in_flight_for_split(
                 SELECT id, generation, app_id, reserved_chunks, materialized_chunks, state
                 FROM send_inflight_reservation
                 WHERE batch_id=:batch_id AND state IN ('batch_bound','materialized')
-                FOR UPDATE
                 """
                 ),
                 {"batch_id": batch_id},
