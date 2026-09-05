@@ -541,12 +541,13 @@ def test_volume_case_waits_for_open_or_expired_recovery_hold() -> None:
     source = (SCRIPTS / "e2e_api.py").read_text(encoding="utf-8")
 
     helper = source[
-        source.index("def _wait_admission_ready_for_volume") : source.index("def case_05")
+        source.index("def _refresh_admission_snapshot") : source.index("def case_05")
     ]
-    assert "reason_code='recovery_hold'" in helper
+    assert "admission did not reach open" in helper
     assert "FROM send_admission_state WHERE scope='send'" in helper
     assert 'category="verify"' in helper
     assert 'category="notice"' not in helper
+    assert "valid_until" in helper
     assert 'self._wait_admission_ready_for_volume("26")' in source
     assert 'self._wait_admission_ready_for_volume("18")' in source
     assert 'self._force_resume_and_verify_unpaused("18")' in source
