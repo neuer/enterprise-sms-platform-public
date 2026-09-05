@@ -769,7 +769,7 @@ class UatSuite:
         wait_until(case_id, pending, timeout_s=30, interval_s=0.5)
 
     def _refresh_admission_snapshot(self, case_id: str, nonce: int) -> None:
-        """用 1 条 verify 续 valid_until，避免空等后再次 CLOSED→recovery_hold。"""
+        """用 1 条 verify 触发 persist。号码落在 900+，避开 UAT-26 的 0-499。"""
 
         self._expect(
             case_id,
@@ -777,7 +777,7 @@ class UatSuite:
                 case_id,
                 app="app-iam",
                 category="verify",
-                mobiles=[self.phone(int(case_id), 90 + (nonce % 9))],
+                mobiles=[self.phone(int(case_id), 900 + (nonce % 9))],
                 content="验证码000000",
                 biz_suffix=f"adm{nonce}",
             ),
@@ -785,20 +785,30 @@ class UatSuite:
         )
 
     def _wait_admission_ready_for_volume(self, case_id: str) -> None:
-        """等到 persisted OPEN。空等会让 valid_until 过期并重启 recovery_hold。"""
+        """大请求必须等到新鲜 OPEN。过期 hold 仍是 recovery_hold，不能当放行。"""
 
-        started = time.monotonic()
-        nonce = 0
-        while time.monotonic() - started <= 90:
-            nonce += 1
-            self._refresh_admission_snapshot(case_id, nonce)
-            state = self._probe().psql_value(
-                "SELECT state FROM send_admission_state WHERE scope='send'"
+        def open_fresh() -> bool | None:
+            marker = self._probe().psql_value(
+                "SELECT CASE WHEN state='open' AND valid_until > now() "
+                "THEN 'ready' ELSE 'wait' END "
+                "FROM send_admission_state WHERE scope='send'"
             )
-            if state == "open":
-                return
-            time.sleep(2)
-        raise UatFailure(f"UAT-{case_id} admission did not reach open")
+            return True if marker == "ready" else None
+
+        def hold_cleared() -> bool | None:
+            marker = self._probe().psql_value(
+                "SELECT CASE WHEN state='open' THEN 'ready' "
+                "WHEN hold_until IS NULL OR hold_until <= now() THEN 'ready' "
+                "ELSE 'wait' END "
+                "FROM send_admission_state WHERE scope='send'"
+            )
+            return True if marker == "ready" else None
+
+        wait_until(case_id, hold_cleared, timeout_s=90, interval_s=1)
+        if open_fresh() is True:
+            return
+        self._refresh_admission_snapshot(case_id, 0)
+        wait_until(case_id, open_fresh, timeout_s=15, interval_s=0.5)
 
     def case_05(self) -> None:
         phone = self.phone(5, 0)
@@ -1434,7 +1444,6 @@ class UatSuite:
     def case_18(self) -> None:
         self._wait_send_pipeline_idle("18/precondition")
         self._force_resume_and_verify_unpaused("18")
-        self._wait_admission_ready_for_volume("18")
         suffix = self._phone_bucket % 10_000
         failed_phone = f"1990000{suffix:04d}"
         data = self._expect(
