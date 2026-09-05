@@ -18,14 +18,13 @@ from app.tasks.send import (
 )
 from app.tasks.send_repository import SqlChunkStore
 from app.vendor.zhihui import VENDOR_TIMEOUT_S
-
 from tests.test_send_repository import FakeEngine, FakeResult, SequenceConnection, chunk_store
 from tests.test_send_worker import FakeBucket, FakeGateway, HistoryStore, chunk
 
 
 def test_stale_invoking_cutoff_exceeds_vendor_absolute_timeout() -> None:
     assert stale_invoking_cutoff_is_safe()
-    assert STALE_INVOKING_CUTOFF_S > VENDOR_TIMEOUT_S + 30 + 60
+    assert VENDOR_TIMEOUT_S + 30 + 60 < STALE_INVOKING_CUTOFF_S
 
 
 @pytest.mark.parametrize(

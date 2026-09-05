@@ -20,9 +20,9 @@ SCHEDULER_JITTER_S = 60
 def stale_invoking_cutoff_is_safe(vendor_timeout_s: float = VENDOR_TIMEOUT_S) -> bool:
     """契约：恢复器不得在活跃 HTTP owner 仍可能返回前接管 invoking。"""
 
-    return STALE_INVOKING_CUTOFF_S > (
+    return (
         vendor_timeout_s + MAX_VENDOR_PERSIST_BUDGET_S + SCHEDULER_JITTER_S
-    )
+    ) < STALE_INVOKING_CUTOFF_S
 
 
 class SqlRecoveryRepository:
