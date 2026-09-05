@@ -1406,7 +1406,10 @@
   `reconcile_send_inflight_app` 按求和修复聚合（禁止清零）。漂移写入
   `send_inflight_reconcile_fact`（仅内部 ID 与计数）；
   同一 batch 多个活动 reservation 只记 `blocked` 并失败关闭新发送，不猜测释放。
-  `conservation_blocked_at` 使新 reserve 返回 503。过程计数器不新增 Prometheus
+  `conservation_blocked_at` 使新 reserve 返回 503；仅改该标记或 `updated_at`、不改
+  `reserved_chunks` 的 balance UPDATE 不触发守恒复核，否则已漂移行无法失败关闭。
+  对账锁使用 `pg_advisory_xact_lock(hashtextextended(app_id::text, 868632))`，
+  因为双参数形式只接受 `(int, int)`。过程计数器不新增 Prometheus
   族（D020/D102–D104），事实在 balance/fact 行上由 `/metrics` 抓取。
 - 原因：先改明细再改聚合且不检查 rowcount 会提交“已 released/materialized 但
   聚合未同步”，之后重复 release 也无法自愈。

@@ -51,6 +51,11 @@ def upgrade() -> None:
           expected INTEGER;
           stored INTEGER;
         BEGIN
+          IF TG_TABLE_NAME = 'send_inflight_balance'
+             AND TG_OP = 'UPDATE'
+             AND NEW.reserved_chunks IS NOT DISTINCT FROM OLD.reserved_chunks THEN
+            RETURN NULL;
+          END IF;
           target_app := COALESCE(NEW.app_id, OLD.app_id);
           SELECT COALESCE(SUM(reserved_chunks), 0)::integer
             INTO expected
@@ -92,7 +97,7 @@ def upgrade() -> None:
           blocked_at TIMESTAMPTZ;
           dupes INTEGER;
         BEGIN
-          PERFORM pg_advisory_xact_lock(868632, p_app_id);
+          PERFORM pg_advisory_xact_lock(hashtextextended(p_app_id::text, 868632));
           SELECT COUNT(*) INTO dupes
             FROM (
               SELECT batch_id

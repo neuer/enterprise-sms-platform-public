@@ -973,6 +973,9 @@ def test_inflight_balance_conservation_repairs_aggregate_only() -> None:
         assert "reconcile_send_inflight_app" in contract
         assert "send_inflight_reconcile_fact" in contract
         assert "conservation_blocked_at" in contract
+        assert "hashtextextended" in contract
+        assert "NEW.reserved_chunks IS NOT DISTINCT FROM OLD.reserved_chunks" in contract
+    assert "pg_advisory_xact_lock(868632, p_app_id)" not in source
     assert 'revision = "0101_inflight_balance_conservation"' in source
     assert 'down_revision = "0100_inflight_acceptance_failed_guard"' in source
     assert "DELETE FROM send_inflight_reservation" not in source
