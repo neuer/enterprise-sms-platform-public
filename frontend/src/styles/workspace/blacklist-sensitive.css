@@ -1,0 +1,803 @@
+/* 黑名单与敏感词：共享抽屉头与确认框 / 词条墙 / 预检 chips。 */
+/* 黑名单/敏感词/用户与角色/系统参数/运维中心/回调任务/安全日报共享选择器：ops-*、callback-* 与 security-daily-* 均并入同一组，按页复制即缺陷。 */
+.sign-drawer-head,
+.blacklist-drawer-head,
+.sensitive-drawer-head,
+.user-drawer-head,
+.callback-drawer-head {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.sign-drawer-title,
+.blacklist-drawer-title,
+.sensitive-drawer-title,
+.user-drawer-title,
+.callback-drawer-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--tx-hi);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.sign-drawer-head code,
+.blacklist-drawer-head code,
+.sensitive-drawer-head code,
+.user-drawer-head code,
+.callback-drawer-head code {
+  display: block;
+  color: var(--tx-3);
+  font: 11px var(--mono);
+}
+
+.sign-content-block {
+  display: grid;
+  gap: 6px;
+  margin-top: 13px;
+  padding: 11px 14px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+
+.sign-content-block > span {
+  color: var(--tx-3);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+.sign-content-block p {
+  margin: 0;
+  color: var(--tx-hi);
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+
+.sign-fact-grid,
+.callback-fact-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px 18px;
+  margin: 16px 0 0;
+}
+
+.sign-fact-grid dt,
+.callback-fact-grid dt {
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.sign-fact-grid dd,
+.callback-fact-grid dd {
+  margin: 1px 0 0;
+  color: var(--tx);
+  font-size: 12px;
+}
+
+.sign-name-item i {
+  margin-left: 6px;
+  color: var(--tx-3);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.sign-delete-dialog p,
+.blacklist-delete-dialog p,
+.sensitive-delete-dialog p,
+.user-confirm-dialog p,
+.config-confirm-dialog p,
+.ops-confirm-dialog p,
+.callback-confirm-dialog p,
+.security-daily-confirm-dialog p,
+.apps-danger-dialog p {
+  margin: 0;
+}
+
+.sign-delete-audit,
+.blacklist-delete-audit,
+.sensitive-delete-audit,
+.user-confirm-audit,
+.config-confirm-audit,
+.ops-confirm-audit,
+.callback-confirm-audit,
+.security-daily-confirm-audit,
+.apps-audit-note {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hair-2);
+  color: var(--tx-3);
+  font-size: 11px;
+}
+
+.sign-trail {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+
+.sign-reject-banner {
+  margin-top: 14px;
+}
+
+.sign-preview-text {
+  color: var(--tx);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.sign-proof-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.sign-apps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.sign-app-chip {
+  padding: 2px 10px;
+  color: var(--tx);
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 5px;
+}
+
+.sign-apps-note {
+  color: var(--tx-3);
+  font-size: 11px;
+}
+
+.sign-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.sign-detail-actions .why {
+  width: 100%;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.sign-form,
+.blacklist-form,
+.user-form {
+  padding-right: 4px;
+}
+
+.sign-editor-preview {
+  margin-top: 4px;
+}
+
+.sign-editor-foot,
+.blacklist-editor-foot,
+.sensitive-editor-foot,
+.user-editor-foot,
+.callback-editor-foot {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sign-editor-foot small,
+.blacklist-editor-foot small,
+.sensitive-editor-foot small,
+.user-editor-foot small,
+.callback-editor-foot small {
+  max-width: 320px;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+/* 敏感词页面专属：短词密排词条墙（替代整行表格），删除 × 常驻弱化、悬停朱红。 */
+.sensitive-head-ops {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex: none;
+}
+
+.sensitive-policy {
+  display: grid;
+  gap: 5px;
+}
+
+.sensitive-policy > span {
+  color: var(--tx-3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.sensitive-wall {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  padding: 12px 8px 8px;
+}
+
+.sensitive-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 8px 7px 12px;
+  color: var(--tx);
+  font-size: 12.5px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+}
+
+.sensitive-tile > span {
+  min-width: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.sensitive-tile-del {
+  flex: none;
+  padding: 3px 5px;
+  color: var(--tx-3);
+  font: 11px/1 var(--mono);
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* 悬停朱红描边即深色 --verm 同值：就地令牌化。 */
+.sensitive-tile:hover {
+  border-color: color-mix(in srgb, var(--verm) 35%, transparent);
+}
+
+.sensitive-tile:hover .sensitive-tile-del,
+.sensitive-tile-del:focus-visible {
+  color: #ef9b89;
+}
+
+/* 黑名单/敏感词页面专属：检索条/分页并入 reply-* 共享组，抽屉骨架并入 sign-* 共享组。 */
+.blacklist-alert,
+.sensitive-alert {
+  margin-bottom: 14px;
+}
+
+.blacklist-dash {
+  color: var(--tx-3);
+}
+
+.blacklist-field-hint,
+.sensitive-field-hint {
+  margin-left: 6px;
+  color: var(--tx-3);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.blacklist-phones .el-textarea__inner,
+.sensitive-words .el-textarea__inner {
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.blacklist-parse,
+.sensitive-parse,
+.user-parse {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -8px 0 14px;
+}
+
+.blacklist-chip,
+.sensitive-chip,
+.user-chip {
+  padding: 2px 10px;
+  color: var(--tx-2);
+  font: 10.5px var(--mono);
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 5px;
+}
+
+/* 预检 chips：ok 文字改用亮底自适应的 --verdi-text，两边框按深色令牌同值就地令牌化；
+   bad 文字 #ef9b89 保留深色值，亮色覆写见文件末尾明亮模式区块。 */
+.blacklist-chip-ok,
+.sensitive-chip-ok,
+.user-chip-ok {
+  color: var(--verdi-text);
+  border-color: color-mix(in srgb, var(--verdi-l) 40%, transparent);
+}
+
+.blacklist-chip-bad,
+.sensitive-chip-bad,
+.user-chip-bad {
+  color: #ef9b89;
+  border-color: color-mix(in srgb, var(--verm) 45%, transparent);
+}
+
+.blacklist-parse-error,
+.sensitive-parse-error,
+.user-parse-error {
+  margin: -6px 0 12px;
+  color: var(--verm);
+  font-size: 11px;
+}
+
+.sign-mobile-list,
+.blacklist-mobile-list {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .approval-rows,
+  .sign-mobile-list,
+  .blacklist-mobile-list,
+  .user-mobile-list {
+    min-height: 120px;
+  }
+
+  .sign-table,
+  .blacklist-table {
+    display: none;
+  }
+
+  .sign-mobile-list,
+  .blacklist-mobile-list {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .sign-mobile-list article,
+  .blacklist-mobile-list article {
+    min-width: 0;
+    padding: 14px;
+    background: var(--surface-soft);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+
+  .sign-mobile-list header,
+  .sign-mobile-list footer,
+  .blacklist-mobile-list header,
+  .blacklist-mobile-list footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .sign-mobile-list dl {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 1px;
+    margin: 12px 0;
+    background: var(--line);
+  }
+
+  .sign-mobile-list dl > div {
+    min-width: 0;
+    padding: 9px;
+    background: var(--card);
+  }
+
+  .sign-mobile-list dt,
+  .blacklist-mobile-list header span,
+  .blacklist-mobile-list footer time {
+    color: var(--muted);
+    font-size: 10px;
+  }
+
+  .sign-mobile-list dd {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
+
+  .sign-mobile-list footer,
+  .blacklist-mobile-list footer {
+    justify-content: flex-end;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+  }
+
+  /* 模板/签名查询栏移动端规则（共享桌面定义见 template 区）。 */
+  .template-filter-bar,
+  .sign-filter-bar {
+    align-items: flex-start;
+  }
+
+  .template-keyword,
+  .sign-keyword {
+    width: 100%;
+  }
+
+  .template-filter-note,
+  .sign-filter-note {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .template-seg,
+  .sign-seg {
+    overflow-x: auto;
+  }
+
+  .template-seg button,
+  .sign-seg button {
+    flex: 1;
+    justify-content: center;
+    padding: 0 8px;
+    white-space: nowrap;
+  }
+
+  .sign-mobile-list header .table-row-detail {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .sign-mobile-list > article > .cell-sub {
+    display: block;
+    margin: 6px 0 0;
+  }
+
+  .sign-trail,
+  .template-trail {
+    flex-wrap: wrap;
+    gap: 8px 0;
+  }
+
+  /* 模板页与签名/黑名单同一断点（760px）切换卡片列表；原 640px 规则并入此块。 */
+  .template-table {
+    display: none;
+  }
+
+  .template-mobile-list {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .template-mobile-list article {
+    min-width: 0;
+    padding: 14px;
+    background: var(--surface-soft);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+
+  .template-mobile-list header,
+  .template-mobile-list footer {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .template-mobile-list header .table-row-detail {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-weight: 600;
+  }
+
+  .template-mobile-list > article > .template-inline-content {
+    display: block;
+    margin-top: 10px;
+    font-size: 12px;
+  }
+
+  .template-mobile-list > article > .cell-sub {
+    margin-top: 6px;
+  }
+
+  .template-mobile-list dl {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    margin: 12px 0 0;
+    background: var(--line);
+  }
+
+  .template-mobile-list dl > div {
+    min-width: 0;
+    padding: 9px;
+    background: var(--card);
+  }
+
+  .template-mobile-list dt {
+    color: var(--muted);
+    font-size: 9px;
+  }
+
+  .template-mobile-list dd {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+  }
+
+  .template-mobile-list footer {
+    justify-content: flex-end;
+    margin-top: 12px;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+  }
+
+  .blacklist-mobile-list p {
+    margin: 12px 0;
+    overflow-wrap: anywhere;
+    color: var(--ink-soft);
+  }
+
+  .sensitive-head-ops {
+    flex-wrap: wrap;
+  }
+
+  .sensitive-wall {
+    grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  }
+}
+
+@media (max-width: 959px) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sidebar {
+    position: fixed;
+    z-index: 31;
+    inset: 0 auto 0 0;
+    width: min(288px, 86vw);
+    padding: 18px 14px 14px;
+    transform: translateX(-101%);
+    visibility: hidden;
+    transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 180ms;
+  }
+
+  .brand {
+    justify-content: flex-start;
+  }
+
+  .navigation-open .sidebar {
+    transform: translateX(0);
+    visibility: visible;
+    box-shadow: 18px 0 48px rgb(14 28 22 / 24%);
+    transition-delay: 0s;
+  }
+
+  .navigation-toggle,
+  .navigation-close {
+    display: grid;
+    place-items: center;
+    color: var(--tx);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+  }
+
+  .navigation-toggle {
+    width: 36px;
+    height: 36px;
+    padding: 9px;
+    gap: 4px;
+  }
+
+  .navigation-toggle span {
+    display: block;
+    width: 17px;
+    height: 1px;
+    background: currentColor;
+  }
+
+  .navigation-close {
+    width: 36px;
+    height: 36px;
+    margin-left: auto;
+    color: #b9c3bd;
+    font-size: 24px;
+    font-weight: 300;
+  }
+
+  .navigation-backdrop {
+    position: fixed;
+    z-index: 30;
+    inset: 0;
+    display: block;
+    background: rgb(14 28 22 / 44%);
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+    transition: opacity 180ms ease-out, visibility 0s linear 180ms;
+  }
+
+  .navigation-open .navigation-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
+    transition-delay: 0s;
+  }
+
+  .topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 10px;
+  }
+
+  .balance {
+    display: none;
+  }
+
+  .breadcrumb {
+    overflow: hidden;
+    color: var(--tx);
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .breadcrumb span,
+  .breadcrumb b {
+    display: none;
+  }
+
+  .channel-strip {
+    justify-self: start;
+  }
+
+  .send-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .send-preview {
+    position: static;
+  }
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    padding-inline: 12px;
+  }
+
+  .operator-name {
+    display: none;
+  }
+
+  .channel-strip {
+    gap: 6px;
+  }
+
+  .lane-track,
+  .tokens {
+    display: none;
+  }
+
+  .page-heading {
+    display: block;
+  }
+
+  .page-heading time {
+    display: block;
+    margin-top: 12px;
+  }
+
+  .security-note {
+    margin-top: 12px;
+  }
+
+  .approval-head-side {
+    justify-content: flex-start;
+    margin-top: 12px;
+  }
+
+  .approval-filter-bar {
+    align-items: flex-start;
+  }
+
+  .approval-filter-go {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .approval-rows {
+    padding: 12px;
+  }
+
+  .approval-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+  }
+
+  .approval-cd {
+    flex-direction: row;
+    gap: 8px;
+    align-items: baseline;
+  }
+
+  .approval-row-actions {
+    justify-content: flex-start;
+  }
+
+  .approval-rows.is-table {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .approval-table,
+  .approval-table tbody,
+  .approval-table tr,
+  .approval-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .approval-table thead {
+    display: none;
+  }
+
+  .approval-table tr {
+    min-width: 0;
+    padding: 12px 14px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+
+  .approval-table td {
+    padding: 4px 0;
+    border: 0;
+  }
+
+  .approval-table td::before {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--tx-3);
+    font-size: 9.5px;
+    content: attr(data-label);
+  }
+
+  .approval-table .approval-open-cell::before {
+    content: none;
+  }
+
+  .approval-dest small {
+    max-width: none;
+    white-space: normal;
+  }
+
+  .approval-detail-grid,
+  .approval-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .send-workbench,
+  .send-editor,
+  .form-panel {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .category-switch,
+  .inline-fields {
+    grid-template-columns: 1fr;
+  }
+}

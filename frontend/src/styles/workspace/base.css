@@ -1,0 +1,143 @@
+/* 壳基础：reset / 布局骨架 / 侧栏导航 / 顶栏。 */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--paper);
+}
+
+.public-shell {
+  min-height: 100vh;
+}
+
+.logout-button,
+.toolbar-action {
+  padding: 4px 0;
+  color: var(--tx-2);
+  font: inherit;
+  font-size: 11px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.logout-button:hover,
+.toolbar-action:hover {
+  color: var(--verdi);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--verdi);
+  outline-offset: 2px;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 18px 14px 14px;
+  overflow-y: auto;
+  color: #e9efeb;
+  background: var(--ink);
+  border-right: 1px solid #314039;
+}
+
+.brand {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  padding: 2px 8px 20px;
+  border-bottom: 1px solid #34413b;
+}
+
+.brand-mark {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  color: #f0f4ef;
+  font-family: var(--serif);
+  font-size: 18px;
+  border: 1px solid #68766f;
+  border-radius: 50%;
+}
+
+.brand strong {
+  display: block;
+  font-family: var(--serif);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.nav-section h2 {
+  margin: 0 10px 5px;
+  color: #75827b;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+}
+
+.nav-link {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 10px;
+  color: #b9c3bd;
+  border-radius: 6px;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.nav-marker {
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  color: #9caaa2;
+  font-size: 10px;
+  border: 1px solid #526159;
+  border-radius: 5px;
+}
+
+.nav-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  color: var(--amber);
+  font: 600 10px/1.6 "IBM Plex Mono", monospace;
+  background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
+  border-radius: 999px;
+}
+
+.sidebar-foot {
+  margin: auto 8px 0;
+  padding-top: 20px;
+  color: #68756e;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+}
+
+.navigation-toggle,
+.navigation-close,
+.navigation-backdrop {
+  display: none;
+}

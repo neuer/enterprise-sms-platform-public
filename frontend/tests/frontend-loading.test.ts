@@ -2,8 +2,10 @@ import mainSource from "../src/main.ts?raw"
 import workspaceElementSource from "../src/element-workspace.ts?raw"
 import routerSource from "../src/router/index.ts?raw"
 import appSource from "../src/App.vue?raw"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
+
+import { readWorkspaceCss } from "./workspace-css"
 
 const lazyViews = [
   "DashboardView", "ReportView", "UserView", "ConfigView", "AuditView", "SendView",
@@ -28,6 +30,30 @@ describe("前端加载边界", () => {
       const source = readFileSync(resolve(process.cwd(), `src/views/${view}.vue`), "utf8")
       expect(source).not.toContain("workspace.css")
     }
+  })
+
+  it("workspace.css 拆分为纯 @import 聚合入口，分片齐全且明亮覆写层在末位", () => {
+    const entry = readFileSync(resolve(process.cwd(), "src/styles/workspace.css"), "utf8")
+    // 除注释与空行外只允许 @import 行（顺序即级联顺序）
+    const lines = entry
+      .replaceAll(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+    const imports = lines.filter((line) => line.startsWith("@import"))
+    expect(lines.length).toBe(imports.length)
+    expect(imports.length).toBeGreaterThan(10)
+    for (const line of imports) {
+      const match = /^@import "(\.\/workspace\/[^"]+)";$/.exec(line)
+      expect(match, `聚合入口只允许引入 styles/workspace/ 分片：${line}`).not.toBeNull()
+      expect(existsSync(resolve(process.cwd(), "src/styles", match![1])), `${line} 目标分片缺失`).toBe(true)
+    }
+    // 明亮模式覆写层必须保持在末位（级联依赖顺序）
+    expect(imports.at(-1)).toContain("overrides-light.css")
+    // 聚合入口内联展开后仍含壳骨架与覆写层规则（防空切片/漏引入）
+    const full = readWorkspaceCss()
+    expect(full).toContain(".app-shell")
+    expect(full).toContain("明亮模式覆写")
   })
 
   it("基础主题不再携带路由页面的大段样式", () => {

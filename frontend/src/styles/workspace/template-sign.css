@@ -1,0 +1,470 @@
+/* 模板与签名：两页查询栏同构共享块 / 编辑器 / 审核轨迹（见块内注释）。 */
+/* 模板/签名两页查询栏同构：sign-filter-bar/sign-fld/sign-keyword/sign-seg/sign-filter-note
+   与 template-* 共用以下规则（移动端见 760px 媒体块），按页复制即缺陷。 */
+.template-filter-bar,
+.sign-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.template-fld,
+.sign-fld {
+  display: grid;
+  gap: 5px;
+}
+
+.template-fld > span,
+.sign-fld > span {
+  color: var(--tx-3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.template-keyword,
+.sign-keyword,
+.blacklist-keyword,
+.user-keyword,
+.config-keyword,
+.ops-keyword,
+.callback-keyword {
+  width: 220px;
+}
+
+.template-seg,
+.sign-seg {
+  display: flex;
+  height: 34px;
+  overflow: hidden;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+}
+
+.template-seg button,
+.sign-seg button {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 0 13px;
+  color: var(--tx-2);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 400;
+  background: var(--sink);
+  border: 0;
+  cursor: pointer;
+}
+
+.template-seg button i,
+.sign-seg button i {
+  color: var(--tx-3);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.template-seg button.on,
+.sign-seg button.on {
+  color: #eaf1ed;
+  background: var(--verdi);
+}
+
+.template-seg button.on i,
+.sign-seg button.on i {
+  color: rgba(234, 241, 237, 0.75);
+}
+
+.template-filter-note,
+.sign-filter-note {
+  margin-left: auto;
+  align-self: center;
+  color: var(--tx-3);
+  font: 11px var(--mono);
+}
+
+.template-alert {
+  margin-bottom: 14px;
+}
+
+.template-results {
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.template-table .el-table__row {
+  cursor: pointer;
+}
+
+.muted {
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+}
+
+.template-mobile-list {
+  display: none;
+}
+
+.template-inline-content {
+  color: var(--tx);
+  font-size: 12.5px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.var-chip {
+  display: inline-flex;
+  gap: 3px;
+  align-items: baseline;
+  margin: 0 1px;
+  padding: 0 5px;
+  color: var(--verdi-l);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--verdi-l) 45%, transparent);
+  border-radius: 4px;
+}
+
+.var-chip i {
+  color: var(--tx-3);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.cell-sub-verm {
+  color: var(--verm);
+}
+
+.cell-sub-mono,
+.mono-id {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.template-foot {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 16px;
+  color: var(--tx-3);
+  font-size: 11px;
+  border-top: 1px solid var(--hair-2);
+}
+
+.template-foot-role {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.template-drawer-head {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.template-drawer-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--tx-hi);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.template-drawer-head code {
+  display: block;
+  color: var(--tx-3);
+  font: 11px var(--mono);
+}
+
+.template-content-block {
+  display: grid;
+  gap: 6px;
+  margin-top: 13px;
+  padding: 11px 14px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+
+.template-content-block > span {
+  color: var(--tx-3);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+}
+
+.template-content-block p {
+  margin: 0;
+  color: var(--tx-hi);
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+
+.template-fact-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px 18px;
+  margin: 16px 0 0;
+}
+
+.template-fact-grid dt {
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.template-fact-grid dd {
+  margin: 1px 0 0;
+  color: var(--tx);
+  font-size: 12px;
+}
+
+.template-spec-card {
+  display: grid;
+  gap: 9px;
+  margin-top: 4px;
+  padding: 11px 14px;
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+
+.template-spec-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.template-spec-head b {
+  color: var(--tx-hi);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.template-spec-head span {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.template-content-item i {
+  margin-left: 6px;
+  color: var(--tx-3);
+  font-size: 10px;
+  font-style: normal;
+}
+
+.template-delete-dialog p {
+  margin: 0;
+}
+
+.template-delete-audit {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hair-2);
+  color: var(--tx-3);
+  font-size: 11px;
+}
+
+.template-trail {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+
+.trail-step {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  align-items: center;
+}
+
+.trail-step .dot {
+  flex: none;
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  background: var(--tx-3);
+  border-radius: 50%;
+}
+
+.trail-step.done .dot {
+  background: var(--verdi-l);
+}
+
+.trail-step.fail .dot {
+  background: var(--verm);
+}
+
+.trail-step.wait .dot {
+  background: transparent;
+  border: 2px solid var(--tx-3);
+}
+
+.trail-txt b {
+  display: block;
+  color: var(--tx-hi);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.trail-txt small {
+  color: var(--tx-3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.trail-step.fail .trail-txt b {
+  color: var(--verm);
+}
+
+.trail-connector {
+  flex: 1;
+  min-width: 16px;
+  height: 1px;
+  margin: 0 12px;
+  background: var(--line-2);
+}
+
+.template-reject-banner {
+  margin-top: 14px;
+}
+
+.template-proof-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.template-vendor-preview {
+  color: var(--tx);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.template-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.template-detail-actions .why {
+  width: 100%;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.template-form {
+  padding-right: 4px;
+}
+
+.variable-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.variable-row code {
+  width: 38px;
+  color: var(--verdi-l);
+  font-family: var(--mono);
+}
+
+.variable-note {
+  margin-left: auto;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.variable-empty {
+  margin: 0;
+  color: var(--tx-3);
+  font-size: 11px;
+}
+
+.template-editor-preview {
+  margin-top: 14px;
+}
+
+.template-editor-foot {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.template-editor-foot small {
+  max-width: 320px;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.form-hint {
+  margin: 10px 0 0;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.sign-heading {
+  margin-bottom: 18px;
+}
+
+/* 签名页查询栏（sign-filter-bar/sign-fld/sign-keyword/sign-seg/sign-filter-note）与模板页同构，
+   规则统一在 template 区共享块维护（移动端见 760px 媒体块），此处不再重复定义。 */
+
+.sign-alert {
+  margin-bottom: 14px;
+}
+
+.sign-results {
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.sign-table .el-table__row,
+.security-daily-table .el-table__row {
+  cursor: pointer;
+}
+
+.sign-name {
+  color: var(--tx-hi);
+  font-weight: 600;
+  border-bottom: 1px dashed color-mix(in srgb, var(--verdi-l) 40%, transparent);
+  border-radius: 0;
+}
+
+.sign-foot {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 16px;
+  color: var(--tx-3);
+  font-size: 11px;
+  border-top: 1px solid var(--hair-2);
+}
+
+.sign-foot-role {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}

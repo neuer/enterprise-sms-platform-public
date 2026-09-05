@@ -1,0 +1,262 @@
+/* 用户与角色：统一身份台账 / 编辑器底栏 / 身份徽标。 */
+/* 用户与角色：统一身份台账同时呈现本地凭据与外部目录身份（admin 专属）。
+   检索条/分页/抽屉头/确认框/编辑器底栏/预检 chips 已并入 reply-* 与 sign-* 共享组，按页复制即缺陷；
+   本区只保留规则条、台账单元格与移动端卡片的页级专属样式；
+   config-rules / ops-rules / callback-rules / security-daily-rules / audit-rules 与 user-rules 同构，共用本组规则。 */
+.user-rules,
+.config-rules,
+.ops-rules,
+.callback-rules,
+.security-daily-rules,
+.audit-rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  margin-bottom: 14px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.user-rules > div,
+.config-rules > div,
+.ops-rules > div,
+.callback-rules > div,
+.security-daily-rules > div,
+.audit-rules > div {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.user-rules span,
+.config-rules span,
+.ops-rules span,
+.callback-rules span,
+.security-daily-rules span,
+.audit-rules span {
+  flex: none;
+  color: var(--tx-3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.user-rules p,
+.config-rules p,
+.ops-rules p,
+.callback-rules p,
+.security-daily-rules p,
+.audit-rules p {
+  margin: 0;
+  color: var(--tx-2);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.user-alert,
+.ops-alert,
+.callback-alert,
+.security-daily-alert,
+.audit-alert { margin-bottom: 14px; }
+
+.user-name {
+  display: block;
+  color: var(--tx-hi);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.user-code {
+  display: block;
+  margin-top: 2px;
+  color: var(--tx-3);
+  font: 11px/1.3 var(--mono);
+}
+
+.identity-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.source-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.source-groups .el-tag {
+  max-width: 100%;
+  font-family: var(--mono);
+}
+
+.source-groups .el-tag__content {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.source-groups small {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.role-origin {
+  display: block;
+  margin-top: 4px;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.sync-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.sync-state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tx-3);
+}
+
+.sync-state.synced i { background: var(--verdi-l); }
+.sync-state.pending i { background: var(--amber); }
+.sync-state.disabled i { background: var(--verm); }
+
+.user-times {
+  display: grid;
+  gap: 1px;
+  margin-top: 5px;
+}
+
+.user-table .user-row-off {
+  opacity: 0.55;
+}
+
+.user-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 8px;
+}
+
+.user-row-actions .el-button + .el-button { margin-left: 0; }
+
+.user-empty-action,
+.callback-empty-action,
+.security-daily-empty-action {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  min-height: 260px;
+  align-content: center;
+}
+
+.role-subject,
+.callback-subject {
+  display: grid;
+  gap: 2px;
+  margin: -4px 0 18px;
+  padding: 11px 14px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+}
+
+.role-subject span,
+.callback-subject span {
+  color: var(--tx-hi);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.role-subject code,
+.callback-subject code {
+  color: var(--tx-2);
+  font: 11px var(--mono);
+}
+
+.role-subject small,
+.callback-subject small {
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.user-drawer .el-select { width: 100%; }
+
+/* field-rule 同时服务应用管理抽屉表单。 */
+.field-rule {
+  display: block;
+  margin-top: 7px;
+  color: var(--tx-3);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.local-role-note {
+  margin: 0;
+  color: var(--tx-2);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.override-control {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 12px;
+}
+
+.override-control p {
+  margin: 0;
+  color: var(--tx-2);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.role-source-preview {
+  margin-top: 4px;
+  padding: 12px 14px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+}
+
+.role-source-preview > span {
+  color: var(--tx-3);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.user-mobile-list { display: none; }
+
+@media (max-width: 760px) {
+  .user-heading { align-items: stretch; }
+  .user-rules > div,
+  .config-rules > div,
+  .ops-rules > div,
+  .callback-rules > div,
+  .security-daily-rules > div,
+  .audit-rules > div { width: 100%; }
+  .user-table { display: none; }
+  .user-mobile-list { display: grid; gap: 10px; padding: 12px; }
+  .user-mobile-list article { padding: 14px; border: 1px solid var(--hair); border-radius: 10px; background: var(--panel-2); }
+  .user-mobile-list header,
+  .user-mobile-list footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .user-mobile-list header > div { min-width: 0; }
+  .user-mobile-list .identity-tags { margin-top: 12px; }
+  .user-mobile-list p { margin: 12px 0 0; color: var(--tx-2); }
+  .user-mobile-list footer { align-items: flex-end; margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--hair-2); }
+  .user-mobile-list footer > span:first-child { display: grid; gap: 5px; color: var(--tx-3); font-size: 10px; }
+  .user-mobile-list footer > span:last-child { display: flex; flex-wrap: wrap; justify-content: flex-end; }
+  .user-mobile-list footer .el-button + .el-button { margin-left: 8px; }
+}

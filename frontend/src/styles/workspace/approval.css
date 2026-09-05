@@ -1,0 +1,634 @@
+/* 审批中心：筛选段 / 待审队列 / 已办表格 / 抽屉与决策。 */
+.approval-heading {
+  margin-bottom: 14px;
+}
+
+.approval-head-side {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.approval-counts-pill {
+  padding: 5px 12px;
+  color: var(--tx-hi);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--verdi) 18%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--verdi-l) 40%, var(--hair));
+  border-radius: 7px;
+}
+
+/* #71c4ad 即深色 --verdi-text（亮底文字绿）：直接引用令牌。 */
+.approval-counts-pill b {
+  color: var(--verdi-text);
+  font-size: 13px;
+}
+
+.approval-counts-pill .is-hot {
+  color: var(--verm);
+}
+
+.approval-role {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  padding: 5px 11px;
+  color: var(--tx-2);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+}
+
+.approval-role i {
+  width: 6px;
+  height: 6px;
+  background: var(--verdi-l);
+  border-radius: 50%;
+}
+
+.approval-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 14px;
+  margin-bottom: 14px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.approval-fld {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.approval-fld > span,
+.approval-fld > label {
+  color: var(--tx-3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.approval-seg {
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+}
+
+.approval-seg button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 10px;
+  color: var(--tx-2);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 400;
+  background: var(--sink);
+  border: 0;
+  cursor: pointer;
+}
+
+.approval-seg button.on {
+  color: #eaf1ed;
+  background: var(--verdi);
+}
+
+.approval-seg-count {
+  display: inline-block;
+  padding: 0 5px;
+  color: var(--tx-3);
+  font: 9.5px/1.5 "IBM Plex Mono", monospace;
+  background: var(--panel-2);
+  border-radius: 4px;
+}
+
+.approval-seg button.on .approval-seg-count {
+  color: #eaf1ed;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.approval-seg-count.is-hot {
+  color: #f0a08c;
+  background: color-mix(in srgb, var(--verm) 25%, transparent);
+}
+
+.approval-pill-select {
+  width: 112px;
+}
+
+.approval-fld .el-input {
+  width: 128px;
+}
+
+.approval-fld .el-input.approval-q-input {
+  width: 112px;
+}
+
+.approval-filter-go {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.approval-poll-hint {
+  color: var(--tx-3);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 9.5px;
+  white-space: nowrap;
+}
+
+.approval-error {
+  margin-bottom: 14px;
+}
+
+/* 待审队列与已办表格共用同一列表标记：断点只改布局，不切换 DOM。 */
+.approval-rows {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+}
+
+/* 待审批空态：与队列卡片同一面板语言（panel 底 + hair 边 + 圆角），避免裸文字悬在页底 */
+.approval-empty {
+  padding: 14px 18px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.approval-queue-list {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.approval-row {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  min-width: 0;
+  padding: 14px 18px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.approval-row.is-urgent {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--red) 7%, var(--card)), var(--card) 34%);
+  border-color: color-mix(in srgb, var(--red) 45%, var(--line));
+}
+
+.approval-row.is-soon {
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line));
+}
+
+.approval-row.is-mine {
+  opacity: 0.74;
+}
+
+.approval-cd {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.approval-cd b {
+  color: var(--tx);
+  font: 600 14px "IBM Plex Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.approval-cd span {
+  color: var(--tx-3);
+  font-size: 9.5px;
+}
+
+.approval-row.is-urgent .approval-cd b {
+  color: var(--red);
+}
+
+.approval-row.is-soon .approval-cd b {
+  color: var(--amber);
+}
+
+.approval-row-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.approval-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.approval-batch-no {
+  color: var(--tx-hi);
+  font: 11.5px "IBM Plex Mono", monospace;
+  overflow-wrap: anywhere;
+}
+
+.approval-sched-chip {
+  padding: 1px 7px;
+  color: var(--tx-3);
+  font: 10px/1.7 "IBM Plex Mono", monospace;
+  white-space: nowrap;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.approval-row-facts {
+  margin: 0;
+  color: var(--tx);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.approval-row-facts em {
+  margin: 0 0.35em;
+  color: var(--tx-3);
+  font-style: normal;
+}
+
+.approval-row-facts b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.approval-row-rule {
+  margin: 0;
+  color: var(--tx-3);
+  font-size: 11px;
+}
+
+.approval-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.approval-expand {
+  padding: 0;
+  color: var(--verdi-l);
+  font-size: 11.5px;
+  white-space: nowrap;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.approval-expand:hover {
+  text-decoration: underline;
+}
+
+.approval-avoid-note {
+  padding: 5px 11px;
+  color: var(--tx-3);
+  font-size: 11px;
+  border: 1px dashed var(--line-2);
+  border-radius: 7px;
+}
+
+.approval-quick {
+  display: grid;
+  gap: 10px;
+}
+
+.approval-quick-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.approval-quick-tip {
+  margin: 0;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.approval-quick-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.approval-rows.is-table {
+  display: block;
+  padding: 0;
+}
+
+.approval-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+
+.approval-table th {
+  padding: 9px 12px;
+  color: var(--tx-3);
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  text-align: left;
+  white-space: nowrap;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--line);
+}
+
+.approval-table td {
+  padding: 10px 12px;
+  color: var(--tx-2);
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+}
+
+.approval-table tbody tr {
+  cursor: pointer;
+}
+
+.approval-table tbody tr:hover {
+  background: color-mix(in srgb, var(--verdi) 5%, var(--card));
+}
+
+.approval-batch-cell {
+  display: grid;
+}
+
+.approval-batch-cell code {
+  color: var(--tx);
+  font: 11px "IBM Plex Mono", monospace;
+}
+
+.approval-batch-cell small,
+.approval-decider small {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.approval-decider {
+  display: grid;
+}
+
+.approval-decider b {
+  color: var(--tx);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.approval-dest {
+  color: var(--tx);
+  font-size: 11.5px;
+}
+
+.approval-dest small {
+  display: block;
+  max-width: 230px;
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--tx-3);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.table-row-detail {
+  max-width: 100%;
+  padding: 3px 2px;
+  color: var(--tx);
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.table-row-detail:hover {
+  color: var(--verdi);
+}
+
+.template-name {
+  overflow: hidden;
+  color: var(--tx-hi);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-bottom: 1px dashed color-mix(in srgb, var(--verdi-l) 40%, transparent);
+  border-radius: 0;
+}
+
+.approval-list-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 4px 0;
+  color: var(--tx-3);
+  font: 11px/1.5 "IBM Plex Mono", monospace;
+}
+
+.approval-list-foot .el-pagination {
+  margin: 0;
+}
+
+.approval-poll-status {
+  margin-left: auto;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.approval-poll-status i {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  vertical-align: 1px;
+  background: var(--verdi-l);
+  border-radius: 50%;
+}
+
+.approval-drawer-head {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.approval-drawer-head strong {
+  color: var(--tx-hi);
+  font-size: 13px;
+}
+
+.approval-drawer-head code {
+  color: var(--tx-hi);
+  font: 12px "IBM Plex Mono", monospace;
+}
+
+.approval-drawer-sub {
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.approval-facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px 18px;
+  margin: 0 0 16px;
+}
+
+.approval-facts .is-wide {
+  grid-column: 1 / -1;
+}
+
+.approval-facts dt,
+.approval-proof span,
+.reason-proof span {
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.approval-facts dd {
+  margin: 1px 0 0;
+  color: var(--tx);
+  font-size: 12px;
+}
+
+.approval-proof,
+.reason-proof {
+  margin-top: 0;
+  padding: 12px 14px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+
+.reason-proof {
+  margin-top: 16px;
+}
+
+.approval-proof p,
+.reason-proof p {
+  margin: 5px 0 0;
+  white-space: pre-wrap;
+}
+
+.approval-content-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.approval-content-head em {
+  padding: 1px 6px;
+  color: var(--slate);
+  font: 9px/1.6 "IBM Plex Mono", monospace;
+  font-style: normal;
+  white-space: nowrap;
+  border: 1px solid color-mix(in srgb, var(--slate) 40%, var(--line));
+  border-radius: 4px;
+}
+
+.approval-content-body {
+  min-height: 60px;
+  color: var(--tx-hi);
+  font-size: 12.5px;
+  line-height: 1.8;
+}
+
+.approval-proof-meta {
+  margin-top: 8px;
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.approval-outcome {
+  margin: 0;
+  padding: 7px 11px;
+  color: var(--tx-2);
+  font-size: 11px;
+  background: color-mix(in srgb, var(--verdi) 12%, var(--panel-2));
+  border: 1px solid color-mix(in srgb, var(--verdi-l) 35%, var(--hair));
+  border-radius: 7px;
+}
+
+.approval-decide-box {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 12px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+
+.approval-decide-hint {
+  display: flex;
+  justify-content: space-between;
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.approval-decide-actions {
+  display: flex;
+  gap: 9px;
+  justify-content: flex-end;
+}
+
+.approval-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  margin: 18px 0;
+  overflow: hidden;
+  background: var(--hair);
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+}
+
+.approval-detail-grid div {
+  padding: 10px 12px;
+  background: var(--panel);
+}
+
+.approval-detail-grid dt,
+.content-proof span {
+  color: var(--tx-3);
+  font-size: 10px;
+}
+
+.approval-detail-grid dd {
+  margin: 2px 0 0;
+}
+
+.content-proof {
+  margin-top: 16px;
+}
+
+.content-proof p {
+  margin: 5px 0 0;
+  padding: 14px;
+  white-space: pre-wrap;
+  background: var(--sink);
+  border-left: 3px solid var(--verdi);
+}
+
+.template-heading {
+  margin-bottom: 18px;
+}
