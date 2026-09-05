@@ -78,16 +78,10 @@ const categories = computed<UatCategory[]>(() => {
   const allowed = selectedApp.value?.allowed_categories || ["verify", "notice", "market"]
   return allowed.filter((item): item is UatCategory => ["verify", "notice", "market"].includes(item))
 })
-const selectedRecipient = computed(
-  () => props.recipients.find((item) => item.id === recipientId.value) || null,
-)
-const approvedTemplates = computed(() =>
-  templates.value.filter((item) => item.vendor_state === "approved"),
-)
+const selectedRecipient = computed(() => props.recipients.find((item) => item.id === recipientId.value) || null)
+const approvedTemplates = computed(() => templates.value.filter((item) => item.vendor_state === "approved"))
 const approvedSigns = computed(() => signs.value.filter((item) => item.vendor_state === "approved"))
-const selectedTemplate = computed(
-  () => approvedTemplates.value.find((item) => item.id === templateId.value) || null,
-)
+const selectedTemplate = computed(() => approvedTemplates.value.find((item) => item.id === templateId.value) || null)
 const renderedTemplate = computed(() => {
   const template = selectedTemplate.value
   if (!template) return ""
@@ -131,9 +125,7 @@ function selectTemplate(value: number | string): void {
   templateParams.value = template?.var_specs.map(() => "") || []
 }
 
-function messagePayload():
-  | { content: string }
-  | { template_id: number; template_params: string[] } {
+function messagePayload(): { content: string } | { template_id: number; template_params: string[] } {
   if (contentMode.value === "content") return { content: content.value.trim() }
   return {
     template_id: templateId.value!,
@@ -299,12 +291,7 @@ onMounted(() => void loadApprovedOptions())
             :disabled="disabled"
             @change="selectTemplate"
           >
-            <el-option
-              v-for="item in approvedTemplates"
-              :key="item.id"
-              :label="item.name"
-              :value="item.id"
-            />
+            <el-option v-for="item in approvedTemplates" :key="item.id" :label="item.name" :value="item.id" />
           </el-select>
         </el-form-item>
         <template v-if="selectedTemplate">
@@ -345,12 +332,7 @@ onMounted(() => void loadApprovedOptions())
           placeholder="留空则使用应用默认签名"
           :disabled="disabled"
         >
-          <el-option
-            v-for="item in approvedSigns"
-            :key="item.id"
-            :label="item.name"
-            :value="item.name"
-          />
+          <el-option v-for="item in approvedSigns" :key="item.id" :label="item.name" :value="item.name" />
         </el-select>
         <small class="vendor-uat-sign-hint">
           {{ selectedApp?.default_sign ? `应用默认：${selectedApp.default_sign}` : "应用未配置默认签名" }}
@@ -375,8 +357,12 @@ onMounted(() => void loadApprovedOptions())
     </div>
 
     <footer class="vendor-uat-actions">
-      <el-button data-testid="uat-preview" :loading="previewing" :disabled="!formReady" @click="runPreview">预检计费</el-button>
-      <el-button data-testid="uat-send" type="danger" plain :loading="sending" :disabled="!formReady" @click="send">发送真实 UAT</el-button>
+      <el-button data-testid="uat-preview" :loading="previewing" :disabled="!formReady" @click="runPreview"
+        >预检计费</el-button
+      >
+      <el-button data-testid="uat-send" type="danger" plain :loading="sending" :disabled="!formReady" @click="send"
+        >发送真实 UAT</el-button
+      >
     </footer>
   </section>
 </template>

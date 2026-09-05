@@ -107,7 +107,10 @@ const metricOptions: Array<{ label: string; value: ReportTrendMetric }> = [
   { label: "计费条", value: "total_segments" },
 ]
 const statusLabel: Record<ExportTask["status"], string> = {
-  pending: "等待生成", running: "生成中", done: "已完成", failed: "生成失败",
+  pending: "等待生成",
+  running: "生成中",
+  done: "已完成",
+  failed: "生成失败",
 }
 
 const dimLabel = computed(() => (result.value?.group_by === "dept" ? "部门" : "应用"))
@@ -139,9 +142,7 @@ const rangeDays = computed(() => {
   if (!Number.isFinite(ms) || ms < 0) return null
   return Math.round(ms / 86_400_000) + 1
 })
-const trendLegend = computed(() =>
-  result.value ? reportTrendDims(result.value.items, metric.value) : [],
-)
+const trendLegend = computed(() => (result.value ? reportTrendDims(result.value.items, metric.value) : []))
 
 function dimColor(index: number): string {
   // 图例色块是 DOM 元素，用 var() 引用令牌即可随主题自动切换
@@ -172,16 +173,13 @@ const sortedItems = computed(() => {
   const { prop, order } = sortState.value
   const direction = order === "ascending" ? 1 : -1
   rows.sort((left, right) => {
-    const primary = prop === "period_start"
-      ? left.period_start.localeCompare(right.period_start)
-      : left[prop] - right[prop]
+    const primary =
+      prop === "period_start" ? left.period_start.localeCompare(right.period_start) : left[prop] - right[prop]
     return (primary || left.dim_label.localeCompare(right.dim_label)) * direction
   })
   return rows
 })
-const pagedItems = computed(() =>
-  sortedItems.value.slice((page.value - 1) * pageSize, page.value * pageSize),
-)
+const pagedItems = computed(() => sortedItems.value.slice((page.value - 1) * pageSize, page.value * pageSize))
 
 function formatRate(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`
@@ -262,16 +260,12 @@ async function download(): Promise<void> {
   try {
     let stepUpToken: string | undefined
     if (exportTask.value.decrypted) {
-      const prompt = await ElMessageBox.prompt(
-        "明文导出属于高风险操作，请重新输入当前认证源密码。",
-        "下载明文导出",
-        {
-          inputType: "password",
-          inputPlaceholder: "当前密码",
-          confirmButtonText: "验证并下载",
-          cancelButtonText: "取消",
-        },
-      )
+      const prompt = await ElMessageBox.prompt("明文导出属于高风险操作，请重新输入当前认证源密码。", "下载明文导出", {
+        inputType: "password",
+        inputPlaceholder: "当前密码",
+        confirmButtonText: "验证并下载",
+        cancelButtonText: "取消",
+      })
       password = prompt.value
       stepUpToken = (await issueExportStepUp(exportTask.value.id, password)).token
     }
@@ -314,7 +308,8 @@ onMounted(() => void load())
           type="button"
           :class="{ on: granularity === opt.value }"
           @click="granularity = opt.value"
-        >{{ opt.label }}</button>
+          >{{ opt.label }}</button
+        >
       </div>
     </div>
     <div class="report-fld">
@@ -327,7 +322,8 @@ onMounted(() => void load())
           :class="{ on: groupBy === opt.value }"
           :data-testid="`report-group-${opt.value}`"
           @click="groupBy = opt.value"
-        >{{ opt.label }}</button>
+          >{{ opt.label }}</button
+        >
       </div>
     </div>
     <div class="report-fld">
@@ -361,16 +357,22 @@ onMounted(() => void load())
   <div v-if="exportTask || exportError" class="export-strip" data-testid="export-strip">
     <template v-if="exportTask">
       <span class="export-tag" :class="exportTask.status">{{ statusLabel[exportTask.status] }}</span>
-      <span class="export-id">导出明细 <code>#{{ exportTask.id.slice(0, 8) }}</code></span>
+      <span class="export-id"
+        >导出明细 <code>#{{ exportTask.id.slice(0, 8) }}</code></span
+      >
       <strong v-if="exportTask.row_count !== null">{{ exportTask.row_count.toLocaleString() }} 行</strong>
       <span class="export-mode">{{ exportTask.decrypted ? "明文导出 · 已记审计" : "掩码导出 · 不含明文手机号" }}</span>
       <small v-if="exportTask.expires_at">保留至 {{ exportTask.expires_at.slice(0, 10) }}</small>
-      <el-button v-if="exportTask.download_url" link type="primary" class="export-download" @click="download">下载 CSV ↓</el-button>
+      <el-button v-if="exportTask.download_url" link type="primary" class="export-download" @click="download"
+        >下载 CSV ↓</el-button
+      >
     </template>
     <el-alert v-if="exportError" :title="exportError" type="error" :closable="false" class="export-strip-error" />
   </div>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" class="report-error"><template #default><el-button link type="primary" @click="load">重新查询</el-button></template></el-alert>
+  <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" class="report-error"
+    ><template #default><el-button link type="primary" @click="load">重新查询</el-button></template></el-alert
+  >
 
   <template v-if="result">
     <section class="report-kpis" aria-label="区间关键指标">
@@ -379,8 +381,8 @@ onMounted(() => void load())
         <strong>{{ result.summary.total.toLocaleString() }}</strong>
         <small>{{ result.start }} — {{ result.end }}{{ rangeDays === null ? "" : ` · ${rangeDays} 天` }}</small>
         <p class="kpi-foot">
-          {{ averageLabel }} {{ periodAverage === null ? "—" : periodAverage.toLocaleString() }}
-          · 峰值 {{ periodPeak === null ? "—" : `${periodPeak[0].slice(5)}（${periodPeak[1].toLocaleString()}）` }}
+          {{ averageLabel }} {{ periodAverage === null ? "—" : periodAverage.toLocaleString() }} · 峰值
+          {{ periodPeak === null ? "—" : `${periodPeak[0].slice(5)}（${periodPeak[1].toLocaleString()}）` }}
         </p>
       </el-card>
       <el-card shadow="never" class="report-kpi">
@@ -393,16 +395,38 @@ onMounted(() => void load())
         <span>送达成功率</span>
         <strong>{{ formatRate(result.summary.success_rate) }}</strong>
         <small>送达 /（送达 + 失败），未知不入分母</small>
-        <div class="kpi-kv"><span>送达</span><b>{{ result.summary.delivered.toLocaleString() }}</b></div>
-        <div class="kpi-kv"><span>失败</span><b class="neg">{{ result.summary.failed.toLocaleString() }}</b></div>
+        <div class="kpi-kv"
+          ><span>送达</span><b>{{ result.summary.delivered.toLocaleString() }}</b></div
+        >
+        <div class="kpi-kv"
+          ><span>失败</span><b class="neg">{{ result.summary.failed.toLocaleString() }}</b></div
+        >
       </el-card>
       <el-card shadow="never" class="report-kpi">
         <span>结果构成</span>
         <strong>{{ result.summary.unknown.toLocaleString() }}<small class="strong-note">未知 · 待终态</small></strong>
         <div class="compose-strip" aria-label="结果构成">
-          <i class="d" :style="{ width: composeWidth(result.summary.delivered) }" :title="`送达 ${result.summary.delivered.toLocaleString()}`"></i><i class="f" :style="{ width: composeWidth(result.summary.failed) }" :title="`失败 ${result.summary.failed.toLocaleString()}`"></i><i class="u" :style="{ width: composeWidth(result.summary.unknown) }" :title="`未知 ${result.summary.unknown.toLocaleString()}`"></i>
+          <i
+            class="d"
+            :style="{ width: composeWidth(result.summary.delivered) }"
+            :title="`送达 ${result.summary.delivered.toLocaleString()}`"
+          ></i
+          ><i
+            class="f"
+            :style="{ width: composeWidth(result.summary.failed) }"
+            :title="`失败 ${result.summary.failed.toLocaleString()}`"
+          ></i
+          ><i
+            class="u"
+            :style="{ width: composeWidth(result.summary.unknown) }"
+            :title="`未知 ${result.summary.unknown.toLocaleString()}`"
+          ></i>
         </div>
-        <div class="kpi-kv compose-shares"><span>送达 {{ shareOf(result.summary.delivered) }}</span><span>失败 {{ shareOf(result.summary.failed) }}</span><span>未知 {{ shareOf(result.summary.unknown) }}</span></div>
+        <div class="kpi-kv compose-shares"
+          ><span>送达 {{ shareOf(result.summary.delivered) }}</span
+          ><span>失败 {{ shareOf(result.summary.failed) }}</span
+          ><span>未知 {{ shareOf(result.summary.unknown) }}</span></div
+        >
       </el-card>
     </section>
 
@@ -410,7 +434,10 @@ onMounted(() => void load())
       <el-card shadow="never" class="report-chart-card">
         <template #header>
           <div class="panel-title">
-            <div><strong>发送趋势 · 按{{ dimLabel }}堆叠</strong><small>{{ granularityLabel[result.granularity] }}粒度 · Top 5 + 其他归并</small></div>
+            <div
+              ><strong>发送趋势 · 按{{ dimLabel }}堆叠</strong
+              ><small>{{ granularityLabel[result.granularity] }}粒度 · Top 5 + 其他归并</small></div
+            >
             <div class="metric-switch" role="group" aria-label="趋势指标">
               <button
                 v-for="opt in metricOptions"
@@ -418,7 +445,8 @@ onMounted(() => void load())
                 type="button"
                 :class="{ on: metric === opt.value }"
                 @click="metric = opt.value"
-              >{{ opt.label }}</button>
+                >{{ opt.label }}</button
+              >
             </div>
           </div>
         </template>
@@ -442,7 +470,10 @@ onMounted(() => void load())
       <el-card shadow="never" class="report-rank-card">
         <template #header>
           <div class="panel-title">
-            <div><strong>维度排行 · {{ dimLabel }}</strong><small>按消息数 · 区间为整个筛选范围</small></div>
+            <div
+              ><strong>维度排行 · {{ dimLabel }}</strong
+              ><small>按消息数 · 区间为整个筛选范围</small></div
+            >
             <span>{{ result.dim_summary.length }} 个{{ dimLabel }}</span>
           </div>
         </template>
@@ -465,7 +496,10 @@ onMounted(() => void load())
     <el-card shadow="never" class="report-table-card">
       <template #header>
         <div class="panel-title">
-          <div><strong>明细 · 周期 × {{ dimLabel }}</strong><small>点击列头排序</small></div>
+          <div
+            ><strong>明细 · 周期 × {{ dimLabel }}</strong
+            ><small>点击列头排序</small></div
+          >
           <span>共 {{ result.items.length }} 行</span>
         </div>
       </template>
@@ -478,12 +512,28 @@ onMounted(() => void load())
       >
         <el-table-column prop="period_start" label="周期" width="120" sortable="custom" />
         <el-table-column prop="dim_label" :label="dimLabel" min-width="140" />
-        <el-table-column prop="total" label="消息数" width="100" align="right" sortable="custom"><template #default="{ row }">{{ row.total.toLocaleString() }}</template></el-table-column>
-        <el-table-column prop="total_segments" label="计费条" width="100" align="right" sortable="custom"><template #default="{ row }">{{ row.total_segments.toLocaleString() }}</template></el-table-column>
-        <el-table-column prop="delivered" label="送达" width="90" align="right"><template #default="{ row }">{{ row.delivered.toLocaleString() }}</template></el-table-column>
-        <el-table-column prop="failed" label="失败" width="80" align="right"><template #default="{ row }">{{ row.failed.toLocaleString() }}</template></el-table-column>
-        <el-table-column prop="unknown" label="未知" width="80" align="right"><template #default="{ row }">{{ row.unknown.toLocaleString() }}</template></el-table-column>
-        <el-table-column prop="success_rate" label="成功率" width="110" align="right" sortable="custom"><template #default="{ row }"><span class="rate-chip" :class="rateClass(row.success_rate)">{{ formatRate(row.success_rate) }}</span></template></el-table-column>
+        <el-table-column prop="total" label="消息数" width="100" align="right" sortable="custom"
+          ><template #default="{ row }">{{ row.total.toLocaleString() }}</template></el-table-column
+        >
+        <el-table-column prop="total_segments" label="计费条" width="100" align="right" sortable="custom"
+          ><template #default="{ row }">{{ row.total_segments.toLocaleString() }}</template></el-table-column
+        >
+        <el-table-column prop="delivered" label="送达" width="90" align="right"
+          ><template #default="{ row }">{{ row.delivered.toLocaleString() }}</template></el-table-column
+        >
+        <el-table-column prop="failed" label="失败" width="80" align="right"
+          ><template #default="{ row }">{{ row.failed.toLocaleString() }}</template></el-table-column
+        >
+        <el-table-column prop="unknown" label="未知" width="80" align="right"
+          ><template #default="{ row }">{{ row.unknown.toLocaleString() }}</template></el-table-column
+        >
+        <el-table-column prop="success_rate" label="成功率" width="110" align="right" sortable="custom"
+          ><template #default="{ row }"
+            ><span class="rate-chip" :class="rateClass(row.success_rate)">{{
+              formatRate(row.success_rate)
+            }}</span></template
+          ></el-table-column
+        >
       </el-table>
       <div v-if="result.items.length > pageSize" class="report-pager">
         <el-pagination
@@ -494,7 +544,22 @@ onMounted(() => void load())
           @current-change="(next: number) => (page = next)"
         />
       </div>
-      <div class="report-mobile-list"><article v-for="item in pagedItems" :key="`${item.period_start}-${item.dim_value}`"><header><time>{{ item.period_start }}</time><strong>{{ item.dim_label }}</strong></header><dl><div><dt>消息数</dt><dd>{{ item.total }}</dd></div><div><dt>计费条</dt><dd>{{ item.total_segments }}</dd></div><div><dt>成功率</dt><dd>{{ formatRate(item.success_rate) }}</dd></div></dl><p>送达 {{ item.delivered }} · 失败 {{ item.failed }} · 未知 {{ item.unknown }}</p></article></div>
+      <div class="report-mobile-list"
+        ><article v-for="item in pagedItems" :key="`${item.period_start}-${item.dim_value}`"
+          ><header
+            ><time>{{ item.period_start }}</time
+            ><strong>{{ item.dim_label }}</strong></header
+          ><dl
+            ><div
+              ><dt>消息数</dt><dd>{{ item.total }}</dd></div
+            ><div
+              ><dt>计费条</dt><dd>{{ item.total_segments }}</dd></div
+            ><div
+              ><dt>成功率</dt><dd>{{ formatRate(item.success_rate) }}</dd></div
+            ></dl
+          ><p>送达 {{ item.delivered }} · 失败 {{ item.failed }} · 未知 {{ item.unknown }}</p></article
+        ></div
+      >
     </el-card>
   </template>
 </template>

@@ -74,9 +74,7 @@ describe("运维查询 API", () => {
   })
 
   it("创建 unmatched 导出时沿用页面的号码与时间筛选", async () => {
-    const fetch = vi.fn().mockResolvedValue(
-      response({ id: "c0a80101-0000-4000-8000-000000000134", status: "pending" }),
-    )
+    const fetch = vi.fn().mockResolvedValue(response({ id: "c0a80101-0000-4000-8000-000000000134", status: "pending" }))
     vi.stubGlobal("fetch", fetch)
 
     await createUnmatchedExport(
@@ -97,16 +95,18 @@ describe("运维查询 API", () => {
   })
 
   it("uncertain 双人处置只走管理员路径且重发不得回写旧分片", async () => {
-    const fetch = vi.fn().mockResolvedValue(response({
-      id: 8,
-      chunk_id: 9,
-      batch_id: 1,
-      action: "resend_new_batch",
-      state: "proposed",
-      proposer_account_id: 1,
-      confirmer_account_id: null,
-      child_batch_id: null,
-    }))
+    const fetch = vi.fn().mockResolvedValue(
+      response({
+        id: 8,
+        chunk_id: 9,
+        batch_id: 1,
+        action: "resend_new_batch",
+        state: "proposed",
+        proposer_account_id: 1,
+        confirmer_account_id: null,
+        child_batch_id: null,
+      }),
+    )
     vi.stubGlobal("fetch", fetch)
 
     await proposeUncertainResolution(9, "resend_new_batch")

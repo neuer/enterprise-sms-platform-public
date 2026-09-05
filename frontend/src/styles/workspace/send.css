@@ -147,7 +147,9 @@
 .cat-tag {
   margin-left: 8px;
   padding: 0 7px;
-  font: 10px/1.9 "IBM Plex Mono", monospace;
+  font:
+    10px/1.9 "IBM Plex Mono",
+    monospace;
   vertical-align: 1px;
   border-radius: 4px;
 }
@@ -326,7 +328,9 @@
 
 .import-ready .cell b {
   color: var(--tx-hi);
-  font: 15px "IBM Plex Mono", monospace;
+  font:
+    15px "IBM Plex Mono",
+    monospace;
   font-variant-numeric: tabular-nums;
 }
 
@@ -576,7 +580,9 @@
 
 .audience-meter strong {
   color: var(--tx-hi);
-  font: 600 26px/1.1 "IBM Plex Mono", monospace;
+  font:
+    600 26px/1.1 "IBM Plex Mono",
+    monospace;
   font-variant-numeric: tabular-nums;
 }
 
@@ -613,13 +619,17 @@
 
 .cost-line .fx {
   color: var(--tx-2);
-  font: 11.5px "IBM Plex Mono", monospace;
+  font:
+    11.5px "IBM Plex Mono",
+    monospace;
   font-variant-numeric: tabular-nums;
 }
 
 .cost-line strong {
   color: var(--tx-hi);
-  font: 600 20px/1 "IBM Plex Mono", monospace;
+  font:
+    600 20px/1 "IBM Plex Mono",
+    monospace;
   font-variant-numeric: tabular-nums;
 }
 
@@ -667,7 +677,11 @@
 .quota-bar .this {
   height: 100%;
   /* 斜纹第二色即深色 --amber 45%：就地令牌化等价。 */
-  background: repeating-linear-gradient(135deg, var(--amber) 0 4px, color-mix(in srgb, var(--amber) 45%, transparent) 4px 8px);
+  background: repeating-linear-gradient(
+    135deg,
+    var(--amber) 0 4px,
+    color-mix(in srgb, var(--amber) 45%, transparent) 4px 8px
+  );
 }
 
 .quota-foot {
@@ -789,7 +803,9 @@
 .batch-row code {
   overflow: hidden;
   color: var(--tx-hi);
-  font: 12px "IBM Plex Mono", monospace;
+  font:
+    12px "IBM Plex Mono",
+    monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

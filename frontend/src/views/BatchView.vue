@@ -148,9 +148,14 @@ function selectGroup(key: string): void {
 
 const currentFiltersKey = computed(() =>
   JSON.stringify([
-    batchNo.value.trim(), category.value, channel.value, isTest.value,
-    appId.value.trim(), isAdmin.value ? dept.value.trim() : "",
-    range.value?.[0]?.toISOString() ?? "", range.value?.[1]?.toISOString() ?? "",
+    batchNo.value.trim(),
+    category.value,
+    channel.value,
+    isTest.value,
+    appId.value.trim(),
+    isAdmin.value ? dept.value.trim() : "",
+    range.value?.[0]?.toISOString() ?? "",
+    range.value?.[1]?.toISOString() ?? "",
   ]),
 )
 const filtersDirty = computed(
@@ -158,9 +163,9 @@ const filtersDirty = computed(
 )
 const moreActiveCount = computed(
   () =>
-    (isTest.value !== "" ? 1 : 0)
-    + (appId.value.trim() !== "" ? 1 : 0)
-    + (isAdmin.value && dept.value.trim() !== "" ? 1 : 0),
+    (isTest.value !== "" ? 1 : 0) +
+    (appId.value.trim() !== "" ? 1 : 0) +
+    (isAdmin.value && dept.value.trim() !== "" ? 1 : 0),
 )
 const moreActive = computed(() => moreActiveCount.value > 0)
 
@@ -256,12 +261,16 @@ const canResendFailed = computed(() => canWrite.value && (selected.value?.failed
 async function cancelSelected(): Promise<void> {
   if (!selected.value || !canScheduleOps.value) return
   try {
-    await ElMessageBox.confirm(`取消批次 ${selected.value.batch_no}？配额将按规则回补。`, "确认取消", { type: "warning" })
+    await ElMessageBox.confirm(`取消批次 ${selected.value.batch_no}？配额将按规则回补。`, "确认取消", {
+      type: "warning",
+    })
     await cancelBatch(selected.value.batch_no)
     drawer.value = false
     ElMessage.success("批次已取消")
     await load()
-  } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "取消失败") }
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "取消失败")
+  }
 }
 
 function openReschedule(): void {
@@ -278,7 +287,9 @@ async function saveReschedule(): Promise<void> {
     drawer.value = false
     ElMessage.success("批次已改期并重新执行审批判定")
     await load()
-  } catch (error) { ElMessage.error(error instanceof Error ? error.message : "改期失败") }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : "改期失败")
+  }
 }
 
 async function resendFailed(): Promise<void> {
@@ -289,7 +300,9 @@ async function resendFailed(): Promise<void> {
     ElMessage.success(`重发批次 ${result.batch_no} 已创建`)
     drawer.value = false
     await load()
-  } catch (error) { if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "重发失败") }
+  } catch (error) {
+    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "重发失败")
+  }
 }
 
 /** 重发溯源跳转：复用批次号模糊筛选定位源批次 */
@@ -301,10 +314,19 @@ function traceResendOf(sourceBatchNo: string): void {
   void load()
 }
 
-function search(): void { page.value = 1; void load() }
+function search(): void {
+  page.value = 1
+  void load()
+}
 function reset(): void {
-  category.value = ""; statusGroup.value = "all"; channel.value = ""; batchNo.value = ""
-  isTest.value = ""; appId.value = ""; dept.value = ""; range.value = null
+  category.value = ""
+  statusGroup.value = "all"
+  channel.value = ""
+  batchNo.value = ""
+  isTest.value = ""
+  appId.value = ""
+  dept.value = ""
+  range.value = null
   search()
 }
 
@@ -325,8 +347,12 @@ watch(moreOpen, (open) => {
   if (!open || appsRequested || !isAdmin.value) return
   appsRequested = true
   listApps()
-    .then((apps) => { appOptions.value = apps.filter((app) => app.status === 1) })
-    .catch(() => { appOptions.value = [] })
+    .then((apps) => {
+      appOptions.value = apps.filter((app) => app.status === 1)
+    })
+    .catch(() => {
+      appOptions.value = []
+    })
 })
 </script>
 
@@ -354,7 +380,8 @@ watch(moreOpen, (open) => {
           type="button"
           :class="{ on: category === opt.value }"
           @click="category = opt.value"
-        >{{ opt.label }}</button>
+          >{{ opt.label }}</button
+        >
       </div>
     </div>
     <div class="batch-fld">
@@ -366,17 +393,33 @@ watch(moreOpen, (open) => {
           type="button"
           :class="{ on: channel === opt.value }"
           @click="channel = opt.value"
-        >{{ opt.label }}</button>
+          >{{ opt.label }}</button
+        >
       </div>
     </div>
     <div class="batch-fld">
       <span>创建时间</span>
-      <el-date-picker v-model="range" type="datetimerange" format="YYYY-MM-DD HH:mm" popper-class="qingluan-date-popper" start-placeholder="创建开始" end-placeholder="创建结束" range-separator="至" class="batch-filter-dates" />
+      <el-date-picker
+        v-model="range"
+        type="datetimerange"
+        format="YYYY-MM-DD HH:mm"
+        popper-class="qingluan-date-popper"
+        start-placeholder="创建开始"
+        end-placeholder="创建结束"
+        range-separator="至"
+        class="batch-filter-dates"
+      />
     </div>
     <div class="batch-fld">
       <el-popover v-model:visible="moreOpen" placement="bottom-end" :width="320" trigger="click">
         <template #reference>
-          <button type="button" class="batch-more-trigger" :class="{ 'is-more-active': moreActive }" data-testid="batch-more-filters">更多筛选 ▾<b v-if="moreActiveCount" class="batch-more-count">{{ moreActiveCount }}</b></button>
+          <button
+            type="button"
+            class="batch-more-trigger"
+            :class="{ 'is-more-active': moreActive }"
+            data-testid="batch-more-filters"
+            >更多筛选 ▾<b v-if="moreActiveCount" class="batch-more-count">{{ moreActiveCount }}</b></button
+          >
         </template>
         <div class="batch-more">
           <label>测试发送</label>
@@ -387,13 +430,33 @@ watch(moreOpen, (open) => {
               type="button"
               :class="{ on: isTest === opt.value }"
               @click="isTest = opt.value"
-            >{{ opt.label }}</button>
+              >{{ opt.label }}</button
+            >
           </div>
           <label>应用</label>
-          <el-select v-if="appOptions.length" v-model="appId" placeholder="全部应用" clearable filterable data-testid="batch-app-filter">
-            <el-option v-for="app in appOptions" :key="app.id" :label="`${app.name}（${app.dept}）`" :value="String(app.id)" />
+          <el-select
+            v-if="appOptions.length"
+            v-model="appId"
+            placeholder="全部应用"
+            clearable
+            filterable
+            data-testid="batch-app-filter"
+          >
+            <el-option
+              v-for="app in appOptions"
+              :key="app.id"
+              :label="`${app.name}（${app.dept}）`"
+              :value="String(app.id)"
+            />
           </el-select>
-          <el-input v-else v-model="appId" inputmode="numeric" placeholder="应用 ID（全部应用留空）" clearable data-testid="batch-app-filter" />
+          <el-input
+            v-else
+            v-model="appId"
+            inputmode="numeric"
+            placeholder="应用 ID（全部应用留空）"
+            clearable
+            data-testid="batch-app-filter"
+          />
           <template v-if="isAdmin">
             <label>部门</label>
             <el-input v-model="dept" placeholder="全部部门" clearable maxlength="128" data-testid="batch-dept-filter" />
@@ -415,13 +478,19 @@ watch(moreOpen, (open) => {
       :key="group.key"
       type="button"
       class="batch-chip"
-      :class="{ on: statusGroup === group.key, hot: group.key === 'balance_blocked' && (groupCount(group.key, group.statuses) ?? 0) > 0 }"
+      :class="{
+        on: statusGroup === group.key,
+        hot: group.key === 'balance_blocked' && (groupCount(group.key, group.statuses) ?? 0) > 0,
+      }"
       :data-testid="`batch-chip-${group.key}`"
       @click="selectGroup(group.key)"
     >
-      {{ group.label }}<b v-if="groupCount(group.key, group.statuses) !== null">{{ groupCount(group.key, group.statuses) }}</b>
+      {{ group.label
+      }}<b v-if="groupCount(group.key, group.statuses) !== null">{{ groupCount(group.key, group.statuses) }}</b>
     </button>
-    <span class="batch-chips-meta">分组 = 进行中(queued+sending) · 待审批 · 已排期 · 余额阻断 · 已完成 · 其他终态(cancelled+rejected+expired)</span>
+    <span class="batch-chips-meta"
+      >分组 = 进行中(queued+sending) · 待审批 · 已排期 · 余额阻断 · 已完成 · 其他终态(cancelled+rejected+expired)</span
+    >
   </div>
 
   <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="batch-error" />
@@ -430,11 +499,23 @@ watch(moreOpen, (open) => {
       <el-table-column label="批次 / 时间" min-width="248">
         <template #default="{ row }">
           <code class="batch-code">{{ row.batch_no }}</code>
-          <div v-if="row.scheduled_at && row.status === 'scheduled' || row.is_test || row.resend_of" class="cell-subline">
+          <div
+            v-if="(row.scheduled_at && row.status === 'scheduled') || row.is_test || row.resend_of"
+            class="cell-subline"
+          >
             <small class="mono-time">{{ formatDateTime(row.created_at) }}</small>
-            <span v-if="row.scheduled_at && row.status === 'scheduled'" class="cell-flag cell-flag--sched">定时 {{ formatDateTimeMinute(row.scheduled_at) }}</span>
+            <span v-if="row.scheduled_at && row.status === 'scheduled'" class="cell-flag cell-flag--sched"
+              >定时 {{ formatDateTimeMinute(row.scheduled_at) }}</span
+            >
             <span v-if="row.is_test" class="cell-flag cell-flag--test">测试</span>
-            <button v-if="row.resend_of" type="button" class="cell-flag cell-flag--resend" :title="`重发自 ${row.resend_of}`" @click="traceResendOf(row.resend_of)">重发自 {{ shortBatchNo(row.resend_of) }} ↗</button>
+            <button
+              v-if="row.resend_of"
+              type="button"
+              class="cell-flag cell-flag--resend"
+              :title="`重发自 ${row.resend_of}`"
+              @click="traceResendOf(row.resend_of)"
+              >重发自 {{ shortBatchNo(row.resend_of) }} ↗</button
+            >
           </div>
           <small v-else class="mono-time cell-subline">{{ formatDateTime(row.created_at) }}</small>
         </template>
@@ -449,17 +530,25 @@ watch(moreOpen, (open) => {
       </el-table-column>
       <el-table-column label="来源" min-width="150">
         <template #default="{ row }">
-          <div class="cell-src" :title="`${channelLabel[row.channel] || row.channel} · ${row.app_name || row.creator || '—'} · ${row.dept}`">
-            {{ channelLabel[row.channel] || row.channel }} · {{ row.app_name || row.creator || "—" }}<span class="cell-src-dept"> · {{ row.dept }}</span>
+          <div
+            class="cell-src"
+            :title="`${channelLabel[row.channel] || row.channel} · ${row.app_name || row.creator || '—'} · ${row.dept}`"
+          >
+            {{ channelLabel[row.channel] || row.channel }} · {{ row.app_name || row.creator || "—"
+            }}<span class="cell-src-dept"> · {{ row.dept }}</span>
           </div>
         </template>
       </el-table-column>
       <el-table-column label="结果构成（非成功率）" min-width="180">
         <template #default="{ row }">
           <div class="compose-nums">
-            <span><b>{{ row.delivered.toLocaleString() }}</b> / {{ row.total.toLocaleString() }}</span>
+            <span
+              ><b>{{ row.delivered.toLocaleString() }}</b> / {{ row.total.toLocaleString() }}</span
+            >
             <span v-if="row.failed > 0" class="is-failed">失败 {{ row.failed.toLocaleString() }}</span>
-            <span v-else-if="row.status === 'scheduled' || row.status === 'pending_approval'" class="compose-hint">{{ row.status === "scheduled" ? "待进入流水线" : "待审批" }}</span>
+            <span v-else-if="row.status === 'scheduled' || row.status === 'pending_approval'" class="compose-hint">{{
+              row.status === "scheduled" ? "待进入流水线" : "待审批"
+            }}</span>
           </div>
           <div class="compose" role="img" :aria-label="composeText(row)">
             <i class="compose-p" :style="{ width: composePct(composeOf(row).pending, row) }"></i>
@@ -478,10 +567,14 @@ watch(moreOpen, (open) => {
         </template>
       </el-table-column>
       <el-table-column label="计费条" width="90" align="right">
-        <template #default="{ row }"><span class="mono-value">{{ row.quota_cost.toLocaleString() }}</span></template>
+        <template #default="{ row }"
+          ><span class="mono-value">{{ row.quota_cost.toLocaleString() }}</span></template
+        >
       </el-table-column>
       <el-table-column label="操作" width="92" fixed="right">
-        <template #default="{ row }"><el-button link type="primary" @click="openBatch(row)">查看详情</el-button></template>
+        <template #default="{ row }"
+          ><el-button link type="primary" @click="openBatch(row)">查看详情</el-button></template
+        >
       </el-table-column>
       <template #empty><EmptyState title="没有符合条件的批次" description="调整筛选条件后重新查询。" /></template>
     </el-table>
@@ -501,10 +594,15 @@ watch(moreOpen, (open) => {
           <i class="compose-o" :style="{ width: composePct(composeOf(item).other, item) }"></i>
         </div>
         <p class="query-mobile-meta">
-          {{ CATEGORY_LABELS[item.category] }} · {{ channelLabel[item.channel] || item.channel }} · {{ item.dept }} · 送达 {{ item.delivered }}/{{ item.total }}<template v-if="item.failed > 0"> · 失败 {{ item.failed }}</template>
+          {{ CATEGORY_LABELS[item.category] }} · {{ channelLabel[item.channel] || item.channel }} · {{ item.dept }} ·
+          送达 {{ item.delivered }}/{{ item.total
+          }}<template v-if="item.failed > 0"> · 失败 {{ item.failed }}</template>
           <span v-if="item.is_test" class="cell-flag cell-flag--test">测试</span>
         </p>
-        <footer><time>{{ formatDateTime(item.created_at) }}</time><el-button link type="primary" @click="openBatch(item)">查看详情</el-button></footer>
+        <footer
+          ><time>{{ formatDateTime(item.created_at) }}</time
+          ><el-button link type="primary" @click="openBatch(item)">查看详情</el-button></footer
+        >
       </article>
     </div>
     <footer class="batch-pager">
@@ -518,7 +616,13 @@ watch(moreOpen, (open) => {
         <em>构成 = 占受理总数的份额，不是成功率；成功率口径见统计报表</em>
       </div>
       <span>共 {{ total }} 个批次 · 每页 20</span>
-      <el-pagination v-model:current-page="page" :page-size="DEFAULT_PAGE_SIZE" :total="total" layout="prev, pager, next" @current-change="load" />
+      <el-pagination
+        v-model:current-page="page"
+        :page-size="DEFAULT_PAGE_SIZE"
+        :total="total"
+        layout="prev, pager, next"
+        @current-change="load"
+      />
     </footer>
   </div>
 
@@ -527,16 +631,30 @@ watch(moreOpen, (open) => {
       <div v-if="selected" class="batch-drawer-head">
         <StatusTag :status="selected.status" />
         <code>{{ selected.batch_no }}</code>
-        <small>创建于 {{ formatDateTime(selected.created_at) }} · {{ channelLabel[selected.channel] || selected.channel }} · {{ selected.dept }}</small>
+        <small
+          >创建于 {{ formatDateTime(selected.created_at) }} · {{ channelLabel[selected.channel] || selected.channel }} ·
+          {{ selected.dept }}</small
+        >
       </div>
       <span v-else>批次详情</span>
     </template>
     <template v-if="selected">
       <div v-if="canWrite" class="batch-actions">
-        <el-button type="danger" plain :disabled="!canScheduleOps" data-testid="cancel-batch" @click="cancelSelected">取消批次</el-button>
+        <el-button type="danger" plain :disabled="!canScheduleOps" data-testid="cancel-batch" @click="cancelSelected"
+          >取消批次</el-button
+        >
         <el-button :disabled="!canScheduleOps" data-testid="reschedule-batch" @click="openReschedule">改期</el-button>
-        <el-button v-if="selected.failed > 0" :disabled="!canResendFailed" data-testid="resend-failed" @click="resendFailed">重发失败（{{ selected.failed.toLocaleString() }}）</el-button>
-        <p class="batch-actions-why">取消 / 改期仅「已排期」批次可用（服务端 409 为最终裁决）；重发失败将生成新批次并完整重走频控、审批与时间窗。</p>
+        <el-button
+          v-if="selected.failed > 0"
+          :disabled="!canResendFailed"
+          data-testid="resend-failed"
+          @click="resendFailed"
+          >重发失败（{{ selected.failed.toLocaleString() }}）</el-button
+        >
+        <p class="batch-actions-why"
+          >取消 / 改期仅「已排期」批次可用（服务端 409
+          为最终裁决）；重发失败将生成新批次并完整重走频控、审批与时间窗。</p
+        >
       </div>
 
       <section class="batch-hero">
@@ -549,46 +667,166 @@ watch(moreOpen, (open) => {
           <i class="compose-o" :style="{ width: composePct(composeOf(selected).other, selected) }"></i>
         </div>
         <div class="batch-hero-nums">
-          <div><span>待处理</span><b>{{ composeOf(selected).pending.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).pending / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
-          <div><span>待回执</span><b>{{ composeOf(selected).sent.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).sent / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
-          <div><span>送达</span><b>{{ composeOf(selected).delivered.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).delivered / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
-          <div><span>失败</span><b :class="{ 'is-failed': composeOf(selected).failed > 0 }">{{ composeOf(selected).failed.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).failed / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
-          <div><span>未知</span><b>{{ composeOf(selected).unknown.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).unknown / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
-          <div><span>其他</span><b>{{ composeOf(selected).other.toLocaleString() }}</b><small>{{ selected.total > 0 ? (composeOf(selected).other / selected.total * 100).toFixed(1) + "%" : "—" }}</small></div>
+          <div
+            ><span>待处理</span><b>{{ composeOf(selected).pending.toLocaleString() }}</b
+            ><small>{{
+              selected.total > 0 ? ((composeOf(selected).pending / selected.total) * 100).toFixed(1) + "%" : "—"
+            }}</small></div
+          >
+          <div
+            ><span>待回执</span><b>{{ composeOf(selected).sent.toLocaleString() }}</b
+            ><small>{{
+              selected.total > 0 ? ((composeOf(selected).sent / selected.total) * 100).toFixed(1) + "%" : "—"
+            }}</small></div
+          >
+          <div
+            ><span>送达</span><b>{{ composeOf(selected).delivered.toLocaleString() }}</b
+            ><small>{{
+              selected.total > 0 ? ((composeOf(selected).delivered / selected.total) * 100).toFixed(1) + "%" : "—"
+            }}</small></div
+          >
+          <div
+            ><span>失败</span
+            ><b :class="{ 'is-failed': composeOf(selected).failed > 0 }">{{
+              composeOf(selected).failed.toLocaleString()
+            }}</b
+            ><small>{{
+              selected.total > 0 ? ((composeOf(selected).failed / selected.total) * 100).toFixed(1) + "%" : "—"
+            }}</small></div
+          >
+          <div
+            ><span>未知</span><b>{{ composeOf(selected).unknown.toLocaleString() }}</b
+            ><small>{{
+              selected.total > 0 ? ((composeOf(selected).unknown / selected.total) * 100).toFixed(1) + "%" : "—"
+            }}</small></div
+          >
+          <div
+            ><span>其他</span><b>{{ composeOf(selected).other.toLocaleString() }}</b
+            ><small>{{
+              selected.total > 0 ? ((composeOf(selected).other / selected.total) * 100).toFixed(1) + "%" : "—"
+            }}</small></div
+          >
         </div>
-        <p class="batch-hero-quotas">受理 <b>{{ selected.total.toLocaleString() }}</b> · 计费条 <b>{{ selected.quota_cost.toLocaleString() }}</b> · 单条 <b>{{ selected.segments }}</b> 条 · 频控剔除 <b>{{ selected.removed_freq_limit.toLocaleString() }}</b></p>
+        <p class="batch-hero-quotas"
+          >受理 <b>{{ selected.total.toLocaleString() }}</b> · 计费条
+          <b>{{ selected.quota_cost.toLocaleString() }}</b> · 单条 <b>{{ selected.segments }}</b> 条 · 频控剔除
+          <b>{{ selected.removed_freq_limit.toLocaleString() }}</b></p
+        >
       </section>
 
-      <p
-        v-if="selected.status === 'sending' && activeOf(selected) > 0"
-        class="batch-note"
-      >仍有 {{ activeOf(selected).toLocaleString() }} 条未终态（待处理 {{ composeOf(selected).pending.toLocaleString() }} + 待回执 {{ composeOf(selected).sent.toLocaleString() }}），批次保持发送中，直至提交完成、结果核对、回执到达或报告超时。构成非成功率。</p>
-      <p v-if="selected.deferred_reason === 'market_window'" class="batch-note is-warn">营销时间窗外，已转为定时发送；到达营销窗口后自动进入队列。</p>
+      <p v-if="selected.status === 'sending' && activeOf(selected) > 0" class="batch-note"
+        >仍有 {{ activeOf(selected).toLocaleString() }} 条未终态（待处理
+        {{ composeOf(selected).pending.toLocaleString() }} + 待回执
+        {{
+          composeOf(selected).sent.toLocaleString()
+        }}），批次保持发送中，直至提交完成、结果核对、回执到达或报告超时。构成非成功率。</p
+      >
+      <p v-if="selected.deferred_reason === 'market_window'" class="batch-note is-warn"
+        >营销时间窗外，已转为定时发送；到达营销窗口后自动进入队列。</p
+      >
 
       <section class="batch-content-card">
         <CategoryTag :category="selected.category" />
         <p>{{ selected.content }}</p>
-        <small>内容长度 {{ selected.content.length }} 字 · 单条 {{ selected.segments }} 计费条<template v-if="selected.category === 'verify'"> · 验证码已等长打码</template></small>
+        <small
+          >内容长度 {{ selected.content.length }} 字 · 单条 {{ selected.segments }} 计费条<template
+            v-if="selected.category === 'verify'"
+          >
+            · 验证码已等长打码</template
+          ></small
+        >
       </section>
 
       <dl class="batch-facts">
-        <div><dt>渠道</dt><dd>{{ channelLabel[selected.channel] || selected.channel }}</dd></div>
-        <div><dt>应用</dt><dd>{{ selected.app_name || "—" }}</dd></div>
-        <div><dt>创建人</dt><dd>{{ selected.creator || "—" }}</dd></div>
-        <div><dt>部门</dt><dd>{{ selected.dept }}</dd></div>
-        <div><dt>创建时间</dt><dd>{{ formatDateTime(selected.created_at) }}</dd></div>
-        <div><dt>定时时间</dt><dd>{{ selected.scheduled_at ? formatDateTime(selected.scheduled_at) : "—" }}</dd></div>
+        <div
+          ><dt>渠道</dt><dd>{{ channelLabel[selected.channel] || selected.channel }}</dd></div
+        >
+        <div
+          ><dt>应用</dt><dd>{{ selected.app_name || "—" }}</dd></div
+        >
+        <div
+          ><dt>创建人</dt><dd>{{ selected.creator || "—" }}</dd></div
+        >
+        <div
+          ><dt>部门</dt><dd>{{ selected.dept }}</dd></div
+        >
+        <div
+          ><dt>创建时间</dt><dd>{{ formatDateTime(selected.created_at) }}</dd></div
+        >
+        <div
+          ><dt>定时时间</dt><dd>{{ selected.scheduled_at ? formatDateTime(selected.scheduled_at) : "—" }}</dd></div
+        >
         <div>
           <dt>重发溯源</dt>
-          <dd><button v-if="selected.resend_of" type="button" class="batch-trace" @click="traceResendOf(selected.resend_of!)">{{ selected.resend_of }} ↗</button><template v-else>—</template></dd>
+          <dd
+            ><button
+              v-if="selected.resend_of"
+              type="button"
+              class="batch-trace"
+              @click="traceResendOf(selected.resend_of!)"
+              >{{ selected.resend_of }} ↗</button
+            ><template v-else>—</template></dd
+          >
         </div>
-        <div><dt>标记</dt><dd>{{ selected.is_test ? "测试发送" : "正式发送" }}</dd></div>
+        <div
+          ><dt>标记</dt><dd>{{ selected.is_test ? "测试发送" : "正式发送" }}</dd></div
+        >
       </dl>
 
-      <div class="batch-detail-head"><h3>号码明细</h3><el-select v-model="detailStatus" data-testid="batch-detail-status" style="width: 128px" placeholder="全部状态" clearable @change="filterDetails"><el-option v-for="option in detailStatusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></div>
-      <el-table v-loading="detailsLoading" :data="details" row-key="id"><el-table-column label="手机号" min-width="190"><template #default="{ row }"><PhoneReveal v-if="canDecrypt" :masked="row.phone" :reveal="() => revealPhone(row.id)" :testid="`batch-phone-decrypt-${row.id}`" /><PhoneMask v-else :value="row.phone" /></template></el-table-column><el-table-column label="状态" width="100"><template #default="{ row }"><StatusTag :status="row.status" /></template></el-table-column><el-table-column prop="report_desc" label="回执" min-width="150" /><el-table-column label="回执时间" min-width="178"><template #default="{ row }">{{ formatDateTime(row.report_time) }}</template></el-table-column><template #empty><EmptyState title="没有符合条件的明细" description="调整状态筛选后查看。" /></template></el-table>
-      <footer class="query-pagination batch-detail-pagination"><span>共 {{ detailTotal }} 条 · 每页 20</span><el-pagination v-model:current-page="detailPage" :page-size="DEFAULT_PAGE_SIZE" :total="detailTotal" layout="prev, pager, next" @current-change="loadDetails" /></footer>
+      <div class="batch-detail-head"
+        ><h3>号码明细</h3
+        ><el-select
+          v-model="detailStatus"
+          data-testid="batch-detail-status"
+          style="width: 128px"
+          placeholder="全部状态"
+          clearable
+          @change="filterDetails"
+          ><el-option
+            v-for="option in detailStatusOptions"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value" /></el-select
+      ></div>
+      <el-table v-loading="detailsLoading" :data="details" row-key="id"
+        ><el-table-column label="手机号" min-width="190"
+          ><template #default="{ row }"
+            ><PhoneReveal
+              v-if="canDecrypt"
+              :masked="row.phone"
+              :reveal="() => revealPhone(row.id)"
+              :testid="`batch-phone-decrypt-${row.id}`" /><PhoneMask
+              v-else
+              :value="row.phone" /></template></el-table-column
+        ><el-table-column label="状态" width="100"
+          ><template #default="{ row }"><StatusTag :status="row.status" /></template></el-table-column
+        ><el-table-column prop="report_desc" label="回执" min-width="150" /><el-table-column
+          label="回执时间"
+          min-width="178"
+          ><template #default="{ row }">{{ formatDateTime(row.report_time) }}</template></el-table-column
+        ><template #empty><EmptyState title="没有符合条件的明细" description="调整状态筛选后查看。" /></template
+      ></el-table>
+      <footer class="query-pagination batch-detail-pagination"
+        ><span>共 {{ detailTotal }} 条 · 每页 20</span
+        ><el-pagination
+          v-model:current-page="detailPage"
+          :page-size="DEFAULT_PAGE_SIZE"
+          :total="detailTotal"
+          layout="prev, pager, next"
+          @current-change="loadDetails"
+      /></footer>
     </template>
   </el-drawer>
-  <el-dialog v-model="rescheduleOpen" title="批次改期" width="min(480px, 92vw)"><el-date-picker v-model="scheduledAt" type="datetime" popper-class="qingluan-date-popper" value-format="YYYY-MM-DDTHH:mm:ss+08:00" placeholder="选择新的发送时间" /><template #footer><el-button @click="rescheduleOpen=false">取消</el-button><el-button type="primary" :disabled="!scheduledAt" @click="saveReschedule">确认改期</el-button></template></el-dialog>
+  <el-dialog v-model="rescheduleOpen" title="批次改期" width="min(480px, 92vw)"
+    ><el-date-picker
+      v-model="scheduledAt"
+      type="datetime"
+      popper-class="qingluan-date-popper"
+      value-format="YYYY-MM-DDTHH:mm:ss+08:00"
+      placeholder="选择新的发送时间"
+    /><template #footer
+      ><el-button @click="rescheduleOpen = false">取消</el-button
+      ><el-button type="primary" :disabled="!scheduledAt" @click="saveReschedule">确认改期</el-button></template
+    ></el-dialog
+  >
 </template>

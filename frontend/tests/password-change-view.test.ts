@@ -145,10 +145,7 @@ describe("首次登录修改密码", () => {
         }),
       )
       .mockResolvedValueOnce(
-        response(
-          { code: "UNAUTHORIZED", message: "改密令牌无效、已过期或已使用", detail: null },
-          401,
-        ),
+        response({ code: "UNAUTHORIZED", message: "改密令牌无效、已过期或已使用", detail: null }, 401),
       )
     vi.stubGlobal("fetch", fetch)
     const { wrapper } = await mountView()
@@ -160,9 +157,7 @@ describe("首次登录修改密码", () => {
 
     expect(sessionStorage.getItem("sms_change_token")).toBeNull()
     expect(sessionStorage.getItem("sms_change_token_expires_at")).toBeNull()
-    expect(wrapper.emitted("invalid")?.[0]).toEqual([
-      "改密令牌无效、已过期或已使用",
-    ])
+    expect(wrapper.emitted("invalid")?.[0]).toEqual(["改密令牌无效、已过期或已使用"])
   })
 
   it("数据库事务失败时保留令牌并明确提示可重试", async () => {
@@ -177,9 +172,7 @@ describe("首次登录修改密码", () => {
           description: "12–128 位，至少包含三类字符，不能包含用户名",
         }),
       )
-      .mockResolvedValueOnce(
-        response({ code: "INTERNAL_ERROR", message: "服务内部错误", detail: null }, 500),
-      )
+      .mockResolvedValueOnce(response({ code: "INTERNAL_ERROR", message: "服务内部错误", detail: null }, 500))
     vi.stubGlobal("fetch", fetch)
     const { wrapper } = await mountView()
 
@@ -196,13 +189,18 @@ describe("首次登录修改密码", () => {
 
   it("改密会话到期后立即销毁并要求重新登录", async () => {
     vi.useFakeTimers()
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({
-      min_length: 12,
-      max_length: 128,
-      required_character_classes: 3,
-      forbid_username: true,
-      description: "12–128 位，至少包含三类字符，不能包含用户名",
-    })))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        response({
+          min_length: 12,
+          max_length: 128,
+          required_character_classes: 3,
+          forbid_username: true,
+          description: "12–128 位，至少包含三类字符，不能包含用户名",
+        }),
+      ),
+    )
     const { wrapper } = await mountView()
 
     await vi.advanceTimersByTimeAsync(600_001)

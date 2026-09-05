@@ -143,14 +143,10 @@ const recipientCount = computed(() =>
 
 // 预检受众口径：导入取预检后有效数，粘贴取客户端去重后数量，与服务端批内去重对齐；
 // 黑名单与频控剔除只有服务端受理时可判定，预检不做虚假精确。
-const previewCount = computed(() =>
-  form.source === "import" ? recipientCount.value : dedupedCount.value,
-)
+const previewCount = computed(() => (form.source === "import" ? recipientCount.value : dedupedCount.value))
 
 const contentReady = computed(() =>
-  form.contentMode === "content"
-    ? form.content.trim().length > 0
-    : Number(form.templateId) > 0,
+  form.contentMode === "content" ? form.content.trim().length > 0 : Number(form.templateId) > 0,
 )
 
 const testLimitExceeded = computed(
@@ -179,9 +175,7 @@ const audienceCount = computed(() => previewCount.value)
 const removedDuplicate = computed(() =>
   form.source === "import" ? (imported.value?.duplicate ?? 0) : duplicateCount.value,
 )
-const removedBlacklist = computed(() =>
-  form.source === "import" ? (imported.value?.blacklisted ?? 0) : null,
-)
+const removedBlacklist = computed(() => (form.source === "import" ? (imported.value?.blacklisted ?? 0) : null))
 const nextSegmentHint = computed(() => {
   const current = preview.value
   if (!current) return "下一段"
@@ -217,11 +211,7 @@ function sendSuccessText(result: SendResult): string {
 }
 
 function removedTotal(result: SendResult): number {
-  return (
-    (result.removed_duplicate ?? 0) +
-    (result.removed_blacklist ?? 0) +
-    (result.removed_freq_limit ?? 0)
-  )
+  return (result.removed_duplicate ?? 0) + (result.removed_blacklist ?? 0) + (result.removed_freq_limit ?? 0)
 }
 
 function contentPayload() {
@@ -254,9 +244,7 @@ const previewReady = computed(
     !(form.source === "paste" && invalidMobiles.value.length > 0),
 )
 
-const previewStale = computed(
-  () => preview.value !== null && lastPreviewKey.value !== previewKey.value,
-)
+const previewStale = computed(() => preview.value !== null && lastPreviewKey.value !== previewKey.value)
 
 function isValidPreview(value: BillingPreview | null): value is BillingPreview {
   return (
@@ -448,8 +436,11 @@ watch(
 )
 
 async function loadTemplates(): Promise<void> {
-  try { templates.value = await listTemplates() }
-  catch (error) { errorMessage.value = error instanceof Error ? error.message : "模板列表加载失败" }
+  try {
+    templates.value = await listTemplates()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "模板列表加载失败"
+  }
 }
 
 async function loadSigns(): Promise<void> {
@@ -482,9 +473,7 @@ function applyTemplateQuery(): void {
   const raw = router?.currentRoute?.value?.query?.template_id
   const id = Array.isArray(raw) ? raw[0] : raw
   if (!id) return
-  const template = templates.value.find(
-    (item) => String(item.id) === id && item.vendor_state === "approved",
-  )
+  const template = templates.value.find((item) => String(item.id) === id && item.vendor_state === "approved")
   if (!template) return
   form.contentMode = "template"
   selectTemplate(template.id)
@@ -500,7 +489,9 @@ async function downloadInvalidFile(): Promise<void> {
     anchor.download = `sms-import-${imported.value.import_id}-invalid.csv`
     anchor.click()
     URL.revokeObjectURL(url)
-  } catch (error) { errorMessage.value = error instanceof Error ? error.message : "剔除清单下载失败" }
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : "剔除清单下载失败"
+  }
 }
 
 function resetFeedback(): void {
@@ -584,7 +575,9 @@ async function copyBatchNo(): Promise<void> {
   if (!sendResult.value) return
   if (await copyText(sendResult.value.batch_no)) {
     copied.value = true
-    window.setTimeout(() => { copied.value = false }, 1600)
+    window.setTimeout(() => {
+      copied.value = false
+    }, 1600)
   } else {
     errorMessage.value = "复制失败，请手动选择批次号"
   }
@@ -650,7 +643,7 @@ onBeforeUnmount(() => {
             @click="chooseCategory('notice')"
           >
             <b>通知短信<span class="cat-tag notice">NOTICE</span></b>
-            <small>实时通道 · 黑名单默认拦截<br>≥100 号码需审批</small>
+            <small>实时通道 · 黑名单默认拦截<br />≥100 号码需审批</small>
           </button>
           <button
             type="button"
@@ -660,7 +653,7 @@ onBeforeUnmount(() => {
             @click="chooseCategory('market')"
           >
             <b>营销短信<span class="cat-tag market">MARKET</span></b>
-            <small>批量通道 · 08:00–21:00 · 强制退订语<br>≥50 号码需审批 · 同号同应用 1 条/天</small>
+            <small>批量通道 · 08:00–21:00 · 强制退订语<br />≥50 号码需审批 · 同号同应用 1 条/天</small>
           </button>
           <!-- verify 仅 API 渠道（PRD FR-00），Web 人工发送不展示验证码类别卡 -->
         </div>
@@ -672,8 +665,12 @@ onBeforeUnmount(() => {
           <h2>收信号码</h2>
           <small>单次最多 50,000 个</small>
           <span class="seg" role="group" aria-label="号码来源">
-            <button type="button" :class="{ on: form.source === 'paste' }" @click="form.source = 'paste'">手工粘贴</button>
-            <button type="button" :class="{ on: form.source === 'import' }" @click="form.source = 'import'">文件导入</button>
+            <button type="button" :class="{ on: form.source === 'paste' }" @click="form.source = 'paste'"
+              >手工粘贴</button
+            >
+            <button type="button" :class="{ on: form.source === 'import' }" @click="form.source = 'import'"
+              >文件导入</button
+            >
           </span>
         </header>
         <template v-if="form.source === 'paste'">
@@ -685,16 +682,26 @@ onBeforeUnmount(() => {
             placeholder="每行一个手机号，也支持逗号或空格分隔"
           />
           <div v-if="pastedMobiles.length" class="phone-stats" data-testid="phone-stats">
-            <span>共 <b>{{ pastedMobiles.length.toLocaleString() }}</b></span>
-            <span>去重后 <b>{{ dedupedCount.toLocaleString() }}</b></span>
-            <span class="bad">格式无效 <b>{{ invalidMobiles.length.toLocaleString() }}</b></span>
-            <span>重复 <b>{{ duplicateCount.toLocaleString() }}</b></span>
+            <span
+              >共 <b>{{ pastedMobiles.length.toLocaleString() }}</b></span
+            >
+            <span
+              >去重后 <b>{{ dedupedCount.toLocaleString() }}</b></span
+            >
+            <span class="bad"
+              >格式无效 <b>{{ invalidMobiles.length.toLocaleString() }}</b></span
+            >
+            <span
+              >重复 <b>{{ duplicateCount.toLocaleString() }}</b></span
+            >
             <span class="act">
               <button v-if="duplicateCount > 0" type="button" @click="removeDuplicates">移除重复</button>
             </span>
           </div>
           <p v-if="invalidMobiles.length" class="mobiles-invalid-hint" data-testid="invalid-mobiles-hint">
-            {{ invalidMobiles.length }} 个号码格式无效（需为 1 开头的 11 位数字），例如「{{ invalidMobiles[0] }}」；请修正后再提交。
+            {{ invalidMobiles.length }} 个号码格式无效（需为 1 开头的 11 位数字），例如「{{
+              invalidMobiles[0]
+            }}」；请修正后再提交。
           </p>
         </template>
         <div v-else class="upload-zone">
@@ -725,17 +732,32 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="importState === 'ready' && imported" class="import-box" data-testid="import-ready">
             <div class="import-ready">
-              <div class="cell"><span>有效</span><b>{{ imported.valid.toLocaleString() }}</b></div>
-              <div class="cell" :class="{ bad: imported.invalid > 0 }"><span>格式无效</span><b>{{ imported.invalid.toLocaleString() }}</b></div>
-              <div class="cell" :class="{ bad: imported.duplicate > 0 }"><span>重复</span><b>{{ imported.duplicate.toLocaleString() }}</b></div>
-              <div class="cell" :class="{ bad: imported.blacklisted > 0 }"><span>黑名单</span><b>{{ imported.blacklisted.toLocaleString() }}</b></div>
+              <div class="cell"
+                ><span>有效</span><b>{{ imported.valid.toLocaleString() }}</b></div
+              >
+              <div class="cell" :class="{ bad: imported.invalid > 0 }"
+                ><span>格式无效</span><b>{{ imported.invalid.toLocaleString() }}</b></div
+              >
+              <div class="cell" :class="{ bad: imported.duplicate > 0 }"
+                ><span>重复</span><b>{{ imported.duplicate.toLocaleString() }}</b></div
+              >
+              <div class="cell" :class="{ bad: imported.blacklisted > 0 }"
+                ><span>黑名单</span><b>{{ imported.blacklisted.toLocaleString() }}</b></div
+              >
               <div class="act">
-                <button v-if="imported.invalid_download_url" data-testid="download-invalid" type="button" @click="downloadInvalidFile">下载剔除清单</button>
+                <button
+                  v-if="imported.invalid_download_url"
+                  data-testid="download-invalid"
+                  type="button"
+                  @click="downloadInvalidFile"
+                  >下载剔除清单</button
+                >
                 <button type="button" @click="resetImport">重新上传</button>
               </div>
             </div>
             <p class="import-meta">
-              {{ importFilename || "导入文件" }} · 解析完成 · 导入包 24 小时内有效（至 {{ formatExpiry(imported.expires_at) }}）· 频控剔除在受理时判定
+              {{ importFilename || "导入文件" }} · 解析完成 · 导入包 24 小时内有效（至
+              {{ formatExpiry(imported.expires_at) }}）· 频控剔除在受理时判定
             </p>
           </div>
         </div>
@@ -747,33 +769,69 @@ onBeforeUnmount(() => {
           <h2>发送内容</h2>
           <small>最终内容（含签名与退订语）不超过 500 字</small>
           <span class="seg" role="group" aria-label="内容来源">
-            <button type="button" :class="{ on: form.contentMode === 'content' }" @click="form.contentMode = 'content'">直接编辑</button>
-            <button type="button" :class="{ on: form.contentMode === 'template' }" @click="form.contentMode = 'template'">审核模板</button>
+            <button type="button" :class="{ on: form.contentMode === 'content' }" @click="form.contentMode = 'content'"
+              >直接编辑</button
+            >
+            <button
+              type="button"
+              :class="{ on: form.contentMode === 'template' }"
+              @click="form.contentMode = 'template'"
+              >审核模板</button
+            >
           </span>
         </header>
-        <el-input v-if="form.contentMode === 'content'" v-model="form.content" type="textarea" :rows="4" maxlength="500" />
+        <el-input
+          v-if="form.contentMode === 'content'"
+          v-model="form.content"
+          type="textarea"
+          :rows="4"
+          maxlength="500"
+        />
         <div v-else class="template-fields">
-          <el-select v-model="form.templateId" data-testid="template-select" filterable placeholder="选择已审核模板" @change="selectTemplate">
+          <el-select
+            v-model="form.templateId"
+            data-testid="template-select"
+            filterable
+            placeholder="选择已审核模板"
+            @change="selectTemplate"
+          >
             <el-option v-for="item in approvedTemplates" :key="item.id" :label="item.name" :value="String(item.id)" />
           </el-select>
           <template v-if="selectedTemplate">
             <div class="tpl-params">
-              <el-input v-for="spec in selectedTemplate.var_specs" :key="spec.pos" v-model="templateParams[spec.pos - 1]" data-testid="template-param" :maxlength="spec.max_len" :placeholder="`参数 {${spec.pos}}，最多 ${spec.max_len} 字`" />
+              <el-input
+                v-for="spec in selectedTemplate.var_specs"
+                :key="spec.pos"
+                v-model="templateParams[spec.pos - 1]"
+                data-testid="template-param"
+                :maxlength="spec.max_len"
+                :placeholder="`参数 {${spec.pos}}，最多 ${spec.max_len} 字`"
+              />
             </div>
             <div class="template-render-preview">
               <span>模板渲染预览</span>
               <p>
                 <template v-for="(part, index) in renderedTemplateParts" :key="index">
-                  <em v-if="part.highlight">{{ part.text }}</em><template v-else>{{ part.text }}</template>
+                  <em v-if="part.highlight">{{ part.text }}</em
+                  ><template v-else>{{ part.text }}</template>
                 </template>
               </p>
             </div>
           </template>
-          <EmptyState v-else-if="!approvedTemplates.length" title="当前没有已审核模板" description="请先在模板管理中提交并通过厂商审核。" />
+          <EmptyState
+            v-else-if="!approvedTemplates.length"
+            title="当前没有已审核模板"
+            description="请先在模板管理中提交并通过厂商审核。"
+          />
         </div>
         <div class="inline-fields">
           <el-select v-model="form.signName" data-testid="sign-select" clearable placeholder="不指定 · 用应用默认签名">
-            <el-option v-for="item in approvedSigns" :key="item.id" :label="`签名：${item.name}（已过审）`" :value="item.name" />
+            <el-option
+              v-for="item in approvedSigns"
+              :key="item.id"
+              :label="`签名：${item.name}（已过审）`"
+              :value="item.name"
+            />
           </el-select>
           <el-input v-model="form.remark" maxlength="200" placeholder="发送备注（可选，写入批次与审计）" />
         </div>
@@ -783,7 +841,7 @@ onBeforeUnmount(() => {
         <header><span class="form-index">04</span><h2>发送选项</h2></header>
         <div class="opt-row">
           <label class="opt">
-            <input v-model="form.scheduleEnabled" type="checkbox" :disabled="form.isTest">
+            <input v-model="form.scheduleEnabled" type="checkbox" :disabled="form.isTest" />
             <span>定时发送<small>不勾选为立即发送；营销窗外自动转定时</small></span>
           </label>
           <el-date-picker
@@ -795,12 +853,15 @@ onBeforeUnmount(() => {
             :disabled="form.isTest || !form.scheduleEnabled"
           />
           <label class="opt">
-            <input v-model="form.isTest" type="checkbox">
-            <span>测试发送<small>{{ testSendHint }}</small></span>
+            <input v-model="form.isTest" type="checkbox" />
+            <span
+              >测试发送<small>{{ testSendHint }}</small></span
+            >
           </label>
         </div>
         <p v-if="testLimitExceeded" class="test-limit-hint" data-testid="test-limit-hint">
-          测试发送最多 {{ testSendMax }} 个号码，当前 {{ recipientCount.toLocaleString() }} 个；请删减号码，或取消测试发送按正式批次提交。
+          测试发送最多 {{ testSendMax }} 个号码，当前
+          {{ recipientCount.toLocaleString() }} 个；请删减号码，或取消测试发送按正式批次提交。
         </p>
       </section>
     </div>
@@ -811,7 +872,10 @@ onBeforeUnmount(() => {
 
       <section v-if="finalParts" class="rail-card">
         <header>最终内容预览 <small>用户实收</small></header>
-        <p class="final-content" data-testid="final-content"><span v-if="finalParts.sign" class="fx-sign">{{ finalParts.sign }}</span>{{ finalParts.body }}<span v-if="finalParts.suffix" class="fx-suffix">{{ finalParts.suffix }}</span></p>
+        <p class="final-content" data-testid="final-content"
+          ><span v-if="finalParts.sign" class="fx-sign">{{ finalParts.sign }}</span
+          >{{ finalParts.body }}<span v-if="finalParts.suffix" class="fx-suffix">{{ finalParts.suffix }}</span></p
+        >
         <footer class="final-meta">
           <div class="legend">
             <span><i class="g"></i>签名</span>
@@ -828,8 +892,12 @@ onBeforeUnmount(() => {
           <span>受理号码（去重与黑名单剔除后）</span>
         </div>
         <div class="removed" data-testid="audience-removed">
-          <span>重复 <b>{{ removedDuplicate.toLocaleString() }}</b></span>
-          <span v-if="removedBlacklist !== null">黑名单 <b>{{ removedBlacklist.toLocaleString() }}</b></span>
+          <span
+            >重复 <b>{{ removedDuplicate.toLocaleString() }}</b></span
+          >
+          <span v-if="removedBlacklist !== null"
+            >黑名单 <b>{{ removedBlacklist.toLocaleString() }}</b></span
+          >
           <span v-else>黑名单 <small>受理时判定</small></span>
           <span>频控 <small>受理时判定</small></span>
         </div>
@@ -842,20 +910,35 @@ onBeforeUnmount(() => {
           <span class="fx">{{ previewCount.toLocaleString() }} × {{ preview.est_segments }} 段 =</span>
           <strong>{{ preview.quota_cost.toLocaleString() }}<small>计费条</small></strong>
         </div>
-        <p class="boundary">第 {{ preview.segment_parts.length }} 段已用 {{ preview.segment_parts.at(-1)?.used }}/{{ preview.segment_parts.at(-1)?.capacity }} 字，再增加 {{ preview.next_segment_at }} 字进入第 {{ preview.segment_parts.length + 1 }} 段。</p>
+        <p class="boundary"
+          >第 {{ preview.segment_parts.length }} 段已用 {{ preview.segment_parts.at(-1)?.used }}/{{
+            preview.segment_parts.at(-1)?.capacity
+          }}
+          字，再增加 {{ preview.next_segment_at }} 字进入第 {{ preview.segment_parts.length + 1 }} 段。</p
+        >
       </section>
 
       <section v-if="preview && preview.quota" class="rail-card">
         <header>部门日配额</header>
         <div class="quota-row">
           <span>今日已用 / 上限</span>
-          <b>{{ preview.quota.limit > 0 ? `${preview.quota.used.toLocaleString()} / ${preview.quota.limit.toLocaleString()}` : `${preview.quota.used.toLocaleString()} / 不限` }}</b>
+          <b>{{
+            preview.quota.limit > 0
+              ? `${preview.quota.used.toLocaleString()} / ${preview.quota.limit.toLocaleString()}`
+              : `${preview.quota.used.toLocaleString()} / 不限`
+          }}</b>
         </div>
         <template v-if="preview.quota.limit > 0">
-          <div class="quota-bar"><i class="used" :style="{ width: `${quotaUsedPct}%` }"></i><i class="this" :style="{ width: `${quotaThisPct}%` }"></i></div>
+          <div class="quota-bar"
+            ><i class="used" :style="{ width: `${quotaUsedPct}%` }"></i
+            ><i class="this" :style="{ width: `${quotaThisPct}%` }"></i
+          ></div>
           <div class="quota-foot">
             <span>斜纹 = 本批预扣 {{ preview.quota_cost.toLocaleString() }}</span>
-            <span>提交后 {{ (preview.quota.used + preview.quota_cost).toLocaleString() }} / {{ preview.quota.limit.toLocaleString() }}（{{ quotaAfterPct }}%）</span>
+            <span
+              >提交后 {{ (preview.quota.used + preview.quota_cost).toLocaleString() }} /
+              {{ preview.quota.limit.toLocaleString() }}（{{ quotaAfterPct }}%）</span
+            >
           </div>
         </template>
         <p v-else class="quota-foot">上限不限；本批预扣 {{ preview.quota_cost.toLocaleString() }} 计费条</p>
@@ -883,7 +966,7 @@ onBeforeUnmount(() => {
       <p v-if="previewError" class="preview-error">{{ previewError }}</p>
 
       <label v-if="form.category === 'market'" class="consent-panel" data-testid="market-consent">
-        <input v-model="form.consentConfirmed" type="checkbox">
+        <input v-model="form.consentConfirmed" type="checkbox" />
         <span>
           <b>我确认以上收信人已同意接收营销信息。</b>
           <p>勾选行为与操作人将写入审计日志；未确认时平台拒绝受理（422 CONSENT_REQUIRED）。</p>
@@ -898,9 +981,15 @@ onBeforeUnmount(() => {
         </div>
         <p class="result-line">{{ sendSuccessText(sendResult) }}。</p>
         <div class="result-stats">
-          <span>受理 <b>{{ sendResult.accepted.toLocaleString() }}</b></span>
-          <span>剔除 <b>{{ removedTotal(sendResult).toLocaleString() }}</b></span>
-          <span>预扣 <b>{{ sendResult.quota_cost.toLocaleString() }}</b> 条</span>
+          <span
+            >受理 <b>{{ sendResult.accepted.toLocaleString() }}</b></span
+          >
+          <span
+            >剔除 <b>{{ removedTotal(sendResult).toLocaleString() }}</b></span
+          >
+          <span
+            >预扣 <b>{{ sendResult.quota_cost.toLocaleString() }}</b> 条</span
+          >
         </div>
         <div class="result-acts">
           <el-button type="primary" @click="goBatches">查看批次</el-button>

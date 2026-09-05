@@ -26,9 +26,7 @@ const emit = defineEmits<{
   quick: [item: ApprovalListItem, action: ApprovalAction, reason?: string]
 }>()
 
-const emptyTitle = computed(() =>
-  props.status === "pending" ? "当前没有待审批记录" : "当前分类没有审批记录",
-)
+const emptyTitle = computed(() => (props.status === "pending" ? "当前没有待审批记录" : "当前分类没有审批记录"))
 
 function isMine(item: ApprovalListItem): boolean {
   return item.applicant === props.currentUsername
@@ -67,8 +65,7 @@ function countdownOf(item: ApprovalListItem): Countdown {
   if (Number.isNaN(remaining)) return { text: "—", caption: "有效期暂不可用", level: "unknown" }
   if (remaining <= 0) return { text: "已临期截止", caption: "等待服务端过期关闭", level: "expired" }
   const text = formatDurationHms(remaining)
-  const level =
-    remaining < URGENT_THRESHOLD_MS ? "urgent" : remaining < SOON_THRESHOLD_MS ? "soon" : "normal"
+  const level = remaining < URGENT_THRESHOLD_MS ? "urgent" : remaining < SOON_THRESHOLD_MS ? "soon" : "normal"
   return { text, caption: "后过期", level }
 }
 
@@ -160,194 +157,195 @@ function confirmQuick(item: ApprovalListItem): void {
         <EmptyState :title="emptyTitle" description="新的审批申请会出现在这里。" />
       </div>
       <ul v-else class="approval-queue-list">
-      <li
-        v-for="item in items"
-        :key="item.id"
-        class="approval-row"
-        :class="rowClass(item)"
-        :data-testid="`approval-row-${item.id}`"
-      >
-        <div class="approval-cd">
-          <b>{{ countdownOf(item).text }}</b>
-          <span>{{ countdownOf(item).caption }}</span>
-        </div>
-        <div class="approval-row-main">
-          <div class="approval-row-title">
-            <CategoryTag :category="item.category" />
-            <code class="approval-batch-no">{{ item.batch_no }}</code>
-            <span class="approval-sched-chip">{{ scheduleChip(item) }}</span>
-          </div>
-          <p class="approval-row-facts">
-            {{ item.applicant }} · {{ item.dept }}
-            <em>·</em>{{ formatDateTime(item.created_at) }} 提交
-            <em>·</em>受众 <b>{{ item.total.toLocaleString() }}</b> 号码
-            <em>·</em>预计计费 <b>{{ formatSegments(item.estimated_segments) }}</b>
-          </p>
-          <p class="approval-row-rule">触发规则 {{ triggerRule(item) }}</p>
-        </div>
-        <span
-          v-if="isMine(item)"
-          class="approval-avoid-note"
-          :data-testid="`approval-avoid-${item.id}`"
-        >本人提交 · 按规则回避</span>
-        <div v-else class="approval-row-actions" :data-testid="`approval-actions-${item.id}`">
-          <button
-            type="button"
-            class="approval-expand"
-            :data-testid="`approval-detail-${item.id}`"
-            :aria-label="`查看批次 ${item.batch_no} 的审批详情`"
-            @click="emit('detail', item)"
-          >详情 ›</button>
-          <el-popover
-            :visible="quickVisible(item, 'approve')"
-            placement="bottom-end"
-            :width="288"
-            trigger="click"
-            :teleported="false"
-          >
-            <template #reference>
-              <el-button
-                type="primary"
-                size="small"
-                :disabled="decidingId !== null"
-                :aria-expanded="quickVisible(item, 'approve')"
-                :data-testid="`approval-quick-approve-${item.id}`"
-                @click="toggleQuick(item, 'approve')"
-              >通过</el-button>
-            </template>
-            <div class="approval-quick">
-              <p class="approval-quick-title">快捷通过 · {{ item.batch_no }}</p>
-              <el-input
-                v-model="quickReason"
-                type="textarea"
-                :rows="3"
-                maxlength="256"
-                show-word-limit
-                placeholder="审批意见（选填，≤256 字）"
-                data-testid="approval-quick-reason-approve"
-              />
-              <p class="approval-quick-tip">决策写审计 · 冲突时自动刷新列表</p>
-              <div class="approval-quick-actions">
-                <el-button size="small" @click="closeQuick">取消</el-button>
-                <el-button
-                  type="primary"
-                  size="small"
-                  :disabled="quickConfirmDisabled"
-                  data-testid="approval-quick-confirm-approve"
-                  @click="confirmQuick(item)"
-                >确认通过</el-button>
-              </div>
-            </div>
-          </el-popover>
-          <el-popover
-            :visible="quickVisible(item, 'reject')"
-            placement="bottom-end"
-            :width="288"
-            trigger="click"
-            :teleported="false"
-          >
-            <template #reference>
-              <el-button
-                type="danger"
-                size="small"
-                :disabled="decidingId !== null"
-                :aria-expanded="quickVisible(item, 'reject')"
-                :data-testid="`approval-quick-reject-${item.id}`"
-                @click="toggleQuick(item, 'reject')"
-              >驳回</el-button>
-            </template>
-            <div class="approval-quick">
-              <p class="approval-quick-title">快捷驳回 · {{ item.batch_no }}</p>
-              <el-input
-                v-model="quickReason"
-                type="textarea"
-                :rows="3"
-                maxlength="256"
-                show-word-limit
-                placeholder="驳回原因（必填，≤256 字）"
-                data-testid="approval-quick-reason-reject"
-              />
-              <p class="approval-quick-tip">驳回原因必填 · 配额由服务端幂等回补</p>
-              <div class="approval-quick-actions">
-                <el-button size="small" @click="closeQuick">取消</el-button>
-                <el-button
-                  type="danger"
-                  size="small"
-                  :disabled="quickConfirmDisabled"
-                  data-testid="approval-quick-confirm-reject"
-                  @click="confirmQuick(item)"
-                >确认驳回</el-button>
-              </div>
-            </div>
-          </el-popover>
-        </div>
-      </li>
-    </ul>
-    </template>
-
-    <template v-else>
-    <table class="approval-table">
-      <thead>
-        <tr>
-          <th>批次号 / 申请时间</th>
-          <th>类别</th>
-          <th>申请人</th>
-          <th>部门</th>
-          <th>受众</th>
-          <th>状态</th>
-          <th>审批人 / 决策时间</th>
-          <th>去向</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr
+        <li
           v-for="item in items"
           :key="item.id"
+          class="approval-row"
+          :class="rowClass(item)"
           :data-testid="`approval-row-${item.id}`"
-          tabindex="0"
-          @click="emit('detail', item)"
-          @keydown.enter="emit('detail', item)"
         >
-          <td data-label="批次号 / 申请时间">
-            <span class="approval-batch-cell">
-              <code>{{ item.batch_no }}</code>
-              <small>{{ formatDateTime(item.created_at) }}</small>
-            </span>
-          </td>
-          <td data-label="类别"><CategoryTag :category="item.category" /></td>
-          <td data-label="申请人">{{ item.applicant }}</td>
-          <td data-label="部门">{{ item.dept }}</td>
-          <td data-label="受众">{{ item.total.toLocaleString() }}</td>
-          <td data-label="状态"><StatusTag :status="item.status" /></td>
-          <td data-label="审批人 / 决策时间">
-            <span class="approval-decider">
-              <b>{{ deciderLabel(item) }}</b>
-              <small>{{ item.decided_at ? formatDateTime(item.decided_at) : "—" }}</small>
-            </span>
-          </td>
-          <td data-label="去向" class="approval-dest">
-            {{ destinationOf(item).title }}
-            <small v-if="destinationOf(item).note" :title="destinationOf(item).note ?? undefined">{{ destinationOf(item).note }}</small>
-          </td>
-          <td class="approval-open-cell">
+          <div class="approval-cd">
+            <b>{{ countdownOf(item).text }}</b>
+            <span>{{ countdownOf(item).caption }}</span>
+          </div>
+          <div class="approval-row-main">
+            <div class="approval-row-title">
+              <CategoryTag :category="item.category" />
+              <code class="approval-batch-no">{{ item.batch_no }}</code>
+              <span class="approval-sched-chip">{{ scheduleChip(item) }}</span>
+            </div>
+            <p class="approval-row-facts">
+              {{ item.applicant }} · {{ item.dept }} <em>·</em>{{ formatDateTime(item.created_at) }} 提交 <em>·</em>受众
+              <b>{{ item.total.toLocaleString() }}</b> 号码 <em>·</em>预计计费
+              <b>{{ formatSegments(item.estimated_segments) }}</b>
+            </p>
+            <p class="approval-row-rule">触发规则 {{ triggerRule(item) }}</p>
+          </div>
+          <span v-if="isMine(item)" class="approval-avoid-note" :data-testid="`approval-avoid-${item.id}`"
+            >本人提交 · 按规则回避</span
+          >
+          <div v-else class="approval-row-actions" :data-testid="`approval-actions-${item.id}`">
             <button
               type="button"
               class="approval-expand"
               :data-testid="`approval-detail-${item.id}`"
               :aria-label="`查看批次 ${item.batch_no} 的审批详情`"
-              @click.stop="emit('detail', item)"
-            >查看</button>
-          </td>
-        </tr>
-      </tbody>
-    </table>
+              @click="emit('detail', item)"
+              >详情 ›</button
+            >
+            <el-popover
+              :visible="quickVisible(item, 'approve')"
+              placement="bottom-end"
+              :width="288"
+              trigger="click"
+              :teleported="false"
+            >
+              <template #reference>
+                <el-button
+                  type="primary"
+                  size="small"
+                  :disabled="decidingId !== null"
+                  :aria-expanded="quickVisible(item, 'approve')"
+                  :data-testid="`approval-quick-approve-${item.id}`"
+                  @click="toggleQuick(item, 'approve')"
+                  >通过</el-button
+                >
+              </template>
+              <div class="approval-quick">
+                <p class="approval-quick-title">快捷通过 · {{ item.batch_no }}</p>
+                <el-input
+                  v-model="quickReason"
+                  type="textarea"
+                  :rows="3"
+                  maxlength="256"
+                  show-word-limit
+                  placeholder="审批意见（选填，≤256 字）"
+                  data-testid="approval-quick-reason-approve"
+                />
+                <p class="approval-quick-tip">决策写审计 · 冲突时自动刷新列表</p>
+                <div class="approval-quick-actions">
+                  <el-button size="small" @click="closeQuick">取消</el-button>
+                  <el-button
+                    type="primary"
+                    size="small"
+                    :disabled="quickConfirmDisabled"
+                    data-testid="approval-quick-confirm-approve"
+                    @click="confirmQuick(item)"
+                    >确认通过</el-button
+                  >
+                </div>
+              </div>
+            </el-popover>
+            <el-popover
+              :visible="quickVisible(item, 'reject')"
+              placement="bottom-end"
+              :width="288"
+              trigger="click"
+              :teleported="false"
+            >
+              <template #reference>
+                <el-button
+                  type="danger"
+                  size="small"
+                  :disabled="decidingId !== null"
+                  :aria-expanded="quickVisible(item, 'reject')"
+                  :data-testid="`approval-quick-reject-${item.id}`"
+                  @click="toggleQuick(item, 'reject')"
+                  >驳回</el-button
+                >
+              </template>
+              <div class="approval-quick">
+                <p class="approval-quick-title">快捷驳回 · {{ item.batch_no }}</p>
+                <el-input
+                  v-model="quickReason"
+                  type="textarea"
+                  :rows="3"
+                  maxlength="256"
+                  show-word-limit
+                  placeholder="驳回原因（必填，≤256 字）"
+                  data-testid="approval-quick-reason-reject"
+                />
+                <p class="approval-quick-tip">驳回原因必填 · 配额由服务端幂等回补</p>
+                <div class="approval-quick-actions">
+                  <el-button size="small" @click="closeQuick">取消</el-button>
+                  <el-button
+                    type="danger"
+                    size="small"
+                    :disabled="quickConfirmDisabled"
+                    data-testid="approval-quick-confirm-reject"
+                    @click="confirmQuick(item)"
+                    >确认驳回</el-button
+                  >
+                </div>
+              </div>
+            </el-popover>
+          </div>
+        </li>
+      </ul>
+    </template>
 
-    <EmptyState
-      v-if="!loading && !items.length"
-      :title="emptyTitle"
-      description="新的审批申请会出现在这里。"
-    />
+    <template v-else>
+      <table class="approval-table">
+        <thead>
+          <tr>
+            <th>批次号 / 申请时间</th>
+            <th>类别</th>
+            <th>申请人</th>
+            <th>部门</th>
+            <th>受众</th>
+            <th>状态</th>
+            <th>审批人 / 决策时间</th>
+            <th>去向</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="item in items"
+            :key="item.id"
+            :data-testid="`approval-row-${item.id}`"
+            tabindex="0"
+            @click="emit('detail', item)"
+            @keydown.enter="emit('detail', item)"
+          >
+            <td data-label="批次号 / 申请时间">
+              <span class="approval-batch-cell">
+                <code>{{ item.batch_no }}</code>
+                <small>{{ formatDateTime(item.created_at) }}</small>
+              </span>
+            </td>
+            <td data-label="类别"><CategoryTag :category="item.category" /></td>
+            <td data-label="申请人">{{ item.applicant }}</td>
+            <td data-label="部门">{{ item.dept }}</td>
+            <td data-label="受众">{{ item.total.toLocaleString() }}</td>
+            <td data-label="状态"><StatusTag :status="item.status" /></td>
+            <td data-label="审批人 / 决策时间">
+              <span class="approval-decider">
+                <b>{{ deciderLabel(item) }}</b>
+                <small>{{ item.decided_at ? formatDateTime(item.decided_at) : "—" }}</small>
+              </span>
+            </td>
+            <td data-label="去向" class="approval-dest">
+              {{ destinationOf(item).title }}
+              <small v-if="destinationOf(item).note" :title="destinationOf(item).note ?? undefined">{{
+                destinationOf(item).note
+              }}</small>
+            </td>
+            <td class="approval-open-cell">
+              <button
+                type="button"
+                class="approval-expand"
+                :data-testid="`approval-detail-${item.id}`"
+                :aria-label="`查看批次 ${item.batch_no} 的审批详情`"
+                @click.stop="emit('detail', item)"
+                >查看</button
+              >
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <EmptyState v-if="!loading && !items.length" :title="emptyTitle" description="新的审批申请会出现在这里。" />
     </template>
   </section>
 </template>

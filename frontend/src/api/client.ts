@@ -144,11 +144,7 @@ function authorizedHeaders(init: RequestInit): Record<string, string> {
   return headers
 }
 
-async function fetchAuthorizedOnce(
-  url: string,
-  init: RequestInit,
-  signal: AbortSignal,
-): Promise<Response> {
+async function fetchAuthorizedOnce(url: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
   assertSameOrigin(url)
   return fetch(url, { ...init, headers: authorizedHeaders(init), signal })
 }
@@ -166,9 +162,7 @@ function rebuildJsonResponse(response: Response, body: unknown): Response {
 
 function classifyAuthDecision(status: number, body: unknown): AuthDecision {
   const code =
-    body && typeof body === "object" && "code" in body && typeof body.code === "string"
-      ? body.code
-      : undefined
+    body && typeof body === "object" && "code" in body && typeof body.code === "string" ? body.code : undefined
   if (status === 423 && code === "ACCOUNT_LOCKED") return "account-locked"
   if (status === 401 && code === "AUTH_REAUTH_REQUIRED") return "reauth-required"
   if (status === 409 && code === "AUTH_CONTEXT_CHANGED") return "context-changed"
@@ -223,8 +217,7 @@ async function refreshSession(): Promise<RefreshResult> {
         currentUser.account_id > 0 &&
         Number.isInteger(currentUser.identity_id) &&
         currentUser.identity_id > 0 &&
-        (currentUser.account_id !== result.user.account_id ||
-          currentUser.identity_id !== result.user.identity_id)
+        (currentUser.account_id !== result.user.account_id || currentUser.identity_id !== result.user.identity_id)
       ) {
         clearSession()
         return "unauthorized"
@@ -274,11 +267,7 @@ async function replayAfterUnauthorized<T>(
   return fallback()
 }
 
-async function jsonAttempt<T>(
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<AuthorizedJsonResult<T>> {
+async function jsonAttempt<T>(url: string, init: RequestInit, timeoutMs: number): Promise<AuthorizedJsonResult<T>> {
   const attempt = startAuthorizedAttempt(timeoutMs, init.signal ?? undefined, "请求超时")
   try {
     const response = await fetchAuthorizedOnce(url, init, attempt.signal)
@@ -398,15 +387,9 @@ export async function authorizedFetch(
   }
 }
 
-type BlobAttempt =
-  | { kind: "blob"; blob: Blob }
-  | { kind: "error"; status: number; body: ApiErrorBody | null }
+type BlobAttempt = { kind: "blob"; blob: Blob } | { kind: "error"; status: number; body: ApiErrorBody | null }
 
-async function blobAttempt(
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-): Promise<BlobAttempt> {
+async function blobAttempt(url: string, init: RequestInit, timeoutMs: number): Promise<BlobAttempt> {
   const attempt = startAuthorizedAttempt(timeoutMs, init.signal ?? undefined, "请求超时")
   try {
     const response = await fetchAuthorizedOnce(url, init, attempt.signal)
@@ -499,9 +482,7 @@ export async function apiRequest<T>(
   init: RequestInit,
   timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<T> {
-  return unwrapAuthorizedJson<T>(
-    await authorizedJsonResult<T>(`/api/v1/web${path}`, init, timeoutMs),
-  )
+  return unwrapAuthorizedJson<T>(await authorizedJsonResult<T>(`/api/v1/web${path}`, init, timeoutMs))
 }
 
 /** 绝对路径端点（如 `/api/v1/messages/...`）：与 apiRequest 同错误类型，不加前缀。 */

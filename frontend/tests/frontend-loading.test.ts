@@ -8,14 +8,37 @@ import { resolve } from "node:path"
 import { readWorkspaceCss } from "./workspace-css"
 
 const lazyViews = [
-  "DashboardView", "ReportView", "UserView", "ConfigView", "AuditView", "SendView",
-  "ApprovalView", "ReplyView", "BatchView", "MessageView", "CallbackView", "OpsView",
-  "TemplateView", "SignView", "AppManagementView", "BlacklistView", "SensitiveWordView",
+  "DashboardView",
+  "ReportView",
+  "UserView",
+  "ConfigView",
+  "AuditView",
+  "SendView",
+  "ApprovalView",
+  "ReplyView",
+  "BatchView",
+  "MessageView",
+  "CallbackView",
+  "OpsView",
+  "TemplateView",
+  "SignView",
+  "AppManagementView",
+  "BlacklistView",
+  "SensitiveWordView",
 ]
 
 describe("前端加载边界", () => {
   it("业务页面全部通过路由懒加载", () => {
-    for (const view of ["ApprovalView", "SendView", "TemplateView", "SignView", "ReplyView", "CallbackView", "BatchView", "MessageView"]) {
+    for (const view of [
+      "ApprovalView",
+      "SendView",
+      "TemplateView",
+      "SignView",
+      "ReplyView",
+      "CallbackView",
+      "BatchView",
+      "MessageView",
+    ]) {
       expect(routerSource).not.toContain(`import ${view} from`)
       expect(routerSource).toContain(`import(\"../views/${view}.vue\")`)
     }

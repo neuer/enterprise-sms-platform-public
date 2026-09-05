@@ -3,27 +3,30 @@ import { computed } from "vue"
 
 import { formatDateTime, formatHms } from "../lib/time"
 
-const props = withDefaults(defineProps<{
-  realtimeQueue?: number | null
-  bulkQueue?: number | null
-  qpsUsed?: number | null
-  qpsRate?: number | null
-  reservedRealtimeQps?: number | null
-  refreshedAt?: string | null
-  lastSuccessfulAt?: string | null
-  degradedReason?: "redis_unavailable" | "snapshot_incomplete" | null
-  stale?: boolean
-}>(), {
-  realtimeQueue: null,
-  bulkQueue: null,
-  qpsUsed: null,
-  qpsRate: null,
-  reservedRealtimeQps: null,
-  refreshedAt: null,
-  lastSuccessfulAt: null,
-  degradedReason: null,
-  stale: true,
-})
+const props = withDefaults(
+  defineProps<{
+    realtimeQueue?: number | null
+    bulkQueue?: number | null
+    qpsUsed?: number | null
+    qpsRate?: number | null
+    reservedRealtimeQps?: number | null
+    refreshedAt?: string | null
+    lastSuccessfulAt?: string | null
+    degradedReason?: "redis_unavailable" | "snapshot_incomplete" | null
+    stale?: boolean
+  }>(),
+  {
+    realtimeQueue: null,
+    bulkQueue: null,
+    qpsUsed: null,
+    qpsRate: null,
+    reservedRealtimeQps: null,
+    refreshedAt: null,
+    lastSuccessfulAt: null,
+    degradedReason: null,
+    stale: true,
+  },
+)
 
 const realtimeLoad = computed(() => `${Math.min(100, (props.realtimeQueue ?? 0) * 2.2)}%`)
 const bulkLoad = computed(() => `${Math.min(100, (props.bulkQueue ?? 0) / 60)}%`)
@@ -54,7 +57,7 @@ function displayNumber(value: number | null): string {
     :class="['channel-monitor', { 'monitor-stale': stale }]"
     aria-label="短信信道实时监视"
   >
-    <span class="monitor-live"><i aria-hidden="true"></i>{{ stale ? '数据暂不可用' : 'LIVE' }}</span>
+    <span class="monitor-live"><i aria-hidden="true"></i>{{ stale ? "数据暂不可用" : "LIVE" }}</span>
 
     <article class="monitor-lane realtime">
       <span>REALTIME / 实时通道</span>
@@ -71,7 +74,7 @@ function displayNumber(value: number | null): string {
     <article class="monitor-qps" :title="qpsTitle">
       <div>
         <span>QPS TOKEN</span>
-        <strong class="num">{{ qpsUsed ?? '—' }} / {{ qpsRate ?? '—' }}</strong>
+        <strong class="num">{{ qpsUsed ?? "—" }} / {{ qpsRate ?? "—" }}</strong>
       </div>
       <div class="token-grid" aria-label="QPS 令牌占用">
         <i v-for="index in 5" :key="index" :class="{ used: !stale && index <= usedTokens }"></i>
@@ -235,8 +238,13 @@ function displayNumber(value: number | null): string {
 }
 
 @keyframes monitor-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
 }
 
 @media (max-width: 1080px) {

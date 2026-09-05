@@ -1,7 +1,6 @@
 const REFRESH_LOCK_NAME = "sms-refresh-rotation"
 
-export const SAFE_SINGLE_TAB_MESSAGE =
-  "当前浏览器不支持跨标签页会话互斥。仅允许单标签页登录，刷新页面后需要重新登录。"
+export const SAFE_SINGLE_TAB_MESSAGE = "当前浏览器不支持跨标签页会话互斥。仅允许单标签页登录，刷新页面后需要重新登录。"
 
 /** login/refresh/logout/restore/BFCache 与 Refresh 共用同一把跨标签页锁。 */
 export function hasWebLocks(): boolean {

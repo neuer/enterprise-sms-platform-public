@@ -80,9 +80,7 @@ const filtered = computed(() => {
   })
 })
 
-const emptyTitle = computed(() =>
-  items.value.length === 0 ? "当前没有签名" : "没有符合筛选条件的签名",
-)
+const emptyTitle = computed(() => (items.value.length === 0 ? "当前没有签名" : "没有符合筛选条件的签名"))
 const emptyDescription = computed(() =>
   items.value.length === 0
     ? "管理员提交签名并通过厂商审核后，发送内容将自动拼接规范签名。"
@@ -105,10 +103,8 @@ function detailHeadMeta(item: SmsSign): string {
   return parts.join(" · ")
 }
 
-const canSync = (item: SmsSign) =>
-  item.vendor_sign_id !== null
-const canAdopt = (item: SmsSign) =>
-  canWrite.value && item.vendor_state === "pending" && item.vendor_sign_id === null
+const canSync = (item: SmsSign) => item.vendor_sign_id !== null
+const canAdopt = (item: SmsSign) => canWrite.value && item.vendor_state === "pending" && item.vendor_sign_id === null
 const canEdit = (item: SmsSign) => item.vendor_state === "rejected"
 const canDelete = (item: SmsSign) => item.vendor_state !== "approved"
 
@@ -128,9 +124,7 @@ const nameIssue = computed(() => {
 })
 
 /** 计入每条计费长度的签名占用（含方括号），与 services/billing.py 的口径同源的前端演示。 */
-const billingChars = computed(() =>
-  bareName.value && !nameIssue.value ? bareName.value.length + 2 : null,
-)
+const billingChars = computed(() => (bareName.value && !nameIssue.value ? bareName.value.length + 2 : null))
 
 /** 详情抽屉审核轨迹：三态全部由 vendor_sign_id 与 vendor_state 前端推导。 */
 const detailTrail = computed<TrailStep[]>(() => {
@@ -180,9 +174,8 @@ async function loadSignApps(signName: string): Promise<void> {
     signApps.value = apps.filter((app) => {
       const configured = app.default_sign?.trim()
       if (!configured) return false
-      const normalized = configured.startsWith("【") && configured.endsWith("】")
-        ? configured.slice(1, -1).trim()
-        : configured
+      const normalized =
+        configured.startsWith("【") && configured.endsWith("】") ? configured.slice(1, -1).trim() : configured
       return normalized === signName
     })
   } catch {
@@ -348,13 +341,7 @@ onMounted(load)
     </div>
     <label class="sign-fld">
       <span>关键词</span>
-      <el-input
-        v-model="keyword"
-        class="sign-keyword"
-        data-testid="sign-keyword"
-        placeholder="签名名称"
-        clearable
-      />
+      <el-input v-model="keyword" class="sign-keyword" data-testid="sign-keyword" placeholder="签名名称" clearable />
     </label>
     <span class="sign-filter-note">接口全量返回 · 前端过滤</span>
   </div>
@@ -382,17 +369,45 @@ onMounted(load)
       <el-table-column label="厂商状态" min-width="280">
         <template #default="{ row }">
           <StatusTag :status="row.vendor_state" :label="stateLabel(row.vendor_state)" />
-          <span class="cell-sub" :class="{ 'cell-sub-verm': stateSub(row).tone === 'verm' }">{{ stateSub(row).text }}</span>
+          <span class="cell-sub" :class="{ 'cell-sub-verm': stateSub(row).tone === 'verm' }">{{
+            stateSub(row).text
+          }}</span>
         </template>
       </el-table-column>
       <el-table-column v-if="canWrite" label="操作" width="230" fixed="right">
         <template #default="{ row }">
           <div @click.stop>
-            <el-button v-if="canSync(row)" :data-testid="`sign-sync-${row.id}`" link type="primary" :loading="syncingId === row.id" @click="sync(row)">同步</el-button>
-            <el-button v-if="canAdopt(row)" :data-testid="`sign-adopt-${row.id}`" link type="primary" @click="openAdopt(row)">关联已有签名</el-button>
-            <el-button v-if="canEdit(row)" :data-testid="`sign-edit-${row.id}`" link @click="resetEditor(row)">修改</el-button>
-            <el-button v-if="canDelete(row)" :data-testid="`sign-delete-${row.id}`" link type="danger" @click="remove(row)">删除</el-button>
-            <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的签名不可编辑或删除">不可编辑/删除</span>
+            <el-button
+              v-if="canSync(row)"
+              :data-testid="`sign-sync-${row.id}`"
+              link
+              type="primary"
+              :loading="syncingId === row.id"
+              @click="sync(row)"
+              >同步</el-button
+            >
+            <el-button
+              v-if="canAdopt(row)"
+              :data-testid="`sign-adopt-${row.id}`"
+              link
+              type="primary"
+              @click="openAdopt(row)"
+              >关联已有签名</el-button
+            >
+            <el-button v-if="canEdit(row)" :data-testid="`sign-edit-${row.id}`" link @click="resetEditor(row)"
+              >修改</el-button
+            >
+            <el-button
+              v-if="canDelete(row)"
+              :data-testid="`sign-delete-${row.id}`"
+              link
+              type="danger"
+              @click="remove(row)"
+              >删除</el-button
+            >
+            <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的签名不可编辑或删除"
+              >不可编辑/删除</span
+            >
           </div>
         </template>
       </el-table-column>
@@ -414,11 +429,37 @@ onMounted(load)
         </header>
         <p class="cell-sub" :class="{ 'cell-sub-verm': stateSub(row).tone === 'verm' }">{{ stateSub(row).text }}</p>
         <footer v-if="canWrite">
-          <el-button v-if="canSync(row)" :data-testid="`mobile-sign-sync-${row.id}`" link type="primary" :loading="syncingId === row.id" @click="sync(row)">同步</el-button>
-          <el-button v-if="canAdopt(row)" :data-testid="`mobile-sign-adopt-${row.id}`" link type="primary" @click="openAdopt(row)">关联已有签名</el-button>
-          <el-button v-if="canEdit(row)" :data-testid="`mobile-sign-edit-${row.id}`" link @click="resetEditor(row)">修改</el-button>
-          <el-button v-if="canDelete(row)" :data-testid="`mobile-sign-delete-${row.id}`" link type="danger" @click="remove(row)">删除</el-button>
-          <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的签名不可编辑或删除">不可编辑/删除</span>
+          <el-button
+            v-if="canSync(row)"
+            :data-testid="`mobile-sign-sync-${row.id}`"
+            link
+            type="primary"
+            :loading="syncingId === row.id"
+            @click="sync(row)"
+            >同步</el-button
+          >
+          <el-button
+            v-if="canAdopt(row)"
+            :data-testid="`mobile-sign-adopt-${row.id}`"
+            link
+            type="primary"
+            @click="openAdopt(row)"
+            >关联已有签名</el-button
+          >
+          <el-button v-if="canEdit(row)" :data-testid="`mobile-sign-edit-${row.id}`" link @click="resetEditor(row)"
+            >修改</el-button
+          >
+          <el-button
+            v-if="canDelete(row)"
+            :data-testid="`mobile-sign-delete-${row.id}`"
+            link
+            type="danger"
+            @click="remove(row)"
+            >删除</el-button
+          >
+          <span v-if="row.vendor_state === 'approved'" class="muted" title="已通过审核的签名不可编辑或删除"
+            >不可编辑/删除</span
+          >
         </footer>
       </article>
       <EmptyState v-if="!loading && !filtered.length" :title="emptyTitle" :description="emptyDescription" />
@@ -445,7 +486,10 @@ onMounted(load)
           <span v-if="index > 0" class="trail-connector"></span>
           <span class="trail-step" :class="step.tone">
             <i class="dot"></i>
-            <span class="trail-txt"><b>{{ step.title }}</b><small>{{ step.desc }}</small></span>
+            <span class="trail-txt"
+              ><b>{{ step.title }}</b
+              ><small>{{ step.desc }}</small></span
+            >
           </span>
         </template>
       </div>
@@ -460,13 +504,24 @@ onMounted(load)
       <div class="sign-content-block">
         <span>发送效果预览（签名自动拼接于内容最前）</span>
         <p class="sign-preview-text">【{{ detail.name }}】您的验证码为 123456，5 分钟内有效，请勿泄露。</p>
-        <small class="sign-proof-hint">计费长度含签名：本签名 +{{ detail.name.length + 2 }} 字（含方括号）· 含签名与退订语 ≤70 字计 1 条，唯一实现 services/billing.py</small>
+        <small class="sign-proof-hint"
+          >计费长度含签名：本签名 +{{ detail.name.length + 2 }} 字（含方括号）· 含签名与退订语 ≤70 字计 1 条，唯一实现
+          services/billing.py</small
+        >
       </div>
       <dl class="sign-fact-grid">
-        <div><dt>平台编号</dt><dd class="mono-id">{{ detail.id }}</dd></div>
-        <div><dt>厂商编号</dt><dd class="mono-id">{{ detail.vendor_sign_id || "—" }}</dd></div>
-        <div><dt>规范签名</dt><dd>【{{ detail.name }}】</dd></div>
-        <div><dt>计入计费长度</dt><dd class="mono-id">+{{ detail.name.length + 2 }} 字</dd></div>
+        <div
+          ><dt>平台编号</dt><dd class="mono-id">{{ detail.id }}</dd></div
+        >
+        <div
+          ><dt>厂商编号</dt><dd class="mono-id">{{ detail.vendor_sign_id || "—" }}</dd></div
+        >
+        <div
+          ><dt>规范签名</dt><dd>【{{ detail.name }}】</dd></div
+        >
+        <div
+          ><dt>计入计费长度</dt><dd class="mono-id">+{{ detail.name.length + 2 }} 字</dd></div
+        >
       </dl>
       <div v-if="isAdmin" class="sign-content-block" data-testid="sign-apps">
         <span>默认签名引用（仅 admin 可见）</span>
@@ -474,17 +529,33 @@ onMounted(load)
           <span v-if="signAppsLoading" class="sign-apps-note">加载中…</span>
           <span v-else-if="signAppsError" class="sign-apps-note">应用引用信息加载失败</span>
           <template v-else>
-            <span v-for="app in signApps" :key="app.id" class="sign-app-chip">{{ app.name }}<template v-if="app.status === 0">（已停用）</template></span>
+            <span v-for="app in signApps" :key="app.id" class="sign-app-chip"
+              >{{ app.name }}<template v-if="app.status === 0">（已停用）</template></span
+            >
             <span v-if="!signApps.length" class="sign-apps-note">暂无应用把该签名设为默认签名</span>
           </template>
         </div>
-        <small class="sign-proof-hint">来自 GET /admin/apps 现有 default_sign 字段前端联查，不新增接口；停用应用同样计入删除约束。</small>
+        <small class="sign-proof-hint"
+          >来自 GET /admin/apps 现有 default_sign 字段前端联查，不新增接口；停用应用同样计入删除约束。</small
+        >
       </div>
       <div v-if="canWrite" class="sign-detail-actions">
-        <el-button v-if="canEdit(detail)" data-testid="sign-detail-edit" type="primary" @click="editFromDetail">修改并重新提交</el-button>
-        <el-button v-if="canSync(detail)" data-testid="sign-detail-sync" :loading="syncingId === detail.id" @click="sync(detail)">同步审核状态</el-button>
-        <el-button v-if="canAdopt(detail)" data-testid="sign-detail-adopt" type="primary" @click="openAdopt(detail)">关联已有签名</el-button>
-        <el-button v-if="canDelete(detail)" data-testid="sign-detail-delete" link type="danger" @click="remove(detail)">删除签名</el-button>
+        <el-button v-if="canEdit(detail)" data-testid="sign-detail-edit" type="primary" @click="editFromDetail"
+          >修改并重新提交</el-button
+        >
+        <el-button
+          v-if="canSync(detail)"
+          data-testid="sign-detail-sync"
+          :loading="syncingId === detail.id"
+          @click="sync(detail)"
+          >同步审核状态</el-button
+        >
+        <el-button v-if="canAdopt(detail)" data-testid="sign-detail-adopt" type="primary" @click="openAdopt(detail)"
+          >关联已有签名</el-button
+        >
+        <el-button v-if="canDelete(detail)" data-testid="sign-detail-delete" link type="danger" @click="remove(detail)"
+          >删除签名</el-button
+        >
         <p class="why">已通过审核的签名不可编辑或删除，但仍可同步厂商状态；已被应用或批次引用的驳回签名请新建。</p>
       </div>
     </template>
@@ -520,7 +591,9 @@ onMounted(load)
     </template>
     <template #footer>
       <el-button @click="adoptOpen = false">取消</el-button>
-      <el-button data-testid="sign-adopt-submit" type="primary" :loading="adopting" @click="adopt">确认关联并查询状态</el-button>
+      <el-button data-testid="sign-adopt-submit" type="primary" :loading="adopting" @click="adopt"
+        >确认关联并查询状态</el-button
+      >
     </template>
   </el-drawer>
 
@@ -555,7 +628,9 @@ onMounted(load)
         <template v-if="billingChars !== null">
           <p>平台保存：{{ bareName }} <small>（裸名称，全局唯一）</small></p>
           <p class="sign-preview-text">下发与计费：【{{ bareName }}】</p>
-          <small class="sign-proof-hint">计入每条计费长度 +{{ billingChars }} 字（含方括号）· 最终内容含签名与退订语 ≤70 字计 1 条</small>
+          <small class="sign-proof-hint"
+            >计入每条计费长度 +{{ billingChars }} 字（含方括号）· 最终内容含签名与退订语 ≤70 字计 1 条</small
+          >
         </template>
         <p v-else class="sign-preview-text">输入名称后实时预览规范化结果</p>
       </div>
@@ -565,7 +640,9 @@ onMounted(load)
         <small>{{ EDITOR_FOOTNOTE }}</small>
         <div>
           <el-button @click="editorOpen = false">取消</el-button>
-          <el-button data-testid="sign-submit" type="primary" :loading="saving" @click="submit">{{ editingSource === null ? "提交厂商审核" : "重新提交审核" }}</el-button>
+          <el-button data-testid="sign-submit" type="primary" :loading="saving" @click="submit">{{
+            editingSource === null ? "提交厂商审核" : "重新提交审核"
+          }}</el-button>
         </div>
       </div>
     </template>

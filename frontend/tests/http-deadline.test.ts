@@ -1,11 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import {
-  AUTH_JSON_MAX_BYTES,
-  HttpBodyError,
-  fetchJsonWithDeadline,
-  readJsonBody,
-} from "../src/api/httpDeadline"
+import { AUTH_JSON_MAX_BYTES, HttpBodyError, fetchJsonWithDeadline, readJsonBody } from "../src/api/httpDeadline"
 
 function hangingBodyResponse(prefix = '{"ok":'): Response {
   return new Response(
@@ -31,11 +26,15 @@ describe("端到端 JSON Deadline", () => {
       vi.fn(() => Promise.resolve(hangingBodyResponse())),
     )
 
-    const pending = fetchJsonWithDeadline("/api/v1/web/auth/refresh", { method: "POST" }, {
-      timeoutMs: 10_000,
-      maxBodyBytes: AUTH_JSON_MAX_BYTES,
-      timeoutMessage: "认证请求超时",
-    })
+    const pending = fetchJsonWithDeadline(
+      "/api/v1/web/auth/refresh",
+      { method: "POST" },
+      {
+        timeoutMs: 10_000,
+        maxBodyBytes: AUTH_JSON_MAX_BYTES,
+        timeoutMessage: "认证请求超时",
+      },
+    )
     const assertion = expect(pending).rejects.toMatchObject({ name: "TimeoutError", message: "认证请求超时" })
     await vi.advanceTimersByTimeAsync(9_999)
     await vi.advanceTimersByTimeAsync(1)
@@ -49,11 +48,15 @@ describe("端到端 JSON Deadline", () => {
       vi.fn(() => Promise.resolve(hangingBodyResponse())),
     )
 
-    const pending = fetchJsonWithDeadline("/api/v1/web/auth/login", { method: "POST" }, {
-      timeoutMs: 55_000,
-      callerSignal: caller.signal,
-      maxBodyBytes: AUTH_JSON_MAX_BYTES,
-    })
+    const pending = fetchJsonWithDeadline(
+      "/api/v1/web/auth/login",
+      { method: "POST" },
+      {
+        timeoutMs: 55_000,
+        callerSignal: caller.signal,
+        maxBodyBytes: AUTH_JSON_MAX_BYTES,
+      },
+    )
     const assertion = expect(pending).rejects.toMatchObject({ name: "AbortError" })
     await Promise.resolve()
     caller.abort(new DOMException("会话已切换", "AbortError"))
@@ -88,9 +91,9 @@ describe("端到端 JSON Deadline", () => {
       status: 200,
       headers: { "Content-Type": "application/json" },
     })
-    await expect(
-      readJsonBody(response, new AbortController().signal, AUTH_JSON_MAX_BYTES),
-    ).rejects.toBeInstanceOf(HttpBodyError)
+    await expect(readJsonBody(response, new AbortController().signal, AUTH_JSON_MAX_BYTES)).rejects.toBeInstanceOf(
+      HttpBodyError,
+    )
   })
 
   it("无效 JSON 不回显正文", async () => {
@@ -98,9 +101,7 @@ describe("端到端 JSON Deadline", () => {
       status: 200,
       headers: { "Content-Type": "application/json" },
     })
-    await expect(
-      readJsonBody(response, new AbortController().signal, AUTH_JSON_MAX_BYTES),
-    ).rejects.toMatchObject({
+    await expect(readJsonBody(response, new AbortController().signal, AUTH_JSON_MAX_BYTES)).rejects.toMatchObject({
       code: "INVALID_JSON_RESPONSE",
       message: "响应不是有效 JSON",
     })

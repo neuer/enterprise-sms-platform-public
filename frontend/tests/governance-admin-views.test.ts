@@ -11,7 +11,7 @@ function response(body: unknown, status = 200) {
   return {
     ok: status >= 200 && status < 300,
     status,
-    headers: { get: (name: string) => name === "content-length" && body === undefined ? "0" : null },
+    headers: { get: (name: string) => (name === "content-length" && body === undefined ? "0" : null) },
     json: async () => body,
   }
 }
@@ -344,10 +344,12 @@ describe("管理员治理页面", () => {
     expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/rotate-key"))).toHaveLength(1)
     expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/rotate-callback-secret"))).toHaveLength(0)
 
-    resolveRotation(response({
-      api_key: "current-final-key",
-      old_key_expires_at: "2026-07-13T08:00:00+08:00",
-    }))
+    resolveRotation(
+      response({
+        api_key: "current-final-key",
+        old_key_expires_at: "2026-07-13T08:00:00+08:00",
+      }),
+    )
     await flushPromises()
 
     expect(document.body.textContent).toContain("这是当前最终 API Key")
@@ -549,12 +551,8 @@ describe("管理员治理页面", () => {
     // 启用流程：先 GET 权威配置，再 PUT 仅改 status
     const calls = fetch.mock.calls
     const order = fetch.mock.invocationCallOrder
-    const getIndex = calls.findIndex(
-      ([url, init]) => String(url).endsWith("/admin/apps/2") && init?.method === "GET",
-    )
-    const putIndex = calls.findIndex(
-      ([url, init]) => String(url).endsWith("/admin/apps/2") && init?.method === "PUT",
-    )
+    const getIndex = calls.findIndex(([url, init]) => String(url).endsWith("/admin/apps/2") && init?.method === "GET")
+    const putIndex = calls.findIndex(([url, init]) => String(url).endsWith("/admin/apps/2") && init?.method === "PUT")
     expect(getIndex).toBeGreaterThanOrEqual(0)
     expect(putIndex).toBeGreaterThanOrEqual(0)
     expect(order[getIndex]).toBeLessThan(order[putIndex])
@@ -636,8 +634,9 @@ describe("管理员治理页面", () => {
     expect(select.attributes("placeholder")).toBeUndefined()
     await select.trigger("click")
     await flushPromises()
-    const optionTexts = Array.from(document.body.querySelectorAll(".el-select-dropdown__item"))
-      .map((el) => el.textContent ?? "")
+    const optionTexts = Array.from(document.body.querySelectorAll(".el-select-dropdown__item")).map(
+      (el) => el.textContent ?? "",
+    )
     expect(optionTexts.some((text) => text.includes("【青鸾平台】"))).toBe(true)
     expect(optionTexts.some((text) => text.includes("青鸾商城"))).toBe(false)
     // 当前值已通过 → 不出现遗留标注
@@ -655,8 +654,9 @@ describe("管理员治理页面", () => {
     await flushPromises()
     await wrapper.get("[data-testid='default-sign-select']").trigger("click")
     await flushPromises()
-    const legacyOptions = Array.from(document.body.querySelectorAll(".el-select-dropdown__item"))
-      .map((el) => el.textContent ?? "")
+    const legacyOptions = Array.from(document.body.querySelectorAll(".el-select-dropdown__item")).map(
+      (el) => el.textContent ?? "",
+    )
     expect(legacyOptions.some((text) => text.includes("【旧签名】（未通过审核的遗留值）"))).toBe(true)
 
     wrapper.unmount()
@@ -768,7 +768,10 @@ describe("管理员治理页面", () => {
       id: 12,
       name: "工单通知",
       content: "尊敬的{1}，您的工单{2}已创建",
-      var_specs: [{ pos: 1, max_len: 10 }, { pos: 2, max_len: 20 }],
+      var_specs: [
+        { pos: 1, max_len: 10 },
+        { pos: 2, max_len: 20 },
+      ],
       dept: "平台技术部",
       vendor_template_id: "T123",
       vendor_state: "approved",
@@ -812,7 +815,7 @@ describe("管理员治理页面", () => {
     const pythonBody = wrapper.get("[data-testid='demo-script-body-python']")
     expect(pythonBody.text()).toContain("import requests")
     expect(pythonBody.text()).toContain('os.environ["SMS_API_KEY"]')
-    expect(pythonBody.text()).toContain("send_template([\"138****8000\"], 12, [\"示例参数1\", \"示例参数2\"]")
+    expect(pythonBody.text()).toContain('send_template(["138****8000"], 12, ["示例参数1", "示例参数2"]')
 
     await wrapper.get("[data-testid='demo-copy']").trigger("click")
     await flushPromises()
@@ -826,8 +829,15 @@ describe("管理员治理页面", () => {
   })
 
   it("黑名单只展示掩码，添加收进抽屉并支持批量添加和删除", async () => {
-    const item = { phone_hmac: "a".repeat(64), phone_mask: "138****8000", source: "manual", remark: "投诉", created_at: null }
-    const fetch = vi.fn()
+    const item = {
+      phone_hmac: "a".repeat(64),
+      phone_mask: "138****8000",
+      source: "manual",
+      remark: "投诉",
+      created_at: null,
+    }
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(response({ total: 1, items: [item] }))
       .mockResolvedValueOnce(response({ added: 2, updated: 0, items: [item] }))
       .mockResolvedValueOnce(response({ total: 1, items: [item] }))
@@ -857,7 +867,9 @@ describe("管理员治理页面", () => {
     ;(document.querySelector("[data-testid='blacklist-add']") as HTMLElement).click()
     await flushPromises()
     expect(JSON.parse(String(fetch.mock.calls[1][1].body))).toEqual({
-      phones: ["13800138000", "13900139000"], source: "manual", remark: null,
+      phones: ["13800138000", "13900139000"],
+      source: "manual",
+      remark: null,
     })
 
     await wrapper.get("[data-testid='blacklist-delete-aaaaaaaa']").trigger("click")
@@ -914,17 +926,35 @@ describe("管理员治理页面", () => {
   })
 
   it("敏感词以词条墙呈现，添加收进抽屉并支持批量添加和删除", async () => {
-    const config = { key: "sensitive_hit_action", value: "block", value_type: "str", description: "敏感词策略", group: "发送策略", sensitive: false, configured: true, beat_restart_required: false, updated_by: null, updated_at: null, default: "block", min_value: null, max_value: null }
+    const config = {
+      key: "sensitive_hit_action",
+      value: "block",
+      value_type: "str",
+      description: "敏感词策略",
+      group: "发送策略",
+      sensitive: false,
+      configured: true,
+      beat_restart_required: false,
+      updated_by: null,
+      updated_at: null,
+      default: "block",
+      min_value: null,
+      max_value: null,
+    }
     const word = { id: 1, word: "测试敏感词", created_at: null }
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith("/admin/configs")) return response([config])
-      if (url.endsWith("/admin/sensitive-words") && init?.method === "POST") return response({ added: 2, skipped: 1, items: [] })
+      if (url.endsWith("/admin/sensitive-words") && init?.method === "POST")
+        return response({ added: 2, skipped: 1, items: [] })
       if (url.includes("/admin/sensitive-words/")) return response(undefined, 204)
       return response({ total: 1, items: [word] })
     })
     vi.stubGlobal("fetch", fetch)
     vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
-    const wrapper = mount(SensitiveWordView, { attachTo: document.body, global: { plugins: [createPinia(), ElementPlus] } })
+    const wrapper = mount(SensitiveWordView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
     await flushPromises()
 
     // 词条墙单一 DOM：无 el-table、无移动端卡片列表
@@ -953,20 +983,41 @@ describe("管理员治理页面", () => {
     // 词条 × 删除
     await wrapper.get("[data-testid='sensitive-delete-1']").trigger("click")
     await flushPromises()
-    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith("/admin/sensitive-words/1") && init?.method === "DELETE")).toBe(true)
+    expect(
+      fetch.mock.calls.some(
+        ([url, init]) => String(url).endsWith("/admin/sensitive-words/1") && init?.method === "DELETE",
+      ),
+    ).toBe(true)
     wrapper.unmount()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
 
   it("敏感词添加抽屉实时预检：批内去重计数、超长线号并禁用提交", async () => {
-    const config = { key: "sensitive_hit_action", value: "block", value_type: "str", description: "敏感词策略", group: "发送策略", sensitive: false, configured: true, beat_restart_required: false, updated_by: null, updated_at: null, default: "block", min_value: null, max_value: null }
+    const config = {
+      key: "sensitive_hit_action",
+      value: "block",
+      value_type: "str",
+      description: "敏感词策略",
+      group: "发送策略",
+      sensitive: false,
+      configured: true,
+      beat_restart_required: false,
+      updated_by: null,
+      updated_at: null,
+      default: "block",
+      min_value: null,
+      max_value: null,
+    }
     const fetch = vi.fn(async (url: string, _init?: RequestInit) => {
       if (url.endsWith("/admin/configs")) return response([config])
       return response({ total: 0, items: [] })
     })
     vi.stubGlobal("fetch", fetch)
-    const wrapper = mount(SensitiveWordView, { attachTo: document.body, global: { plugins: [createPinia(), ElementPlus] } })
+    const wrapper = mount(SensitiveWordView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
     await flushPromises()
 
     await wrapper.get("[data-testid='sensitive-add-open']").trigger("click")
@@ -991,7 +1042,21 @@ describe("管理员治理页面", () => {
   })
 
   it("敏感词命中策略 seg 切换写入配置，失败回退原值", async () => {
-    const config = { key: "sensitive_hit_action", value: "block", value_type: "str", description: "敏感词策略", group: "发送策略", sensitive: false, configured: true, beat_restart_required: false, updated_by: null, updated_at: null, default: "block", min_value: null, max_value: null }
+    const config = {
+      key: "sensitive_hit_action",
+      value: "block",
+      value_type: "str",
+      description: "敏感词策略",
+      group: "发送策略",
+      sensitive: false,
+      configured: true,
+      beat_restart_required: false,
+      updated_by: null,
+      updated_at: null,
+      default: "block",
+      min_value: null,
+      max_value: null,
+    }
     let failPut = false
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith("/admin/configs") && init?.method === "PUT") {
@@ -1002,7 +1067,10 @@ describe("管理员治理页面", () => {
       return response({ total: 0, items: [] })
     })
     vi.stubGlobal("fetch", fetch)
-    const wrapper = mount(SensitiveWordView, { attachTo: document.body, global: { plugins: [createPinia(), ElementPlus] } })
+    const wrapper = mount(SensitiveWordView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
     await flushPromises()
 
     expect(wrapper.get("[data-testid='sensitive-policy-block']").classes()).toContain("on")
@@ -1010,7 +1078,10 @@ describe("管理员治理页面", () => {
     await flushPromises()
     expect(fetch).toHaveBeenCalledWith(
       "/api/v1/web/admin/configs",
-      expect.objectContaining({ method: "PUT", body: JSON.stringify({ items: [{ key: "sensitive_hit_action", value: "audit" }] }) }),
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ items: [{ key: "sensitive_hit_action", value: "audit" }] }),
+      }),
     )
     expect(wrapper.get("[data-testid='sensitive-policy-audit']").classes()).toContain("on")
 

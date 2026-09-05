@@ -84,9 +84,7 @@ const signs = [
   },
 ]
 
-const statusCases: Array<
-  [VendorTestStatus["mode"], VendorTestStatus["pause_kind"], string]
-> = [
+const statusCases: Array<[VendorTestStatus["mode"], VendorTestStatus["pause_kind"], string]> = [
   ["setup_required", null, "待完成设置"],
   ["inactive", null, "待激活"],
   ["controlled", null, "受控联调中"],
@@ -147,12 +145,8 @@ beforeEach(() => {
 })
 
 function fillResetDialog(passwordValue: string, confirmationValue: string): void {
-  const password = document.querySelector(
-    "[data-testid='vendor-reset-password']",
-  ) as HTMLInputElement
-  const confirmation = document.querySelector(
-    "[data-testid='vendor-reset-confirmation']",
-  ) as HTMLInputElement
+  const password = document.querySelector("[data-testid='vendor-reset-password']") as HTMLInputElement
+  const confirmation = document.querySelector("[data-testid='vendor-reset-confirmation']") as HTMLInputElement
   password.value = passwordValue
   password.dispatchEvent(new Event("input", { bubbles: true }))
   confirmation.value = confirmationValue
@@ -233,9 +227,7 @@ describe("系统配置页真实联调控制台", () => {
     expect(document.querySelector("[data-testid='vendor-secret-name']")).toBeNull()
     expect(document.querySelector("[data-testid='vendor-secret-key']")).toBeNull()
     expect(document.body.textContent).toContain("当前入口不支持正式凭据安全加密。")
-    expect(document.body.textContent).toContain(
-      "当前页面不处于安全上下文（非 HTTPS），无法对凭据加密封装。",
-    )
+    expect(document.body.textContent).toContain("当前页面不处于安全上下文（非 HTTPS），无法对凭据加密封装。")
     expect(document.body.textContent).toContain("请改用 HTTPS 地址访问后重试。")
 
     const submit = [...document.querySelectorAll("button")].find((button) =>
@@ -246,9 +238,7 @@ describe("系统配置页真实联调控制台", () => {
     await flushPromises()
 
     const sensitiveRequests = fetch.mock.calls.filter(([url]) =>
-      ["/step-up", "/seal-sessions", "/credentials"].some((suffix) =>
-        String(url).endsWith(suffix),
-      ),
+      ["/step-up", "/seal-sessions", "/credentials"].some((suffix) => String(url).endsWith(suffix)),
     )
     expect(sensitiveRequests).toEqual([])
     wrapper.unmount()
@@ -303,35 +293,32 @@ describe("系统配置页真实联调控制台", () => {
       requested_at: "2026-07-17T09:31:00+08:00",
       completed_at: null,
     }
-    const fetch = consoleFetch(
-      { ...baseStatus, mode: "controlled" },
-      (url, init) => {
-        if (url.endsWith("/vendor-test/messages/preview")) {
-          return response({
-            final_length: 18,
-            est_segments: 1,
-            quota_cost: 1,
-            segment_parts: [{ used: 18, capacity: 70, partial: false }],
-            next_segment_at: 71,
-            approval_required: false,
-            unsubscribe_appended: false,
-            deferred_reason: null,
-          })
-        }
-        if (url.endsWith("/vendor-test/messages") && init.method === "POST") {
-          return response(uatOperation)
-        }
-        if (url.endsWith(`/vendor-test/messages/${uatOperation.operation_id}`)) {
-          uatPolls += 1
-          return response({
-            ...uatOperation,
-            status: "succeeded",
-            completed_at: "2026-07-17T09:31:01+08:00",
-          })
-        }
-        return undefined
-      },
-    )
+    const fetch = consoleFetch({ ...baseStatus, mode: "controlled" }, (url, init) => {
+      if (url.endsWith("/vendor-test/messages/preview")) {
+        return response({
+          final_length: 18,
+          est_segments: 1,
+          quota_cost: 1,
+          segment_parts: [{ used: 18, capacity: 70, partial: false }],
+          next_segment_at: 71,
+          approval_required: false,
+          unsubscribe_appended: false,
+          deferred_reason: null,
+        })
+      }
+      if (url.endsWith("/vendor-test/messages") && init.method === "POST") {
+        return response(uatOperation)
+      }
+      if (url.endsWith(`/vendor-test/messages/${uatOperation.operation_id}`)) {
+        uatPolls += 1
+        return response({
+          ...uatOperation,
+          status: "succeeded",
+          completed_at: "2026-07-17T09:31:01+08:00",
+        })
+      }
+      return undefined
+    })
     vi.stubGlobal("fetch", fetch)
     const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     const wrapper = mountConsole()
@@ -379,41 +366,38 @@ describe("系统配置页真实联调控制台", () => {
 
   it("真实 UAT 响应不明确时重试复用同一浏览器幂等键", async () => {
     const bodies: Array<{ biz_id: string }> = []
-    const fetch = consoleFetch(
-      { ...baseStatus, mode: "controlled" },
-      (url, init) => {
-        if (url.endsWith("/vendor-test/messages/preview")) {
-          return response({
-            final_length: 4,
-            est_segments: 1,
-            quota_cost: 1,
-            segment_parts: [{ used: 4, capacity: 70, partial: false }],
-            next_segment_at: 71,
-            approval_required: false,
-            unsubscribe_appended: false,
-            deferred_reason: null,
-          })
+    const fetch = consoleFetch({ ...baseStatus, mode: "controlled" }, (url, init) => {
+      if (url.endsWith("/vendor-test/messages/preview")) {
+        return response({
+          final_length: 4,
+          est_segments: 1,
+          quota_cost: 1,
+          segment_parts: [{ used: 4, capacity: 70, partial: false }],
+          next_segment_at: 71,
+          approval_required: false,
+          unsubscribe_appended: false,
+          deferred_reason: null,
+        })
+      }
+      if (url.endsWith("/vendor-test/messages") && init.method === "POST") {
+        bodies.push(JSON.parse(String(init.body)) as { biz_id: string })
+        if (bodies.length === 1) {
+          return response({ code: "AUTH_SESSION_UNAVAILABLE", message: "结果不明确" }, 503)
         }
-        if (url.endsWith("/vendor-test/messages") && init.method === "POST") {
-          bodies.push(JSON.parse(String(init.body)) as { biz_id: string })
-          if (bodies.length === 1) {
-            return response({ code: "AUTH_SESSION_UNAVAILABLE", message: "结果不明确" }, 503)
-          }
-          return response({
-            operation_id: "00000000-0000-4000-8000-000000000199",
-            operation_type: "uat_send",
-            status: "succeeded",
-            safe_code: null,
-            vendor_code: null,
-            batch_no: "UAT-RETRY-001",
-            checkpoint_id: null,
-            requested_at: "2026-07-17T09:31:00+08:00",
-            completed_at: "2026-07-17T09:31:01+08:00",
-          })
-        }
-        return undefined
-      },
-    )
+        return response({
+          operation_id: "00000000-0000-4000-8000-000000000199",
+          operation_type: "uat_send",
+          status: "succeeded",
+          safe_code: null,
+          vendor_code: null,
+          batch_no: "UAT-RETRY-001",
+          checkpoint_id: null,
+          requested_at: "2026-07-17T09:31:00+08:00",
+          completed_at: "2026-07-17T09:31:01+08:00",
+        })
+      }
+      return undefined
+    })
     vi.stubGlobal("fetch", fetch)
     vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     const wrapper = mountConsole()
@@ -452,21 +436,15 @@ describe("系统配置页真实联调控制台", () => {
 
     await wrapper.get("[data-testid='vendor-refresh-recipient-9']").trigger("click")
     await flushPromises()
-    const phone = document.querySelector(
-      "[data-testid='vendor-refresh-phone']",
-    ) as HTMLInputElement
+    const phone = document.querySelector("[data-testid='vendor-refresh-phone']") as HTMLInputElement
     expect(phone.autocomplete).toBe("off")
     phone.value = "13900000001"
     phone.dispatchEvent(new Event("input", { bubbles: true }))
-    const submit = document.querySelector(
-      "[data-testid='vendor-refresh-submit']",
-    ) as HTMLButtonElement
+    const submit = document.querySelector("[data-testid='vendor-refresh-submit']") as HTMLButtonElement
     submit.click()
     await flushPromises()
 
-    const call = fetch.mock.calls.find(([url]) =>
-      url.endsWith("/vendor-test/recipients/9/refresh-index"),
-    )
+    const call = fetch.mock.calls.find(([url]) => url.endsWith("/vendor-test/recipients/9/refresh-index"))
     expect(JSON.parse(String(call?.[1].body))).toEqual({ phone: "13900000001" })
     expect(document.querySelector("[data-testid='vendor-refresh-phone']")).toBeNull()
     expect(JSON.stringify(localStorage)).not.toContain("13900000001")
@@ -486,27 +464,24 @@ describe("系统配置页真实联调控制台", () => {
       requested_at: "2026-07-17T09:32:00+08:00",
       completed_at: "2026-07-17T09:32:01+08:00",
     }
-    const fetch = consoleFetch(
-      { ...baseStatus, mode: "controlled" },
-      (url, init) => {
-        if (url.endsWith("/vendor-test/messages/preview")) {
-          return response({
-            final_length: 25,
-            est_segments: 1,
-            quota_cost: 1,
-            segment_parts: [{ used: 25, capacity: 70, partial: false }],
-            next_segment_at: 71,
-            approval_required: false,
-            unsubscribe_appended: false,
-            deferred_reason: null,
-          })
-        }
-        if (url.endsWith("/vendor-test/messages") && init.method === "POST") {
-          return response(operation)
-        }
-        return undefined
-      },
-    )
+    const fetch = consoleFetch({ ...baseStatus, mode: "controlled" }, (url, init) => {
+      if (url.endsWith("/vendor-test/messages/preview")) {
+        return response({
+          final_length: 25,
+          est_segments: 1,
+          quota_cost: 1,
+          segment_parts: [{ used: 25, capacity: 70, partial: false }],
+          next_segment_at: 71,
+          approval_required: false,
+          unsubscribe_appended: false,
+          deferred_reason: null,
+        })
+      }
+      if (url.endsWith("/vendor-test/messages") && init.method === "POST") {
+        return response(operation)
+      }
+      return undefined
+    })
     vi.stubGlobal("fetch", fetch)
     vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     const wrapper = mountConsole()
@@ -524,9 +499,7 @@ describe("系统配置页真实联调控制台", () => {
     await wrapper.get("[data-testid='uat-send']").trigger("click")
     await flushPromises()
 
-    const previewCall = fetch.mock.calls.find(([url]) =>
-      url.endsWith("/vendor-test/messages/preview"),
-    )
+    const previewCall = fetch.mock.calls.find(([url]) => url.endsWith("/vendor-test/messages/preview"))
     expect(JSON.parse(String(previewCall?.[1].body))).toEqual({
       app_id: 7,
       category: "notice",
@@ -600,9 +573,11 @@ describe("系统配置页真实联调控制台", () => {
     await flushPromises()
 
     expect(polls).toBe(2)
-    expect(fetch.mock.calls.filter(([url]) => url.includes("/vendor-test/operations/")).every(
-      ([url]) => url.endsWith(operation.operation_id),
-    )).toBe(true)
+    expect(
+      fetch.mock.calls
+        .filter(([url]) => url.includes("/vendor-test/operations/"))
+        .every(([url]) => url.endsWith(operation.operation_id)),
+    ).toBe(true)
     expect(document.querySelector("[data-testid='vendor-step-up-password']")).toBeNull()
     expect(sessionStorage.getItem("current-password")).toBeNull()
     expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).toBeNull()
@@ -653,9 +628,9 @@ describe("系统配置页真实联调控制台", () => {
 
     expect(afterRefresh.text()).toContain(operation.operation_id)
     expect(afterRefresh.text()).toContain("执行中")
-    expect(fetch.mock.calls.some(([url]) =>
-      url.endsWith(`/vendor-test/operations/${operation.operation_id}`),
-    )).toBe(true)
+    expect(fetch.mock.calls.some(([url]) => url.endsWith(`/vendor-test/operations/${operation.operation_id}`))).toBe(
+      true,
+    )
     const stored = JSON.stringify(sessionStorage)
     expect(stored).toContain(operation.operation_id)
     expect(stored).not.toContain("current-password")
@@ -678,17 +653,23 @@ describe("系统配置页真实联调控制台", () => {
       completed_at: null,
     }
     let lookups = 0
-    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
-      operation_id: operation.operation_id,
-      operation_type: operation.operation_type,
-    }))
-    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
-      if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
-        lookups += 1
-        return response({ code: "NOT_FOUND", message: "操作不存在" }, status)
-      }
-      return undefined
-    }))
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
+          lookups += 1
+          return response({ code: "NOT_FOUND", message: "操作不存在" }, status)
+        }
+        return undefined
+      }),
+    )
 
     const wrapper = mountConsole()
     await flushPromises()
@@ -717,18 +698,24 @@ describe("系统配置页真实联调控制台", () => {
       completed_at: null,
     }
     let lookups = 0
-    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
-      operation_id: operation.operation_id,
-      operation_type: operation.operation_type,
-    }))
-    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
-      if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
-        lookups += 1
-        if (lookups === 1) return response({ code: "TEMPORARY", message: "暂时不可用" }, 503)
-        return response(operation)
-      }
-      return undefined
-    }))
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
+          lookups += 1
+          if (lookups === 1) return response({ code: "TEMPORARY", message: "暂时不可用" }, 503)
+          return response(operation)
+        }
+        return undefined
+      }),
+    )
 
     const wrapper = mountConsole()
     await flushPromises()
@@ -756,19 +743,25 @@ describe("系统配置页真实联调控制台", () => {
       completed_at: null,
     }
     let lookups = 0
-    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
-      operation_id: operation.operation_id,
-      operation_type: operation.operation_type,
-    }))
-    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
-      if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
-      lookups += 1
-      // 恢复成功 → 两次失败 → 一次成功 → 再次失败：验证提示只按失败段去重。
-      if (lookups === 2 || lookups === 3 || lookups === 5) {
-        return response({ code: "TEMPORARY", message: "控制代理暂不可用" }, 503)
-      }
-      return response(operation)
-    }))
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
+        lookups += 1
+        // 恢复成功 → 两次失败 → 一次成功 → 再次失败：验证提示只按失败段去重。
+        if (lookups === 2 || lookups === 3 || lookups === 5) {
+          return response({ code: "TEMPORARY", message: "控制代理暂不可用" }, 503)
+        }
+        return response(operation)
+      }),
+    )
     const error = vi.spyOn(ElMessage, "error")
 
     const wrapper = mountConsole()
@@ -812,16 +805,22 @@ describe("系统配置页真实联调控制台", () => {
     }
     const pendingPoll = deferred<ReturnType<typeof response>>()
     let lookups = 0
-    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
-      operation_id: operation.operation_id,
-      operation_type: operation.operation_type,
-    }))
-    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
-      if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
-      lookups += 1
-      if (lookups === 1) return response(operation)
-      return pendingPoll.promise
-    }))
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
+        lookups += 1
+        if (lookups === 1) return response(operation)
+        return pendingPoll.promise
+      }),
+    )
     const error = vi.spyOn(ElMessage, "error")
 
     const wrapper = mountConsole()
@@ -854,21 +853,27 @@ describe("系统配置页真实联调控制台", () => {
     }
     const initialLookup = deferred<ReturnType<typeof response>>()
     let operationLookups = 0
-    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
-      operation_id: operation.operation_id,
-      operation_type: operation.operation_type,
-    }))
-    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
-      if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
-      operationLookups += 1
-      if (operationLookups === 1) return initialLookup.promise
-      return response({
-        ...operation,
-        status: "failed",
-        safe_code: "RESET_INCOMPLETE",
-        completed_at: "2026-07-17T09:31:01+08:00",
-      })
-    }))
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
+        operationLookups += 1
+        if (operationLookups === 1) return initialLookup.promise
+        return response({
+          ...operation,
+          status: "failed",
+          safe_code: "RESET_INCOMPLETE",
+          completed_at: "2026-07-17T09:31:01+08:00",
+        })
+      }),
+    )
     const wrapper = mountConsole()
     expect(wrapper.find("[data-testid='vendor-reset']").exists()).toBe(false)
     await flushPromises()
@@ -879,9 +884,7 @@ describe("系统配置页真实联调控制台", () => {
     expect(wrapper.get("[data-testid='vendor-credentials']").attributes("disabled")).toBeDefined()
     expect(wrapper.get("[data-testid='vendor-activate']").attributes("disabled")).toBeDefined()
     expect(wrapper.get("[data-testid='vendor-add-recipient']").attributes("disabled")).toBeDefined()
-    expect(
-      wrapper.get("[data-testid='vendor-refresh-recipient-9']").attributes("disabled"),
-    ).toBeDefined()
+    expect(wrapper.get("[data-testid='vendor-refresh-recipient-9']").attributes("disabled")).toBeDefined()
     await restoringReset.trigger("click")
     expect(document.querySelector("[data-testid='vendor-reset-password']")).toBeNull()
 
@@ -911,16 +914,22 @@ describe("系统配置页真实联调控制台", () => {
       completed_at: null,
     }
     let operationLookups = 0
-    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
-      operation_id: operation.operation_id,
-      operation_type: operation.operation_type,
-    }))
-    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
-      if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
-      operationLookups += 1
-      if (operationLookups === 1) return Promise.reject(new Error("temporary network failure"))
-      return response(operation)
-    }))
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
+        operationLookups += 1
+        if (operationLookups === 1) return Promise.reject(new Error("temporary network failure"))
+        return response(operation)
+      }),
+    )
 
     const wrapper = mountConsole()
     await flushPromises()
@@ -953,23 +962,29 @@ describe("系统配置页真实联调控制台", () => {
     }
     const completionStatus = deferred<ReturnType<typeof response>>()
     let statusLookups = 0
-    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
-      operation_id: operation.operation_id,
-      operation_type: operation.operation_type,
-    }))
-    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
-      if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
-        return response(operation)
-      }
-      if (url.endsWith("/vendor-test/status")) {
-        statusLookups += 1
-        return statusLookups === 1 ? response(baseStatus) : completionStatus.promise
-      }
-      if (url.endsWith("/vendor-test/recipients")) {
-        return response(recipients)
-      }
-      return undefined
-    }))
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
+          return response(operation)
+        }
+        if (url.endsWith("/vendor-test/status")) {
+          statusLookups += 1
+          return statusLookups === 1 ? response(baseStatus) : completionStatus.promise
+        }
+        if (url.endsWith("/vendor-test/recipients")) {
+          return response(recipients)
+        }
+        return undefined
+      }),
+    )
 
     const wrapper = mountConsole()
     await flushPromises()
@@ -980,12 +995,14 @@ describe("系统配置页真实联调控制台", () => {
     await wrapper.get("[data-testid='vendor-credentials']").trigger("click")
     expect(document.querySelector("[data-testid='vendor-reset-password']")).toBeNull()
 
-    completionStatus.resolve(response({
-      ...baseStatus,
-      mode: "setup_required",
-      credential_configured: false,
-      active_recipient_count: 1,
-    }))
+    completionStatus.resolve(
+      response({
+        ...baseStatus,
+        mode: "setup_required",
+        credential_configured: false,
+        active_recipient_count: 1,
+      }),
+    )
     await flushPromises()
 
     expect(wrapper.find("[data-testid='vendor-reset']").exists()).toBe(false)
@@ -1008,30 +1025,36 @@ describe("系统配置页真实联调控制台", () => {
     const oldStatus = deferred<ReturnType<typeof response>>()
     let statusLookups = 0
     let recipientLookups = 0
-    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
-      operation_id: operation.operation_id,
-      operation_type: operation.operation_type,
-    }))
-    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
-      if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
-        return response(operation)
-      }
-      if (url.endsWith("/vendor-test/status")) {
-        statusLookups += 1
-        if (statusLookups === 1) return oldStatus.promise
-        return response({
-          ...baseStatus,
-          mode: "setup_required",
-          credential_configured: false,
-          active_recipient_count: 0,
-        })
-      }
-      if (url.endsWith("/vendor-test/recipients")) {
-        recipientLookups += 1
-        return response(recipientLookups === 1 ? recipients : [])
-      }
-      return undefined
-    }))
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
+          return response(operation)
+        }
+        if (url.endsWith("/vendor-test/status")) {
+          statusLookups += 1
+          if (statusLookups === 1) return oldStatus.promise
+          return response({
+            ...baseStatus,
+            mode: "setup_required",
+            credential_configured: false,
+            active_recipient_count: 0,
+          })
+        }
+        if (url.endsWith("/vendor-test/recipients")) {
+          recipientLookups += 1
+          return response(recipientLookups === 1 ? recipients : [])
+        }
+        return undefined
+      }),
+    )
 
     const wrapper = mountConsole()
     await flushPromises()
@@ -1063,37 +1086,45 @@ describe("系统配置页真实联调控制台", () => {
     let statusLookups = 0
     let recipientLookups = 0
     let appLookups = 0
-    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
-      operation_id: operation.operation_id,
-      operation_type: operation.operation_type,
-    }))
-    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
-      if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
-        return response(operation)
-      }
-      if (url.endsWith("/vendor-test/status")) {
-        statusLookups += 1
-        return response(statusLookups === 1
-          ? baseStatus
-          : {
-              ...baseStatus,
-              mode: "setup_required",
-              credential_configured: false,
-              active_recipient_count: 0,
-            })
-      }
-      if (url.endsWith("/vendor-test/recipients")) {
-        recipientLookups += 1
-        return response(recipientLookups === 1 ? recipients : [])
-      }
-      if (url.endsWith("/admin/apps")) {
-        appLookups += 1
-        return appLookups === 2
-          ? response({ code: "TEMPORARY", message: "temporary app failure" }, 503)
-          : response(apps)
-      }
-      return undefined
-    }))
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) {
+          return response(operation)
+        }
+        if (url.endsWith("/vendor-test/status")) {
+          statusLookups += 1
+          return response(
+            statusLookups === 1
+              ? baseStatus
+              : {
+                  ...baseStatus,
+                  mode: "setup_required",
+                  credential_configured: false,
+                  active_recipient_count: 0,
+                },
+          )
+        }
+        if (url.endsWith("/vendor-test/recipients")) {
+          recipientLookups += 1
+          return response(recipientLookups === 1 ? recipients : [])
+        }
+        if (url.endsWith("/admin/apps")) {
+          appLookups += 1
+          return appLookups === 2
+            ? response({ code: "TEMPORARY", message: "temporary app failure" }, 503)
+            : response(apps)
+        }
+        return undefined
+      }),
+    )
 
     const wrapper = mountConsole()
     await flushPromises()
@@ -1133,12 +1164,7 @@ describe("系统配置页真实联调控制台", () => {
       recipients,
       false,
     ],
-    [
-      "blocked",
-      { ...baseStatus, mode: "blocked" as const, pause_kind: "critical" as const },
-      recipients,
-      false,
-    ],
+    ["blocked", { ...baseStatus, mode: "blocked" as const, pause_kind: "critical" as const }, recipients, false],
     [
       "setup_required 全新环境",
       {
@@ -1163,10 +1189,13 @@ describe("系统配置页真实联调控制台", () => {
       false,
     ],
   ])("仅在安全可切回状态显示动作：%s", async (_scenario, currentStatus, projectedRecipients, visible) => {
-    vi.stubGlobal("fetch", consoleFetch(currentStatus, (url) => {
-      if (url.endsWith("/vendor-test/recipients")) return response(projectedRecipients)
-      return undefined
-    }))
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(currentStatus, (url) => {
+        if (url.endsWith("/vendor-test/recipients")) return response(projectedRecipients)
+        return undefined
+      }),
+    )
 
     const wrapper = mountConsole()
     await flushPromises()
@@ -1188,14 +1217,20 @@ describe("系统配置页真实联调控制台", () => {
       requested_at: "2026-07-17T09:31:00+08:00",
       completed_at: null,
     }
-    sessionStorage.setItem("sms-platform:vendor-test:operation:v1", JSON.stringify({
-      operation_id: operation.operation_id,
-      operation_type: operation.operation_type,
-    }))
-    vi.stubGlobal("fetch", consoleFetch(baseStatus, (url) => {
-      if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return response(operation)
-      return undefined
-    }))
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return response(operation)
+        return undefined
+      }),
+    )
 
     const wrapper = mountConsole()
     await flushPromises()
@@ -1272,12 +1307,8 @@ describe("系统配置页真实联调控制台", () => {
     clickResetSubmit()
     await flushPromises()
     expect(fetch.mock.calls.some(([url]) => url.endsWith("/vendor-test/step-up"))).toBe(false)
-    expect((document.querySelector(
-      "[data-testid='vendor-reset-password']",
-    ) as HTMLInputElement).value).toBe("")
-    expect((document.querySelector(
-      "[data-testid='vendor-reset-confirmation']",
-    ) as HTMLInputElement).value).toBe("")
+    expect((document.querySelector("[data-testid='vendor-reset-password']") as HTMLInputElement).value).toBe("")
+    expect((document.querySelector("[data-testid='vendor-reset-confirmation']") as HTMLInputElement).value).toBe("")
 
     fillResetDialog("current-password", "切回Mock")
     clickResetSubmit()
@@ -1304,9 +1335,7 @@ describe("系统配置页真实联调控制台", () => {
     expect(wrapper.text()).toContain("待完成设置")
     expect(wrapper.text()).toContain("未激活")
     expect(wrapper.text()).toContain("139****0001")
-    expect(success).toHaveBeenCalledWith(
-      "测试环境已切回 Mock，正式厂商凭据已撤销；测试号码与生产环境未变",
-    )
+    expect(success).toHaveBeenCalledWith("测试环境已切回 Mock，正式厂商凭据已撤销；测试号码与生产环境未变")
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).toBeNull()
     expect(JSON.stringify(sessionStorage)).not.toContain("single-use-reset-token")
@@ -1358,20 +1387,14 @@ describe("系统配置页真实联调控制台", () => {
     await wrapper.get("[data-testid='vendor-reset']").trigger("click")
     await flushPromises()
     fillResetDialog("close-password", "切回Mock")
-    const stepUpDialog = wrapper.findAllComponents(ElDialog).find(
-      (dialog) => dialog.props("modelValue") === true,
-    )
+    const stepUpDialog = wrapper.findAllComponents(ElDialog).find((dialog) => dialog.props("modelValue") === true)
     expect(stepUpDialog).toBeDefined()
 
     stepUpDialog!.vm.$emit("close")
     await flushPromises()
 
-    expect((document.querySelector(
-      "[data-testid='vendor-reset-password']",
-    ) as HTMLInputElement).value).toBe("")
-    expect((document.querySelector(
-      "[data-testid='vendor-reset-confirmation']",
-    ) as HTMLInputElement).value).toBe("")
+    expect((document.querySelector("[data-testid='vendor-reset-password']") as HTMLInputElement).value).toBe("")
+    expect((document.querySelector("[data-testid='vendor-reset-confirmation']") as HTMLInputElement).value).toBe("")
     expect(document.body.textContent).toContain("仅影响测试环境的厂商连接，操作不可撤销")
     wrapper.unmount()
   })
@@ -1380,12 +1403,14 @@ describe("系统配置页真实联调控制台", () => {
     vi.stubGlobal("fetch", consoleFetch())
     const wrapper = mountConsole()
     await flushPromises()
-    const setupState = (wrapper.vm.$ as unknown as {
-      setupState: {
-        stepUpPassword: string
-        resetConfirmation: string
+    const setupState = (
+      wrapper.vm.$ as unknown as {
+        setupState: {
+          stepUpPassword: string
+          resetConfirmation: string
+        }
       }
-    }).setupState
+    ).setupState
 
     await wrapper.get("[data-testid='vendor-reset']").trigger("click")
     await flushPromises()
@@ -1408,13 +1433,16 @@ describe("系统配置页真实联调控制台", () => {
 
   it("reset step-up 失效时保留当前登录，显示安全错误并清空敏感输入", async () => {
     sessionStorage.setItem("sms_token", "admin.jwt")
-    sessionStorage.setItem("sms_user", "{\"username\":\"admin\"}")
+    sessionStorage.setItem("sms_user", '{"username":"admin"}')
     const fetch = consoleFetch(baseStatus, (url) => {
       if (url.endsWith("/vendor-test/step-up")) {
-        return response({
-          code: "STEP_UP_EXPIRED",
-          message: "二次认证已失效，请重新输入当前账号密码",
-        }, 401)
+        return response(
+          {
+            code: "STEP_UP_EXPIRED",
+            message: "二次认证已失效，请重新输入当前账号密码",
+          },
+          401,
+        )
       }
       return undefined
     })
@@ -1436,12 +1464,8 @@ describe("系统配置页真实联调控制台", () => {
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(unauthorized).not.toHaveBeenCalled()
-    expect((document.querySelector(
-      "[data-testid='vendor-reset-password']",
-    ) as HTMLInputElement).value).toBe("")
-    expect((document.querySelector(
-      "[data-testid='vendor-reset-confirmation']",
-    ) as HTMLInputElement).value).toBe("")
+    expect((document.querySelector("[data-testid='vendor-reset-password']") as HTMLInputElement).value).toBe("")
+    expect((document.querySelector("[data-testid='vendor-reset-confirmation']") as HTMLInputElement).value).toBe("")
 
     const cancel = document.querySelector("[data-testid='vendor-reset-cancel']") as HTMLButtonElement
     cancel.click()
@@ -1453,16 +1477,19 @@ describe("系统配置页真实联调控制台", () => {
 
   it("step-up 成功但 reset 端点令牌失效时保留当前登录并清空敏感输入", async () => {
     sessionStorage.setItem("sms_token", "admin.jwt")
-    sessionStorage.setItem("sms_user", "{\"username\":\"admin\"}")
+    sessionStorage.setItem("sms_user", '{"username":"admin"}')
     const fetch = consoleFetch(baseStatus, (url) => {
       if (url.endsWith("/vendor-test/step-up")) {
         return response({ token: "expired-after-issue", expires_in: 300 })
       }
       if (url.endsWith("/vendor-test/reset")) {
-        return response({
-          code: "STEP_UP_EXPIRED",
-          message: "二次认证已过期或已使用，请重新认证后重试",
-        }, 401)
+        return response(
+          {
+            code: "STEP_UP_EXPIRED",
+            message: "二次认证已过期或已使用，请重新认证后重试",
+          },
+          401,
+        )
       }
       return undefined
     })
@@ -1484,12 +1511,8 @@ describe("系统配置页真实联调控制台", () => {
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(unauthorized).not.toHaveBeenCalled()
-    expect((document.querySelector(
-      "[data-testid='vendor-reset-password']",
-    ) as HTMLInputElement).value).toBe("")
-    expect((document.querySelector(
-      "[data-testid='vendor-reset-confirmation']",
-    ) as HTMLInputElement).value).toBe("")
+    expect((document.querySelector("[data-testid='vendor-reset-password']") as HTMLInputElement).value).toBe("")
+    expect((document.querySelector("[data-testid='vendor-reset-confirmation']") as HTMLInputElement).value).toBe("")
     expect(JSON.stringify(sessionStorage)).not.toContain("expired-after-issue")
     window.removeEventListener("sms:unauthorized", unauthorized)
     wrapper.unmount()
@@ -1508,16 +1531,13 @@ describe("系统配置页真实联调控制台", () => {
       requested_at: "2026-07-17T09:31:00+08:00",
       completed_at: "2026-07-17T09:31:01+08:00",
     }
-    const fetch = consoleFetch(
-      { ...baseStatus, mode: "blocked", pause_kind: "critical" },
-      (url) => {
-        if (url.endsWith("/vendor-test/step-up")) {
-          return response({ token: "resume-critical-token", expires_in: 300 })
-        }
-        if (url.endsWith("/vendor-test/resume")) return response(operation, 202)
-        return undefined
-      },
-    )
+    const fetch = consoleFetch({ ...baseStatus, mode: "blocked", pause_kind: "critical" }, (url) => {
+      if (url.endsWith("/vendor-test/step-up")) {
+        return response({ token: "resume-critical-token", expires_in: 300 })
+      }
+      if (url.endsWith("/vendor-test/resume")) return response(operation, 202)
+      return undefined
+    })
     vi.stubGlobal("fetch", fetch)
     vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     const wrapper = mountConsole()
@@ -1525,13 +1545,11 @@ describe("系统配置页真实联调控制台", () => {
 
     await wrapper.get("[data-testid='vendor-resume']").trigger("click")
     await flushPromises()
-    const password = document.querySelector(
-      "[data-testid='vendor-step-up-password']",
-    ) as HTMLInputElement
+    const password = document.querySelector("[data-testid='vendor-step-up-password']") as HTMLInputElement
     password.value = "resume-password"
     password.dispatchEvent(new Event("input", { bubbles: true }))
-    const submit = [...document.querySelectorAll("button")].find(
-      (button) => button.textContent?.includes("验证并恢复"),
+    const submit = [...document.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("验证并恢复"),
     ) as HTMLButtonElement
     submit.click()
     await flushPromises()
@@ -1597,9 +1615,7 @@ describe("系统配置页真实联调控制台", () => {
     fillResetDialog("current-password", "切回Mock")
     clickResetSubmit()
     await flushPromises()
-    expect(wrapper.text()).toContain(
-      "正在切回 Mock，请勿发送或重复操作；切换前历史未决记录会保留",
-    )
+    expect(wrapper.text()).toContain("正在切回 Mock，请勿发送或重复操作；切换前历史未决记录会保留")
 
     await vi.advanceTimersByTimeAsync(800)
     await flushPromises()

@@ -10,7 +10,12 @@ const chart = vi.hoisted(() => ({
 
 vi.mock("echarts/core", () => ({ init: vi.fn(() => chart), use: vi.fn() }))
 vi.mock("echarts/charts", () => ({ LineChart: {}, BarChart: {} }))
-vi.mock("echarts/components", () => ({ GridComponent: {}, MarkLineComponent: {}, TooltipComponent: {}, LegendComponent: {} }))
+vi.mock("echarts/components", () => ({
+  GridComponent: {},
+  MarkLineComponent: {},
+  TooltipComponent: {},
+  LegendComponent: {},
+}))
 vi.mock("echarts/renderers", () => ({ CanvasRenderer: {} }))
 
 import BalanceChart from "../src/components/BalanceChart.vue"
@@ -146,10 +151,7 @@ describe("仪表盘", () => {
     expect(wrapper.text()).toContain("aggregate_stats")
     expect(wrapper.text()).toContain("聚合最近三日的消息统计并写入每日统计数据")
     expect(wrapper.findAll(".job-alert")).toHaveLength(1)
-    expect(fetch).toHaveBeenCalledWith(
-      "/api/v1/web/reports/dashboard",
-      expect.objectContaining({ method: "GET" }),
-    )
+    expect(fetch).toHaveBeenCalledWith("/api/v1/web/reports/dashboard", expect.objectContaining({ method: "GET" }))
 
     wrapper.unmount()
     vi.unstubAllGlobals()
@@ -166,7 +168,8 @@ describe("仪表盘", () => {
   })
 
   it("成功后轮询失败时保留最后值并把信道标记为陈旧", async () => {
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(response(snapshot))
       .mockResolvedValueOnce(response({ message: "Redis 快照超时" }, false))
     vi.stubGlobal("fetch", fetch)
@@ -186,9 +189,7 @@ describe("仪表盘", () => {
   })
 
   it("服务端快照字段缺失时显示降级原因和最近成功时间", async () => {
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(response(snapshot))
-      .mockResolvedValueOnce(response(incompleteSnapshot))
+    const fetch = vi.fn().mockResolvedValueOnce(response(snapshot)).mockResolvedValueOnce(response(incompleteSnapshot))
     vi.stubGlobal("fetch", fetch)
     const wrapper = mountDashboard()
     await flushPromises()
@@ -205,9 +206,7 @@ describe("仪表盘", () => {
   })
 
   it("快照恢复后轮询重新显示 LIVE", async () => {
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(response(incompleteSnapshot))
-      .mockResolvedValueOnce(response(snapshot))
+    const fetch = vi.fn().mockResolvedValueOnce(response(incompleteSnapshot)).mockResolvedValueOnce(response(snapshot))
     vi.stubGlobal("fetch", fetch)
     const wrapper = mountDashboard()
     await flushPromises()

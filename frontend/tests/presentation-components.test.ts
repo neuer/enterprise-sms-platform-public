@@ -8,7 +8,11 @@ describe("共享语义展示组件", () => {
   it("CategoryTag 集中呈现类别中文名与固定色类", async () => {
     const CategoryTag = (await import("../src/components/CategoryTag.vue")).default
 
-    for (const [category, label] of [["verify", "验证码"], ["notice", "通知"], ["market", "营销"]] as const) {
+    for (const [category, label] of [
+      ["verify", "验证码"],
+      ["notice", "通知"],
+      ["market", "营销"],
+    ] as const) {
       const wrapper = mount(CategoryTag, {
         props: { category },
         global: { plugins: [ElementPlus] },

@@ -2,8 +2,21 @@ import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import type { ExportTask } from "./reports"
 import { apiRequest } from "./client"
 
-export interface OpsPage<T> { items: T[]; total: number; page: number; page_size: number }
-export interface AlertItem { id: number; alert_type: string; level: "info" | "warn" | "crit"; title: string; detail: Record<string, unknown> | null; channels: string; created_at: string }
+export interface OpsPage<T> {
+  items: T[]
+  total: number
+  page: number
+  page_size: number
+}
+export interface AlertItem {
+  id: number
+  alert_type: string
+  level: "info" | "warn" | "crit"
+  title: string
+  detail: Record<string, unknown> | null
+  channels: string
+  created_at: string
+}
 export interface CurrentAlertItem {
   key: string
   alert_type: string
@@ -32,10 +45,7 @@ export interface RawLogItem {
   capture_state: RawCaptureState
 }
 export type UncertainResolutionAction =
-  | "confirm_accepted"
-  | "confirm_not_accepted"
-  | "keep_unknown"
-  | "resend_new_batch"
+  "confirm_accepted" | "confirm_not_accepted" | "keep_unknown" | "resend_new_batch"
 
 export interface UncertainItem {
   chunk_id: number
@@ -51,11 +61,43 @@ export interface UncertainItem {
   resolution_state: string | null
   proposer_account_id: number | null
 }
-export interface UnmatchedItem { id: number; vendor_task_id: string | null; custom_id: string | null; phone_mask: string; report_status: number | null; report_desc: string | null; report_time: string | null; created_at: string }
-export interface JobItem { job_name: string; last_run_at: string | null; last_status: "running" | "success" | "failed" | null; last_duration_ms: number | null; last_items: number; success_rate_24h: number; stalled: boolean }
-export interface QueueStatus { realtime_code: string | null; bulk_code: string | null; balance: number | null; threshold: number }
-export interface QueueResumeResult { resumed_batches: number; paused_codes: string[] }
-export interface OutboxStats { pending: number; published: number; processing: number; dead: number; failed_attempts: number; oldest_age_seconds: number }
+export interface UnmatchedItem {
+  id: number
+  vendor_task_id: string | null
+  custom_id: string | null
+  phone_mask: string
+  report_status: number | null
+  report_desc: string | null
+  report_time: string | null
+  created_at: string
+}
+export interface JobItem {
+  job_name: string
+  last_run_at: string | null
+  last_status: "running" | "success" | "failed" | null
+  last_duration_ms: number | null
+  last_items: number
+  success_rate_24h: number
+  stalled: boolean
+}
+export interface QueueStatus {
+  realtime_code: string | null
+  bulk_code: string | null
+  balance: number | null
+  threshold: number
+}
+export interface QueueResumeResult {
+  resumed_batches: number
+  paused_codes: string[]
+}
+export interface OutboxStats {
+  pending: number
+  published: number
+  processing: number
+  dead: number
+  failed_attempts: number
+  oldest_age_seconds: number
+}
 export type OutboxState = "pending" | "leased" | "published" | "processing" | "completed" | "dead"
 export interface OutboxEventItem {
   id: string
@@ -74,10 +116,25 @@ export interface OutboxEventItem {
   updated_at: string
 }
 
-export interface PageQuery { page?: number; pageSize?: number }
-export interface AlertQuery extends PageQuery { alertType?: string; level?: AlertItem["level"]; start?: string; end?: string }
-export interface RawLogQuery extends PageQuery { source?: RawLogItem["source"]; processed?: boolean }
-export interface UnmatchedQuery extends PageQuery { phone?: string; start?: string; end?: string }
+export interface PageQuery {
+  page?: number
+  pageSize?: number
+}
+export interface AlertQuery extends PageQuery {
+  alertType?: string
+  level?: AlertItem["level"]
+  start?: string
+  end?: string
+}
+export interface RawLogQuery extends PageQuery {
+  source?: RawLogItem["source"]
+  processed?: boolean
+}
+export interface UnmatchedQuery extends PageQuery {
+  phone?: string
+  start?: string
+  end?: string
+}
 export type UnmatchedExportFilters = Omit<UnmatchedQuery, "page" | "pageSize">
 
 function pageParams(query: PageQuery): URLSearchParams {
@@ -105,7 +162,8 @@ export function listRawLogs(query: RawLogQuery = {}): Promise<OpsPage<RawLogItem
   return apiRequest<OpsPage<RawLogItem>>(`/admin/raw-logs?${params}`, { method: "GET" })
 }
 
-export const replayRaw = (id: number) => apiRequest<{ processed_items: number }>(`/admin/raw-logs/${id}/replay`, { method: "POST" })
+export const replayRaw = (id: number) =>
+  apiRequest<{ processed_items: number }>(`/admin/raw-logs/${id}/replay`, { method: "POST" })
 
 export function listUncertain(query: PageQuery = {}): Promise<OpsPage<UncertainItem>> {
   return apiRequest<OpsPage<UncertainItem>>(`/admin/chunks/uncertain?${pageParams(query)}`, { method: "GET" })
@@ -122,10 +180,7 @@ export interface UncertainResolutionItem {
   child_batch_id: number | null
 }
 
-export const proposeUncertainResolution = (
-  chunkId: number,
-  action: UncertainResolutionAction,
-) =>
+export const proposeUncertainResolution = (chunkId: number, action: UncertainResolutionAction) =>
   apiRequest<UncertainResolutionItem>(`/admin/chunks/${chunkId}/resolution`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -152,9 +207,11 @@ export function listUnmatched(query: UnmatchedQuery = {}): Promise<OpsPage<Unmat
   })
 }
 export const listJobs = () => apiRequest<JobItem[]>("/admin/jobs", { method: "GET" })
-export const triggerJob = (name: string) => apiRequest<void>(`/admin/jobs/${encodeURIComponent(name)}/trigger`, { method: "POST" })
+export const triggerJob = (name: string) =>
+  apiRequest<void>(`/admin/jobs/${encodeURIComponent(name)}/trigger`, { method: "POST" })
 export const getQueueStatus = () => apiRequest<QueueStatus>("/admin/queue/status", { method: "GET" })
-export const resumeQueue = (force: boolean) => apiRequest<QueueResumeResult>(`/admin/queue/resume?force=${force}`, { method: "POST" })
+export const resumeQueue = (force: boolean) =>
+  apiRequest<QueueResumeResult>(`/admin/queue/resume?force=${force}`, { method: "POST" })
 export const getOutboxStatus = () => apiRequest<OutboxStats>("/admin/outbox", { method: "GET" })
 export function listOutboxEvents(query: PageQuery & { state?: OutboxState }): Promise<OpsPage<OutboxEventItem>> {
   const params = pageParams(query)

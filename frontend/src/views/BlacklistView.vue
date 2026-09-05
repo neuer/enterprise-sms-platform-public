@@ -52,13 +52,14 @@ function sourceType(source: BlacklistSource): "primary" | "warning" | "info" {
 
 /** 与服务端 BlacklistService.add 同口径拆分：空白/中英文逗号分号分隔，行号即拆分序号。 */
 const entries = computed(() =>
-  phonesText.value.split(/[\s,，;；]+/).map((value) => value.trim()).filter(Boolean),
+  phonesText.value
+    .split(/[\s,，;；]+/)
+    .map((value) => value.trim())
+    .filter(Boolean),
 )
 
 /** 格式错误行的 1 基序号；服务端 400 报错同样只带行号。 */
-const invalidLines = computed(() =>
-  entries.value.flatMap((value, index) => (PHONE_RE.test(value) ? [] : [index + 1])),
-)
+const invalidLines = computed(() => entries.value.flatMap((value, index) => (PHONE_RE.test(value) ? [] : [index + 1])))
 
 /** 批内按号码字符串去重（与服务端按 phone_hmac 归并同效），得到实际提交清单。 */
 const uniquePhones = computed(() => [...new Set(entries.value.filter((value) => PHONE_RE.test(value)))])
@@ -72,9 +73,7 @@ const invalidHint = computed(() => {
   return `第 ${shown}${suffix} 行格式错误，应为 11 位手机号；修正后才可提交。服务端报错同样只带行号。`
 })
 
-const canSubmit = computed(
-  () => entries.value.length > 0 && invalidLines.value.length === 0 && !saving.value,
-)
+const canSubmit = computed(() => entries.value.length > 0 && invalidLines.value.length === 0 && !saving.value)
 
 const filtering = computed(() => sourceFilter.value !== "all" || Boolean(keyword.value.trim()))
 const emptyState = computed(() =>
@@ -205,7 +204,8 @@ onMounted(() => void load())
           :class="{ on: sourceFilter === option.value }"
           :data-testid="`blacklist-source-${option.value}`"
           @click="setSource(option.value)"
-        >{{ option.label }}</button>
+          >{{ option.label }}</button
+        >
       </div>
     </div>
     <label class="blacklist-fld">
@@ -224,7 +224,10 @@ onMounted(() => void load())
       <el-button data-testid="blacklist-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="blacklist-reset" @click="reset">重置</el-button>
     </div>
-    <p class="blacklist-privacy">关键词仅匹配掩码与备注（服务端 ILIKE，通配符已转义），不涉号码明文；变更经控制面锁串行并即时失效缓存，受理读下次重建。</p>
+    <p class="blacklist-privacy"
+      >关键词仅匹配掩码与备注（服务端
+      ILIKE，通配符已转义），不涉号码明文；变更经控制面锁串行并即时失效缓存，受理读下次重建。</p
+    >
   </form>
 
   <el-alert v-if="errorMessage" class="blacklist-alert" :title="errorMessage" type="error" :closable="false" />
@@ -235,17 +238,29 @@ onMounted(() => void load())
         <template #default="{ row }"><PhoneMask :value="row.phone_mask" /></template>
       </el-table-column>
       <el-table-column label="来源" width="110">
-        <template #default="{ row }"><el-tag :type="sourceType(row.source)" effect="plain">{{ sourceLabel(row.source) }}</el-tag></template>
+        <template #default="{ row }"
+          ><el-tag :type="sourceType(row.source)" effect="plain">{{ sourceLabel(row.source) }}</el-tag></template
+        >
       </el-table-column>
       <el-table-column label="备注" min-width="200">
-        <template #default="{ row }"><span :class="{ 'blacklist-dash': !row.remark }">{{ row.remark || "—" }}</span></template>
+        <template #default="{ row }"
+          ><span :class="{ 'blacklist-dash': !row.remark }">{{ row.remark || "—" }}</span></template
+        >
       </el-table-column>
       <el-table-column label="加入时间" width="178">
-        <template #default="{ row }"><time class="mono-time">{{ formatDateTime(row.created_at) }}</time></template>
+        <template #default="{ row }"
+          ><time class="mono-time">{{ formatDateTime(row.created_at) }}</time></template
+        >
       </el-table-column>
       <el-table-column label="操作" width="80" fixed="right">
         <template #default="{ row }">
-          <el-button :data-testid="`blacklist-delete-${row.phone_hmac.slice(0, 8)}`" link type="danger" @click="remove(row)">移除</el-button>
+          <el-button
+            :data-testid="`blacklist-delete-${row.phone_hmac.slice(0, 8)}`"
+            link
+            type="danger"
+            @click="remove(row)"
+            >移除</el-button
+          >
         </template>
       </el-table-column>
       <template #empty><EmptyState :title="emptyState.title" :description="emptyState.description" /></template>
@@ -260,7 +275,13 @@ onMounted(() => void load())
         <p>{{ item.remark || "无备注" }}</p>
         <footer>
           <time class="mono-time">{{ formatDateTime(item.created_at) }}</time>
-          <el-button :data-testid="`mobile-blacklist-delete-${item.phone_hmac.slice(0, 8)}`" link type="danger" @click="remove(item)">移除</el-button>
+          <el-button
+            :data-testid="`mobile-blacklist-delete-${item.phone_hmac.slice(0, 8)}`"
+            link
+            type="danger"
+            @click="remove(item)"
+            >移除</el-button
+          >
         </footer>
       </article>
       <EmptyState v-if="!loading && !items.length" :title="emptyState.title" :description="emptyState.description" />
@@ -304,7 +325,9 @@ onMounted(() => void load())
       <div v-if="entries.length" class="blacklist-parse" data-testid="blacklist-parse">
         <span class="blacklist-chip blacklist-chip-ok">有效 {{ uniquePhones.length }}</span>
         <span v-if="dupeCount" class="blacklist-chip">批内去重 {{ dupeCount }}</span>
-        <span v-if="invalidLines.length" class="blacklist-chip blacklist-chip-bad">格式错误 {{ invalidLines.length }}（第 {{ invalidLines.slice(0, 5).join("、") }} 行）</span>
+        <span v-if="invalidLines.length" class="blacklist-chip blacklist-chip-bad"
+          >格式错误 {{ invalidLines.length }}（第 {{ invalidLines.slice(0, 5).join("、") }} 行）</span
+        >
       </div>
       <p v-if="invalidHint" class="blacklist-parse-error">{{ invalidHint }}</p>
       <el-form-item>
@@ -320,7 +343,9 @@ onMounted(() => void load())
         <small>已存在号码将按全版本 HMAC 归并，以本次来源与备注更新；添加行为与数量写入审计日志。</small>
         <div>
           <el-button @click="drawerOpen = false">取消</el-button>
-          <el-button data-testid="blacklist-add" type="primary" :disabled="!canSubmit" :loading="saving" @click="add">添加到黑名单</el-button>
+          <el-button data-testid="blacklist-add" type="primary" :disabled="!canSubmit" :loading="saving" @click="add"
+            >添加到黑名单</el-button
+          >
         </div>
       </div>
     </template>

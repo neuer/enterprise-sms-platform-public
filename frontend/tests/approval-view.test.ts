@@ -78,8 +78,7 @@ function stubApprovalsFetch(responses: MockResponses) {
         json: async () => responses.decisionBody,
       }
     }
-    const body =
-      route === "list" ? responses.list : route === "detail" ? responses.detail : responses.decision
+    const body = route === "list" ? responses.list : route === "detail" ? responses.detail : responses.decision
     return {
       ok: true,
       status: 200,
@@ -92,9 +91,7 @@ function stubApprovalsFetch(responses: MockResponses) {
 }
 
 function listCalls(fetchMock: ReturnType<typeof stubApprovalsFetch>): string[] {
-  return fetchMock.mock.calls
-    .map((call) => String(call[0]))
-    .filter((url) => routeOf(url) === "list")
+  return fetchMock.mock.calls.map((call) => String(call[0])).filter((url) => routeOf(url) === "list")
 }
 
 // 已挂载实例登记：afterEach 统一卸载，确保轮询/倒计时 interval 不泄漏到后续用例
@@ -261,9 +258,7 @@ describe("审批中心", () => {
     await wrapper.get("[data-testid='approval-quick-confirm-approve']").trigger("click")
     await flushPromises()
 
-    const decisionCall = fetchMock.mock.calls.find((call) =>
-      String(call[0]).includes("/decision"),
-    )
+    const decisionCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/decision"))
     expect(decisionCall).toBeDefined()
     expect(String(decisionCall![0])).toBe(`/api/v1/web/approvals/${item.id}/decision`)
     expect(decisionCall![1]?.method).toBe("POST")
@@ -298,9 +293,7 @@ describe("审批中心", () => {
     await wrapper.get("[data-testid='approval-quick-confirm-reject']").trigger("click")
     await flushPromises()
 
-    const decisionCall = fetchMock.mock.calls.find((call) =>
-      String(call[0]).includes("/decision"),
-    )
+    const decisionCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/decision"))
     expect(JSON.parse(String(decisionCall![1]?.body))).toEqual({
       action: "reject",
       reason: "含未备案链接",
@@ -341,9 +334,7 @@ describe("审批中心", () => {
     await wrapper.get("[data-testid='drawer-approve']").trigger("click")
     await flushPromises()
 
-    const decisionCall = fetchMock.mock.calls.find((call) =>
-      String(call[0]).includes("/decision"),
-    )
+    const decisionCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/decision"))
     expect(JSON.parse(String(decisionCall![1]?.body))).toEqual({
       action: "approve",
       reason: "同意，注意营销时间窗",

@@ -9,9 +9,7 @@ describe("深色主题一致性守卫（前端打磨回归）", () => {
   it("深色层收编按卡片定制的浅色表头变量", () => {
     const workspace = readWorkspaceCss()
     const darkLayer = workspace.slice(workspace.indexOf("青鸾 Console 深色监视台"))
-    expect(darkLayer).toMatch(
-      /\.sign-table(?:\.el-table)?\s*\{[^}]*--el-table-header-bg-color:\s*var\(--panel-2\)/s,
-    )
+    expect(darkLayer).toMatch(/\.sign-table(?:\.el-table)?\s*\{[^}]*--el-table-header-bg-color:\s*var\(--panel-2\)/s)
   })
 
   it("图表配色经 chartTheme 单点读取 --chart-* 令牌，不残留硬编码色值", () => {
@@ -42,7 +40,7 @@ describe("深色主题一致性守卫（前端打磨回归）", () => {
     const themeLib = source("src/lib/theme.ts")
     expect(app).toContain('data-testid="theme-toggle"')
     expect(app).toContain('from "./lib/theme"')
-    expect(themeLib).toContain('localStorage.setItem(STORAGE_KEY, mode)')
+    expect(themeLib).toContain("localStorage.setItem(STORAGE_KEY, mode)")
     expect(themeLib).toContain("sms:theme-change")
   })
 

@@ -9,14 +9,15 @@ import SendView from "../src/views/SendView.vue"
 
 describe("人工发送工作台", () => {
   it("测试发送显示后端运行策略中的号码上限", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => String(url).endsWith("/reports/dashboard")
-        ? { ui_policy: { test_send_max: 7 } }
-        : [],
-    })))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => (String(url).endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 7 } } : []),
+      })),
+    )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
 
@@ -46,7 +47,10 @@ describe("人工发送工作台", () => {
   })
 
   it("粘贴号码格式无效时即时提示并禁止提交", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => [] }))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => [] }),
+    )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     const vm = wrapper.vm as unknown as { form: { mobilesText: string; content: string } }
     vm.form.content = "维护通知"
@@ -67,7 +71,10 @@ describe("人工发送工作台", () => {
   })
 
   it("营销发送未勾选同意时禁止提交", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => [] }))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => [] }),
+    )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
 
     await wrapper.get("[data-testid='category-market']").trigger("click")
@@ -80,10 +87,34 @@ describe("人工发送工作台", () => {
 
   it("只提供已审核模板并按变量规格生成渲染预览", async () => {
     const templates = [
-      { id: 7, name: "登录验证码", content: "验证码{1}，{2}分钟内有效", var_specs: [{ pos: 1, max_len: 6 }, { pos: 2, max_len: 2 }], dept: "业务一部", vendor_template_id: "T7", vendor_state: "approved", vendor_reject_reason: null },
-      { id: 8, name: "未审核模板", content: "草稿{1}", var_specs: [{ pos: 1, max_len: 4 }], dept: "业务一部", vendor_template_id: null, vendor_state: "pending", vendor_reject_reason: null },
+      {
+        id: 7,
+        name: "登录验证码",
+        content: "验证码{1}，{2}分钟内有效",
+        var_specs: [
+          { pos: 1, max_len: 6 },
+          { pos: 2, max_len: 2 },
+        ],
+        dept: "业务一部",
+        vendor_template_id: "T7",
+        vendor_state: "approved",
+        vendor_reject_reason: null,
+      },
+      {
+        id: 8,
+        name: "未审核模板",
+        content: "草稿{1}",
+        var_specs: [{ pos: 1, max_len: 4 }],
+        dept: "业务一部",
+        vendor_template_id: null,
+        vendor_state: "pending",
+        vendor_reject_reason: null,
+      },
     ]
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }),
+    )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     ;(wrapper.vm as unknown as { form: { contentMode: string } }).form.contentMode = "template"
@@ -103,10 +134,34 @@ describe("人工发送工作台", () => {
 
   it("模板管理跳转的 template_id query 预选已审核模板", async () => {
     const templates = [
-      { id: 7, name: "登录验证码", content: "验证码{1}，{2}分钟内有效", var_specs: [{ pos: 1, max_len: 6 }, { pos: 2, max_len: 2 }], dept: "业务一部", vendor_template_id: "T7", vendor_state: "approved", vendor_reject_reason: null },
-      { id: 8, name: "未审核模板", content: "草稿{1}", var_specs: [{ pos: 1, max_len: 4 }], dept: "业务一部", vendor_template_id: null, vendor_state: "pending", vendor_reject_reason: null },
+      {
+        id: 7,
+        name: "登录验证码",
+        content: "验证码{1}，{2}分钟内有效",
+        var_specs: [
+          { pos: 1, max_len: 6 },
+          { pos: 2, max_len: 2 },
+        ],
+        dept: "业务一部",
+        vendor_template_id: "T7",
+        vendor_state: "approved",
+        vendor_reject_reason: null,
+      },
+      {
+        id: 8,
+        name: "未审核模板",
+        content: "草稿{1}",
+        var_specs: [{ pos: 1, max_len: 4 }],
+        dept: "业务一部",
+        vendor_template_id: null,
+        vendor_state: "pending",
+        vendor_reject_reason: null,
+      },
     ]
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }),
+    )
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [{ path: "/send", component: SendView }],
@@ -130,9 +185,21 @@ describe("人工发送工作台", () => {
 
   it("template_id query 指向未通过审核或不存在的模板时不预选", async () => {
     const templates = [
-      { id: 8, name: "未审核模板", content: "草稿{1}", var_specs: [{ pos: 1, max_len: 4 }], dept: "业务一部", vendor_template_id: null, vendor_state: "pending", vendor_reject_reason: null },
+      {
+        id: 8,
+        name: "未审核模板",
+        content: "草稿{1}",
+        var_specs: [{ pos: 1, max_len: 4 }],
+        dept: "业务一部",
+        vendor_template_id: null,
+        vendor_state: "pending",
+        vendor_reject_reason: null,
+      },
     ]
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }),
+    )
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [{ path: "/send", component: SendView }],
@@ -154,12 +221,34 @@ describe("人工发送工作台", () => {
 
   it("剔除清单使用带 Bearer 的按钮下载而不是裸链接", async () => {
     sessionStorage.setItem("sms_token", "jwt")
-    const imported = { import_id: "imp-1", valid: 1, invalid: 1, duplicate: 0, blacklisted: 0, invalid_download_url: "/api/v1/web/messages/import/imp-1/invalid-file", expires_at: "2026-07-13T08:00:00+08:00", status: "ready" as const, error: null }
+    const imported = {
+      import_id: "imp-1",
+      valid: 1,
+      invalid: 1,
+      duplicate: 0,
+      blacklisted: 0,
+      invalid_download_url: "/api/v1/web/messages/import/imp-1/invalid-file",
+      expires_at: "2026-07-13T08:00:00+08:00",
+      status: "ready" as const,
+      error: null,
+    }
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url === "/api/v1/web/templates") return { ok: true, status: 200, headers: { get: (_name: string): string | null => null }, json: async () => [] }
-      if (url === imported.invalid_download_url) return { ok: true, status: 200, headers: { get: (_name: string): string | null => null }, blob: async () => new Blob(["masked"]) }
+      if (url === "/api/v1/web/templates")
+        return { ok: true, status: 200, headers: { get: (_name: string): string | null => null }, json: async () => [] }
+      if (url === imported.invalid_download_url)
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (_name: string): string | null => null },
+          blob: async () => new Blob(["masked"]),
+        }
       expect(init?.method).toBe("POST")
-      return { ok: true, status: 200, headers: { get: (_name: string): string | null => null }, json: async () => imported }
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: (_name: string): string | null => null },
+        json: async () => imported,
+      }
     })
     vi.stubGlobal("fetch", fetch)
     vi.stubGlobal(
@@ -174,7 +263,10 @@ describe("人工发送工作台", () => {
     ;(wrapper.vm as unknown as { form: { source: string } }).form.source = "import"
     await wrapper.vm.$nextTick()
     const upload = wrapper.findComponent({ name: "ElUpload" })
-    await (upload.props("httpRequest") as (options: object) => Promise<void>)({ file: new File(["phone"], "phones.csv"), onSuccess: vi.fn() })
+    await (upload.props("httpRequest") as (options: object) => Promise<void>)({
+      file: new File(["phone"], "phones.csv"),
+      onSuccess: vi.fn(),
+    })
     await flushPromises()
 
     const download = wrapper.get("[data-testid='download-invalid']")
@@ -199,9 +291,7 @@ describe("人工发送工作台", () => {
           ok: true,
           status: 200,
           headers: { get: () => null },
-          json: async () => (target.endsWith("/reports/dashboard")
-            ? { ui_policy: { test_send_max: 5 } }
-            : []),
+          json: async () => (target.endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 5 } } : []),
         }
       }
       if (target.endsWith("/messages/send")) {
@@ -305,26 +395,29 @@ describe("人工发送工作台", () => {
     },
   ])("成功提示：$name 使用中文并区分幂等与转定时", async ({ result, expected, unexpected }) => {
     sessionStorage.setItem("sms_token", "jwt")
-    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
-      const target = String(url)
-      if (target.endsWith("/templates") || target.endsWith("/reports/dashboard")) {
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: () => null },
-          json: async () => (target.endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 5 } } : []),
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const target = String(url)
+        if (target.endsWith("/templates") || target.endsWith("/reports/dashboard")) {
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => (target.endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 5 } } : []),
+          }
         }
-      }
-      if (target.endsWith("/messages/send")) {
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: () => null },
-          json: async () => result,
+        if (target.endsWith("/messages/send")) {
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => result,
+          }
         }
-      }
-      return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({}) }
-    }))
+        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({}) }
+      }),
+    )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     const vm = wrapper.vm as unknown as {
@@ -357,7 +450,11 @@ describe("人工发送工作台", () => {
     unsubscribe_appended: false,
     final_content: "【平台】维护通知",
     deferred_reason: null,
-    quota: { used: 3412, limit: 20000, remaining: 16588 } as { used: number; limit: number; remaining: number | null } | null,
+    quota: { used: 3412, limit: 20000, remaining: 16588 } as {
+      used: number
+      limit: number
+      remaining: number | null
+    } | null,
   }
 
   function stubPreviewFetch(previewBody: unknown) {
@@ -367,7 +464,12 @@ describe("人工发送工作台", () => {
         return { ok: true, status: 200, headers: { get: () => null }, json: async () => previewBody }
       }
       if (target.endsWith("/reports/dashboard")) {
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ui_policy: { test_send_max: 5 } }) }
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => ({ ui_policy: { test_send_max: 5 } }),
+        }
       }
       return { ok: true, status: 200, headers: { get: () => null }, json: async () => [] }
     })
@@ -446,7 +548,12 @@ describe("人工发送工作台", () => {
         return { ok: true, status: 200, headers: { get: () => null }, json: async () => readyBody }
       }
       if (target.endsWith("/reports/dashboard")) {
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({ ui_policy: { test_send_max: 5 } }) }
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: async () => ({ ui_policy: { test_send_max: 5 } }),
+        }
       }
       return { ok: true, status: 200, headers: { get: () => null }, json: async () => [] }
     })
@@ -507,12 +614,15 @@ describe("人工发送工作台", () => {
     vi.useFakeTimers()
     const bodies: Array<{ accepted_count: number }> = []
     const base = stubPreviewFetch(basePreview)
-    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-      if (String(url).endsWith("/billing/preview")) {
-        bodies.push(JSON.parse(String(init?.body)) as { accepted_count: number })
-      }
-      return base(url)
-    }))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (String(url).endsWith("/billing/preview")) {
+          bodies.push(JSON.parse(String(init?.body)) as { accepted_count: number })
+        }
+        return base(url)
+      }),
+    )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     const vm = wrapper.vm as unknown as { form: { mobilesText: string; content: string } }
@@ -531,14 +641,15 @@ describe("人工发送工作台", () => {
   })
 
   it("测试发送超出号码上限即时提示并禁止提交", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => String(url).endsWith("/reports/dashboard")
-        ? { ui_policy: { test_send_max: 1 } }
-        : [],
-    })))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({
+        ok: true,
+        status: 200,
+        headers: { get: () => null },
+        json: async () => (String(url).endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 1 } } : []),
+      })),
+    )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     const vm = wrapper.vm as unknown as {
@@ -592,26 +703,29 @@ describe("人工发送工作台", () => {
     vi.useFakeTimers()
     const sentBodies: Array<{ mobiles?: string[] }> = []
     const base = stubPreviewFetch(basePreview)
-    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
-      const target = String(url)
-      if (target.endsWith("/messages/send")) {
-        sentBodies.push(JSON.parse(String(init?.body)) as { mobiles?: string[] })
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: () => null },
-          json: async () => ({
-            batch_no: "b-big",
-            status: "queued",
-            accepted: 301,
-            quota_cost: 301,
-            idempotent: false,
-            deferred_reason: null,
-          }),
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const target = String(url)
+        if (target.endsWith("/messages/send")) {
+          sentBodies.push(JSON.parse(String(init?.body)) as { mobiles?: string[] })
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => ({
+              batch_no: "b-big",
+              status: "queued",
+              accepted: 301,
+              quota_cost: 301,
+              idempotent: false,
+              deferred_reason: null,
+            }),
+          }
         }
-      }
-      return base(url)
-    }))
+        return base(url)
+      }),
+    )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     const vm = wrapper.vm as unknown as { form: { mobilesText: string; content: string } }

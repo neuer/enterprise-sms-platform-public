@@ -43,12 +43,9 @@ describe("认证路由判定", () => {
   })
 
   it("角色不匹配时回到首个公共业务页", () => {
-    expect(
-      resolveRouteAccess(
-        { public: false, roles: ["admin"] },
-        { authenticated: true, role: "viewer" },
-      ),
-    ).toBe("/dashboard")
+    expect(resolveRouteAccess({ public: false, roles: ["admin"] }, { authenticated: true, role: "viewer" })).toBe(
+      "/dashboard",
+    )
   })
 
   it("整页刷新后守卫等待 Cookie 恢复完成，深链直达目标页", async () => {

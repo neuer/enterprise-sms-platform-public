@@ -43,20 +43,25 @@ describe("批次与号码查询", () => {
       scheduled_at: null,
       created_at: "2026-07-12T08:00:00+08:00",
     }
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
       .mockResolvedValueOnce(response(batch))
-      .mockResolvedValueOnce(response({
-        total: 1,
-        items: [{
-          id: 9,
-          phone: "138****8000",
-          status: "delivered",
-          vendor_task_id: "task-1",
-          report_desc: "DELIVRD",
-          report_time: "2026-07-12T08:01:00+08:00",
-        }],
-      }))
+      .mockResolvedValueOnce(
+        response({
+          total: 1,
+          items: [
+            {
+              id: 9,
+              phone: "138****8000",
+              status: "delivered",
+              vendor_task_id: "task-1",
+              report_desc: "DELIVRD",
+              report_time: "2026-07-12T08:01:00+08:00",
+            },
+          ],
+        }),
+      )
       .mockResolvedValueOnce(response({ phone: "13800138000" }))
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()
@@ -88,7 +93,7 @@ describe("批次与号码查询", () => {
     expect(wrapper.find(".batch-facts").exists()).toBe(true)
     expect(wrapper.find(".batch-meta").exists()).toBe(false)
     expect(wrapper.find(".el-alert").exists()).toBe(false)
-    expect(wrapper.text()).not.toContain(`${Math.round(1 / 2 * 100)}%`)
+    expect(wrapper.text()).not.toContain(`${Math.round((1 / 2) * 100)}%`)
     expect(wrapper.find(".status-tag--delivered").exists()).toBe(true)
     expect(wrapper.get("[data-testid='resend-failed']").text()).toContain("重发失败")
     await wrapper.get("[data-testid='batch-phone-decrypt-9']").trigger("click")
@@ -101,14 +106,32 @@ describe("批次与号码查询", () => {
 
   it("抽屉内明细加载失败用浮层消息提示，不写入被遮挡的列表警告", async () => {
     const batch = {
-      batch_no: "BATCH-2", category: "notice", channel: "web", app_name: null,
-      creator: "operator-a", dept: "平台部", content: "系统通知", status: "completed",
-      deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 2,
-      total: 2, removed_freq_limit: 0, pending: 0, sent: 0,
-      delivered: 1, failed: 1, unknown: 0, other: 0,
-      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+      batch_no: "BATCH-2",
+      category: "notice",
+      channel: "web",
+      app_name: null,
+      creator: "operator-a",
+      dept: "平台部",
+      content: "系统通知",
+      status: "completed",
+      deferred_reason: null,
+      resend_of: null,
+      is_test: false,
+      segments: 1,
+      quota_cost: 2,
+      total: 2,
+      removed_freq_limit: 0,
+      pending: 0,
+      sent: 0,
+      delivered: 1,
+      failed: 1,
+      unknown: 0,
+      other: 0,
+      scheduled_at: null,
+      created_at: "2026-07-12T08:00:00+08:00",
     }
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
       .mockResolvedValueOnce(response(batch))
       .mockResolvedValueOnce({
@@ -137,12 +160,29 @@ describe("批次与号码查询", () => {
 
   it("连点两个批次时抽屉只保留后一次打开的明细", async () => {
     const batch = (batch_no: string, creator: string) => ({
-      batch_no, category: "notice", channel: "web", app_name: null,
-      creator, dept: "平台部", content: "系统通知", status: "completed",
-      deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 2,
-      total: 2, removed_freq_limit: 0, pending: 0, sent: 0,
-      delivered: 1, failed: 1, unknown: 0, other: 0,
-      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+      batch_no,
+      category: "notice",
+      channel: "web",
+      app_name: null,
+      creator,
+      dept: "平台部",
+      content: "系统通知",
+      status: "completed",
+      deferred_reason: null,
+      resend_of: null,
+      is_test: false,
+      segments: 1,
+      quota_cost: 2,
+      total: 2,
+      removed_freq_limit: 0,
+      pending: 0,
+      sent: 0,
+      delivered: 1,
+      failed: 1,
+      unknown: 0,
+      other: 0,
+      scheduled_at: null,
+      created_at: "2026-07-12T08:00:00+08:00",
     })
     const first = batch("BATCH-A", "operator-a")
     const second = batch("BATCH-B", "operator-b")
@@ -159,19 +199,31 @@ describe("批次与号码查询", () => {
         await firstDetails
         return response({
           total: 1,
-          items: [{
-            id: 1, phone: "138****0001", status: "delivered",
-            vendor_task_id: "task-a", report_desc: "DELIVRD", report_time: "2026-07-12T08:01:00+08:00",
-          }],
+          items: [
+            {
+              id: 1,
+              phone: "138****0001",
+              status: "delivered",
+              vendor_task_id: "task-a",
+              report_desc: "DELIVRD",
+              report_time: "2026-07-12T08:01:00+08:00",
+            },
+          ],
         })
       }
       if (url.includes("/BATCH-B/details")) {
         return response({
           total: 1,
-          items: [{
-            id: 2, phone: "138****0002", status: "failed",
-            vendor_task_id: "task-b", report_desc: "FAIL", report_time: "2026-07-12T08:02:00+08:00",
-          }],
+          items: [
+            {
+              id: 2,
+              phone: "138****0002",
+              status: "failed",
+              vendor_task_id: "task-b",
+              report_desc: "FAIL",
+              report_time: "2026-07-12T08:02:00+08:00",
+            },
+          ],
         })
       }
       return response({ total: 0, items: [] })
@@ -199,18 +251,40 @@ describe("批次与号码查询", () => {
 
   it("批次号模糊查询，抽屉明细支持状态筛选与分页", async () => {
     const batch = {
-      batch_no: "BATCH-9", category: "notice", channel: "api", app_name: "通知应用",
-      creator: "operator-b", dept: "平台部", content: "系统通知", status: "completed",
-      deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 21,
-      total: 21, removed_freq_limit: 0, pending: 0, sent: 0,
-      delivered: 20, failed: 1, unknown: 0, other: 0,
-      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+      batch_no: "BATCH-9",
+      category: "notice",
+      channel: "api",
+      app_name: "通知应用",
+      creator: "operator-b",
+      dept: "平台部",
+      content: "系统通知",
+      status: "completed",
+      deferred_reason: null,
+      resend_of: null,
+      is_test: false,
+      segments: 1,
+      quota_cost: 21,
+      total: 21,
+      removed_freq_limit: 0,
+      pending: 0,
+      sent: 0,
+      delivered: 20,
+      failed: 1,
+      unknown: 0,
+      other: 0,
+      scheduled_at: null,
+      created_at: "2026-07-12T08:00:00+08:00",
     }
     const message = {
-      id: 9, phone: "138****8000", status: "delivered",
-      vendor_task_id: "task-1", report_desc: "DELIVRD", report_time: "2026-07-12T08:01:00+08:00",
+      id: 9,
+      phone: "138****8000",
+      status: "delivered",
+      vendor_task_id: "task-1",
+      report_desc: "DELIVRD",
+      report_time: "2026-07-12T08:01:00+08:00",
     }
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
       .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
       .mockResolvedValueOnce(response(batch))
@@ -230,7 +304,10 @@ describe("批次与号码查询", () => {
     expect(fetch.mock.calls[1][0]).toContain("/api/v1/web/batches?")
     expect(fetch.mock.calls[1][0]).toContain("batch_no=BATCH-9")
 
-    await wrapper.findAll("button").find((item) => item.text().includes("查看详情"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((item) => item.text().includes("查看详情"))!
+      .trigger("click")
     await flushPromises()
     expect(fetch.mock.calls[3][0]).toBe("/api/v1/messages/batches/BATCH-9/details?page=1&size=20")
     expect(wrapper.text()).toContain("共 21 条")
@@ -249,18 +326,40 @@ describe("批次与号码查询", () => {
 
   it("抽屉明细翻页保留状态筛选", async () => {
     const batch = {
-      batch_no: "BATCH-10", category: "notice", channel: "web", app_name: null,
-      creator: "operator-c", dept: "平台部", content: "系统通知", status: "sending",
-      deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 40,
-      total: 40, removed_freq_limit: 0, pending: 2, sent: 25,
-      delivered: 10, failed: 0, unknown: 2, other: 1,
-      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+      batch_no: "BATCH-10",
+      category: "notice",
+      channel: "web",
+      app_name: null,
+      creator: "operator-c",
+      dept: "平台部",
+      content: "系统通知",
+      status: "sending",
+      deferred_reason: null,
+      resend_of: null,
+      is_test: false,
+      segments: 1,
+      quota_cost: 40,
+      total: 40,
+      removed_freq_limit: 0,
+      pending: 2,
+      sent: 25,
+      delivered: 10,
+      failed: 0,
+      unknown: 2,
+      other: 1,
+      scheduled_at: null,
+      created_at: "2026-07-12T08:00:00+08:00",
     }
     const message = {
-      id: 9, phone: "138****8000", status: "sent",
-      vendor_task_id: "task-1", report_desc: null, report_time: null,
+      id: 9,
+      phone: "138****8000",
+      status: "sent",
+      vendor_task_id: "task-1",
+      report_desc: null,
+      report_time: null,
     }
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
       .mockResolvedValueOnce(response(batch))
       .mockResolvedValueOnce(response({ total: 40, items: [message] }))
@@ -272,7 +371,10 @@ describe("批次与号码查询", () => {
     useSessionStore().role = "admin"
     const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
-    await wrapper.findAll("button").find((item) => item.text().includes("查看详情"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((item) => item.text().includes("查看详情"))!
+      .trigger("click")
     await flushPromises()
     expect(wrapper.text()).toContain("仍有 27 条未终态（待处理 2 + 待回执 25）")
     const composition = wrapper.get(".batch-hero-nums").text()
@@ -297,14 +399,32 @@ describe("批次与号码查询", () => {
 
   it("定时批次详情提供取消和改期并调用现有后端端点", async () => {
     const batch = {
-      batch_no: "BATCH-SCHEDULED", category: "market", channel: "web", app_name: null,
-      creator: "operator01", dept: "业务一部", content: "营销通知", status: "scheduled",
-      deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 1,
-      total: 1, removed_freq_limit: 0, pending: 1, sent: 0,
-      delivered: 0, failed: 0, unknown: 0, other: 0,
-      scheduled_at: "2026-07-13T08:00:00+08:00", created_at: "2026-07-12T08:00:00+08:00",
+      batch_no: "BATCH-SCHEDULED",
+      category: "market",
+      channel: "web",
+      app_name: null,
+      creator: "operator01",
+      dept: "业务一部",
+      content: "营销通知",
+      status: "scheduled",
+      deferred_reason: null,
+      resend_of: null,
+      is_test: false,
+      segments: 1,
+      quota_cost: 1,
+      total: 1,
+      removed_freq_limit: 0,
+      pending: 1,
+      sent: 0,
+      delivered: 0,
+      failed: 0,
+      unknown: 0,
+      other: 0,
+      scheduled_at: "2026-07-13T08:00:00+08:00",
+      created_at: "2026-07-12T08:00:00+08:00",
     }
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
       .mockResolvedValueOnce(response(batch))
       .mockResolvedValueOnce(response({ total: 0, items: [] }))
@@ -317,7 +437,10 @@ describe("批次与号码查询", () => {
     useSessionStore().role = "operator"
     const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
-    await wrapper.findAll("button").find((item) => item.text().includes("查看详情"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((item) => item.text().includes("查看详情"))!
+      .trigger("click")
     await flushPromises()
 
     expect(wrapper.get("[data-testid='cancel-batch']").text()).toContain("取消批次")
@@ -332,15 +455,33 @@ describe("批次与号码查询", () => {
 
   it("状态分组 chips 展示分面计数并按组筛选", async () => {
     const batch = {
-      batch_no: "BATCH-1", category: "notice", channel: "web", app_name: null,
-      creator: "operator-a", dept: "平台部", content: "系统通知", status: "completed",
-      deferred_reason: null, resend_of: null, is_test: false, segments: 1, quota_cost: 2,
-      total: 2, removed_freq_limit: 0, pending: 0, sent: 0,
-      delivered: 1, failed: 1, unknown: 0, other: 0,
-      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+      batch_no: "BATCH-1",
+      category: "notice",
+      channel: "web",
+      app_name: null,
+      creator: "operator-a",
+      dept: "平台部",
+      content: "系统通知",
+      status: "completed",
+      deferred_reason: null,
+      resend_of: null,
+      is_test: false,
+      segments: 1,
+      quota_cost: 2,
+      total: 2,
+      removed_freq_limit: 0,
+      pending: 0,
+      sent: 0,
+      delivered: 1,
+      failed: 1,
+      unknown: 0,
+      other: 0,
+      scheduled_at: null,
+      created_at: "2026-07-12T08:00:00+08:00",
     }
     const counts = { queued: 1, sending: 2, balance_blocked: 1, completed: 5 }
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(response({ total: 1, status_counts: counts, items: [batch] }))
       .mockResolvedValueOnce(response({ total: 3, status_counts: counts, items: [batch] }))
     vi.stubGlobal("fetch", fetch)
@@ -362,8 +503,7 @@ describe("批次与号码查询", () => {
   })
 
   it("筛选条件变更后提示需重新查询", async () => {
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(response({ total: 0, status_counts: {}, items: [] }))
+    const fetch = vi.fn().mockResolvedValueOnce(response({ total: 0, status_counts: {}, items: [] }))
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -381,14 +521,32 @@ describe("批次与号码查询", () => {
 
   it("重发溯源链接按源批次号重新筛选", async () => {
     const batch = {
-      batch_no: "BATCH-R", category: "market", channel: "api", app_name: "会员营销",
-      creator: "operator-a", dept: "市场部", content: "营销内容", status: "completed",
-      deferred_reason: null, resend_of: "BATCH-0", is_test: false, segments: 1, quota_cost: 5,
-      total: 5, removed_freq_limit: 0, pending: 0, sent: 0,
-      delivered: 4, failed: 1, unknown: 0, other: 0,
-      scheduled_at: null, created_at: "2026-07-12T08:00:00+08:00",
+      batch_no: "BATCH-R",
+      category: "market",
+      channel: "api",
+      app_name: "会员营销",
+      creator: "operator-a",
+      dept: "市场部",
+      content: "营销内容",
+      status: "completed",
+      deferred_reason: null,
+      resend_of: "BATCH-0",
+      is_test: false,
+      segments: 1,
+      quota_cost: 5,
+      total: 5,
+      removed_freq_limit: 0,
+      pending: 0,
+      sent: 0,
+      delivered: 4,
+      failed: 1,
+      unknown: 0,
+      other: 0,
+      scheduled_at: null,
+      created_at: "2026-07-12T08:00:00+08:00",
     }
-    const fetch = vi.fn()
+    const fetch = vi
+      .fn()
       .mockResolvedValueOnce(response({ total: 1, status_counts: {}, items: [batch] }))
       .mockResolvedValueOnce(response(batch))
       .mockResolvedValueOnce(response({ total: 0, items: [] }))
@@ -399,7 +557,10 @@ describe("批次与号码查询", () => {
     useSessionStore().role = "admin"
     const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
-    await wrapper.findAll("button").find((item) => item.text().includes("查看详情"))!.trigger("click")
+    await wrapper
+      .findAll("button")
+      .find((item) => item.text().includes("查看详情"))!
+      .trigger("click")
     await flushPromises()
 
     const trace = wrapper.findAll("button").find((item) => item.text().includes("BATCH-0 ↗"))!
@@ -411,23 +572,28 @@ describe("批次与号码查询", () => {
   })
 
   it("号码列表保持掩码并允许 approver 在徽标条授权查看", async () => {
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(response({
-        total: 1,
-        badge: { blacklisted: false, blacklist_source: null, recv_30d: 1 },
-        items: [{
-          id: 9,
-          phone: "138****8000",
-          status: "delivered",
-          report_desc: "DELIVRD",
-          report_time: "2026-07-12T08:01:00+08:00",
-          created_at: "2026-07-12T08:00:00+08:00",
-          batch_no: "BATCH-1",
-          category: "notice",
-          content: "系统通知",
-          sender: "通知应用",
-        }],
-      }))
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          total: 1,
+          badge: { blacklisted: false, blacklist_source: null, recv_30d: 1 },
+          items: [
+            {
+              id: 9,
+              phone: "138****8000",
+              status: "delivered",
+              report_desc: "DELIVRD",
+              report_time: "2026-07-12T08:01:00+08:00",
+              created_at: "2026-07-12T08:00:00+08:00",
+              batch_no: "BATCH-1",
+              category: "notice",
+              content: "系统通知",
+              sender: "通知应用",
+            },
+          ],
+        }),
+      )
       .mockResolvedValueOnce(response({ phone: "13800138000" }))
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()
@@ -463,22 +629,26 @@ describe("批次与号码查询", () => {
   })
 
   it("号码列表支持类别状态筛选、分页并展示失败回报", async () => {
-    const fetch = vi.fn().mockResolvedValue(response({
-      total: 45,
-      badge: { blacklisted: false, blacklist_source: null, recv_30d: 45 },
-      items: [{
-        id: 9,
-        phone: "138****8000",
-        status: "failed",
-        report_desc: "UNDELIV",
-        report_time: "2026-07-12T08:01:00+08:00",
-        created_at: "2026-07-12T08:00:00+08:00",
-        batch_no: "BATCH-1",
-        category: "notice",
-        content: "系统通知",
-        sender: "通知应用",
-      }],
-    }))
+    const fetch = vi.fn().mockResolvedValue(
+      response({
+        total: 45,
+        badge: { blacklisted: false, blacklist_source: null, recv_30d: 45 },
+        items: [
+          {
+            id: 9,
+            phone: "138****8000",
+            status: "failed",
+            report_desc: "UNDELIV",
+            report_time: "2026-07-12T08:01:00+08:00",
+            created_at: "2026-07-12T08:00:00+08:00",
+            batch_no: "BATCH-1",
+            category: "notice",
+            content: "系统通知",
+            sender: "通知应用",
+          },
+        ],
+      }),
+    )
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -527,19 +697,23 @@ describe("批次与号码查询", () => {
   })
 
   it("时间线展示号码徽标并将用户回复标为回声", async () => {
-    const fetch = vi.fn().mockResolvedValue(response({
-      badge: { blacklisted: true, blacklist_source: "reply_optout", recv_30d: 3 },
-      truncated: true,
-      events: [{
-        ts: "2026-07-12T08:02:00+08:00",
-        direction: "in",
-        category: "notice",
-        batch_no: "BATCH-1",
-        content: "退订",
-        status: null,
-        sender: "用户",
-      }],
-    }))
+    const fetch = vi.fn().mockResolvedValue(
+      response({
+        badge: { blacklisted: true, blacklist_source: "reply_optout", recv_30d: 3 },
+        truncated: true,
+        events: [
+          {
+            ts: "2026-07-12T08:02:00+08:00",
+            direction: "in",
+            category: "notice",
+            batch_no: "BATCH-1",
+            content: "退订",
+            status: null,
+            sender: "用户",
+          },
+        ],
+      }),
+    )
     vi.stubGlobal("fetch", fetch)
     const wrapper = mount(MessageView, { global: { plugins: [createPinia(), ElementPlus] } })
     await wrapper.find('input[placeholder="输入 11 位手机号"]').setValue("13800138000")
@@ -562,36 +736,45 @@ describe("批次与号码查询", () => {
 
   it("时间线视图授权查看复用首条消息 id 完成解密", async () => {
     const badge = { blacklisted: false, blacklist_source: null, recv_30d: 1 }
-    const fetch = vi.fn()
-      .mockResolvedValueOnce(response({
-        badge,
-        truncated: false,
-        events: [{
-          ts: "2026-07-12T08:02:00+08:00",
-          direction: "out",
-          category: "notice",
-          batch_no: "BATCH-1",
-          content: "系统通知",
-          status: "delivered",
-          sender: "通知应用",
-        }],
-      }))
-      .mockResolvedValueOnce(response({
-        total: 1,
-        badge,
-        items: [{
-          id: 9,
-          phone: "138****8000",
-          status: "delivered",
-          report_desc: null,
-          report_time: null,
-          created_at: "2026-07-12T08:02:00+08:00",
-          batch_no: "BATCH-1",
-          category: "notice",
-          content: "系统通知",
-          sender: "通知应用",
-        }],
-      }))
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        response({
+          badge,
+          truncated: false,
+          events: [
+            {
+              ts: "2026-07-12T08:02:00+08:00",
+              direction: "out",
+              category: "notice",
+              batch_no: "BATCH-1",
+              content: "系统通知",
+              status: "delivered",
+              sender: "通知应用",
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        response({
+          total: 1,
+          badge,
+          items: [
+            {
+              id: 9,
+              phone: "138****8000",
+              status: "delivered",
+              report_desc: null,
+              report_time: null,
+              created_at: "2026-07-12T08:02:00+08:00",
+              batch_no: "BATCH-1",
+              category: "notice",
+              content: "系统通知",
+              sender: "通知应用",
+            },
+          ],
+        }),
+      )
       .mockResolvedValueOnce(response({ phone: "13800138000" }))
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()

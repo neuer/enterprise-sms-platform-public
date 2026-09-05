@@ -258,15 +258,30 @@ async function revealSearched(): Promise<string> {
     <div class="message-fld">
       <span>视图</span>
       <div class="message-seg" role="group" aria-label="查询视图" data-testid="message-mode-seg">
-        <button type="button" :class="{ on: mode === 'list' }" data-testid="message-view-list" @click="switchMode('list')">列表</button>
-        <button type="button" :class="{ on: mode === 'timeline' }" data-testid="message-view-timeline" @click="switchMode('timeline')">时间线</button>
+        <button
+          type="button"
+          :class="{ on: mode === 'list' }"
+          data-testid="message-view-list"
+          @click="switchMode('list')"
+          >列表</button
+        >
+        <button
+          type="button"
+          :class="{ on: mode === 'timeline' }"
+          data-testid="message-view-timeline"
+          @click="switchMode('timeline')"
+          >时间线</button
+        >
       </div>
     </div>
     <div class="message-filter-go">
       <el-button type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="message-reset" @click="reset">重置</el-button>
     </div>
-    <p class="message-privacy">查询参数不进入 Nginx/Uvicorn 访问日志；服务端仅向 SQL 传递 <code>phone_hmac</code> 候选。类别与状态筛选在列表视图结果区提供。</p>
+    <p class="message-privacy"
+      >查询参数不进入 Nginx/Uvicorn 访问日志；服务端仅向 SQL 传递
+      <code>phone_hmac</code> 候选。类别与状态筛选在列表视图结果区提供。</p
+    >
   </form>
 
   <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
@@ -316,7 +331,9 @@ async function revealSearched(): Promise<string> {
         </template>
       </el-table-column>
       <el-table-column label="内容摘要" min-width="280">
-        <template #default="{ row }"><p class="message-content">{{ row.content }}</p></template>
+        <template #default="{ row }"
+          ><p class="message-content">{{ row.content }}</p></template
+        >
       </el-table-column>
       <el-table-column label="状态" width="150">
         <template #default="{ row }">
@@ -330,9 +347,11 @@ async function revealSearched(): Promise<string> {
       <template #empty>
         <EmptyState
           :title="searched ? '未找到符合条件的记录' : '尚未查询号码记录'"
-          :description="searched
-            ? '该号码在所选时间范围内没有收发记录；可扩大时间范围，或核对号码后重试。'
-            : '输入完整手机号后，这里会出现该号码跨批次的收发轨迹；切换到时间线可一屏还原「我们发了什么、用户回了什么」。'"
+          :description="
+            searched
+              ? '该号码在所选时间范围内没有收发记录；可扩大时间范围，或核对号码后重试。'
+              : '输入完整手机号后，这里会出现该号码跨批次的收发轨迹；切换到时间线可一屏还原「我们发了什么、用户回了什么」。'
+          "
         />
       </template>
     </el-table>
@@ -354,26 +373,58 @@ async function revealSearched(): Promise<string> {
     <footer v-if="searched" class="query-pagination message-pager">
       <span>共 {{ total }} 条 · 每页 20</span>
       <span class="result-filters">
-        <el-select v-model="category" data-testid="message-category-filter" placeholder="全部类别" clearable size="small" style="width: 118px" @change="applyFilters">
-          <el-option v-for="option in categoryOptions" :key="option.value" :value="option.value" :label="option.label" />
+        <el-select
+          v-model="category"
+          data-testid="message-category-filter"
+          placeholder="全部类别"
+          clearable
+          size="small"
+          style="width: 118px"
+          @change="applyFilters"
+        >
+          <el-option
+            v-for="option in categoryOptions"
+            :key="option.value"
+            :value="option.value"
+            :label="option.label"
+          />
         </el-select>
-        <el-select v-model="status" data-testid="message-status-filter" placeholder="全部状态" clearable size="small" style="width: 118px" @change="applyFilters">
+        <el-select
+          v-model="status"
+          data-testid="message-status-filter"
+          placeholder="全部状态"
+          clearable
+          size="small"
+          style="width: 118px"
+          @change="applyFilters"
+        >
           <el-option v-for="option in statusOptions" :key="option.value" :value="option.value" :label="option.label" />
         </el-select>
       </span>
-      <el-pagination v-model:current-page="page" data-testid="message-pagination" :page-size="DEFAULT_PAGE_SIZE" :total="total" layout="prev, pager, next" @current-change="changePage" />
+      <el-pagination
+        v-model:current-page="page"
+        data-testid="message-pagination"
+        :page-size="DEFAULT_PAGE_SIZE"
+        :total="total"
+        layout="prev, pager, next"
+        @current-change="changePage"
+      />
     </footer>
   </section>
 
   <section v-else v-loading="loading" class="timeline-panel">
-    <p v-if="timeline?.truncated" class="timeline-truncated">事件过多，仅显示最近 500 条；缩小时间范围可查看完整轨迹。</p>
+    <p v-if="timeline?.truncated" class="timeline-truncated"
+      >事件过多，仅显示最近 500 条；缩小时间范围可查看完整轨迹。</p
+    >
     <EmptyState
       v-if="!timeline?.events.length"
       :title="searched ? '该号码在所选条件下没有事件' : '尚未生成号码时间线'"
       :description="searched ? '可调整时间范围后重试。' : '输入完整手机号后，下行与用户回复会按日期排列。'"
     />
     <section v-for="group in groupedEvents" :key="group.day" class="timeline-day">
-      <h2>{{ group.day }}<span class="timeline-day-meta">{{ group.weekday }} · {{ group.events.length }} 事件</span></h2>
+      <h2
+        >{{ group.day }}<span class="timeline-day-meta">{{ group.weekday }} · {{ group.events.length }} 事件</span></h2
+      >
       <article
         v-for="event in group.events"
         :key="`${event.ts}-${event.direction}-${event.content}`"
@@ -381,8 +432,13 @@ async function revealSearched(): Promise<string> {
       >
         <div class="timeline-dot"></div>
         <header>
-          <CategoryTag v-if="event.direction === 'out' && event.category && isCategory(event.category)" :category="event.category" />
-          <span v-else-if="event.direction === 'out'" class="category-mark">{{ CATEGORY_LABELS[event.category || ''] || '平台下行' }}</span>
+          <CategoryTag
+            v-if="event.direction === 'out' && event.category && isCategory(event.category)"
+            :category="event.category"
+          />
+          <span v-else-if="event.direction === 'out'" class="category-mark">{{
+            CATEGORY_LABELS[event.category || ""] || "平台下行"
+          }}</span>
           <strong v-else>↩ 用户回复</strong>
           <StatusTag v-if="event.status" :status="event.status" />
           <time>{{ formatDateTime(event.ts).slice(11) }}</time>

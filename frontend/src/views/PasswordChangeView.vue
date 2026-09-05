@@ -1,12 +1,7 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue"
 
-import {
-  AuthApiError,
-  initialPasswordChangeRequest,
-  passwordPolicyRequest,
-  type PasswordPolicy,
-} from "../api/auth"
+import { AuthApiError, initialPasswordChangeRequest, passwordPolicyRequest, type PasswordPolicy } from "../api/auth"
 import loginMarkUrl from "../assets/brand/login-egret-icon.png"
 
 const props = defineProps<{ changeToken: string; expiresAt: number }>()
@@ -33,10 +28,7 @@ onMounted(async () => {
     emit("invalid", "改密会话已过期，请重新登录")
     return
   }
-  expiryTimer = window.setTimeout(
-    () => emit("invalid", "改密会话已过期，请重新登录"),
-    remaining,
-  )
+  expiryTimer = window.setTimeout(() => emit("invalid", "改密会话已过期，请重新登录"), remaining)
   try {
     policy.value = await passwordPolicyRequest()
   } catch {
@@ -126,13 +118,7 @@ async function submit() {
 
         <p v-if="errorMessage" class="login-error" role="alert">{{ errorMessage }}</p>
 
-        <el-button
-          class="login-submit"
-          :loading="submitting"
-          native-type="submit"
-          size="large"
-          type="primary"
-        >
+        <el-button class="login-submit" :loading="submitting" native-type="submit" size="large" type="primary">
           确认修改
         </el-button>
       </form>

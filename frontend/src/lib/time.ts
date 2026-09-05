@@ -57,10 +57,7 @@ function parse(value: string | number | Date | null | undefined): Date | null {
 }
 
 /** `YYYY-MM-DD HH:mm:ss`（Asia/Shanghai）；空值/非法值返回 empty。 */
-export function formatDateTime(
-  value: string | number | Date | null | undefined,
-  empty = "—",
-): string {
+export function formatDateTime(value: string | number | Date | null | undefined, empty = "—"): string {
   const date = parse(value)
   if (!date) return empty
   const p = partsOf(DATE_TIME, date)
@@ -68,10 +65,7 @@ export function formatDateTime(
 }
 
 /** `MM-DD HH:mm`（Asia/Shanghai）；空值/非法值返回 empty。 */
-export function formatDateTimeMinute(
-  value: string | number | Date | null | undefined,
-  empty = "—",
-): string {
+export function formatDateTimeMinute(value: string | number | Date | null | undefined, empty = "—"): string {
   const date = parse(value)
   if (!date) return empty
   const p = partsOf(DATE_TIME_MINUTE, date)
