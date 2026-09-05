@@ -784,7 +784,10 @@ class SqlVendorTestOperationRepository:
             raise VendorTestOperationConflict("UAT batch 引用冲突")
         resolved_batch = next(iter(batch_numbers))
         statuses = [str(row["chunk_status"]) for row in rows if row["chunk_status"] is not None]
-        if any(status in {"pending", "submitting", "retrying"} for status in statuses):
+        if any(
+            status in {"pending", "submitting", "retrying", "split_capacity_blocked"}
+            for status in statuses
+        ):
             return UatBatchResult(resolved_batch, "running", None, None)
         if "uncertain" in statuses:
             return UatBatchResult(

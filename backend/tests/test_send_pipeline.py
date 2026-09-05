@@ -42,15 +42,17 @@ from app.services.pipeline import (
     StoredBatch,
     VendorTestConsoleOnly,
 )
-from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL
+from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL, SqlPipelineStore
 from app.services.quota import QuotaFenceLost
 from app.services.send_admission import SendAdmissionRejected
 from app.services.send_inflight import (
     ACTIVE_INFLIGHT_STATES,
+    OCCUPYING_CHUNK_STATES,
     AcceptCommitResolution,
     _apply_reservation_delta,
     _load_bound_batch,
     apply_inflight_delta,
+    expand_in_flight_for_split,
     materialize_in_flight_reservation,
     release_in_flight_reservation,
     release_unbound_acceptance_reservation,
@@ -71,6 +73,7 @@ def test_idempotency_live_sql_keeps_unknown_and_unfinished_callback() -> None:
     assert "expires_at > now()" in sql
     assert "uncertain" in sql
     assert "unknown_terminal" in sql
+    assert "split_capacity_blocked" in sql
     assert "callback_task" in sql
     assert "pending" in sql and "retrying" in sql
     assert "phone" not in sql
@@ -92,10 +95,33 @@ def test_inflight_mutations_use_conservation_primitive() -> None:
         inspect.getsource(release_unbound_acceptance_reservation),
         inspect.getsource(materialize_in_flight_reservation),
         inspect.getsource(reserve_in_flight_chunks),
+        inspect.getsource(expand_in_flight_for_split),
     ):
         assert "apply_inflight_delta" in source
     assert inspect.getsource(apply_inflight_delta).count("def apply_inflight_delta") == 1
     assert frozenset({"reserved", "batch_bound", "materialized"}) == ACTIVE_INFLIGHT_STATES
+    assert frozenset(
+        {
+            "pending",
+            "submitting",
+            "retrying",
+            "submitted",
+            "uncertain",
+            "split_capacity_blocked",
+        }
+    ) == OCCUPYING_CHUNK_STATES
+
+
+def test_split_expand_does_not_lock_reservation_before_balance() -> None:
+    source = inspect.getsource(expand_in_flight_for_split)
+    assert "FOR UPDATE" not in source
+    assert "apply_inflight_delta" in source
+
+
+def test_count_in_flight_chunks_uses_occupying_states() -> None:
+    source = inspect.getsource(SqlPipelineStore.count_in_flight_chunks)
+    assert "send_chunk_occupying_states()" in source
+    assert "'pending', 'submitting', 'retrying', 'uncertain'" not in source
 
 
 def crypto() -> CryptoService:

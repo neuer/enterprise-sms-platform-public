@@ -1436,3 +1436,34 @@
   严格策略下创建的会话在后续放宽时被延长。
 - 影响：schema v1.6.88/0102、`jwt.py`、`session_policy.py`、认证装配、OpenAPI
   与 #645。`auth_legacy_policy_fallback_total` 必须保持 0。
+
+## D107 供应商动态拆分必须同步扩充在途预留
+
+- 决策：`split_once` 在批次 advisory lock 的同一事务中先
+  `apply_inflight_delta(operation="split", delta=1)`（先锁 balance 再锁
+  reservation，禁止在 delta 前 `FOR UPDATE` reservation），再把父分片标
+  failed、创建两个带 `parent_chunk_id/split_generation/child_ordinal` 身份的
+  子分片。父 `usage_chunk_allocation` 保留身份与 `request_count`，
+  `recipient_count`/`segment_count` 转到 child（child `request_count=0`），
+  同事务写 `chunk.ready` Outbox。父分片上仍为 `invoking` 的
+  `sms_vendor_attempt` CAS 为 `rejected`/`vendor_code=1006`，禁止走完整
+  `finalize_vendor_attempt`。占用态权威集合是
+  `send_chunk_occupying_states()` / `OCCUPYING_CHUNK_STATES`：
+  `pending|submitting|retrying|submitted|uncertain|split_capacity_blocked`。
+  `failed` 与 `unknown_terminal` 不占容量。容量不足时父分片进入
+  `split_capacity_blocked`，不创建部分 child，也不再次调用供应商；
+  对账在有余量后重试同一 generation。重复投递只在已有恰好 2 个 child 时
+  返回，不再扩容。COMMIT 用延迟约束触发器保证：有活动 reservation 时
+  `reserved_chunks >= COUNT(occupying chunks)`，且同一 parent/generation
+  的 child 数只能是 0 或 2。占用数高于 materialized reservation 时只扩不缩。
+  过程计数器不新增 Prometheus 族（D020/D102–D105），事实在 chunk/reservation 行上。
+  0001 装入当前 schema 后，0065 回填 sms_chunk 先
+  `SET CONSTRAINTS ALL IMMEDIATE` 再 ALTER，结束时恢复
+  `SET CONSTRAINTS ALL DEFERRED`，避免同一 upgrade-head 长事务里
+  0094 在缺 balance 时立即守恒失败。
+  0001 装入当前 schema 的占用延迟触发器后，0065 回填与 0103 ALTER `sms_chunk`
+  之前必须 `SET CONSTRAINTS ALL IMMEDIATE`，否则同事务 ADD CONSTRAINT 会碰到
+  pending trigger events。禁止用 `transaction_per_migration` 绕过。
+- 原因：只拆分 chunk 不扩 reservation 会让真实在途超过 `max_in_flight_chunks`。
+- 影响：schema v1.6.89/0103、`send_inflight.py`、`send_repository.py`、
+  `send.py`、`deploy/failover.md`。

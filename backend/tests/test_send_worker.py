@@ -14,6 +14,7 @@ from app.tasks.send import (
     FinalizeKind,
     FinalizeReport,
     SendWorker,
+    SubmitOutcome,
 )
 from app.vendor.routing import PRIMARY_VENDOR_ID, VendorAttempt, VendorRouter
 from app.vendor.zhihui import VendorApiError, VendorProtocolError, VendorTransportError
@@ -774,6 +775,21 @@ async def test_1006_splits_once_and_submits_children() -> None:
     assert ("split", 3) in store.events
     assert ("submitted", (4, "task-4")) in store.events
     assert ("submitted", (5, "task-5")) in store.events
+
+
+@pytest.mark.asyncio
+async def test_1006_empty_split_does_not_recall_vendor() -> None:
+    store = FakeStore()
+    original = ChunkPayload(3, 2, "a" * 32, ("13800138000", "13900139000"), "通知", "", "")
+    gateway = FakeGateway([VendorApiError(1006, "too many"), "should-not-run"])
+    outcome = await SendWorker(gateway, store, FakeBucket()).submit(
+        original,
+        lane="realtime",
+    )
+    assert outcome is SubmitOutcome.STALE
+    assert gateway.calls == 1
+    assert ("split", 3) in store.events
+    assert not any(event[0] in {"delay", "failed"} for event in store.events)
 
 
 @pytest.mark.asyncio

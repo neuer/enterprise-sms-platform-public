@@ -10,7 +10,7 @@ const props = defineProps<{ status: string; label?: string }>()
 
 const infoStates = new Set(["queued", "sending"])
 const dangerStates = new Set(["failed", "rejected", "cancelled", "expired", "dead", "unknown"])
-const warningStates = new Set(["pending", "pending_approval", "scheduled"])
+const warningStates = new Set(["pending", "pending_approval", "scheduled", "split_capacity_blocked"])
 const successStates = new Set(["completed", "delivered", "approved"])
 const interventionStates = new Set(["uncertain", "unknown_terminal", "completed_unknown", "balance_blocked"])
 

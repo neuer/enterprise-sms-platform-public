@@ -1,5 +1,9 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.89  2026-09-05
+-- v1.6.89：供应商动态拆分必须同步扩充在途预留；占用态由
+--          send_chunk_occupying_states() 定义，容量不足进入
+--          split_capacity_blocked，子分片以 parent/generation/ordinal 幂等。
 -- v1.6.88  2026-09-05
 -- v1.6.88：AD Token 签发绑定 auth_session_policy.revision，最低接受世代
 --          min_accepted_policy_revision 拒绝修复前回退 480/revision=1 的会话。
@@ -695,10 +699,10 @@ CREATE TABLE sms_chunk (
     custom_id      CHAR(32)    NOT NULL UNIQUE,           -- 批次前缀24+序号8
     vendor_task_id VARCHAR(64),
     phone_count    INTEGER     NOT NULL,
-    status         VARCHAR(16) NOT NULL DEFAULT 'pending'
+    status         VARCHAR(32) NOT NULL DEFAULT 'pending'
         CHECK (status IN (
           'pending','submitting','submitted','failed','retrying',
-          'uncertain','unknown_terminal'
+          'uncertain','unknown_terminal','split_capacity_blocked'
         )),
     vendor_code    INTEGER,
     vendor_msg     VARCHAR(256),
@@ -720,12 +724,38 @@ CREATE TABLE sms_chunk (
     CONSTRAINT ck_sms_chunk_route_generation CHECK (route_generation >= 1),
     CONSTRAINT ck_sms_chunk_vendor_task_pseudonym CHECK (
       vendor_task_id IS NULL OR vendor_task_id ~ '^[0-9a-f]{64}$'
+    ),
+    parent_chunk_id BIGINT REFERENCES sms_chunk(id) ON DELETE RESTRICT,
+    split_generation INTEGER,
+    child_ordinal SMALLINT,
+    CONSTRAINT ck_sms_chunk_split_identity CHECK (
+      (
+        parent_chunk_id IS NULL
+        AND split_generation IS NULL
+        AND child_ordinal IS NULL
+      ) OR (
+        parent_chunk_id IS NOT NULL
+        AND split_generation >= 1
+        AND child_ordinal IN (1, 2)
+      )
     )
 );
 CREATE INDEX idx_chunk_taskid    ON sms_chunk(vendor_task_id);
 CREATE INDEX idx_chunk_retry_due ON sms_chunk(retry_not_before) WHERE status = 'retrying';
 CREATE INDEX idx_chunk_unknown_terminal
     ON sms_chunk(unknown_terminal_at) WHERE status = 'unknown_terminal';
+CREATE UNIQUE INDEX uk_sms_chunk_split_child
+    ON sms_chunk(parent_chunk_id, split_generation, child_ordinal)
+    WHERE parent_chunk_id IS NOT NULL;
+CREATE INDEX idx_chunk_split_capacity_blocked
+    ON sms_chunk(id) WHERE status = 'split_capacity_blocked';
+CREATE OR REPLACE FUNCTION send_chunk_occupying_states()
+RETURNS TEXT[] LANGUAGE sql IMMUTABLE AS $$
+  SELECT ARRAY[
+    'pending','submitting','retrying','submitted',
+    'uncertain','split_capacity_blocked'
+  ]::text[];
+$$;
 
 -- uncertain 保守终态后的双人处置；禁止把旧分片改回 pending。
 CREATE TABLE sms_uncertain_resolution (
@@ -900,6 +930,101 @@ AFTER INSERT OR UPDATE OR DELETE ON send_inflight_balance
 DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW
 EXECUTE FUNCTION check_send_inflight_balance_conservation();
+CREATE OR REPLACE FUNCTION check_send_inflight_chunk_occupancy()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path=pg_catalog,public AS $$
+DECLARE
+  target_batch BIGINT;
+  reserved INTEGER;
+  occupying INTEGER;
+BEGIN
+  IF TG_TABLE_NAME = 'sms_chunk' THEN
+    IF TG_OP = 'UPDATE'
+       AND NEW.status IS NOT DISTINCT FROM OLD.status
+       AND NEW.batch_id IS NOT DISTINCT FROM OLD.batch_id THEN
+      RETURN NULL;
+    END IF;
+    target_batch := COALESCE(NEW.batch_id, OLD.batch_id);
+  ELSE
+    IF TG_OP = 'DELETE' THEN
+      RETURN NULL;
+    END IF;
+    IF TG_OP = 'UPDATE'
+       AND NEW.reserved_chunks IS NOT DISTINCT FROM OLD.reserved_chunks
+       AND NEW.state IS NOT DISTINCT FROM OLD.state
+       AND NEW.batch_id IS NOT DISTINCT FROM OLD.batch_id THEN
+      RETURN NULL;
+    END IF;
+    IF NOT (NEW.state = ANY (send_inflight_active_states())) THEN
+      RETURN NULL;
+    END IF;
+    target_batch := NEW.batch_id;
+  END IF;
+  IF target_batch IS NULL THEN
+    RETURN NULL;
+  END IF;
+  SELECT reserved_chunks
+    INTO reserved
+    FROM send_inflight_reservation
+   WHERE batch_id = target_batch
+     AND state = ANY (send_inflight_active_states());
+  IF reserved IS NULL THEN
+    RETURN NULL;
+  END IF;
+  SELECT COUNT(*)::integer
+    INTO occupying
+    FROM sms_chunk
+   WHERE batch_id = target_batch
+     AND status = ANY (send_chunk_occupying_states());
+  IF occupying > reserved THEN
+    RAISE EXCEPTION 'send_inflight occupancy exceeds reservation'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+REVOKE ALL ON FUNCTION check_send_inflight_chunk_occupancy() FROM PUBLIC;
+CREATE CONSTRAINT TRIGGER trg_sms_chunk_inflight_occupancy
+AFTER INSERT OR UPDATE OR DELETE ON sms_chunk
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION check_send_inflight_chunk_occupancy();
+CREATE CONSTRAINT TRIGGER trg_send_inflight_reservation_occupancy
+AFTER INSERT OR UPDATE OR DELETE ON send_inflight_reservation
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION check_send_inflight_chunk_occupancy();
+CREATE OR REPLACE FUNCTION check_sms_chunk_split_children_complete()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path=pg_catalog,public AS $$
+DECLARE
+  target_parent BIGINT;
+  target_generation INTEGER;
+  child_count INTEGER;
+BEGIN
+  target_parent := COALESCE(NEW.parent_chunk_id, OLD.parent_chunk_id);
+  target_generation := COALESCE(NEW.split_generation, OLD.split_generation);
+  IF target_parent IS NULL OR target_generation IS NULL THEN
+    RETURN NULL;
+  END IF;
+  SELECT COUNT(*)::integer
+    INTO child_count
+    FROM sms_chunk
+   WHERE parent_chunk_id = target_parent
+     AND split_generation = target_generation;
+  IF child_count <> 0 AND child_count <> 2 THEN
+    RAISE EXCEPTION 'sms_chunk split children incomplete'
+      USING ERRCODE = '23514';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+REVOKE ALL ON FUNCTION check_sms_chunk_split_children_complete() FROM PUBLIC;
+CREATE CONSTRAINT TRIGGER trg_sms_chunk_split_children_complete
+AFTER INSERT OR UPDATE OR DELETE ON sms_chunk
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION check_sms_chunk_split_children_complete();
 CREATE TABLE send_inflight_reconcile_fact (
     id BIGSERIAL PRIMARY KEY,
     app_id BIGINT NOT NULL REFERENCES app(id) ON DELETE RESTRICT,
@@ -3121,6 +3246,8 @@ GRANT SELECT (replay_eligibility, processing_lease_epoch, processing_lease_expir
               system_replay_audit_state)
     ON raw_vendor_log TO sms_metrics;
 GRANT EXECUTE ON FUNCTION send_inflight_active_states()
+    TO sms_accept, sms_send, sms_scheduler, sms_metrics;
+GRANT EXECUTE ON FUNCTION send_chunk_occupying_states()
     TO sms_accept, sms_send, sms_scheduler, sms_metrics;
 GRANT EXECUTE ON FUNCTION reconcile_send_inflight_app(BIGINT)
     TO sms_accept, sms_send;
