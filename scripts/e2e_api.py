@@ -890,6 +890,7 @@ class UatSuite:
             raise UatFailure("UAT-07 frequency removal mismatch")
 
     def case_08(self) -> None:
+        self._wait_admission_ready_for_volume("08")
         now = datetime.now(UTC).astimezone(SHANGHAI)
         window, expected_start = closed_market_window(now)
         previous_window = self.set_config("market_send_window", window)

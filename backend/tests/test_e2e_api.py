@@ -464,7 +464,17 @@ def test_case08_restores_original_market_window_before_case09(
             HttpResponse(200, []),
         ]
     )
-    suite = UatSuite(http, None, {"app-mkt": "memory-key"}, run_id="fixed-run")
+    class ReadyAdmissionProbe:
+        def psql_value(self, _sql: str, **_variables: str) -> str:
+            return "ready"
+
+    suite = UatSuite(
+        http,
+        None,
+        {"app-mkt": "memory-key"},
+        probe=ReadyAdmissionProbe(),  # type: ignore[arg-type]
+        run_id="fixed-run",
+    )
     suite._tokens["admin01"] = "memory-token"
     monkeypatch.setattr(
         e2e_api,
@@ -544,6 +554,7 @@ def test_volume_case_waits_for_open_or_expired_recovery_hold() -> None:
     assert 'category="verify"' in helper
     assert 'category="notice"' not in helper
     assert "900 +" in helper
+    assert 'self._wait_admission_ready_for_volume("08")' in source
     assert 'self._wait_admission_ready_for_volume("26")' in source
     assert 'self._wait_admission_ready_for_volume("18")' not in source
     assert 'self._force_resume_and_verify_unpaused("18")' in source
