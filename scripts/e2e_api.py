@@ -770,19 +770,19 @@ class UatSuite:
         wait_until(case_id, pending, timeout_s=30, interval_s=0.5)
 
     def _refresh_admission_snapshot(self, case_id: str, nonce: int) -> None:
-        """用 1 条 verify 触发 persist。号码落在 900+，避开 UAT-26 的 0-499。"""
+        """用 1 条 verify 触发 persist。号码落在 900+，避开 UAT-26 的 0-499。
 
-        self._expect(
+        persist 在 authorize 拒答之前就会跑。进程内 CLOSED 缓存可能先 503，
+        仍算一次刷新，不能把 200 当成 hold-complete 的前置条件。
+        """
+
+        self.api_send(
             case_id,
-            self.api_send(
-                case_id,
-                app="app-iam",
-                category="verify",
-                mobiles=[self.phone(int(case_id), 900 + nonce)],
-                content="验证码000000",
-                biz_suffix=f"adm{nonce}",
-            ),
-            200,
+            app="app-iam",
+            category="verify",
+            mobiles=[self.phone(int(case_id), 900 + nonce)],
+            content="验证码000000",
+            biz_suffix=f"adm{nonce}",
         )
 
     def _seed_completed_admission_hold(self) -> None:

@@ -556,6 +556,10 @@ def test_volume_case_waits_for_open_or_expired_recovery_hold() -> None:
     assert "timeout_s=15" not in helper[helper.index("def _wait_admission_ready_for_volume") :]
     assert 'category="verify"' in helper
     assert 'category="notice"' not in helper
+    refresh_start = helper.index("def _refresh_admission_snapshot")
+    refresh = helper[refresh_start : helper.index("def _seed_completed_admission_hold")]
+    assert "self.api_send(" in refresh
+    assert "self._expect(" not in refresh
     assert "900 + nonce" in helper
     assert "nonce % 9" not in helper
     assert 'self._wait_admission_ready_for_volume("08")' in source
