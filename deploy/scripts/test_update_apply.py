@@ -60,6 +60,8 @@ class ApplyOperations(Protocol):
 
     def replace_redis_services(self) -> None: ...
 
+    def prepare_rollback_images(self) -> None: ...
+
     def replace_backend_services(self, services: tuple[str, ...]) -> None: ...
 
     def replace_web(self) -> None: ...
@@ -134,6 +136,8 @@ class TestUpdateApply:
                 current = TestUpdateState.MIGRATED
             step = "replace_redis"
             self.operations.replace_redis_services()
+            step = "prepare_rollback"
+            self.operations.prepare_rollback_images()
             step = "writer_cutover"
             self.operations.run_writer_cutover(update_id)
             step = "replace_backend"
@@ -150,7 +154,8 @@ class TestUpdateApply:
             if (
                 locked
                 and migration_from == migration_target
-                and step in {"replace_web", "replace_backend", "replace_redis"}
+                and step
+                in {"replace_web", "replace_backend", "replace_redis", "prepare_rollback"}
             ):
                 try:
                     actual_commit, actual_head = (
