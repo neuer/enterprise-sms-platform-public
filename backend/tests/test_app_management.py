@@ -142,7 +142,7 @@ async def test_app_without_callback_works_when_callback_egress_is_disabled() -> 
             deployment_allow_cidrs=(),
             deployment_allow_ports=(443,),
         ),
-        secret_generator=lambda: "api-key-plain-once",
+        token_factory=lambda: "api-key-plain-once",
     )
 
     assert await service.list() == []
@@ -165,7 +165,7 @@ async def test_create_returns_secrets_once_but_repository_only_gets_hash_and_cip
         repo,
         crypto(),
         validator("10.2.3.4"),
-        secret_generator=lambda: next(secrets),
+        token_factory=lambda: next(secrets),
     )
 
     result = await service.create(
@@ -198,7 +198,7 @@ async def test_rotate_key_sets_previous_expiry_and_revoke_is_explicit() -> None:
         repo,
         crypto(),
         validator("10.1.1.1"),
-        secret_generator=lambda: "new-api-key-plain-value",
+        token_factory=lambda: "new-api-key-plain-value",
         clock=lambda: now,
         key_grace=timedelta(hours=72),
     )
@@ -238,7 +238,7 @@ async def test_callback_secret_rotation_only_persists_packed_ciphertext() -> Non
         repo,
         crypto(),
         validator("10.1.1.1"),
-        secret_generator=lambda: "rotated-callback-secret",
+        token_factory=lambda: "rotated-callback-secret",
     )
     result = await service.rotate_callback_secret(3, actor="admin01", ip="10.0.0.8")
 
@@ -268,7 +268,7 @@ async def test_production_rejects_unlimited_quota_and_empty_allowlist(
         repo,
         crypto(),
         validator("10.1.1.1"),
-        secret_generator=lambda: "api-key-plain-once",
+        token_factory=lambda: "api-key-plain-once",
         clock=lambda: now,
     )
     with pytest.raises(InvalidAppConfig, match="非零日配额"):
@@ -309,7 +309,7 @@ async def test_allowed_ips_are_normalized_deduped_and_sorted_on_create() -> None
         repo,
         crypto(),
         validator("10.1.1.1"),
-        secret_generator=lambda: "api-key-plain-once",
+        token_factory=lambda: "api-key-plain-once",
     )
 
     await service.create(
@@ -342,7 +342,7 @@ async def test_allowed_ips_reject_invalid_entries_and_exceed_bounds() -> None:
         repo,
         crypto(),
         validator("10.1.1.1"),
-        secret_generator=lambda: "api-key-plain-once",
+        token_factory=lambda: "api-key-plain-once",
     )
 
     for invalid in (
@@ -375,7 +375,7 @@ async def test_update_requires_callback_secret_before_callback_url() -> None:
         repo,
         crypto(),
         validator("10.1.1.1"),
-        secret_generator=lambda: "api-key-plain-once",
+        token_factory=lambda: "api-key-plain-once",
     )
 
     with pytest.raises(InvalidAppConfig, match="callback secret"):

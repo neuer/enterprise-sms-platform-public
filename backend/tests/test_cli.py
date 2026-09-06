@@ -158,7 +158,7 @@ def test_api_key_file_is_atomic_json_and_owner_only(tmp_path: Path) -> None:
     destination = tmp_path / "nested/dev-apikeys.txt"
     keys = development_keys(module)
 
-    module.write_dev_api_keys(destination, keys)
+    module.write_dev_app_tokens(destination, keys)
 
     assert json.loads(destination.read_text(encoding="utf-8")) == keys
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
@@ -171,19 +171,19 @@ def test_api_keys_are_generated_locally_and_safe_existing_values_are_reused(
     module = load_cli_module()
     destination = tmp_path / "dev-apikeys.txt"
 
-    generated, was_generated = module.load_or_generate_dev_api_keys(destination)
+    generated, was_generated = module.load_or_generate_dev_app_tokens(destination)
     assert was_generated is True
     assert set(generated) == {app.name for app in module.DEV_APPS}
     assert all(len(value) >= 32 and not value.startswith("dev_") for value in generated.values())
-    module.write_dev_api_keys(destination, generated)
+    module.write_dev_app_tokens(destination, generated)
 
-    reused, was_generated = module.load_or_generate_dev_api_keys(destination)
+    reused, was_generated = module.load_or_generate_dev_app_tokens(destination)
     assert reused == generated
     assert was_generated is False
 
     destination.chmod(0o644)
     with pytest.raises(ValueError, match="permissions"):
-        module.load_or_generate_dev_api_keys(destination)
+        module.load_or_generate_dev_app_tokens(destination)
 
 
 def test_legacy_fixed_api_key_format_is_rotated_without_echoing_values(
@@ -202,7 +202,7 @@ def test_legacy_fixed_api_key_format_is_rotated_without_echoing_values(
     )
     destination.chmod(0o600)
 
-    generated, was_generated = module.load_or_generate_dev_api_keys(destination)
+    generated, was_generated = module.load_or_generate_dev_app_tokens(destination)
 
     assert was_generated is True
     assert all(not value.startswith("dev_") for value in generated.values())
