@@ -551,9 +551,13 @@ def test_volume_case_waits_for_open_or_expired_recovery_hold() -> None:
     assert "reason_code='recovery_hold'" in helper
     assert "hold_until=now() - interval '1 second'" in helper
     assert "hold_until IS NULL OR hold_until <= now()" not in helper
+    assert "persist_until_open" in helper
+    assert "timeout_s=75" in helper
+    assert "timeout_s=15" not in helper[helper.index("def _wait_admission_ready_for_volume") :]
     assert 'category="verify"' in helper
     assert 'category="notice"' not in helper
-    assert "900 +" in helper
+    assert "900 + nonce" in helper
+    assert "nonce % 9" not in helper
     assert 'self._wait_admission_ready_for_volume("08")' in source
     assert 'self._wait_admission_ready_for_volume("26")' in source
     assert 'self._wait_admission_ready_for_volume("18")' not in source

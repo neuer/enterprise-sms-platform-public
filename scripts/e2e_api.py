@@ -778,7 +778,7 @@ class UatSuite:
                 case_id,
                 app="app-iam",
                 category="verify",
-                mobiles=[self.phone(int(case_id), 900 + (nonce % 9))],
+                mobiles=[self.phone(int(case_id), 900 + nonce)],
                 content="验证码000000",
                 biz_suffix=f"adm{nonce}",
             ),
@@ -797,7 +797,11 @@ class UatSuite:
         )
 
     def _wait_admission_ready_for_volume(self, case_id: str) -> None:
-        """大请求必须等到新鲜 OPEN。过期 hold 仍是 recovery_hold，不能当放行。"""
+        """大请求必须等到新鲜 OPEN。过期 hold 仍是 recovery_hold，不能当放行。
+
+        进程内快照 TTL 为 5s，单次 refresh 可能仍走缓存、不把种子写回 OPEN。
+        等待期间反复用小 verify 触发 persist；hold 本身是 60s。
+        """
 
         def open_fresh() -> bool | None:
             marker = self._probe().psql_value(
@@ -810,8 +814,17 @@ class UatSuite:
         if open_fresh() is True:
             return
         self._seed_completed_admission_hold()
-        self._refresh_admission_snapshot(case_id, 0)
-        wait_until(case_id, open_fresh, timeout_s=15, interval_s=0.5)
+        nonce = 0
+
+        def persist_until_open() -> bool | None:
+            nonlocal nonce
+            if open_fresh() is True:
+                return True
+            self._refresh_admission_snapshot(case_id, nonce)
+            nonce += 1
+            return True if open_fresh() is True else None
+
+        wait_until(case_id, persist_until_open, timeout_s=75, interval_s=0.5)
 
     def case_05(self) -> None:
         phone = self.phone(5, 0)
