@@ -1,4 +1,11 @@
 import { apiRequest, authorizedBlob, ApiRequestError, DOWNLOAD_TIMEOUT_MS } from "./client"
+import type { paths } from "./types.gen"
+
+/**
+ * 契约类型逐步迁移说明：`types.gen.ts` 由 `npm run gen:api-types` 从根 openapi.yaml
+ * 生成（CI 对生成产物做零漂移门禁，禁止手改）。src/api/ 下其余手写 interface 后续按
+ * 模块逐个替换为 paths/operations 生成类型引用，迁移时以 SendResult 为范例。
+ */
 
 export type Category = "notice" | "market"
 
@@ -54,29 +61,11 @@ export interface WebMessagePayload {
   remark?: string
 }
 
-export interface SendResult {
-  batch_no: string
-  status:
-    | "queued"
-    | "scheduled"
-    | "pending_approval"
-    | "completed"
-    | "completed_unknown"
-    | "cancelled"
-    | "rejected"
-    | "expired"
-    | "sending"
-    | "balance_blocked"
-  accepted: number
-  quota_cost: number
-  idempotent: boolean
-  deferred_reason: string | null
-  removed_duplicate?: number
-  removed_blacklist?: number
-  removed_freq_limit?: number
-  est_segments?: number
-  scheduled_at?: string | null
-}
+/**
+ * `/api/v1/web/messages/send` 200 响应；字段与状态枚举（含 completed_unknown 等
+ * 全部批次终态）以 openapi.yaml 为准，required 字段不得再标可选。
+ */
+export type SendResult = paths["/api/v1/web/messages/send"]["post"]["responses"]["200"]["content"]["application/json"]
 
 export async function uploadPhones(file: File): Promise<ImportResult> {
   const form = new FormData()

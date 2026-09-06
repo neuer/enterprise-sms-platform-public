@@ -211,7 +211,7 @@ function sendSuccessText(result: SendResult): string {
 }
 
 function removedTotal(result: SendResult): number {
-  return (result.removed_duplicate ?? 0) + (result.removed_blacklist ?? 0) + (result.removed_freq_limit ?? 0)
+  return result.removed_duplicate + result.removed_blacklist + result.removed_freq_limit
 }
 
 function contentPayload() {
