@@ -382,6 +382,7 @@ class UatSuite:
         self.rollback = RollbackStack()
         self._tokens: dict[str, str] = {}
         self._account_ids: dict[str, int] = {}
+        self.admission_snapshot_ttl_s = 5.1
 
     @classmethod
     def stub(cls, *, run_id: str) -> UatSuite:
@@ -770,46 +771,69 @@ class UatSuite:
         wait_until(case_id, pending, timeout_s=30, interval_s=0.5)
 
     def _refresh_admission_snapshot(self, case_id: str, nonce: int) -> None:
-        """用 1 条 verify 触发 persist。号码落在 900+，避开 UAT-26 的 0-499。"""
+        """用 1 条 verify 触发 persist。号码落在 900+，避开 UAT-26 的 0-499。
 
-        self._expect(
+        persist 在 authorize 拒答之前就会跑。进程内 CLOSED 缓存可能先 503，
+        仍算一次刷新，不能把 200 当成 hold-complete 的前置条件。
+        """
+
+        self.api_send(
             case_id,
-            self.api_send(
-                case_id,
-                app="app-iam",
-                category="verify",
-                mobiles=[self.phone(int(case_id), 900 + (nonce % 9))],
-                content="验证码000000",
-                biz_suffix=f"adm{nonce}",
-            ),
-            200,
+            app="app-iam",
+            category="verify",
+            mobiles=[self.phone(int(case_id), 900 + nonce)],
+            content="验证码000000",
+            biz_suffix=f"adm{nonce}",
+        )
+
+    def _seed_completed_admission_hold(self) -> None:
+        """热启动必须代表 hold 已结束，不能把初始化标记当 OPEN。"""
+
+        self._probe().psql_execute(
+            "UPDATE send_admission_state "
+            "SET state='degraded', reason_code='recovery_hold', "
+            "hold_until=now() - interval '1 second', "
+            "valid_until=now() - interval '1 second' "
+            "WHERE scope='send'"
         )
 
     def _wait_admission_ready_for_volume(self, case_id: str) -> None:
-        """大请求必须等到新鲜 OPEN。过期 hold 仍是 recovery_hold，不能当放行。"""
+        """大请求必须等到新鲜 OPEN。过期 hold 仍是 recovery_hold，不能当放行。
 
-        def open_fresh() -> bool | None:
+        进程内快照 TTL 为 5s。DB 先写成 OPEN 时缓存仍可能是 degraded，
+        营销会 503 degraded_bulk。必须等 TTL 过期后再 persist 一次。
+        """
+
+        def open_fresh() -> bool:
             marker = self._probe().psql_value(
                 "SELECT CASE WHEN state='open' AND valid_until > now() "
                 "THEN 'ready' ELSE 'wait' END "
                 "FROM send_admission_state WHERE scope='send'"
             )
-            return True if marker == "ready" else None
+            return marker == "ready"
 
-        def hold_cleared() -> bool | None:
-            marker = self._probe().psql_value(
-                "SELECT CASE WHEN state='open' THEN 'ready' "
-                "WHEN hold_until IS NULL OR hold_until <= now() THEN 'ready' "
-                "ELSE 'wait' END "
-                "FROM send_admission_state WHERE scope='send'"
-            )
-            return True if marker == "ready" else None
+        started_open = open_fresh()
+        if not started_open:
+            self._seed_completed_admission_hold()
+        nonce = 0
+        open_since = self.clock() if started_open else None
 
-        wait_until(case_id, hold_cleared, timeout_s=90, interval_s=1)
-        if open_fresh() is True:
-            return
-        self._refresh_admission_snapshot(case_id, 0)
-        wait_until(case_id, open_fresh, timeout_s=15, interval_s=0.5)
+        def persist_until_open() -> bool | None:
+            nonlocal nonce, open_since
+            if open_fresh():
+                if open_since is None:
+                    open_since = self.clock()
+                elif self.clock() - open_since >= self.admission_snapshot_ttl_s:
+                    self._refresh_admission_snapshot(case_id, nonce)
+                    nonce += 1
+                    return True if open_fresh() else None
+            else:
+                open_since = None
+            self._refresh_admission_snapshot(case_id, nonce)
+            nonce += 1
+            return None
+
+        wait_until(case_id, persist_until_open, timeout_s=75, interval_s=0.5)
 
     def case_05(self) -> None:
         phone = self.phone(5, 0)
@@ -888,6 +912,7 @@ class UatSuite:
             raise UatFailure("UAT-07 frequency removal mismatch")
 
     def case_08(self) -> None:
+        self._wait_admission_ready_for_volume("08")
         now = datetime.now(UTC).astimezone(SHANGHAI)
         window, expected_start = closed_market_window(now)
         previous_window = self.set_config("market_send_window", window)
