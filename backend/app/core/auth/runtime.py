@@ -49,7 +49,7 @@ from app.core.auth.service import (
     RateLimited,
     RedisKeyValue,
 )
-from app.core.auth.session_policy_sync import AlignedAuthSessionPolicyLoader
+from app.core.auth.session_policy_sync import get_auth_session_policy_runtime
 from app.core.auth.users import (
     AuthContextChanged,
     PasswordChangeAuthorization,
@@ -778,7 +778,7 @@ def create_auth_facade(settings: Settings) -> AuthFacade:
             security_events=SqlAuthSecurityEventRepository(settings),
         ),
     )
-    session_policy = AlignedAuthSessionPolicyLoader(store, settings=settings)
+    session_policy = get_auth_session_policy_runtime(settings).snapshot
     tokens = JwtService(
         settings.credential("jwt_secret"),
         store,

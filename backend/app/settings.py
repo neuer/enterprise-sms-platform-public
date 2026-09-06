@@ -195,6 +195,9 @@ class Settings(BaseSettings):
     )
     jwt_secret_file: Path = Path("/run/secrets/jwt_secret")
     jwt_accept_legacy: bool = False
+    auth_session_policy_refresh_interval_s: float = 5.0
+    auth_session_policy_max_staleness_s: float = 15.0
+    auth_session_policy_reconcile_timeout_s: float = 2.0
     trusted_hosts: str = "*"
     ldap_bind_password_file: Path = Path("/run/secrets/ldap_bind_password")
     metrics_scrape_token_file: Path = Path("/run/secrets/metrics_scrape_token")
@@ -429,6 +432,26 @@ class Settings(BaseSettings):
             )
         if not 1 <= self.metrics_snapshot_ttl_seconds <= 60:
             raise ValueError("METRICS_SNAPSHOT_TTL_SECONDS must be between 1 and 60")
+        if not 0.1 <= self.auth_session_policy_refresh_interval_s <= 60:
+            raise ValueError(
+                "AUTH_SESSION_POLICY_REFRESH_INTERVAL_S must be between 0.1 and 60"
+            )
+        if not 1 <= self.auth_session_policy_max_staleness_s <= 120:
+            raise ValueError(
+                "AUTH_SESSION_POLICY_MAX_STALENESS_S must be between 1 and 120"
+            )
+        if not 0.1 <= self.auth_session_policy_reconcile_timeout_s <= 10:
+            raise ValueError(
+                "AUTH_SESSION_POLICY_RECONCILE_TIMEOUT_S must be between 0.1 and 10"
+            )
+        if (
+            self.auth_session_policy_refresh_interval_s
+            >= self.auth_session_policy_max_staleness_s
+        ):
+            raise ValueError(
+                "AUTH_SESSION_POLICY_REFRESH_INTERVAL_S must be less than "
+                "AUTH_SESSION_POLICY_MAX_STALENESS_S"
+            )
         max_spill_bytes = 8 * 1024 * 1024 * 1024
         if not RAW_SPILL_MIN_TOTAL_BYTES <= self.raw_spill_max_total_bytes <= max_spill_bytes:
             raise ValueError(

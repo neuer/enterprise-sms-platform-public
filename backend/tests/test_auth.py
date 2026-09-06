@@ -259,9 +259,13 @@ class FakeKeyValue:
         return "", "orphaned"
 
     async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
+        from app.core.auth.jwt import eval_memory_jwt_script
         from app.core.auth.service import MAX_TRANSITION_ATTEMPTS, MAX_TRANSITION_RECOVERY_MS
         from app.core.auth.session_policy import eval_memory_session_policy
 
+        jwt_result = eval_memory_jwt_script(self.values, script, args)
+        if jwt_result is not None:
+            return jwt_result
         policy_result = eval_memory_session_policy(self.values, script, args)
         if policy_result is not None or "auth-session-policy-" in script:
             return policy_result
@@ -601,28 +605,7 @@ class FakeKeyValue:
                     "",
                 ]
             return [0, "", user_count, "", ip_count, 0, 0, "", "", "", ""]
-        if numkeys == 3:
-            revoked_jti, revoked_session, refresh_family, jti_ttl, session_ttl = args
-            assert int(jti_ttl) > 0 and int(session_ttl) > 0
-            self.values[str(revoked_jti)] = "1"
-            self.values[str(revoked_session)] = "1"
-            self.values.pop(str(refresh_family), None)
-            return 1
-        assert numkeys == 2
-        key, revoked_session, expected, replacement, _ttl, session_ttl = args
-        current = self.values.get(str(key))
-        if current is None:
-            assert int(session_ttl) > 0
-            self.values[str(revoked_session)] = "1"
-            self.values.pop(str(key), None)
-            return 0
-        if current != expected:
-            assert int(session_ttl) > 0
-            self.values[str(revoked_session)] = "1"
-            self.values.pop(str(key), None)
-            return -1
-        self.values[str(key)] = replacement
-        return 1
+        raise AssertionError(f"unexpected Lua script keys={numkeys}")
 
 
 def access_claims(
@@ -1690,6 +1673,8 @@ async def test_refresh_replay_revokes_family_with_authoritative_projection() -> 
     first = await service.issue_pair(access_claims(), TAB_ID)
     second = await service.rotate_refresh(first.refresh_token, TAB_ID)
     assert (await service.verify(second.token)).account_id == 8
+    sid = str(service._decode(second.refresh_token)["sid"])
+    store.values.pop(f"auth:jwt:session-revoked:{sid}", None)
 
     with pytest.raises(InvalidCredentials):
         await service.rotate_refresh(first.refresh_token, TAB_ID)
@@ -1746,6 +1731,8 @@ async def test_old_refresh_token_replay_immediately_destroys_family() -> None:
     )
     first = await service.issue_pair(access_claims(), TAB_ID)
     second = await service.rotate_refresh(first.refresh_token, TAB_ID)
+    sid = str(service._decode(second.refresh_token)["sid"])
+    store.values.pop(f"auth:jwt:session-revoked:{sid}", None)
 
     with pytest.raises(InvalidCredentials):
         await service.rotate_refresh(first.refresh_token, TAB_ID)
