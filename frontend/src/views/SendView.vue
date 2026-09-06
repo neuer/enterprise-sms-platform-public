@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { UploadRequestOptions } from "element-plus"
-import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from "vue"
+import { computed, onBeforeUnmount, onMounted, reactive, ref, toRef, watch } from "vue"
 import { useRouter } from "vue-router"
 
 import {
@@ -19,6 +19,7 @@ import { listSigns, type SmsSign } from "../api/signs"
 import { getDashboard } from "../api/dashboard"
 import SegmentBar from "../components/SegmentBar.vue"
 import EmptyState from "../components/EmptyState.vue"
+import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { copyText } from "../lib/clipboard"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
@@ -59,6 +60,7 @@ function newIdempotencyKey(): string {
 }
 
 const idempotencyKey = ref(newIdempotencyKey())
+let copiedTimer: number | undefined
 const templates = ref<SmsTemplate[]>([])
 const templateParams = ref<string[]>([])
 const signs = ref<SmsSign[]>([])
@@ -92,11 +94,8 @@ const renderedTemplateParts = computed(() => {
   return parts
 })
 
-// ── 号码解析：≤2000 字的小文本每次变更同步解析，校验提示与计数即时反馈不变；
-// 更大粘贴（可能数万行）300ms 防抖，避免每次按键全量 split/Set 阻塞输入。 ──
-const MOBILES_SYNC_PARSE_MAX_LENGTH = 2_000
-const MOBILES_PARSE_DEBOUNCE_MS = 300
-
+// ── 号码解析：共享 useDebouncedEntries 单点（#596 模式）——≤2000 字的小文本同步解析，
+// 校验提示与计数即时反馈不变；更大粘贴（可能数万行）300ms 防抖，避免逐键全量 split/Set 阻塞输入。 ──
 function parseMobiles(text: string): string[] {
   return text
     .split(/[\s,，;；]+/)
@@ -104,33 +103,9 @@ function parseMobiles(text: string): string[] {
     .filter(Boolean)
 }
 
-// shallowRef 持有解析结果：大数组不做深度响应，仅在解析落盘时整体替换并触发下游 computed。
-const pastedMobiles = shallowRef<string[]>([])
-let mobilesParseTimer: number | undefined
-
-watch(
-  () => form.mobilesText,
-  (text) => {
-    window.clearTimeout(mobilesParseTimer)
-    if (text.length <= MOBILES_SYNC_PARSE_MAX_LENGTH) {
-      mobilesParseTimer = undefined
-      pastedMobiles.value = parseMobiles(text)
-      return
-    }
-    mobilesParseTimer = window.setTimeout(() => {
-      mobilesParseTimer = undefined
-      pastedMobiles.value = parseMobiles(text)
-    }, MOBILES_PARSE_DEBOUNCE_MS)
-  },
-)
-
-/** 提交 / 剔除等即时路径先落盘待定解析，绝不使用防抖窗口内的过期结果。 */
-function flushMobilesParse(): void {
-  if (mobilesParseTimer === undefined) return
-  window.clearTimeout(mobilesParseTimer)
-  mobilesParseTimer = undefined
-  pastedMobiles.value = parseMobiles(form.mobilesText)
-}
+const { entries: pastedMobiles, flush: flushMobilesParse } = useDebouncedEntries(toRef(form, "mobilesText"), {
+  parse: parseMobiles,
+})
 
 // 与服务端一致的 ^1\d{10}$（lib/phone 单点）；提交前即时暴露格式错误，避免整单被 400 拒绝却只看到笼统提示。
 const invalidMobiles = computed(() => pastedMobiles.value.filter((value) => !PHONE_RE.test(value)))
@@ -575,7 +550,9 @@ async function copyBatchNo(): Promise<void> {
   if (!sendResult.value) return
   if (await copyText(sendResult.value.batch_no)) {
     copied.value = true
-    window.setTimeout(() => {
+    window.clearTimeout(copiedTimer)
+    copiedTimer = window.setTimeout(() => {
+      copiedTimer = undefined
       copied.value = false
     }, 1600)
   } else {
@@ -612,7 +589,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.clearTimeout(previewTimer)
-  window.clearTimeout(mobilesParseTimer)
+  window.clearTimeout(copiedTimer)
 })
 </script>
 
