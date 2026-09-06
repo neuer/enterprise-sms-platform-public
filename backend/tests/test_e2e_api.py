@@ -64,9 +64,7 @@ class FakeQuotaProbe:
 
 
 def test_case_registry_is_exact_autopilot_subset() -> None:
-    expected = tuple(
-        [f"{value:02d}" for value in range(5, 21)] + ["24", "25", "26", "27", "29"]
-    )
+    expected = tuple([f"{value:02d}" for value in range(5, 21)] + ["24", "25", "26", "27", "29"])
     assert expected == CASE_IDS
 
 
@@ -530,21 +528,19 @@ def test_fault_barrier_waits_for_queued_batches_and_chunks_that_can_still_send()
     assert "FROM sms_batch b" in barrier
     assert "b.status = 'queued'" in barrier
     assert "c.batch_id = b.id" in barrier
-    assert (
-        "c.status IN ('pending','submitting','retrying','split_capacity_blocked')"
-        in barrier
-    )
+    assert "c.status IN ('pending','submitting','retrying','split_capacity_blocked')" in barrier
     assert "b.status = 'sending'" not in barrier
 
 
 def test_volume_case_waits_for_open_or_expired_recovery_hold() -> None:
     source = (SCRIPTS / "e2e_api.py").read_text(encoding="utf-8")
 
-    helper = source[
-        source.index("def _refresh_admission_snapshot") : source.index("def case_05")
-    ]
+    helper = source[source.index("def _refresh_admission_snapshot") : source.index("def case_05")]
     assert "state='open' AND valid_until > now()" in helper
     assert "FROM send_admission_state WHERE scope='send'" in helper
+    assert "reason_code='recovery_hold'" in helper
+    assert "hold_until=now() - interval '1 second'" in helper
+    assert "hold_until IS NULL OR hold_until <= now()" not in helper
     assert 'category="verify"' in helper
     assert 'category="notice"' not in helper
     assert "900 +" in helper

@@ -1509,10 +1509,9 @@
   `degraded/recovery_hold`，禁止保存 `open + future hold`。`valid_until`
   过期的 OPEN/CLOSED 行与缺行视为 previous=CLOSED。已在
   `degraded/recovery_hold` 的行即使 `valid_until` 过期仍按 degraded 续读，
-  避免 15s 快照过期把已到期 hold 再次当成 CLOSED 并重开 60s。唯一例外是
-  迁移写入的一次性 `reason_code=bootstrap`：首次健康 facts 可进入 raw
-  状态且不建 hold，标记随写入被消费。hold 期内 raw=OPEN 仍保持
-  recovery_hold；raw=CLOSED 立即关闭并清空 hold。0105 先修复存量再加 CHECK。
+  避免 15s 快照过期把已到期 hold 再次当成 CLOSED 并重开 60s。hold 期内
+  raw=OPEN 仍保持 recovery_hold；raw=CLOSED 立即关闭并清空 hold。
+  `reason_code=bootstrap` 不豁免保持期，见 D114。0105 先修复存量再加 CHECK。
 - 原因：旧代码先算出 OPEN 再写 future hold，当前请求立即全量放行，
   下一轮 previous=OPEN 使 hold 永不生效。
 - 影响：schema v1.6.91/0105、`send_admission.py`、`send_admission_repository.py`。
@@ -1564,3 +1563,18 @@
   `auth_transition_dead_letter`、auth Redis ACL（`+scan`/`+zscore`）、
   `docs/runbooks/auth-transition-audit.md`。
   本期不把首次信封再抄一份 PostgreSQL Outbox；ACK 成功前信封仍只在 Redis。
+
+## D114 bootstrap reason 不得跳过 recovery hold
+
+- 决策：删除 `previous_reason == 'bootstrap'` 直通。`closed/bootstrap` 与普通
+  CLOSED 相同：raw CLOSED 不放行；raw OPEN/DEGRADED 立即保存
+  `degraded/recovery_hold` 并在本次转换写入 `hold_until`。缺失、过期或旧
+  初始化行按 CLOSED 处理，不得默认 OPEN。已有正常 hold 不因 snapshot TTL
+  刷新重开。`reason_code` 只解释状态，不授权豁免。不在 API 层另加
+  bootstrap bypass，不取消 OPEN/hold 组合约束。热启动夹具必须代表 hold
+  已结束，不能把初始化标记伪装成全新 OPEN。
+- 原因：#678。仅凭可变 reason 字符串无法证明全新安装；已有业务环境重写
+  该标记会绕过保持期。
+- 影响：`send_admission.py`、`test_send_admission.py`、
+  `docs/runbooks/send-admission-lanes.md`、E2E 热启动夹具。取代 D110
+  中的 bootstrap 例外。

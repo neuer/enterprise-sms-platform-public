@@ -785,6 +785,17 @@ class UatSuite:
             200,
         )
 
+    def _seed_completed_admission_hold(self) -> None:
+        """热启动必须代表 hold 已结束，不能把初始化标记当 OPEN。"""
+
+        self._probe().psql_execute(
+            "UPDATE send_admission_state "
+            "SET state='degraded', reason_code='recovery_hold', "
+            "hold_until=now() - interval '1 second', "
+            "valid_until=now() - interval '1 second' "
+            "WHERE scope='send'"
+        )
+
     def _wait_admission_ready_for_volume(self, case_id: str) -> None:
         """大请求必须等到新鲜 OPEN。过期 hold 仍是 recovery_hold，不能当放行。"""
 
@@ -796,18 +807,9 @@ class UatSuite:
             )
             return True if marker == "ready" else None
 
-        def hold_cleared() -> bool | None:
-            marker = self._probe().psql_value(
-                "SELECT CASE WHEN state='open' THEN 'ready' "
-                "WHEN hold_until IS NULL OR hold_until <= now() THEN 'ready' "
-                "ELSE 'wait' END "
-                "FROM send_admission_state WHERE scope='send'"
-            )
-            return True if marker == "ready" else None
-
-        wait_until(case_id, hold_cleared, timeout_s=90, interval_s=1)
         if open_fresh() is True:
             return
+        self._seed_completed_admission_hold()
         self._refresh_admission_snapshot(case_id, 0)
         wait_until(case_id, open_fresh, timeout_s=15, interval_s=0.5)
 
