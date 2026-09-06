@@ -39,8 +39,25 @@ from app.tasks.send import (
     FinalizeReport,
     classify_finalize_conflict,
 )
+from app.vendor.failover import (
+    FIRST_INVOKE_CHUNK_STATES,
+    ISOLATING_CHUNK_STATES,
+    InvokeAuthorization,
+    InvokeClaim,
+    InvokeClaimKind,
+    NextAction,
+    already_handled_reason,
+    claim_denied_reason,
+    historical_safe_reject_repairable,
+    next_action_after_safe_reject,
+)
 from app.vendor.identifiers import vendor_identifier_pseudonym
-from app.vendor.routing import VendorAttempt
+from app.vendor.routing import (
+    VendorAttempt,
+    VendorRecord,
+    default_vendor_registry,
+    validate_vendor_id,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -77,6 +94,7 @@ class SqlChunkStore:
         crypto: CryptoService,
         settings: Settings | None = None,
         redis: Any | None = None,
+        registry: tuple[VendorRecord, ...] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.crypto = crypto
@@ -84,6 +102,8 @@ class SqlChunkStore:
             self.settings.redis_control_url,
             decode_responses=True,
         )
+        self.registry = registry or default_vendor_registry()
+        self.adapter_ids = frozenset(item.adapter for item in self.registry if item.adapter)
 
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
@@ -232,10 +252,13 @@ class SqlChunkStore:
             text(
                 """
                 SELECT c.id chunk_id, c.batch_id, c.custom_id,c.retry_count,
+                       c.status chunk_status,
                        COALESCE(c.selected_vendor,'zhihui') selected_vendor,
                        COALESCE(c.route_generation,1) route_generation,
+                       c.next_vendor, COALESCE(c.route_policy_version,1) route_policy_version,
+                       c.failover_from_attempt_id,
                        trim(b.batch_no) batch_no,b.send_content_enc,b.sign_name,
-                       t.vendor_template_id
+                       b.category, t.vendor_template_id
                 FROM sms_chunk c
                 JOIN sms_batch b ON b.id=c.batch_id
                 LEFT JOIN sms_template t ON t.id=b.template_id
@@ -308,6 +331,17 @@ class SqlChunkStore:
             denied_recipient_count=denied_recipient_count,
             selected_vendor=str(row.get("selected_vendor") or "zhihui"),
             route_generation=max(1, int(row.get("route_generation") or 1)),
+            category=str(row.get("category") or "notice"),
+            status=str(row.get("chunk_status") or "pending"),
+            next_vendor=(
+                str(row["next_vendor"]) if row.get("next_vendor") is not None else None
+            ),
+            route_policy_version=max(1, int(row.get("route_policy_version") or 1)),
+            failover_from_attempt_id=(
+                int(row["failover_from_attempt_id"])
+                if row.get("failover_from_attempt_id") is not None
+                else None
+            ),
         )
 
     async def load_chunk(self, chunk_id: int) -> tuple[ChunkPayload, str] | None:
@@ -323,7 +357,8 @@ class SqlChunkStore:
                         WHERE c.id=:chunk_id
                           AND b.status IN ('queued','sending')
                           AND (c.status='pending' OR (
-                            c.status='retrying' AND c.retry_not_before<=now()
+                            c.status IN ('retrying','failover_pending')
+                            AND (c.retry_not_before IS NULL OR c.retry_not_before<=now())
                           ))
                         """
                     ),
@@ -332,7 +367,7 @@ class SqlChunkStore:
                 row = status_result.mappings().one_or_none()
                 if (
                     row is None
-                    or row["status"] not in {"pending", "retrying"}
+                    or row["status"] not in {"pending", "retrying", "failover_pending"}
                     or row["batch_status"] not in {"queued", "sending"}
                 ):
                     return None
@@ -416,7 +451,8 @@ class SqlChunkStore:
                         """
                         SELECT id FROM sms_chunk WHERE batch_id=:batch_id
                           AND (status='pending' OR (
-                            status='retrying' AND retry_not_before<=now()
+                            status IN ('retrying','failover_pending')
+                            AND (retry_not_before IS NULL OR retry_not_before<=now())
                           )) ORDER BY chunk_no
                         """
                     ),
@@ -1150,10 +1186,29 @@ class SqlChunkStore:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                chunk = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT c.id, c.status, c.batch_id
+                            FROM sms_chunk c
+                            WHERE c.id=:id
+                            FOR UPDATE
+                            """
+                        ),
+                        {"id": chunk_id},
+                    )
+                ).mappings().one_or_none()
+                if chunk is None:
+                    raise RuntimeError("vendor attempt chunk missing")
                 await connection.execute(
-                    text("SELECT id FROM sms_chunk WHERE id=:id FOR UPDATE"),
-                    {"id": chunk_id},
+                    text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
+                    {"id": int(chunk["batch_id"])},
                 )
+                if str(chunk["status"]) in ISOLATING_CHUNK_STATES:
+                    raise RuntimeError("vendor attempt blocked by terminal chunk")
+                if str(chunk["status"]) not in FIRST_INVOKE_CHUNK_STATES:
+                    raise RuntimeError("vendor attempt not first-invoke")
                 history = (
                     await connection.execute(
                         text(
@@ -1290,7 +1345,10 @@ class SqlChunkStore:
                         text(
                             """
                             SELECT c.id, c.status, c.batch_id, c.route_generation,
-                                   b.category
+                                   c.next_vendor, c.route_policy_version,
+                                   c.failover_from_attempt_id, b.category,
+                                   b.route_policy_version AS batch_policy_version,
+                                   b.status AS batch_status
                             FROM sms_chunk c
                             JOIN sms_batch b ON b.id=c.batch_id
                             WHERE c.id=:id
@@ -1307,13 +1365,10 @@ class SqlChunkStore:
                     {"id": int(chunk["batch_id"])},
                 )
                 if str(attempt["outcome"]) != "invoking":
-                    return FinalizeReport(
-                        classify_finalize_conflict(
-                            attempt_outcome=str(attempt["outcome"]),
-                            chunk_status=str(chunk["status"]),
-                            requested=result,
-                        ),
-                        result,
+                    return self._report_from_locked_state(
+                        attempt=attempt,
+                        chunk=chunk,
+                        requested=result,
                     )
                 updated = (
                     await connection.execute(
@@ -1341,7 +1396,9 @@ class SqlChunkStore:
                         await connection.execute(
                             text(
                                 """
-                                SELECT a.outcome, c.status
+                                SELECT a.outcome, a.generation, a.id,
+                                       c.status, c.next_vendor, c.route_generation,
+                                       c.route_policy_version, c.failover_from_attempt_id
                                 FROM sms_vendor_attempt a
                                 JOIN sms_chunk c ON c.id=a.chunk_id
                                 WHERE a.id=:id
@@ -1350,13 +1407,10 @@ class SqlChunkStore:
                             {"id": attempt_id},
                         )
                     ).mappings().one()
-                    return FinalizeReport(
-                        classify_finalize_conflict(
-                            attempt_outcome=str(current["outcome"]),
-                            chunk_status=str(current["status"]),
-                            requested=result,
-                        ),
-                        result,
+                    return self._report_from_locked_state(
+                        attempt=current,
+                        chunk=current,
+                        requested=result,
                     )
                 if result == "submitted":
                     submitted = await connection.execute(
@@ -1465,33 +1519,32 @@ class SqlChunkStore:
                         if transitioned.scalar_one_or_none() is None:
                             raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
                         await settle_live_test_attempt(connection, chunk_id, "released")
-                elif result in {"rejected", "failed"} and not safe_to_failover:
-                    failed = await connection.execute(
-                        text(
-                            """
-                            UPDATE sms_chunk SET status='failed',vendor_code=:code,
-                              vendor_msg=:message,submitting_since=NULL,
-                              retry_not_before=NULL
-                            WHERE id=:id AND status='submitting'
-                            RETURNING batch_id
-                            """
-                        ),
-                        {
-                            "id": chunk_id,
-                            "code": vendor_code,
-                            "message": result,
-                        },
-                    )
-                    transitioned_batch_id = failed.scalar_one_or_none()
-                    if transitioned_batch_id is None:
-                        raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
-                    await settle_live_test_attempt(connection, chunk_id, "released")
-                    await self._finalize_failed_messages(
+                elif result in {"rejected", "failed"}:
+                    persisted = await self._apply_reject_or_fail(
                         connection,
-                        chunk_id,
-                        int(transitioned_batch_id),
+                        chunk=chunk,
+                        attempt_id=attempt_id,
+                        expected_generation=expected_generation,
+                        result=result,
+                        vendor_code=vendor_code,
+                        safe_to_failover=safe_to_failover,
                     )
-                report = FinalizeReport(FinalizeKind.APPLIED, result)
+                    report = FinalizeReport(
+                        FinalizeKind.APPLIED,
+                        result,
+                        next_action=persisted.action.value,
+                        next_vendor=persisted.next_vendor,
+                        route_generation=persisted.route_generation,
+                        previous_attempt_id=persisted.previous_attempt_id,
+                        route_policy_version=persisted.route_policy_version,
+                        chunk_status=(
+                            "failover_pending"
+                            if persisted.action is NextAction.FAILOVER_PENDING
+                            else "failed"
+                        ),
+                    )
+                if result not in {"rejected", "failed"}:
+                    report = FinalizeReport(FinalizeKind.APPLIED, result)
         except _FinalizeRollback as exc:
             report = exc.report
         finally:
@@ -1503,6 +1556,559 @@ class SqlChunkStore:
                 enqueue[2],
             )
         return report
+
+
+    def _report_from_locked_state(
+        self,
+        *,
+        attempt: Any,
+        chunk: Any,
+        requested: str,
+    ) -> FinalizeReport:
+        """按已落库组合分类，并带回权威 next action。"""
+
+        chunk_status = str(chunk["status"])
+        kind = classify_finalize_conflict(
+            attempt_outcome=str(attempt["outcome"]),
+            chunk_status=chunk_status,
+            requested=requested,
+        )
+        next_action = None
+        next_vendor = None
+        if chunk_status == "failed":
+            next_action = NextAction.FAILED.value
+        elif chunk_status == "failover_pending":
+            next_action = NextAction.FAILOVER_PENDING.value
+            next_vendor = (
+                str(chunk["next_vendor"]) if chunk.get("next_vendor") is not None else None
+            )
+        elif chunk_status == "retrying":
+            next_action = NextAction.RETRYING.value
+        return FinalizeReport(
+            kind,
+            requested,
+            next_action=next_action,
+            next_vendor=next_vendor,
+            route_generation=(
+                int(chunk["route_generation"])
+                if chunk.get("route_generation") is not None
+                else None
+            ),
+            previous_attempt_id=(
+                int(chunk["failover_from_attempt_id"])
+                if chunk.get("failover_from_attempt_id") is not None
+                else None
+            ),
+            route_policy_version=(
+                int(chunk["route_policy_version"])
+                if chunk.get("route_policy_version") is not None
+                else None
+            ),
+            chunk_status=chunk_status,
+        )
+
+    async def _load_attempts_for_update(
+        self,
+        connection: AsyncConnection,
+        chunk_id: int,
+    ) -> tuple[VendorAttempt, ...]:
+        rows = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT id, vendor_id, generation, outcome,
+                           safe_to_failover, vendor_code
+                    FROM sms_vendor_attempt
+                    WHERE chunk_id=:chunk_id
+                    ORDER BY generation
+                    FOR UPDATE
+                    """
+                ),
+                {"chunk_id": chunk_id},
+            )
+        ).mappings().all()
+        return tuple(
+            VendorAttempt(
+                str(row["vendor_id"]),
+                int(row["generation"]),
+                str(row["outcome"]),
+                bool(row["safe_to_failover"]),
+                int(row["vendor_code"]) if row["vendor_code"] is not None else None,
+            )
+            for row in rows
+        )
+
+    async def _apply_reject_or_fail(
+        self,
+        connection: AsyncConnection,
+        *,
+        chunk: Any,
+        attempt_id: int,
+        expected_generation: int,
+        result: str,
+        vendor_code: int | None,
+        safe_to_failover: bool,
+    ) -> Any:
+        """把 rejected 与下一动作写进同一事务；永不留下 rejected+submitting。"""
+
+        from app.vendor.failover import PersistedNextAction
+
+        chunk_id = int(chunk["id"])
+        category = str(chunk["category"] or "notice")
+        policy_version = max(
+            1,
+            int(chunk.get("batch_policy_version") or chunk.get("route_policy_version") or 1),
+        )
+        if result == "failed" or not safe_to_failover:
+            persisted = PersistedNextAction(
+                action=NextAction.FAILED,
+                route_generation=expected_generation,
+                previous_attempt_id=attempt_id,
+                route_policy_version=policy_version,
+                reason="hard_fail",
+            )
+        else:
+            attempts = await self._load_attempts_for_update(connection, chunk_id)
+            persisted = next_action_after_safe_reject(
+                attempts=attempts,
+                category=category,
+                previous_attempt_id=attempt_id,
+                records=self.registry,
+                adapter_ids=self.adapter_ids,
+                policy_version=policy_version,
+            )
+        if persisted.action is NextAction.FAILOVER_PENDING:
+            updated = await connection.execute(
+                text(
+                    """
+                    UPDATE sms_chunk SET
+                      status='failover_pending',
+                      selected_vendor=:next_vendor,
+                      next_vendor=:next_vendor,
+                      route_generation=:generation,
+                      route_policy_version=:policy_version,
+                      failover_from_attempt_id=:attempt_id,
+                      vendor_code=:code,
+                      vendor_msg='safe_rejected_failover_pending',
+                      submitting_since=NULL,
+                      retry_not_before=now()
+                    WHERE id=:id AND status='submitting'
+                    RETURNING id
+                    """
+                ),
+                {
+                    "id": chunk_id,
+                    "next_vendor": persisted.next_vendor,
+                    "generation": expected_generation,
+                    "policy_version": persisted.route_policy_version,
+                    "attempt_id": attempt_id,
+                    "code": vendor_code,
+                },
+            )
+            if updated.scalar_one_or_none() is None:
+                raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
+            await settle_live_test_attempt(connection, chunk_id, "released")
+            await self._enqueue_chunk_ready(
+                connection,
+                [chunk_id],
+                self.lane_for(category),
+            )
+            return persisted
+        failed = await connection.execute(
+            text(
+                """
+                UPDATE sms_chunk SET status='failed',vendor_code=:code,
+                  vendor_msg=:message,submitting_since=NULL,
+                  retry_not_before=NULL, next_vendor=NULL,
+                  failover_from_attempt_id=NULL
+                WHERE id=:id AND status='submitting'
+                RETURNING batch_id
+                """
+            ),
+            {
+                "id": chunk_id,
+                "code": vendor_code,
+                "message": result,
+            },
+        )
+        transitioned_batch_id = failed.scalar_one_or_none()
+        if transitioned_batch_id is None:
+            raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
+        await settle_live_test_attempt(connection, chunk_id, "released")
+        await self._finalize_failed_messages(
+            connection,
+            chunk_id,
+            int(transitioned_batch_id),
+        )
+        return persisted
+
+    async def claim_next_vendor_invoke(
+        self,
+        chunk_id: int,
+        *,
+        expected_route_generation: int,
+        previous_attempt_id: int,
+        expected_next_vendor: str,
+        expected_route_policy_version: int,
+    ) -> InvokeClaim:
+        """领取下一跳 HTTP 授权；只有 COMMIT 为 invoking 后才允许外呼。"""
+
+        expected_next = validate_vendor_id(expected_next_vendor)
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                previous = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT id, chunk_id, vendor_id, generation, outcome,
+                                   safe_to_failover, vendor_code
+                            FROM sms_vendor_attempt
+                            WHERE id=:id
+                            FOR UPDATE
+                            """
+                        ),
+                        {"id": previous_attempt_id},
+                    )
+                ).mappings().one_or_none()
+                chunk = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT c.id, c.status, c.batch_id, c.route_generation,
+                                   c.next_vendor, c.route_policy_version,
+                                   c.retry_not_before, b.category, b.status AS batch_status
+                            FROM sms_chunk c
+                            JOIN sms_batch b ON b.id=c.batch_id
+                            WHERE c.id=:id
+                            FOR UPDATE OF c
+                            """
+                        ),
+                        {"id": chunk_id},
+                    )
+                ).mappings().one_or_none()
+                if chunk is None:
+                    return InvokeClaim(InvokeClaimKind.DENIED, reason="chunk_missing")
+                await connection.execute(
+                    text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
+                    {"id": int(chunk["batch_id"])},
+                )
+                history = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT id, vendor_id, generation, outcome,
+                                   safe_to_failover, vendor_code
+                            FROM sms_vendor_attempt
+                            WHERE chunk_id=:chunk_id
+                            ORDER BY generation
+                            FOR UPDATE
+                            """
+                        ),
+                        {"chunk_id": chunk_id},
+                    )
+                ).mappings().all()
+                previous_attempt = None
+                if previous is not None:
+                    previous_attempt = VendorAttempt(
+                        str(previous["vendor_id"]),
+                        int(previous["generation"]),
+                        str(previous["outcome"]),
+                        bool(previous["safe_to_failover"]),
+                        int(previous["vendor_code"])
+                        if previous["vendor_code"] is not None
+                        else None,
+                    )
+                invoking = next(
+                    (
+                        row
+                        for row in history
+                        if str(row["outcome"]) == "invoking"
+                    ),
+                    None,
+                )
+                handled = already_handled_reason(
+                    chunk_status=str(chunk["status"]),
+                    invoking_vendor=(
+                        str(invoking["vendor_id"]) if invoking is not None else None
+                    ),
+                    expected_next_vendor=expected_next,
+                    invoking_generation=(
+                        int(invoking["generation"]) if invoking is not None else None
+                    ),
+                    expected_route_generation=expected_route_generation,
+                )
+                if handled is not None and invoking is not None:
+                    return InvokeClaim(
+                        InvokeClaimKind.ALREADY_HANDLED,
+                        authorization=InvokeAuthorization(
+                            int(invoking["id"]),
+                            int(invoking["generation"]),
+                            str(invoking["vendor_id"]),
+                            str(invoking["vendor_id"]),
+                            expected_route_policy_version,
+                        ),
+                        reason=handled,
+                    )
+                denied = claim_denied_reason(
+                    chunk_status=str(chunk["status"]),
+                    batch_status=str(chunk["batch_status"]),
+                    expected_route_generation=expected_route_generation,
+                    actual_route_generation=int(chunk["route_generation"] or 0),
+                    previous_attempt=previous_attempt,
+                    previous_attempt_chunk_id=(
+                        int(previous["chunk_id"]) if previous is not None else None
+                    ),
+                    chunk_id=chunk_id,
+                    expected_next_vendor=expected_next,
+                    persisted_next_vendor=(
+                        str(chunk["next_vendor"])
+                        if chunk["next_vendor"] is not None
+                        else None
+                    ),
+                    expected_route_policy_version=expected_route_policy_version,
+                    actual_route_policy_version=int(
+                        chunk["route_policy_version"] or 0
+                    ),
+                    retry_due=True,
+                    blocking_outcomes=frozenset(str(row["outcome"]) for row in history),
+                    category=str(chunk["category"] or "notice"),
+                    records=self.registry,
+                    adapter_ids=self.adapter_ids,
+                )
+                if denied is not None:
+                    return InvokeClaim(InvokeClaimKind.DENIED, reason=denied)
+                retry_due = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT (retry_not_before IS NULL OR retry_not_before<=now())
+                            FROM sms_chunk WHERE id=:id
+                            """
+                        ),
+                        {"id": chunk_id},
+                    )
+                ).scalar_one()
+                if not bool(retry_due):
+                    return InvokeClaim(InvokeClaimKind.DENIED, reason="retry_not_due")
+                next_generation = expected_route_generation + 1
+                inserted = (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO sms_vendor_attempt (
+                              chunk_id, vendor_id, generation, outcome,
+                              adapter_id, routing_reason, invoke_started_at
+                            ) VALUES (
+                              :chunk_id, :vendor_id, :generation, 'invoking',
+                              :adapter_id, 'safe_failover', now()
+                            )
+                            RETURNING id, generation, vendor_id, outcome
+                            """
+                        ),
+                        {
+                            "chunk_id": chunk_id,
+                            "vendor_id": expected_next,
+                            "generation": next_generation,
+                            "adapter_id": expected_next,
+                        },
+                    )
+                ).mappings().one()
+                claimed = await connection.execute(
+                    text(
+                        """
+                        UPDATE sms_chunk SET
+                          status='submitting',
+                          selected_vendor=:vendor_id,
+                          route_generation=:generation,
+                          submitting_since=now(),
+                          retry_not_before=NULL
+                        WHERE id=:id AND status='failover_pending'
+                          AND route_generation=:expected_generation
+                          AND next_vendor=:vendor_id
+                        RETURNING id
+                        """
+                    ),
+                    {
+                        "id": chunk_id,
+                        "vendor_id": expected_next,
+                        "generation": next_generation,
+                        "expected_generation": expected_route_generation,
+                    },
+                )
+                if claimed.scalar_one_or_none() is None:
+                    raise RuntimeError("failover claim lost cas")
+                return InvokeClaim(
+                    InvokeClaimKind.AUTHORIZED,
+                    authorization=InvokeAuthorization(
+                        int(inserted["id"]),
+                        int(inserted["generation"]),
+                        str(inserted["vendor_id"]),
+                        str(inserted["vendor_id"]),
+                        expected_route_policy_version,
+                    ),
+                    reason="authorized",
+                )
+        except Exception:
+            return InvokeClaim(InvokeClaimKind.DENIED, reason="claim_failed")
+        finally:
+            await engine.dispose()
+
+    async def load_authoritative_next_action(
+        self,
+        chunk_id: int,
+        *,
+        attempt_id: int,
+        expected_generation: int,
+    ) -> FinalizeReport | None:
+        """COMMIT 结果未知时按 attempt/chunk/generation 回读事实。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                row = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT a.id, a.generation, a.outcome, c.status,
+                                   c.next_vendor, c.route_generation,
+                                   c.route_policy_version, c.failover_from_attempt_id
+                            FROM sms_vendor_attempt a
+                            JOIN sms_chunk c ON c.id=a.chunk_id
+                            WHERE a.id=:attempt_id AND a.chunk_id=:chunk_id
+                              AND a.generation=:generation
+                            """
+                        ),
+                        {
+                            "attempt_id": attempt_id,
+                            "chunk_id": chunk_id,
+                            "generation": expected_generation,
+                        },
+                    )
+                ).mappings().one_or_none()
+                if row is None:
+                    return None
+                return self._report_from_locked_state(
+                    attempt=row,
+                    chunk=row,
+                    requested=str(row["outcome"]),
+                )
+        finally:
+            await engine.dispose()
+
+    async def repair_legacy_safe_reject_submitting(
+        self,
+        connection: AsyncConnection,
+        *,
+        limit: int = 100,
+    ) -> int:
+        """有界修复历史 submitting+safe rejected；无法证明则隔离不猜测。"""
+
+        rows = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT a.id AS attempt_id, c.id, c.status, c.batch_id, b.category,
+                           COALESCE(b.route_policy_version,1) route_policy_version
+                    FROM sms_chunk c
+                    JOIN sms_batch b ON b.id=c.batch_id
+                    JOIN sms_vendor_attempt a ON a.chunk_id=c.id
+                    WHERE c.status='submitting'
+                      AND a.generation=(
+                        SELECT max(generation) FROM sms_vendor_attempt
+                        WHERE chunk_id=c.id
+                      )
+                      AND a.outcome='rejected'
+                      AND a.safe_to_failover
+                    ORDER BY c.id
+                    LIMIT :limit
+                    """
+                ),
+                {"limit": limit},
+            )
+        ).mappings().all()
+        repaired = 0
+        for row in rows:
+            chunk_id = int(row["id"])
+            last_id = int(row["attempt_id"])
+            await connection.execute(
+                text("SELECT id FROM sms_vendor_attempt WHERE id=:id FOR UPDATE"),
+                {"id": last_id},
+            )
+            await connection.execute(
+                text("SELECT id FROM sms_chunk WHERE id=:id FOR UPDATE"),
+                {"id": chunk_id},
+            )
+            await connection.execute(
+                text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
+                {"id": int(row["batch_id"])},
+            )
+            attempts = await self._load_attempts_for_update(connection, chunk_id)
+            if not historical_safe_reject_repairable(
+                chunk_status="submitting",
+                attempts=attempts,
+            ):
+                continue
+            persisted = next_action_after_safe_reject(
+                attempts=attempts,
+                category=str(row["category"] or "notice"),
+                previous_attempt_id=int(last_id),
+                records=self.registry,
+                adapter_ids=self.adapter_ids,
+                policy_version=int(row["route_policy_version"] or 1),
+            )
+            if persisted.action is NextAction.FAILOVER_PENDING:
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE sms_chunk SET
+                          status='failover_pending',
+                          selected_vendor=:next_vendor,
+                          next_vendor=:next_vendor,
+                          route_generation=:generation,
+                          route_policy_version=:policy_version,
+                          failover_from_attempt_id=:attempt_id,
+                          submitting_since=NULL,
+                          retry_not_before=now(),
+                          vendor_msg='repaired_legacy_safe_reject'
+                        WHERE id=:id AND status='submitting'
+                        """
+                    ),
+                    {
+                        "id": chunk_id,
+                        "next_vendor": persisted.next_vendor,
+                        "generation": persisted.route_generation,
+                        "policy_version": persisted.route_policy_version,
+                        "attempt_id": last_id,
+                    },
+                )
+                await self._enqueue_chunk_ready(
+                    connection,
+                    [chunk_id],
+                    self.lane_for(str(row["category"] or "notice")),
+                )
+            else:
+                failed = await connection.execute(
+                    text(
+                        """
+                        UPDATE sms_chunk SET status='failed',
+                          vendor_msg='repaired_legacy_safe_reject',
+                          submitting_since=NULL, retry_not_before=NULL,
+                          next_vendor=NULL, failover_from_attempt_id=NULL
+                        WHERE id=:id AND status='submitting'
+                        RETURNING batch_id
+                        """
+                    ),
+                    {"id": chunk_id},
+                )
+                batch_id = failed.scalar_one_or_none()
+                if batch_id is not None:
+                    await settle_live_test_attempt(connection, chunk_id, "released")
+                    await self._finalize_failed_messages(
+                        connection, chunk_id, int(batch_id)
+                    )
+            repaired += 1
+        return repaired
 
     async def complete_vendor_attempt(
         self,

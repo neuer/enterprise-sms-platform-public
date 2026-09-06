@@ -44,7 +44,7 @@ IDEMPOTENCY_LIVE_SQL = """
     WHERE c.batch_id=b.id
       AND c.status IN (
         'uncertain','unknown_terminal','submitting','retrying','pending',
-        'split_capacity_blocked'
+        'split_capacity_blocked','failover_pending'
       )
   )
   OR EXISTS (

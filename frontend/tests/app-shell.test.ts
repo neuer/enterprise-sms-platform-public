@@ -4,6 +4,7 @@ import { createMemoryHistory, createRouter } from "vue-router"
 import { vi } from "vitest"
 
 import App from "../src/App.vue"
+import DailyPasswordChangeDialog from "../src/components/DailyPasswordChangeDialog.vue"
 import { getDashboard, type DashboardSnapshot } from "../src/api/dashboard"
 import { useApprovalBadgeStore } from "../src/stores/approvalBadge"
 import { encodeSessionRetiredMessage } from "../src/api/sessionSignals"
@@ -563,7 +564,9 @@ describe("应用骨架", () => {
     vi.stubGlobal("fetch", fetch)
     await router.push("/dashboard")
     await router.isReady()
-    const wrapper = mount(App, { global: { plugins: [pinia, router] } })
+    const wrapper = mount(App, {
+      global: { plugins: [pinia, router], stubs: { DailyPasswordChangeDialog } },
+    })
 
     expect(wrapper.find("[data-testid='change-password']").exists()).toBe(true)
     await wrapper.get("[data-testid='change-password']").trigger("click")

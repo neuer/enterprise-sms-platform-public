@@ -100,6 +100,9 @@ class FakeResult:
     def scalar_one_or_none(self) -> object:
         return self.scalar
 
+    def all(self) -> list[dict[str, object]]:
+        return list(self.rows)
+
     def scalars(self) -> list[object]:
         return self.scalar_values
 
@@ -786,6 +789,7 @@ async def test_recovery_repository_selects_only_recoverable_work(
 ) -> None:
     connection = FakeConnection(
         [
+            FakeResult(rows=[]),
             FakeResult(rowcount=1),
             FakeResult(rows=[{"batch_no": "batch-1", "category": "notice"}]),
             FakeResult(rows=[{"batch_no": "batch-2", "category": "market", "chunk_id": 8}]),
@@ -810,7 +814,7 @@ async def test_recovery_repository_selects_only_recoverable_work(
         ("batch", "batch-1", None),
         ("chunk", "batch-2", 8),
     ]
-    recovery_sql = connection.calls[0][0]
+    recovery_sql = connection.calls[1][0]
     assert "UPDATE sms_chunk" in recovery_sql
     assert "vendor_test_send_attempt" in recovery_sql
     assert "status='reserved'" in recovery_sql
@@ -829,9 +833,10 @@ async def test_recovery_repository_selects_only_recoverable_work(
     assert "c.status='submitted'" in recovery_sql
     assert "b.updated_at" not in recovery_sql
     assert "5 minutes" in recovery_sql
-    enqueue_sql = connection.calls[2][0]
+    enqueue_sql = connection.calls[3][0]
     assert "c.status='pending'" in enqueue_sql
-    assert "c.status='retrying'" in enqueue_sql
+    assert "retrying" in enqueue_sql
+    assert "failover_pending" in enqueue_sql
     assert "retry_not_before<=now()" in enqueue_sql
     assert "submitting" not in enqueue_sql
     assert "submitted" not in enqueue_sql

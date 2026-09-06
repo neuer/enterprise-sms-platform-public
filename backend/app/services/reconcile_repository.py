@@ -33,6 +33,16 @@ class SqlRecoveryRepository:
         engine: Any = database_engine(self.settings.database_url)
         try:
             async with engine.begin() as connection:
+                from types import SimpleNamespace
+
+                from app.tasks.send_repository import SqlChunkStore
+
+                repair_store = SqlChunkStore(
+                    crypto=SimpleNamespace(),  # type: ignore[arg-type]
+                    settings=self.settings,
+                    redis=object(),
+                )
+                await repair_store.repair_legacy_safe_reject_submitting(connection)
                 await connection.execute(
                     text(
                         """
@@ -85,6 +95,25 @@ class SqlRecoveryRepository:
                               c.submitting_since<now()-interval '5 minutes'
                               OR c.id IN (SELECT chunk_id FROM stale_invoking)
                             )
+                            AND NOT (
+                              EXISTS (
+                                SELECT 1 FROM sms_vendor_attempt last
+                                WHERE last.chunk_id=c.id
+                                  AND last.generation=(
+                                    SELECT max(generation) FROM sms_vendor_attempt
+                                    WHERE chunk_id=c.id
+                                  )
+                                  AND last.outcome='rejected'
+                                  AND last.safe_to_failover
+                              )
+                              AND NOT EXISTS (
+                                SELECT 1 FROM sms_vendor_attempt x
+                                WHERE x.chunk_id=c.id
+                                  AND x.outcome IN (
+                                    'submitted','uncertain','invoking','inconsistent'
+                                  )
+                              )
+                            )
                           RETURNING c.id
                         ), settled AS (
                           UPDATE vendor_test_send_attempt attempt SET
@@ -121,7 +150,8 @@ class SqlRecoveryRepository:
                         FROM sms_chunk c JOIN sms_batch b ON b.id=c.batch_id
                         WHERE b.status='sending' AND (
                           c.status='pending' OR (
-                            c.status='retrying' AND c.retry_not_before<=now()
+                            c.status IN ('retrying','failover_pending')
+                            AND (c.retry_not_before IS NULL OR c.retry_not_before<=now())
                           )
                         )
                           AND b.updated_at<now()-interval '5 minutes'

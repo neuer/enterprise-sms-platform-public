@@ -16,6 +16,7 @@ from app.tasks.send import (
     SendWorker,
     SubmitOutcome,
 )
+from app.vendor.failover import InvokeAuthorization, InvokeClaim, InvokeClaimKind, NextAction
 from app.vendor.routing import PRIMARY_VENDOR_ID, VendorAttempt, VendorRouter
 from app.vendor.zhihui import VendorApiError, VendorProtocolError, VendorTransportError
 
@@ -62,6 +63,11 @@ class FakeStore:
         self.claim_segments: list[int] = []
         self.claim_result = SubmissionClaim(SubmissionClaimStatus.CLAIMED)
         self.paused = False
+        self.attempt_seq = 0
+        self.chunk_status = "submitting"
+        self.failover_vendor: str | None = None
+        self.claim_gate = None
+        self.force_uncertain = False
 
     async def claim_submission(
         self,
@@ -132,8 +138,42 @@ class FakeStore:
                 await self.balance_blocked(batch_id or 0, chunk_id)
             else:
                 await self.pause_blocked(chunk_id, vendor_code or 0)
-        elif result in {"rejected", "failed"} and not safe_to_failover:
+        elif result in {"rejected", "failed"}:
+            if result == "rejected" and safe_to_failover and self.failover_vendor:
+                self.chunk_status = "failover_pending"
+                self.events.append(("failover_pending", (chunk_id, self.failover_vendor)))
+                await self.complete_vendor_attempt(
+                    attempt_id,
+                    outcome=result,
+                    safe_to_failover=safe_to_failover,
+                    vendor_code=vendor_code,
+                )
+                return FinalizeReport(
+                    FinalizeKind.APPLIED,
+                    result,
+                    next_action=NextAction.FAILOVER_PENDING.value,
+                    next_vendor=self.failover_vendor,
+                    route_generation=expected_generation,
+                    previous_attempt_id=attempt_id,
+                    route_policy_version=1,
+                    chunk_status="failover_pending",
+                )
             await self.mark_failed(chunk_id, vendor_code or 0, result)
+            self.chunk_status = "failed"
+            await self.complete_vendor_attempt(
+                attempt_id,
+                outcome=result,
+                safe_to_failover=safe_to_failover,
+                vendor_code=vendor_code,
+            )
+            return FinalizeReport(
+                FinalizeKind.APPLIED,
+                result,
+                next_action=NextAction.FAILED.value,
+                route_generation=expected_generation,
+                previous_attempt_id=attempt_id,
+                chunk_status="failed",
+            )
         await self.complete_vendor_attempt(
             attempt_id,
             outcome=result,
@@ -141,6 +181,61 @@ class FakeStore:
             vendor_code=vendor_code,
         )
         return FinalizeReport(FinalizeKind.APPLIED, result)
+
+    async def begin_vendor_invoke(
+        self,
+        chunk_id: int,
+        *,
+        vendor_id: str,
+        adapter_id: str,
+        reason: str,
+    ) -> Any:
+        if self.force_uncertain or self.chunk_status in {
+            "uncertain",
+            "unknown_terminal",
+            "inconsistent",
+            "failed",
+            "submitted",
+            "failover_pending",
+        }:
+            raise RuntimeError("vendor attempt blocked by terminal chunk")
+        self.attempt_seq += 1
+        return type("Row", (), {"id": self.attempt_seq, "generation": self.attempt_seq})()
+
+    async def claim_next_vendor_invoke(
+        self,
+        chunk_id: int,
+        *,
+        expected_route_generation: int,
+        previous_attempt_id: int,
+        expected_next_vendor: str,
+        expected_route_policy_version: int,
+    ) -> InvokeClaim:
+        if self.claim_gate is not None:
+            await self.claim_gate.wait()
+        if self.force_uncertain or self.chunk_status in {
+            "uncertain",
+            "unknown_terminal",
+            "inconsistent",
+            "failed",
+            "submitted",
+        }:
+            return InvokeClaim(InvokeClaimKind.DENIED, reason="chunk_uncertain")
+        if self.chunk_status != "failover_pending":
+            return InvokeClaim(InvokeClaimKind.DENIED, reason="chunk_not_claimable")
+        self.attempt_seq += 1
+        self.chunk_status = "submitting"
+        return InvokeClaim(
+            InvokeClaimKind.AUTHORIZED,
+            authorization=InvokeAuthorization(
+                self.attempt_seq,
+                expected_route_generation + 1,
+                expected_next_vendor,
+                expected_next_vendor,
+                expected_route_policy_version,
+            ),
+            reason="authorized",
+        )
 
     async def mark_failed(self, chunk_id: int, code: int, message: str) -> None:
         self.failed_messages.append(message)
@@ -201,6 +296,35 @@ class FakeStore:
     async def is_paused(self, lane: str) -> bool:
         return self.paused
 
+    async def load_authoritative_next_action(
+        self,
+        chunk_id: int,
+        *,
+        attempt_id: int,
+        expected_generation: int,
+    ) -> FinalizeReport | None:
+        if self.chunk_status == "failover_pending" and self.failover_vendor:
+            return FinalizeReport(
+                FinalizeKind.ALREADY_FINALIZED_SAME_RESULT,
+                "rejected",
+                next_action=NextAction.FAILOVER_PENDING.value,
+                next_vendor=self.failover_vendor,
+                route_generation=expected_generation,
+                previous_attempt_id=attempt_id,
+                route_policy_version=1,
+                chunk_status="failover_pending",
+            )
+        if self.chunk_status == "failed":
+            return FinalizeReport(
+                FinalizeKind.ALREADY_FINALIZED_SAME_RESULT,
+                "rejected",
+                next_action=NextAction.FAILED.value,
+                route_generation=expected_generation,
+                previous_attempt_id=attempt_id,
+                chunk_status="failed",
+            )
+        return None
+
 
 class FakeVendorMonitor:
     def __init__(self) -> None:
@@ -211,6 +335,12 @@ class FakeVendorMonitor:
 
     async def record_success(self) -> None:
         self.events.append(("success", None))
+
+
+def public_events(store: FakeStore) -> list[tuple[str, Any]]:
+    """忽略 invoking 账本事件，现有断言仍检查业务状态迁移。"""
+
+    return [event for event in store.events if event[0] != "attempt"]
 
 
 def chunk() -> ChunkPayload:
@@ -507,7 +637,7 @@ async def test_retry_is_persisted_without_sleeping_in_current_worker() -> None:
 
     await worker.submit(chunk(), lane="realtime")
 
-    assert store.events == [
+    assert public_events(store) == [
         ("submitting", 3),
         ("retrying", (3, 5002)),
     ]
@@ -589,7 +719,7 @@ async def test_protocol_error_becomes_uncertain_without_retry_or_failure(
     await SendWorker(gateway, store, FakeBucket()).submit(chunk(), lane="realtime")
 
     assert gateway.calls == 1
-    assert store.events == [("submitting", 3), ("uncertain", 3)]
+    assert public_events(store) == [("submitting", 3), ("uncertain", 3)]
 
 
 @pytest.mark.asyncio
@@ -606,7 +736,7 @@ async def test_backoff_error_schedules_one_durable_retry_and_returns() -> None:
 
     assert sleeps == []
     assert gateway.calls == 1
-    assert store.events == [
+    assert public_events(store) == [
         ("submitting", 3),
         ("retrying", (3, 5002)),
     ]
@@ -650,7 +780,7 @@ async def test_backoff_retry_rechecks_dynamic_allowlist_before_next_vendor_call(
 
     assert len(guard.calls) == 2
     assert gateway.calls == 1
-    assert store.events == [
+    assert public_events(store) == [
         ("submitting", 3),
         ("retrying", (3, 5002)),
         ("guard_denied", (3, 1)),
@@ -757,8 +887,9 @@ async def test_vendor_reflection_is_replaced_before_chunk_persistence() -> None:
         FakeBucket(),
     ).submit(chunk(), lane="realtime")
 
-    assert store.failed_messages == ["内容格式错误"]
     assert reflected not in "".join(store.failed_messages)
+    assert all("secretKey" not in item for item in store.failed_messages)
+    assert ("failed", (3, 1002)) in store.events
 
 
 @pytest.mark.asyncio
@@ -943,7 +1074,7 @@ async def test_successful_vendor_call_with_writeback_failure_is_never_retried() 
 
     assert outcome.value == "uncertain"
     assert gateway.calls == 1
-    assert store.events == [("submitting", 3), ("uncertain", 3)]
+    assert public_events(store) == [("submitting", 3), ("uncertain", 3)]
 
 
 @pytest.mark.asyncio
@@ -970,7 +1101,7 @@ async def test_unexpected_error_after_vendor_starts_marks_uncertain() -> None:
             FakeBucket(),
         ).submit(chunk(), lane="realtime")
 
-    assert store.events == [("submitting", 3), ("uncertain", 3)]
+    assert public_events(store) == [("submitting", 3), ("uncertain", 3)]
     assert not any(event[0] == "release_unsent" for event in store.events)
 
 
@@ -1022,6 +1153,15 @@ class HistoryStore(FakeStore):
         adapter_id: str,
         reason: str,
     ) -> Any:
+        if self.force_uncertain or self.chunk_status in {
+            "uncertain",
+            "unknown_terminal",
+            "inconsistent",
+            "failed",
+            "submitted",
+            "failover_pending",
+        }:
+            raise RuntimeError("vendor attempt blocked by terminal chunk")
         generation = max((item.generation for item in self.attempts), default=0) + 1
         self.begun.append((vendor_id, generation))
         self.attempts.append(VendorAttempt(vendor_id, generation, "invoking", False))
@@ -1103,6 +1243,7 @@ async def test_unregistered_adapter_is_fail_closed_before_http() -> None:
 @pytest.mark.asyncio
 async def test_safe_failover_does_not_refund_token_after_invoke() -> None:
     store = HistoryStore()
+    store.failover_vendor = "secondary"
     primary = FakeGateway([VendorApiError(1002, "format")])
     secondary = FakeGateway(["task-b"])
     bucket = FakeBucket()

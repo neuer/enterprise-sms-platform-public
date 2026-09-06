@@ -1454,7 +1454,7 @@
   `sms_vendor_attempt` CAS 为 `rejected`/`vendor_code=1006`，禁止走完整
   `finalize_vendor_attempt`。占用态权威集合是
   `send_chunk_occupying_states()` / `OCCUPYING_CHUNK_STATES`：
-  `pending|submitting|retrying|submitted|uncertain|split_capacity_blocked`。
+  `pending|submitting|retrying|submitted|uncertain|split_capacity_blocked|failover_pending`。
   `failed` 与 `unknown_terminal` 不占容量。容量不足时父分片进入
   `split_capacity_blocked`，不创建部分 child，也不再次调用供应商；
   对账在有余量后重试同一 generation。重复投递只在已有恰好 2 个 child 时

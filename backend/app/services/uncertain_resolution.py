@@ -914,7 +914,7 @@ async def _all_chunks_not_accepted(
               SELECT 1 FROM sms_chunk
               WHERE batch_id=:batch_id
                 AND status IN ('submitted','submitting','pending','retrying',
-                               'uncertain','unknown_terminal')
+                               'uncertain','unknown_terminal','failover_pending')
                 AND NOT EXISTS (
                   SELECT 1 FROM usage_chunk_release r
                   WHERE r.chunk_id=sms_chunk.id

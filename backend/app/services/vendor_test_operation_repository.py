@@ -785,7 +785,14 @@ class SqlVendorTestOperationRepository:
         resolved_batch = next(iter(batch_numbers))
         statuses = [str(row["chunk_status"]) for row in rows if row["chunk_status"] is not None]
         if any(
-            status in {"pending", "submitting", "retrying", "split_capacity_blocked"}
+            status
+            in {
+                "pending",
+                "submitting",
+                "retrying",
+                "split_capacity_blocked",
+                "failover_pending",
+            }
             for status in statuses
         ):
             return UatBatchResult(resolved_batch, "running", None, None)
