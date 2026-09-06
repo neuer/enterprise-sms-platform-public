@@ -47,6 +47,8 @@ jobs:
       g2: ${{ steps.classify.outputs.g2 }}
       release_control: ${{ steps.classify.outputs.release_control }}
       reused_pr_sha: ${{ steps.reuse.outputs.tested_sha }}
+      skip_frontend_static: ${{ steps.local_gates.outputs.skip_frontend_static }}
+      skip_ruff_files: ${{ steps.local_gates.outputs.skip_ruff_files }}
     steps:
       - name: Validate post-merge dispatch binding
         id: dispatch
@@ -147,6 +149,24 @@ jobs:
             --head-sha "$head_sha" \
             --trusted-pr-evidence "${{ steps.reuse.outputs.reuse }}" \
             --github-output "$GITHUB_OUTPUT"
+      # Local push hooks may publish refs/sms-local-gates/<sha>. Missing or
+      # mismatched receipts fail closed: cheap overlapping checks still run.
+      # G2, coverage, vendor-pg, mypy, frontend build/types/audit, and
+      # security never honor this receipt.
+      - name: Evaluate local gate receipt
+        id: local_gates
+        run: |
+          set -euo pipefail
+          receipt_ref="refs/sms-local-gates/${GITHUB_SHA}"
+          extra=()
+          if git fetch --no-tags origin "${receipt_ref}:${receipt_ref}"; then
+            extra+=(--receipt-ref "$receipt_ref")
+          fi
+          python3 scripts/check_pre_vcs_gates.py --evaluate-receipt \
+            --event-name "${{ github.event_name }}" \
+            --commit "$GITHUB_SHA" \
+            --github-output "$GITHUB_OUTPUT" \
+            "${extra[@]}"
 
   backend-vendor-lint:
     name: backend-vendor-lint
@@ -191,8 +211,18 @@ jobs:
           SMS_SKIP_VENDOR_POSTGRES_RECOVERY: "1"
         run: bash scripts/verify_vendor_live_test.sh
       - name: Lint and type-check backend
+        env:
+          LOCAL_SKIP_RUFF_FILES: ${{ needs.changes.outputs.skip_ruff_files }}
         run: |
           cd backend
+          ruff_excludes=()
+          while IFS= read -r arg; do
+            [[ -n "$arg" ]] || continue
+            ruff_excludes+=("$arg")
+          done < <(
+            python3 ../scripts/check_pre_vcs_gates.py --ruff-exclude-args \
+              --skip-ruff-files "$LOCAL_SKIP_RUFF_FILES"
+          )
           uv run ruff check app migrations scripts_support tests \
             ../scripts/classify_ci_changes.py ../scripts/verify_ci_results.py \
             ../scripts/g2_timing.py \
@@ -207,7 +237,8 @@ jobs:
             ../deploy/scripts/release_manifest.py \
             ../scripts/check_invariants.py \
             ../scripts/check_contract.py ../scripts/security_acceptance.py \
-            ../scripts/e2e_api.py ../scripts/perf_smoke.py ../scripts/locustfile.py
+            ../scripts/e2e_api.py ../scripts/perf_smoke.py ../scripts/locustfile.py \
+            "${ruff_excludes[@]}"
           uv run mypy app migrations scripts_support ../scripts/check_contract.py \
             ../scripts/classify_ci_changes.py ../scripts/verify_ci_results.py \
             ../scripts/g2_timing.py \
@@ -343,10 +374,12 @@ jobs:
       - name: Build
         run: npm run build
       - name: Lint and format check
+        if: ${{ needs.changes.outputs.skip_frontend_static != 'true' }}
         run: |
           npm run lint
           npm run format:check
       - name: Run component tests
+        if: ${{ needs.changes.outputs.skip_frontend_static != 'true' }}
         run: npm test
 
   security:

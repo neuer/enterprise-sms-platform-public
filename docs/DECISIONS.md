@@ -1596,3 +1596,22 @@
   `deploy/scripts/writer_cutover.py`、`test_update_apply.py`、
   `test_update_manager.py`、`deploy/sms-compose`、
   `docs/runbooks/app-rate-limit-cutover.md`。
+
+## D116 本地 hook 回执可跳过 CI 廉价重叠，缺证明则失败关闭
+
+- 决策：push hook 在同一棵树上强制跑过的廉价检查，通过绑定
+  `commit`/`tree` 的 `refs/sms-local-gates/<sha>` 回执证明。push
+  `ci-gate` 只跳过已证明的重叠面：hook 刚跑过的 ruff 文件，以及 hook
+  已跑完的 frontend `lint` / `format:check` / `vitest`。无回执、树不一致、
+  字段畸形、`--no-verify`、GitHub 网页改文件、未装 hook 的克隆，以及
+  `schedule` / `workflow_dispatch`，一律重跑这些廉价检查。G2、
+  `verify_all.sh --mode integration`、全量 `backend-coverage`、
+  vendor-pg recovery、mypy、frontend `build` / `gen:api-types` /
+  `npm audit`、security 不得因回执跳过。`pytest_changed` 被全量
+  coverage 严格包含，也不因此跳过 coverage。同仓 `pull_request` 仍走
+  `same-repo-pr-ci-skipped`，权威仍是 push `ci-gate`。
+- 原因：本地 hook 不是 mini-CI，但也不该在已强制跑过且能证明同一棵树
+  的廉价面上再跑一遍。
+- 影响：`scripts/check_pre_vcs_gates.py`、`.githooks/pre-push`、
+  `.github/workflows/ci.yml`、`test_pre_vcs_gates.py`、
+  `test_ci_workflows.py`。

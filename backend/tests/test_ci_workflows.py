@@ -121,6 +121,8 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "g2": "${{ steps.classify.outputs.g2 }}",
         "release_control": "${{ steps.classify.outputs.release_control }}",
         "reused_pr_sha": "${{ steps.reuse.outputs.tested_sha }}",
+        "skip_frontend_static": "${{ steps.local_gates.outputs.skip_frontend_static }}",
+        "skip_ruff_files": "${{ steps.local_gates.outputs.skip_ruff_files }}",
     }
     dispatch = next(step for step in changes["steps"] if step.get("id") == "dispatch")
     assert dispatch["env"] == {
@@ -152,6 +154,8 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "scripts/release_metadata.py",
         "scripts/reuse_pr_ci_evidence.py",
         "scripts/classify_ci_changes.py",
+        "scripts/check_pre_vcs_gates.py --evaluate-receipt",
+        "refs/sms-local-gates/${GITHUB_SHA}",
         "github.event.pull_request.head.sha || github.sha",
         'git merge-base origin/main "$GITHUB_SHA"',
         'event_name=pull_request',
@@ -173,6 +177,11 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
 
     vendor_lint_commands = job_commands(jobs["backend-vendor-lint"])
     coverage_commands = job_commands(jobs["backend-coverage"])
+    assert "LOCAL_SKIP_RUFF_FILES" in yaml.safe_dump(jobs["backend-vendor-lint"])
+    assert "--ruff-exclude-args" in vendor_lint_commands
+    assert "ruff_excludes[@]" in vendor_lint_commands
+    assert "LOCAL_SKIP_RUFF_FILES" not in coverage_commands
+    assert "skip_frontend_static" not in coverage_commands
     backend_commands = "\n".join((vendor_lint_commands, coverage_commands))
     for command in (
         "scripts/local_test.sh prepare",
@@ -273,6 +282,30 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     assert "git diff --exit-code -- src/api/types.gen.ts" in frontend_commands
     assert jobs["frontend"]["needs"] == "changes"
     assert "needs.changes.outputs.frontend == 'true'" in jobs["frontend"]["if"]
+    lint_step = next(
+        step
+        for step in jobs["frontend"]["steps"]
+        if step.get("name") == "Lint and format check"
+    )
+    test_step = next(
+        step
+        for step in jobs["frontend"]["steps"]
+        if step.get("name") == "Run component tests"
+    )
+    assert lint_step["if"] == (
+        "${{ needs.changes.outputs.skip_frontend_static != 'true' }}"
+    )
+    assert test_step["if"] == (
+        "${{ needs.changes.outputs.skip_frontend_static != 'true' }}"
+    )
+    for name in (
+        "Install dependencies",
+        "Audit dependency lockfile",
+        "Verify generated API types match openapi.yaml",
+        "Build",
+    ):
+        step = next(item for item in jobs["frontend"]["steps"] if item.get("name") == name)
+        assert "skip_frontend_static" not in str(step.get("if", ""))
 
     security_commands = job_commands(jobs["security"])
     for command in (
@@ -324,8 +357,21 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     )
     assert "scripts/verify_ci_results.py" in job_commands(gate)
 
-    assert_actions_are_immutable(workflow)
     source = CI_WORKFLOW.read_text(encoding="utf-8")
+    for job_name in ("backend-coverage", "security", "g2", "ci-gate"):
+        job_if = str(jobs[job_name].get("if", ""))
+        job_text = yaml.safe_dump(jobs[job_name])
+        assert "skip_frontend_static" not in job_if
+        assert "skip_ruff_files" not in job_if
+        if job_name != "backend-coverage":
+            assert "LOCAL_SKIP_RUFF_FILES" not in job_text
+    assert "skip_pytest_changed" not in source
+    assert "mypy" in vendor_lint_commands
+    assert "npm run build" in frontend_commands
+    assert "npm run gen:api-types" in frontend_commands
+    assert "npm audit --audit-level=high" in frontend_commands
+
+    assert_actions_are_immutable(workflow)
     assert "secrets." not in source
     assert "upload-artifact" not in source
     assert "pytest-xdist" not in source
