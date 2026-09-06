@@ -250,14 +250,16 @@ def transition_admission_state(
     hold_until: datetime | None,
     previous_reason: str | None = None,
 ) -> tuple[AdmissionState, str, datetime | None]:
-    """把 raw 容量与持久 previous/hold 收成可保存的 state/reason/hold。"""
+    """把 raw 容量与持久 previous/hold 收成可保存的 state/reason/hold。
 
+    previous_reason 只解释状态，不授权豁免；bootstrap 与普通 CLOSED 相同。
+    """
+
+    del previous_reason
     if raw_state == "closed":
         return "closed", raw_reason, None
     previous_state = previous if previous in ADMISSION_STATES else "closed"
     active_hold = hold_until if hold_until is not None and hold_until > db_now else None
-    if previous_state == "closed" and previous_reason == "bootstrap":
-        return raw_state, raw_reason, None
     if previous_state == "closed":
         new_hold = db_now + timedelta(seconds=RECOVERY_HOLD_SECONDS)
         if active_hold is not None and active_hold > new_hold:
@@ -532,9 +534,7 @@ class SendAdmissionGuard:
             return False
         try:
             valid_until = _aware_datetime(raw_valid_until)
-            db_now = (
-                _aware_datetime(raw_db_now) if raw_db_now is not None else datetime.now(UTC)
-            )
+            db_now = _aware_datetime(raw_db_now) if raw_db_now is not None else datetime.now(UTC)
         except SendAdmissionUnavailable:
             return False
         if valid_until < db_now:
@@ -602,9 +602,7 @@ class SendAdmissionGuard:
             if isinstance(saved, dict):
                 outcome = str(saved.get("outcome") or "saved")
                 saved_state = str(saved.get("state") or state)
-                saved_reason = str(
-                    saved.get("reason_code") or saved.get("reason") or reason
-                )
+                saved_reason = str(saved.get("reason_code") or saved.get("reason") or reason)
                 if outcome == "adopted" and not self._can_adopt(state, reason, saved):
                     continue
                 if saved_state in ADMISSION_STATES:
