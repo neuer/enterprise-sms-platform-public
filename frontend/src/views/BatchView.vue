@@ -102,7 +102,7 @@ function shortBatchNo(value: string): string {
 }
 
 /** 结果构成直接使用服务端消息状态计数，不从总数反推。 */
-function composeOf(row: BatchItem): {
+function buildCompose(row: BatchItem): {
   pending: number
   sent: number
   delivered: number
@@ -118,6 +118,13 @@ function composeOf(row: BatchItem): {
     unknown: row.unknown,
     other: row.other,
   }
+}
+
+/** 列表行构成随 items 一次预计算：渲染期每行 7+ 处引用同一构成，改查表不再重复组装。 */
+const composeMap = computed(() => new Map(items.value.map((row) => [row.batch_no, buildCompose(row)])))
+
+function composeOf(row: BatchItem): ReturnType<typeof buildCompose> {
+  return composeMap.value.get(row.batch_no) ?? buildCompose(row)
 }
 
 function activeOf(row: BatchItem): number {

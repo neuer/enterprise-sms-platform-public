@@ -800,7 +800,7 @@ onMounted(() => {
         <p>刷新于 {{ formatDateTime(currentAlerts.refreshed_at) }} · 页面可见时每 60 秒更新</p>
       </div>
       <section class="ops-results">
-        <el-table :data="currentAlerts?.items ?? []" class="ops-table">
+        <el-table :data="currentAlerts?.items ?? []" row-key="key" class="ops-table">
           <el-table-column label="等级" width="88"
             ><template #default="{ row }"
               ><el-tag :type="levelTag(row.level)" :effect="row.level === 'crit' ? 'dark' : 'plain'">{{
@@ -901,7 +901,7 @@ onMounted(() => {
         >
       </form>
       <section class="ops-results">
-        <el-table :data="alerts" class="ops-table"
+        <el-table :data="alerts" row-key="id" class="ops-table"
           ><el-table-column label="等级" width="88"
             ><template #default="{ row }"
               ><el-tag :type="levelTag(row.level)" :effect="row.level === 'crit' ? 'dark' : 'plain'">{{
@@ -1002,7 +1002,7 @@ onMounted(() => {
       <p class="ops-privacy">点选即重查；拉走即消费，完整响应先以 AES-GCM 密文落库，页面只展示无 PII 元数据。</p>
     </form>
     <section class="ops-results">
-      <el-table :data="rawLogs" class="ops-table"
+      <el-table :data="rawLogs" row-key="id" class="ops-table"
         ><el-table-column prop="id" label="RAW" width="80" /><el-table-column
           prop="source"
           label="来源"
@@ -1105,7 +1105,7 @@ onMounted(() => {
       ></header
     >
     <section class="ops-results">
-      <el-table :data="uncertain" class="ops-table"
+      <el-table :data="uncertain" row-key="chunk_id" class="ops-table"
         ><el-table-column prop="batch_no" label="批次" min-width="160" /><el-table-column label="状态" width="110"
           ><template #default="{ row }"><StatusTag :status="row.status" /></template></el-table-column
         ><el-table-column label="customId" min-width="160"
@@ -1255,7 +1255,7 @@ onMounted(() => {
       ></el-alert
     >
     <section class="ops-results">
-      <el-table :data="unmatched" class="ops-table"
+      <el-table :data="unmatched" row-key="id" class="ops-table"
         ><el-table-column label="号码" width="140"
           ><template #default="{ row }"><PhoneMask :value="row.phone_mask" /></template></el-table-column
         ><el-table-column label="customId" min-width="170"
@@ -1307,7 +1307,7 @@ onMounted(() => {
       ></header
     >
     <section class="ops-results">
-      <el-table :data="jobs" class="ops-table"
+      <el-table :data="jobs" row-key="job_name" class="ops-table"
         ><el-table-column prop="job_name" label="任务" min-width="180" /><el-table-column
           label="中文用途"
           min-width="270"
@@ -1450,7 +1450,7 @@ onMounted(() => {
       >
     </div>
     <section class="ops-results">
-      <el-table :data="outboxEvents" class="ops-table"
+      <el-table :data="outboxEvents" row-key="id" class="ops-table"
         ><el-table-column label="事件" min-width="140"
           ><template #default="{ row }"
             ><strong>{{ row.event_type }}</strong></template

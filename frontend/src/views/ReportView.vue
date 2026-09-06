@@ -14,6 +14,7 @@ import {
   type ReportGranularity,
   type ReportGroupBy,
   type ReportResult,
+  type ReportRow,
   type ReportTrendMetric,
 } from "../api/reports"
 import ReportTrendChart from "../components/ReportTrendChart.vue"
@@ -180,6 +181,11 @@ const sortedItems = computed(() => {
   return rows
 })
 const pagedItems = computed(() => sortedItems.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+
+/** 明细行稳定键：周期 × 维度值，与移动端列表同一口径。 */
+function reportRowKey(row: ReportRow): string {
+  return `${row.period_start}-${row.dim_value}`
+}
 
 function formatRate(rate: number): string {
   return `${(rate * 100).toFixed(1)}%`
@@ -507,6 +513,7 @@ onMounted(() => void load())
         :data="pagedItems"
         class="report-table"
         :loading="loading"
+        :row-key="reportRowKey"
         :default-sort="{ prop: 'period_start', order: 'descending' }"
         @sort-change="onSortChange"
       >

@@ -102,7 +102,8 @@ const { render } = useChart(root, (chart) => {
   })
 })
 
-watch(() => [props.items, props.metric, props.start, props.end, props.granularity], render, { deep: true })
+// 查询结果每次整体替换（result 重新赋值），引用变化即代表数据变化，无需深比较。
+watch(() => [props.items, props.metric, props.start, props.end, props.granularity], render)
 </script>
 
 <template><div ref="root" class="report-trend-chart" role="img" aria-label="按维度堆叠的发送趋势"></div></template>
