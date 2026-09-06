@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from time import monotonic
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.report_timeout import SweepResult
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -51,6 +57,9 @@ class SqlReportRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self._leases: dict[int, RawProcessingLease] = {}
+        self._timeout_backoff_until: dict[int, float] = {}
+        self._timeout_fail_counts: dict[int, int] = {}
+        self.on_claimed_batch: Callable[[Any, int], Awaitable[None]] | None = None
 
     def remember_lease(self, lease: RawProcessingLease) -> None:
         self._leases[lease.raw_id] = lease
@@ -62,13 +71,43 @@ class SqlReportRepository:
         return database_engine(self.settings.database_url)
 
     async def report_timeout_hours(self) -> int:
+        return await self.require_report_timeout_hours()
+
+    async def require_report_timeout_hours(self) -> int:
+        """读取并校验无报告置 unknown 的时长；缺失或损坏立即失败。"""
+
+        from app.services.report_timeout import parse_report_timeout_hours
+
         engine = self._engine()
         try:
             async with engine.connect() as connection:
                 result = await connection.execute(
                     text("SELECT value FROM sys_config WHERE key='report_timeout_hours'")
                 )
-                return int(result.scalar_one_or_none() or 48)
+                return parse_report_timeout_hours(result.scalar_one_or_none())
+        finally:
+            await engine.dispose()
+
+    async def load_sweep_config(self) -> dict[str, str]:
+        """读取超时扫描有界参数；缺键由调用方回落到注册默认值。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(
+                        """
+                        SELECT key, value FROM sys_config WHERE key IN (
+                          'report_timeout_batch_limit',
+                          'report_timeout_message_limit',
+                          'report_timeout_round_seconds',
+                          'report_timeout_statement_ms',
+                          'report_timeout_lock_ms'
+                        )
+                        """
+                    )
+                )
+                return {str(row["key"]): str(row["value"]) for row in result.mappings()}
         finally:
             await engine.dispose()
 
@@ -246,32 +285,56 @@ class SqlReportRepository:
         *,
         batch_locked: bool = False,
         source_report_event_key: str | None = None,
+        unknown_delta: int | None = None,
     ) -> None:
         if not batch_locked:
             await cls._lock_batch(connection, batch_id)
-        await connection.execute(
-            text(
-                """
-                UPDATE sms_batch b SET
-                  delivered=s.delivered, failed=s.failed, unknown_cnt=s.unknown_cnt,
-                  status=CASE
-                    WHEN b.status='completed_unknown' THEN 'completed_unknown'
-                    WHEN s.active=0 THEN 'completed'
-                    ELSE b.status
-                  END,
-                  updated_at=now()
-                FROM (
-                  SELECT batch_id,
-                    count(*) FILTER (WHERE status='delivered') delivered,
-                    count(*) FILTER (WHERE status='failed') failed,
-                    count(*) FILTER (WHERE status='unknown') unknown_cnt,
-                    count(*) FILTER (WHERE status IN ('pending','sent')) active
-                  FROM sms_message WHERE batch_id=:batch_id GROUP BY batch_id
-                ) s WHERE b.id=s.batch_id
-                """
-            ),
-            {"batch_id": batch_id},
-        )
+        if unknown_delta is not None:
+            if unknown_delta < 0:
+                raise ValueError("unknown_delta must be non-negative")
+            await connection.execute(
+                text(
+                    """
+                    UPDATE sms_batch b SET
+                      unknown_cnt=b.unknown_cnt + :delta,
+                      status=CASE
+                        WHEN b.status='completed_unknown' THEN 'completed_unknown'
+                        WHEN NOT EXISTS (
+                          SELECT 1 FROM sms_message
+                          WHERE batch_id=b.id AND status IN ('pending','sent')
+                        ) THEN 'completed'
+                        ELSE b.status
+                      END,
+                      updated_at=now()
+                    WHERE b.id=:batch_id
+                    """
+                ),
+                {"batch_id": batch_id, "delta": unknown_delta},
+            )
+        else:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE sms_batch b SET
+                      delivered=s.delivered, failed=s.failed, unknown_cnt=s.unknown_cnt,
+                      status=CASE
+                        WHEN b.status='completed_unknown' THEN 'completed_unknown'
+                        WHEN s.active=0 THEN 'completed'
+                        ELSE b.status
+                      END,
+                      updated_at=now()
+                    FROM (
+                      SELECT batch_id,
+                        count(*) FILTER (WHERE status='delivered') delivered,
+                        count(*) FILTER (WHERE status='failed') failed,
+                        count(*) FILTER (WHERE status='unknown') unknown_cnt,
+                        count(*) FILTER (WHERE status IN ('pending','sent')) active
+                      FROM sms_message WHERE batch_id=:batch_id GROUP BY batch_id
+                    ) s WHERE b.id=s.batch_id
+                    """
+                ),
+                {"batch_id": batch_id},
+            )
         await enqueue_batch_finished(
             connection,
             batch_id,
@@ -685,33 +748,218 @@ class SqlReportRepository:
             await engine.dispose()
         self._leases.pop(raw_id, None)
 
-    async def expire_unknown(self, timeout_hours: int) -> int:
+    async def expire_due_reports(
+        self,
+        *,
+        timeout_hours: int,
+        batch_limit: int,
+        message_limit_per_batch: int,
+        max_round_seconds: float,
+        statement_timeout_ms: int,
+        lock_timeout_ms: int,
+    ) -> SweepResult:
+        """有界短事务扫描到期 sent 消息；每批独立提交，锁冲突 SKIP LOCKED。"""
+
+        from app.services.report_timeout import SweepResult, parse_report_timeout_hours
+
+        hours = parse_report_timeout_hours(timeout_hours)
         engine = self._engine()
+        candidates = 0
+        batches_changed = 0
+        messages_changed = 0
+        skipped_locked = 0
+        failed = 0
+        more_remaining = False
+        visited: set[int] = set()
+        deadline = monotonic() + max_round_seconds
+        try:
+            async with asyncio.timeout(max_round_seconds):
+                while len(visited) < batch_limit:
+                    remaining_s = deadline - monotonic()
+                    if remaining_s <= 0:
+                        more_remaining = True
+                        break
+                    remaining_ms = max(1, int(remaining_s * 1000))
+                    try:
+                        outcome = await self._expire_one_due_batch(
+                            engine,
+                            timeout_hours=hours,
+                            message_limit=message_limit_per_batch,
+                            exclude_ids=visited | self._active_timeout_backoff(),
+                            statement_timeout_ms=min(statement_timeout_ms, remaining_ms),
+                            lock_timeout_ms=min(lock_timeout_ms, remaining_ms),
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except TimeoutError:
+                        more_remaining = True
+                        break
+                    except Exception:
+                        failed += 1
+                        more_remaining = True
+                        LOGGER.exception("report timeout batch failed")
+                        continue
+                    if outcome.kind == "empty":
+                        if await self._due_batches_exist(
+                            engine,
+                            timeout_hours=hours,
+                            exclude_ids=visited,
+                        ):
+                            skipped_locked += 1
+                            more_remaining = True
+                        break
+                    visited.add(outcome.batch_id)
+                    candidates += 1
+                    if outcome.kind == "failed":
+                        failed += 1
+                        more_remaining = True
+                        continue
+                    if outcome.messages_changed:
+                        batches_changed += 1
+                        messages_changed += outcome.messages_changed
+                    if outcome.more_in_batch:
+                        more_remaining = True
+                if len(visited) >= batch_limit:
+                    more_remaining = True
+        except TimeoutError:
+            more_remaining = True
+        finally:
+            await engine.dispose()
+        return SweepResult(
+            candidates=candidates,
+            batches_changed=batches_changed,
+            messages_changed=messages_changed,
+            skipped_locked=skipped_locked,
+            failed=failed,
+            more_remaining=more_remaining,
+        )
+
+    def _active_timeout_backoff(self) -> set[int]:
+        now = monotonic()
+        return {
+            batch_id
+            for batch_id, until in self._timeout_backoff_until.items()
+            if until > now
+        }
+
+    def _record_timeout_backoff(self, batch_id: int) -> None:
+        count = self._timeout_fail_counts.get(batch_id, 0) + 1
+        self._timeout_fail_counts[batch_id] = count
+        delay = min(60.0, float(2 ** min(count, 6)))
+        self._timeout_backoff_until[batch_id] = monotonic() + delay
+
+    async def _due_batches_exist(
+        self,
+        engine: Any,
+        *,
+        timeout_hours: int,
+        exclude_ids: set[int],
+    ) -> bool:
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
+                    SELECT EXISTS (
+                      SELECT 1
+                      FROM sms_batch b
+                      WHERE EXISTS (
+                        SELECT 1
+                        FROM sms_message m
+                        JOIN sms_chunk c ON c.id=m.chunk_id
+                        WHERE m.batch_id=b.id
+                          AND m.status='sent'
+                          AND c.submitted_at < now() - make_interval(hours=>:hours)
+                      )
+                      AND NOT (b.id = ANY(CAST(:exclude_ids AS bigint[])))
+                    )
+                    """
+                ),
+                {"hours": timeout_hours, "exclude_ids": list(exclude_ids)},
+            )
+            return bool(result.scalar_one())
+
+    async def _expire_one_due_batch(
+        self,
+        engine: Any,
+        *,
+        timeout_hours: int,
+        message_limit: int,
+        exclude_ids: set[int],
+        statement_timeout_ms: int,
+        lock_timeout_ms: int,
+    ) -> _BatchSweepOutcome:
+        batch_id = 0
         try:
             async with engine.begin() as connection:
-                candidates = await connection.execute(
+                await _apply_local_timeouts(
+                    connection,
+                    statement_timeout_ms=statement_timeout_ms,
+                    lock_timeout_ms=lock_timeout_ms,
+                )
+                claimed = await connection.execute(
                     text(
                         """
-                        SELECT DISTINCT m.batch_id
-                        FROM sms_message m JOIN sms_chunk c ON c.id=m.chunk_id
-                        WHERE m.chunk_id=c.id AND m.status='sent'
-                          AND c.submitted_at < now() - make_interval(hours=>:hours)
-                        ORDER BY m.batch_id
+                        SELECT b.id
+                        FROM sms_batch b
+                        WHERE EXISTS (
+                          SELECT 1
+                          FROM sms_message m
+                          JOIN sms_chunk c ON c.id=m.chunk_id
+                          WHERE m.batch_id=b.id
+                            AND m.status='sent'
+                            AND c.submitted_at < now() - make_interval(hours=>:hours)
+                        )
+                        AND NOT (b.id = ANY(CAST(:exclude_ids AS bigint[])))
+                        ORDER BY b.id
+                        LIMIT 1
+                        FOR UPDATE OF b SKIP LOCKED
                         """
                     ),
-                    {"hours": timeout_hours},
+                    {"hours": timeout_hours, "exclude_ids": list(exclude_ids)},
                 )
-                batch_ids = [int(value) for value in candidates.scalars()]
-                refreshed = 0
-                for batch_id in batch_ids:
-                    await self._lock_batch(connection, batch_id)
+                raw_id = claimed.scalar_one_or_none()
+                if raw_id is None:
+                    return _BatchSweepOutcome("empty", 0, 0, False)
+                batch_id = int(raw_id)
+                try:
+                    if self.on_claimed_batch is not None:
+                        await self.on_claimed_batch(connection, batch_id)
+                    picked = await connection.execute(
+                        text(
+                            """
+                            SELECT m.id, m.created_at
+                            FROM sms_message m
+                            JOIN sms_chunk c ON c.id=m.chunk_id
+                            WHERE m.batch_id=:batch_id
+                              AND m.status='sent'
+                              AND c.submitted_at < now() - make_interval(hours=>:hours)
+                            ORDER BY m.id, m.created_at
+                            LIMIT :message_limit
+                            FOR UPDATE OF m
+                            """
+                        ),
+                        {
+                            "batch_id": batch_id,
+                            "hours": timeout_hours,
+                            "message_limit": message_limit,
+                        },
+                    )
+                    rows = list(picked.mappings())
+                    if not rows:
+                        return _BatchSweepOutcome("changed", batch_id, 0, False)
                     updated = await connection.execute(
                         text(
                             """
                             WITH expired AS (
                               UPDATE sms_message m SET status='unknown'
-                              FROM sms_chunk c
-                              WHERE m.chunk_id=c.id AND m.batch_id=:batch_id
+                              FROM sms_chunk c,
+                              unnest(
+                                CAST(:ids AS bigint[]),
+                                CAST(:created_ats AS timestamptz[])
+                              ) AS p(id, created_at)
+                              WHERE m.id=p.id AND m.created_at=p.created_at
+                                AND m.chunk_id=c.id
+                                AND m.batch_id=:batch_id
                                 AND m.status='sent'
                                 AND c.submitted_at < now()-make_interval(hours=>:hours)
                               RETURNING m.created_at
@@ -725,15 +973,88 @@ class SqlReportRepository:
                             SELECT count(*) FROM expired
                             """
                         ),
-                        {"batch_id": batch_id, "hours": timeout_hours},
+                        {
+                            "batch_id": batch_id,
+                            "hours": timeout_hours,
+                            "ids": [int(row["id"]) for row in rows],
+                            "created_ats": [row["created_at"] for row in rows],
+                        },
                     )
-                    if int(updated.scalar_one()) == 0:
-                        continue
-                    await self._refresh_batch(connection, batch_id, batch_locked=True)
-                    refreshed += 1
-                return refreshed
-        finally:
-            await engine.dispose()
+                    changed = int(updated.scalar_one())
+                    remaining = False
+                    if changed:
+                        remaining = await self._batch_has_due_sent(
+                            connection,
+                            batch_id=batch_id,
+                            timeout_hours=timeout_hours,
+                        )
+                        await self._refresh_batch(
+                            connection,
+                            batch_id,
+                            batch_locked=True,
+                            unknown_delta=changed,
+                        )
+                    return _BatchSweepOutcome("changed", batch_id, changed, remaining)
+                except asyncio.CancelledError:
+                    self._record_timeout_backoff(batch_id)
+                    raise
+                except Exception:
+                    self._record_timeout_backoff(batch_id)
+                    raise
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if batch_id:
+                return _BatchSweepOutcome("failed", batch_id, 0, False)
+            raise
+
+    @staticmethod
+    async def _batch_has_due_sent(
+        connection: AsyncConnection,
+        *,
+        batch_id: int,
+        timeout_hours: int,
+    ) -> bool:
+        result = await connection.execute(
+            text(
+                """
+                SELECT EXISTS (
+                  SELECT 1
+                  FROM sms_message m
+                  JOIN sms_chunk c ON c.id=m.chunk_id
+                  WHERE m.batch_id=:batch_id
+                    AND m.status='sent'
+                    AND c.submitted_at < now() - make_interval(hours=>:hours)
+                )
+                """
+            ),
+            {"batch_id": batch_id, "timeout_hours": timeout_hours, "hours": timeout_hours},
+        )
+        return bool(result.scalar_one())
+
+
+@dataclass(frozen=True, slots=True)
+class _BatchSweepOutcome:
+    kind: str
+    batch_id: int
+    messages_changed: int
+    more_in_batch: bool
+
+
+async def _apply_local_timeouts(
+    connection: AsyncConnection,
+    *,
+    statement_timeout_ms: int,
+    lock_timeout_ms: int,
+) -> None:
+    await connection.execute(
+        text("SELECT set_config('statement_timeout', :value, true)"),
+        {"value": str(statement_timeout_ms)},
+    )
+    await connection.execute(
+        text("SELECT set_config('lock_timeout', :value, true)"),
+        {"value": str(lock_timeout_ms)},
+    )
 
 
 def evaluate_failure_rate(row: Mapping[str, Any]) -> FailureRateAlert | None:

@@ -24,6 +24,18 @@ def test_beat_schedule_reads_report_interval_once_at_startup() -> None:
     assert celery_app.conf.task_routes == {
         "app.tasks.poll_report": {"queue": "realtime-report"}
     }
+    assert schedule["expire-report-timeouts"] == {
+        "task": "app.tasks.expire_report_timeouts",
+        "schedule": 60,
+        "options": {"queue": "realtime"},
+    }
+    assert build_beat_schedule({"report_timeout_scan_seconds": "45"})[
+        "expire-report-timeouts"
+    ] == {
+        "task": "app.tasks.expire_report_timeouts",
+        "schedule": 45,
+        "options": {"queue": "realtime"},
+    }
     assert schedule["reconcile"] == {
         "task": "app.tasks.reconcile",
         "schedule": 300,
@@ -101,6 +113,7 @@ def test_startup_schedule_overrides_all_configurable_job_heartbeats() -> None:
     schedule = build_beat_schedule(
         {
             "report_poll_seconds": "17",
+            "report_timeout_scan_seconds": "45",
             "reply_poll_seconds": "73",
             "reconcile_interval_min": "7",
             "approval_scan_seconds": "91",
@@ -116,6 +129,7 @@ def test_startup_schedule_overrides_all_configurable_job_heartbeats() -> None:
             name: JOB_SPECS[name].expect_interval_s
             for name in (
                 "poll_report",
+                "expire_report_timeouts",
                 "poll_reply",
                 "reconcile",
                 "expire_approvals",
@@ -126,6 +140,7 @@ def test_startup_schedule_overrides_all_configurable_job_heartbeats() -> None:
             )
         } == {
             "poll_report": 17,
+            "expire_report_timeouts": 45,
             "poll_reply": 73,
             "reconcile": 420,
             "expire_approvals": 91,

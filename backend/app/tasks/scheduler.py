@@ -19,6 +19,7 @@ from app.settings import get_settings
 STARTUP_SCHEDULE_ENV = "SMS_BEAT_SCHEDULE_JSON"
 CONFIGURABLE_JOB_SCHEDULES = {
     "poll-report": "poll_report",
+    "expire-report-timeouts": "expire_report_timeouts",
     "poll-reply": "poll_reply",
     "reconcile": "reconcile",
     "expire-approvals": "expire_approvals",
@@ -33,6 +34,7 @@ def build_beat_schedule(config: dict[str, str]) -> dict[str, dict[str, Any]]:
     """构造固定到本次 beat 生命周期的调度表，不提供运行时热更。"""
 
     report_seconds = int(config.get("report_poll_seconds", "60"))
+    timeout_scan_seconds = int(config.get("report_timeout_scan_seconds", "60"))
     reply_seconds = int(config.get("reply_poll_seconds", "300"))
     reconcile_seconds = int(config.get("reconcile_interval_min", "5")) * 60
     approval_seconds = int(config.get("approval_scan_seconds", "300"))
@@ -43,6 +45,7 @@ def build_beat_schedule(config: dict[str, str]) -> dict[str, dict[str, Any]]:
     if (
         min(
             report_seconds,
+            timeout_scan_seconds,
             reply_seconds,
             reconcile_seconds,
             approval_seconds,
@@ -62,6 +65,11 @@ def build_beat_schedule(config: dict[str, str]) -> dict[str, dict[str, Any]]:
                 "queue": "realtime-report",
                 "expires": report_seconds,
             },
+        },
+        "expire-report-timeouts": {
+            "task": "app.tasks.expire_report_timeouts",
+            "schedule": timeout_scan_seconds,
+            "options": {"queue": "realtime"},
         },
         "poll-reply": {
             "task": "app.tasks.poll_reply",
@@ -174,7 +182,8 @@ async def load_beat_schedule() -> dict[str, dict[str, Any]]:
                 text(
                     "SELECT key,value FROM sys_config "
                     "WHERE key IN ("
-                    "'report_poll_seconds','reply_poll_seconds','reconcile_interval_min',"
+                    "'report_poll_seconds','report_timeout_scan_seconds',"
+                    "'reply_poll_seconds','reconcile_interval_min',"
                     "'approval_scan_seconds',"
                     "'scheduled_scan_seconds','balance_poll_seconds'"
                     ",'anomaly_scan_minutes'"
