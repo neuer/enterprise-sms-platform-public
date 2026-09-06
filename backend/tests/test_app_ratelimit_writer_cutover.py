@@ -751,3 +751,38 @@ def test_writer_cutover_bootstrap_requires_compose() -> None:
     from writer_cutover import main
 
     assert main(["bootstrap", "--root", str(REPO_ROOT)]) == 2
+
+
+def test_writer_cutover_bootstrap_parses_compose_option_tokens() -> None:
+    import sys
+
+    scripts = str(REPO_ROOT / "deploy" / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from writer_cutover import parse_args
+
+    args = parse_args(
+        [
+            "bootstrap",
+            "--root",
+            str(REPO_ROOT),
+            "--environment",
+            "development",
+            "--compose",
+            "docker",
+            "compose",
+            "--env-file",
+            "/tmp/.env",
+            "-f",
+            "/tmp/docker-compose.yml",
+        ]
+    )
+    assert args.command == "bootstrap"
+    assert args.compose == [
+        "docker",
+        "compose",
+        "--env-file",
+        "/tmp/.env",
+        "-f",
+        "/tmp/docker-compose.yml",
+    ]

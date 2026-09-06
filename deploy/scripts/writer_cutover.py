@@ -282,7 +282,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--release-binding", default="")
     parser.add_argument("--environment", default="development")
     parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--compose", nargs="+", default=())
+    # REMAINDER：compose 前缀含 --env-file/-f，nargs="+" 会把它们当成未知可选参。
+    parser.add_argument("--compose", nargs=argparse.REMAINDER, default=())
     return parser.parse_args(argv)
 
 
