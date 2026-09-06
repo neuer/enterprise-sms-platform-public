@@ -26,6 +26,7 @@ from app.services.app_ratelimit_cutover import (
     AdmissionView,
     CutoverError,
     ProbeResult,
+    bootstrap_greenfield_cutover,
     check_supported_launch,
     parse_cutover_marker,
     read_cutover_marker,
@@ -33,6 +34,8 @@ from app.services.app_ratelimit_cutover import (
     trusted_writer_version,
 )
 from tests.support.lua_redis import AsyncLuaRedis, LuaRedis
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # 8354c31 旧 writer：只写 v1 :buckets，不认识 marker / v2。
 V1_BUCKETS_LUA = """
@@ -533,6 +536,70 @@ async def test_missing_or_conflicting_marker_does_not_auto_activate() -> None:
     assert redis.hashes[WRITER_CUTOVER_MARKER_KEY]["state"] == "active"
 
 
+def test_greenfield_bootstrap_activates_empty_marker() -> None:
+    redis = LuaRedis(1_778_201_000)
+    result = bootstrap_greenfield_cutover(redis=redis, root=REPO_ROOT)
+    marker = read_cutover_marker(redis)
+    assert result.ok is True
+    assert result.state == "active_v2"
+    assert marker is not None
+    assert marker.state == "active_v2"
+    assert marker.generation == 1
+    assert marker.release_binding == ""
+    assert result.admission_state == "open"
+
+
+def test_greenfield_bootstrap_is_idempotent_when_active_v2() -> None:
+    redis = LuaRedis(1_778_201_100)
+    _seed_active_marker(redis)
+    result = bootstrap_greenfield_cutover(redis=redis, root=REPO_ROOT)
+    marker = read_cutover_marker(redis)
+    assert result.ok is True
+    assert marker is not None
+    assert marker.state == "active_v2"
+    assert marker.generation == 1
+    assert marker.release_binding == "rel-676"
+
+
+def test_greenfield_bootstrap_does_not_clobber_in_progress() -> None:
+    redis = LuaRedis(1_778_201_200)
+    redis.seed_hash(
+        WRITER_CUTOVER_MARKER_KEY,
+        {
+            "schema_version": "1",
+            "generation": "1",
+            "target_writer_version": "2",
+            "minimum_writer_version": "2",
+            "fence_time": "",
+            "not_before": "",
+            "state": "preparing",
+            "release_binding": "",
+            "admission_reason": CUTOVER_ADMISSION_REASON,
+            "window_seconds": str(COST_WINDOW_SECONDS),
+            "safety_margin_seconds": str(CUTOVER_SAFETY_MARGIN_SECONDS),
+        },
+    )
+    result = bootstrap_greenfield_cutover(redis=redis, root=REPO_ROOT)
+    assert result.ok is False
+    assert result.error == "cutover state conflict"
+    assert read_cutover_marker(redis).state == "preparing"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
+async def test_consume_works_after_greenfield_bootstrap() -> None:
+    redis = LuaRedis(1_778_201_300)
+    assert bootstrap_greenfield_cutover(redis=redis, root=REPO_ROOT).ok is True
+    limiter = ApplicationRateLimiter(AsyncLuaRedis(redis), nonce=lambda: "n")
+    await limiter.consume_send_cost(
+        app_id=7,
+        recipient_count=1,
+        segment_count=1,
+        recipient_limit=100,
+        segment_limit=100,
+    )
+    assert _v2_total(redis, 7) == 1
+
+
 def test_unsupported_old_binary_is_blocked_by_supported_launcher(
     tmp_path: Path,
 ) -> None:
@@ -667,3 +734,20 @@ def test_compose_executor_probe_timeout_is_not_absent() -> None:
     )
     assert executor.isolate_writers().status == "timeout"
     assert executor.probe_writers().status == "timeout"
+
+
+def test_greenfield_bootstrap_rejects_old_writer_tree(tmp_path: Path) -> None:
+    redis = LuaRedis(1_778_201_400)
+    with pytest.raises(CutoverError, match="unsupported old writer"):
+        bootstrap_greenfield_cutover(redis=redis, root=tmp_path)
+
+
+def test_writer_cutover_bootstrap_requires_compose() -> None:
+    import sys
+
+    scripts = str(REPO_ROOT / "deploy" / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from writer_cutover import main
+
+    assert main(["bootstrap", "--root", str(REPO_ROOT)]) == 2

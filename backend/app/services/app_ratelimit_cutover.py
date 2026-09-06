@@ -108,6 +108,9 @@ if exists then
       and current_state ~= 'aborted_closed' then
     return {-2, current_state, current_generation, tostring(now_sec)}
   end
+  if action == 'bootstrap' and current_state == 'active_v2' then
+    return {1, current_state, current_generation, tostring(now_sec)}
+  end
   local bound = field('release_binding')
   if bound ~= '' and bound ~= release_binding then
     return {-6, current_state, current_generation, tostring(now_sec)}
@@ -291,6 +294,16 @@ if action == 'rollback_finish' then
     target_writer
   )
   return {1, 'preparing', current_generation, tostring(now_sec)}
+end
+if action == 'bootstrap' then
+  if exists and current_state == 'active_v2' then
+    return {1, current_state, current_generation, tostring(now_sec)}
+  end
+  if exists then
+    return {0, current_state, current_generation, tostring(now_sec)}
+  end
+  write_fields('1', 'active_v2', tostring(now_sec), tostring(now_sec), target_writer)
+  return {1, 'active_v2', '1', tostring(now_sec)}
 end
 return {-4, current_state, current_generation, tostring(now_sec)}
 """
@@ -492,6 +505,70 @@ def trusted_writer_version(root: Path) -> int:
     if margin != CUTOVER_SAFETY_MARGIN_SECONDS:
         raise CutoverError("writer protocol metadata is unsupported")
     return version
+
+
+def bootstrap_greenfield_cutover(
+    *,
+    redis: CutoverRedis,
+    root: Path,
+    target_writer_version: int = WRITER_PROTOCOL_VERSION,
+) -> CutoverResult:
+    """空 marker 的受控绿地激活：没有旧 writer 可排空，直接写入 active_v2。
+
+    已是 active_v2 时幂等成功。进行中的切换不得覆盖。业务请求不得调用。
+    """
+
+    admission = AdmissionView(state="open", reason="ok", owned=False)
+    version = trusted_writer_version(root)
+    if version < target_writer_version:
+        raise CutoverError("unsupported old writer binary")
+    try:
+        code, _, _, redis_time = cas_cutover(
+            redis,
+            action="bootstrap",
+            release_binding="",
+            target_writer_version=target_writer_version,
+            minimum_writer_version=target_writer_version,
+        )
+    except CutoverError as exc:
+        return _result(
+            ok=False,
+            marker=None,
+            admission=admission,
+            redis_time=0,
+            error=str(exc),
+        )
+    if code < 0:
+        return _result(
+            ok=False,
+            marker=read_cutover_marker(redis),
+            admission=admission,
+            redis_time=redis_time,
+            error="cutover control plane is unavailable",
+        )
+    if code == 0:
+        return _result(
+            ok=False,
+            marker=read_cutover_marker(redis),
+            admission=admission,
+            redis_time=redis_time,
+            error="cutover state conflict",
+        )
+    marker = read_cutover_marker(redis)
+    if marker is None or marker.state != "active_v2":
+        return _result(
+            ok=False,
+            marker=marker,
+            admission=admission,
+            redis_time=redis_time,
+            error="cutover did not activate",
+        )
+    return _result(
+        ok=True,
+        marker=marker,
+        admission=admission,
+        redis_time=redis_time,
+    )
 
 
 def check_supported_launch(

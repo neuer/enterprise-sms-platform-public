@@ -47,6 +47,10 @@ preparing → old_writers_fenced → waiting_window → active_v2
 脚本按状态可重入：不重置用量、不降低 generation。marker 缺失、损坏或
 与发布绑定冲突时失败关闭。
 
+空 Redis 没有旧 writer。`sms-compose up` 在 `redis-control` 已运行后由控制面
+`writer_cutover bootstrap` 写入 `active_v2`。业务请求仍不得写 marker。
+进行中的切换（preparing / fenced / waiting）不得被 bootstrap 覆盖。
+
 ## Abort / 回滚
 
 - 探测失败或时间异常：保持关闭，不自动开闸。`finally` 不得无条件 OPEN。

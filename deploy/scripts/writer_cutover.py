@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 from dataclasses import dataclass, field
@@ -184,6 +185,34 @@ class ComposeWriterExecutor:
         return _cutover().trusted_writer_version(root)
 
 
+@dataclass
+class ComposeControlRunner:
+    """通过 compose exec 访问 control Redis，供绿地 bootstrap 使用。"""
+
+    runner: CommandRunner
+    compose: tuple[str, ...]
+
+    def run(self, argv: list[str], *, timeout_s: int = 30) -> str:
+        script = (
+            'exec redis-cli --user sms_control --askpass --raw "$@" '
+            "< /run/secrets/redis_control_password"
+        )
+        return self.runner.run(
+            [
+                *self.compose,
+                "exec",
+                "-T",
+                "redis-control",
+                "sh",
+                "-ec",
+                script,
+                "sh",
+                *argv,
+            ],
+            timeout_s=timeout_s,
+        )
+
+
 class CliRedis:
     """通过注入的 redis-cli/eval 适配器访问 control Redis，时间只用 Redis TIME。"""
 
@@ -245,11 +274,15 @@ def write_local_marker(marker: object, path: Path = LOCAL_MARKER_PATH) -> None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="writer cutover")
-    parser.add_argument("command", choices=("advance", "rollback", "status", "check-launch"))
+    parser.add_argument(
+        "command",
+        choices=("advance", "rollback", "status", "check-launch", "bootstrap"),
+    )
     parser.add_argument("--root", type=Path, default=ROOT_CANDIDATE)
     parser.add_argument("--release-binding", default="")
     parser.add_argument("--environment", default="development")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--compose", nargs="+", default=())
     return parser.parse_args(argv)
 
 
@@ -279,6 +312,22 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 1
         return 0
+    if args.command == "bootstrap":
+        if not args.compose:
+            print("compose command is required", file=sys.stderr)
+            return 2
+        redis = CliRedis(ComposeControlRunner(SubprocessRunner(), tuple(args.compose)))
+        try:
+            result = cutover.bootstrap_greenfield_cutover(redis=redis, root=root)
+        except cutover.CutoverError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        if result.ok:
+            marker = cutover.read_cutover_marker(redis)
+            if marker is not None:
+                with contextlib.suppress(OSError):
+                    write_local_marker(marker)
+        return _print(result)
     if args.command == "status":
         print(
             json.dumps(

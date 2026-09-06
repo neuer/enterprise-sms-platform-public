@@ -897,6 +897,28 @@ assert_writer_launch_allowed() {
     --environment "$environment"
 }
 
+activate_greenfield_writer_cutover() {
+  local environment=development
+  local running attempt
+  if [[ "$SECRETS_MODE" == production ]]; then
+    environment=production
+  fi
+  running="$("${COMPOSE[@]}" ps --status running --format '{{.Service}}' redis-control || true)"
+  if [[ "$running" != *redis-control* ]]; then
+    return 0
+  fi
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if "${CONTROL_PYTHON[@]}" "$WRITER_CUTOVER" bootstrap \
+      --root "$ROOT" \
+      --environment "$environment" \
+      --compose "${COMPOSE[@]}"; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 start_stack() {
   local external_tls_mode trusted_proxy_cidrs trusted_proxy_conf
   local build_guard=()
@@ -918,7 +940,8 @@ start_stack() {
     --output "$trusted_proxy_conf"
   "${COMPOSE[@]}" config --quiet
   assert_writer_launch_allowed || return $?
-  "${COMPOSE[@]}" up "${build_guard[@]}" "$@"
+  "${COMPOSE[@]}" up "${build_guard[@]}" "$@" || return $?
+  activate_greenfield_writer_cutover || return $?
 }
 
 stop_stack() {

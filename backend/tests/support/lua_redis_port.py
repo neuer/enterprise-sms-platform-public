@@ -237,6 +237,8 @@ def _eval_cas(store: _Store, args: list[str]) -> list[object]:
             "aborted_closed",
         }:
             return [-2, current_state, current_generation, str(now_sec)]
+        if action == "bootstrap" and current_state == "active_v2":
+            return [1, current_state, current_generation, str(now_sec)]
         bound = field("release_binding")
         if bound not in {"", release_binding}:
             return [-6, current_state, current_generation, str(now_sec)]
@@ -385,4 +387,11 @@ def _eval_cas(store: _Store, args: list[str]) -> list[object]:
             target_writer,
         )
         return [1, "preparing", current_generation, str(now_sec)]
+    if action == "bootstrap":
+        if exists and current_state == "active_v2":
+            return [1, current_state, current_generation, str(now_sec)]
+        if exists:
+            return [0, current_state, current_generation, str(now_sec)]
+        write_fields("1", "active_v2", str(now_sec), str(now_sec), target_writer)
+        return [1, "active_v2", "1", str(now_sec)]
     return [-4, current_state, current_generation, str(now_sec)]
