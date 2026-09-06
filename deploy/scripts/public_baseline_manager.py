@@ -1093,6 +1093,9 @@ class BaselineUpdateOperations:
     def replace_redis_services(self) -> None:
         self.delegate.replace_redis_services()
 
+    def prepare_rollback_images(self) -> None:
+        self.delegate.prepare_rollback_images()
+
     def run_expand_migration(self, source: str, target: str) -> str:
         raise PublicBaselineManagerError("baseline migration is forbidden")
 

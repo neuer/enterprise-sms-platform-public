@@ -1547,7 +1547,7 @@ def test_rollback_image_tags_are_idempotent_across_apply_resume() -> None:
     class Host:
         def _run(self, *arguments: str) -> str:
             calls.append(arguments)
-            assert arguments == ("ps", "-q", "web")
+            assert arguments == ("ps", "--all", "-q", "web")
             return "abcdef123456"
 
     operations = object.__new__(HostTestUpdateOperations)

@@ -112,7 +112,7 @@ if exists then
     return {1, current_state, current_generation, tostring(now_sec)}
   end
   local bound = field('release_binding')
-  if bound ~= '' and bound ~= release_binding then
+  if action ~= 'takeover_prepare' and bound ~= '' and bound ~= release_binding then
     return {-6, current_state, current_generation, tostring(now_sec)}
   end
 end
@@ -138,6 +138,14 @@ local function write_fields(generation, state, fence_time, not_before, minimum)
   redis.call('HSET', marker, 'admission_reason', admission_reason)
   redis.call('HSET', marker, 'window_seconds', window_seconds)
   redis.call('HSET', marker, 'safety_margin_seconds', safety_margin)
+end
+if action == 'takeover_prepare' then
+  if (not exists) or current_state ~= 'preparing' then
+    return {0, current_state, current_generation, tostring(now_sec)}
+  end
+  local generation = tostring(tonumber(current_generation) + 1)
+  write_fields(generation, 'preparing', '', '', min_writer)
+  return {1, 'preparing', generation, tostring(now_sec)}
 end
 if action == 'prepare' then
   if exists and current_state == 'active_v2'

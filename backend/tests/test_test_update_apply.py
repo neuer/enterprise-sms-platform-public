@@ -51,6 +51,9 @@ class FakeApplyOperations:
     def replace_redis_services(self) -> None:
         self._event("replace_redis")
 
+    def prepare_rollback_images(self) -> None:
+        self._event("prepare_rollback")
+
     def run_writer_cutover(self, update_id: str) -> None:
         self._event(("writer_cutover", update_id))
 
@@ -95,6 +98,7 @@ def test_backend_apply_migrates_then_replaces_fixed_services_without_mock() -> N
         ("pauses", "test-api"),
         ("migrate", "0015", "0016"),
         "replace_redis",
+        "prepare_rollback",
         ("writer_cutover", "test-api"),
         ("replace_backend", BACKEND_SERVICES),
     ]
@@ -134,6 +138,7 @@ def test_backend_without_migration_skips_migration_and_checkpoint_state() -> Non
         ("mode", "live"),
         ("pauses", "test-api"),
         "replace_redis",
+        "prepare_rollback",
         ("writer_cutover", "test-api"),
         ("replace_backend", BACKEND_SERVICES),
     ]

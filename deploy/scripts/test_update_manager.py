@@ -2203,7 +2203,7 @@ class HostTestUpdateOperations:
                         "rollback image identity is invalid"
                     )
                 if require_current_match:
-                    container_id = self.host._run("ps", "-q", component)
+                    container_id = self.host._run("ps", "--all", "-q", component)
                     if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
                         raise TestUpdateManagerError(
                             "rollback container identity is invalid"
@@ -2220,7 +2220,7 @@ class HostTestUpdateOperations:
                             "rollback image identity drifted"
                         )
                 continue
-            container_id = self.host._run("ps", "-q", component)
+            container_id = self.host._run("ps", "--all", "-q", component)
             if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
                 raise TestUpdateManagerError("rollback container identity is invalid")
             image_id = self._command(
@@ -2305,6 +2305,8 @@ class HostTestUpdateOperations:
             rollback=rollback,
         )
         redis = _HostControlRedis(self.host)
+        if not rollback:
+            self._takeover_blocked_cutover_marker(redis, update_id)
         sleeper = getattr(self, "_writer_cutover_sleep", time.sleep)
         deadline = time.monotonic() + 90
         while True:
@@ -2339,6 +2341,44 @@ class HostTestUpdateOperations:
         if marker is not None:
             with contextlib.suppress(OSError):
                 write_local_marker(marker)
+
+    def _takeover_blocked_cutover_marker(self, redis: object, update_id: str) -> None:
+        from app.services.app_ratelimit_cutover import (
+            WRITER_PROTOCOL_VERSION,
+            cas_cutover,
+            read_cutover_marker,
+        )
+
+        marker = read_cutover_marker(redis)  # type: ignore[arg-type]
+        if marker is None or marker.state != "preparing":
+            return
+        predecessor_id = marker.release_binding
+        if predecessor_id in {"", update_id}:
+            return
+        try:
+            predecessor = TestUpdateStore(self.state_root, predecessor_id)
+            predecessor.read_request()
+            predecessor_state = predecessor.read_consistent_state()
+        except Exception as exc:
+            raise TestUpdateManagerError(
+                "cutover marker predecessor is unavailable"
+            ) from exc
+        if predecessor_state["state"] != TestUpdateState.BLOCKED.value:
+            raise TestUpdateManagerError(
+                "cutover marker requires a blocked predecessor"
+            )
+        code, _, _, _ = cas_cutover(
+            redis,  # type: ignore[arg-type]
+            action="takeover_prepare",
+            release_binding=update_id,
+            target_writer_version=WRITER_PROTOCOL_VERSION,
+            minimum_writer_version=WRITER_PROTOCOL_VERSION,
+            expect_state="preparing",
+        )
+        if code < 0:
+            raise TestUpdateManagerError("cutover marker conflict")
+        if code == 0:
+            raise TestUpdateManagerError("cutover state conflict")
 
     def replace_backend_services(self, services: tuple[str, ...]) -> None:
         if "mock-vendor" in services:

@@ -240,7 +240,7 @@ def _eval_cas(store: _Store, args: list[str]) -> list[object]:
         if action == "bootstrap" and current_state == "active_v2":
             return [1, current_state, current_generation, str(now_sec)]
         bound = field("release_binding")
-        if bound not in {"", release_binding}:
+        if action != "takeover_prepare" and bound not in {"", release_binding}:
             return [-6, current_state, current_generation, str(now_sec)]
     if expect_generation and (not exists or current_generation != expect_generation):
         return [0, current_state, current_generation, str(now_sec)]
@@ -266,6 +266,12 @@ def _eval_cas(store: _Store, args: list[str]) -> list[object]:
         store.hset(marker, "window_seconds", window_seconds)
         store.hset(marker, "safety_margin_seconds", safety_margin)
 
+    if action == "takeover_prepare":
+        if (not exists) or current_state != "preparing":
+            return [0, current_state, current_generation, str(now_sec)]
+        generation = str(int(current_generation) + 1)
+        write_fields(generation, "preparing", "", "", min_writer)
+        return [1, "preparing", generation, str(now_sec)]
     if action == "prepare":
         if (
             exists
