@@ -17,6 +17,7 @@ OCCUPYING_CHUNK_STATES = frozenset(
         "submitted",
         "uncertain",
         "split_capacity_blocked",
+        "failover_pending",
     }
 )
 InFlightDeltaOperation = Literal[

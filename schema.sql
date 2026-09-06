@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.94  2026-09-06
+-- v1.6.94：sms_chunk 增加 failover_pending，safe reject 后持久化下一跳；
+--          无下一供应商时按失败合同收敛，禁止留下 rejected+submitting。
 -- v1.6.93  2026-09-06
 -- v1.6.93：本地回执超时扫描独立于 GetReport；到期 sent 消息按批次
 --          SKIP LOCKED 有界领取，并增加与查询匹配的部分索引。
@@ -742,7 +745,8 @@ CREATE TABLE sms_chunk (
     status         VARCHAR(32) NOT NULL DEFAULT 'pending'
         CHECK (status IN (
           'pending','submitting','submitted','failed','retrying',
-          'uncertain','unknown_terminal','split_capacity_blocked'
+          'uncertain','unknown_terminal','split_capacity_blocked',
+          'failover_pending'
         )),
     vendor_code    INTEGER,
     vendor_msg     VARCHAR(256),
@@ -756,12 +760,19 @@ CREATE TABLE sms_chunk (
     late_evidence_at TIMESTAMPTZ,
     selected_vendor  VARCHAR(32) NOT NULL DEFAULT 'zhihui',
     route_generation INTEGER     NOT NULL DEFAULT 1,
+    next_vendor      VARCHAR(32),
+    route_policy_version SMALLINT NOT NULL DEFAULT 1,
+    failover_from_attempt_id BIGINT,
     UNIQUE (batch_id, chunk_no),
     CONSTRAINT chk_chunk_vendor_attempt_count CHECK (vendor_attempt_count >= 0),
     CONSTRAINT ck_sms_chunk_selected_vendor CHECK (
       selected_vendor ~ '^[a-z][a-z0-9_]{0,31}$'
     ),
     CONSTRAINT ck_sms_chunk_route_generation CHECK (route_generation >= 1),
+    CONSTRAINT ck_sms_chunk_next_vendor CHECK (
+      next_vendor IS NULL OR next_vendor ~ '^[a-z][a-z0-9_]{0,31}$'
+    ),
+    CONSTRAINT ck_sms_chunk_route_policy_version CHECK (route_policy_version >= 1),
     CONSTRAINT ck_sms_chunk_vendor_task_pseudonym CHECK (
       vendor_task_id IS NULL OR vendor_task_id ~ '^[0-9a-f]{64}$'
     ),
@@ -782,6 +793,7 @@ CREATE TABLE sms_chunk (
 );
 CREATE INDEX idx_chunk_taskid    ON sms_chunk(vendor_task_id);
 CREATE INDEX idx_chunk_retry_due ON sms_chunk(retry_not_before) WHERE status = 'retrying';
+CREATE INDEX idx_chunk_failover_due ON sms_chunk(retry_not_before) WHERE status = 'failover_pending';
 CREATE INDEX idx_chunk_unknown_terminal
     ON sms_chunk(unknown_terminal_at) WHERE status = 'unknown_terminal';
 CREATE UNIQUE INDEX uk_sms_chunk_split_child
@@ -793,7 +805,7 @@ CREATE OR REPLACE FUNCTION send_chunk_occupying_states()
 RETURNS TEXT[] LANGUAGE sql IMMUTABLE AS $$
   SELECT ARRAY[
     'pending','submitting','retrying','submitted',
-    'uncertain','split_capacity_blocked'
+    'uncertain','split_capacity_blocked','failover_pending'
   ]::text[];
 $$;
 

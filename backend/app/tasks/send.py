@@ -28,12 +28,21 @@ from app.services.vendor_test_budget import SubmissionClaim, SubmissionClaimStat
 from app.services.vendor_test_guard import VendorTestRecipientDenied
 from app.settings import get_settings
 from app.tasks import celery_app
+from app.vendor.failover import (
+    InvokeClaim,
+    InvokeClaimKind,
+    NextAction,
+    followup_for_policy,
+)
 from app.vendor.routing import (
     PRIMARY_VENDOR_ID,
+    ROUTE_POLICY_VERSION,
     RouteRequest,
     VendorAttempt,
     VendorHealth,
+    VendorRecord,
     VendorRouter,
+    default_vendor_registry,
 )
 from app.vendor.zhihui import (
     VendorApiError,
@@ -77,10 +86,16 @@ class FinalizeKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class FinalizeReport:
-    """finalize_vendor_attempt 的权威结果。"""
+    """finalize_vendor_attempt 的权威结果；后续动作只以仓储返回为准。"""
 
     kind: FinalizeKind
     result: str
+    next_action: str | None = None
+    next_vendor: str | None = None
+    route_generation: int | None = None
+    previous_attempt_id: int | None = None
+    route_policy_version: int | None = None
+    chunk_status: str | None = None
 
 
 SUBMIT_OUTCOME_LABELS = tuple(item.value for item in SubmitOutcome)
@@ -103,7 +118,7 @@ def classify_finalize_conflict(
             return FinalizeKind.ALREADY_FINALIZED_SAME_RESULT
         if requested in {"rejected", "failed"} and chunk_status == "failed":
             return FinalizeKind.ALREADY_FINALIZED_SAME_RESULT
-        if requested == "rejected" and chunk_status == "submitting":
+        if requested == "rejected" and chunk_status == "failover_pending":
             return FinalizeKind.ALREADY_FINALIZED_SAME_RESULT
         return FinalizeKind.STATE_CORRUPTION
     if attempt_outcome == "uncertain" or chunk_status == "uncertain":
@@ -131,6 +146,22 @@ def submit_outcome_from_finalize(
     if requested is SubmitOutcome.RETRY_SCHEDULED:
         return SubmitOutcome.STALE
     return SubmitOutcome.UNCERTAIN
+
+
+def followup_allowed(report: FinalizeReport) -> bool:
+    """只有 APPLIED 或同一 attempt/generation/后续动作的 SAME_RESULT 才可继续。"""
+
+    if report.kind is FinalizeKind.APPLIED:
+        return True
+    if report.kind is FinalizeKind.ALREADY_FINALIZED_SAME_RESULT:
+        return report.next_action in {
+            NextAction.FAILOVER_PENDING.value,
+            NextAction.RETRYING.value,
+            NextAction.BALANCE_BLOCKED.value,
+            NextAction.FAILED.value,
+            None,
+        }
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +209,11 @@ class ChunkPayload:
     denied_recipient_count: int = 0
     selected_vendor: str = PRIMARY_VENDOR_ID
     route_generation: int = 1
+    category: str = "notice"
+    status: str = "pending"
+    next_vendor: str | None = None
+    route_policy_version: int = ROUTE_POLICY_VERSION
+    failover_from_attempt_id: int | None = None
 
 
 class Gateway(Protocol):
@@ -239,6 +275,24 @@ class ChunkStore(Protocol):
         batch_id: int | None = None,
         balance_blocked: bool = False,
     ) -> FinalizeReport: ...
+
+    async def claim_next_vendor_invoke(
+        self,
+        chunk_id: int,
+        *,
+        expected_route_generation: int,
+        previous_attempt_id: int,
+        expected_next_vendor: str,
+        expected_route_policy_version: int,
+    ) -> InvokeClaim: ...
+
+    async def load_authoritative_next_action(
+        self,
+        chunk_id: int,
+        *,
+        attempt_id: int,
+        expected_generation: int,
+    ) -> FinalizeReport | None: ...
 
     async def mark_failed(self, chunk_id: int, code: int, message: str) -> None: ...
 
@@ -328,6 +382,7 @@ class SendWorker:
         gateways: Mapping[str, Gateway] | None = None,
         router: VendorRouter | None = None,
         health: Callable[[], Awaitable[tuple[VendorHealth, ...]]] | None = None,
+        registry: tuple[VendorRecord, ...] | None = None,
     ) -> None:
         self.gateway = gateway
         self.store = store
@@ -335,6 +390,7 @@ class SendWorker:
         self.gateways = dict(gateways or {})
         self.router = router or VendorRouter()
         self.health = health
+        self.registry = registry or default_vendor_registry()
         self.monitor = monitor or NoopVendorAlertMonitor()
         if (
             enforce_live_test_budget
@@ -632,23 +688,336 @@ class SendWorker:
         expected_retry_count: int | None = None,
         balance_blocked: bool = False,
     ) -> FinalizeReport | None:
-        """有 invoking 行时走原子终结；否则保持旧的分步路径。"""
+        """有 invoking 行时走原子终结；COMMIT 不确定时回读数据库事实。"""
 
         if attempt_id is None:
             return None
-        return await self.store.finalize_vendor_attempt(
-            attempt_id,
-            chunk.chunk_id,
-            expected_generation=generation,
-            result=result,
-            vendor_task_id=vendor_task_id,
-            vendor_code=vendor_code,
-            safe_to_failover=safe_to_failover,
-            retry_delay_s=retry_delay_s,
-            expected_retry_count=expected_retry_count,
-            batch_id=chunk.batch_id,
-            balance_blocked=balance_blocked,
+        try:
+            return await self.store.finalize_vendor_attempt(
+                attempt_id,
+                chunk.chunk_id,
+                expected_generation=generation,
+                result=result,
+                vendor_task_id=vendor_task_id,
+                vendor_code=vendor_code,
+                safe_to_failover=safe_to_failover,
+                retry_delay_s=retry_delay_s,
+                expected_retry_count=expected_retry_count,
+                batch_id=chunk.batch_id,
+                balance_blocked=balance_blocked,
+            )
+        except Exception:
+            loader = getattr(self.store, "load_authoritative_next_action", None)
+            if loader is None:
+                raise
+            reloaded = await loader(
+                chunk.chunk_id,
+                attempt_id=attempt_id,
+                expected_generation=generation,
+            )
+            if reloaded is None:
+                return None
+            return reloaded
+
+    def _route_request(
+        self,
+        chunk: ChunkPayload,
+        attempts: tuple[VendorAttempt, ...],
+        health: tuple[VendorHealth, ...],
+    ) -> RouteRequest:
+        return RouteRequest(
+            registered=self.router.registered_ids(),
+            attempts=attempts,
+            health=health,
+            category=chunk.category,
+            policy_version=chunk.route_policy_version,
         )
+
+    async def _claim_persisted_failover(
+        self,
+        chunk: ChunkPayload,
+        *,
+        lane: Literal["realtime", "bulk"],
+        report: FinalizeReport,
+    ) -> tuple[InvokeClaim, str, int | None]:
+        """令牌之后才 CAS；拒绝时必须尚未外呼。"""
+
+        vendor_id = report.next_vendor
+        if vendor_id is None or report.previous_attempt_id is None:
+            return (
+                InvokeClaim(InvokeClaimKind.DENIED, reason="missing_next_action"),
+                PRIMARY_VENDOR_ID,
+                None,
+            )
+        lease_epoch = await self._token(lane, vendor_id)
+        if lease_epoch is None:
+            return (
+                InvokeClaim(InvokeClaimKind.DENIED, reason="token_unavailable"),
+                vendor_id,
+                None,
+            )
+        claimer = getattr(self.store, "claim_next_vendor_invoke", None)
+        if claimer is None:
+            await self._refund_token(lease_epoch, vendor_id)
+            return (
+                InvokeClaim(InvokeClaimKind.DENIED, reason="claim_unavailable"),
+                vendor_id,
+                lease_epoch,
+            )
+        claim = await claimer(
+            chunk.chunk_id,
+            expected_route_generation=int(report.route_generation or chunk.route_generation),
+            previous_attempt_id=int(report.previous_attempt_id),
+            expected_next_vendor=vendor_id,
+            expected_route_policy_version=int(
+                report.route_policy_version or chunk.route_policy_version
+            ),
+        )
+        if claim.kind is not InvokeClaimKind.AUTHORIZED:
+            await self._refund_token(lease_epoch, vendor_id)
+        return claim, vendor_id, lease_epoch
+
+    async def _invoke_authorized(
+        self,
+        chunk: ChunkPayload,
+        *,
+        lane: Literal["realtime", "bulk"],
+        vendor_id: str,
+        generation: int,
+        attempt_id: int | None,
+        allow_split: bool,
+        retry_index: int,
+    ) -> SubmitOutcome:
+        try:
+            gateway = self._gateway_for(vendor_id)
+        except LookupError:
+            return SubmitOutcome.FAILED
+        vendor_invoked = False
+        try:
+            vendor_invoked = True
+            task_id = await gateway.send(
+                chunk.phones,
+                chunk.content,
+                template_id=chunk.template_id,
+                sign_name=chunk.sign_name,
+                custom_id=chunk.custom_id,
+            )
+        except (VendorTransportError, VendorProtocolError):
+            report = await self._finalize_invoke(
+                chunk,
+                vendor_id=vendor_id,
+                generation=generation,
+                attempt_id=attempt_id,
+                result="uncertain",
+            )
+            if report is None:
+                await self._persist_attempt(
+                    chunk,
+                    vendor_id=vendor_id,
+                    generation=generation,
+                    outcome="uncertain",
+                    attempt_id=attempt_id,
+                )
+                await self.store.mark_uncertain(chunk.chunk_id)
+                return SubmitOutcome.UNCERTAIN
+            return submit_outcome_from_finalize(report, SubmitOutcome.UNCERTAIN)
+        except VendorApiError as error:
+            return await self._handle_terminal_api_error(
+                chunk,
+                error,
+                lane=lane,
+                vendor_id=vendor_id,
+                generation=generation,
+                attempt_id=attempt_id,
+                allow_split=allow_split,
+                retry_index=retry_index,
+            )
+        except Exception:
+            if vendor_invoked:
+                report = await self._finalize_invoke(
+                    chunk,
+                    vendor_id=vendor_id,
+                    generation=generation,
+                    attempt_id=attempt_id,
+                    result="uncertain",
+                )
+                if report is None:
+                    await self._persist_attempt(
+                        chunk,
+                        vendor_id=vendor_id,
+                        generation=generation,
+                        outcome="uncertain",
+                        attempt_id=attempt_id,
+                    )
+                    await self.store.mark_uncertain(chunk.chunk_id)
+            raise
+        else:
+            report = await self._finalize_invoke(
+                chunk,
+                vendor_id=vendor_id,
+                generation=generation,
+                attempt_id=attempt_id,
+                result="submitted",
+                vendor_task_id=task_id,
+            )
+            if report is not None:
+                outcome = submit_outcome_from_finalize(report, SubmitOutcome.SUBMITTED)
+                if outcome is SubmitOutcome.SUBMITTED:
+                    await self._record_success()
+                return outcome
+            try:
+                await self.store.mark_submitted(chunk.chunk_id, task_id)
+            except Exception:
+                await self._persist_attempt(
+                    chunk,
+                    vendor_id=vendor_id,
+                    generation=generation,
+                    outcome="uncertain",
+                    attempt_id=attempt_id,
+                )
+                await self.store.mark_uncertain(chunk.chunk_id)
+                return SubmitOutcome.UNCERTAIN
+            await self._persist_attempt(
+                chunk,
+                vendor_id=vendor_id,
+                generation=generation,
+                outcome="submitted",
+                attempt_id=attempt_id,
+            )
+            await self._record_success()
+            return SubmitOutcome.SUBMITTED
+
+    async def _handle_terminal_api_error(
+        self,
+        chunk: ChunkPayload,
+        error: VendorApiError,
+        *,
+        lane: Literal["realtime", "bulk"],
+        vendor_id: str,
+        generation: int,
+        attempt_id: int | None,
+        allow_split: bool,
+        retry_index: int,
+    ) -> SubmitOutcome:
+        policy = error.policy
+        if policy.retry_delays_s and retry_index < len(policy.retry_delays_s):
+            delay = policy.retry_delays_s[retry_index]
+            report = await self._finalize_invoke(
+                chunk,
+                vendor_id=vendor_id,
+                generation=generation,
+                attempt_id=attempt_id,
+                result="retry_scheduled",
+                vendor_code=error.code,
+                retry_delay_s=delay,
+                expected_retry_count=retry_index,
+            )
+            if report is not None:
+                return submit_outcome_from_finalize(report, SubmitOutcome.RETRY_SCHEDULED)
+            if not await self.store.schedule_retry(
+                chunk.chunk_id,
+                error.code,
+                retry_index,
+                delay,
+            ):
+                return SubmitOutcome.STALE
+            await self._persist_attempt(
+                chunk,
+                vendor_id=vendor_id,
+                generation=generation,
+                outcome="retry_scheduled",
+                attempt_id=attempt_id,
+                vendor_code=error.code,
+            )
+            return SubmitOutcome.RETRY_SCHEDULED
+        if policy.shrink_batch_once and allow_split:
+            children = await self.store.split_once(chunk)
+            if children:
+                for child in children:
+                    await self.submit(child, lane=lane, allow_split=False)
+                return SubmitOutcome.SPLIT
+            return SubmitOutcome.STALE
+        if policy.delay_s is not None:
+            report = await self._finalize_invoke(
+                chunk,
+                vendor_id=vendor_id,
+                generation=generation,
+                attempt_id=attempt_id,
+                result="delayed",
+                vendor_code=error.code,
+                retry_delay_s=policy.delay_s,
+            )
+            if report is not None:
+                return submit_outcome_from_finalize(report, SubmitOutcome.DELAYED)
+            await self.store.delay(chunk.chunk_id, error.code, policy.delay_s)
+            await self._persist_attempt(
+                chunk,
+                vendor_id=vendor_id,
+                generation=generation,
+                outcome="delayed",
+                attempt_id=attempt_id,
+                vendor_code=error.code,
+            )
+            return SubmitOutcome.DELAYED
+        hold_like = followup_for_policy(policy, vendor_code=error.code) == "hold"
+        report = await self._finalize_invoke(
+            chunk,
+            vendor_id=vendor_id,
+            generation=generation,
+            attempt_id=attempt_id,
+            result="paused" if hold_like else "rejected",
+            vendor_code=error.code,
+            safe_to_failover=policy.safe_to_failover,
+            balance_blocked=policy.balance_blocked,
+        )
+        if report is None:
+            await self._persist_attempt(
+                chunk,
+                vendor_id=vendor_id,
+                generation=generation,
+                outcome="paused" if hold_like else "rejected",
+                attempt_id=attempt_id,
+                safe_to_failover=policy.safe_to_failover,
+                vendor_code=error.code,
+            )
+            return await self._apply_terminal_api_error(chunk, error, persist_chunk=True)
+        if not followup_allowed(report):
+            return submit_outcome_from_finalize(
+                report,
+                SubmitOutcome.PAUSED if hold_like else SubmitOutcome.FAILED,
+            )
+        if hold_like or report.next_action in {
+            NextAction.RETRYING.value,
+            NextAction.BALANCE_BLOCKED.value,
+        }:
+            await self.store.pause_queues(error.code)
+            await self._record_failure(chunk, error.code)
+            return SubmitOutcome.PAUSED
+        if report.next_action == NextAction.FAILOVER_PENDING.value:
+            claim, _next_vendor, _lease = await self._claim_persisted_failover(
+                chunk,
+                lane=lane,
+                report=report,
+            )
+            if claim.kind is InvokeClaimKind.DENIED and claim.reason == "token_unavailable":
+                return SubmitOutcome.PAUSED
+            if claim.kind is InvokeClaimKind.ALREADY_HANDLED:
+                return SubmitOutcome.STALE
+            if claim.kind is not InvokeClaimKind.AUTHORIZED or claim.authorization is None:
+                return SubmitOutcome.UNCERTAIN
+            return await self._invoke_authorized(
+                chunk,
+                lane=lane,
+                vendor_id=claim.authorization.vendor_id,
+                generation=claim.authorization.generation,
+                attempt_id=claim.authorization.attempt_id,
+                allow_split=allow_split,
+                retry_index=retry_index,
+            )
+        if report.next_action == NextAction.FAILED.value:
+            await self._record_failure(chunk, error.code)
+            return SubmitOutcome.FAILED
+        return await self._apply_terminal_api_error(chunk, error, persist_chunk=False)
 
     async def submit(
         self,
@@ -661,16 +1030,42 @@ class SendWorker:
         attempts = list(await self._load_attempts(chunk))
         claimed = False
         lease_epoch: int | None = None
-        lease_vendor = PRIMARY_VENDOR_ID
+        if chunk.status == "failover_pending":
+            report = FinalizeReport(
+                FinalizeKind.APPLIED,
+                "rejected",
+                next_action=NextAction.FAILOVER_PENDING.value,
+                next_vendor=chunk.next_vendor,
+                route_generation=chunk.route_generation,
+                previous_attempt_id=chunk.failover_from_attempt_id,
+                route_policy_version=chunk.route_policy_version,
+                chunk_status="failover_pending",
+            )
+            claim, next_vendor, _lease = await self._claim_persisted_failover(
+                chunk,
+                lane=lane,
+                report=report,
+            )
+            if claim.kind is InvokeClaimKind.DENIED and claim.reason == "token_unavailable":
+                return SubmitOutcome.PAUSED
+            if claim.kind is InvokeClaimKind.ALREADY_HANDLED:
+                return SubmitOutcome.STALE
+            if claim.kind is not InvokeClaimKind.AUTHORIZED or claim.authorization is None:
+                return SubmitOutcome.UNCERTAIN
+            return await self._invoke_authorized(
+                chunk,
+                lane=lane,
+                vendor_id=claim.authorization.vendor_id,
+                generation=claim.authorization.generation,
+                attempt_id=claim.authorization.attempt_id,
+                allow_split=allow_split,
+                retry_index=retry_index,
+            )
         while True:
             platform_paused = await self.store.is_paused(lane)
             health = await self._health_snapshot(platform_paused=platform_paused)
             decision = self.router.decide(
-                RouteRequest(
-                    registered=self.router.registered_ids(),
-                    attempts=tuple(attempts),
-                    health=health,
-                )
+                self._route_request(chunk, tuple(attempts), health)
             )
             if decision.action == "terminal_uncertain":
                 return SubmitOutcome.UNCERTAIN
@@ -683,7 +1078,7 @@ class SendWorker:
             vendor_id = decision.vendor_id
             generation = decision.generation
             try:
-                gateway = self._gateway_for(vendor_id)
+                self._gateway_for(vendor_id)
             except LookupError:
                 await self._record_attempt(
                     chunk,
@@ -698,7 +1093,6 @@ class SendWorker:
                 if not await self._control_ready(chunk, claimed=False):
                     return SubmitOutcome.PAUSED
                 lease_epoch = await self._token(lane, vendor_id)
-                lease_vendor = vendor_id
                 if lease_epoch is None:
                     return SubmitOutcome.PAUSED
                 claim_status = await self._claim_after_token(
@@ -722,7 +1116,6 @@ class SendWorker:
                     return SubmitOutcome.PAUSED
             begin = getattr(self.store, "begin_vendor_invoke", None)
             attempt_id: int | None = None
-            vendor_invoked = False
             if begin is not None:
                 try:
                     started = await begin(
@@ -739,221 +1132,15 @@ class SendWorker:
                     if isinstance(started, dict)
                     else int(started.generation)
                 )
-            try:
-                vendor_invoked = True
-                task_id = await gateway.send(
-                    chunk.phones,
-                    chunk.content,
-                    template_id=chunk.template_id,
-                    sign_name=chunk.sign_name,
-                    custom_id=chunk.custom_id,
-                )
-            except (VendorTransportError, VendorProtocolError):
-                report = await self._finalize_invoke(
-                    chunk,
-                    vendor_id=vendor_id,
-                    generation=generation,
-                    attempt_id=attempt_id,
-                    result="uncertain",
-                )
-                if report is None:
-                    await self._persist_attempt(
-                        chunk,
-                        vendor_id=vendor_id,
-                        generation=generation,
-                        outcome="uncertain",
-                        attempt_id=attempt_id,
-                    )
-                    await self.store.mark_uncertain(chunk.chunk_id)
-                    return SubmitOutcome.UNCERTAIN
-                return submit_outcome_from_finalize(report, SubmitOutcome.UNCERTAIN)
-            except VendorApiError as error:
-                policy = error.policy
-                if policy.retry_delays_s and retry_index < len(policy.retry_delays_s):
-                    delay = policy.retry_delays_s[retry_index]
-                    report = await self._finalize_invoke(
-                        chunk,
-                        vendor_id=vendor_id,
-                        generation=generation,
-                        attempt_id=attempt_id,
-                        result="retry_scheduled",
-                        vendor_code=error.code,
-                        retry_delay_s=delay,
-                        expected_retry_count=retry_index,
-                    )
-                    if report is not None:
-                        return submit_outcome_from_finalize(
-                            report,
-                            SubmitOutcome.RETRY_SCHEDULED,
-                        )
-                    if not await self.store.schedule_retry(
-                        chunk.chunk_id,
-                        error.code,
-                        retry_index,
-                        delay,
-                    ):
-                        return SubmitOutcome.STALE
-                    await self._persist_attempt(
-                        chunk,
-                        vendor_id=vendor_id,
-                        generation=generation,
-                        outcome="retry_scheduled",
-                        attempt_id=attempt_id,
-                        vendor_code=error.code,
-                    )
-                    return SubmitOutcome.RETRY_SCHEDULED
-                if policy.shrink_batch_once and allow_split:
-                    children = await self.store.split_once(chunk)
-                    if children:
-                        for child in children:
-                            await self.submit(child, lane=lane, allow_split=False)
-                        return SubmitOutcome.SPLIT
-                    return SubmitOutcome.STALE
-                if policy.delay_s is not None:
-                    report = await self._finalize_invoke(
-                        chunk,
-                        vendor_id=vendor_id,
-                        generation=generation,
-                        attempt_id=attempt_id,
-                        result="delayed",
-                        vendor_code=error.code,
-                        retry_delay_s=policy.delay_s,
-                    )
-                    if report is not None:
-                        return submit_outcome_from_finalize(report, SubmitOutcome.DELAYED)
-                    await self.store.delay(chunk.chunk_id, error.code, policy.delay_s)
-                    await self._persist_attempt(
-                        chunk,
-                        vendor_id=vendor_id,
-                        generation=generation,
-                        outcome="delayed",
-                        attempt_id=attempt_id,
-                        vendor_code=error.code,
-                    )
-                    return SubmitOutcome.DELAYED
-                hold_like = policy.balance_blocked or policy.pause_queues
-                report = await self._finalize_invoke(
-                    chunk,
-                    vendor_id=vendor_id,
-                    generation=generation,
-                    attempt_id=attempt_id,
-                    result="paused" if hold_like else "rejected",
-                    vendor_code=error.code,
-                    safe_to_failover=policy.safe_to_failover,
-                    balance_blocked=policy.balance_blocked,
-                )
-                if report is None:
-                    await self._persist_attempt(
-                        chunk,
-                        vendor_id=vendor_id,
-                        generation=generation,
-                        outcome="paused" if hold_like else "rejected",
-                        attempt_id=attempt_id,
-                        safe_to_failover=policy.safe_to_failover,
-                        vendor_code=error.code,
-                    )
-                if hold_like:
-                    return await self._apply_terminal_api_error(
-                        chunk,
-                        error,
-                        persist_chunk=report is None,
-                    )
-                attempts.append(
-                    VendorAttempt(
-                        vendor_id,
-                        generation,
-                        "rejected",
-                        policy.safe_to_failover,
-                        error.code,
-                    )
-                )
-                if policy.safe_to_failover:
-                    failover = self.router.decide(
-                        RouteRequest(
-                            registered=self.router.registered_ids(),
-                            attempts=tuple(attempts),
-                            health=health,
-                        )
-                    )
-                    if (
-                        failover.action == "invoke"
-                        and failover.vendor_id is not None
-                        and failover.vendor_id != vendor_id
-                    ):
-                        vendor_id = failover.vendor_id
-                        generation = failover.generation
-                        lease_epoch = await self._token(lane, vendor_id)
-                        lease_vendor = vendor_id
-                        if lease_epoch is None:
-                            return await self._apply_terminal_api_error(
-                                chunk,
-                                error,
-                                persist_chunk=report is None,
-                            )
-                        continue
-                return await self._apply_terminal_api_error(
-                    chunk,
-                    error,
-                    persist_chunk=report is None,
-                )
-            except Exception:
-                if vendor_invoked:
-                    report = await self._finalize_invoke(
-                        chunk,
-                        vendor_id=vendor_id,
-                        generation=generation,
-                        attempt_id=attempt_id,
-                        result="uncertain",
-                    )
-                    if report is None:
-                        await self._persist_attempt(
-                            chunk,
-                            vendor_id=vendor_id,
-                            generation=generation,
-                            outcome="uncertain",
-                            attempt_id=attempt_id,
-                        )
-                        await self.store.mark_uncertain(chunk.chunk_id)
-                else:
-                    await self.store.release_unsent(chunk.chunk_id)
-                    if lease_epoch is not None:
-                        await self._refund_token(lease_epoch, lease_vendor)
-                raise
-            else:
-                report = await self._finalize_invoke(
-                    chunk,
-                    vendor_id=vendor_id,
-                    generation=generation,
-                    attempt_id=attempt_id,
-                    result="submitted",
-                    vendor_task_id=task_id,
-                )
-                if report is not None:
-                    outcome = submit_outcome_from_finalize(report, SubmitOutcome.SUBMITTED)
-                    if outcome is SubmitOutcome.SUBMITTED:
-                        await self._record_success()
-                    return outcome
-                try:
-                    await self.store.mark_submitted(chunk.chunk_id, task_id)
-                except Exception:
-                    await self._persist_attempt(
-                        chunk,
-                        vendor_id=vendor_id,
-                        generation=generation,
-                        outcome="uncertain",
-                        attempt_id=attempt_id,
-                    )
-                    await self.store.mark_uncertain(chunk.chunk_id)
-                    return SubmitOutcome.UNCERTAIN
-                await self._persist_attempt(
-                    chunk,
-                    vendor_id=vendor_id,
-                    generation=generation,
-                    outcome="submitted",
-                    attempt_id=attempt_id,
-                )
-                await self._record_success()
-                return SubmitOutcome.SUBMITTED
+            return await self._invoke_authorized(
+                chunk,
+                lane=lane,
+                vendor_id=vendor_id,
+                generation=generation,
+                attempt_id=attempt_id,
+                allow_split=allow_split,
+                retry_index=retry_index,
+            )
 
 
 async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:

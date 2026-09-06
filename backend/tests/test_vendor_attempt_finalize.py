@@ -35,6 +35,9 @@ def test_stale_invoking_cutoff_exceeds_vendor_absolute_timeout() -> None:
         ("submitted", "submitted", "uncertain", FinalizeKind.FINALIZED_DIFFERENT_RESULT),
         ("invoking", "submitting", "submitted", FinalizeKind.STATE_CORRUPTION),
         ("inconsistent", "submitted", "submitted", FinalizeKind.STATE_CORRUPTION),
+        ("rejected", "submitting", "rejected", FinalizeKind.STATE_CORRUPTION),
+        ("rejected", "failover_pending", "rejected", FinalizeKind.ALREADY_FINALIZED_SAME_RESULT),
+        ("rejected", "failed", "rejected", FinalizeKind.ALREADY_FINALIZED_SAME_RESULT),
     ],
 )
 def test_classify_finalize_conflict(

@@ -83,6 +83,7 @@ def test_idempotency_live_sql_keeps_unknown_and_unfinished_callback() -> None:
     assert "uncertain" in sql
     assert "unknown_terminal" in sql
     assert "split_capacity_blocked" in sql
+    assert "failover_pending" in sql
     assert "callback_task" in sql
     assert "pending" in sql and "retrying" in sql
     assert "phone" not in sql
@@ -117,6 +118,7 @@ def test_inflight_mutations_use_conservation_primitive() -> None:
             "submitted",
             "uncertain",
             "split_capacity_blocked",
+            "failover_pending",
         }
     ) == OCCUPYING_CHUNK_STATES
 

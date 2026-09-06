@@ -167,6 +167,7 @@ async def test_safe_reject_failsover_to_secondary() -> None:
     primary = FakeGateway([VendorApiError(1002, "bad content")])
     secondary = FakeGateway(["task-b"])
     store = FakeStore()
+    store.failover_vendor = "secondary"
     outcome = await SendWorker(
         primary,
         store,
