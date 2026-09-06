@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
+import { ElMessage } from "element-plus"
 import { computed, h, nextTick, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 
@@ -33,14 +33,16 @@ import {
   type UncertainResolutionAction,
   type UnmatchedItem,
 } from "../api/ops"
+import { confirmAuditedAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { jobDescription } from "../lib/jobDescriptions"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
-import { downloadExport, getExportTask, issueExportStepUp, type ExportTask } from "../api/reports"
 import EmptyState from "../components/EmptyState.vue"
 import PhoneMask from "../components/PhoneMask.vue"
 import StatusTag from "../components/StatusTag.vue"
+import { useExportTask } from "../composables/useExportTask"
 import { usePolling } from "../composables/usePolling"
 import { useSessionStore } from "../stores/session"
 import CallbackView from "./CallbackView.vue"
@@ -102,9 +104,15 @@ const queue = ref<QueueStatus | null>(null)
 const unmatchedPhone = ref("")
 const unmatchedRange = ref<[Date, Date] | null>(null)
 const exportDecrypted = ref(false)
-const exportTask = ref<ExportTask | null>(null)
-const exportBusy = ref(false)
-const exportError = ref("")
+const {
+  exportTask,
+  exportBusy,
+  exportError,
+  start: startExportTask,
+  download: downloadExportFile,
+} = useExportTask({
+  timeoutMessage: "导出状态查询超时（已超过 5 分钟），请稍后重新发起导出",
+})
 const forceResume = ref(false)
 const queueRecovered = ref(false)
 const outboxStats = ref<OutboxStats | null>(null)
@@ -121,29 +129,6 @@ const queueBlocked = computed(() => Boolean(queue.value?.realtime_code || queue.
 const currentAlertPolling = usePolling(() => load("alerts"), {
   intervalMs: 60_000,
   enabled: computed(() => activeTab.value === "alerts" && alertMode.value === "current"),
-})
-
-// 对账导出状态轮询：2s 间隔、终态自停；150 次（≈5 分钟）仍未完成给出兜底超时提示。
-const EXPORT_POLL_MAX_ATTEMPTS = 150
-
-/** 查询一次导出任务状态；终态或查询失败返回 true 停止轮询。 */
-async function pollExportTask(): Promise<boolean> {
-  if (!exportTask.value) return true
-  try {
-    exportTask.value = await getExportTask(exportTask.value.id)
-  } catch (error) {
-    exportError.value = error instanceof Error ? error.message : "导出状态查询失败"
-    return true
-  }
-  return exportTask.value.status !== "pending" && exportTask.value.status !== "running"
-}
-
-const exportPolling = usePolling(pollExportTask, {
-  intervalMs: 2_000,
-  maxAttempts: EXPORT_POLL_MAX_ATTEMPTS,
-  onTimeout: () => {
-    exportError.value = "导出状态查询超时（已超过 5 分钟），请稍后重新发起导出"
-  },
 })
 
 // 与服务端 Query(pattern=^1\d{10}$) 同一规则（硬性规则 8）；服务端仍为权威校验。
@@ -333,7 +318,7 @@ async function load(tab: TabName = activeTab.value): Promise<void> {
     }
   } catch (error) {
     if (token !== loadToken) return
-    errorMessage.value = error instanceof Error ? error.message : "运维数据加载失败"
+    errorMessage.value = errorText(error, "运维数据加载失败")
   } finally {
     if (token === loadToken) loading.value = false
   }
@@ -468,109 +453,104 @@ async function moveTab(direction: -1 | 1): Promise<void> {
 }
 
 async function proposeResolution(item: UncertainItem, action: UncertainResolutionAction): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "确认提出处置",
+      body: `对批次 ${item.batch_no} 提出「${resolutionLabel(action)}」。确认后须另一名管理员复核；重发只会创建新批次，不会把旧分片改回待发送。`,
+      auditNote: "提出行为与操作人将写入审计日志。",
+      confirmText: "提出处置",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "ops-confirm-dialog" }, [
-        h(
-          "p",
-          `对批次 ${item.batch_no} 提出「${resolutionLabel(action)}」。确认后须另一名管理员复核；重发只会创建新批次，不会把旧分片改回待发送。`,
-        ),
-        h("p", { class: "ops-confirm-audit" }, "提出行为与操作人将写入审计日志。"),
-      ]),
-      "确认提出处置",
-      { type: "warning", confirmButtonText: "提出处置", cancelButtonText: "取消", customClass: "ops-confirm-box" },
-    )
     await proposeUncertainResolution(item.chunk_id, action)
     ElMessage.success("已提出处置 · 本次操作已记入审计")
     await load("uncertain")
   } catch (error) {
-    if (error !== "cancel" && error !== "close")
-      ElMessage.error(error instanceof Error ? error.message : "提出处置失败")
+    ElMessage.error(errorText(error, "提出处置失败"))
   }
 }
 
 async function confirmResolution(item: UncertainItem): Promise<void> {
   if (item.resolution_id == null) return
+  if (
+    !(await confirmAuditedAction({
+      title: "确认处置",
+      body: `确认批次 ${item.batch_no} 的处置「${resolutionLabel(item.resolution_action)}」。提案人不能确认自己的单。`,
+      auditNote: "确认行为与操作人将写入审计日志。",
+      confirmText: "确认处置",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "ops-confirm-dialog" }, [
-        h(
-          "p",
-          `确认批次 ${item.batch_no} 的处置「${resolutionLabel(item.resolution_action)}」。提案人不能确认自己的单。`,
-        ),
-        h("p", { class: "ops-confirm-audit" }, "确认行为与操作人将写入审计日志。"),
-      ]),
-      "确认处置",
-      { type: "warning", confirmButtonText: "确认处置", cancelButtonText: "取消", customClass: "ops-confirm-box" },
-    )
     await confirmUncertainResolution(item.resolution_id)
     ElMessage.success("处置已确认 · 本次操作已记入审计")
     await load("uncertain")
   } catch (error) {
-    if (error !== "cancel" && error !== "close")
-      ElMessage.error(error instanceof Error ? error.message : "确认处置失败")
+    ElMessage.error(errorText(error, "确认处置失败"))
   }
 }
 
 async function retryOutbox(item: OutboxEventItem): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      h("div", { class: "ops-confirm-dialog" }, [
-        h("p", [
-          "将死信事件 ",
-          h("strong", item.event_type),
-          `（${item.aggregate_type}/${item.aggregate_id}）重置为待投递，dispatcher 将按租约重新投递。`,
-        ]),
-        h("p", { class: "ops-confirm-audit" }, "重推行为与操作人将写入审计日志。"),
+  if (
+    !(await confirmAuditedAction({
+      title: "确认重推 Outbox 事件",
+      body: h("p", [
+        "将死信事件 ",
+        h("strong", item.event_type),
+        `（${item.aggregate_type}/${item.aggregate_id}）重置为待投递，dispatcher 将按租约重新投递。`,
       ]),
-      "确认重推 Outbox 事件",
-      { type: "warning", confirmButtonText: "重推事件", cancelButtonText: "取消", customClass: "ops-confirm-box" },
-    )
+      auditNote: "重推行为与操作人将写入审计日志。",
+      confirmText: "重推事件",
+    }))
+  )
+    return
+  try {
     retryingOutboxId.value = item.id
     await retryOutboxEvent(item.id)
     ElMessage.success("事件已重置为待投递 · 本次操作已记入审计")
     await load("outbox")
   } catch (error) {
-    if (error !== "cancel" && error !== "close")
-      ElMessage.error(error instanceof Error ? error.message : "事件重推失败")
+    ElMessage.error(errorText(error, "事件重推失败"))
   } finally {
     retryingOutboxId.value = null
   }
 }
 
 async function replay(item: RawLogItem): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "确认报文重放",
+      body: `重放 raw #${item.id}：仅允许未处理且载荷完整的报文；重放重新走受控解密解析，不会产生重复下发。`,
+      auditNote: "重放行为与操作人将写入审计日志。",
+      confirmText: "确认重放",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "ops-confirm-dialog" }, [
-        h("p", `重放 raw #${item.id}：仅允许未处理且载荷完整的报文；重放重新走受控解密解析，不会产生重复下发。`),
-        h("p", { class: "ops-confirm-audit" }, "重放行为与操作人将写入审计日志。"),
-      ]),
-      "确认报文重放",
-      { type: "warning", confirmButtonText: "确认重放", cancelButtonText: "取消", customClass: "ops-confirm-box" },
-    )
     const result = await replayRaw(item.id)
     ElMessage.success(`重放完成，处理 ${result.processed_items} 项 · 本次操作已记入审计`)
     await load("raw")
   } catch (error) {
-    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "重放失败")
+    ElMessage.error(errorText(error, "重放失败"))
   }
 }
 
 async function trigger(item: JobItem): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "确认任务触发",
+      body: `手动触发 ${item.job_name} 将立即投递一次执行，不改变 beat 既有调度。`,
+      auditNote: "触发行为与操作人将写入审计日志。",
+      confirmText: "手动触发",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "ops-confirm-dialog" }, [
-        h("p", `手动触发 ${item.job_name} 将立即投递一次执行，不改变 beat 既有调度。`),
-        h("p", { class: "ops-confirm-audit" }, "触发行为与操作人将写入审计日志。"),
-      ]),
-      "确认任务触发",
-      { type: "warning", confirmButtonText: "手动触发", cancelButtonText: "取消", customClass: "ops-confirm-box" },
-    )
     await triggerJob(item.job_name)
     ElMessage.success("任务已投递 · 本次操作已记入审计")
   } catch (error) {
-    if (error !== "cancel" && error !== "close")
-      ElMessage.error(error instanceof Error ? error.message : "任务触发失败")
+    ElMessage.error(errorText(error, "任务触发失败"))
   }
 }
 
@@ -580,76 +560,42 @@ async function exportUnmatched(): Promise<void> {
     ElMessage.warning(issue)
     return
   }
-  exportBusy.value = true
-  exportError.value = ""
-  try {
-    exportTask.value = await createUnmatchedExport(
+  const created = await startExportTask(() =>
+    createUnmatchedExport(
       {
         phone: unmatchedPhone.value,
         ...rangeValues(unmatchedRange.value),
       },
       exportDecrypted.value,
-    )
-    ElMessage.success("对账导出任务已创建 · 本次操作已记入审计")
-    exportPolling.restart()
-  } catch (error) {
-    exportError.value = error instanceof Error ? error.message : "导出创建失败"
-    ElMessage.error(exportError.value)
-  } finally {
-    exportBusy.value = false
-  }
+    ),
+  )
+  if (created) ElMessage.success("对账导出任务已创建 · 本次操作已记入审计")
+  else ElMessage.error(exportError.value)
 }
 
 async function downloadUnmatchedExport(): Promise<void> {
-  if (!exportTask.value) return
-  let password = ""
-  try {
-    let stepUpToken: string | undefined
-    if (exportTask.value.decrypted) {
-      const prompt = await ElMessageBox.prompt("明文导出属于高风险操作，请重新输入当前认证源密码。", "下载明文导出", {
-        inputType: "password",
-        inputPlaceholder: "当前密码",
-        confirmButtonText: "验证并下载",
-        cancelButtonText: "取消",
-      })
-      password = prompt.value
-      stepUpToken = (await issueExportStepUp(exportTask.value.id, password)).token
-    }
-    const blob = await downloadExport(exportTask.value, stepUpToken)
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement("a")
-    anchor.href = url
-    anchor.download = `unmatched-reports-${exportTask.value.id}.csv`
-    anchor.click()
-    URL.revokeObjectURL(url)
-  } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "下载失败")
-    }
-  } finally {
-    password = ""
-  }
+  await downloadExportFile("unmatched-reports")
 }
 
 async function recover(): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "确认恢复双队列",
+      body: forceResume.value
+        ? h("p", ["FORCE 已开启：将", h("strong", "绕过余额与暂停原因守卫"), "，实时与批量队列立即恢复投递。"])
+        : h("p", "仅在余额达标且暂停码为 999 时恢复，不满足条件时服务端拒绝。"),
+      auditNote: "恢复行为、force 取值与操作人将写入审计日志。",
+      confirmText: "恢复队列",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "ops-confirm-dialog" }, [
-        forceResume.value
-          ? h("p", ["FORCE 已开启：将", h("strong", "绕过余额与暂停原因守卫"), "，实时与批量队列立即恢复投递。"])
-          : h("p", "仅在余额达标且暂停码为 999 时恢复，不满足条件时服务端拒绝。"),
-        h("p", { class: "ops-confirm-audit" }, "恢复行为、force 取值与操作人将写入审计日志。"),
-      ]),
-      "确认恢复双队列",
-      { type: "warning", confirmButtonText: "恢复队列", cancelButtonText: "取消", customClass: "ops-confirm-box" },
-    )
     const result = await resumeQueue(forceResume.value)
     queueRecovered.value = true
     ElMessage.success(`已恢复 ${result.resumed_batches} 个批次 · 本次操作已记入审计`)
     await load("queue")
   } catch (error) {
-    if (error !== "cancel" && error !== "close")
-      ElMessage.error(error instanceof Error ? error.message : "队列恢复失败")
+    ElMessage.error(errorText(error, "队列恢复失败"))
   }
 }
 

@@ -3,6 +3,7 @@ import { ElMessage } from "element-plus"
 import { ref } from "vue"
 
 import PhoneMask from "./PhoneMask.vue"
+import { errorText } from "../lib/error"
 
 /** 授权查看手机号：默认掩码 + 「授权查看」，解密成功后内联展示明文；明文只存组件内存，不持久化。 */
 const props = defineProps<{
@@ -30,7 +31,7 @@ async function onReveal(): Promise<void> {
     emit("revealed", revealedPhone.value)
     ElMessage.success("已解密 · 本次授权查看已记入审计")
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "解密失败")
+    ElMessage.error(errorText(error, "解密失败"))
   } finally {
     revealing.value = false
   }

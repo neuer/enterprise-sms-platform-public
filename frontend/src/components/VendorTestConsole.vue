@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
+import { ElMessage } from "element-plus"
 import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 
 import {
@@ -25,6 +25,8 @@ import VendorCredentialDialog from "./VendorCredentialDialog.vue"
 import VendorTestRecipientDialog from "./VendorTestRecipientDialog.vue"
 import VendorTestUatPanel from "./VendorTestUatPanel.vue"
 import { usePolling } from "../composables/usePolling"
+import { confirmAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
 
@@ -148,7 +150,7 @@ async function load(): Promise<boolean> {
     return true
   } catch (error) {
     if (!disposed && generation === loadGeneration) {
-      loadErrorMessage.value = error instanceof Error ? error.message : "真实联调状态加载失败"
+      loadErrorMessage.value = errorText(error, "真实联调状态加载失败")
     }
     return false
   } finally {
@@ -233,10 +235,10 @@ async function restoreOperation(): Promise<boolean> {
     if (isGoneOperation(error)) {
       forgetOperation()
       operationRestoring.value = false
-      restoreErrorMessage.value = error instanceof Error ? error.message : "上次操作已不存在，已停止恢复"
+      restoreErrorMessage.value = errorText(error, "上次操作已不存在，已停止恢复")
       return true
     }
-    restoreErrorMessage.value = error instanceof Error ? error.message : "操作状态恢复失败"
+    restoreErrorMessage.value = errorText(error, "操作状态恢复失败")
     return false
   }
 }
@@ -318,7 +320,7 @@ async function pollOperation(): Promise<boolean> {
     // 出错续轮：吞错返回 false，按固定间隔等下一周期；连续失败只提示一次。
     if (!pollFailureNotified) {
       pollFailureNotified = true
-      ElMessage.error(error instanceof Error ? error.message : "操作状态查询失败")
+      ElMessage.error(errorText(error, "操作状态查询失败"))
     }
   }
   return false
@@ -347,17 +349,18 @@ function trackOperation(operation: VendorTestOperation): void {
 }
 
 async function requestActivation(): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      "确认正式凭据已安装、至少登记一个自有测试号码，并理解激活后仅允许系统配置页单号码 UAT。",
-      "激活真实运营商受控联调",
-      { type: "warning", confirmButtonText: "进入二次认证", cancelButtonText: "继续检查" },
-    )
-    stepUpAction.value = "activate"
-    stepUpVisible.value = true
-  } catch {
-    // 操作者保留当前关闭状态。
-  }
+  // 取消 / 关闭时操作者保留当前关闭状态。
+  if (
+    !(await confirmAction({
+      title: "激活真实运营商受控联调",
+      body: "确认正式凭据已安装、至少登记一个自有测试号码，并理解激活后仅允许系统配置页单号码 UAT。",
+      confirmText: "进入二次认证",
+      cancelText: "继续检查",
+    }))
+  )
+    return
+  stepUpAction.value = "activate"
+  stepUpVisible.value = true
 }
 
 function clearStepUpSecrets(): void {
@@ -406,7 +409,7 @@ async function submitStepUp(): Promise<void> {
     stepUpVisible.value = false
     trackOperation(operation)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "二次认证操作失败")
+    ElMessage.error(errorText(error, "二次认证操作失败"))
   } finally {
     clearStepUpSecrets()
     controlBusy.value = false
@@ -414,18 +417,20 @@ async function submitStepUp(): Promise<void> {
 }
 
 async function pause(): Promise<void> {
+  if (
+    !(await confirmAction({
+      title: "人工暂停真实联调",
+      body: "暂停后真实出口立即关闭；已提交或结果未知的批次不会自动重发。",
+      confirmText: "立即暂停",
+      cancelText: "保持运行",
+    }))
+  )
+    return
+  controlBusy.value = true
   try {
-    await ElMessageBox.confirm("暂停后真实出口立即关闭；已提交或结果未知的批次不会自动重发。", "人工暂停真实联调", {
-      type: "warning",
-      confirmButtonText: "立即暂停",
-      cancelButtonText: "保持运行",
-    })
-    controlBusy.value = true
     trackOperation(await pauseVendorTest())
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "人工暂停失败")
-    }
+    ElMessage.error(errorText(error, "人工暂停失败"))
   } finally {
     controlBusy.value = false
   }
@@ -437,31 +442,34 @@ async function resume(): Promise<void> {
     return
   }
   if (status.value?.pause_kind === "critical") {
-    try {
-      await ElMessageBox.confirm("确认已完成余额或运营商错误处置。恢复前系统会再次检查余额。", "恢复安全阻断", {
-        type: "warning",
-        confirmButtonText: "进入二次认证",
-        cancelButtonText: "继续阻断",
-      })
-      stepUpAction.value = "resume_critical"
-      stepUpVisible.value = true
-    } catch {
-      // 保持安全阻断。
-    }
+    // 取消 / 关闭时保持安全阻断。
+    if (
+      !(await confirmAction({
+        title: "恢复安全阻断",
+        body: "确认已完成余额或运营商错误处置。恢复前系统会再次检查余额。",
+        confirmText: "进入二次认证",
+        cancelText: "继续阻断",
+      }))
+    )
+      return
+    stepUpAction.value = "resume_critical"
+    stepUpVisible.value = true
     return
   }
+  if (
+    !(await confirmAction({
+      title: "恢复受控联调",
+      body: "确认恢复人工暂停并重新开放已登记号码的真实 UAT。",
+      confirmText: "恢复联调",
+      cancelText: "继续暂停",
+    }))
+  )
+    return
+  controlBusy.value = true
   try {
-    await ElMessageBox.confirm("确认恢复人工暂停并重新开放已登记号码的真实 UAT。", "恢复受控联调", {
-      type: "warning",
-      confirmButtonText: "恢复联调",
-      cancelButtonText: "继续暂停",
-    })
-    controlBusy.value = true
     trackOperation(await resumeVendorTest())
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "恢复联调失败")
-    }
+    ElMessage.error(errorText(error, "恢复联调失败"))
   } finally {
     controlBusy.value = false
   }
@@ -473,19 +481,21 @@ function recipientAdded(recipient: VendorTestRecipient): void {
 }
 
 async function disableRecipient(recipient: VendorTestRecipient): Promise<void> {
+  if (
+    !(await confirmAction({
+      title: "停用测试号码",
+      body: `停用 ${recipient.label}（${recipient.phone_mask}）后不可再用于真实 UAT。`,
+      confirmText: "停用号码",
+      cancelText: "保留号码",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      `停用 ${recipient.label}（${recipient.phone_mask}）后不可再用于真实 UAT。`,
-      "停用测试号码",
-      { type: "warning", confirmButtonText: "停用号码", cancelButtonText: "保留号码" },
-    )
     const disabled = await disableVendorTestRecipient(recipient.id)
     recipients.value = recipients.value.map((item) => (item.id === disabled.id ? disabled : item))
     if (status.value) status.value = { ...status.value, active_recipient_count: activeRecipients.value.length }
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "测试号码停用失败")
-    }
+    ElMessage.error(errorText(error, "测试号码停用失败"))
   }
 }
 
@@ -514,7 +524,7 @@ async function submitIndexRefresh(): Promise<void> {
     refreshVisible.value = false
     ElMessage.success("号码索引已覆盖当前全部密钥版本")
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "号码索引刷新失败")
+    ElMessage.error(errorText(error, "号码索引刷新失败"))
   } finally {
     refreshPhone.value = ""
     refreshBusy.value = false

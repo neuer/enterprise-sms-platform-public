@@ -1,13 +1,9 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 
 import {
   createDetailExport,
-  downloadExport,
-  getExportTask,
   getReport,
-  issueExportStepUp,
   type ExportTask,
   type ReportCategory,
   type ReportFilters,
@@ -19,11 +15,12 @@ import {
 } from "../api/reports"
 import ReportTrendChart from "../components/ReportTrendChart.vue"
 import EmptyState from "../components/EmptyState.vue"
-import { usePolling } from "../composables/usePolling"
+import { useExportTask } from "../composables/useExportTask"
 import { CHART_DIM_VARS } from "../lib/chartTheme"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { reportTrendDims } from "../lib/reportTrend"
 import { daysAgoDateKey, shanghaiDateKey } from "../lib/time"
+import { errorText } from "../lib/error"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -41,38 +38,19 @@ const category = ref<ReportCategory>("all")
 const result = ref<ReportResult | null>(null)
 const loading = ref(false)
 const errorMessage = ref("")
-const exportTask = ref<ExportTask | null>(null)
-const exportLoading = ref(false)
-const exportError = ref("")
+const {
+  exportTask,
+  exportBusy: exportLoading,
+  exportError,
+  start: startExportTask,
+  download: downloadExportFile,
+} = useExportTask({ timeoutMessage: "导出结果等待超时（已超过 5 分钟），请稍后重新发起导出" })
 const decrypted = ref(false)
 const metric = ref<ReportTrendMetric>("total")
 const page = ref(1)
 const pageSize = DEFAULT_PAGE_SIZE
 /** 最后一次成功查询的条件快照；与当前表单不一致时提示「条件已变更」，不自动重查。 */
 const applied = ref<ReportFilters | null>(null)
-
-// 导出状态轮询：2s 间隔、终态自停；150 次（≈5 分钟）仍未完成给出兜底超时提示。
-const EXPORT_POLL_MAX_ATTEMPTS = 150
-
-/** 查询一次导出任务状态；终态或查询失败返回 true 停止轮询。 */
-async function pollExportTask(): Promise<boolean> {
-  if (!exportTask.value) return true
-  try {
-    exportTask.value = await getExportTask(exportTask.value.id)
-  } catch (error) {
-    exportError.value = error instanceof Error ? error.message : "导出状态查询失败"
-    return true
-  }
-  return exportTask.value.status === "done" || exportTask.value.status === "failed"
-}
-
-const exportPolling = usePolling(pollExportTask, {
-  intervalMs: 2_000,
-  maxAttempts: EXPORT_POLL_MAX_ATTEMPTS,
-  onTimeout: () => {
-    exportError.value = "导出结果等待超时（已超过 5 分钟），请稍后重新发起导出"
-  },
-})
 
 const canDecrypt = computed(() => result.value?.can_export_decrypted === true)
 const filters = computed<ReportFilters>(() => ({
@@ -231,7 +209,7 @@ async function load(): Promise<void> {
     page.value = 1
   } catch (error) {
     if (token !== loadToken) return
-    errorMessage.value = error instanceof Error ? error.message : "报表加载失败"
+    errorMessage.value = errorText(error, "报表加载失败")
   } finally {
     if (token === loadToken) loading.value = false
   }
@@ -247,48 +225,11 @@ function resetFilters(): void {
 }
 
 async function createExport(): Promise<void> {
-  exportLoading.value = true
-  exportError.value = ""
-  try {
-    exportTask.value = await createDetailExport(filters.value, decrypted.value)
-    // 重复点击「导出」会开启新任务：restart 重置旧轮询链，保证任何时候只有一条。
-    exportPolling.restart()
-  } catch (error) {
-    exportError.value = error instanceof Error ? error.message : "导出创建失败"
-  } finally {
-    exportLoading.value = false
-  }
+  await startExportTask(() => createDetailExport(filters.value, decrypted.value))
 }
 
 async function download(): Promise<void> {
-  if (!exportTask.value) return
-  let password = ""
-  try {
-    let stepUpToken: string | undefined
-    if (exportTask.value.decrypted) {
-      const prompt = await ElMessageBox.prompt("明文导出属于高风险操作，请重新输入当前认证源密码。", "下载明文导出", {
-        inputType: "password",
-        inputPlaceholder: "当前密码",
-        confirmButtonText: "验证并下载",
-        cancelButtonText: "取消",
-      })
-      password = prompt.value
-      stepUpToken = (await issueExportStepUp(exportTask.value.id, password)).token
-    }
-    const blob = await downloadExport(exportTask.value, stepUpToken)
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement("a")
-    anchor.href = url
-    anchor.download = `sms-report-${exportTask.value.id}.csv`
-    anchor.click()
-    URL.revokeObjectURL(url)
-  } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "下载失败")
-    }
-  } finally {
-    password = ""
-  }
+  await downloadExportFile("sms-report")
 }
 
 onMounted(() => void load())

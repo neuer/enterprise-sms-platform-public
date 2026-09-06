@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, h, onMounted, ref } from "vue"
+import { ElMessage } from "element-plus"
+import { computed, onMounted, ref } from "vue"
 
 import { listConfigs, updateConfigs } from "../api/admin"
 import {
@@ -11,6 +11,8 @@ import {
 } from "../api/sensitiveWords"
 import EmptyState from "../components/EmptyState.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
+import { confirmAuditedAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { formatDateTime } from "../lib/time"
 
 const MAX_WORD_LENGTH = 64
@@ -86,7 +88,7 @@ async function load(): Promise<void> {
     policy.value = configs.find((item) => item.key === "sensitive_hit_action")?.value || "block"
   } catch (error) {
     if (token !== loadToken) return
-    errorMessage.value = error instanceof Error ? error.message : "敏感词加载失败"
+    errorMessage.value = errorText(error, "敏感词加载失败")
   } finally {
     if (token === loadToken) loading.value = false
   }
@@ -114,7 +116,7 @@ async function setPolicy(next: string): Promise<void> {
     ElMessage.success(next === "block" ? "敏感词命中将阻断发送" : "敏感词命中仅审计记录")
   } catch (error) {
     policy.value = previous
-    ElMessage.error(error instanceof Error ? error.message : "策略更新失败")
+    ElMessage.error(errorText(error, "策略更新失败"))
   } finally {
     policySaving.value = false
   }
@@ -145,38 +147,29 @@ async function add(): Promise<void> {
     page.value = 1
     await load()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "添加失败")
+    ElMessage.error(errorText(error, "添加失败"))
   } finally {
     saving.value = false
   }
 }
 
 async function remove(item: SensitiveWordItem): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "删除敏感词确认",
+      body: `删除“${item.word}”？删除后该词不再参与命中判定（当前策略为${policy.value === "block" ? "命中阻断" : "仅审计"}，验证码 / 通知 / 营销全类别一致生效）。`,
+      auditNote: "删除行为与操作人将写入审计日志；审计只记数量，不记词面。",
+      confirmText: "删除敏感词",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "sensitive-delete-dialog" }, [
-        h(
-          "p",
-          `删除“${item.word}”？删除后该词不再参与命中判定（当前策略为${policy.value === "block" ? "命中阻断" : "仅审计"}，验证码 / 通知 / 营销全类别一致生效）。`,
-        ),
-        h("p", { class: "sensitive-delete-audit" }, "删除行为与操作人将写入审计日志；审计只记数量，不记词面。"),
-      ]),
-      "删除敏感词确认",
-      {
-        type: "warning",
-        confirmButtonText: "删除敏感词",
-        cancelButtonText: "取消",
-        customClass: "sensitive-delete-box",
-      },
-    )
     await deleteSensitiveWord(item.id)
     ElMessage.success("已删除敏感词 · 本次操作已记入审计")
     if (items.value.length === 1 && page.value > 1) page.value -= 1
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "删除失败")
-    }
+    ElMessage.error(errorText(error, "删除失败"))
   }
 }
 

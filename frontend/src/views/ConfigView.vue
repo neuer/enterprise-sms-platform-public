@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, h, nextTick, onMounted, reactive, ref } from "vue"
+import { ElMessage } from "element-plus"
+import { computed, nextTick, onMounted, reactive, ref } from "vue"
 
 import {
   activateAuthProvider,
@@ -20,6 +20,8 @@ import {
 } from "../api/admin"
 import EmptyState from "../components/EmptyState.vue"
 import VendorTestConsole from "../components/VendorTestConsole.vue"
+import { confirmAuditedAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { ROLE_LABELS } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 import { useSessionStore } from "../stores/session"
@@ -125,10 +127,6 @@ const canActivateProvider = computed(
     (!adProvider.value.enabled || adProvider.value.active_version !== adProvider.value.draft_version),
 )
 
-function errorText(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback
-}
-
 function selectTab(tab: ConfigTab): void {
   activeTab.value = tab
 }
@@ -223,24 +221,21 @@ async function save(): Promise<void> {
     return
   }
   const restartKeys = new Set(configs.value.filter((item) => item.beat_restart_required).map((item) => item.key))
+  if (items.some((item) => restartKeys.has(item.key))) {
+    const confirmed = await confirmAuditedAction({
+      title: "确认调度参数变更",
+      body: "待保存项包含 beat 调度参数；保存后必须重启 beat 与 API 容器才会生效，运行中不会动态热更。",
+      auditNote: "每个变更键的旧值与新值将写入审计日志。",
+      confirmText: "保存变更",
+    })
+    if (!confirmed) return
+  }
+  saving.value = true
   try {
-    if (items.some((item) => restartKeys.has(item.key))) {
-      await ElMessageBox.confirm(
-        h("div", { class: "config-confirm-dialog" }, [
-          h("p", "待保存项包含 beat 调度参数；保存后必须重启 beat 与 API 容器才会生效，运行中不会动态热更。"),
-          h("p", { class: "config-confirm-audit" }, "每个变更键的旧值与新值将写入审计日志。"),
-        ]),
-        "确认调度参数变更",
-        { type: "warning", confirmButtonText: "保存变更", cancelButtonText: "取消", customClass: "config-confirm-box" },
-      )
-    }
-    saving.value = true
     hydrate(await updateConfigs(items))
     ElMessage.success("系统参数已更新 · 本次操作已记入审计")
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(errorText(error, "参数保存失败"))
-    }
+    ElMessage.error(errorText(error, "参数保存失败"))
   } finally {
     saving.value = false
   }
@@ -306,23 +301,22 @@ async function activateProvider(): Promise<void> {
 }
 
 async function disableProvider(): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "确认禁用 AD",
+      body: "禁用后登录页不再显示 AD，已登录会话不受影响；草稿、生效配置与角色映射继续保留，可随时重新测试并启用。",
+      auditNote: "禁用行为与操作人将写入审计日志。",
+      confirmText: "禁用 AD",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "config-confirm-dialog" }, [
-        h("p", "禁用后登录页不再显示 AD，已登录会话不受影响；草稿、生效配置与角色映射继续保留，可随时重新测试并启用。"),
-        h("p", { class: "config-confirm-audit" }, "禁用行为与操作人将写入审计日志。"),
-      ]),
-      "确认禁用 AD",
-      { type: "warning", confirmButtonText: "禁用 AD", cancelButtonText: "取消", customClass: "config-confirm-box" },
-    )
     providerSaving.value = true
     hydrateProvider(await disableAuthProvider("ad"))
     disabledPreserved.value = true
     ElMessage.success("AD 已禁用，配置与角色映射均已保留 · 本次操作已记入审计")
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(errorText(error, "AD 认证源禁用失败"))
-    }
+    ElMessage.error(errorText(error, "AD 认证源禁用失败"))
   } finally {
     providerSaving.value = false
   }

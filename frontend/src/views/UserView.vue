@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, h, onMounted, reactive, ref } from "vue"
+import { ElMessage } from "element-plus"
+import { computed, onMounted, reactive, ref } from "vue"
 
 import { passwordPolicyRequest, type PasswordPolicy, type UserRole } from "../api/auth"
 import {
@@ -14,6 +14,8 @@ import {
   type UserSyncStatus,
 } from "../api/users"
 import EmptyState from "../components/EmptyState.vue"
+import { confirmAuditedAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { DEFAULT_PAGE_SIZE, ROLE_LABELS } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 
@@ -94,10 +96,6 @@ const filtering = computed(
   () =>
     Boolean(filters.keyword.trim()) || Boolean(filters.providerCode) || Boolean(filters.role) || filters.status !== "",
 )
-
-function errorText(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback
-}
 
 function roleLabel(role: UserRole): string {
   return ROLE_LABELS[role]
@@ -388,32 +386,23 @@ async function confirmPasswordReset(): Promise<void> {
     ElMessage.warning(passwordIssue)
     return
   }
+  if (
+    !(await confirmAuditedAction({
+      title: "确认重置密码",
+      body: `将重置 ${selected.value.display_name || selected.value.username} 的本地密码，并立即吊销现有会话；用户下次登录必须修改密码。`,
+      auditNote: "重置行为、操作人与对象 account_id 将写入审计日志；临时密码不回显。",
+      confirmText: "确认重置",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "user-confirm-dialog" }, [
-        h(
-          "p",
-          `将重置 ${selected.value.display_name || selected.value.username} 的本地密码，并立即吊销现有会话；用户下次登录必须修改密码。`,
-        ),
-        h("p", { class: "user-confirm-audit" }, "重置行为、操作人与对象 account_id 将写入审计日志；临时密码不回显。"),
-      ]),
-      "确认重置密码",
-      {
-        confirmButtonText: "确认重置",
-        cancelButtonText: "取消",
-        type: "warning",
-        customClass: "user-confirm-box",
-      },
-    )
     saving.value = true
     await resetLocalPassword(selected.value.account_id, resetPasswordDraft.value)
     closePasswordReset()
     ElMessage.success("临时密码已重置，下次登录须修改 · 本次操作已记入审计")
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(errorText(error, "密码重置失败"))
-    }
+    ElMessage.error(errorText(error, "密码重置失败"))
   } finally {
     saving.value = false
   }
@@ -422,56 +411,43 @@ async function confirmPasswordReset(): Promise<void> {
 async function changeStatus(user: ManagedUser): Promise<void> {
   const nextStatus: 0 | 1 = user.status === 1 ? 0 : 1
   const action = nextStatus === 1 ? "启用" : "停用"
+  if (
+    !(await confirmAuditedAction({
+      title: `确认${action}账号`,
+      body:
+        nextStatus === 0
+          ? `停用 ${user.display_name || user.username} 后，该账号将无法登录且现有会话立即失效；台账记录保留，可随时重新启用。`
+          : `将重新允许 ${user.display_name || user.username} 登录平台，角色与权限维持不变。`,
+      auditNote: `${action}行为、操作人与对象 account_id 将写入审计日志。`,
+      confirmText: action,
+      danger: nextStatus === 0,
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "user-confirm-dialog" }, [
-        h(
-          "p",
-          nextStatus === 0
-            ? `停用 ${user.display_name || user.username} 后，该账号将无法登录且现有会话立即失效；台账记录保留，可随时重新启用。`
-            : `将重新允许 ${user.display_name || user.username} 登录平台，角色与权限维持不变。`,
-        ),
-        h("p", { class: "user-confirm-audit" }, `${action}行为、操作人与对象 account_id 将写入审计日志。`),
-      ]),
-      `确认${action}账号`,
-      {
-        confirmButtonText: action,
-        cancelButtonText: "取消",
-        type: nextStatus === 0 ? "warning" : "info",
-        customClass: "user-confirm-box",
-      },
-    )
     await updateUserStatus(user.account_id, nextStatus)
     ElMessage.success(`账号已${action} · 本次操作已记入审计`)
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(errorText(error, `账号${action}失败`))
-    }
+    ElMessage.error(errorText(error, `账号${action}失败`))
   }
 }
 
 async function forceLogout(user: ManagedUser): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "确认强制下线",
+      body: `将立即吊销 ${user.display_name || user.username} 的全部现有会话，需重新登录。`,
+      auditNote: "强制下线行为、操作人与对象 account_id 将写入审计日志。",
+      confirmText: "强制下线",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "user-confirm-dialog" }, [
-        h("p", `将立即吊销 ${user.display_name || user.username} 的全部现有会话，需重新登录。`),
-        h("p", { class: "user-confirm-audit" }, "强制下线行为、操作人与对象 account_id 将写入审计日志。"),
-      ]),
-      "确认强制下线",
-      {
-        confirmButtonText: "强制下线",
-        cancelButtonText: "取消",
-        type: "warning",
-        customClass: "user-confirm-box",
-      },
-    )
     await revokeUserSessions(user.account_id)
     ElMessage.success("用户已强制下线 · 本次操作已记入审计")
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(errorText(error, "强制下线失败"))
-    }
+    ElMessage.error(errorText(error, "强制下线失败"))
   }
 }
 

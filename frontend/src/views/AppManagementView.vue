@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
+import { ElMessage } from "element-plus"
 import { computed, h, onMounted, reactive, ref } from "vue"
 
 import {
@@ -24,8 +24,10 @@ import { listTemplates, type SmsTemplate, type VarSpec } from "../api/templates"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { copyText } from "../lib/clipboard"
+import { confirmAuditedAction } from "../lib/confirm"
 import { CATEGORY_LABELS } from "../lib/labels"
 import { formatDateTime, shanghaiDateKey } from "../lib/time"
+import { errorText } from "../lib/error"
 
 type SecretOperation = "create-app" | "rotate-api-key" | "rotate-callback-secret"
 
@@ -98,7 +100,7 @@ const freqOverrideError = computed(() => {
     parseFrequencyOverride(form.freq_override)
     return ""
   } catch (error) {
-    return error instanceof Error ? error.message : "频控覆盖 JSON 无效"
+    return errorText(error, "频控覆盖 JSON 无效")
   }
 })
 
@@ -493,7 +495,7 @@ async function loadApprovedTemplates(): Promise<void> {
       demoTemplateId.value = approvedTemplates.value[0].id
     }
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "模板加载失败")
+    ElMessage.error(errorText(error, "模板加载失败"))
     approvedTemplates.value = []
   } finally {
     demoTemplatesLoading.value = false
@@ -523,7 +525,7 @@ async function load(): Promise<void> {
   try {
     items.value = await listApps()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "应用列表加载失败"
+    errorMessage.value = errorText(error, "应用列表加载失败")
   } finally {
     loading.value = false
   }
@@ -570,7 +572,7 @@ async function loadApprovedSigns(): Promise<void> {
   } catch (error) {
     approvedSigns.value = []
     signsUnavailable.value = true
-    ElMessage.error(error instanceof Error ? error.message : "已通过签名清单加载失败")
+    ElMessage.error(errorText(error, "已通过签名清单加载失败"))
   } finally {
     signsLoading.value = false
   }
@@ -717,7 +719,7 @@ async function save(): Promise<void> {
     drawerOpen.value = false
     await load()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "应用保存失败")
+    ElMessage.error(errorText(error, "应用保存失败"))
   } finally {
     saving.value = false
     if (creating && !secretRevealed) clearSecret()
@@ -734,14 +736,15 @@ async function rotateKey(item: ManagedApp): Promise<void> {
       keyGraceHours.value === null
         ? "旧 Key 将进入当前配置的宽限期。"
         : `旧 Key 将进入 ${keyGraceHours.value} 小时宽限期。`
-    await ElMessageBox.confirm(
-      h("div", { class: "apps-danger-dialog" }, [
-        h("p", `将为 ${item.name} 生成新的 API Key。新 Key 仅展示一次，${graceHint}请确认已准备好立即复制并安全保存。`),
-        h("p", { class: "apps-audit-note" }, "轮换行为与操作人将写入审计日志。"),
-      ]),
-      "确认轮换 API Key",
-      { type: "warning", confirmButtonText: "确认轮换", cancelButtonText: "取消", customClass: "apps-confirm-box" },
+    if (
+      !(await confirmAuditedAction({
+        title: "确认轮换 API Key",
+        body: `将为 ${item.name} 生成新的 API Key。新 Key 仅展示一次，${graceHint}请确认已准备好立即复制并安全保存。`,
+        auditNote: "轮换行为与操作人将写入审计日志。",
+        confirmText: "确认轮换",
+      }))
     )
+      return
     const result = await rotateAppKey(item.id)
     secretRevealed = true
     reveal(
@@ -751,9 +754,7 @@ async function rotateKey(item: ManagedApp): Promise<void> {
     )
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "Key 轮换失败")
-    }
+    ElMessage.error(errorText(error, "Key 轮换失败"))
   } finally {
     if (!secretRevealed) clearSecret()
   }
@@ -761,23 +762,21 @@ async function rotateKey(item: ManagedApp): Promise<void> {
 
 async function revokeKey(item: ManagedApp): Promise<void> {
   if (!item.old_key_prefix || !item.old_key_expires_at) return
+  if (
+    !(await confirmAuditedAction({
+      title: "立即作废旧 Key？",
+      body: `旧 Key ${item.old_key_prefix}•••• 原定 ${formatDateTime(item.old_key_expires_at)} 到期，作废后立即失效；仍使用旧 Key 的调用方将收到 401。`,
+      auditNote: "作废行为与操作人将写入审计日志。",
+      confirmText: "确认作废",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "apps-danger-dialog" }, [
-        h(
-          "p",
-          `旧 Key ${item.old_key_prefix}•••• 原定 ${formatDateTime(item.old_key_expires_at)} 到期，作废后立即失效；仍使用旧 Key 的调用方将收到 401。`,
-        ),
-        h("p", { class: "apps-audit-note" }, "作废行为与操作人将写入审计日志。"),
-      ]),
-      "立即作废旧 Key？",
-      { type: "warning", confirmButtonText: "确认作废", cancelButtonText: "取消", customClass: "apps-confirm-box" },
-    )
     await revokeOldAppKey(item.id)
     ElMessage.success("旧 Key 已作废")
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "作废失败")
+    ElMessage.error(errorText(error, "作废失败"))
   }
 }
 
@@ -787,64 +786,62 @@ async function rotateCallback(item: ManagedApp): Promise<void> {
   rotatingCallbackId.value = item.id
   let secretRevealed = false
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "apps-danger-dialog" }, [
-        h(
-          "p",
-          `将为 ${item.name} 生成新的回调密钥，已部署的旧密钥立即失效。新密钥仅展示一次，请确认已准备好立即复制并安全保存。`,
-        ),
-        h("p", { class: "apps-audit-note" }, "轮换行为与操作人将写入审计日志。"),
-      ]),
-      "确认轮换回调密钥",
-      { type: "warning", confirmButtonText: "确认轮换", cancelButtonText: "取消", customClass: "apps-confirm-box" },
+    if (
+      !(await confirmAuditedAction({
+        title: "确认轮换回调密钥",
+        body: `将为 ${item.name} 生成新的回调密钥，已部署的旧密钥立即失效。新密钥仅展示一次，请确认已准备好立即复制并安全保存。`,
+        auditNote: "轮换行为与操作人将写入审计日志。",
+        confirmText: "确认轮换",
+      }))
     )
+      return
     const result = await rotateCallbackSecret(item.id)
     secretRevealed = true
     reveal("新回调密钥（仅展示一次）", result.callback_secret)
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "回调密钥轮换失败")
-    }
+    ElMessage.error(errorText(error, "回调密钥轮换失败"))
   } finally {
     if (!secretRevealed) clearSecret()
   }
 }
 
 async function disable(item: ManagedApp): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      h("div", { class: "apps-danger-dialog" }, [
-        h("ul", { class: "apps-conseq" }, [
-          h("li", "当前与宽限期旧 API Key 立即吊销，发送/查询返回 401"),
-          h("li", "在途批次继续到终态，历史数据保留可查"),
-          h("li", "未终结的旧回调在同一事务隔离为不可重试"),
-          h("li", "恢复需管理员在详情抽屉重新启用"),
-        ]),
-        h("p", { class: "apps-audit-note" }, "操作记审计（app_disable）· 操作人写入审计主体"),
+  if (
+    !(await confirmAuditedAction({
+      title: `停用应用 ${item.name}？`,
+      body: h("ul", { class: "apps-conseq" }, [
+        h("li", "当前与宽限期旧 API Key 立即吊销，发送/查询返回 401"),
+        h("li", "在途批次继续到终态，历史数据保留可查"),
+        h("li", "未终结的旧回调在同一事务隔离为不可重试"),
+        h("li", "恢复需管理员在详情抽屉重新启用"),
       ]),
-      `停用应用 ${item.name}？`,
-      { type: "warning", confirmButtonText: "确认停用", cancelButtonText: "取消" },
-    )
+      auditNote: "操作记审计（app_disable）· 操作人写入审计主体",
+      confirmText: "确认停用",
+    }))
+  )
+    return
+  try {
     await disableApp(item.id)
     ElMessage.success(`应用 ${item.name} 已停用`)
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "停用失败")
+    ElMessage.error(errorText(error, "停用失败"))
   }
 }
 
 /** 启用不再从列表行拼全字段 PUT：先取权威配置再仅改 status，消除字段漂移写坏配置的风险。 */
 async function enable(item: ManagedApp): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "确认启用",
+      body: `启用应用 ${item.name}？`,
+      auditNote: "启用行为与操作人将写入审计日志。",
+      confirmText: "确认启用",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "apps-danger-dialog" }, [
-        h("p", `启用应用 ${item.name}？`),
-        h("p", { class: "apps-audit-note" }, "启用行为与操作人将写入审计日志。"),
-      ]),
-      "确认启用",
-      { type: "warning", confirmButtonText: "确认启用", cancelButtonText: "取消", customClass: "apps-confirm-box" },
-    )
     const current = await getApp(item.id)
     await updateApp(item.id, {
       dept: current.dept,
@@ -869,7 +866,7 @@ async function enable(item: ManagedApp): Promise<void> {
     ElMessage.success(`应用 ${item.name} 已启用`)
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "启用失败")
+    ElMessage.error(errorText(error, "启用失败"))
   }
 }
 

@@ -21,8 +21,10 @@ import SegmentBar from "../components/SegmentBar.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { copyText } from "../lib/clipboard"
+import { saveBlob } from "../lib/download"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
+import { errorText } from "../lib/error"
 
 // 测试环境未安装路由时 useRouter 返回 undefined，跳转入口做空值守卫。
 const router = useRouter()
@@ -251,7 +253,7 @@ async function runPreview(key: string): Promise<void> {
     }
   } catch (error) {
     if (key !== previewKey.value) return
-    previewError.value = error instanceof Error ? error.message : "预检失败"
+    previewError.value = errorText(error, "预检失败")
   } finally {
     if (key === previewKey.value) previewLoading.value = false
   }
@@ -414,7 +416,7 @@ async function loadTemplates(): Promise<void> {
   try {
     templates.value = await listTemplates()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "模板列表加载失败"
+    errorMessage.value = errorText(error, "模板列表加载失败")
   }
 }
 
@@ -458,14 +460,9 @@ async function downloadInvalidFile(): Promise<void> {
   if (!imported.value?.invalid_download_url) return
   try {
     const blob = await downloadImportInvalidFile(imported.value.invalid_download_url)
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement("a")
-    anchor.href = url
-    anchor.download = `sms-import-${imported.value.import_id}-invalid.csv`
-    anchor.click()
-    URL.revokeObjectURL(url)
+    saveBlob(blob, `sms-import-${imported.value.import_id}-invalid.csv`)
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "剔除清单下载失败"
+    errorMessage.value = errorText(error, "剔除清单下载失败")
   }
 }
 
@@ -508,7 +505,7 @@ async function handleUpload(options: UploadRequestOptions): Promise<void> {
   } catch (error) {
     imported.value = null
     importState.value = "failed"
-    importError.value = error instanceof Error ? error.message : "号码文件解析失败"
+    importError.value = errorText(error, "号码文件解析失败")
   } finally {
     busy.value = false
   }
@@ -540,7 +537,7 @@ async function submit(): Promise<void> {
   try {
     sendResult.value = await sendWebMessage(payload)
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "发送受理失败"
+    errorMessage.value = errorText(error, "发送受理失败")
   } finally {
     busy.value = false
   }

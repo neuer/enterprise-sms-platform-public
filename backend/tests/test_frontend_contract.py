@@ -204,20 +204,21 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
     reports_api = read("frontend/src/api/reports.ts")
     ops_view = read("frontend/src/views/OpsView.vue")
     report_view = read("frontend/src/views/ReportView.vue")
+    export_task = read("frontend/src/composables/useExportTask.ts")
     credential_dialog = read("frontend/src/components/VendorCredentialDialog.vue")
     vendor_seal = read("frontend/src/lib/vendorSeal.ts")
 
     assert '"/api/v1/web/auth/password/change"' in auth_api
     for field in ("page_size", "alert_type", "processed", "phone"):
         assert field in ops_api
-    assert "getExportTask" in ops_view
-    assert "downloadExport" in ops_view
+    assert "useExportTask" in ops_view
+    assert "useExportTask" in report_view
+    assert "getExportTask" in export_task
+    assert "downloadExport" in export_task
     assert "issueExportStepUp" in reports_api
     assert '"X-Export-Step-Up"' in reports_api
-    assert "issueExportStepUp" in ops_view
-    assert "issueExportStepUp" in report_view
-    assert 'inputType: "password"' in ops_view
-    assert 'inputType: "password"' in report_view
+    assert "issueExportStepUp" in export_task
+    assert 'inputType: "password"' in export_task
     assert 'data-testid="download-unmatched-export"' in ops_view
     assert "reset_configuration" in admin_api
     assert "correlation_id" in admin_api

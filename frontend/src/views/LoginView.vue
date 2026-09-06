@@ -6,6 +6,7 @@ import PasswordChangeView from "./PasswordChangeView.vue"
 import { ACCESS_ONLY_SESSION_MESSAGE, isAccessOnlySessionMode } from "../api/refreshLock"
 import loginMarkUrl from "../assets/brand/login-egret-icon.png"
 import { useSessionStore } from "../stores/session"
+import { errorText } from "../lib/error"
 
 const router = useRouter()
 const session = useSessionStore()
@@ -92,7 +93,7 @@ onMounted(async () => {
     const known = new Set<string>(PROVIDER_CATALOG.map((item) => item.code))
     providerCode.value = session.providers.find((provider) => known.has(provider.code))?.code ?? ""
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "认证源列表加载失败"
+    errorMessage.value = errorText(error, "认证源列表加载失败")
   } finally {
     loadingProviders.value = false
   }
@@ -126,7 +127,7 @@ async function submit() {
     }
     await router.replace("/dashboard")
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "登录失败，请稍后重试"
+    errorMessage.value = errorText(error, "登录失败，请稍后重试")
   } finally {
     password.value = ""
     submitting.value = false

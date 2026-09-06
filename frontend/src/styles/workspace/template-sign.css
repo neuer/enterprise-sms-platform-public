@@ -263,18 +263,6 @@
   font-style: normal;
 }
 
-.template-delete-dialog p {
-  margin: 0;
-}
-
-.template-delete-audit {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid var(--hair-2);
-  color: var(--tx-3);
-  font-size: 11px;
-}
-
 .template-trail {
   display: flex;
   align-items: center;

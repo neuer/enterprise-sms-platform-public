@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, h, onMounted, reactive, ref } from "vue"
+import { ElMessage } from "element-plus"
+import { computed, onMounted, reactive, ref } from "vue"
 
 import { listApps, type ManagedApp } from "../api/apps"
 import {
@@ -11,6 +11,8 @@ import {
   type CallbackTask,
 } from "../api/callbacks"
 import EmptyState from "../components/EmptyState.vue"
+import { confirmAuditedAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 
@@ -99,7 +101,7 @@ async function load(): Promise<void> {
     syncSelected()
   } catch (error) {
     if (token !== loadToken) return
-    errorMessage.value = error instanceof Error ? error.message : "回调任务加载失败"
+    errorMessage.value = errorText(error, "回调任务加载失败")
   } finally {
     if (token === loadToken) loading.value = false
   }
@@ -150,29 +152,20 @@ async function retry(item: CallbackTask): Promise<void> {
   if (retryingId.value !== null) return
   retryingId.value = item.id
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "callback-confirm-dialog" }, [
-        h(
-          "p",
-          `将把 CB-${item.id}（${item.app_name} · ${eventLabel(item.event)}）重置为待投递并清零重试计数，dispatcher 随即按应用当前回调配置重新投递；应用已停用或回调 URL / 密钥已变更时重推将被拒绝。`,
-        ),
-        h("p", { class: "callback-confirm-audit" }, "重推行为、操作人与任务 id 将写入审计日志。"),
-      ]),
-      "确认手动重推",
-      {
-        confirmButtonText: "重推任务",
-        cancelButtonText: "取消",
-        type: "warning",
-        customClass: "callback-confirm-box",
-      },
+    if (
+      !(await confirmAuditedAction({
+        title: "确认手动重推",
+        body: `将把 CB-${item.id}（${item.app_name} · ${eventLabel(item.event)}）重置为待投递并清零重试计数，dispatcher 随即按应用当前回调配置重新投递；应用已停用或回调 URL / 密钥已变更时重推将被拒绝。`,
+        auditNote: "重推行为、操作人与任务 id 将写入审计日志。",
+        confirmText: "重推任务",
+      }))
     )
+      return
     await retryCallback(item.id)
     ElMessage.success("回调任务已重新入队 · 本次操作已记入审计")
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "手动重推失败")
-    }
+    ElMessage.error(errorText(error, "手动重推失败"))
   } finally {
     retryingId.value = null
   }

@@ -16,7 +16,7 @@ function response(body: unknown, status = 200) {
   }
 }
 
-/** ElMessageBox.confirm 的消息为 h() VNode（apps-danger-dialog），递归提取文本用于断言。 */
+/** ElMessageBox.confirm 的消息为 h() VNode（lib/confirm.ts confirm-dialog），递归提取文本用于断言。 */
 function vnodeText(value: unknown): string {
   if (typeof value === "string") return value
   if (value == null) return ""

@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
+import { ElMessage } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 
 import EmptyState from "../components/EmptyState.vue"
 import PhoneMask from "../components/PhoneMask.vue"
 import { blacklistReply, listReplies, type ReplyDisposition, type ReplyItem } from "../api/replies"
+import { confirmAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
@@ -75,7 +77,7 @@ async function load(): Promise<void> {
     total.value = result.total
   } catch (error) {
     if (token !== loadToken) return
-    errorMessage.value = error instanceof Error ? error.message : "回复列表加载失败"
+    errorMessage.value = errorText(error, "回复列表加载失败")
   } finally {
     if (token === loadToken) loading.value = false
   }
@@ -110,20 +112,21 @@ function openBatch(batchNo: string): void {
 }
 
 async function optout(item: ReplyItem): Promise<void> {
+  if (
+    !(await confirmAction({
+      title: "退订加黑确认",
+      body: `将回复号码 ${item.phone} 加入退订黑名单？加入后发送将自动剔除该号码；加黑行为与操作人将写入审计日志。`,
+      confirmText: "加入黑名单",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      `将回复号码 ${item.phone} 加入退订黑名单？加入后发送将自动剔除该号码；加黑行为与操作人将写入审计日志。`,
-      "退订加黑确认",
-      { confirmButtonText: "加入黑名单", cancelButtonText: "取消", type: "warning" },
-    )
     optingOutId.value = item.id
     await blacklistReply(item.id)
     ElMessage.success("已加入退订黑名单 · 本次操作已记入审计")
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "退订加黑失败")
-    }
+    ElMessage.error(errorText(error, "退订加黑失败"))
   } finally {
     optingOutId.value = null
   }

@@ -8,6 +8,7 @@ import {
   issueVendorTestStepUp,
   type VendorTestOperation,
 } from "../api/admin"
+import { errorText } from "../lib/error"
 import {
   clearCredentialDraft,
   isVendorCredentialSecureContext,
@@ -62,7 +63,7 @@ async function submit(): Promise<void> {
     ElMessage.success("正式凭据操作已进入受控执行队列")
     emit("update:modelValue", false)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "正式凭据提交失败")
+    ElMessage.error(errorText(error, "正式凭据提交失败"))
   } finally {
     clear()
     submitting.value = false

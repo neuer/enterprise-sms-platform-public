@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, h, nextTick, onMounted, reactive, ref } from "vue"
+import { ElMessage } from "element-plus"
+import { computed, nextTick, onMounted, reactive, ref } from "vue"
 
 import {
   generateSecurityDailyReport,
@@ -23,6 +23,8 @@ import {
   updateSecurityDailyConfiguration,
 } from "../api/securityDaily"
 import EmptyState from "../components/EmptyState.vue"
+import { confirmAuditedAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 
@@ -206,7 +208,7 @@ function apiErrorMessage(error: unknown, fallback: string): string {
     const retry = status >= 500 ? "，请刷新重试" : ""
     return `${error.message}（错误码 ${error.code}）${retry}`
   }
-  return error instanceof Error ? error.message : fallback
+  return errorText(error, fallback)
 }
 
 function tagType(value: string): "success" | "warning" | "danger" | "info" {
@@ -397,23 +399,16 @@ async function refresh(): Promise<void> {
 }
 
 async function generateReport(): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "确认立即生成",
+      body: "将汇总前一自然日（北京时间）的脱敏结构化证据并新增一条日报记录，不覆盖历史记录；生成完成后立即提交邮件投递，该日已有处理中的投递请求时将被拒绝。",
+      auditNote: "立即生成行为与操作人将写入审计日志。",
+      confirmText: "立即生成并投递",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "security-daily-confirm-dialog" }, [
-        h(
-          "p",
-          "将汇总前一自然日（北京时间）的脱敏结构化证据并新增一条日报记录，不覆盖历史记录；生成完成后立即提交邮件投递，该日已有处理中的投递请求时将被拒绝。",
-        ),
-        h("p", { class: "security-daily-confirm-audit" }, "立即生成行为与操作人将写入审计日志。"),
-      ]),
-      "确认立即生成",
-      {
-        confirmButtonText: "立即生成并投递",
-        cancelButtonText: "取消",
-        type: "warning",
-        customClass: "security-daily-confirm-box",
-      },
-    )
     generationLoading.value = true
     const report = await generateSecurityDailyReport()
     await refresh()
@@ -424,7 +419,6 @@ async function generateReport(): Promise<void> {
       ElMessage.warning(`${report.last_error ?? "证据源不可用，已新增记录并发送问题通报"} · 本次操作已记入审计`)
     }
   } catch (error) {
-    if (error === "cancel" || error === "close") return
     ElMessage.error(apiErrorMessage(error, "安全日报生成失败，请刷新重试"))
   } finally {
     generationLoading.value = false
@@ -466,23 +460,16 @@ async function openPreview(): Promise<void> {
 async function requestDelivery(action: "send" | "retry"): Promise<void> {
   if (!selected.value || delivering.value) return
   const operation = action === "retry" ? "重试投递" : "手动投递"
+  if (
+    !(await confirmAuditedAction({
+      title: `确认${operation}`,
+      body: `确认${operation} ${selected.value.report_date} 的安全日报？邮件正文只来自已脱敏结构化报告，投递由独立 mailer 执行并回写状态，同日重复投递有幂等保护。`,
+      auditNote: `${operation}行为、操作人与日报 id 将写入审计日志。`,
+      confirmText: `确认${operation}`,
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "security-daily-confirm-dialog" }, [
-        h(
-          "p",
-          `确认${operation} ${selected.value.report_date} 的安全日报？邮件正文只来自已脱敏结构化报告，投递由独立 mailer 执行并回写状态，同日重复投递有幂等保护。`,
-        ),
-        h("p", { class: "security-daily-confirm-audit" }, `${operation}行为、操作人与日报 id 将写入审计日志。`),
-      ]),
-      `确认${operation}`,
-      {
-        confirmButtonText: `确认${operation}`,
-        cancelButtonText: "取消",
-        type: "warning",
-        customClass: "security-daily-confirm-box",
-      },
-    )
     delivering.value = true
     if (action === "retry") {
       await retrySecurityDailyReport(selected.value.id)
@@ -493,7 +480,6 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
     await refresh()
     await openReport(selected.value.id)
   } catch (error) {
-    if (error === "cancel" || error === "close") return
     ElMessage.error(apiErrorMessage(error, "投递请求失败，请刷新重试"))
   } finally {
     delivering.value = false

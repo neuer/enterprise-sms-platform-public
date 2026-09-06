@@ -25,6 +25,11 @@ const CLIPBOARD_SINGLE_POINT = {
   message:
     "剪贴板写入统一走 src/lib/clipboard.ts 的 copyText（含非安全上下文回退），禁止页面直接访问 navigator.clipboard。",
 }
+const ERROR_TEXT_SINGLE_POINT = {
+  selector:
+    "ConditionalExpression[test.operator='instanceof'][test.right.name='Error'][consequent.property.name='message']",
+  message: "错误文案提取统一走 src/lib/error.ts 的 errorText，禁止内联 error instanceof Error ? error.message : …。",
+}
 
 export default tseslint.config(
   {
@@ -77,10 +82,10 @@ export default tseslint.config(
     },
   },
   {
-    // 请求基建与路由单点：src 全域拦截
+    // 请求基建、路由与错误文案单点：src 全域拦截
     files: ["src/**/*.{ts,vue}"],
     rules: {
-      "no-restricted-syntax": ["error", FETCH_SINGLE_POINT, ROUTER_SINGLE_POINT],
+      "no-restricted-syntax": ["error", FETCH_SINGLE_POINT, ROUTER_SINGLE_POINT, ERROR_TEXT_SINGLE_POINT],
     },
   },
   {
@@ -93,6 +98,7 @@ export default tseslint.config(
         ROUTER_SINGLE_POINT,
         INTL_SINGLE_POINT,
         CLIPBOARD_SINGLE_POINT,
+        ERROR_TEXT_SINGLE_POINT,
       ],
       "no-restricted-imports": [
         "error",
@@ -108,8 +114,8 @@ export default tseslint.config(
     },
   },
   {
-    // fetch 单点的请求基建例外：client / auth / 二者共用的 Deadline 原语
-    files: ["src/api/client.ts", "src/api/auth.ts", "src/api/httpDeadline.ts"],
+    // fetch 单点的请求基建例外：client / auth / 二者共用的 Deadline 原语；errorText 单点自身例外
+    files: ["src/api/client.ts", "src/api/auth.ts", "src/api/httpDeadline.ts", "src/lib/error.ts"],
     rules: {
       "no-restricted-syntax": "off",
     },

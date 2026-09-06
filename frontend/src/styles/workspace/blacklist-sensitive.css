@@ -84,27 +84,12 @@
   font-style: normal;
 }
 
-.sign-delete-dialog p,
-.blacklist-delete-dialog p,
-.sensitive-delete-dialog p,
-.user-confirm-dialog p,
-.config-confirm-dialog p,
-.ops-confirm-dialog p,
-.callback-confirm-dialog p,
-.security-daily-confirm-dialog p,
-.apps-danger-dialog p {
+/* 审计确认对话框（lib/confirm.ts confirmAuditedAction 固定结构）：后果段 + 审计提示段 */
+.confirm-dialog p {
   margin: 0;
 }
 
-.sign-delete-audit,
-.blacklist-delete-audit,
-.sensitive-delete-audit,
-.user-confirm-audit,
-.config-confirm-audit,
-.ops-confirm-audit,
-.callback-confirm-audit,
-.security-daily-confirm-audit,
-.apps-audit-note {
+.confirm-audit-note {
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid var(--hair-2);
