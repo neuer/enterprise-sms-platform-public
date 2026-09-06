@@ -1,6 +1,4 @@
 <script setup lang="ts">
-import "./styles/workspace.css"
-
 import { ElConfigProvider, ElMessage } from "element-plus"
 import zhCn from "element-plus/es/locale/lang/zh-cn"
 import { computed, defineAsyncComponent, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from "vue"

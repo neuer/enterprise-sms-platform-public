@@ -44,14 +44,29 @@ describe("前端加载边界", () => {
     }
   })
 
-  it("workspace.css 由 App.vue 全局引入单点承载，视图不再重复 import", () => {
+  it("workspace.css 由 element-workspace.ts 懒加载单点承载，入口与视图不重复 import", () => {
     expect(mainSource).toContain('import "./styles/theme.css"')
     expect(mainSource).not.toContain("workspace.css")
-    expect(appSource).toContain('import "./styles/workspace.css"')
+    expect(appSource).not.toContain("workspace.css")
+    // 登录壳不背工作区样式：workspace.css 随首个非公开路由前的守卫动态加载，
+    // 且必须位于 element-workspace 的 el-* 样式之前（维持搬家前的级联顺序）。
+    expect(workspaceElementSource).toContain('import "./styles/workspace.css"')
+    expect(workspaceElementSource.indexOf('import "./styles/workspace.css"')).toBeLessThan(
+      workspaceElementSource.indexOf('import "element-plus/'),
+    )
 
     for (const view of lazyViews) {
       const source = readFileSync(resolve(process.cwd(), `src/views/${view}.vue`), "utf8")
       expect(source).not.toContain("workspace.css")
+    }
+  })
+
+  it("登录壳样式只由 theme.css 承载，workspace 分片不得定义公开页选择器", () => {
+    // workspace.css 已随 element-workspace.ts 懒加载，登录/首次改密渲染时它尚不存在；
+    // 公开页样式若落进 workspace 分片会造成首屏裸奔，此用例防该类回归。
+    const workspace = readWorkspaceCss().replaceAll(/\/\*[\s\S]*?\*\//g, "")
+    for (const selector of [".public-shell", ".login-screen", ".login-card", ".login-brand"]) {
+      expect(workspace).not.toContain(selector)
     }
   })
 
