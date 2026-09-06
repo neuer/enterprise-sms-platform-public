@@ -445,6 +445,7 @@ def test_case08_restores_original_market_window_before_case09(
     previous = "07:13-19:47"
     http = FakeHttp(
         [
+            HttpResponse(503, {"code": "DEPENDENCY_UNAVAILABLE"}),
             HttpResponse(
                 200,
                 [{"key": "market_send_window", "value": previous}],
@@ -471,10 +472,11 @@ def test_case08_restores_original_market_window_before_case09(
     suite = UatSuite(
         http,
         None,
-        {"app-mkt": "memory-key"},
+        {"app-mkt": "memory-key", "app-iam": "memory-key"},
         probe=ReadyAdmissionProbe(),  # type: ignore[arg-type]
         run_id="fixed-run",
     )
+    suite.admission_snapshot_ttl_s = 0
     suite._tokens["admin01"] = "memory-token"
     monkeypatch.setattr(
         e2e_api,

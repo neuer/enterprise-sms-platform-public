@@ -382,6 +382,7 @@ class UatSuite:
         self.rollback = RollbackStack()
         self._tokens: dict[str, str] = {}
         self._account_ids: dict[str, int] = {}
+        self.admission_snapshot_ttl_s = 5.1
 
     @classmethod
     def stub(cls, *, run_id: str) -> UatSuite:
@@ -799,30 +800,38 @@ class UatSuite:
     def _wait_admission_ready_for_volume(self, case_id: str) -> None:
         """大请求必须等到新鲜 OPEN。过期 hold 仍是 recovery_hold，不能当放行。
 
-        进程内快照 TTL 为 5s，单次 refresh 可能仍走缓存、不把种子写回 OPEN。
-        等待期间反复用小 verify 触发 persist；hold 本身是 60s。
+        进程内快照 TTL 为 5s。DB 先写成 OPEN 时缓存仍可能是 degraded，
+        营销会 503 degraded_bulk。必须等 TTL 过期后再 persist 一次。
         """
 
-        def open_fresh() -> bool | None:
+        def open_fresh() -> bool:
             marker = self._probe().psql_value(
                 "SELECT CASE WHEN state='open' AND valid_until > now() "
                 "THEN 'ready' ELSE 'wait' END "
                 "FROM send_admission_state WHERE scope='send'"
             )
-            return True if marker == "ready" else None
+            return marker == "ready"
 
-        if open_fresh() is True:
-            return
-        self._seed_completed_admission_hold()
+        started_open = open_fresh()
+        if not started_open:
+            self._seed_completed_admission_hold()
         nonce = 0
+        open_since = self.clock() if started_open else None
 
         def persist_until_open() -> bool | None:
-            nonlocal nonce
-            if open_fresh() is True:
-                return True
+            nonlocal nonce, open_since
+            if open_fresh():
+                if open_since is None:
+                    open_since = self.clock()
+                elif self.clock() - open_since >= self.admission_snapshot_ttl_s:
+                    self._refresh_admission_snapshot(case_id, nonce)
+                    nonce += 1
+                    return True if open_fresh() else None
+            else:
+                open_since = None
             self._refresh_admission_snapshot(case_id, nonce)
             nonce += 1
-            return True if open_fresh() is True else None
+            return None
 
         wait_until(case_id, persist_until_open, timeout_s=75, interval_s=0.5)
 
