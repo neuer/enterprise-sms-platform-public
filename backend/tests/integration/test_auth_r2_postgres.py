@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import suppress
@@ -24,7 +25,16 @@ from app.core.auth.security_events import (
     SqlAuthSecurityEventRepository,
     transition_dead_letter_hmac,
 )
-from app.core.auth.service import AccountLocked, LoginGuard, RateLimited, RedisKeyValue
+from app.core.auth.service import (
+    AUDIT_DUE_KEY,
+    AUDIT_OPEN_KEY,
+    AUDIT_RECOVERY_TTL_S,
+    AccountLocked,
+    LoginGuard,
+    RateLimited,
+    RedisKeyValue,
+)
+from app.core.auth.transition_sync import AuthTransitionReconciler
 from app.core.runtime_resources import close_runtime_resources
 from app.settings import Settings
 
@@ -48,19 +58,13 @@ async def auth_roles(
     owner = create_async_engine(owner_url)
     database = owner_url.database
     async with owner.begin() as connection:
-        await connection.execute(
-            text(f"ALTER ROLE sms_auth WITH LOGIN PASSWORD '{auth_password}'")
-        )
+        await connection.execute(text(f"ALTER ROLE sms_auth WITH LOGIN PASSWORD '{auth_password}'"))
         await connection.execute(
             text(f"ALTER ROLE sms_accept WITH LOGIN PASSWORD '{accept_password}'")
         )
         if database:
-            await connection.execute(
-                text(f'GRANT CONNECT ON DATABASE "{database}" TO sms_auth')
-            )
-            await connection.execute(
-                text(f'GRANT CONNECT ON DATABASE "{database}" TO sms_accept')
-            )
+            await connection.execute(text(f'GRANT CONNECT ON DATABASE "{database}" TO sms_auth'))
+            await connection.execute(text(f'GRANT CONNECT ON DATABASE "{database}" TO sms_accept'))
         await connection.execute(
             text(
                 """
@@ -107,6 +111,110 @@ def _transition(
         remaining_ttl_seconds=900,
         ip="10.8.0.8",
     )
+
+
+async def _audit_lock_count(owner: AsyncEngine, object_id: str) -> int:
+    async with owner.connect() as connection:
+        count = await connection.scalar(
+            text(
+                """
+                SELECT COUNT(*) FROM audit_log
+                WHERE action='auth_account_locked' AND object_id=:object_id
+                """
+            ),
+            {"object_id": object_id},
+        )
+    return int(count)
+
+
+class _FailFirstWriter:
+    """首次审计写入失败，留下 pending transition 供 Reconciler 接管。"""
+
+    def __init__(self, real: SqlAuthSecurityEventRepository) -> None:
+        self._real = real
+        self.calls = 0
+
+    async def ensure_transition(self, transition: AuthSecurityTransition) -> None:
+        self.calls += 1
+        if self.calls == 1:
+            raise SessionStateUnavailable("auth security audit unavailable")
+        await self._real.ensure_transition(transition)
+
+    async def record_dead_letter(self, record: AuthTransitionDeadLetter) -> None:
+        await self._real.record_dead_letter(record)
+
+
+class _ExclusiveLeaseWriter:
+    """只统计目标 transition 的并发写入，用于证明单 Writer 租约。"""
+
+    def __init__(self, real: SqlAuthSecurityEventRepository, transition_id: str) -> None:
+        self._real = real
+        self._transition_id = transition_id
+        self.calls = 0
+        self.max_in_flight = 0
+        self._in_flight = 0
+        self._lock = asyncio.Lock()
+
+    async def ensure_transition(self, transition: AuthSecurityTransition) -> None:
+        if transition.transition_id != self._transition_id:
+            await self._real.ensure_transition(transition)
+            return
+        async with self._lock:
+            self.calls += 1
+            self._in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self._in_flight)
+        try:
+            await asyncio.sleep(0.3)
+            await self._real.ensure_transition(transition)
+        finally:
+            async with self._lock:
+                self._in_flight -= 1
+
+    async def record_dead_letter(self, record: AuthTransitionDeadLetter) -> None:
+        await self._real.record_dead_letter(record)
+
+
+async def _pending_lock_transition(
+    client: Any,
+    writer: Any,
+    *,
+    username: str,
+    ip: str,
+    provider_code: str = "local",
+) -> str:
+    guard = LoginGuard(RedisKeyValue(client), security_events=writer)
+    for _ in range(4):
+        await guard.record_failure(username, ip, provider_code)
+    with pytest.raises(SessionStateUnavailable):
+        await guard.record_failure(username, ip, provider_code)
+    lock = await client.get(f"auth:lock:user:{username}")
+    assert lock
+    return str(lock)
+
+
+async def _cleanup_transition_keys(
+    client: Any,
+    *,
+    username: str,
+    ip: str,
+    lock: str | None,
+) -> None:
+    keys = [
+        f"auth:fail:user:{username}",
+        f"auth:lock:user:{username}",
+        f"auth:fail:ip:{ip}",
+        f"auth:ban:ip:{ip}",
+    ]
+    if lock:
+        keys.extend(
+            (
+                f"auth:audit:transition:{lock}",
+                f"auth:audit:dead-letter:{lock}",
+            )
+        )
+        await client.zrem(AUDIT_DUE_KEY, lock)
+        await client.zrem(AUDIT_OPEN_KEY, lock)
+    await client.delete(*keys)
 
 
 @pytest.mark.asyncio
@@ -375,9 +483,6 @@ async def test_reconciler_recovers_after_postgres_outage_without_followup_login(
 
     from redis.asyncio import Redis
 
-    from app.core.auth.service import AUDIT_DUE_KEY
-    from app.core.auth.transition_sync import AuthTransitionReconciler
-
     owner, _auth_url, _accept_url, settings = auth_roles
     client = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
     real = SqlAuthSecurityEventRepository(cast(Settings, settings))
@@ -466,9 +571,7 @@ async def test_sms_auth_can_insert_dead_letter_but_has_no_select(
     try:
         async with engine.connect() as connection:
             with pytest.raises(DBAPIError):
-                await connection.execute(
-                    text("SELECT id FROM auth_transition_dead_letter LIMIT 1")
-                )
+                await connection.execute(text("SELECT id FROM auth_transition_dead_letter LIMIT 1"))
     finally:
         await engine.dispose()
 
@@ -627,5 +730,125 @@ async def test_multi_process_real_redis_and_postgres_transition_integrity(
         await first.zrem(AUDIT_OPEN_KEY, orphan_id)
         keys.append(f"auth:audit:dead-letter:{orphan_id}")
         await first.delete(*keys)
+        await first.aclose()
+        await second.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif("AUTH_GUARD_REDIS_URL" not in os.environ, reason="requires isolated Redis 7")
+async def test_multi_reconciler_exclusive_lease_writes_one_audit(
+    auth_roles: tuple[AsyncEngine, URL, URL, Any],
+) -> None:
+    from redis.asyncio import Redis
+
+    owner, _auth_url, _accept_url, settings = auth_roles
+    first = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
+    second = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
+    real = SqlAuthSecurityEventRepository(cast(Settings, settings))
+    username = f"mr-{uuid4().hex[:12]}"
+    ip = "10.9.4.31"
+    lock = None
+    try:
+        lock = await _pending_lock_transition(
+            first, _FailFirstWriter(real), username=username, ip=ip
+        )
+        await asyncio.sleep(1.2)
+        writer = _ExclusiveLeaseWriter(real, lock)
+        left = AuthTransitionReconciler(
+            store=RedisKeyValue(first),
+            security_events=writer,
+            interval_s=1,
+        )
+        right = AuthTransitionReconciler(
+            store=RedisKeyValue(second),
+            security_events=writer,
+            interval_s=1,
+        )
+        settled = await asyncio.gather(left.reconcile(), right.reconcile())
+        assert sum(settled) >= 1
+        assert writer.calls == 1
+        assert writer.max_in_flight == 1
+        assert await _audit_lock_count(owner, lock) == 1
+        envelope = await first.hgetall(f"auth:audit:transition:{lock}")
+        assert envelope["action"] == "auth_account_locked"
+        assert envelope["ip"] == ip
+        assert envelope["state"] == "audited"
+    finally:
+        await _cleanup_transition_keys(first, username=username, ip=ip, lock=lock)
+        await first.aclose()
+        await second.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif("AUTH_GUARD_REDIS_URL" not in os.environ, reason="requires isolated Redis 7")
+async def test_long_outage_after_lock_ttl_preserves_original_envelope(
+    auth_roles: tuple[AsyncEngine, URL, URL, Any],
+) -> None:
+    from redis.asyncio import Redis
+
+    owner, _auth_url, _accept_url, settings = auth_roles
+    first = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
+    second = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
+    real = SqlAuthSecurityEventRepository(cast(Settings, settings))
+    username = f"lo-{uuid4().hex[:12]}"
+    ip = "10.9.4.32"
+    lock = None
+    try:
+        lock = await _pending_lock_transition(
+            first,
+            _FailFirstWriter(real),
+            username=username,
+            ip=ip,
+            provider_code="ad",
+        )
+        key = f"auth:audit:transition:{lock}"
+        envelope = await first.hgetall(key)
+        assert envelope["action"] == "auth_account_locked"
+        assert envelope["provider_code"] == "ad"
+        assert envelope["ip"] == ip
+        assert envelope["state"] == "pending"
+        assert int(await first.ttl(key)) == -1
+        raw_time = await first.time()
+        now_ms = int(raw_time[0]) * 1000 + int(raw_time[1]) // 1000
+        aged_ms = now_ms - (AUDIT_RECOVERY_TTL_S * 1000 + 5_000)
+        await first.hset(key, "created_at_ms", str(aged_ms))
+        await first.delete(f"auth:lock:user:{username}", f"auth:fail:user:{username}")
+        await asyncio.sleep(1.2)
+        writer = SqlAuthSecurityEventRepository(cast(Settings, settings))
+        left = AuthTransitionReconciler(
+            store=RedisKeyValue(first),
+            security_events=writer,
+            interval_s=1,
+        )
+        right = AuthTransitionReconciler(
+            store=RedisKeyValue(second),
+            security_events=writer,
+            interval_s=1,
+        )
+        await asyncio.gather(left.reconcile(), right.reconcile())
+        assert await _audit_lock_count(owner, lock) == 1
+        restored = await first.hgetall(key)
+        assert restored["created_at_ms"] == str(aged_ms)
+        assert restored["action"] == "auth_account_locked"
+        assert restored["provider_code"] == "ad"
+        assert restored["ip"] == ip
+        assert restored["state"] == "audited"
+        async with owner.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                            SELECT after_val::text, host(ip)
+                            FROM audit_log
+                            WHERE action='auth_account_locked' AND object_id=:object_id
+                        """
+                    ),
+                    {"object_id": lock},
+                )
+            ).one()
+        assert "ad" in str(row[0])
+        assert str(row[1]) == ip
+    finally:
+        await _cleanup_transition_keys(first, username=username, ip=ip, lock=lock)
         await first.aclose()
         await second.aclose()
