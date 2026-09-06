@@ -1,5 +1,5 @@
 import { AUTH_JSON_MAX_BYTES, HttpBodyError, fetchJsonWithDeadline } from "./httpDeadline"
-import { detectSessionMode, type SessionMode } from "./refreshLock"
+import { detectSessionMode, type SessionMode } from "./sessionMode"
 import { beginRefreshTabBinding, clearRefreshTabBinding, getRefreshTabBinding, getSessionMode } from "./sessionTokens"
 
 export type { SessionMode }
