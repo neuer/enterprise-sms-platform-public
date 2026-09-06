@@ -100,6 +100,19 @@ describe("共享语义展示组件", () => {
     expect(wrapper.find(".el-empty").exists()).toBe(false)
   })
 
+  it("PhoneMask 原样展示调用方传入的掩码值并标注无障碍名称", async () => {
+    const PhoneMask = (await import("../src/components/PhoneMask.vue")).default
+    const wrapper = mount(PhoneMask, { props: { value: "138****8000" } })
+
+    // 契约：调用方只传服务端 phone_mask；组件展示值与 aria-label 均不得出现明文
+    expect(wrapper.text()).toBe("138****8000")
+    expect(wrapper.classes()).toContain("phone-mask")
+    expect(wrapper.attributes("aria-label")).toBe("掩码号码 138****8000")
+    expect(wrapper.text()).not.toContain("13800138000")
+    expect(wrapper.attributes("aria-label")).not.toContain("13800138000")
+    wrapper.unmount()
+  })
+
   it("PhoneReveal 默认展示掩码与授权查看入口", async () => {
     const PhoneReveal = (await import("../src/components/PhoneReveal.vue")).default
     const reveal = vi.fn<() => Promise<string>>().mockResolvedValue("13800138000")

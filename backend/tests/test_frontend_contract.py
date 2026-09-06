@@ -258,6 +258,7 @@ def test_frontend_package_exposes_one_canonical_gate_set() -> None:
         "build": "npm run typecheck && npm run build:g2",
         "build:g2": "vite build",
         "typecheck": "vue-tsc --noEmit",
+        "gen:api-types": "openapi-typescript ../openapi.yaml -o src/api/types.gen.ts",
         "test": "vitest run",
         "lint": "eslint .",
         "lint:fix": "eslint . --fix",

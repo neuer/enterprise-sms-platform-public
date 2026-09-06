@@ -114,6 +114,11 @@ require(
     frontend_scripts.get("build:g2") == "vite build",
     "frontend build:g2 必须执行 Vite 生产构建",
 )
+require(
+    frontend_scripts.get("gen:api-types")
+    == "openapi-typescript ../openapi.yaml -o src/api/types.gen.ts",
+    "frontend 必须提供 gen:api-types 契约类型生成脚本（CI 据此做零漂移门禁）",
+)
 
 uat_cases = re.findall(r"^\|\s*(\d{2})\s*\|", uat, flags=re.MULTILINE)
 require(len(uat_cases) == len(set(uat_cases)), "UAT 用例编号不得重复")
@@ -267,8 +272,13 @@ openapi_batch = set(re.findall(r"completed_unknown|pending_approval|balance_bloc
 require("completed_unknown" in openapi_batch, "OpenAPI 缺少 completed_unknown")
 frontend_status = read("frontend/src/api/webMessages.ts")
 require(
-    "completed_unknown" in frontend_status,
-    "前端 SendResult 必须包含 completed_unknown",
+    'paths["/api/v1/web/messages/send"]' in frontend_status,
+    "前端 SendResult 必须引用 openapi 生成类型而非手写枚举",
+)
+frontend_gen_types = read("frontend/src/api/types.gen.ts")
+require(
+    "completed_unknown" in frontend_gen_types,
+    "前端生成契约类型必须包含 completed_unknown",
 )
 
 if (ROOT / ".git").exists():
