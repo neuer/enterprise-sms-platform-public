@@ -33,6 +33,7 @@ def test_runtime_policy_inventory_covers_every_schema_config_key() -> None:
 def test_only_beat_schedule_keys_are_startup_only() -> None:
     assert {
         "report_poll_seconds",
+        "report_timeout_scan_seconds",
         "reply_poll_seconds",
         "reconcile_interval_min",
         "balance_poll_seconds",
@@ -90,6 +91,14 @@ def test_runtime_policy_returns_typed_snapshot() -> None:
         ("test_send_max", "6", "test_send_max"),
         ("report_poll_seconds", "9", "report_poll_seconds"),
         ("report_poll_seconds", "3601", "report_poll_seconds"),
+        ("report_timeout_scan_seconds", "9", "report_timeout_scan_seconds"),
+        ("report_timeout_scan_seconds", "3601", "report_timeout_scan_seconds"),
+        ("report_timeout_batch_limit", "0", "report_timeout_batch_limit"),
+        ("report_timeout_batch_limit", "501", "report_timeout_batch_limit"),
+        ("report_timeout_message_limit", "0", "report_timeout_message_limit"),
+        ("report_timeout_round_seconds", "121", "report_timeout_round_seconds"),
+        ("report_timeout_statement_ms", "99", "report_timeout_statement_ms"),
+        ("report_timeout_lock_ms", "49", "report_timeout_lock_ms"),
         ("reply_poll_seconds", "29", "reply_poll_seconds"),
         ("balance_poll_seconds", "59", "balance_poll_seconds"),
         ("reconcile_interval_min", "61", "reconcile_interval_min"),

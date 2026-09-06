@@ -57,6 +57,7 @@ TASK_NAMES = {
 MANUAL_JOB_TASK_NAMES = frozenset(
     {
         "app.tasks.poll_report",
+        "app.tasks.expire_report_timeouts",
         "app.tasks.poll_reply",
         "app.tasks.reconcile",
         "app.tasks.expire_approvals",

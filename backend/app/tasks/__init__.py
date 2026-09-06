@@ -38,6 +38,7 @@ settings = get_settings()
 TASK_MODULES = (
     "app.tasks.send",
     "app.tasks.poll_report",
+    "app.tasks.expire_report_timeouts",
     "app.tasks.poll_reply",
     "app.tasks.reconcile",
     "app.tasks.approval",
