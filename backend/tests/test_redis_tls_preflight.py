@@ -449,6 +449,17 @@ def test_tls_healthcheck_uses_service_name_for_connection_and_sni() -> None:
     assert source.index('--sni "$server_name"') < source.index('-h "$server_name"')
 
 
+def test_tls_healthcheck_auth_requires_type_after_ping() -> None:
+    source = HEALTHCHECK.read_text(encoding="utf-8")
+
+    ping = 'redis-cli "$@" ping'
+    type_probe = 'redis-cli "$@" type auth:__healthcheck__'
+    assert ping in source
+    assert type_probe in source
+    assert "grep -qx none" in source
+    assert source.index(ping) < source.index(type_probe)
+
+
 def test_public_production_paths_stay_fixed_and_private_key_uses_platform_secrets(
     module: ModuleType,
     tmp_path: Path,
