@@ -753,6 +753,26 @@ def test_writer_cutover_bootstrap_requires_compose() -> None:
     assert main(["bootstrap", "--root", str(REPO_ROOT)]) == 2
 
 
+def test_cli_redis_hgetall_keeps_empty_release_binding() -> None:
+    import sys
+
+    scripts = str(REPO_ROOT / "deploy" / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from writer_cutover import CliRedis
+
+    class _Runner:
+        def run(self, argv: list[str], *, timeout_s: int = 30) -> str:
+            _ = argv, timeout_s
+            return "state\nactive_v2\nrelease_binding\n\nadmission_reason\nwriter_cutover\n"
+
+    assert CliRedis(_Runner()).hgetall("ratelimit:cost:writer_cutover") == {
+        "state": "active_v2",
+        "release_binding": "",
+        "admission_reason": "writer_cutover",
+    }
+
+
 def test_writer_cutover_bootstrap_parses_compose_option_tokens() -> None:
     import sys
 

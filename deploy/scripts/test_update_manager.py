@@ -2288,7 +2288,7 @@ class HostTestUpdateOperations:
 
             def hgetall(self, key: str) -> dict[str, str]:
                 raw = self.host._redis("HGETALL", key)
-                values = [line for line in raw.splitlines() if line != ""]
+                values = list(raw.splitlines())
                 if len(values) % 2 != 0:
                     raise CutoverError("cutover marker is corrupt")
                 return {

@@ -233,7 +233,8 @@ class CliRedis:
 
     def hgetall(self, key: str) -> dict[str, str]:
         raw = self.eval_impl.run([*self.prefix, "HGETALL", key], timeout_s=15)
-        values = [line for line in raw.splitlines() if line != ""]
+        # 保留空行：greenfield bootstrap 的 release_binding 就是空字符串。
+        values = list(raw.splitlines())
         if len(values) % 2 != 0:
             raise _cutover().CutoverError("cutover marker is corrupt")
         return {values[index]: values[index + 1] for index in range(0, len(values), 2)}
