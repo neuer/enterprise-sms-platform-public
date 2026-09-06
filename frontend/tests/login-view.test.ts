@@ -113,6 +113,7 @@ describe("登录页", () => {
       provider_code: "local",
       username: "admin",
       password: "Temp@Password123",
+      session_mode: "refresh",
     })
     expect(router.currentRoute.value.path).toBe("/dashboard")
   })
@@ -156,6 +157,7 @@ describe("登录页", () => {
       provider_code: "local",
       username: "admin",
       password: "Temp@Password123",
+      session_mode: "refresh",
       tab_id: expect.stringMatching(/^[0-9a-f]{32}$/),
     })
     expect(router.currentRoute.value.path).toBe("/dashboard")
@@ -256,16 +258,47 @@ describe("登录页", () => {
     expect(wrapper.get("[data-testid='login-password']").element).toHaveProperty("value", "")
   })
 
-  it("无 Web Locks 时提示仅允许单标签页", async () => {
+  it("无 Web Locks 时提示短会话并提交 access_only", async () => {
     vi.stubGlobal("navigator", {})
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider])))
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response([localProvider]))
+      .mockResolvedValueOnce(
+        response({
+          session_mode: "access_only",
+          token: "jwt",
+          expires_in: 900,
+          user: {
+            account_id: 8,
+            identity_id: 18,
+            provider_code: "local",
+            username: "admin",
+            display_name: "平台管理员",
+            dept: "平台部",
+            role: "admin",
+          },
+        }),
+      )
+    vi.stubGlobal("fetch", fetch)
 
-    const { wrapper } = await mountLogin()
+    const { router, wrapper } = await mountLogin()
 
-    expect(wrapper.get("[data-testid='login-safe-single-tab']").text()).toContain("仅允许单标签页登录")
+    expect(wrapper.get("[data-testid='login-access-only']").text()).toContain("短会话模式")
+    await wrapper.get("[data-testid='login-username']").setValue("admin")
+    await wrapper.get("[data-testid='login-password']").setValue("Temp@Password123")
+    await wrapper.get("form").trigger("submit")
+    await flushPromises()
+
+    expect(JSON.parse(String(fetch.mock.calls.at(-1)?.[1]?.body))).toEqual({
+      provider_code: "local",
+      username: "admin",
+      password: "Temp@Password123",
+      session_mode: "access_only",
+    })
+    expect(router.currentRoute.value.path).toBe("/dashboard")
   })
 
-  it("具备 Web Locks 时不显示单标签页提示", async () => {
+  it("具备 Web Locks 时不显示短会话提示", async () => {
     vi.stubGlobal("navigator", {
       locks: {
         request: async (_name: string, callback: () => Promise<unknown>) => callback(),
@@ -275,6 +308,6 @@ describe("登录页", () => {
 
     const { wrapper } = await mountLogin()
 
-    expect(wrapper.find("[data-testid='login-safe-single-tab']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='login-access-only']").exists()).toBe(false)
   })
 })

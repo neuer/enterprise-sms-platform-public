@@ -1,6 +1,6 @@
 import { afterEach, vi } from "vitest"
 
-import { hasWebLocks, isSafeSingleTabMode, withRefreshLock } from "../src/api/refreshLock"
+import { detectSessionMode, hasWebLocks, isSafeSingleTabMode, withRefreshLock } from "../src/api/refreshLock"
 import {
   beginRefreshTabBinding,
   getRefreshTabBinding,
@@ -14,10 +14,11 @@ describe("跨标签页 Refresh Lock", () => {
     resetAccessSessionModule()
   })
 
-  it("没有 Web Locks 时本页串行且进入安全单标签页", async () => {
+  it("没有 Web Locks 时本页串行且进入 Access-Only", async () => {
     vi.stubGlobal("navigator", {})
     expect(hasWebLocks()).toBe(false)
     expect(isSafeSingleTabMode()).toBe(true)
+    expect(detectSessionMode()).toBe("access_only")
 
     const order: string[] = []
     let releaseFirst!: () => void
@@ -85,16 +86,12 @@ describe("跨标签页 Refresh Lock", () => {
     expect(order).toEqual(["first-enter", "first-leave", "second"])
   })
 
-  it("安全单标签页不把 refresh 绑定写入 sessionStorage，刷新后不得复活", () => {
+  it("Access-Only 拒绝建立 Refresh 绑定且不得消费旧 sessionStorage", () => {
     vi.stubGlobal("navigator", {})
     sessionStorage.setItem(REFRESH_TAB_ID_KEY, "a".repeat(32))
 
-    const tabId = beginRefreshTabBinding()
-    expect(tabId).toMatch(/^[0-9a-f]{32}$/)
+    expect(() => beginRefreshTabBinding()).toThrow("短会话模式不得建立 Refresh 标签页绑定")
     expect(sessionStorage.getItem(REFRESH_TAB_ID_KEY)).toBe("a".repeat(32))
-    expect(getRefreshTabBinding()).toBe(tabId)
-
-    resetAccessSessionModule()
     expect(getRefreshTabBinding()).toBeNull()
   })
 })

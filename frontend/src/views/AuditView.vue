@@ -328,7 +328,7 @@ onMounted(() => {
 
   <section class="audit-results">
     <template v-if="items.length || loading">
-      <el-table v-loading="loading" :data="items" class="audit-table"
+      <el-table v-loading="loading" :data="items" row-key="id" class="audit-table"
         ><el-table-column label="稳定主体" min-width="150"
           ><template #default="{ row }">{{
             row.actor_account_id

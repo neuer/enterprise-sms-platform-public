@@ -12,7 +12,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 import jwt
@@ -20,6 +20,7 @@ import jwt
 from app.core.auth.accounts import PlatformAccount, SecurityPrincipal
 from app.core.auth.backends import InvalidCredentials, SessionStateUnavailable
 from app.core.auth.observability import (
+    observe_access_only_refresh_block,
     observe_token_issue_denied,
     observe_token_issue_policy_load,
     observe_token_issue_policy_mismatch,
@@ -45,6 +46,18 @@ JWT_ISSUER = "sms-platform-web"
 JWT_AUDIENCE = "sms-platform-api"
 JWT_KEY_VERSION_BYTES = 2
 REFRESH_TAB_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+SessionMode = Literal["refresh", "access_only"]
+SESSION_MODES: frozenset[str] = frozenset({"refresh", "access_only"})
+
+
+def _read_session_mode(payload: dict[str, Any]) -> SessionMode:
+    """旧令牌缺省 refresh；未知取值失败关闭，禁止静默升级。"""
+
+    raw = payload.get("session_mode", "refresh")
+    if raw not in SESSION_MODES:
+        raise InvalidCredentials("无效或已吊销的令牌")
+    return cast(SessionMode, raw)
+
 
 LOGGER = logging.getLogger(__name__)
 
@@ -112,6 +125,7 @@ class JwtClaims:
     auth_time: float | None
     reauth_deadline: float | None
     auth_policy_version: int | None
+    session_mode: SessionMode
 
     def __init__(
         self,
@@ -128,6 +142,7 @@ class JwtClaims:
         auth_time: float | None = None,
         reauth_deadline: float | None = None,
         auth_policy_version: int | None = None,
+        session_mode: SessionMode = "refresh",
     ) -> None:
         # 旧的四位置参数仅保留给尚未迁移的 API 权限单测；JwtService 拒绝签发。
         if isinstance(account_id, str):
@@ -153,6 +168,11 @@ class JwtClaims:
         object.__setattr__(self, "auth_time", auth_time)
         object.__setattr__(self, "reauth_deadline", reauth_deadline)
         object.__setattr__(self, "auth_policy_version", auth_policy_version)
+        object.__setattr__(
+            self,
+            "session_mode",
+            session_mode if session_mode in SESSION_MODES else "refresh",
+        )
 
     @property
     def username(self) -> str:
@@ -314,6 +334,9 @@ class JwtService:
             "jti": uuid4().hex,
             "iat": now.timestamp(),
             "exp": int((now + ttl).timestamp()),
+            "session_mode": (
+                claims.session_mode if claims.session_mode in SESSION_MODES else "refresh"
+            ),
         }
         if claims.provider_code == "ad":
             if (
@@ -525,6 +548,7 @@ class JwtService:
             auth_time=auth_time,
             reauth_deadline=deadline,
             auth_policy_version=policy.revision,
+            session_mode=claims.session_mode,
         )
 
     def _reject_expired_access(self, payload: dict[str, Any]) -> None:
@@ -619,6 +643,50 @@ class JwtService:
             expires_in=max(1, min(900, int(access_ttl.total_seconds()))),
             refresh_expires_in=remaining,
         )
+
+    async def issue_access_only(self, claims: JwtClaims) -> IssuedTokenPair:
+        """只签发短期 Access，不创建 Refresh Family、Rotation Binding 或 Cookie 密文。"""
+
+        claims = await self._bind_ad_deadline(
+            JwtClaims(
+                account_id=claims.account_id,
+                identity_id=claims.identity_id,
+                provider_code=claims.provider_code,
+                login_name=claims.login_name,
+                display_name=claims.display_name,
+                dept=claims.dept,
+                role=claims.role,
+                security_version=claims.security_version,
+                jti=claims.jti,
+                session_id=claims.session_id,
+                auth_time=claims.auth_time,
+                reauth_deadline=claims.reauth_deadline,
+                auth_policy_version=claims.auth_policy_version,
+                session_mode="access_only",
+            )
+        )
+        session_id = uuid4().hex
+        access_token = self._encode_access(claims, session_id)
+        access_ttl = self._access_ttl_for(claims)
+        remaining = max(1, min(900, int(access_ttl.total_seconds())))
+        try:
+            await self.store.set(
+                self._session_mode_key(session_id),
+                "access_only",
+                ex=remaining,
+            )
+        except Exception:
+            raise SessionStateUnavailable("session mode projection unavailable") from None
+        return IssuedTokenPair(
+            access_token,
+            "",
+            expires_in=remaining,
+            refresh_expires_in=0,
+        )
+
+    @staticmethod
+    def _session_mode_key(session_id: str) -> str:
+        return f"auth:jwt:session-mode:{session_id}"
 
     def issue_password_change(
         self,
@@ -766,6 +834,7 @@ class JwtService:
             auth_time=auth_time,
             reauth_deadline=reauth_deadline,
             auth_policy_version=auth_policy_version,
+            session_mode=_read_session_mode(payload),
         )
 
     async def _authoritative(self, claims: JwtClaims) -> JwtClaims:
@@ -807,6 +876,7 @@ class JwtService:
             auth_time=claims.auth_time,
             reauth_deadline=claims.reauth_deadline,
             auth_policy_version=claims.auth_policy_version,
+            session_mode=claims.session_mode,
         )
 
     async def _ensure_account_not_revoked(
@@ -926,6 +996,9 @@ class JwtService:
         if family_expires_at != int(payload["exp"]) or remaining < 1:
             raise InvalidCredentials("无效或已使用的刷新令牌")
         claims = self._claims(payload)
+        if claims.session_mode == "access_only":
+            observe_access_only_refresh_block("refresh_endpoint")
+            raise InvalidCredentials("无效或已使用的刷新令牌")
         await self._ensure_session_not_revoked(claims)
         await self._ensure_account_not_revoked(payload, claims)
         claims = await self._authoritative(claims)

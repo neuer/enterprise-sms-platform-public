@@ -155,6 +155,12 @@ def test_single_spa_keeps_the_browser_session_contract() -> None:
     assert "setAccessSession" in session_tokens
     assert "clearAccessSession" in session_tokens
     assert "revalidateOnResume" in session
+    refresh_lock = read("frontend/src/api/refreshLock.ts")
+    assert "detectSessionMode" in refresh_lock
+    assert "access_only" in refresh_lock
+    auth_api = read("frontend/src/api/auth.ts")
+    assert 'session_mode: "access_only"' in auth_api
+    assert 'session_mode: "refresh"' in auth_api
 
     web_messages = read("frontend/src/api/webMessages.ts")
     assert "apiRequest" in web_messages

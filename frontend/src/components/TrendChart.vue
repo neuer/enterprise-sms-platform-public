@@ -70,7 +70,8 @@ const { render } = useChart(root, (chart) => {
   })
 })
 
-watch(() => props.points, render, { deep: true })
+// DashboardView 按内容指纹只在变化时替换 snapshot，points 引用变化即代表数据变化，无需深比较。
+watch(() => props.points, render)
 </script>
 
 <template>

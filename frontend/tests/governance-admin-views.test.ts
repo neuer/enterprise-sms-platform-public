@@ -907,6 +907,46 @@ describe("管理员治理页面", () => {
     vi.unstubAllGlobals()
   })
 
+  it("黑名单大文本粘贴防抖解析，防抖窗口内提交强制落盘最新结果", async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return response({ added: 301, updated: 0, items: [] })
+      return response({ total: 0, items: [] })
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(BlacklistView, { attachTo: document.body, global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='blacklist-add-open']").trigger("click")
+    await flushPromises()
+    const textarea = document.querySelector(".el-drawer textarea") as HTMLTextAreaElement
+
+    // 300 行 ≈ 3,600 字，超过同步解析阈值进入防抖路径：窗口内不解析、不上屏
+    const phones = Array.from({ length: 300 }, (_, index) => `139${String(index).padStart(8, "0")}`)
+    textarea.value = phones.join("\n")
+    textarea.dispatchEvent(new Event("input"))
+    await flushPromises()
+    expect(document.querySelector("[data-testid='blacklist-parse']")).toBeNull()
+
+    await vi.advanceTimersByTimeAsync(300)
+    await flushPromises()
+    expect(document.body.textContent).toContain("有效 300")
+
+    // 防抖窗口内直接提交：flush 落盘最新文本，追加的号码一并进入请求
+    textarea.value = [...phones, "13700000001"].join("\n")
+    textarea.dispatchEvent(new Event("input"))
+    await flushPromises()
+    ;(document.querySelector("[data-testid='blacklist-add']") as HTMLElement).click()
+    await flushPromises()
+    const postCall = fetch.mock.calls.find(([, init]) => init?.method === "POST")
+    const submitted = JSON.parse(String(postCall?.[1]?.body)).phones as string[]
+    expect(submitted).toHaveLength(301)
+    expect(submitted).toContain("13700000001")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
+
   it("黑名单来源筛选点选即重查，重置恢复全部", async () => {
     const fetch = vi.fn(async (_url: string) => response({ total: 0, items: [] }))
     vi.stubGlobal("fetch", fetch)
@@ -1039,6 +1079,54 @@ describe("管理员治理页面", () => {
     expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0)
     wrapper.unmount()
     vi.unstubAllGlobals()
+  })
+
+  it("敏感词大文本粘贴防抖解析，防抖落盘后才上屏计数", async () => {
+    vi.useFakeTimers()
+    const config = {
+      key: "sensitive_hit_action",
+      value: "block",
+      value_type: "str",
+      description: "敏感词策略",
+      group: "发送策略",
+      sensitive: false,
+      configured: true,
+      beat_restart_required: false,
+      updated_by: null,
+      updated_at: null,
+      default: "block",
+      min_value: null,
+      max_value: null,
+    }
+    const fetch = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.endsWith("/admin/configs")) return response([config])
+      return response({ total: 0, items: [] })
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(SensitiveWordView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    await wrapper.get("[data-testid='sensitive-add-open']").trigger("click")
+    await flushPromises()
+    const textarea = document.querySelector(".el-drawer textarea") as HTMLTextAreaElement
+
+    // 400 词 ≈ 2,800 字，超过同步解析阈值进入防抖路径：窗口内不解析、不上屏
+    const words = Array.from({ length: 400 }, (_, index) => `敏感词${index}`)
+    textarea.value = words.join("\n")
+    textarea.dispatchEvent(new Event("input"))
+    await flushPromises()
+    expect(document.querySelector("[data-testid='sensitive-parse']")).toBeNull()
+
+    await vi.advanceTimersByTimeAsync(300)
+    await flushPromises()
+    expect(document.body.textContent).toContain("有效 400")
+    expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
   })
 
   it("敏感词命中策略 seg 切换写入配置，失败回退原值", async () => {

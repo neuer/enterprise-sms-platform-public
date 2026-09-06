@@ -1327,21 +1327,26 @@
   `sms_send_submit_outcome`、威胁模型、failover 手册、PERFORMANCE.md 与 OpenAPI 发送说明。
   第二生产 adapter 仍未接入，不得把当前合同写成已具备多账户高可用。
 
-## D101 无 Web Locks 时采用安全单标签页，禁止静默并行 refresh
+## D101 无 Web Locks 时采用 Access-Only，禁止签发 Refresh Cookie
 
-- 决策：`navigator.locks.request` 不存在时，禁止 `withRefreshLock` 直接 `return run()`。
-  本页只用 Promise 链串行；不声称跨标签页互斥。此时：
-  `restoreFromCookie()` 立即返回 false，不调用 `/refresh`；
-  `revalidateOnResume()`（BFCache `pageshow`）失败关闭并 `clearAllTabs()`；
-  refresh 标签页绑定只留当前页内存，不读写 `sessionStorage`，刷新后必须重新登录。
-  登录页按能力检测（不是 UA）提示「仅允许单标签页，刷新后需要重新登录」。
-- 浏览器基线：Chrome/Edge 69+、Firefox 96+、Safari 15.4+ 具备 Web Locks，走既有跨标签页锁。
-  更旧内核、部分内嵌 WebView 或锁 API 被关闭时进入安全单标签页。不引入 BroadcastChannel
-  租约，不改 Cookie/epoch 协议，也不为前端单独加 Prometheus 指标（当前无前端指标汇）。
-- 原因：无锁时并行 refresh 会竞态轮换、覆盖代际或把旧主体写回；静默降级会让多标签页
-  看起来“还能用”却破坏 AUTH-R3 会话合同。
-- 影响：`frontend/src/api/refreshLock.ts`、`sessionTokens.ts`、`stores/session.ts`、
-  登录页提示与前端会话测试。#585 / #595 跟踪项保持开放。
+- 决策：官方前端以 `navigator.locks.request` 能力检测选择会话模式，不用 UA。
+  可用 → `session_mode=refresh`（HttpOnly Cookie、tab binding、单次轮换、grace、
+  重放检测）。不可用 → `session_mode=access_only`：只签发短期 Access；不签发
+  Refresh、不建 Family、不要求或保存 tab_id、不写 Refresh Cookie。登录须吊销
+  请求携带的旧 Family 并删除旧 Cookie；撤销存储故障失败关闭，不得静默保留可
+  恢复旧会话。Access-Only 不能经 `/auth/refresh` 或事后补交 tab_id 升级；升级
+  必须在支持 Web Locks 的客户端重新显式登录。前端不调用 `beginRefreshTabBinding` /
+  `refreshRequest` / `restoreFromCookie` / BFCache cookie 恢复；401 不 refresh、
+  不自动重放。页内 Mutex 只用于本页串行，不是跨标签页 Cookie Writer 证明。
+  在实现服务端 Browser Session Epoch 之前，无 Web Locks 环境不得恢复持久刷新。
+- 浏览器基线：Chrome/Edge 69+、Firefox 96+、Safari 15.4+ 具备 Web Locks，走既有
+  可刷新会话。更旧内核、部分内嵌 WebView 或锁 API 被关闭时进入 Access-Only。
+  真实多浏览器/企业 WebView 乱序 E2E 矩阵如未跑通，不得声称该矩阵已通过。
+- 原因：仅页内 Mutex 仍会签发共享 Refresh Cookie，迟到 Set-Cookie/删 Cookie
+  能覆盖或清除其他标签页会话（AUTH-R4-03 / #647）。
+- 影响：登录契约 `session_mode`、`backend/app/api/auth.py`、`jwt.py`、
+  `runtime.py`、前端 auth/session/client、OpenAPI 联合响应。#614 / #585 / #595
+  跟踪项保持开放。
 
 ## D102 供应商结果必须在单一事务内终结，禁止把 submitted 降为 uncertain
 

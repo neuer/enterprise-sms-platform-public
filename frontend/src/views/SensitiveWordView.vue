@@ -10,6 +10,7 @@ import {
   type SensitiveWordItem,
 } from "../api/sensitiveWords"
 import EmptyState from "../components/EmptyState.vue"
+import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { formatDateTime } from "../lib/time"
 
 const MAX_WORD_LENGTH = 64
@@ -32,12 +33,15 @@ const policyOptions = [
 ]
 
 /** 与现提交口径一致拆分：换行/中英文逗号分号分隔，行号即拆分序号。 */
-const entries = computed(() =>
-  wordsText.value
+function parseWordEntries(text: string): string[] {
+  return text
     .split(/[\n,，;；]+/)
     .map((value) => value.trim())
-    .filter(Boolean),
-)
+    .filter(Boolean)
+}
+
+// 上限 1 万词的大文本粘贴走 useDebouncedEntries 防抖解析（#596 模式单点），词面只在内存处理。
+const { entries, flush: flushEntries } = useDebouncedEntries(wordsText, { parse: parseWordEntries })
 
 /** 超长词的 1 基序号；服务端 400 报错同样只带行号。 */
 const oversizedLines = computed(() =>
@@ -122,6 +126,8 @@ function openDrawer(): void {
 }
 
 async function add(): Promise<void> {
+  // 大文本粘贴后防抖窗口内也可能点击提交：先落盘最新解析，再做校验与组包。
+  flushEntries()
   if (!entries.value.length) {
     ElMessage.warning("请先输入要添加的敏感词")
     return

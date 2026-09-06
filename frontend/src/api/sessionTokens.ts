@@ -1,7 +1,7 @@
 // Access Token 与用户快照的仅内存会话；不再写入 Web Storage。
 
 import type { PlatformUser } from "./auth"
-import { isSafeSingleTabMode } from "./refreshLock"
+import { isAccessOnlySessionMode, type SessionMode } from "./refreshLock"
 
 /** 历史 Web Storage 凭据键（规则 26 一次性迁移 + 清除的唯一事实源）。 */
 export const LEGACY_TOKEN_KEY = "sms_token"
@@ -11,6 +11,7 @@ const REFRESH_TAB_ID_PATTERN = /^[0-9a-f]{32}$/
 
 let accessToken: string | null = null
 let sessionUser: PlatformUser | null = null
+let sessionMode: SessionMode | null = null
 let refreshTabId: string | null = null
 let legacyMigrationAttempted = false
 let legacyMigrationClosed = false
@@ -22,11 +23,10 @@ function newRefreshTabId(): string {
 }
 
 export function beginRefreshTabBinding(): string {
-  refreshTabId = newRefreshTabId()
-  if (isSafeSingleTabMode()) {
-    // 安全单标签页：绑定只活在当前页内存，刷新后必须重新登录。
-    return refreshTabId
+  if (isAccessOnlySessionMode()) {
+    throw new Error("短会话模式不得建立 Refresh 标签页绑定")
   }
+  refreshTabId = newRefreshTabId()
   try {
     sessionStorage.setItem(REFRESH_TAB_ID_KEY, refreshTabId)
   } catch {
@@ -36,8 +36,8 @@ export function beginRefreshTabBinding(): string {
 }
 
 export function getRefreshTabBinding(): string | null {
+  if (isAccessOnlySessionMode() || sessionMode === "access_only") return null
   if (refreshTabId && REFRESH_TAB_ID_PATTERN.test(refreshTabId)) return refreshTabId
-  if (isSafeSingleTabMode()) return null
   try {
     const stored = sessionStorage.getItem(REFRESH_TAB_ID_KEY)
     if (stored && REFRESH_TAB_ID_PATTERN.test(stored)) {
@@ -127,16 +127,22 @@ export function getSessionUser(): PlatformUser | null {
   return sessionUser
 }
 
-export function setAccessSession(token: string, user: PlatformUser): void {
+export function setAccessSession(token: string, user: PlatformUser, mode: SessionMode = "refresh"): void {
   // 新主体只写入模块内存；剩余 Storage 不得再覆盖当前会话。
   legacyMigrationAttempted = true
   accessToken = token
   sessionUser = user
+  sessionMode = mode === "access_only" ? "access_only" : "refresh"
+}
+
+export function getSessionMode(): SessionMode | null {
+  return sessionMode
 }
 
 export function clearAccessSession(): void {
   accessToken = null
   sessionUser = null
+  sessionMode = null
   closeLegacyAccessMigration()
   storageRemove(LEGACY_TOKEN_KEY)
   storageRemove(LEGACY_USER_KEY)
@@ -146,6 +152,7 @@ export function clearAccessSession(): void {
 export function resetAccessSessionModule(): void {
   accessToken = null
   sessionUser = null
+  sessionMode = null
   refreshTabId = null
   legacyMigrationAttempted = false
   legacyMigrationClosed = false

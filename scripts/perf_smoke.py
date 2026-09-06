@@ -542,6 +542,7 @@ class PerformanceSuite:
                 "provider_code": "ad",
                 "username": "operator01",
                 "password": self.mock_password,
+                "session_mode": "refresh",
                 "tab_id": TAB_ID,
             },
         )
