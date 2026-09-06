@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import suppress
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -17,6 +19,7 @@ from app.core.auth.security_events import (
 from app.core.auth.service import (
     AUDIT_DUE_KEY,
     AUDIT_RECOVERY_TTL_S,
+    INTEGRITY_STATS_PAGE_MAX,
     WRITER_LEASE_MS,
     AccountLocked,
     LoginGuard,
@@ -81,6 +84,119 @@ def _reconciler(
         alerter=alerter or RecordingAlerter(),
         interval_s=1,
     )
+
+
+def _audit_key(transition_id: str) -> str:
+    return f"auth:audit:transition:{transition_id}"
+
+
+def _put_hash_only(
+    store: FakeKeyValue,
+    *,
+    ip: str,
+    created_at_ms: int = 4242,
+    action: str = "auth_account_locked",
+    provider_code: str = "ad",
+    transition_id: str | None = None,
+) -> str:
+    tid = transition_id or str(uuid4())
+    result = "ACCOUNT_LOCKED" if action == "auth_account_locked" else "RATE_LIMITED"
+    store.values[store._audit_key(tid)] = {
+        "transition_id": tid,
+        "schema_version": "1",
+        "action": action,
+        "provider_code": provider_code,
+        "result_code": result,
+        "count": "5",
+        "remaining_ttl_seconds": "900",
+        "ip": ip,
+        "created_at_ms": created_at_ms,
+        "state": "pending",
+        "next_retry_at_ms": created_at_ms + 1000,
+        "object_kind": "account" if action == "auth_account_locked" else "ip",
+    }
+    store.values["__now_ms"] = max(int(store.values.get("__now_ms", 0)), created_at_ms + 2000)
+    return tid
+
+
+def _scan_pages(*batches: tuple[str, ...]) -> dict[str, tuple[str, tuple[str, ...]]]:
+    pages: dict[str, tuple[str, tuple[str, ...]]] = {}
+    current = "0"
+    for index, keys in enumerate(batches, start=1):
+        nxt = "0" if index == len(batches) else f"c{index}"
+        pages[current] = (nxt, keys)
+        current = nxt
+    return pages
+
+
+def _long_scan_pages(
+    *,
+    target_key: str | None = None,
+    extra: int = 1,
+) -> dict[str, tuple[str, tuple[str, ...]]]:
+    batches: list[tuple[str, ...]] = [() for _ in range(8)]
+    batches.append((target_key,) if target_key else ())
+    batches.extend(() for _ in range(extra))
+    return _scan_pages(*batches)
+
+
+def _assert_cursor_walk(
+    store: ScriptedHashScanStore,
+    cursors: list[str],
+) -> None:
+    current = "0"
+    for cursor in cursors:
+        assert cursor == current
+        current, _keys = store.pages[cursor]
+
+
+class ScriptedHashScanStore(FakeKeyValue):
+    """按预设不透明游标序列返回 SCAN 页，覆盖超过 8 次调用的尾部。"""
+
+    def __init__(self, pages: dict[str, tuple[str, tuple[str, ...]]]) -> None:
+        super().__init__()
+        self.pages = pages
+        self.scan_cursors: list[str] = []
+        self.scan_calls = 0
+        self.scan_in_flight = 0
+        self.max_scan_in_flight = 0
+        self.fail_on_call: int | None = None
+        self.hold_on_call: int | None = None
+        self.hold_gate = asyncio.Event()
+        self.scan_started = asyncio.Event()
+        self.scan_delay_s = 0.0
+        self.storage_identity = "gen-1"
+        self.stats_calls: list[tuple[str, int, int]] = []
+
+    async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
+        if "auth-audit-integrity-scan-v1" in script:
+            return await self._scan(str(args[0]))
+        if "auth-audit-integrity-stats-page-v1" in script:
+            self.stats_calls.append((str(args[0]), int(args[1]), int(args[2])))
+            assert int(args[2]) <= INTEGRITY_STATS_PAGE_MAX
+        if "auth-audit-integrity-stats-v1" in script:
+            raise AssertionError("unbounded integrity stats script must not run")
+        return await super().eval(script, numkeys, *args)
+
+    async def _scan(self, cursor: str) -> list[Any]:
+        self.scan_calls += 1
+        self.scan_cursors.append(cursor)
+        self.scan_in_flight += 1
+        self.max_scan_in_flight = max(self.max_scan_in_flight, self.scan_in_flight)
+        try:
+            if self.scan_delay_s:
+                await asyncio.sleep(self.scan_delay_s)
+            if self.hold_on_call == self.scan_calls:
+                self.scan_started.set()
+                await self.hold_gate.wait()
+            if self.fail_on_call == self.scan_calls:
+                raise SessionStateUnavailable("hash scan failed")
+            if cursor not in self.pages:
+                raise SessionStateUnavailable("unknown scan cursor")
+            next_cursor, keys = self.pages[cursor]
+            return [next_cursor, list(keys)]
+        finally:
+            self.scan_in_flight -= 1
 
 
 @pytest.fixture(autouse=True)
@@ -477,3 +593,228 @@ async def test_real_redis_pending_hash_persists_until_ack() -> None:
             await client.zrem(AUDIT_OPEN_KEY, str(lock))
         await client.delete(*keys)
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_integrity_scan_preserves_cursor_across_ticks() -> None:
+    store = ScriptedHashScanStore(_long_scan_pages())
+    writer = RecordingSecurityEvents()
+    reconciler = _reconciler(store, writer)
+    await reconciler.reconcile()
+    assert store.scan_cursors == ["0", "c1", "c2", "c3", "c4", "c5", "c6", "c7"]
+    _assert_cursor_walk(store, store.scan_cursors)
+    assert reconciler._hash_scan_cursor == "c8"
+    assert reconciler.scan_in_progress
+    await reconciler.reconcile()
+    assert store.scan_cursors[8:] == ["c8", "c9"]
+    _assert_cursor_walk(store, store.scan_cursors)
+    assert reconciler._hash_scan_cursor == "0"
+    assert not reconciler.scan_in_progress
+
+
+@pytest.mark.asyncio
+async def test_hash_only_tail_beyond_eight_scan_calls_is_recovered() -> None:
+    store = ScriptedHashScanStore({})
+    tid = _put_hash_only(store, ip="10.0.8.9", created_at_ms=7777, provider_code="ad")
+    store.pages = _long_scan_pages(target_key=_audit_key(tid))
+    writer = RecordingSecurityEvents()
+    reconciler = _reconciler(store, writer)
+    await reconciler.reconcile()
+    assert tid not in store._due()
+    assert writer.transitions == []
+    assert store.scan_calls == 8
+    await reconciler.reconcile()
+    assert store.values[store._audit_key(tid)]["created_at_ms"] == 7777
+    assert store.values[store._audit_key(tid)]["action"] == "auth_account_locked"
+    assert writer.transitions[-1].ip == "10.0.8.9"
+    assert writer.transitions[-1].provider_code == "ad"
+    assert store.values[store._audit_key(tid)]["state"] == "audited"
+
+
+@pytest.mark.asyncio
+async def test_empty_page_with_nonzero_cursor_does_not_end_cycle() -> None:
+    store = ScriptedHashScanStore(_scan_pages((), (), ()))
+    reconciler = _reconciler(store, RecordingSecurityEvents())
+    reconciler.scan_calls_per_tick = 1
+    await reconciler.reconcile()
+    assert store.scan_cursors == ["0"]
+    assert reconciler._hash_scan_cursor == "c1"
+    assert reconciler.scan_in_progress
+    assert auth_observability_snapshot().integrity_scan_cycles_completed == 0
+    await reconciler.reconcile()
+    assert store.scan_cursors == ["0", "c1"]
+    assert reconciler._hash_scan_cursor == "c2"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_scan_results_are_idempotent() -> None:
+    store = ScriptedHashScanStore({})
+    tid = _put_hash_only(store, ip="10.0.8.10", created_at_ms=8888)
+    key = _audit_key(tid)
+    store.pages = _scan_pages((key,), (key,), ())
+    writer = RecordingSecurityEvents()
+    reconciler = _reconciler(store, writer)
+    await reconciler.reconcile()
+    assert len(writer.transitions) == 1
+    assert writer.transitions[0].ip == "10.0.8.10"
+    assert store.values[store._audit_key(tid)]["created_at_ms"] == 8888
+    await reconciler.reconcile()
+    assert len(writer.transitions) == 1
+
+
+@pytest.mark.asyncio
+async def test_oversized_scan_batch_is_not_truncated_or_lost() -> None:
+    store = ScriptedHashScanStore({})
+    tids = [_put_hash_only(store, ip=f"10.0.8.{index}") for index in range(20, 25)]
+    keys = tuple(_audit_key(tid) for tid in tids)
+    store.pages = _scan_pages(keys, ())
+    writer = RecordingSecurityEvents()
+    reconciler = _reconciler(store, writer)
+    reconciler.hash_process_budget = 2
+    await reconciler.reconcile()
+    pending = [key.rsplit(":", 1)[-1] for key in reconciler._pending_scan_batch]
+    found = {item.transition_id for item in writer.transitions} | set(pending)
+    assert found == set(tids)
+    assert len(pending) == 3
+    assert reconciler._hash_scan_cursor == "c1"
+    while pending or reconciler._hash_scan_cursor != "0":
+        await reconciler.reconcile()
+        pending = [key.rsplit(":", 1)[-1] for key in reconciler._pending_scan_batch]
+    assert {item.transition_id for item in writer.transitions} == set(tids)
+    assert all(store.values[store._audit_key(tid)]["state"] == "audited" for tid in tids)
+
+
+@pytest.mark.asyncio
+async def test_scan_budget_does_not_reset_progress() -> None:
+    store = ScriptedHashScanStore(_long_scan_pages())
+    reconciler = _reconciler(store, RecordingSecurityEvents())
+    await reconciler.reconcile()
+    assert store.scan_calls == 8
+    assert reconciler._hash_scan_cursor == "c8"
+    first = list(store.scan_cursors)
+    await reconciler.reconcile()
+    assert store.scan_cursors[:8] == first
+    assert store.scan_cursors[8] == "c8"
+    assert reconciler._hash_scan_cursor == "0"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_reconcile_does_not_overwrite_scan_cursor() -> None:
+    store = ScriptedHashScanStore(_scan_pages(*[() for _ in range(20)]))
+    store.scan_delay_s = 0.01
+    reconciler = _reconciler(store, RecordingSecurityEvents())
+    await asyncio.gather(reconciler.reconcile(), reconciler.reconcile())
+    assert store.max_scan_in_flight == 1
+    _assert_cursor_walk(store, store.scan_cursors)
+    assert store.scan_calls == 16
+    assert reconciler._hash_scan_cursor == "c16"
+
+
+@pytest.mark.asyncio
+async def test_scan_error_or_cancel_preserves_confirmed_progress() -> None:
+    store = ScriptedHashScanStore(_long_scan_pages())
+    reconciler = _reconciler(store, RecordingSecurityEvents())
+    store.fail_on_call = 3
+    await reconciler.reconcile()
+    assert store.scan_cursors == ["0", "c1", "c2"]
+    assert reconciler._hash_scan_cursor == "c2"
+    store.fail_on_call = None
+    store.hold_on_call = 4
+    task = asyncio.create_task(reconciler.reconcile())
+    await asyncio.wait_for(store.scan_started.wait(), timeout=1)
+    assert reconciler._hash_scan_cursor == "c2"
+    task.cancel()
+    store.hold_gate.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert reconciler._hash_scan_cursor == "c2"
+
+
+@pytest.mark.asyncio
+async def test_storage_reset_restarts_one_full_scan() -> None:
+    store = ScriptedHashScanStore(_long_scan_pages())
+    reconciler = _reconciler(store, RecordingSecurityEvents())
+    await reconciler.reconcile()
+    assert reconciler._hash_scan_cursor == "c8"
+    store.storage_identity = "gen-2"
+    await reconciler.reconcile()
+    assert store.scan_cursors[8] == "0"
+    assert reconciler._hash_scan_cursor == "c8"
+    _assert_cursor_walk(store, store.scan_cursors[8:])
+
+
+@pytest.mark.asyncio
+async def test_repair_preserves_original_envelope_and_created_at() -> None:
+    store = ScriptedHashScanStore({})
+    tid = _put_hash_only(
+        store,
+        ip="10.0.8.30",
+        created_at_ms=9090,
+        action="auth_ip_banned",
+        provider_code="local",
+    )
+    store.pages = _long_scan_pages(target_key=_audit_key(tid))
+    writer = RecordingSecurityEvents()
+    reconciler = _reconciler(store, writer)
+    await reconciler.reconcile()
+    await reconciler.reconcile()
+    audit = store.values[store._audit_key(tid)]
+    assert audit["created_at_ms"] == 9090
+    assert audit["action"] == "auth_ip_banned"
+    assert audit["provider_code"] == "local"
+    assert audit["ip"] == "10.0.8.30"
+    assert audit["result_code"] == "RATE_LIMITED"
+    assert writer.transitions[-1].action == "auth_ip_banned"
+    assert writer.transitions[-1].provider_code == "local"
+    assert writer.transitions[-1].ip == "10.0.8.30"
+
+
+@pytest.mark.asyncio
+async def test_integrity_statistics_uses_bounded_batches() -> None:
+    store = ScriptedHashScanStore(_scan_pages(()))
+    for index in range(20):
+        tid = str(uuid4())
+        store.values[store._audit_key(tid)] = {
+            "state": "pending",
+            "action": "auth_account_locked",
+        }
+        store._open()[tid] = index
+    for _ in range(20):
+        store._due()[str(uuid4())] = 99_999
+    script = LoginGuard._INTEGRITY_STATS_PAGE_LUA
+    assert "ZRANGE', OPEN, 0, -1" not in script
+    assert "ZRANGE', DUE, 0, -1" not in script
+    assert not hasattr(LoginGuard, "_INTEGRITY_STATS_LUA")
+    reconciler = _reconciler(store, RecordingSecurityEvents())
+    reconciler.stats_page_size = 8
+    reconciler.stats_pages_per_tick = 1
+    await reconciler.reconcile()
+    assert store.stats_calls == [("open", 0, 8)]
+    snapshot = auth_observability_snapshot()
+    assert snapshot.integrity_stats_complete == 0
+    assert snapshot.transition_pending_without_due == 0
+    assert snapshot.transition_due_without_payload == 0
+    for _ in range(5):
+        await reconciler.reconcile()
+    snapshot = auth_observability_snapshot()
+    assert snapshot.integrity_stats_complete == 1
+    assert snapshot.transition_pending_without_due == 20
+    assert snapshot.transition_due_without_payload == 20
+    assert all(limit <= INTEGRITY_STATS_PAGE_MAX for _index, _offset, limit in store.stats_calls)
+    assert all(limit == 8 for _index, _offset, limit in store.stats_calls)
+
+
+@pytest.mark.asyncio
+async def test_full_cycle_metrics_update_only_after_cursor_zero() -> None:
+    store = ScriptedHashScanStore(_long_scan_pages())
+    reconciler = _reconciler(store, RecordingSecurityEvents())
+    await reconciler.reconcile()
+    snapshot = auth_observability_snapshot()
+    assert snapshot.integrity_scan_cycles_completed == 0
+    assert snapshot.integrity_scan_in_progress == 1
+    assert snapshot.integrity_scan_processed > 0 or store.scan_calls == 8
+    await reconciler.reconcile()
+    snapshot = auth_observability_snapshot()
+    assert snapshot.integrity_scan_cycles_completed == 1
+    assert snapshot.integrity_scan_in_progress == 0
+    assert reconciler._hash_scan_cursor == "0"
