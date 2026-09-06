@@ -39,6 +39,7 @@ const workspaceRegistered = extractRegistered(workspaceTs)
 const registered = new Set([...entryRegistered, ...workspaceRegistered])
 
 // 拆分前的完整注册全集：两级拆分只允许搬家，不允许漏注册或重复注册。
+// （ElRadioButton/ElRadioGroup 因全 src 无 <el-radio*> 使用已移除注册与样式。）
 const FULL_REGISTRY = [
   "ElAlert",
   "ElButton",
@@ -59,8 +60,6 @@ const FULL_REGISTRY = [
   "ElOption",
   "ElPagination",
   "ElPopover",
-  "ElRadioButton",
-  "ElRadioGroup",
   "ElSegmented",
   "ElSelect",
   "ElSkeleton",

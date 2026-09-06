@@ -18,7 +18,6 @@ import "element-plus/theme-chalk/el-overlay.css"
 import "element-plus/theme-chalk/el-pagination.css"
 import "element-plus/theme-chalk/el-popover.css"
 import "element-plus/theme-chalk/el-popper.css"
-import "element-plus/theme-chalk/el-radio.css"
 import "element-plus/theme-chalk/el-scrollbar.css"
 import "element-plus/theme-chalk/el-segmented.css"
 import "element-plus/theme-chalk/el-select.css"
@@ -48,8 +47,6 @@ import {
   ElOption,
   ElPagination,
   ElPopover,
-  ElRadioButton,
-  ElRadioGroup,
   ElSegmented,
   ElSelect,
   ElSkeleton,
@@ -88,8 +85,6 @@ export function registerWorkspaceElement(app: App): void {
     ElOption,
     ElPagination,
     ElPopover,
-    ElRadioButton,
-    ElRadioGroup,
     ElSegmented,
     ElSelect,
     ElSkeleton,
