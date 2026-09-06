@@ -127,6 +127,7 @@ describe("Provider 与 JWT 会话", () => {
       provider_code: "local",
       username: "admin",
       password: "Temp@Password123",
+      session_mode: "refresh",
       tab_id: expect.stringMatching(/^[0-9a-f]{32}$/),
     })
     expect(session.isAuthenticated).toBe(true)
@@ -532,6 +533,34 @@ describe("历史 Storage 残留不得再次导入 Access Token", () => {
       }
     },
   )
+
+  it("无 Web Locks 登录不写 tab binding 且响应为短会话", async () => {
+    vi.stubGlobal("navigator", {})
+    const fetch = vi.fn().mockResolvedValue(
+      response({
+        session_mode: "access_only",
+        token: "jwt-token",
+        expires_in: 900,
+        user: admin,
+      }),
+    )
+    vi.stubGlobal("fetch", fetch)
+    const session = useSessionStore()
+
+    await expect(session.login("local", "admin", "Temp@Password123")).resolves.toEqual({
+      nextAction: "authenticated",
+    })
+
+    expect(JSON.parse(String(fetch.mock.calls[0][1].body))).toEqual({
+      provider_code: "local",
+      username: "admin",
+      password: "Temp@Password123",
+      session_mode: "access_only",
+    })
+    expect(session.sessionMode).toBe("access_only")
+    expect(sessionStorage.getItem(REFRESH_TAB_ID_KEY)).toBeNull()
+    expect(getAccessToken()).toBe("jwt-token")
+  })
 
   it("无 Web Locks 时 Cookie 恢复立即失败且不请求 refresh", async () => {
     vi.stubGlobal("navigator", {})

@@ -9,9 +9,10 @@ import {
   refreshRequest,
   type AuthProvider,
   type PlatformUser,
+  type SessionMode,
   type UserRole,
 } from "../api/auth"
-import { isSafeSingleTabMode } from "../api/refreshLock"
+import { detectSessionMode, isAccessOnlySessionMode } from "../api/refreshLock"
 import {
   invalidateSessionGeneration,
   SessionGenerationStaleError,
@@ -22,6 +23,7 @@ import {
   clearAccessSession,
   clearRefreshTabBinding,
   getAccessToken,
+  getSessionMode,
   getSessionUser,
   LEGACY_TOKEN_KEY,
   LEGACY_USER_KEY,
@@ -105,6 +107,7 @@ export const useSessionStore = defineStore("session", {
     displayName: getSessionUser()?.display_name ?? "",
     dept: getSessionUser()?.dept ?? "",
     role: (getSessionUser()?.role ?? null) as UserRole | null,
+    sessionMode: (getSessionMode() ?? null) as SessionMode | null,
     providers: [] as AuthProvider[],
   }),
   getters: {
@@ -121,9 +124,10 @@ export const useSessionStore = defineStore("session", {
       this.displayName = ""
       this.dept = ""
       this.role = null
+      this.sessionMode = null
       clearAccessSession()
     },
-    apply(token: string, user: PlatformUser) {
+    apply(token: string, user: PlatformUser, mode: SessionMode = "refresh") {
       clearLegacyPersistence()
       this.token = token
       this.accountId = user.account_id
@@ -133,7 +137,8 @@ export const useSessionStore = defineStore("session", {
       this.displayName = user.display_name
       this.dept = user.dept
       this.role = user.role
-      setAccessSession(token, user)
+      this.sessionMode = mode === "access_only" ? "access_only" : "refresh"
+      setAccessSession(token, user, this.sessionMode)
     },
     clear() {
       try {
@@ -160,20 +165,20 @@ export const useSessionStore = defineStore("session", {
       const memoryToken = getAccessToken()
       const memoryUser = getSessionUser()
       if (memoryToken && memoryUser && isPlatformUser(memoryUser)) {
-        this.apply(memoryToken, memoryUser)
+        this.apply(memoryToken, memoryUser, getSessionMode() ?? "refresh")
         return
       }
       this.resetIdentity()
     },
     async restoreFromCookie(): Promise<boolean> {
       if (this.token) return true
-      if (isSafeSingleTabMode()) return false
+      if (isAccessOnlySessionMode() || this.sessionMode === "access_only") return false
       try {
         return await withSessionGeneration({}, async ({ isLive, signal }) => {
           if (this.token) return true
           const result = await refreshRequest(signal)
           if (!isLive()) return false
-          this.apply(result.token, result.user)
+          this.apply(result.token, result.user, result.session_mode)
           return true
         })
       } catch (error) {
@@ -186,7 +191,7 @@ export const useSessionStore = defineStore("session", {
       }
     },
     async revalidateOnResume(): Promise<boolean> {
-      if (isSafeSingleTabMode()) {
+      if (isAccessOnlySessionMode() || this.sessionMode === "access_only") {
         this.clearAllTabs()
         return false
       }
@@ -194,7 +199,7 @@ export const useSessionStore = defineStore("session", {
         return await withSessionGeneration({ invalidateFirst: true }, async ({ isLive, signal }) => {
           const result = await refreshRequest(signal)
           if (!isLive()) return false
-          this.apply(result.token, result.user)
+          this.apply(result.token, result.user, result.session_mode)
           return true
         })
       } catch (error) {
@@ -228,8 +233,12 @@ export const useSessionStore = defineStore("session", {
               expiresAt: Date.now() + response.expires_in * 1000,
             }
           }
-          this.apply(response.token, response.user)
-          // 登录会覆盖浏览器级 Refresh Cookie；兄弟标签页必须销毁旧主体。
+          const mode =
+            response.session_mode === "access_only" || response.session_mode === "refresh"
+              ? response.session_mode
+              : detectSessionMode()
+          this.apply(response.token, response.user, mode)
+          // Refresh 登录会覆盖浏览器级 Cookie；Access-Only 也会清旧 Cookie。兄弟标签页销毁旧主体。
           broadcastSessionClear()
           return { nextAction: "authenticated" }
         })

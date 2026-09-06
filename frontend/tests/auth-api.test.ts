@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { loginRequest, refreshRequest } from "../src/api/auth"
-import { beginRefreshTabBinding } from "../src/api/sessionTokens"
+import { beginRefreshTabBinding, getRefreshTabBinding, setAccessSession } from "../src/api/sessionTokens"
 
 const USER = {
   account_id: 8,
@@ -10,7 +10,7 @@ const USER = {
   username: "operator01",
   display_name: "测试用户",
   dept: "研发部",
-  role: "operator",
+  role: "operator" as const,
 }
 
 afterEach(() => {
@@ -19,6 +19,48 @@ afterEach(() => {
 })
 
 describe("认证请求边界", () => {
+  it("无 Web Locks 登录请求 access_only 且不建立 tab binding", async () => {
+    vi.stubGlobal("navigator", {})
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          session_mode: "access_only",
+          token: "access.jwt",
+          expires_in: 900,
+          user: USER,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    await loginRequest("local", "operator01", "password")
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toEqual({
+      provider_code: "local",
+      username: "operator01",
+      password: "password",
+      session_mode: "access_only",
+    })
+    expect(String(fetchMock.mock.calls[0][1].body)).not.toContain("tab_id")
+    expect(getRefreshTabBinding()).toBeNull()
+    expect(sessionStorage.getItem("sms_refresh_tab_id")).toBeNull()
+  })
+
+  it("Access-Only 在客户端阻断 refresh", async () => {
+    vi.stubGlobal("navigator", {})
+    const fetchMock = vi.fn()
+    vi.stubGlobal("fetch", fetchMock)
+    setAccessSession("access.jwt", USER, "access_only")
+
+    await expect(refreshRequest()).rejects.toMatchObject({
+      name: "AuthApiError",
+      status: 401,
+      code: "UNAUTHORIZED",
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it("refresh 只发送 tab_id 并显式使用同源 Cookie", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(

@@ -1,5 +1,8 @@
 import { AUTH_JSON_MAX_BYTES, HttpBodyError, fetchJsonWithDeadline } from "./httpDeadline"
-import { beginRefreshTabBinding, clearRefreshTabBinding, getRefreshTabBinding } from "./sessionTokens"
+import { detectSessionMode, type SessionMode } from "./refreshLock"
+import { beginRefreshTabBinding, clearRefreshTabBinding, getRefreshTabBinding, getSessionMode } from "./sessionTokens"
+
+export type { SessionMode }
 
 /**
  * 本模块是 pre-auth 流程（登录/刷新/改密/注销），刻意不走 client.ts 的
@@ -36,12 +39,22 @@ export interface PlatformUser {
   role: UserRole
 }
 
-export interface LoginSuccess {
+export interface RefreshLoginSuccess {
+  session_mode: "refresh"
   token: string
   expires_in: number
   refresh_expires_in: number
   user: PlatformUser
 }
+
+export interface AccessOnlyLoginSuccess {
+  session_mode: "access_only"
+  token: string
+  expires_in: number
+  user: PlatformUser
+}
+
+export type LoginSuccess = RefreshLoginSuccess | AccessOnlyLoginSuccess
 
 export interface PasswordChangeRequired {
   change_token: string
@@ -127,6 +140,26 @@ export async function loginRequest(
   password: string,
   signal?: AbortSignal,
 ): Promise<LoginResponse> {
+  const sessionMode = detectSessionMode()
+  if (sessionMode === "access_only") {
+    return requireJson(
+      await authJson<LoginResponse>(
+        "/api/v1/web/auth/login",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            provider_code: providerCode,
+            username,
+            password,
+            session_mode: "access_only",
+          }),
+        },
+        PASSWORD_AUTH_REQUEST_TIMEOUT_MS,
+        signal,
+      ),
+    )
+  }
   const tabId = beginRefreshTabBinding()
   try {
     return requireJson(
@@ -135,7 +168,13 @@ export async function loginRequest(
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ provider_code: providerCode, username, password, tab_id: tabId }),
+          body: JSON.stringify({
+            provider_code: providerCode,
+            username,
+            password,
+            session_mode: "refresh",
+            tab_id: tabId,
+          }),
         },
         PASSWORD_AUTH_REQUEST_TIMEOUT_MS,
         signal,
@@ -147,13 +186,16 @@ export async function loginRequest(
   }
 }
 
-export async function refreshRequest(signal?: AbortSignal): Promise<LoginSuccess> {
+export async function refreshRequest(signal?: AbortSignal): Promise<RefreshLoginSuccess> {
+  if (detectSessionMode() === "access_only" || getSessionMode() === "access_only") {
+    throw new AuthApiError(401, "UNAUTHORIZED", "当前为短会话模式，请重新登录")
+  }
   const tabId = getRefreshTabBinding()
   if (!tabId) {
     throw new AuthApiError(401, "UNAUTHORIZED", "当前标签页会话绑定缺失，请重新登录")
   }
   return requireJson(
-    await authJson<LoginSuccess>(
+    await authJson<RefreshLoginSuccess>(
       "/api/v1/web/auth/refresh",
       {
         method: "POST",

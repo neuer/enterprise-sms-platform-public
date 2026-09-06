@@ -125,6 +125,33 @@ describe("统一 API 请求", () => {
     expect(unauthorized).toHaveBeenCalledOnce()
   })
 
+  it("Access-Only 收到 401 时不 refresh 也不重放", async () => {
+    vi.stubGlobal("navigator", {})
+    setAccessSession(
+      "expired",
+      {
+        account_id: 8,
+        identity_id: 18,
+        provider_code: "local",
+        username: "admin",
+        display_name: "管理员",
+        dept: "平台部",
+        role: "admin",
+      },
+      "access_only",
+    )
+    const fetch = vi.fn().mockResolvedValue(response({ code: "UNAUTHORIZED" }, 401))
+    vi.stubGlobal("fetch", fetch)
+    const unauthorized = watchUnauthorized()
+
+    await expect(apiRequest("/reports/dashboard", { method: "GET" })).rejects.toThrow("UNAUTHORIZED")
+
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual(["/api/v1/web/reports/dashboard"])
+    expect(fetch.mock.calls.some(([url]) => url === "/api/v1/web/auth/refresh")).toBe(false)
+    expect(getAccessToken()).toBeNull()
+    expect(unauthorized).toHaveBeenCalledOnce()
+  })
+
   it("访问令牌失效时单次轮换 refresh token 并重放原请求", async () => {
     const refreshed = watchUnauthorized()
     const sessionRefreshed = vi.fn()

@@ -323,9 +323,7 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
     )
     frequency_values = _values(snapshot.facts.frequency_filtered)
     for category in CATEGORIES:
-        frequency_filtered.labels(category=category).set(
-            frequency_values.get(category, 0.0)
-        )
+        frequency_filtered.labels(category=category).set(frequency_values.get(category, 0.0))
 
     poll_lag = Gauge(
         "sms_poll_lag_seconds",
@@ -362,9 +360,7 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
     )
     stalled_values = _values(snapshot.facts.worker_stalled_leases)
     for task_kind in ("callback", "export"):
-        stalled_leases.labels(task_kind=task_kind).set(
-            stalled_values.get(task_kind, 0.0)
-        )
+        stalled_leases.labels(task_kind=task_kind).set(stalled_values.get(task_kind, 0.0))
 
     lease_events = Gauge(
         "sms_worker_lease_events",
@@ -417,9 +413,7 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
             ("state",),
             registry=registry,
         )
-        database_connections.labels(state="open").set(
-            snapshot.runtime.resources.database_open
-        )
+        database_connections.labels(state="open").set(snapshot.runtime.resources.database_open)
         database_connections.labels(state="checked_out").set(
             snapshot.runtime.resources.database_checked_out
         )
@@ -468,18 +462,12 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
                 component=component.component,
                 state="checked_out",
             ).set(component.checked_out)
-            database_pool_budget.labels(component=component.component).set(
-                component.budget
-            )
+            database_pool_budget.labels(component=component.component).set(component.budget)
             database_pool_acquisitions.labels(component=component.component).set(
                 component.acquisitions
             )
-            database_pool_wait.labels(component=component.component).set(
-                component.wait_seconds
-            )
-            database_pool_timeouts.labels(component=component.component).set(
-                component.timeouts
-            )
+            database_pool_wait.labels(component=component.component).set(component.wait_seconds)
+            database_pool_timeouts.labels(component=component.component).set(component.timeouts)
             database_pool_leaks.labels(component=component.component).set(
                 component.leaked_on_shutdown
             )
@@ -489,12 +477,8 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
             ("state",),
             registry=registry,
         )
-        redis_connections.labels(state="open").set(
-            snapshot.runtime.resources.redis_open
-        )
-        redis_connections.labels(state="in_use").set(
-            snapshot.runtime.resources.redis_in_use
-        )
+        redis_connections.labels(state="open").set(snapshot.runtime.resources.redis_open)
+        redis_connections.labels(state="in_use").set(snapshot.runtime.resources.redis_in_use)
 
     auth = auth_observability_snapshot()
     created = Gauge(
@@ -739,5 +723,38 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         registry=registry,
     )
     legacy_fallback.set(auth.legacy_policy_fallback)
+    session_mode = Gauge(
+        "web_session_mode_total",
+        "Web login session mode outcomes.",
+        ("mode", "outcome"),
+        registry=registry,
+    )
+    for mode, outcome, value in auth.web_session_mode:
+        session_mode.labels(mode=mode, outcome=outcome).set(value)
+    access_only_login = Gauge(
+        "web_access_only_login_total",
+        "Access-only web logins by provider class.",
+        ("provider",),
+        registry=registry,
+    )
+    for provider, value in auth.web_access_only_login:
+        if provider in {"local", "ad", "other"}:
+            access_only_login.labels(provider=provider).set(value)
+    access_only_refresh_block = Gauge(
+        "web_access_only_refresh_block_total",
+        "Rejected refresh or upgrade attempts against access-only sessions.",
+        ("source",),
+        registry=registry,
+    )
+    for source, value in auth.web_access_only_refresh_block:
+        access_only_refresh_block.labels(source=source).set(value)
+    old_refresh_revoked = Gauge(
+        "web_old_refresh_revoked_on_access_only_login_total",
+        "Old refresh family disposal during access-only login.",
+        ("outcome",),
+        registry=registry,
+    )
+    for outcome, value in auth.web_old_refresh_revoked:
+        old_refresh_revoked.labels(outcome=outcome).set(value)
 
     return generate_latest(registry)

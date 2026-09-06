@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 
 import PasswordChangeView from "./PasswordChangeView.vue"
-import { isSafeSingleTabMode, SAFE_SINGLE_TAB_MESSAGE } from "../api/refreshLock"
+import { ACCESS_ONLY_SESSION_MESSAGE, isAccessOnlySessionMode } from "../api/refreshLock"
 import loginMarkUrl from "../assets/brand/login-egret-icon.png"
 import { useSessionStore } from "../stores/session"
 
@@ -18,8 +18,8 @@ const submitting = ref(false)
 const errorMessage = ref("")
 const successMessage = ref("")
 const pendingChange = ref<{ token: string; expiresAt: number } | null>(null)
-const safeSingleTab = isSafeSingleTabMode()
-const safeSingleTabMessage = SAFE_SINGLE_TAB_MESSAGE
+const accessOnlySession = isAccessOnlySessionMode()
+const accessOnlySessionMessage = ACCESS_ONLY_SESSION_MESSAGE
 
 /** 本期固定目录：始终画出 local / AD，服务端未返回的标未开通。 */
 const PROVIDER_CATALOG = [
@@ -163,8 +163,8 @@ function invalidateInitialPasswordChange(message: string): void {
         <i class="login-goldline" aria-hidden="true"></i>
       </div>
 
-      <p v-if="safeSingleTab" class="login-safe-mode" data-testid="login-safe-single-tab" role="status">
-        {{ safeSingleTabMessage }}
+      <p v-if="accessOnlySession" class="login-safe-mode" data-testid="login-access-only" role="status">
+        {{ accessOnlySessionMessage }}
       </p>
 
       <form @submit.prevent="submit">

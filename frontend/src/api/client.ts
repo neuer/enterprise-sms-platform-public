@@ -14,7 +14,7 @@ import {
   readJsonBody,
   readLimitedBlob,
 } from "./httpDeadline"
-import { withRefreshLock } from "./refreshLock"
+import { detectSessionMode, withRefreshLock } from "./refreshLock"
 import {
   getSessionGeneration,
   invalidateSessionGeneration,
@@ -25,6 +25,7 @@ import {
   clearAccessSession,
   clearRefreshTabBinding,
   getAccessToken,
+  getSessionMode,
   getSessionUser,
   setAccessSession,
 } from "./sessionTokens"
@@ -191,6 +192,10 @@ function clearSession(broadcast: "unauthorized" | "reauth-required" | "none" = "
 }
 
 async function refreshSession(): Promise<RefreshResult> {
+  if (detectSessionMode() === "access_only" || getSessionMode() === "access_only") {
+    clearSession()
+    return "unauthorized"
+  }
   if (refreshInFlight) return refreshInFlight
   const epochAtRequest = getSessionGeneration()
   refreshInFlight = withRefreshLock(async () => {
@@ -222,7 +227,7 @@ async function refreshSession(): Promise<RefreshResult> {
         clearSession()
         return "unauthorized"
       }
-      setAccessSession(result.token, result.user)
+      setAccessSession(result.token, result.user, result.session_mode)
       window.dispatchEvent(new Event("sms:session-refreshed"))
       return "refreshed"
     } catch (error) {

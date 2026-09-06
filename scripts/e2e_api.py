@@ -454,6 +454,7 @@ class UatSuite:
                 "provider_code": "ad",
                 "username": username,
                 "password": self.mock_password,
+                "session_mode": "refresh",
                 "tab_id": TAB_ID,
             },
         )
