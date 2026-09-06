@@ -1066,6 +1066,49 @@ def test_auth_transition_dead_letter_is_expand_only() -> None:
     assert "return" in source.split("def downgrade", 1)[1]
 
 
+def test_report_timeout_sweep_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0107_report_timeout_sweep.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.93：" in schema
+    for contract in (schema, source):
+        assert "idx_msg_sent_timeout" in contract
+        assert "idx_chunk_submitted_timeout" in contract
+        assert "report_timeout_scan_seconds" in contract
+        assert "report_timeout_batch_limit" in contract
+        assert "report_timeout_message_limit" in contract
+        assert "report_timeout_round_seconds" in contract
+        assert "report_timeout_statement_ms" in contract
+        assert "report_timeout_lock_ms" in contract
+    assert 'revision = "0107_report_timeout_sweep"' in source
+    assert 'down_revision = "0106_auth_transition_dead_letter"' in source
+    assert "CREATE INDEX IF NOT EXISTS idx_msg_sent_timeout" in source
+    assert "ON CONFLICT(key) DO NOTHING" in source
+    assert "return" in source.split("def downgrade", 1)[1]
+
+
+def test_chunk_failover_pending_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0108_chunk_failover_pending.py"
+    source = revision.read_text(encoding="utf-8")
+
+    assert "-- v1.6.94：" in schema
+    for contract in (schema, source):
+        assert "failover_pending" in contract
+        assert "idx_chunk_failover_due" in contract
+        assert "next_vendor" in contract
+        assert "route_policy_version" in contract
+        assert "failover_from_attempt_id" in contract
+        assert "ck_sms_chunk_next_vendor" in contract
+    assert 'revision = "0108_chunk_failover_pending"' in source
+    assert 'down_revision = "0107_report_timeout_sweep"' in source
+    assert "CREATE INDEX IF NOT EXISTS idx_chunk_failover_due" in source
+    downgrade = source.split("def downgrade", 1)[1]
+    assert "DROP INDEX IF EXISTS idx_chunk_failover_due" in downgrade
+    assert "failover_pending" in downgrade
+
+
 def test_idempotency_claim_lease_lifecycle_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0099_idempotency_claim_lease_lifecycle.py"

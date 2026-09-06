@@ -21,6 +21,7 @@ return 1
 COST_WINDOW_SECONDS = 60
 COST_BUCKET_TTL_SECONDS = 70
 COST_MIGRATION_TTL_SECONDS = 604800
+WRITER_CUTOVER_MARKER_KEY = "ratelimit:cost:writer_cutover"
 WEIGHTED_WINDOW_LUA = """
 local rec_key = KEYS[1]
 local seg_key = KEYS[2]
@@ -86,6 +87,20 @@ local function v1_active(key)
   end
   return total
 end
+local marker_typ = redis_type(marker_key)
+if marker_typ == 'none' then
+  return -3
+end
+if marker_typ ~= 'hash' then
+  return -2
+end
+local marker_state = redis.call('HGET', marker_key, 'state')
+local marker_schema = redis.call('HGET', marker_key, 'schema_version')
+local marker_generation = tonumber(redis.call('HGET', marker_key, 'generation'))
+if marker_state ~= 'active_v2' or marker_schema ~= '1'
+    or marker_generation == nil or marker_generation < 1 then
+  return -4
+end
 local v2_rec = ring_total(rec_key)
 local v2_seg = ring_total(seg_key)
 local v1_rec = v1_active(v1_rec_key)
@@ -93,6 +108,7 @@ local v1_seg = v1_active(v1_seg_key)
 if v1_rec == nil or v1_seg == nil then
   return -2
 end
+-- 静态 v1 继承只在旧 writer 已冻结后有效；max 不是混跑独立增量的并集。
 local recipients = v2_rec
 if v1_rec > recipients then
   recipients = v1_rec
@@ -127,13 +143,6 @@ local function ring_add(key, weight)
 end
 ring_add(rec_key, rec_add)
 ring_add(seg_key, seg_add)
-if redis.call('HGET', marker_key, 'generation') == false then
-  redis.call('HSET', marker_key, 'schema_version', '2')
-  redis.call('HSET', marker_key, 'cutover_epoch', tostring(now_sec))
-  redis.call('HSET', marker_key, 'generation', '1')
-  redis.call('HSET', marker_key, 'state', 'active')
-  redis.call('EXPIRE', marker_key, marker_ttl)
-end
 return 1
 """
 
@@ -191,8 +200,9 @@ class ApplicationRateLimiter:
     ) -> None:
         """按收件人与预计分段计入分钟额度；1×10000 与 100×100 等价。
 
-        迁移窗口内同时读 v1 `:buckets` 与 v2 环形槽，按 max 合并后只写 v2，
-        避免空 v2 被当成零而重置活动窗口额度。
+        只在受控切换把全局 marker 置为 active_v2 之后扣减同一个 v2 计数。
+        静态读取仍活动的 v1 基线并折入 v2，这只在旧 writer 已冻结后有效；
+        max(v1,v2) 不能合并混跑时两边各自的独立增量。业务请求不改 marker。
         """
 
         if (
@@ -210,7 +220,7 @@ class ApplicationRateLimiter:
                 f"ratelimit:app:{app_id}:segments:v2",
                 f"ratelimit:app:{app_id}:recipients:buckets",
                 f"ratelimit:app:{app_id}:segments:buckets",
-                f"ratelimit:app:{app_id}:cost:mig",
+                WRITER_CUTOVER_MARKER_KEY,
                 str(recipient_limit),
                 str(recipient_count),
                 str(segment_limit),

@@ -40,8 +40,13 @@ def _settings(database_url: Any) -> Any:
     return cast(Any, SimpleNamespace(database_url=database_url))
 
 
-def _store(database_url: Any) -> SqlChunkStore:
-    return SqlChunkStore(_crypto(), settings=_settings(database_url), redis=object())
+def _store(database_url: Any, registry: Any = None) -> SqlChunkStore:
+    return SqlChunkStore(
+        _crypto(),
+        settings=_settings(database_url),
+        redis=object(),
+        registry=registry,
+    )
 
 
 def child_finalize() -> None:
@@ -109,6 +114,7 @@ async def _seed_chunk(
     submitted_at: bool = False,
     message_status: str = "pending",
     batch_status: str = "sending",
+    category: str = "notice",
 ) -> tuple[int, int]:
     custom_id = f"{nonce[:24]}{index:08d}"
     protected = _crypto().protect_phone("13800138000")
@@ -119,10 +125,10 @@ async def _seed_chunk(
                     text(
                         """
                         INSERT INTO sms_batch(
-                          batch_no,channel,app_id,dept,content,
+                          batch_no,channel,app_id,dept,content,category,
                           display_content_enc,send_content_enc,status,total
                         ) VALUES(
-                          :batch_no,'api',:app_id,'平台部','[encrypted]',
+                          :batch_no,'api',:app_id,'平台部','[encrypted]',:category,
                           :content_enc,:content_enc,:status,1
                         ) RETURNING id
                         """
@@ -132,6 +138,7 @@ async def _seed_chunk(
                         "app_id": app_id,
                         "content_enc": b"cipher-content",
                         "status": batch_status,
+                        "category": category,
                     },
                 )
             ).scalar_one()
@@ -194,7 +201,8 @@ async def _snapshot(engine: Any, chunk_id: int) -> dict[str, Any]:
                 text(
                     """
                     SELECT c.status AS chunk_status, c.vendor_task_id,
-                           c.route_generation, a.outcome, a.generation,
+                           c.route_generation, c.next_vendor,
+                           c.failover_from_attempt_id, a.outcome, a.generation,
                            a.safe_to_failover, a.vendor_id,
                            (
                              SELECT m.status FROM sms_message m
@@ -280,19 +288,24 @@ async def test_finalize_submitted_is_atomic_on_postgres() -> None:
         assert state["chunk_status"] == "submitted"
         assert state["message_status"] == "sent"
         assert state["vendor_task_id"] is not None
-        with pytest.raises(RuntimeError, match="irreversible"):
+        with pytest.raises(RuntimeError, match="blocked by terminal chunk"):
             await store.begin_vendor_invoke(
                 chunk_id, vendor_id="secondary", adapter_id="zhihui", reason="failover"
             )
 
         batch_id, stuck_id = await _seed_chunk(
-            engine, app_id=app_id, nonce=nonce, index=2, status="failed"
+            engine, app_id=app_id, nonce=nonce, index=2
         )
         batch_ids.append(batch_id)
         chunk_ids.append(stuck_id)
         stuck = await store.begin_vendor_invoke(
             stuck_id, vendor_id="zhihui", adapter_id="zhihui", reason="primary"
         )
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE sms_chunk SET status='failed' WHERE id=:id"),
+                {"id": stuck_id},
+            )
         lost = await store.finalize_vendor_attempt(
             stuck.id,
             stuck_id,
@@ -341,7 +354,7 @@ async def test_finalize_uncertain_and_rejects_on_postgres() -> None:
         state = await _snapshot(engine, uncertain_id)
         assert state["outcome"] == "uncertain"
         assert state["chunk_status"] == "uncertain"
-        with pytest.raises(RuntimeError, match="irreversible"):
+        with pytest.raises(RuntimeError, match="blocked by terminal chunk"):
             await store.begin_vendor_invoke(
                 uncertain_id, vendor_id="secondary", adapter_id="zhihui", reason="failover"
             )
@@ -365,13 +378,13 @@ async def test_finalize_uncertain_and_rejects_on_postgres() -> None:
         assert report.kind is FinalizeKind.APPLIED
         state = await _snapshot(engine, safe_id)
         assert state["outcome"] == "rejected"
-        assert state["chunk_status"] == "submitting"
+        assert state["chunk_status"] == "failed"
+        assert state["message_status"] == "failed"
         assert state["safe_to_failover"] is True
-        next_attempt = await store.begin_vendor_invoke(
-            safe_id, vendor_id="secondary", adapter_id="zhihui", reason="failover"
-        )
-        assert next_attempt.generation == attempt.generation + 1
-        assert next_attempt.vendor_id == "secondary"
+        with pytest.raises(RuntimeError, match="terminal|first-invoke"):
+            await store.begin_vendor_invoke(
+                safe_id, vendor_id="secondary", adapter_id="zhihui", reason="failover"
+            )
 
         batch_id, unsafe_id = await _seed_chunk(
             engine, app_id=app_id, nonce=nonce, index=3
@@ -517,7 +530,7 @@ async def test_reconcile_repairs_or_isolates_submitted_invoking_on_postgres() ->
         unproven = await _snapshot(engine, unproven_id)
         assert unproven["chunk_status"] == "submitted"
         assert unproven["outcome"] == "inconsistent"
-        with pytest.raises(RuntimeError, match="irreversible"):
+        with pytest.raises(RuntimeError, match="blocked by terminal chunk"):
             await store.begin_vendor_invoke(
                 unproven_id, vendor_id="secondary", adapter_id="zhihui", reason="failover"
             )

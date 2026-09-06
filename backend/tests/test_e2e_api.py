@@ -64,9 +64,7 @@ class FakeQuotaProbe:
 
 
 def test_case_registry_is_exact_autopilot_subset() -> None:
-    expected = tuple(
-        [f"{value:02d}" for value in range(5, 21)] + ["24", "25", "26", "27", "29"]
-    )
+    expected = tuple([f"{value:02d}" for value in range(5, 21)] + ["24", "25", "26", "27", "29"])
     assert expected == CASE_IDS
 
 
@@ -447,6 +445,7 @@ def test_case08_restores_original_market_window_before_case09(
     previous = "07:13-19:47"
     http = FakeHttp(
         [
+            HttpResponse(503, {"code": "DEPENDENCY_UNAVAILABLE"}),
             HttpResponse(
                 200,
                 [{"key": "market_send_window", "value": previous}],
@@ -466,7 +465,18 @@ def test_case08_restores_original_market_window_before_case09(
             HttpResponse(200, []),
         ]
     )
-    suite = UatSuite(http, None, {"app-mkt": "memory-key"}, run_id="fixed-run")
+    class ReadyAdmissionProbe:
+        def psql_value(self, _sql: str, **_variables: str) -> str:
+            return "ready"
+
+    suite = UatSuite(
+        http,
+        None,
+        {"app-mkt": "memory-key", "app-iam": "memory-key"},
+        probe=ReadyAdmissionProbe(),  # type: ignore[arg-type]
+        run_id="fixed-run",
+    )
+    suite.admission_snapshot_ttl_s = 0
     suite._tokens["admin01"] = "memory-token"
     monkeypatch.setattr(
         e2e_api,
@@ -531,7 +541,7 @@ def test_fault_barrier_waits_for_queued_batches_and_chunks_that_can_still_send()
     assert "b.status = 'queued'" in barrier
     assert "c.batch_id = b.id" in barrier
     assert (
-        "c.status IN ('pending','submitting','retrying','split_capacity_blocked')"
+        "c.status IN ('pending','submitting','retrying','split_capacity_blocked','failover_pending')"  # noqa: E501
         in barrier
     )
     assert "b.status = 'sending'" not in barrier
@@ -540,14 +550,24 @@ def test_fault_barrier_waits_for_queued_batches_and_chunks_that_can_still_send()
 def test_volume_case_waits_for_open_or_expired_recovery_hold() -> None:
     source = (SCRIPTS / "e2e_api.py").read_text(encoding="utf-8")
 
-    helper = source[
-        source.index("def _refresh_admission_snapshot") : source.index("def case_05")
-    ]
+    helper = source[source.index("def _refresh_admission_snapshot") : source.index("def case_05")]
     assert "state='open' AND valid_until > now()" in helper
     assert "FROM send_admission_state WHERE scope='send'" in helper
+    assert "reason_code='recovery_hold'" in helper
+    assert "hold_until=now() - interval '1 second'" in helper
+    assert "hold_until IS NULL OR hold_until <= now()" not in helper
+    assert "persist_until_open" in helper
+    assert "timeout_s=75" in helper
+    assert "timeout_s=15" not in helper[helper.index("def _wait_admission_ready_for_volume") :]
     assert 'category="verify"' in helper
     assert 'category="notice"' not in helper
-    assert "900 +" in helper
+    refresh_start = helper.index("def _refresh_admission_snapshot")
+    refresh = helper[refresh_start : helper.index("def _seed_completed_admission_hold")]
+    assert "self.api_send(" in refresh
+    assert "self._expect(" not in refresh
+    assert "900 + nonce" in helper
+    assert "nonce % 9" not in helper
+    assert 'self._wait_admission_ready_for_volume("08")' in source
     assert 'self._wait_admission_ready_for_volume("26")' in source
     assert 'self._wait_admission_ready_for_volume("18")' not in source
     assert 'self._force_resume_and_verify_unpaused("18")' in source

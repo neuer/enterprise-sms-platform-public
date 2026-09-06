@@ -100,6 +100,9 @@ class FakeResult:
     def scalar_one_or_none(self) -> object:
         return self.scalar
 
+    def all(self) -> list[dict[str, object]]:
+        return list(self.rows)
+
     def scalars(self) -> list[object]:
         return self.scalar_values
 
@@ -786,6 +789,7 @@ async def test_recovery_repository_selects_only_recoverable_work(
 ) -> None:
     connection = FakeConnection(
         [
+            FakeResult(rows=[]),
             FakeResult(rowcount=1),
             FakeResult(rows=[{"batch_no": "batch-1", "category": "notice"}]),
             FakeResult(rows=[{"batch_no": "batch-2", "category": "market", "chunk_id": 8}]),
@@ -810,7 +814,7 @@ async def test_recovery_repository_selects_only_recoverable_work(
         ("batch", "batch-1", None),
         ("chunk", "batch-2", 8),
     ]
-    recovery_sql = connection.calls[0][0]
+    recovery_sql = connection.calls[1][0]
     assert "UPDATE sms_chunk" in recovery_sql
     assert "vendor_test_send_attempt" in recovery_sql
     assert "status='reserved'" in recovery_sql
@@ -829,9 +833,10 @@ async def test_recovery_repository_selects_only_recoverable_work(
     assert "c.status='submitted'" in recovery_sql
     assert "b.updated_at" not in recovery_sql
     assert "5 minutes" in recovery_sql
-    enqueue_sql = connection.calls[2][0]
+    enqueue_sql = connection.calls[3][0]
     assert "c.status='pending'" in enqueue_sql
-    assert "c.status='retrying'" in enqueue_sql
+    assert "retrying" in enqueue_sql
+    assert "failover_pending" in enqueue_sql
     assert "retry_not_before<=now()" in enqueue_sql
     assert "submitting" not in enqueue_sql
     assert "submitted" not in enqueue_sql
@@ -995,8 +1000,15 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
 
     connection = FakeConnection([FakeResult(scalar=None)])
     engine = bind_engine(monkeypatch, repository, connection)
-    assert await repository.report_timeout_hours() == 48
+    from app.services.runtime_policy import InvalidRuntimePolicy
+
+    with pytest.raises(InvalidRuntimePolicy, match="report_timeout_hours"):
+        await repository.report_timeout_hours()
     assert engine.disposed
+
+    connection = FakeConnection([FakeResult(scalar="48")])
+    bind_engine(monkeypatch, repository, connection)
+    assert await repository.report_timeout_hours() == 48
 
     connection = FakeConnection([FakeResult(scalar=17)])
     bind_engine(monkeypatch, repository, connection)
@@ -1159,39 +1171,7 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
         "epoch": 2,
     }
 
-    connection = FakeConnection(
-        [
-            FakeResult(scalars=[2, 3]),
-            FakeResult(),
-            FakeResult(scalar=1),
-            FakeResult(),
-            FakeResult(scalar="sending"),
-            FakeResult(),
-            FakeResult(scalar=1),
-            FakeResult(),
-            FakeResult(scalar="sending"),
-        ]
-    )
-
-    async def no_callback(
-        _connection: object,
-        _batch_id: int,
-        **_values: object,
-    ) -> None:
-        return None
-
-    monkeypatch.setattr(report_repository_module, "enqueue_batch_finished", no_callback)
-    bind_engine(monkeypatch, repository, connection)
-    assert await repository.expire_unknown(48) == 2
-    assert connection.calls[0][0].lstrip().startswith("SELECT DISTINCT m.batch_id")
-    assert "sms_batch" in connection.calls[1][0] and "FOR UPDATE" in connection.calls[1][0]
-    assert "UPDATE sms_message" in connection.calls[2][0]
-    assert "stat_dirty_date" in connection.calls[2][0]
-    assert connection.calls[1][1] == {"batch_id": 2}
-    assert connection.calls[2][1] == {"batch_id": 2, "hours": 48}
-    assert "SELECT status FROM sms_batch" in connection.calls[4][0]
-    assert "sms_batch" in connection.calls[5][0] and "FOR UPDATE" in connection.calls[5][0]
-    assert "UPDATE sms_message" in connection.calls[6][0]
+    assert "expire_unknown" not in inspect.getsource(type(repository))
 
 
 @pytest.mark.asyncio

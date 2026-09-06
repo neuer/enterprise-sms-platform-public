@@ -4,9 +4,20 @@ import { createMemoryHistory, createRouter } from "vue-router"
 import { vi } from "vitest"
 
 import App from "../src/App.vue"
+import DailyPasswordChangeDialog from "../src/components/DailyPasswordChangeDialog.vue"
 import { getDashboard, type DashboardSnapshot } from "../src/api/dashboard"
 import { useApprovalBadgeStore } from "../src/stores/approvalBadge"
+import { encodeSessionRetiredMessage } from "../src/api/sessionSignals"
 import { SESSION_CLEAR_SIGNAL_KEY, useSessionStore } from "../src/stores/session"
+
+function retireSignal(session: { sessionInstanceId: string }, eventId = "e".repeat(32)): string {
+  return encodeSessionRetiredMessage({
+    version: 1,
+    type: "session-retired",
+    target_instance_id: session.sessionInstanceId,
+    event_id: eventId,
+  })
+}
 
 vi.mock("../src/api/dashboard", () => ({ getDashboard: vi.fn() }))
 
@@ -373,13 +384,15 @@ describe("应用骨架", () => {
     })
     await router.push("/dashboard")
     await router.isReady()
-    mount(App, { global: { plugins: [pinia, router] } })
+    const wrapper = mount(App, { global: { plugins: [pinia, router] } })
 
+    session.clear()
     window.dispatchEvent(new Event("sms:unauthorized"))
     await flushPromises()
 
     expect(session.isAuthenticated).toBe(false)
     expect(router.currentRoute.value.path).toBe("/login")
+    wrapper.unmount()
   })
 
   it("收到其他标签页的会话清除信号时立即清除当前会话", async () => {
@@ -406,7 +419,9 @@ describe("应用骨架", () => {
     await router.isReady()
     const wrapper = mount(App, { global: { plugins: [pinia, router] } })
 
-    window.dispatchEvent(new StorageEvent("storage", { key: SESSION_CLEAR_SIGNAL_KEY }))
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: SESSION_CLEAR_SIGNAL_KEY, newValue: retireSignal(session) }),
+    )
     await flushPromises()
 
     expect(session.isAuthenticated).toBe(false)
@@ -454,7 +469,9 @@ describe("应用骨架", () => {
     const pending = authorizedFetch("/api/v1/web/reports/dashboard", { method: "GET" })
     const assertion = expect(pending).rejects.toThrow("会话已切换")
 
-    window.dispatchEvent(new StorageEvent("storage", { key: SESSION_CLEAR_SIGNAL_KEY }))
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: SESSION_CLEAR_SIGNAL_KEY, newValue: retireSignal(session) }),
+    )
     await flushPromises()
     await assertion
     expect(aborted).toBe(true)
@@ -547,7 +564,9 @@ describe("应用骨架", () => {
     vi.stubGlobal("fetch", fetch)
     await router.push("/dashboard")
     await router.isReady()
-    const wrapper = mount(App, { global: { plugins: [pinia, router] } })
+    const wrapper = mount(App, {
+      global: { plugins: [pinia, router], stubs: { DailyPasswordChangeDialog } },
+    })
 
     expect(wrapper.find("[data-testid='change-password']").exists()).toBe(true)
     await wrapper.get("[data-testid='change-password']").trigger("click")

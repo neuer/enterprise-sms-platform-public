@@ -140,7 +140,8 @@ describe("Provider 与 JWT 会话", () => {
     expect(sessionStorage.getItem(REFRESH_TAB_ID_KEY)).toMatch(/^[0-9a-f]{32}$/)
     expect(localStorage.getItem("sms_token")).toBeNull()
     expect(localStorage.getItem("sms_user")).toBeNull()
-    expect(storageSignal).toHaveBeenCalledWith("sms_session_clear", expect.any(String))
+    expect(localStorage.getItem("sms_session_instance")).toMatch(/^[0-9a-f]{32}$/)
+    expect(storageSignal.mock.calls.some(([key]) => key === "sms_session_clear")).toBe(false)
   })
 
   it("AUTH_CONTEXT_CHANGED 时清理会话且不重放改密请求", async () => {
@@ -210,7 +211,9 @@ describe("Provider 与 JWT 会话", () => {
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_user")).toBeNull()
     expect(sessionStorage.getItem("sms_refresh_token")).toBeNull()
-    expect(localStorage.length).toBe(0)
+    expect(localStorage.getItem("sms_token")).toBeNull()
+    expect(localStorage.getItem("sms_user")).toBeNull()
+    expect(localStorage.getItem("sms_session_instance")).toMatch(/^[0-9a-f]{32}$/)
   })
 
   it("恢复时丢弃已经过期的改密令牌", () => {
@@ -289,7 +292,7 @@ describe("Provider 与 JWT 会话", () => {
     }).not.toThrow()
     session.apply("jwt-token", admin)
     await expect(session.logout()).rejects.toThrow("offline")
-    await expect(session.logout()).resolves.toBeUndefined()
+    await expect(session.logout()).resolves.toEqual({ cleared: false })
     expect(session.isAuthenticated).toBe(false)
     expect(getAccessToken()).toBeNull()
   })
@@ -414,7 +417,7 @@ describe("历史 Storage 残留不得再次导入 Access Token", () => {
     }
     try {
       if (rejects) await expect(session.logout()).rejects.toThrow("offline")
-      else await expect(session.logout()).resolves.toBeUndefined()
+      else await expect(session.logout()).resolves.toEqual({ cleared: true })
       expect(session.isAuthenticated).toBe(false)
       expect(getAccessToken()).toBeNull()
       expect(getSessionUser()).toBeNull()

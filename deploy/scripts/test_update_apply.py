@@ -56,6 +56,8 @@ class ApplyOperations(Protocol):
 
     def run_expand_migration(self, source: str, target: str) -> str: ...
 
+    def run_writer_cutover(self, update_id: str) -> None: ...
+
     def replace_backend_services(self, services: tuple[str, ...]) -> None: ...
 
     def replace_web(self) -> None: ...
@@ -128,6 +130,8 @@ class TestUpdateApply:
                     actual_migration_head=actual_head,
                 )
                 current = TestUpdateState.MIGRATED
+            step = "writer_cutover"
+            self.operations.run_writer_cutover(update_id)
             step = "replace_backend"
             self.operations.replace_backend_services(BACKEND_SERVICES)
             self.store.transition(

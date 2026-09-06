@@ -51,6 +51,9 @@ class FakeResult:
     def scalar_one(self) -> object:
         return self.scalar
 
+    def all(self) -> list[dict[str, object]]:
+        return list(self.rows)
+
     def scalars(self) -> list[object]:
         return self.scalar_values
 
@@ -136,6 +139,9 @@ def test_payload_sql_select_list_is_well_formed() -> None:
     assert "t.vendor_template_id" in source
     assert "selected_vendor" in source
     assert "route_generation" in source
+    assert "b.category" in source
+    assert "next_vendor" in source
+    assert "chunk_status" in source
 
 
 @pytest.mark.asyncio

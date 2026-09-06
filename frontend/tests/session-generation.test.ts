@@ -18,7 +18,17 @@ import {
   resetAccessSessionModule,
   setAccessSession,
 } from "../src/api/sessionTokens"
+import { encodeSessionRetiredMessage } from "../src/api/sessionSignals"
 import { SESSION_CLEAR_SIGNAL_KEY, useSessionStore } from "../src/stores/session"
+
+function retireSignal(session: { sessionInstanceId: string }, eventId = "d".repeat(32)): string {
+  return encodeSessionRetiredMessage({
+    version: 1,
+    type: "session-retired",
+    target_instance_id: session.sessionInstanceId,
+    event_id: eventId,
+  })
+}
 
 // TEST-MANUAL #442 / 8.1.1-4：真实双标签页中，B 有在途 Refresh 时 A 登录新账号，
 // B 不得恢复旧主体，且不得把 Access/Refresh 写入 Web Storage。
@@ -197,7 +207,9 @@ describe("会话代际与跨标签页 Refresh 写回", () => {
     const pending = session.revalidateOnResume()
     await waitForHeldRefresh(held)
 
-    window.dispatchEvent(new StorageEvent("storage", { key: SESSION_CLEAR_SIGNAL_KEY, newValue: "1700000000000" }))
+    window.dispatchEvent(
+      new StorageEvent("storage", { key: SESSION_CLEAR_SIGNAL_KEY, newValue: retireSignal(session) }),
+    )
     await flushPromises()
     held.releaseRefresh(staleRefreshBody("old-subject-access"))
     await expect(pending).resolves.toBe(false)

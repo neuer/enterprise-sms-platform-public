@@ -200,6 +200,7 @@ SQL
       tests/integration/test_raw_replay_fencing_postgres.py \
       tests/integration/test_ops_audit_postgres.py \
       tests/integration/test_vendor_attempt_finalize_postgres.py \
+      tests/integration/test_vendor_failover_pending_postgres.py \
       tests/integration/test_idempotency_claim_lease_postgres.py \
       tests/integration/test_inflight_ambiguous_commit_postgres.py \
       tests/integration/test_inflight_balance_conservation_postgres.py \

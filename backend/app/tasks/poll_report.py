@@ -58,7 +58,6 @@ async def _poll() -> int:
             alerts=alerts,
             spill=RawSpillStore.from_settings(settings),
         ).poll_once()
-        await repository.expire_unknown(await repository.report_timeout_hours())
         return count
     finally:
         if gateway is not None:

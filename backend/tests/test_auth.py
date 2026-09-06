@@ -259,9 +259,13 @@ class FakeKeyValue:
         return "", "orphaned"
 
     async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
+        from app.core.auth.jwt import eval_memory_jwt_script
         from app.core.auth.service import MAX_TRANSITION_ATTEMPTS, MAX_TRANSITION_RECOVERY_MS
         from app.core.auth.session_policy import eval_memory_session_policy
 
+        jwt_result = eval_memory_jwt_script(self.values, script, args)
+        if jwt_result is not None:
+            return jwt_result
         policy_result = eval_memory_session_policy(self.values, script, args)
         if policy_result is not None or "auth-session-policy-" in script:
             return policy_result
@@ -399,22 +403,30 @@ class FakeKeyValue:
         if "auth-audit-open-scan-v1" in script:
             limit = int(args[0]) if args else 32
             return list(self._open().keys())[:limit]
-        if "auth-audit-integrity-stats-v1" in script:
-            pending_without_due = 0
-            due_without_payload = 0
-            due = self._due()
-            for tid, _score in self._open().items():
-                current = self.values.get(self._audit_key(tid))
-                if (
-                    isinstance(current, dict)
-                    and current.get("state") in {"pending", "writing"}
-                    and tid not in due
-                ):
-                    pending_without_due += 1
-            for tid in due:
-                if not isinstance(self.values.get(self._audit_key(tid)), dict):
-                    due_without_payload += 1
-            return [pending_without_due, due_without_payload]
+        if "auth-audit-integrity-stats-page-v1" in script:
+            index = str(args[0]) if args else "open"
+            offset = int(args[1]) if len(args) > 1 else 0
+            limit = int(args[2]) if len(args) > 2 else 32
+            members = list(self._due().keys() if index == "due" else self._open().keys())
+            page = members[max(0, offset) : max(0, offset) + max(1, limit)]
+            matches = 0
+            if index == "due":
+                matches = sum(
+                    1
+                    for tid in page
+                    if not isinstance(self.values.get(self._audit_key(tid)), dict)
+                )
+            else:
+                due = self._due()
+                for tid in page:
+                    current = self.values.get(self._audit_key(tid))
+                    if (
+                        isinstance(current, dict)
+                        and current.get("state") in {"pending", "writing"}
+                        and tid not in due
+                    ):
+                        matches += 1
+            return [len(page), matches]
         if "auth-audit-integrity-v1" in script:
             transition_id = str(args[0])
             field = self._field_class(transition_id)
@@ -593,28 +605,7 @@ class FakeKeyValue:
                     "",
                 ]
             return [0, "", user_count, "", ip_count, 0, 0, "", "", "", ""]
-        if numkeys == 3:
-            revoked_jti, revoked_session, refresh_family, jti_ttl, session_ttl = args
-            assert int(jti_ttl) > 0 and int(session_ttl) > 0
-            self.values[str(revoked_jti)] = "1"
-            self.values[str(revoked_session)] = "1"
-            self.values.pop(str(refresh_family), None)
-            return 1
-        assert numkeys == 2
-        key, revoked_session, expected, replacement, _ttl, session_ttl = args
-        current = self.values.get(str(key))
-        if current is None:
-            assert int(session_ttl) > 0
-            self.values[str(revoked_session)] = "1"
-            self.values.pop(str(key), None)
-            return 0
-        if current != expected:
-            assert int(session_ttl) > 0
-            self.values[str(revoked_session)] = "1"
-            self.values.pop(str(key), None)
-            return -1
-        self.values[str(key)] = replacement
-        return 1
+        raise AssertionError(f"unexpected Lua script keys={numkeys}")
 
 
 def access_claims(
@@ -1682,6 +1673,8 @@ async def test_refresh_replay_revokes_family_with_authoritative_projection() -> 
     first = await service.issue_pair(access_claims(), TAB_ID)
     second = await service.rotate_refresh(first.refresh_token, TAB_ID)
     assert (await service.verify(second.token)).account_id == 8
+    sid = str(service._decode(second.refresh_token)["sid"])
+    store.values.pop(f"auth:jwt:session-revoked:{sid}", None)
 
     with pytest.raises(InvalidCredentials):
         await service.rotate_refresh(first.refresh_token, TAB_ID)
@@ -1738,6 +1731,8 @@ async def test_old_refresh_token_replay_immediately_destroys_family() -> None:
     )
     first = await service.issue_pair(access_claims(), TAB_ID)
     second = await service.rotate_refresh(first.refresh_token, TAB_ID)
+    sid = str(service._decode(second.refresh_token)["sid"])
+    store.values.pop(f"auth:jwt:session-revoked:{sid}", None)
 
     with pytest.raises(InvalidCredentials):
         await service.rotate_refresh(first.refresh_token, TAB_ID)

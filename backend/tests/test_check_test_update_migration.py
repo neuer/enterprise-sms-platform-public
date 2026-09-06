@@ -119,6 +119,8 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0104_uncertain_web_usage_subject",
         "0105_admission_recovery_hold",
         "0106_auth_transition_dead_letter",
+        "0107_report_timeout_sweep",
+        "0108_chunk_failover_pending",
     ]
 
 

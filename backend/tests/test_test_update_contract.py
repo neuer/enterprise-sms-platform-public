@@ -794,6 +794,7 @@ def test_phase0_production_control_paths_are_safe_non_runtime_inputs() -> None:
             "scripts/deploy_release_remote.py",
             "public-repository.json",
             "deploy/scripts/prepare_runtime_secrets.py",
+            "deploy/scripts/redis_ha_preflight.py",
             "deploy/scripts/redis_tls_preflight.py",
             "deploy/scripts/redis_tls_rotation_guard.py",
             "deploy/scripts/release_manager.py",
@@ -839,6 +840,12 @@ def test_runtime_verification_scripts_are_explicitly_non_runtime() -> None:
             "scripts/verify_all.sh",
             "scripts/verify_ci_commit.py",
             "scripts/verify_vendor_postgres_recovery.sh",
+            "scripts/check_pre_vcs_gates.py",
+            "scripts/check_spec_consistency.py",
+            "scripts/install_git_hooks.sh",
+            "scripts/perf_capacity.py",
+            "scripts/perf_fault_matrix.py",
+            "scripts/subset_fonts.py",
         ]
     )
 
@@ -1307,6 +1314,30 @@ def test_filter_bar_preview_keeps_approval_view_high_risk() -> None:
     assert change.migration_changed is False
 
 
+def test_local_git_hooks_and_publication_docs_are_safe_non_runtime_inputs() -> None:
+    change = classify_changed_paths(
+        [
+            ".cursor/hooks.json",
+            ".cursor/hooks/block-git-without-gates.sh",
+            ".githooks/pre-commit",
+            ".githooks/pre-push",
+            "CONTRIBUTING.md",
+            "PUBLICATION.md",
+            "README.md",
+            "docs/runbooks/api-key-pepper-upgrade.md",
+            "docs/runbooks/app-rate-limit-cutover.md",
+            "docs/runbooks/auth-session-policy-issue.md",
+            "docs/runbooks/auth-transition-audit.md",
+            "docs/runbooks/send-admission-lanes.md",
+            "docs/runbooks/uncertain-web-resend.md",
+        ]
+    )
+
+    assert change.components == frozenset()
+    assert change.runtime_changed is False
+    assert change.risk == "none"
+
+
 def test_repository_guidance_and_rehearsal_report_are_safe_non_runtime_inputs() -> None:
     change = classify_changed_paths(
         [
@@ -1448,7 +1479,6 @@ def test_rebaseline_accepts_reviewed_historical_non_runtime_paths() -> None:
         "deploy/production-storage-manifest.example.json",
         "deploy/scripts/initialize_production_storage.py",
         "deploy/scripts/offline_image_archive.py",
-        "scripts/check_spec_consistency.py",
         "scripts/create_offline_image_index.py",
     ],
 )
@@ -1647,6 +1677,14 @@ def test_every_host_control_asset_is_high_risk_outside_cutover(path: str) -> Non
     assert change.risk == "high-risk"
     assert change.components == frozenset({"api"})
     assert change.high_risk_paths == (path,)
+
+
+def test_writer_protocol_metadata_is_high_risk() -> None:
+    change = classify_changed_paths(["deploy/writer-protocol.json"])
+
+    assert change.risk == "high-risk"
+    assert change.components == frozenset({"api"})
+    assert change.high_risk_paths == ("deploy/writer-protocol.json",)
 
 
 def test_public_cutover_accepts_the_complete_host_control_asset_set() -> None:

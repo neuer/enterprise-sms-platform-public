@@ -9,9 +9,15 @@ import pytest
 from redis.asyncio import Redis
 
 from app.services.app_ratelimit import (
+    COST_WINDOW_SECONDS,
+    WRITER_CUTOVER_MARKER_KEY,
     ApplicationRateLimiter,
     ApplicationRateLimitExceeded,
     ControlPlaneUnavailable,
+)
+from app.services.app_ratelimit_cutover import (
+    CUTOVER_ADMISSION_REASON,
+    CUTOVER_SAFETY_MARGIN_SECONDS,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -30,6 +36,25 @@ def _app_id() -> int:
     return 8_000_000 + int.from_bytes(uuid4().bytes[:3], "big")
 
 
+async def _seed_active_marker(redis: Redis, now_sec: int) -> None:
+    await redis.hset(
+        WRITER_CUTOVER_MARKER_KEY,
+        mapping={
+            "schema_version": "1",
+            "generation": "1",
+            "target_writer_version": "2",
+            "minimum_writer_version": "2",
+            "fence_time": str(now_sec - 80),
+            "not_before": str(now_sec - 15),
+            "state": "active_v2",
+            "release_binding": "rel-676",
+            "admission_reason": CUTOVER_ADMISSION_REASON,
+            "window_seconds": str(COST_WINDOW_SECONDS),
+            "safety_margin_seconds": str(CUTOVER_SAFETY_MARGIN_SECONDS),
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_real_redis_exhausted_v1_does_not_reset_on_v2() -> None:
     redis = await _client()
@@ -37,9 +62,9 @@ async def test_real_redis_exhausted_v1_does_not_reset_on_v2() -> None:
     rec_v1 = f"ratelimit:app:{app_id}:recipients:buckets"
     seg_v1 = f"ratelimit:app:{app_id}:segments:buckets"
     rec_v2 = f"ratelimit:app:{app_id}:recipients:v2"
-    mig = f"ratelimit:app:{app_id}:cost:mig"
     try:
         now_sec = int((await redis.time())[0])
+        await _seed_active_marker(redis, now_sec)
         await redis.hset(rec_v1, mapping={str(now_sec): "10000"})
         await redis.hset(seg_v1, mapping={str(now_sec): "10000"})
         await redis.expire(rec_v1, 70)
@@ -55,9 +80,9 @@ async def test_real_redis_exhausted_v1_does_not_reset_on_v2() -> None:
             )
         assert await redis.exists(rec_v2) == 0
         assert await redis.hget(rec_v1, str(now_sec)) == "10000"
-        assert await redis.exists(mig) == 0
+        assert await redis.hget(WRITER_CUTOVER_MARKER_KEY, "state") == "active_v2"
     finally:
-        await redis.delete(rec_v1, seg_v1, rec_v2, f"ratelimit:app:{app_id}:segments:v2", mig)
+        await redis.delete(rec_v1, seg_v1, rec_v2, f"ratelimit:app:{app_id}:segments:v2")
         await redis.aclose()
 
 
@@ -70,9 +95,9 @@ async def test_real_redis_partial_v1_is_inherited_by_two_writers() -> None:
     seg_v1 = f"ratelimit:app:{app_id}:segments:buckets"
     rec_v2 = f"ratelimit:app:{app_id}:recipients:v2"
     seg_v2 = f"ratelimit:app:{app_id}:segments:v2"
-    mig = f"ratelimit:app:{app_id}:cost:mig"
     try:
         now_sec = int((await redis.time())[0])
+        await _seed_active_marker(redis, now_sec)
         await redis.hset(rec_v1, mapping={str(now_sec): "8000"})
         await redis.hset(seg_v1, mapping={str(now_sec): "8000"})
         first = ApplicationRateLimiter(redis)
@@ -100,15 +125,14 @@ async def test_real_redis_partial_v1_is_inherited_by_two_writers() -> None:
                 segment_limit=10_000,
             )
         assert await redis.hget(rec_v1, str(now_sec)) == "8000"
-        assert await redis.hget(mig, "state") == "active"
-        assert await redis.hget(mig, "schema_version") == "2"
+        assert await redis.hget(WRITER_CUTOVER_MARKER_KEY, "state") == "active_v2"
         # 首次写入把 v1 差额折进 v2，两笔 1000 后环形槽总量为 10000，而不是 2000。
         copied = 0
         for slot in range(60):
             copied += int(await redis.hget(rec_v2, f"w{slot}") or 0)
         assert copied == 10_000
     finally:
-        await redis.delete(rec_v1, seg_v1, rec_v2, seg_v2, mig)
+        await redis.delete(rec_v1, seg_v1, rec_v2, seg_v2)
         await redis.aclose()
         await second.aclose()
 

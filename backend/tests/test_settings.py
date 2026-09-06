@@ -1042,3 +1042,27 @@ def test_raw_spill_quotas_have_upper_and_lower_bounds() -> None:
             vendor_mock=True,
             raw_spill_reclaim_max_header_bytes=64,
         )
+
+
+def test_auth_session_policy_windows_require_refresh_less_than_staleness() -> None:
+    module = load_settings_module()
+    with pytest.raises(ValueError, match="AUTH_SESSION_POLICY_REFRESH_INTERVAL_S"):
+        module.Settings(
+            _env_file=None,
+            environment="test",
+            debug=True,
+            auth_mock=True,
+            vendor_mock=True,
+            auth_session_policy_refresh_interval_s=15,
+            auth_session_policy_max_staleness_s=15,
+        )
+    settings = module.Settings(
+        _env_file=None,
+        environment="test",
+        debug=True,
+        auth_mock=True,
+        vendor_mock=True,
+    )
+    assert settings.auth_session_policy_refresh_interval_s == 5.0
+    assert settings.auth_session_policy_max_staleness_s == 15.0
+    assert settings.auth_session_policy_reconcile_timeout_s == 2.0

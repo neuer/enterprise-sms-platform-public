@@ -593,6 +593,36 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         registry=registry,
     )
     due_without_payload.set(auth.transition_due_without_payload)
+    scan_cycles = Gauge(
+        "auth_transition_integrity_scan_cycles_completed",
+        "Completed auth transition hash-scan cycles.",
+        registry=registry,
+    )
+    scan_cycles.set(auth.integrity_scan_cycles_completed)
+    scan_in_progress = Gauge(
+        "auth_transition_integrity_scan_in_progress",
+        "Whether an auth transition hash-scan cycle is in progress.",
+        registry=registry,
+    )
+    scan_in_progress.set(auth.integrity_scan_in_progress)
+    scan_processed = Gauge(
+        "auth_transition_integrity_scan_processed",
+        "Auth transition hash keys processed in the last reconcile tick.",
+        registry=registry,
+    )
+    scan_processed.set(auth.integrity_scan_processed)
+    scan_age = Gauge(
+        "auth_transition_integrity_scan_age_seconds",
+        "Seconds since the last completed auth transition hash-scan cycle.",
+        registry=registry,
+    )
+    scan_age.set(auth.integrity_scan_age_seconds)
+    stats_complete = Gauge(
+        "auth_transition_integrity_stats_complete",
+        "Whether integrity gauges are from the last complete stats cycle.",
+        registry=registry,
+    )
+    stats_complete.set(auth.integrity_stats_complete)
     dead_letter = Gauge(
         "auth_transition_dead_letter_total",
         "Operational dead-letter facts for orphaned auth transitions.",

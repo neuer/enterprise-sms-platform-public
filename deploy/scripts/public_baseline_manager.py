@@ -1087,6 +1087,9 @@ class BaselineUpdateOperations:
     def require_owned_update_pauses(self, update_id: str) -> None:
         self.delegate.require_owned_update_pauses(update_id)
 
+    def run_writer_cutover(self, update_id: str) -> None:
+        self.delegate.run_writer_cutover(update_id)
+
     def run_expand_migration(self, source: str, target: str) -> str:
         raise PublicBaselineManagerError("baseline migration is forbidden")
 

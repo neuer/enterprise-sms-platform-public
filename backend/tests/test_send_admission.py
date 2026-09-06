@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -57,9 +58,10 @@ def test_capacity_bands_use_outbox_not_broker() -> None:
     )
     assert evaluate_capacity(facts(realtime_heartbeat_stale=True)) == ("open", "ok")
     assert evaluate_capacity(facts(bulk_heartbeat_stale=True)) == ("open", "ok")
-    assert evaluate_capacity(
-        facts(realtime_heartbeat_stale=True, bulk_heartbeat_stale=True)
-    ) == ("closed", "send_lanes_heartbeat_stale")
+    assert evaluate_capacity(facts(realtime_heartbeat_stale=True, bulk_heartbeat_stale=True)) == (
+        "closed",
+        "send_lanes_heartbeat_stale",
+    )
 
 
 def test_closed_recovery_creates_hold_and_returns_degraded() -> None:
@@ -145,7 +147,8 @@ def test_closed_recovery_creates_hold_and_returns_degraded() -> None:
         hold_until=None,
         previous_reason="bootstrap",
     )
-    assert (marked, marked_reason, marked_hold) == ("open", "ok", None)
+    assert (marked, marked_reason) == ("degraded", "recovery_hold")
+    assert marked_hold == now + timedelta(seconds=60)
 
 
 def test_recovery_hysteresis_holds_closed_then_degraded() -> None:
@@ -365,6 +368,59 @@ class SequenceClock:
         return self.values.pop(0)
 
 
+def _control_row(
+    *,
+    now: datetime,
+    state: str,
+    reason: str,
+    epoch: int = 1,
+    hold_until: datetime | None = None,
+    valid_until: datetime | None = None,
+) -> dict[str, object]:
+    return {
+        "state": state,
+        "reason_code": reason,
+        "state_epoch": epoch,
+        "hold_until": hold_until,
+        "valid_until": now + timedelta(seconds=10) if valid_until is None else valid_until,
+        "db_now": now,
+    }
+
+
+class ControlRepo(FakeFacts):
+    """真实 Guard 读 / CAS / 保存路径；row=None 表示缺行。"""
+
+    def __init__(
+        self,
+        payload: SendAdmissionFacts | None = None,
+        *,
+        row: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(payload)
+        self.row = row
+        self.saved: list[dict[str, object]] = []
+
+    async def load_control_state(self) -> dict[str, object] | None:
+        if self.row is None:
+            return None
+        return dict(self.row)
+
+    async def save_control_state(self, **values: object) -> dict[str, object]:
+        self.saved.append(values)
+        epoch = 1
+        if self.row is not None:
+            raw_epoch = self.row.get("state_epoch", 1)
+            if isinstance(raw_epoch, int) and not isinstance(raw_epoch, bool):
+                epoch = raw_epoch
+        return {
+            "state": values["state"],
+            "reason_code": values["reason"],
+            "state_epoch": epoch,
+            "hold_until": values["hold_until"],
+            "outcome": "saved",
+        }
+
+
 @pytest.mark.asyncio
 async def test_guard_reuses_fresh_snapshot_and_versions_on_refresh() -> None:
     repo = FakeFacts(facts(outbox_active=10))
@@ -477,7 +533,9 @@ async def test_repository_loads_same_keys_as_current_alerts() -> None:
     )
     redis = FakeRedis(["999", None, "4"])
     repository = SqlSendAdmissionRepository(
-        settings=type("S", (), {"database_url": "postgresql+asyncpg://x", "redis_control_url": "redis://x"})(),
+        settings=type(
+            "S", (), {"database_url": "postgresql+asyncpg://x", "redis_control_url": "redis://x"}
+        )(),
         redis=redis,
     )
     repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
@@ -564,7 +622,9 @@ async def test_repository_fail_closes_on_invalid_vendor_counter() -> None:
         }
     )
     repository = SqlSendAdmissionRepository(
-        settings=type("S", (), {"database_url": "postgresql+asyncpg://x", "redis_control_url": "redis://x"})(),
+        settings=type(
+            "S", (), {"database_url": "postgresql+asyncpg://x", "redis_control_url": "redis://x"}
+        )(),
         redis=FakeRedis([None, None, "bad"]),
     )
     repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
@@ -576,7 +636,9 @@ async def test_repository_fail_closes_on_invalid_vendor_counter() -> None:
 async def test_repository_records_transition_without_pii() -> None:
     connection = FakeConnection({})
     repository = SqlSendAdmissionRepository(
-        settings=type("S", (), {"database_url": "postgresql+asyncpg://x", "redis_control_url": "redis://x"})(),
+        settings=type(
+            "S", (), {"database_url": "postgresql+asyncpg://x", "redis_control_url": "redis://x"}
+        )(),
         redis=FakeRedis([]),
     )
     repository._engine = lambda: FakeEngine(connection)  # type: ignore[method-assign]
@@ -773,35 +835,243 @@ async def test_expired_snapshot_keeps_active_recovery_hold() -> None:
 
 
 @pytest.mark.asyncio
-async def test_migration_bootstrap_marker_opens_without_hold() -> None:
-    from datetime import UTC, datetime, timedelta
+async def test_bootstrap_closed_to_healthy_enters_hold_immediately() -> None:
+    now = datetime(2026, 9, 6, 4, 0, tzinfo=UTC)
+    repo = ControlRepo(
+        facts(),
+        row=_control_row(now=now, state="closed", reason="bootstrap"),
+    )
+    snap = await SendAdmissionGuard(repo).snapshot()
+    assert snap.state == "degraded"
+    assert snap.reason == "recovery_hold"
+    assert repo.saved[0]["state"] == "degraded"
+    assert repo.saved[0]["reason"] == "recovery_hold"
+    assert repo.saved[0]["hold_until"] == now + timedelta(seconds=60)
 
-    now = datetime.now(UTC)
 
-    class BootstrapRow(FakeFacts):
-        def __init__(self) -> None:
-            super().__init__(facts())
-            self.saved: list[dict[str, object]] = []
+@pytest.mark.asyncio
+async def test_bootstrap_with_existing_business_never_bypasses_hold() -> None:
+    now = datetime(2026, 9, 6, 4, 0, tzinfo=UTC)
+    repo = ControlRepo(
+        facts(outbox_active=50),
+        row=_control_row(now=now, state="closed", reason="bootstrap"),
+    )
+    snap = await SendAdmissionGuard(repo).snapshot()
+    assert snap.state == "degraded"
+    assert snap.reason == "recovery_hold"
+    assert repo.saved[0]["state"] == "degraded"
+    assert repo.saved[0]["reason"] == "recovery_hold"
+    assert repo.saved[0]["hold_until"] == now + timedelta(seconds=60)
+    with pytest.raises(SendAdmissionRejected) as rejected:
+        await SendAdmissionGuard(repo).authorize(
+            category="market",
+            channel="api",
+            recipient_count=1,
+        )
+    assert rejected.value.state == "degraded"
+    assert rejected.value.reason == "degraded_bulk"
 
+
+@pytest.mark.asyncio
+async def test_missing_or_expired_bootstrap_state_is_conservative() -> None:
+    now = datetime(2026, 9, 6, 4, 0, tzinfo=UTC)
+    missing = ControlRepo(facts(), row=None)
+    missing_snap = await SendAdmissionGuard(missing).snapshot()
+    assert missing_snap.state == "degraded"
+    assert missing_snap.reason == "recovery_hold"
+    assert missing.saved[0]["state"] == "degraded"
+    assert missing.saved[0]["reason"] == "recovery_hold"
+    assert missing.saved[0]["hold_until"] is not None
+
+    stale = ControlRepo(
+        facts(),
+        row=_control_row(
+            now=now,
+            state="closed",
+            reason="bootstrap",
+            valid_until=now - timedelta(seconds=1),
+        ),
+    )
+    stale_snap = await SendAdmissionGuard(stale).snapshot()
+    assert stale_snap.state == "degraded"
+    assert stale_snap.reason == "recovery_hold"
+    assert stale.saved[0]["state"] == "degraded"
+    assert stale.saved[0]["hold_until"] is not None
+
+    expired_open = ControlRepo(
+        facts(),
+        row=_control_row(
+            now=now,
+            state="open",
+            reason="bootstrap",
+            valid_until=now - timedelta(seconds=5),
+        ),
+    )
+    expired_snap = await SendAdmissionGuard(expired_open).snapshot()
+    assert expired_snap.state == "degraded"
+    assert expired_snap.reason == "recovery_hold"
+    assert expired_open.saved[0]["state"] != "open"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_hold_persists_until_database_deadline() -> None:
+    now = datetime(2026, 9, 6, 4, 0, tzinfo=UTC)
+    hold = now + timedelta(seconds=60)
+
+    class HoldRepo(ControlRepo):
+        async def load_control_state(self) -> dict[str, object]:
+            if not self.saved:
+                return _control_row(now=now, state="closed", reason="bootstrap")
+            later = now + timedelta(seconds=15)
+            return {
+                "state": "degraded",
+                "reason_code": "recovery_hold",
+                "state_epoch": 2,
+                "hold_until": hold,
+                "valid_until": later - timedelta(seconds=1),
+                "db_now": later,
+            }
+
+    repo = HoldRepo(facts())
+    clock = SequenceClock([0.0, 0.0, 6.0, 6.0])
+    guard = SendAdmissionGuard(repo, clock=clock)
+    first = await guard.snapshot()
+    assert first.state == "degraded"
+    assert first.reason == "recovery_hold"
+    assert repo.saved[0]["hold_until"] == hold
+    second = await guard.snapshot()
+    assert second.state == "degraded"
+    assert second.reason == "recovery_hold"
+    assert repo.saved[-1]["hold_until"] == hold
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_hold_expires_without_restarting_forever() -> None:
+    now = datetime(2026, 9, 6, 4, 0, tzinfo=UTC)
+
+    class ExpiredHoldRepo(ControlRepo):
         async def load_control_state(self) -> dict[str, object]:
             return {
-                "state": "closed",
-                "reason_code": "bootstrap",
-                "state_epoch": 1,
-                "hold_until": None,
-                "valid_until": now + timedelta(seconds=10),
+                "state": "degraded",
+                "reason_code": "recovery_hold",
+                "state_epoch": 3,
+                "hold_until": now - timedelta(seconds=1),
+                "valid_until": now - timedelta(seconds=1),
                 "db_now": now,
             }
 
-        async def save_control_state(self, **values: object) -> None:
-            self.saved.append(values)
+    repo = ExpiredHoldRepo(facts())
+    clock = SequenceClock([0.0, 0.0, 6.0, 6.0])
+    guard = SendAdmissionGuard(repo, clock=clock)
+    first = await guard.snapshot()
+    assert first.state == "open"
+    assert first.reason == "ok"
+    assert repo.saved[0]["state"] == "open"
+    assert repo.saved[0]["hold_until"] is None
+    second = await guard.snapshot()
+    assert second.state == "open"
+    assert second.reason == "ok"
+    assert repo.saved[-1]["state"] == "open"
+    assert repo.saved[-1]["hold_until"] is None
 
-    repo = BootstrapRow()
+
+@pytest.mark.asyncio
+async def test_raw_closed_overrides_any_bootstrap_marker() -> None:
+    now = datetime(2026, 9, 6, 4, 0, tzinfo=UTC)
+    repo = ControlRepo(
+        facts(outbox_active=2000),
+        row=_control_row(now=now, state="closed", reason="bootstrap"),
+    )
+    guard = SendAdmissionGuard(repo)
+    snap = await guard.snapshot()
+    assert snap.state == "closed"
+    assert snap.reason == "outbox_backlog"
+    assert repo.saved[0]["state"] == "closed"
+    assert repo.saved[0]["hold_until"] is None
+    with pytest.raises(SendAdmissionRejected) as rejected:
+        await guard.authorize(category="verify", channel="api", recipient_count=1)
+    assert rejected.value.state == "closed"
+    assert rejected.value.reason == "outbox_backlog"
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_snapshot_cas_adopts_stricter_winner() -> None:
+    from app.services.send_admission_repository import AdmissionControlConflict
+
+    now = datetime(2026, 9, 6, 4, 0, tzinfo=UTC)
+    closed_winner = {
+        "state": "closed",
+        "reason_code": "dispatcher_heartbeat_stale",
+        "state_epoch": 8,
+        "hold_until": None,
+        "valid_until": now + timedelta(seconds=10),
+        "db_now": now,
+        "outcome": "adopted",
+    }
+
+    class RacingBootstrap(ControlRepo):
+        async def save_control_state(self, **values: object) -> dict[str, object]:
+            self.saved.append(values)
+            assert values["state"] == "degraded"
+            assert values["reason"] == "recovery_hold"
+            raise AdmissionControlConflict(closed_winner)
+
+    repo = RacingBootstrap(
+        facts(),
+        row=_control_row(now=now, state="closed", reason="bootstrap"),
+    )
+    snap = await SendAdmissionGuard(repo).snapshot()
+    assert snap.state == "closed"
+    assert snap.reason == "dispatcher_heartbeat_stale"
+    assert repo.saved[0]["state"] == "degraded"
+    assert repo.saved[0]["reason"] == "recovery_hold"
+
+
+@pytest.mark.asyncio
+async def test_open_state_has_no_active_hold() -> None:
+    now = datetime(2026, 9, 6, 4, 0, tzinfo=UTC)
+    opened, opened_reason, opened_hold = transition_admission_state(
+        previous="degraded",
+        raw_state="open",
+        raw_reason="ok",
+        db_now=now,
+        hold_until=now - timedelta(seconds=1),
+        previous_reason="bootstrap",
+    )
+    assert (opened, opened_reason, opened_hold) == ("open", "ok", None)
+
+    repo = ControlRepo(
+        facts(),
+        row={
+            "state": "degraded",
+            "reason_code": "recovery_hold",
+            "state_epoch": 6,
+            "hold_until": now - timedelta(seconds=1),
+            "valid_until": now - timedelta(seconds=1),
+            "db_now": now,
+        },
+    )
     snap = await SendAdmissionGuard(repo).snapshot()
     assert snap.state == "open"
     assert snap.reason == "ok"
     assert repo.saved[0]["state"] == "open"
     assert repo.saved[0]["hold_until"] is None
+
+    repository = SqlSendAdmissionRepository(
+        settings=type(
+            "S",
+            (),
+            {"database_url": "postgresql+asyncpg://x", "redis_control_url": "redis://x"},
+        )(),
+        redis=FakeRedis([]),
+    )
+    with pytest.raises(ValueError, match="open admission state cannot carry"):
+        await repository.save_control_state(
+            state="open",
+            reason="ok",
+            hold_until=now + timedelta(seconds=60),
+            epoch=1,
+        )
 
 
 @pytest.mark.asyncio
@@ -879,34 +1149,49 @@ def test_send_worker_heartbeat_components_follow_queue_flags() -> None:
         ("celery", "-A", "app.tasks", "worker", "-Q", "bulk"),
         environ=empty,
     ) == ("send-bulk",)
-    assert send_worker_heartbeat_components(
-        ("celery", "-A", "app.tasks", "worker", "-Q", "callback"),
-        environ=empty,
-    ) == ()
-    assert send_worker_heartbeat_components(
-        ("celery", "-A", "app.tasks", "worker", "-Q", "realtime-report"),
-        environ=empty,
-    ) == ()
+    assert (
+        send_worker_heartbeat_components(
+            ("celery", "-A", "app.tasks", "worker", "-Q", "callback"),
+            environ=empty,
+        )
+        == ()
+    )
+    assert (
+        send_worker_heartbeat_components(
+            ("celery", "-A", "app.tasks", "worker", "-Q", "realtime-report"),
+            environ=empty,
+        )
+        == ()
+    )
     assert send_worker_heartbeat_components(
         ("celery", "-A", "app.tasks", "worker", "--queues=realtime,callback"),
         environ=empty,
     ) == ("send-realtime",)
-    assert send_worker_heartbeat_components(
-        ("celery", "-A", "app.tasks", "worker", "--queues", "bulk-report"),
-        environ=empty,
-    ) == ()
+    assert (
+        send_worker_heartbeat_components(
+            ("celery", "-A", "app.tasks", "worker", "--queues", "bulk-report"),
+            environ=empty,
+        )
+        == ()
+    )
     assert send_worker_heartbeat_components(("pytest",), environ=empty) == (
         "send-realtime",
         "send-bulk",
     )
-    assert send_worker_heartbeat_components(
-        ("pytest",),
-        environ={"ENVIRONMENT": "production"},
-    ) == ()
-    assert send_worker_heartbeat_components(
-        ("celery", "-A", "app.tasks", "worker", "-Q", "realtime-report"),
-        environ={"SMS_RUNTIME_HEARTBEAT_COMPONENTS": "none"},
-    ) == ()
+    assert (
+        send_worker_heartbeat_components(
+            ("pytest",),
+            environ={"ENVIRONMENT": "production"},
+        )
+        == ()
+    )
+    assert (
+        send_worker_heartbeat_components(
+            ("celery", "-A", "app.tasks", "worker", "-Q", "realtime-report"),
+            environ={"SMS_RUNTIME_HEARTBEAT_COMPONENTS": "none"},
+        )
+        == ()
+    )
     assert send_worker_heartbeat_components(
         ("celery", "-A", "app.tasks", "worker", "-Q", "realtime-report"),
         environ={"SMS_RUNTIME_HEARTBEAT_COMPONENTS": "send-realtime"},
@@ -1235,6 +1520,7 @@ async def test_repository_recovery_budget_uses_epoch_key() -> None:
         limits=SendAdmissionLimits(),
     )
     assert denied is False
+
     class BoomRedis:
         async def eval(self, *_args: object) -> object:
             raise RuntimeError("down")

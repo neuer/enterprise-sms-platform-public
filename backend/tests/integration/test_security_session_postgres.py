@@ -48,26 +48,16 @@ class MemoryStore:
         return value
 
     async def eval(self, script: str, numkeys: int, *args: Any) -> object:
+        from app.core.auth.jwt import eval_memory_jwt_script
         from app.core.auth.session_policy import eval_memory_session_policy
 
+        jwt_result = eval_memory_jwt_script(self.values, script, args)
+        if jwt_result is not None:
+            return jwt_result
         policy_result = eval_memory_session_policy(self.values, script, args)
         if policy_result is not None or "auth-session-policy-" in script:
             return policy_result
-        assert numkeys == 2
-        key, revoked_session, expected, replacement, _ttl, session_ttl = args
-        current = self.values.get(str(key))
-        if current is None:
-            assert int(session_ttl) > 0
-            self.values[str(revoked_session)] = "1"
-            self.values.pop(str(key), None)
-            return 0
-        if current != expected:
-            assert int(session_ttl) > 0
-            self.values[str(revoked_session)] = "1"
-            self.values.pop(str(key), None)
-            return -1
-        self.values[str(key)] = replacement
-        return 1
+        raise AssertionError(f"unexpected Lua script keys={numkeys}")
 
 
 def claims(projection: Any) -> JwtClaims:

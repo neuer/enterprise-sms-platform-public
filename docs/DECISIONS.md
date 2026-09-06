@@ -1454,7 +1454,7 @@
   `sms_vendor_attempt` CAS 为 `rejected`/`vendor_code=1006`，禁止走完整
   `finalize_vendor_attempt`。占用态权威集合是
   `send_chunk_occupying_states()` / `OCCUPYING_CHUNK_STATES`：
-  `pending|submitting|retrying|submitted|uncertain|split_capacity_blocked`。
+  `pending|submitting|retrying|submitted|uncertain|split_capacity_blocked|failover_pending`。
   `failed` 与 `unknown_terminal` 不占容量。容量不足时父分片进入
   `split_capacity_blocked`，不创建部分 child，也不再次调用供应商；
   对账在有余量后重试同一 generation。重复投递只在已有恰好 2 个 child 时
@@ -1509,10 +1509,9 @@
   `degraded/recovery_hold`，禁止保存 `open + future hold`。`valid_until`
   过期的 OPEN/CLOSED 行与缺行视为 previous=CLOSED。已在
   `degraded/recovery_hold` 的行即使 `valid_until` 过期仍按 degraded 续读，
-  避免 15s 快照过期把已到期 hold 再次当成 CLOSED 并重开 60s。唯一例外是
-  迁移写入的一次性 `reason_code=bootstrap`：首次健康 facts 可进入 raw
-  状态且不建 hold，标记随写入被消费。hold 期内 raw=OPEN 仍保持
-  recovery_hold；raw=CLOSED 立即关闭并清空 hold。0105 先修复存量再加 CHECK。
+  避免 15s 快照过期把已到期 hold 再次当成 CLOSED 并重开 60s。hold 期内
+  raw=OPEN 仍保持 recovery_hold；raw=CLOSED 立即关闭并清空 hold。
+  `reason_code=bootstrap` 不豁免保持期，见 D114。0105 先修复存量再加 CHECK。
 - 原因：旧代码先算出 OPEN 再写 future hold，当前请求立即全量放行，
   下一轮 previous=OPEN 使 hold 永不生效。
 - 影响：schema v1.6.91/0105、`send_admission.py`、`send_admission_repository.py`。
@@ -1539,15 +1538,13 @@
   `:v2` 环形槽，有效用量取 max 而非相加，只写 v2。首次放行把
   `v1-v2` 差额写入当前环形槽，避免只加新请求权重时 max(v1,v2增长)
   再放出一整份额度。v1 畸形、非 Hash 或
-  窗口内未来字段失败关闭。首次成功写入 `cost:mig` marker
-  （schema_version/cutover_epoch/generation/state=active），不 `DEL` 活动
-  v1。control ACL 增加 `+type`，不增加 `KEYS/FLUSH*`。
+  窗口内未来字段失败关闭。不 `DEL` 活动 v1。control ACL 增加 `+type`，
+  不增加 `KEYS/FLUSH*`。
 - 原因：直接切 v2 会把空环形槽当零，滚动升级时同一窗口获得第二份额度。
 - 影响：`app_ratelimit.py`、control Redis ACL、
   `docs/runbooks/app-rate-limit-cutover.md`。
-  本期不做新旧二进制混跑拓扑、Redis failover 旧主复活、readiness
-  `minimum_writer_version` 或新 Prometheus 家族。旧实例仍只写 v1，新实例
-  双读可继承；旧实例本身仍可能超发，需尽快抽干。
+- 修订：max 只表示「旧 writer 已冻结后的静态 v1 基线继承」，不是混跑时
+  两边独立增量的并集。业务请求不得把空 marker 写成 active；见 D115。
 
 ## D113 Transition Envelope 是 Canonical 事实，Due 索引不得单独存活
 
@@ -1564,3 +1561,57 @@
   `auth_transition_dead_letter`、auth Redis ACL（`+scan`/`+zscore`）、
   `docs/runbooks/auth-transition-audit.md`。
   本期不把首次信封再抄一份 PostgreSQL Outbox；ACK 成功前信封仍只在 Redis。
+
+## D114 bootstrap reason 不得跳过 recovery hold
+
+- 决策：删除 `previous_reason == 'bootstrap'` 直通。`closed/bootstrap` 与普通
+  CLOSED 相同：raw CLOSED 不放行；raw OPEN/DEGRADED 立即保存
+  `degraded/recovery_hold` 并在本次转换写入 `hold_until`。缺失、过期或旧
+  初始化行按 CLOSED 处理，不得默认 OPEN。已有正常 hold 不因 snapshot TTL
+  刷新重开。`reason_code` 只解释状态，不授权豁免。不在 API 层另加
+  bootstrap bypass，不取消 OPEN/hold 组合约束。热启动夹具必须代表 hold
+  已结束，不能把初始化标记伪装成全新 OPEN。
+- 原因：#678。仅凭可变 reason 字符串无法证明全新安装；已有业务环境重写
+  该标记会绕过保持期。
+- 影响：`send_admission.py`、`test_send_admission.py`、
+  `docs/runbooks/send-admission-lanes.md`、E2E 热启动夹具。取代 D110
+  中的 bootstrap 例外。
+
+## D115 成本限流 v2 必须先冻结旧 writer 再激活
+
+- 决策：采用 #676 方案 A。全局 marker
+  `ratelimit:cost:writer_cutover` 由受控切换入口按
+  `preparing → old_writers_fenced → waiting_window → active_v2`
+  （失败 `aborted_closed`）推进。记录 schema_version、单调 generation、
+  目标 writer 版本、fence_time、not_before、state、release_binding。
+  时钟只用 Redis TIME；`not_before = fence_time + 60s + 5s`。
+  支持的 test-update/sms-compose 先关发送入口，再用 compose/进程探测
+  隔离旧 writer；探测超时/错误/仍有旧进程则保持关闭。
+  `minimum_writer_version` 由启动包装器对照 `deploy/writer-protocol.json`
+  拒绝旧树，不假设旧二进制会读 Admission。激活后只写 v2；活动 v1 键
+  不删除。回滚必须再次冻结当前 writer 并排空窗口；finally 不得无条件
+  OPEN，也不得清掉无关的更严 CLOSED。
+- 原因：新旧 writer 各自增量时 max(v1,v2) 漏计，限额会被突破。
+- 影响：`app_ratelimit.py`、`app_ratelimit_cutover.py`、
+  `deploy/scripts/writer_cutover.py`、`test_update_apply.py`、
+  `test_update_manager.py`、`deploy/sms-compose`、
+  `docs/runbooks/app-rate-limit-cutover.md`。
+
+## D116 本地 hook 回执可跳过 CI 廉价重叠，缺证明则失败关闭
+
+- 决策：push hook 在同一棵树上强制跑过的廉价检查，通过绑定
+  `commit`/`tree` 的 `refs/sms-local-gates/<sha>` 回执证明。push
+  `ci-gate` 只跳过已证明的重叠面：hook 刚跑过的 ruff 文件，以及 hook
+  已跑完的 frontend `lint` / `format:check` / `vitest`。无回执、树不一致、
+  字段畸形、`--no-verify`、GitHub 网页改文件、未装 hook 的克隆，以及
+  `schedule` / `workflow_dispatch`，一律重跑这些廉价检查。G2、
+  `verify_all.sh --mode integration`、全量 `backend-coverage`、
+  vendor-pg recovery、mypy、frontend `build` / `gen:api-types` /
+  `npm audit`、security 不得因回执跳过。`pytest_changed` 被全量
+  coverage 严格包含，也不因此跳过 coverage。同仓 `pull_request` 仍走
+  `same-repo-pr-ci-skipped`，权威仍是 push `ci-gate`。
+- 原因：本地 hook 不是 mini-CI，但也不该在已强制跑过且能证明同一棵树
+  的廉价面上再跑一遍。
+- 影响：`scripts/check_pre_vcs_gates.py`、`.githooks/pre-push`、
+  `.github/workflows/ci.yml`、`test_pre_vcs_gates.py`、
+  `test_ci_workflows.py`。

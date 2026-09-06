@@ -514,6 +514,9 @@ class FakeHostOperations:
     def require_owned_update_pauses(self, update_id: str) -> None:
         self.events.append(("owned_pauses", update_id))
 
+    def run_writer_cutover(self, update_id: str) -> None:
+        self.events.append(("writer_cutover", update_id))
+
     def replace_backend_services(self, services: tuple[str, ...]) -> None:
         self.events.append(("replace_backend", services))
         if self.fail_replace:
