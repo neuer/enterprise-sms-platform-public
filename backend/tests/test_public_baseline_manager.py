@@ -517,6 +517,9 @@ class FakeHostOperations:
     def run_writer_cutover(self, update_id: str) -> None:
         self.events.append(("writer_cutover", update_id))
 
+    def replace_redis_services(self) -> None:
+        self.events.append("replace_redis")
+
     def replace_backend_services(self, services: tuple[str, ...]) -> None:
         self.events.append(("replace_backend", services))
         if self.fail_replace:
