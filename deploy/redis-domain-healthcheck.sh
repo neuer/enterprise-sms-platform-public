@@ -31,3 +31,12 @@ esac
   cat "$secret_file"
   printf '\n'
 } | redis-cli "$@" ping 2>/dev/null | grep -qx PONG
+# Auth session-policy needs TYPE; missing key must report none.
+case "$domain" in
+  auth)
+    {
+      cat "$secret_file"
+      printf '\n'
+    } | redis-cli "$@" type auth:__healthcheck__ 2>/dev/null | grep -qx none
+    ;;
+esac
