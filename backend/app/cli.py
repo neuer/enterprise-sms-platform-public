@@ -408,40 +408,40 @@ def ensure_seed_allowed(settings: AuthMockSettings) -> None:
         raise RuntimeError("seed-dev requires AUTH_MOCK=1")
 
 
-def generate_dev_api_keys() -> dict[str, str]:
-    """为三个固定开发应用生成不可预测且互不相同的 API Key。"""
+def generate_dev_app_tokens() -> dict[str, str]:
+    """为三个固定开发应用生成不可预测且互不相同的访问令牌。"""
 
     return {dev_app.name: secrets.token_urlsafe(32) for dev_app in DEV_APPS}
 
 
-def validate_dev_api_keys(value: object) -> dict[str, str]:
-    """校验本地密钥文件结构，拒绝弱值与仓库旧式 ``dev_`` 固定值。"""
+def validate_dev_app_tokens(value: object) -> dict[str, str]:
+    """校验本地令牌文件结构，拒绝弱值与仓库旧式 ``dev_`` 固定值。"""
 
     expected_names = {dev_app.name for dev_app in DEV_APPS}
     if not isinstance(value, dict) or set(value) != expected_names:
         raise ValueError("development API key file has an invalid application set")
-    keys: dict[str, str] = {}
+    tokens: dict[str, str] = {}
     for name in sorted(expected_names):
-        key = value.get(name)
+        token = value.get(name)
         if (
-            not isinstance(key, str)
-            or len(key) < 32
-            or any(character.isspace() for character in key)
+            not isinstance(token, str)
+            or len(token) < 32
+            or any(character.isspace() for character in token)
         ):
             raise ValueError("development API key file contains an invalid key")
-        if key.startswith("dev_"):
+        if token.startswith("dev_"):
             raise ValueError("development API key file contains a legacy fixed key")
-        keys[name] = key
-    if len(set(keys.values())) != len(keys):
+        tokens[name] = token
+    if len(set(tokens.values())) != len(tokens):
         raise ValueError("development API keys must be unique")
-    return keys
+    return tokens
 
 
-def load_or_generate_dev_api_keys(source: Path) -> tuple[dict[str, str], bool]:
-    """复用安全的本地密钥；缺失或命中旧固定格式时生成新值。"""
+def load_or_generate_dev_app_tokens(source: Path) -> tuple[dict[str, str], bool]:
+    """复用安全的本地令牌；缺失或命中旧固定格式时生成新值。"""
 
     if not source.exists():
-        return generate_dev_api_keys(), True
+        return generate_dev_app_tokens(), True
     try:
         if source.stat().st_mode & 0o077:
             raise ValueError("development API key file permissions must be 0600")
@@ -449,17 +449,17 @@ def load_or_generate_dev_api_keys(source: Path) -> tuple[dict[str, str], bool]:
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError("development API key file is unavailable or invalid") from error
     try:
-        return validate_dev_api_keys(value), False
+        return validate_dev_app_tokens(value), False
     except ValueError as error:
         if "legacy fixed key" not in str(error):
             raise
-        return generate_dev_api_keys(), True
+        return generate_dev_app_tokens(), True
 
 
-def seed_commands(api_keys: Mapping[str, str]) -> tuple[tuple[str, dict[str, Any]], ...]:
+def seed_commands(dev_tokens: Mapping[str, str]) -> tuple[tuple[str, dict[str, Any]], ...]:
     """生成幂等 seed SQL；数据库参数不包含任何明文 API Key。"""
 
-    validated_api_keys = validate_dev_api_keys(dict(api_keys))
+    issued_tokens = validate_dev_app_tokens(dict(dev_tokens))
     commands: list[tuple[str, dict[str, Any]]] = []
     commands.append(
         (
@@ -580,8 +580,8 @@ def seed_commands(api_keys: Mapping[str, str]) -> tuple[tuple[str, dict[str, Any
           updated_at = now()
     """
     for dev_app in DEV_APPS:
-        api_key = validated_api_keys[dev_app.name]
-        issued = issue_api_key_record(api_key)
+        issued_token = issued_tokens[dev_app.name]
+        issued = issue_api_key_record(issued_token)
         commands.append(
             (
                 app_sql,
@@ -589,7 +589,7 @@ def seed_commands(api_keys: Mapping[str, str]) -> tuple[tuple[str, dict[str, Any
                     "name": dev_app.name,
                     "dept": dev_app.dept,
                     "api_key_hash": issued.digest,
-                    "api_key_prefix": api_key[:8],
+                    "api_key_prefix": issued_token[:8],
                     "api_key_hash_version": issued.pepper_version,
                     "api_key_hash_algorithm": issued.algorithm,
                     "allowed_categories": dev_app.allowed_categories,
@@ -673,21 +673,21 @@ async def seed_dev_template(
 
 async def seed_database(
     engine: AsyncEngine,
-    api_keys: Mapping[str, str],
+    dev_tokens: Mapping[str, str],
     crypto: CryptoService,
 ) -> None:
     """在单个事务内幂等写入全部开发数据。"""
 
     async with engine.begin() as connection:
-        for sql, params in seed_commands(api_keys):
+        for sql, params in seed_commands(dev_tokens):
             await connection.execute(text(sql), params)
         await seed_dev_template(connection, crypto)
 
 
-def write_dev_api_keys(destination: Path, api_keys: Mapping[str, str]) -> None:
-    """以原子替换和 0600 权限写入随机开发 API Key。"""
+def write_dev_app_tokens(destination: Path, dev_tokens: Mapping[str, str]) -> None:
+    """以原子替换和 0600 权限写入随机开发访问令牌。"""
 
-    payload = validate_dev_api_keys(dict(api_keys))
+    payload = validate_dev_app_tokens(dict(dev_tokens))
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
     try:
@@ -706,7 +706,7 @@ async def run_seed_dev(settings: Settings, keys_file: Path) -> None:
     """校验环境、写数据库，并仅在成功后落开发密钥文件。"""
 
     ensure_seed_allowed(settings)
-    api_keys, _generated = load_or_generate_dev_api_keys(keys_file)
+    dev_tokens, _generated = load_or_generate_dev_app_tokens(keys_file)
     auth_engine = create_async_engine(
         settings.database_url_for("auth"),
         hide_parameters=True,
@@ -716,7 +716,7 @@ async def run_seed_dev(settings: Settings, keys_file: Path) -> None:
         hide_parameters=True,
     )
     try:
-        commands = seed_commands(api_keys)
+        commands = seed_commands(dev_tokens)
         crypto = CryptoService.from_settings(settings)
         auth_command_count = 2 + len(DEV_USERS)
         async with auth_engine.begin() as connection:
@@ -729,7 +729,7 @@ async def run_seed_dev(settings: Settings, keys_file: Path) -> None:
     finally:
         await auth_engine.dispose()
         await accept_engine.dispose()
-    write_dev_api_keys(keys_file, api_keys)
+    write_dev_app_tokens(keys_file, dev_tokens)
 
 
 async def run_usage_projection_rebuild(settings: Settings) -> int:

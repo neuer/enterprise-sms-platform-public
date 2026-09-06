@@ -109,8 +109,8 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def generate_secret() -> str:
-    """生成至少 256 bit 随机性的一次性密钥。"""
+def generate_random_token() -> str:
+    """生成至少 256 bit 随机性的一次性令牌。"""
 
     return secrets.token_urlsafe(32)
 
@@ -233,14 +233,14 @@ class AppManagementService:
         crypto: CryptoService,
         callback_validator: CallbackUrlValidator,
         *,
-        secret_generator: Callable[[], str] = generate_secret,
+        token_factory: Callable[[], str] = generate_random_token,
         clock: Callable[[], datetime] = utc_now,
         key_grace: timedelta = timedelta(hours=72),
     ) -> None:
         self.repository = repository
         self.crypto = crypto
         self.callback_validator = callback_validator
-        self.secret_generator = secret_generator
+        self.token_factory = token_factory
         self.clock = clock
         self.key_grace = key_grace
 
@@ -403,11 +403,11 @@ class AppManagementService:
 
     async def create(self, config: AppCreate, *, actor: str, ip: str) -> dict[str, Any]:
         values = await self._config_values(config)
-        api_key = self.secret_generator()
-        values.update(self._key_values(api_key))
+        issued_token = self.token_factory()
+        values.update(self._key_values(issued_token))
         callback_secret: str | None = None
         if config.callback_url:
-            callback_secret = self.secret_generator()
+            callback_secret = self.token_factory()
             values["callback_secret_enc"] = self.crypto.encrypt_bound_packed_text(
                 callback_secret,
                 self._callback_secret_context(config.name),
@@ -415,7 +415,7 @@ class AppManagementService:
         else:
             values["callback_secret_enc"] = None
         app_id = await self.repository.create(**values, actor=actor, ip=ip)
-        return {"id": app_id, "api_key": api_key, "callback_secret": callback_secret}
+        return {"id": app_id, "api_key": issued_token, "callback_secret": callback_secret}
 
     async def update(
         self,
@@ -443,16 +443,16 @@ class AppManagementService:
         await self.repository.disable(app_id, actor, ip)
 
     async def rotate_key(self, app_id: int, *, actor: str, ip: str) -> dict[str, Any]:
-        api_key = self.secret_generator()
+        issued_token = self.token_factory()
         expires_at = self.clock() + self.key_grace
         await self.repository.rotate_key(
             app_id,
-            **self._key_values(api_key),
+            **self._key_values(issued_token),
             old_key_expires_at=expires_at,
             actor=actor,
             ip=ip,
         )
-        return {"api_key": api_key, "old_key_expires_at": expires_at}
+        return {"api_key": issued_token, "old_key_expires_at": expires_at}
 
     async def revoke_old_key(self, app_id: int, *, actor: str, ip: str) -> None:
         await self.repository.revoke_old_key(app_id, actor, ip)
@@ -464,7 +464,7 @@ class AppManagementService:
         actor: str,
         ip: str,
     ) -> dict[str, str]:
-        callback_secret = self.secret_generator()
+        callback_secret = self.token_factory()
         current = await self.repository.get(app_id)
         if current is None:
             raise AppNotFound("应用不存在")
