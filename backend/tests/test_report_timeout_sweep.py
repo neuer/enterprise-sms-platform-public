@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import socket
 import subprocess
 import time
 from collections.abc import AsyncIterator, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -16,6 +18,7 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 import app.services.report_repository as report_repository_module
 from app.core.jobtrack import JobTracker
@@ -180,6 +183,36 @@ def _docker(args: list[str], *, check: bool = True) -> subprocess.CompletedProce
     )
 
 
+def _host_tcp_ready(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=1.0):
+            return True
+    except OSError:
+        return False
+
+
+def _dsn_reachable(dsn: str) -> bool:
+    if not dsn:
+        return False
+    url = make_url(dsn)
+    host = url.host or "127.0.0.1"
+    port = int(url.port or 5432)
+    return _host_tcp_ready(host, port)
+
+
+def _is_lost_connection(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    name = type(exc).__name__
+    return (
+        isinstance(exc, (OSError, ConnectionError))
+        or "connection_lost" in message
+        or "connection was closed" in message
+        or "connection does not exist" in message
+        or "the database system is starting up" in message
+        or name in {"ConnectionDoesNotExistError", "CannotConnectNowError"}
+    )
+
+
 def _start_ephemeral_postgres() -> tuple[str, str]:
     name = f"sms-timeout-{uuid4().hex[:8]}"
     _docker(
@@ -208,37 +241,116 @@ def _start_ephemeral_postgres() -> tuple[str, str]:
         if ready.returncode == 0:
             mapping = _docker(["docker", "port", name, "5432/tcp"]).stdout.strip()
             port = mapping.rsplit(":", 1)[1]
-            return name, f"postgresql+asyncpg://sms@127.0.0.1:{port}/sms"
+            if _host_tcp_ready("127.0.0.1", int(port)):
+                time.sleep(0.5)
+                if _host_tcp_ready("127.0.0.1", int(port)):
+                    return name, f"postgresql+asyncpg://sms@127.0.0.1:{port}/sms"
         time.sleep(1)
     _docker(["docker", "rm", "-f", name], check=False)
     raise RuntimeError("temporary PostgreSQL did not become ready")
 
 
+@dataclass
+class TimeoutPgLease:
+    """会话级租约；vendor-pg 恢复拆掉容器后按测试重开，禁止沿用死连接。"""
+
+    name: str
+    dsn: str
+
+    def running(self) -> bool:
+        if not self.dsn or not _dsn_reachable(self.dsn):
+            return False
+        if not self.name:
+            return True
+        inspect = _docker(
+            ["docker", "inspect", "-f", "{{.State.Running}}", self.name],
+            check=False,
+        )
+        return inspect.returncode == 0 and inspect.stdout.strip() == "true"
+
+    def refresh(self) -> str:
+        if self.running():
+            return self.dsn
+        return self.force_restart()
+
+    def force_restart(self) -> str:
+        if self.name:
+            _docker(["docker", "rm", "-f", self.name], check=False)
+            self.name = ""
+            self.dsn = ""
+        existing = os.environ.get("REPORT_TIMEOUT_POSTGRES_DSN")
+        if existing and _dsn_reachable(existing):
+            self.name = ""
+            self.dsn = existing
+            return self.dsn
+        self.name, self.dsn = _start_ephemeral_postgres()
+        return self.dsn
+
+    def close(self) -> None:
+        if self.name:
+            _docker(["docker", "rm", "-f", self.name], check=False)
+        self.name = ""
+        self.dsn = ""
+
+
 @pytest.fixture(scope="session")
-def timeout_pg_dsn() -> Iterator[str]:
+def timeout_pg_lease() -> Iterator[TimeoutPgLease]:
     existing = os.environ.get("REPORT_TIMEOUT_POSTGRES_DSN")
-    if existing:
-        yield existing
-        return
-    name, dsn = _start_ephemeral_postgres()
+    lease = TimeoutPgLease(name="", dsn=existing or "")
+    if not existing:
+        lease.refresh()
     try:
-        yield dsn
+        yield lease
     finally:
-        _docker(["docker", "rm", "-f", name], check=False)
+        lease.close()
+
+
+@pytest.fixture
+def timeout_pg_dsn(timeout_pg_lease: TimeoutPgLease) -> str:
+    return timeout_pg_lease.refresh()
 
 
 @pytest_asyncio.fixture
 async def timeout_env(
     timeout_pg_dsn: str,
+    timeout_pg_lease: TimeoutPgLease,
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[tuple[Any, EngineBoundRepository, ReportTimeoutService, str]]:
-    url = make_url(timeout_pg_dsn)
-    engine = create_async_engine(url, hide_parameters=True)
+    async def open_engine(dsn: str) -> Any:
+        url = make_url(dsn)
+        engine = create_async_engine(
+            url,
+            hide_parameters=True,
+            poolclass=NullPool,
+            connect_args={"ssl": False, "timeout": 5},
+        )
+        async with engine.begin() as connection:
+            for statement in (item.strip() for item in MINIMAL_SCHEMA.split(";")):
+                if statement:
+                    await connection.execute(text(statement))
+        return engine, url
+
+    last_error: Exception | None = None
+    dsn = timeout_pg_dsn if _dsn_reachable(timeout_pg_dsn) else timeout_pg_lease.refresh()
+    engine: Any | None = None
+    url: Any | None = None
+    for attempt in range(5):
+        try:
+            engine, url = await open_engine(dsn)
+            break
+        except Exception as exc:
+            last_error = exc
+            if not _is_lost_connection(exc):
+                raise
+            if attempt < 2 and _dsn_reachable(dsn):
+                await asyncio.sleep(1)
+                continue
+            dsn = timeout_pg_lease.force_restart()
+    if engine is None or url is None:
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("timeout postgres engine did not open")
     nonce = uuid4().hex[:16]
-    async with engine.begin() as connection:
-        for statement in (item.strip() for item in MINIMAL_SCHEMA.split(";")):
-            if statement:
-                await connection.execute(text(statement))
     repository = EngineBoundRepository(engine)
 
     async def enqueue_finished(connection: Any, batch_id: int, **_: object) -> None:
@@ -292,39 +404,47 @@ async def timeout_env(
     try:
         yield engine, repository, service, nonce
     finally:
-        async with engine.begin() as connection:
-            owned = "SELECT id FROM sms_batch WHERE batch_no LIKE :p"
-            await connection.execute(
-                text(f"DELETE FROM callback_task WHERE batch_id IN ({owned})"),
-                {"p": f"{nonce}%"},
-            )
-            await connection.execute(
-                text(
-                    "DELETE FROM send_inflight_reservation "
-                    f"WHERE batch_id IN ({owned})"
-                ),
-                {"p": f"{nonce}%"},
-            )
-            await connection.execute(
-                text(
-                    "DELETE FROM report_event_projection "
-                    f"WHERE batch_id IN ({owned})"
-                ),
-                {"p": f"{nonce}%"},
-            )
-            await connection.execute(
-                text(f"DELETE FROM sms_message WHERE batch_id IN ({owned})"),
-                {"p": f"{nonce}%"},
-            )
-            await connection.execute(
-                text(f"DELETE FROM sms_chunk WHERE batch_id IN ({owned})"),
-                {"p": f"{nonce}%"},
-            )
-            await connection.execute(
-                text("DELETE FROM sms_batch WHERE batch_no LIKE :p"),
-                {"p": f"{nonce}%"},
-            )
+        try:
+            await _cleanup_timeout_rows(engine, nonce)
+        except Exception as exc:
+            if not _is_lost_connection(exc):
+                raise
         await engine.dispose()
+
+
+async def _cleanup_timeout_rows(engine: Any, nonce: str) -> None:
+    async with engine.begin() as connection:
+        owned = "SELECT id FROM sms_batch WHERE batch_no LIKE :p"
+        await connection.execute(
+            text(f"DELETE FROM callback_task WHERE batch_id IN ({owned})"),
+            {"p": f"{nonce}%"},
+        )
+        await connection.execute(
+            text(
+                "DELETE FROM send_inflight_reservation "
+                f"WHERE batch_id IN ({owned})"
+            ),
+            {"p": f"{nonce}%"},
+        )
+        await connection.execute(
+            text(
+                "DELETE FROM report_event_projection "
+                f"WHERE batch_id IN ({owned})"
+            ),
+            {"p": f"{nonce}%"},
+        )
+        await connection.execute(
+            text(f"DELETE FROM sms_message WHERE batch_id IN ({owned})"),
+            {"p": f"{nonce}%"},
+        )
+        await connection.execute(
+            text(f"DELETE FROM sms_chunk WHERE batch_id IN ({owned})"),
+            {"p": f"{nonce}%"},
+        )
+        await connection.execute(
+            text("DELETE FROM sms_batch WHERE batch_no LIKE :p"),
+            {"p": f"{nonce}%"},
+        )
 
 
 async def _add_batch(
@@ -465,6 +585,54 @@ def _bounds(**values: Any) -> dict[str, Any]:
         "lock_timeout_ms": 1000,
         **values,
     }
+
+
+def test_timeout_pg_lease_restarts_when_container_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inspect_name = {"value": "sms-timeout-old"}
+
+    def fake_docker(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["docker", "inspect"]:
+            running = "true" if inspect_name["value"] == "sms-timeout-new" else "false"
+            return subprocess.CompletedProcess(args, 0, f"{running}\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(
+        "tests.test_report_timeout_sweep._docker",
+        fake_docker,
+    )
+    monkeypatch.setattr(
+        "tests.test_report_timeout_sweep._start_ephemeral_postgres",
+        lambda: ("sms-timeout-new", "postgresql+asyncpg://sms@127.0.0.1:1/sms"),
+    )
+    monkeypatch.setattr(
+        "tests.test_report_timeout_sweep._dsn_reachable",
+        lambda dsn: dsn.endswith(":1/sms"),
+    )
+    lease = TimeoutPgLease(
+        name="sms-timeout-old",
+        dsn="postgresql+asyncpg://sms@127.0.0.1:32770/sms",
+    )
+    assert lease.refresh() == "postgresql+asyncpg://sms@127.0.0.1:1/sms"
+    assert lease.name == "sms-timeout-new"
+    inspect_name["value"] = "sms-timeout-new"
+    assert lease.refresh() == "postgresql+asyncpg://sms@127.0.0.1:1/sms"
+
+
+def test_timeout_pg_lease_ignores_dead_env_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REPORT_TIMEOUT_POSTGRES_DSN", "postgresql+asyncpg://sms@127.0.0.1:32770/sms")
+    monkeypatch.setattr(
+        "tests.test_report_timeout_sweep._start_ephemeral_postgres",
+        lambda: ("sms-timeout-new", "postgresql+asyncpg://sms@127.0.0.1:1/sms"),
+    )
+    monkeypatch.setattr(
+        "tests.test_report_timeout_sweep._dsn_reachable",
+        lambda dsn: dsn.endswith(":1/sms"),
+    )
+    lease = TimeoutPgLease(name="", dsn="postgresql+asyncpg://sms@127.0.0.1:32770/sms")
+    assert lease.refresh() == "postgresql+asyncpg://sms@127.0.0.1:1/sms"
+    assert lease.name == "sms-timeout-new"
 
 
 @pytest.mark.asyncio

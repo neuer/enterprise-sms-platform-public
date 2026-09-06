@@ -74,6 +74,11 @@ _ENVELOPE_INVALID = {field: 0 for field in _FIELD_CLASSES}
 _DEAD_LETTER = {reason: 0 for reason in _ORPHAN_REASONS}
 _PENDING_WITHOUT_DUE = 0
 _DUE_WITHOUT_PAYLOAD = 0
+_SCAN_CYCLES = 0
+_SCAN_IN_PROGRESS = 0
+_SCAN_PROCESSED = 0
+_SCAN_AGE = 0.0
+_STATS_COMPLETE = 0
 _SESSION_POLICY_PUBLISH = {
     "accepted": 0,
     "idempotent": 0,
@@ -143,6 +148,11 @@ class AuthObservabilitySnapshot:
     transition_envelope_invalid: tuple[tuple[str, int], ...] = ()
     transition_pending_without_due: int = 0
     transition_due_without_payload: int = 0
+    integrity_scan_cycles_completed: int = 0
+    integrity_scan_in_progress: int = 0
+    integrity_scan_processed: int = 0
+    integrity_scan_age_seconds: float = 0.0
+    integrity_stats_complete: int = 0
     transition_dead_letter: tuple[tuple[str, int], ...] = ()
     web_session_mode: tuple[tuple[str, str, int], ...] = ()
     web_access_only_login: tuple[tuple[str, int], ...] = ()
@@ -267,6 +277,27 @@ def observe_transition_integrity_gauges(
     with _LOCK:
         _PENDING_WITHOUT_DUE = max(0, pending_without_due)
         _DUE_WITHOUT_PAYLOAD = max(0, due_without_payload)
+
+
+def observe_transition_integrity_scan(
+    *,
+    cycles_completed: int,
+    in_progress: bool,
+    processed: int,
+    age_seconds: float,
+) -> None:
+    global _SCAN_CYCLES, _SCAN_IN_PROGRESS, _SCAN_PROCESSED, _SCAN_AGE
+    with _LOCK:
+        _SCAN_CYCLES = max(0, cycles_completed)
+        _SCAN_IN_PROGRESS = 1 if in_progress else 0
+        _SCAN_PROCESSED = max(0, processed)
+        _SCAN_AGE = max(0.0, age_seconds)
+
+
+def observe_transition_integrity_stats_complete(complete: bool) -> None:
+    global _STATS_COMPLETE
+    with _LOCK:
+        _STATS_COMPLETE = 1 if complete else 0
 
 
 def observe_session_policy_publish(outcome: str) -> None:
@@ -412,6 +443,11 @@ def auth_observability_snapshot() -> AuthObservabilitySnapshot:
             tuple((field, _ENVELOPE_INVALID[field]) for field in _FIELD_CLASSES),
             _PENDING_WITHOUT_DUE,
             _DUE_WITHOUT_PAYLOAD,
+            _SCAN_CYCLES,
+            _SCAN_IN_PROGRESS,
+            _SCAN_PROCESSED,
+            _SCAN_AGE,
+            _STATS_COMPLETE,
             tuple((reason, _DEAD_LETTER[reason]) for reason in _ORPHAN_REASONS),
             tuple(
                 (mode, outcome, _WEB_SESSION_MODE[mode, outcome])
@@ -432,6 +468,8 @@ def reset_auth_observability() -> None:
     global _SESSION_POLICY_SNAPSHOT_AGE, _SESSION_POLICY_LAG
     global _LEGACY_POLICY_FALLBACK
     global _PENDING_WITHOUT_DUE, _DUE_WITHOUT_PAYLOAD
+    global _SCAN_CYCLES, _SCAN_IN_PROGRESS, _SCAN_PROCESSED, _SCAN_AGE
+    global _STATS_COMPLETE
     with _LOCK:
         for action in _ACTIONS:
             _CREATED[action] = 0
@@ -482,6 +520,11 @@ def reset_auth_observability() -> None:
             _ENVELOPE_INVALID[field] = 0
         _PENDING_WITHOUT_DUE = 0
         _DUE_WITHOUT_PAYLOAD = 0
+        _SCAN_CYCLES = 0
+        _SCAN_IN_PROGRESS = 0
+        _SCAN_PROCESSED = 0
+        _SCAN_AGE = 0.0
+        _STATS_COMPLETE = 0
         for mode_key in _WEB_SESSION_MODE:
             _WEB_SESSION_MODE[mode_key] = 0
         for key in _WEB_ACCESS_ONLY_LOGIN:

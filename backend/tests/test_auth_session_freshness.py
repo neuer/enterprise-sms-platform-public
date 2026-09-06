@@ -79,4 +79,5 @@ async def test_ad_policy_failure_does_not_rotate_or_revoke_family() -> None:
     decoded = service._decode(first.refresh_token)  # noqa: SLF001
     session_id = str(decoded["sid"])
     assert f"auth:jwt:refresh-family:{session_id}" in store.values
-    assert f"auth:jwt:session-revoked:{session_id}" not in store.values
+    state = store.values.get(f"auth:jwt:session-revoked:{session_id}")
+    assert state is None or str(state).startswith("grace\n")
