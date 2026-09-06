@@ -3,5 +3,8 @@ node_modules
 coverage
 package-lock.json
 
+# 自动生成文件（npm run gen:api-types），格式以生成器输出为准，CI 有零漂移门禁
+src/api/types.gen.ts
+
 # 静态直出资源（独立测试页等）不参与应用构建，保持手写原样
 public

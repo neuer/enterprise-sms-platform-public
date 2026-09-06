@@ -336,6 +336,10 @@ jobs:
         run: npm ci
       - name: Audit dependency lockfile
         run: npm audit --audit-level=high
+      - name: Verify generated API types match openapi.yaml
+        run: |
+          npm run gen:api-types
+          git diff --exit-code -- src/api/types.gen.ts
       - name: Build
         run: npm run build
       - name: Lint and format check

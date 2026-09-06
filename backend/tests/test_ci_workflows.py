@@ -266,6 +266,11 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "npm test"
     )
     assert "npm run typecheck" not in frontend_commands
+    # 契约类型零漂移门禁：重新生成 openapi 类型后 git diff 必须为空，且先于构建
+    assert frontend_commands.index("npm run gen:api-types") < frontend_commands.index(
+        "npm run build"
+    )
+    assert "git diff --exit-code -- src/api/types.gen.ts" in frontend_commands
     assert jobs["frontend"]["needs"] == "changes"
     assert "needs.changes.outputs.frontend == 'true'" in jobs["frontend"]["if"]
 
