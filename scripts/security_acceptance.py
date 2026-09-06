@@ -208,6 +208,7 @@ class AcceptanceSuite:
                 "provider_code": "ad",
                 "username": username,
                 "password": self.mock_password,
+                "session_mode": "refresh",
                 "tab_id": TAB_ID,
             },
         )
@@ -287,6 +288,7 @@ class AcceptanceSuite:
                 "provider_code": "ad",
                 "username": "admin01' OR '1'='1",
                 "password": self.mock_password,
+                "session_mode": "refresh",
                 "tab_id": TAB_ID,
             },
         )

@@ -99,6 +99,14 @@ _TOKEN_ISSUE_POLICY_LOAD = {"success": 0, "unavailable": 0, "invalid": 0}
 _TOKEN_ISSUE_POLICY_MISMATCH = {"revision": 0, "deadline": 0}
 _TOKEN_ISSUE_DENIED = {"policy_unavailable": 0}
 _LEGACY_POLICY_FALLBACK = 0
+_WEB_SESSION_MODE = {
+    (mode, outcome): 0
+    for mode in ("refresh", "access_only")
+    for outcome in ("success", "rejected", "unavailable")
+}
+_WEB_ACCESS_ONLY_LOGIN = {"local": 0, "ad": 0, "other": 0}
+_WEB_ACCESS_ONLY_REFRESH_BLOCK = {"refresh_endpoint": 0, "tab_id_upgrade": 0}
+_WEB_OLD_REFRESH_REVOKED = {"revoked": 0, "invalid": 0, "unavailable": 0, "absent": 0}
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +144,10 @@ class AuthObservabilitySnapshot:
     transition_pending_without_due: int = 0
     transition_due_without_payload: int = 0
     transition_dead_letter: tuple[tuple[str, int], ...] = ()
+    web_session_mode: tuple[tuple[str, str, int], ...] = ()
+    web_access_only_login: tuple[tuple[str, int], ...] = ()
+    web_access_only_refresh_block: tuple[tuple[str, int], ...] = ()
+    web_old_refresh_revoked: tuple[tuple[str, int], ...] = ()
 
 
 def observe_transition_created(action: TransitionAction) -> None:
@@ -228,18 +240,14 @@ def observe_transition_orphan(reason: str) -> None:
 
 
 def observe_transition_integrity_repair(direction: str, outcome: str) -> None:
-    dir_key: IntegrityDirection = (
-        direction if direction in _INTEGRITY_DIRECTIONS else "hash_to_due"
-    )
+    dir_key: IntegrityDirection = direction if direction in _INTEGRITY_DIRECTIONS else "hash_to_due"
     out_key: IntegrityOutcome = outcome if outcome in _INTEGRITY_OUTCOMES else "skipped"
     with _LOCK:
         _INTEGRITY[dir_key, out_key] += 1
 
 
 def observe_transition_envelope_invalid(field_class: str) -> None:
-    key: EnvelopeFieldClass = (
-        field_class if field_class in _FIELD_CLASSES else "schema"
-    )
+    key: EnvelopeFieldClass = field_class if field_class in _FIELD_CLASSES else "schema"
     with _LOCK:
         _ENVELOPE_INVALID[key] += 1
 
@@ -332,6 +340,33 @@ def observe_token_issue_denied(reason: str) -> None:
         _TOKEN_ISSUE_DENIED[key] += 1
 
 
+def observe_web_session_mode(mode: str, outcome: str) -> None:
+    key = (
+        mode if mode in {"refresh", "access_only"} else "access_only",
+        outcome if outcome in {"success", "rejected", "unavailable"} else "rejected",
+    )
+    with _LOCK:
+        _WEB_SESSION_MODE[key] += 1
+
+
+def observe_access_only_login(provider: str) -> None:
+    key = provider if provider in _WEB_ACCESS_ONLY_LOGIN else "other"
+    with _LOCK:
+        _WEB_ACCESS_ONLY_LOGIN[key] += 1
+
+
+def observe_access_only_refresh_block(source: str) -> None:
+    key = source if source in _WEB_ACCESS_ONLY_REFRESH_BLOCK else "refresh_endpoint"
+    with _LOCK:
+        _WEB_ACCESS_ONLY_REFRESH_BLOCK[key] += 1
+
+
+def observe_old_refresh_revoked_on_access_only_login(outcome: str) -> None:
+    key = outcome if outcome in _WEB_OLD_REFRESH_REVOKED else "invalid"
+    with _LOCK:
+        _WEB_OLD_REFRESH_REVOKED[key] += 1
+
+
 def auth_observability_snapshot() -> AuthObservabilitySnapshot:
     with _LOCK:
         return AuthObservabilitySnapshot(
@@ -347,9 +382,7 @@ def auth_observability_snapshot() -> AuthObservabilitySnapshot:
             _PENDING,
             _OLDEST_PENDING,
             tuple(
-                (action, owner, _CLAIM[action, owner])
-                for action in _ACTIONS
-                for owner in _OWNERS
+                (action, owner, _CLAIM[action, owner]) for action in _ACTIONS for owner in _OWNERS
             ),
             tuple((action, _LEASE_EXPIRED[action]) for action in _ACTIONS),
             tuple(
@@ -380,6 +413,14 @@ def auth_observability_snapshot() -> AuthObservabilitySnapshot:
             _PENDING_WITHOUT_DUE,
             _DUE_WITHOUT_PAYLOAD,
             tuple((reason, _DEAD_LETTER[reason]) for reason in _ORPHAN_REASONS),
+            tuple(
+                (mode, outcome, _WEB_SESSION_MODE[mode, outcome])
+                for mode in ("refresh", "access_only")
+                for outcome in ("success", "rejected", "unavailable")
+            ),
+            tuple(_WEB_ACCESS_ONLY_LOGIN.items()),
+            tuple(_WEB_ACCESS_ONLY_REFRESH_BLOCK.items()),
+            tuple(_WEB_OLD_REFRESH_REVOKED.items()),
         )
 
 
@@ -441,3 +482,11 @@ def reset_auth_observability() -> None:
             _ENVELOPE_INVALID[field] = 0
         _PENDING_WITHOUT_DUE = 0
         _DUE_WITHOUT_PAYLOAD = 0
+        for mode_key in _WEB_SESSION_MODE:
+            _WEB_SESSION_MODE[mode_key] = 0
+        for key in _WEB_ACCESS_ONLY_LOGIN:
+            _WEB_ACCESS_ONLY_LOGIN[key] = 0
+        for key in _WEB_ACCESS_ONLY_REFRESH_BLOCK:
+            _WEB_ACCESS_ONLY_REFRESH_BLOCK[key] = 0
+        for key in _WEB_OLD_REFRESH_REVOKED:
+            _WEB_OLD_REFRESH_REVOKED[key] = 0

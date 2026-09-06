@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal, Self, cast
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Body, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyCookie, HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.audit import audited
+from app.core.auth.accounts import PlatformAccount
 from app.core.auth.runtime import (
     AuthFacade,
     LoginSuccess,
@@ -71,12 +72,24 @@ class PasswordPolicyResponse(StrictModel):
 class LoginRequest(StrictModel):
     provider_code: str = Field(min_length=1, max_length=64)
     username: str = Field(min_length=1, max_length=64)
-    tab_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    session_mode: Literal["refresh", "access_only"]
+    tab_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
     password: str = Field(
         min_length=1,
         max_length=128,
         json_schema_extra={"writeOnly": True},
     )
+
+    @model_validator(mode="after")
+    def validate_session_mode_binding(self) -> Self:
+        """refresh 必须绑定 tab_id；access_only 禁止携带，防止事后补参升级。"""
+
+        if self.session_mode == "refresh":
+            if self.tab_id is None:
+                raise ValueError("refresh 会话必须提供 tab_id")
+        elif self.tab_id is not None:
+            raise ValueError("access_only 会话不得携带 tab_id")
+        return self
 
 
 class UserResponse(StrictModel):
@@ -89,11 +102,22 @@ class UserResponse(StrictModel):
     role: Literal["admin", "approver", "operator", "viewer"]
 
 
-class LoginResponse(StrictModel):
+class RefreshLoginResponse(StrictModel):
+    session_mode: Literal["refresh"]
     token: str
     expires_in: int = Field(ge=1, le=900)
     refresh_expires_in: int = Field(ge=1, le=604800)
     user: UserResponse
+
+
+class AccessOnlyLoginResponse(StrictModel):
+    session_mode: Literal["access_only"]
+    token: str
+    expires_in: int = Field(ge=1, le=900)
+    user: UserResponse
+
+
+LoginResponse = RefreshLoginResponse | AccessOnlyLoginResponse
 
 
 class RefreshRequest(StrictModel):
@@ -169,21 +193,35 @@ def _bearer(credentials: HTTPAuthorizationCredentials | None) -> str:
     return credentials.credentials
 
 
+def _user_response(user: PlatformAccount) -> UserResponse:
+    return UserResponse(
+        account_id=user.account_id,
+        identity_id=user.identity_id,
+        provider_code=user.provider_code,
+        username=user.login_name,
+        display_name=user.display_name,
+        dept=user.dept,
+        role=user.role,
+    )
+
+
 def _login_response(result: LoginSuccess) -> LoginResponse:
-    user = result.user
-    return LoginResponse(
+    """按会话模式返回联合类型；access_only 不得伪装正数 refresh TTL。"""
+
+    user = _user_response(result.user)
+    if result.session_mode == "access_only":
+        return AccessOnlyLoginResponse(
+            session_mode="access_only",
+            token=result.token,
+            expires_in=result.expires_in,
+            user=user,
+        )
+    return RefreshLoginResponse(
+        session_mode="refresh",
         token=result.token,
         expires_in=result.expires_in,
         refresh_expires_in=result.refresh_expires_in,
-        user=UserResponse(
-            account_id=user.account_id,
-            identity_id=user.identity_id,
-            provider_code=user.provider_code,
-            username=user.login_name,
-            display_name=user.display_name,
-            dept=user.dept,
-            role=user.role,
-        ),
+        user=user,
     )
 
 
@@ -251,7 +289,7 @@ async def password_policy(
 
 @router.post(
     "/auth/login",
-    response_model=LoginResponse | PasswordChangeRequiredResponse,
+    response_model=RefreshLoginResponse | AccessOnlyLoginResponse | PasswordChangeRequiredResponse,
     responses={
         200: NO_STORE_RESPONSE,
         401: ERROR_RESPONSE,
@@ -276,9 +314,12 @@ async def login(
         _client_ip(request),
         payload.tab_id,
         request.cookies.get(REFRESH_COOKIE_NAME),
+        session_mode=payload.session_mode,
     )
     response.headers["Cache-Control"] = "no-store"
     if isinstance(result, PasswordChangeRequired):
+        if payload.session_mode == "access_only":
+            _clear_refresh_cookie(response)
         return PasswordChangeRequiredResponse(
             change_token=result.change_token,
             expires_in=600,
@@ -286,6 +327,12 @@ async def login(
         )
     if not isinstance(result, LoginSuccess):
         raise RuntimeError("unsupported login result")
+    if result.session_mode == "access_only":
+        # 删除旧 Cookie，同时服务端已吊销其 Family；不得再签发新 Refresh。
+        _clear_refresh_cookie(response)
+        return _login_response(result)
+    if not result.refresh_token or result.refresh_expires_in < 1:
+        raise RuntimeError("refresh login missing refresh token")
     _set_refresh_cookie(
         response,
         result.refresh_token,
@@ -301,7 +348,7 @@ async def login(
 
 @router.post(
     "/auth/refresh",
-    response_model=LoginResponse,
+    response_model=RefreshLoginResponse,
     responses={
         200: NO_STORE_RESPONSE,
         401: ERROR_RESPONSE,
@@ -316,12 +363,18 @@ async def refresh(
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     payload: Annotated[RefreshRequest, Body()],
     refresh_token: Annotated[str | None, Depends(refresh_cookie_scheme)],
-) -> LoginResponse | Response:
+) -> RefreshLoginResponse | Response:
     _assert_same_origin(request)
     try:
         if not refresh_token:
             raise ApiError(401, "UNAUTHORIZED", "刷新令牌缺失", None)
         result = await facade.refresh(refresh_token, _client_ip(request), payload.tab_id)
+        if (
+            result.session_mode != "refresh"
+            or not result.refresh_token
+            or result.refresh_expires_in < 1
+        ):
+            raise ApiError(401, "UNAUTHORIZED", "刷新令牌无效或已使用", None)
     except ApiError as error:
         if error.status_code != 401:
             raise
@@ -343,7 +396,10 @@ async def refresh(
         or request.url.scheme == "https",
         max_age=result.refresh_expires_in,
     )
-    return _login_response(result)
+    login_response = _login_response(result)
+    if not isinstance(login_response, RefreshLoginResponse):
+        raise RuntimeError("refresh must return refresh session")
+    return login_response
 
 
 @router.post(

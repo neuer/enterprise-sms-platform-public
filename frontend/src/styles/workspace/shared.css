@@ -594,6 +594,16 @@
   color: var(--line-2);
 }
 
+.access-only-banner {
+  margin: 0;
+  padding: 8px 24px;
+  color: var(--amber);
+  font-size: 12px;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--amber) 28%, transparent);
+}
+
 .operator {
   display: flex;
   gap: 20px;

@@ -26,6 +26,13 @@ from app.core.auth.jwt import (
     JwtClaims,
     JwtService,
     ReauthenticationRequired,
+    SessionMode,
+)
+from app.core.auth.observability import (
+    observe_access_only_login,
+    observe_access_only_refresh_block,
+    observe_old_refresh_revoked_on_access_only_login,
+    observe_web_session_mode,
 )
 from app.core.auth.passwords import (
     LocalPasswordHasher,
@@ -68,6 +75,7 @@ class LoginSuccess:
     expires_in: int
     refresh_expires_in: int
     user: PlatformAccount
+    session_mode: SessionMode = "refresh"
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,8 +239,10 @@ class AuthFacade:
         login_name: str,
         password: str,
         ip: str,
-        tab_id: str,
+        tab_id: str | None = None,
         prior_refresh_token: str | None = None,
+        *,
+        session_mode: SessionMode = "refresh",
     ) -> LoginSuccess | PasswordChangeRequired:
         try:
             identity = await self.auth.authenticate(
@@ -285,6 +295,21 @@ class AuthFacade:
                 "会话权威状态暂不可用，请稍后重试",
                 None,
             ) from None
+        if session_mode == "access_only":
+            if tab_id is not None:
+                observe_access_only_refresh_block("tab_id_upgrade")
+                observe_web_session_mode("access_only", "rejected")
+                raise ApiError(
+                    400,
+                    "INVALID_PARAM",
+                    "access_only 会话不得携带 tab_id",
+                    None,
+                )
+            # 改密挑战也必须先吊销旧 Family，不能留下可恢复 Refresh。
+            await self._revoke_presented_refresh_family(
+                prior_refresh_token,
+                record_access_only=True,
+            )
         if user.must_change_password:
             change_token = self.tokens.issue_password_change(
                 account_id=user.account_id,
@@ -303,37 +328,68 @@ class AuthFacade:
                 expires_at=datetime.fromtimestamp(change_claims.expires_at, tz=UTC),
             )
             return PasswordChangeRequired(change_token)
+        if session_mode == "access_only":
+            try:
+                pair = await self.tokens.issue_access_only(
+                    self._claims(user, session_mode="access_only")
+                )
+            except SessionStateUnavailable:
+                observe_web_session_mode("access_only", "unavailable")
+                raise ApiError(
+                    503,
+                    "AUTH_SESSION_UNAVAILABLE",
+                    "会话权威状态暂不可用，请稍后重试",
+                    None,
+                ) from None
+            observe_access_only_login(user.provider_code)
+            observe_web_session_mode("access_only", "success")
+            return self._login_success(pair, user, session_mode="access_only")
+        if tab_id is None:
+            observe_web_session_mode("refresh", "rejected")
+            raise ApiError(400, "INVALID_PARAM", "refresh 会话必须提供 tab_id", None)
         await self._revoke_presented_refresh_family(prior_refresh_token)
         try:
             pair = await self.tokens.issue_pair(self._claims(user), tab_id)
         except SessionStateUnavailable:
+            observe_web_session_mode("refresh", "unavailable")
             raise ApiError(
                 503,
                 "AUTH_SESSION_UNAVAILABLE",
                 "会话权威状态暂不可用，请稍后重试",
                 None,
             ) from None
-        return self._login_success(pair, user)
+        observe_web_session_mode("refresh", "success")
+        return self._login_success(pair, user, session_mode="refresh")
 
     async def _revoke_presented_refresh_family(
         self,
         refresh_token: str | None,
+        *,
+        record_access_only: bool = False,
     ) -> None:
         """吊销请求带来的旧 Cookie family；无效令牌忽略，存储故障失败关闭。"""
 
         if not refresh_token:
+            if record_access_only:
+                observe_old_refresh_revoked_on_access_only_login("absent")
             return
         try:
             await self.tokens.revoke_refresh_token(refresh_token)
         except InvalidCredentials:
+            if record_access_only:
+                observe_old_refresh_revoked_on_access_only_login("invalid")
             return
         except SessionStateUnavailable:
+            if record_access_only:
+                observe_old_refresh_revoked_on_access_only_login("unavailable")
             raise ApiError(
                 503,
                 "AUTH_SESSION_UNAVAILABLE",
                 "会话权威状态暂不可用，请稍后重试",
                 None,
             ) from None
+        if record_access_only:
+            observe_old_refresh_revoked_on_access_only_login("revoked")
 
     async def refresh(self, refresh_token: str, ip: str, tab_id: str) -> LoginSuccess:
         """轮换后持久审计；审计失败时吊销刚签发的整个会话。"""
@@ -651,7 +707,11 @@ class AuthFacade:
             raise ApiError(404, "NOT_FOUND", "账号不存在", None) from None
 
     @staticmethod
-    def _claims(user: PlatformAccount) -> JwtClaims:
+    def _claims(
+        user: PlatformAccount,
+        *,
+        session_mode: SessionMode = "refresh",
+    ) -> JwtClaims:
         return JwtClaims(
             account_id=user.account_id,
             identity_id=user.identity_id,
@@ -661,6 +721,7 @@ class AuthFacade:
             dept=user.dept,
             role=user.role,
             security_version=user.security_version,
+            session_mode=session_mode,
         )
 
     @staticmethod
@@ -681,13 +742,19 @@ class AuthFacade:
         )
 
     @staticmethod
-    def _login_success(pair: IssuedTokenPair, user: PlatformAccount) -> LoginSuccess:
+    def _login_success(
+        pair: IssuedTokenPair,
+        user: PlatformAccount,
+        *,
+        session_mode: SessionMode = "refresh",
+    ) -> LoginSuccess:
         return LoginSuccess(
             pair.token,
             pair.refresh_token,
             pair.expires_in,
             pair.refresh_expires_in,
             user,
+            session_mode,
         )
 
 

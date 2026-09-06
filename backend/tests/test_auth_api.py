@@ -73,11 +73,13 @@ class FakeAuthFacade:
         username: str,
         password: str,
         ip: str,
-        tab_id: str,
+        tab_id: str | None = None,
         prior_refresh_token: str | None = None,
+        *,
+        session_mode: str = "refresh",
     ) -> LoginSuccess | PasswordChangeRequired:
         self.login_calls.append(
-            (provider_code, username, password, ip, tab_id, prior_refresh_token)
+            (provider_code, username, password, ip, tab_id, prior_refresh_token, session_mode)
         )
         if provider_code == "disabled":
             raise ApiError(403, "AUTH_PROVIDER_DISABLED", "所选认证源未启用", None)
@@ -85,12 +87,22 @@ class FakeAuthFacade:
             return PasswordChangeRequired("change.jwt")
         if password != "correct":
             raise ApiError(401, "UNAUTHORIZED", "用户名或密码错误", None)
+        if session_mode == "access_only":
+            return LoginSuccess(
+                "signed.jwt",
+                "",
+                900,
+                0,
+                user(),
+                "access_only",
+            )
         return LoginSuccess(
             "signed.jwt",
             "refresh.jwt",
             900,
             604800,
             user(),
+            "refresh",
         )
 
     async def refresh(self, refresh_token: str, ip: str, tab_id: str) -> LoginSuccess:
@@ -103,6 +115,7 @@ class FakeAuthFacade:
             900,
             604800,
             user(),
+            "refresh",
         )
 
     async def change_initial_password(
@@ -169,6 +182,7 @@ def test_login_requires_explicit_provider_and_returns_account_identity_fields() 
             "provider_code": "local",
             "username": "operator01",
             "password": "correct",
+            "session_mode": "refresh",
             "tab_id": TAB_ID,
         },
     )
@@ -176,6 +190,7 @@ def test_login_requires_explicit_provider_and_returns_account_identity_fields() 
     assert success.status_code == 200
     assert success.headers["cache-control"] == "no-store"
     assert success.json() == {
+        "session_mode": "refresh",
         "token": "signed.jwt",
         "expires_in": 900,
         "refresh_expires_in": 604800,
@@ -237,6 +252,7 @@ def test_temporary_login_and_both_password_change_endpoints() -> None:
             "provider_code": "local",
             "username": "operator01",
             "password": "temporary",
+            "session_mode": "refresh",
             "tab_id": TAB_ID,
         },
     )
@@ -259,6 +275,7 @@ def test_cookie_refresh_rejects_cross_origin_request() -> None:
             "provider_code": "local",
             "username": "operator01",
             "password": "correct",
+            "session_mode": "refresh",
             "tab_id": TAB_ID,
         },
     )
@@ -291,6 +308,7 @@ def test_cookie_refresh_rejects_malformed_origin_with_stable_403(origin: str) ->
             "provider_code": "local",
             "username": "operator01",
             "password": "correct",
+            "session_mode": "refresh",
             "tab_id": TAB_ID,
         },
     )
@@ -336,6 +354,7 @@ def test_login_uses_standard_error_envelope_for_credentials_and_provider_state()
             "provider_code": "local",
             "username": "unknown",
             "password": "wrong",
+            "session_mode": "refresh",
             "tab_id": TAB_ID,
         },
     )
@@ -345,6 +364,7 @@ def test_login_uses_standard_error_envelope_for_credentials_and_provider_state()
             "provider_code": "disabled",
             "username": "unknown",
             "password": "correct",
+            "session_mode": "refresh",
             "tab_id": TAB_ID,
         },
     )
@@ -443,6 +463,7 @@ def test_production_login_sets_secure_refresh_cookie(tmp_path: Path) -> None:
             "provider_code": "local",
             "username": "operator01",
             "password": "correct",
+            "session_mode": "refresh",
             "tab_id": TAB_ID,
         },
     )
@@ -461,13 +482,20 @@ def _refresh_cookie(response: Any) -> str:
     raise AssertionError("missing sms_refresh_token Set-Cookie")
 
 
-def _login_payload(password: str = "correct") -> dict[str, str]:
-    return {
+def _login_payload(
+    password: str = "correct",
+    *,
+    session_mode: str = "refresh",
+) -> dict[str, str | None]:
+    payload: dict[str, str | None] = {
         "provider_code": "local",
         "username": "operator01",
         "password": password,
-        "tab_id": TAB_ID,
+        "session_mode": session_mode,
     }
+    if session_mode == "refresh":
+        payload["tab_id"] = TAB_ID
+    return payload
 
 
 def test_login_forwards_existing_refresh_cookie_and_refresh_body_rejects_token() -> None:

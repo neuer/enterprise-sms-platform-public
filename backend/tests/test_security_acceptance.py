@@ -158,11 +158,10 @@ def test_injection_probes_use_valid_shape_and_authenticated_path(tmp_path: Path)
         "provider_code": "ad",
         "username": "admin01' OR '1'='1",
         "password": "in-memory-security-test-password",
+        "session_mode": "refresh",
         "tab_id": "00000000000000000000000000000001",
     }
-    path_probe = next(
-        call for call in http.calls if call[1].endswith("/phone/decrypt")
-    )
+    path_probe = next(call for call in http.calls if call[1].endswith("/phone/decrypt"))
     assert path_probe[0] == "POST"
     assert path_probe[3] == "token-admin01"
 

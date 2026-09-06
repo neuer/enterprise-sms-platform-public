@@ -378,6 +378,14 @@ async function handlePasswordChanged(): Promise<void> {
           </div>
         </header>
 
+        <p
+          v-if="session.sessionMode === 'access_only'"
+          class="access-only-banner"
+          data-testid="access-only-banner"
+          role="status"
+        >
+          当前浏览器为短会话模式，页面刷新或会话到期需重新登录。
+        </p>
         <main>
           <router-view />
         </main>
