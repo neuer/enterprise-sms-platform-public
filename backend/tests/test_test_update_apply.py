@@ -97,8 +97,8 @@ def test_backend_apply_migrates_then_replaces_fixed_services_without_mock() -> N
         ("mode", "live"),
         ("pauses", "test-api"),
         ("migrate", "0015", "0016"),
-        "replace_redis",
         "prepare_rollback",
+        "replace_redis",
         ("writer_cutover", "test-api"),
         ("replace_backend", BACKEND_SERVICES),
     ]
@@ -137,8 +137,8 @@ def test_backend_without_migration_skips_migration_and_checkpoint_state() -> Non
         "lock",
         ("mode", "live"),
         ("pauses", "test-api"),
-        "replace_redis",
         "prepare_rollback",
+        "replace_redis",
         ("writer_cutover", "test-api"),
         ("replace_backend", BACKEND_SERVICES),
     ]

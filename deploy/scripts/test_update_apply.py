@@ -134,10 +134,10 @@ class TestUpdateApply:
                     actual_migration_head=actual_head,
                 )
                 current = TestUpdateState.MIGRATED
-            step = "replace_redis"
-            self.operations.replace_redis_services()
             step = "prepare_rollback"
             self.operations.prepare_rollback_images()
+            step = "replace_redis"
+            self.operations.replace_redis_services()
             step = "writer_cutover"
             self.operations.run_writer_cutover(update_id)
             step = "replace_backend"
