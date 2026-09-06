@@ -2,6 +2,8 @@
 # Main local gate for `git push`. Enable with: scripts/install_git_hooks.sh
 # Path-based checks: scripts/check_pre_vcs_gates.py --git-hook push
 # `git push --no-verify` bypasses this hook; Cursor only blocks that bypass.
+# Receipt-only pushes of refs/sms-local-gates/<sha> skip gates so the hook
+# can publish proof without recursing.
 set -euo pipefail
 
 ROOT="$(git rev-parse --show-toplevel)"
@@ -42,8 +44,11 @@ if [[ "$repository_identity" != "$EXPECTED_REPOSITORY" ]]; then
 fi
 
 zero="0000000000000000000000000000000000000000"
+local_refs=()
 ranges=()
 while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -n "${local_ref:-}" ]] || continue
+  local_refs+=("$local_ref")
   [[ -n "${local_sha:-}" ]] || continue
   [[ "$local_sha" != "$zero" ]] || continue
   if [[ "$remote_sha" != "$zero" ]]; then
@@ -57,6 +62,13 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
   fi
 done
+
+if ((${#local_refs[@]})) && python3 "$ROOT/scripts/check_pre_vcs_gates.py" \
+  --receipt-push-only "${local_refs[@]}"
+then
+  echo "pre-push: receipt ref only; skip local gates" >&2
+  exit 0
+fi
 
 args=()
 for range in "${ranges[@]}"; do
@@ -73,4 +85,5 @@ if ! command -v python3 >/dev/null 2>&1; then
   echo "pre-push: python3 is required for pre-vcs gates" >&2
   exit 1
 fi
-python3 "$ROOT/scripts/check_pre_vcs_gates.py" --git-hook push
+python3 "$ROOT/scripts/check_pre_vcs_gates.py" --git-hook push \
+  --publish-remote "$REMOTE_NAME"

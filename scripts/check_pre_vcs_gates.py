@@ -26,7 +26,7 @@ import subprocess
 import sys
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 CHECK_RUFF = "ruff"
@@ -36,6 +36,13 @@ CHECK_MIGRATION = "check_migration"
 CHECK_VENDOR_PG = "vendor_postgres_recovery"
 CHECK_SPEC = "spec_consistency"
 CHECK_CI_CONTRACTS = "ci_contracts"
+FRONTEND_HOOK_SCRIPTS = ("lint", "format:check", "typecheck", "test")
+FRONTEND_CI_OVERLAP = ("lint", "format:check", "test")
+RECEIPT_KIND = "sms-local-gates"
+RECEIPT_SCHEMA = 1
+RECEIPT_REF_PREFIX = "refs/sms-local-gates/"
+RECEIPT_IGNORED_EVENTS = frozenset({"workflow_dispatch", "schedule"})
+SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 Mode = Literal["commit", "push"]
 GIT_HOOK_ENV_KEYS = (
@@ -143,6 +150,15 @@ class GitInvocation:
     subcommand: Literal["commit", "push"]
     args: tuple[str, ...]
     skips_hooks: bool
+
+
+@dataclass(frozen=True)
+class ReceiptSkip:
+    """CI 可跳过的廉价重叠面；CI-only 门禁不得出现在这里。"""
+
+    skip_frontend_static: bool = False
+    skip_ruff_files: tuple[str, ...] = ()
+    skip_pytest_changed: bool = False
 
 
 @dataclass
@@ -619,6 +635,223 @@ def write_stamp(root: Path, digest: str) -> None:
     path.chmod(0o600)
 
 
+def safe_repo_path(path: str) -> str | None:
+    """拒绝绝对路径、父目录穿越和空段；回执路径必须是仓库相对 POSIX。"""
+
+    if not path or path.startswith("/") or "\\" in path:
+        return None
+    parts = PurePosixPath(path).parts
+    if not parts or parts[0] == ".." or ".." in parts:
+        return None
+    return path
+
+
+def is_receipt_ref(ref: str) -> bool:
+    if not ref.startswith(RECEIPT_REF_PREFIX):
+        return False
+    return SHA_RE.fullmatch(ref[len(RECEIPT_REF_PREFIX) :]) is not None
+
+
+def receipt_push_only(refs: Sequence[str]) -> bool:
+    """仅推送回执 ref 时跳过门禁，避免 publish 递归触发 pre-push。"""
+
+    return bool(refs) and all(is_receipt_ref(ref) for ref in refs)
+
+
+def build_push_receipt(
+    root: Path,
+    plan: GatePlan,
+    *,
+    commit: str | None = None,
+) -> dict[str, Any]:
+    """把本次 push hook 实际点名的廉价检查绑到 commit/tree。"""
+
+    resolved = commit or git_output(root, ["rev-parse", "HEAD"]).strip()
+    if SHA_RE.fullmatch(resolved) is None:
+        raise GateError("HEAD commit is invalid")
+    tree = git_output(root, ["rev-parse", f"{resolved}^{{tree}}"]).strip()
+    if SHA_RE.fullmatch(tree) is None:
+        raise GateError("HEAD tree is invalid")
+    return {
+        "kind": RECEIPT_KIND,
+        "schema": RECEIPT_SCHEMA,
+        "commit": resolved,
+        "tree": tree,
+        "mode": "push",
+        "checks": list(plan.required()),
+        "ruff_files": list(plan.ruff_files),
+        "pytest_files": list(plan.pytest_files),
+        "frontend_scripts": (
+            list(FRONTEND_HOOK_SCRIPTS) if CHECK_FRONTEND in plan.checks else []
+        ),
+    }
+
+
+def receipt_skips(
+    receipt: object,
+    *,
+    commit: str,
+    tree: str,
+) -> ReceiptSkip:
+    """回执与当前树不一致或字段畸形时失败关闭：不跳过任何 CI 检查。"""
+
+    empty = ReceiptSkip()
+    if type(receipt) is not dict:
+        return empty
+    if (
+        receipt.get("kind") != RECEIPT_KIND
+        or receipt.get("schema") != RECEIPT_SCHEMA
+        or receipt.get("mode") != "push"
+        or receipt.get("commit") != commit
+        or receipt.get("tree") != tree
+        or SHA_RE.fullmatch(commit) is None
+        or SHA_RE.fullmatch(tree) is None
+    ):
+        return empty
+    checks = receipt.get("checks")
+    if type(checks) is not list or any(type(item) is not str for item in checks):
+        return empty
+
+    ruff_files: list[str] = []
+    if CHECK_RUFF in checks:
+        raw_ruff = receipt.get("ruff_files")
+        if type(raw_ruff) is not list or any(type(item) is not str for item in raw_ruff):
+            return empty
+        for item in raw_ruff:
+            safe = safe_repo_path(item)
+            if safe is None:
+                return empty
+            if safe not in ruff_files:
+                ruff_files.append(safe)
+
+    scripts: list[str] = []
+    if CHECK_FRONTEND in checks:
+        raw_scripts = receipt.get("frontend_scripts")
+        if type(raw_scripts) is not list or any(
+            type(item) is not str for item in raw_scripts
+        ):
+            return empty
+        scripts = raw_scripts
+
+    return ReceiptSkip(
+        skip_frontend_static=CHECK_FRONTEND in checks
+        and set(FRONTEND_CI_OVERLAP).issubset(scripts),
+        skip_ruff_files=tuple(ruff_files),
+        skip_pytest_changed=CHECK_PYTEST_CHANGED in checks,
+    )
+
+
+def format_ruff_exclude_args(skip_files: Sequence[str]) -> list[str]:
+    """把仓库相对路径转成 backend cwd 下的 ruff --exclude。"""
+
+    args: list[str] = []
+    seen: set[str] = set()
+    for raw in skip_files:
+        path = safe_repo_path(raw)
+        if path is None:
+            continue
+        exclude = (
+            path.removeprefix("backend/")
+            if path.startswith("backend/")
+            else f"../{path}"
+        )
+        if exclude in seen:
+            continue
+        seen.add(exclude)
+        args.extend(["--exclude", exclude])
+    return args
+
+
+def load_receipt_from_ref(root: Path, ref: str) -> dict[str, Any] | None:
+    if not is_receipt_ref(ref):
+        return None
+    try:
+        raw = git_output(root, ["cat-file", "-p", ref])
+    except GateError:
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if type(data) is dict else None
+
+
+def write_receipt_outputs(path: Path, skip: ReceiptSkip) -> None:
+    with path.open("a", encoding="utf-8") as output:
+        output.write(f"skip_frontend_static={str(skip.skip_frontend_static).lower()}\n")
+        output.write(f"skip_ruff_files={','.join(skip.skip_ruff_files)}\n")
+
+
+def evaluate_receipt(
+    *,
+    root: Path,
+    event_name: str,
+    commit: str,
+    receipt_ref: str,
+) -> ReceiptSkip:
+    if event_name in RECEIPT_IGNORED_EVENTS or SHA_RE.fullmatch(commit) is None:
+        return ReceiptSkip()
+    try:
+        tree = git_output(root, ["rev-parse", f"{commit}^{{tree}}"]).strip()
+    except GateError:
+        return ReceiptSkip()
+    receipt = load_receipt_from_ref(root, receipt_ref) if receipt_ref else None
+    return receipt_skips(receipt, commit=commit, tree=tree)
+
+
+def publish_push_receipt(root: Path, remote: str, plan: GatePlan) -> None:
+    """发布失败不得阻断已通过的 push hook；CI 将因无回执重跑廉价检查。"""
+
+    if not remote or remote.startswith("-"):
+        print(
+            "pre-vcs-gates: invalid publish remote; CI will re-run cheap checks",
+            file=sys.stderr,
+        )
+        return
+    try:
+        receipt = build_push_receipt(root, plan)
+        payload = json.dumps(receipt, sort_keys=True, separators=(",", ":"))
+        hashed = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"],
+            cwd=root,
+            input=payload.encode("utf-8"),
+            capture_output=True,
+            check=False,
+        )
+        blob = hashed.stdout.decode("utf-8").strip()
+        if hashed.returncode != 0 or SHA_RE.fullmatch(blob) is None:
+            raise GateError("cannot write receipt blob")
+        ref = f"{RECEIPT_REF_PREFIX}{receipt['commit']}"
+        updated = subprocess.run(
+            ["git", "update-ref", ref, blob],
+            cwd=root,
+            capture_output=True,
+            check=False,
+        )
+        if updated.returncode != 0:
+            raise GateError("cannot store receipt ref")
+        pushed = subprocess.run(
+            ["git", "push", remote, ref],
+            cwd=root,
+            capture_output=True,
+            check=False,
+        )
+        if pushed.returncode != 0:
+            detail = (pushed.stderr or pushed.stdout).decode("utf-8", "replace").strip()
+            print(
+                "pre-vcs-gates: receipt publish failed; "
+                f"CI will re-run cheap checks ({detail})",
+                file=sys.stderr,
+            )
+            return
+        print(f"pre-vcs-gates: published {ref}", file=sys.stderr)
+    except (GateError, OSError) as exc:
+        print(
+            f"pre-vcs-gates: receipt publish failed; CI will re-run cheap checks ({exc})",
+            file=sys.stderr,
+        )
+
+
 def isolated_check_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
     """去掉 git hook 注入的 GIT_*，避免 pytest 里的 git 操作打到当前仓库。"""
 
@@ -717,7 +950,7 @@ def execute_plan(root: Path, plan: GatePlan) -> None:
         if shutil.which("npm") is None:
             raise GateError("npm is required for frontend changes but is not on PATH")
         frontend = root / "frontend"
-        for script in ("lint", "format:check", "typecheck", "test"):
+        for script in FRONTEND_HOOK_SCRIPTS:
             run_command(["npm", "run", script], cwd=frontend, env=env)
     if CHECK_CI_CONTRACTS in plan.checks:
         if not plan.contract_tests:
@@ -840,10 +1073,12 @@ def cursor_hook_main() -> int:
         )
 
 
-def git_hook_main(mode: Mode) -> int:
+def git_hook_main(mode: Mode, *, publish_remote: str = "") -> int:
     try:
         root = repo_root_from_cwd()
-        run_gates(root, mode, None)
+        plan = run_gates(root, mode, None)
+        if mode == "push" and publish_remote:
+            publish_push_receipt(root, publish_remote, plan)
         return 0
     except GateError as exc:
         print(f"pre-vcs-gates: {exc}", file=sys.stderr)
@@ -880,25 +1115,61 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cursor-hook", action="store_true")
     parser.add_argument("--git-hook", choices=("commit", "push"))
+    parser.add_argument("--publish-remote", default="")
     parser.add_argument("--require-hooks-path", action="store_true")
     parser.add_argument("--plan", action="store_true")
+    parser.add_argument("--evaluate-receipt", action="store_true")
+    parser.add_argument("--receipt-push-only", action="store_true")
+    parser.add_argument("--ruff-exclude-args", action="store_true")
+    parser.add_argument("--commit", default="")
+    parser.add_argument("--receipt-ref", default="")
+    parser.add_argument("--event-name", default="")
+    parser.add_argument("--github-output", type=Path)
+    parser.add_argument("--skip-ruff-files", default="")
     parser.add_argument("--paths", nargs="*")
+    parser.add_argument("refs", nargs="*")
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.receipt_push_only:
+        return 0 if receipt_push_only(args.refs) else 1
+    if args.ruff_exclude_args:
+        files = [part for part in args.skip_ruff_files.split(",") if part]
+        for arg in format_ruff_exclude_args(files):
+            print(arg)
+        return 0
+    if args.evaluate_receipt:
+        if args.github_output is None:
+            parser.error("--github-output is required with --evaluate-receipt")
+        skip = evaluate_receipt(
+            root=repo_root_from_cwd(),
+            event_name=args.event_name,
+            commit=args.commit,
+            receipt_ref=args.receipt_ref,
+        )
+        write_receipt_outputs(args.github_output, skip)
+        print(
+            "local_gate_receipt "
+            f"skip_frontend_static={str(skip.skip_frontend_static).lower()} "
+            f"skip_ruff_files={len(skip.skip_ruff_files)}"
+        )
+        return 0
     if args.cursor_hook:
         return cursor_hook_main()
     if args.git_hook:
-        return git_hook_main(args.git_hook)
+        return git_hook_main(args.git_hook, publish_remote=args.publish_remote)
     if args.require_hooks_path:
         return require_hooks_path_main()
     if args.plan:
         root = repo_root_from_cwd()
         return plan_main(args.paths or [], root)
-    parser.error("choose --cursor-hook, --git-hook, --require-hooks-path, or --plan")
+    parser.error(
+        "choose --cursor-hook, --git-hook, --require-hooks-path, "
+        "--plan, --evaluate-receipt, --receipt-push-only, or --ruff-exclude-args"
+    )
     return 2
 
 
