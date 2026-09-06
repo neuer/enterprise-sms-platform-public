@@ -133,12 +133,13 @@ def test_frontend_root_entry_rejects_storage_token_session_persistence_apis() ->
 
 def test_single_spa_keeps_the_browser_session_contract() -> None:
     session = read("frontend/src/stores/session.ts")
+    signals = read("frontend/src/api/sessionSignals.ts")
 
-    for token in (
-        'const CHANGE_TOKEN_KEY = "sms_change_token"',
-        'const SESSION_CLEAR_SIGNAL_KEY = "sms_session_clear"',
-    ):
-        assert token in session
+    assert 'const CHANGE_TOKEN_KEY = "sms_change_token"' in session
+    assert 'export const SESSION_CLEAR_SIGNAL_KEY = "sms_session_clear"' in signals
+    assert "SESSION_CLEAR_SIGNAL_KEY" in session
+    assert "clearIfCurrent(" in session
+    assert "sessionInstanceId" in session
 
     assert "sessionStorage.setItem(TOKEN_KEY" not in session
     assert "sessionStorage.setItem(USER_KEY" not in session
@@ -148,7 +149,7 @@ def test_single_spa_keeps_the_browser_session_contract() -> None:
     assert "localStorage.setItem(USER_KEY" not in session
     assert "localStorage.setItem(SESSION_CLEAR_SIGNAL_KEY" not in session
     assert "function readStorage(" in session
-    assert "storage.setItem(SESSION_CLEAR_SIGNAL_KEY" in session
+    assert "storage.setItem(SESSION_CLEAR_SIGNAL_KEY" in signals
     assert "this.resetIdentity()" in session
 
     session_tokens = read("frontend/src/api/sessionTokens.ts")
@@ -157,7 +158,8 @@ def test_single_spa_keeps_the_browser_session_contract() -> None:
     assert "revalidateOnResume" in session
     refresh_lock = read("frontend/src/api/refreshLock.ts")
     assert "detectSessionMode" in refresh_lock
-    assert "access_only" in refresh_lock
+    assert "ACCESS_ONLY_SESSION_MESSAGE" in refresh_lock
+    assert "isAccessOnlySessionMode" in refresh_lock
     auth_api = read("frontend/src/api/auth.ts")
     assert 'session_mode: "access_only"' in auth_api
     assert 'session_mode: "refresh"' in auth_api
