@@ -717,6 +717,8 @@ class SendWorker:
             )
             if reloaded is None:
                 return None
+            if not isinstance(reloaded, FinalizeReport):
+                raise
             return reloaded
 
     def _route_request(
