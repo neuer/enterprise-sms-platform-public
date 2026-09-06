@@ -48,6 +48,9 @@ class FakeApplyOperations:
     def require_owned_update_pauses(self, update_id: str) -> None:
         self._event(("pauses", update_id))
 
+    def replace_redis_services(self) -> None:
+        self._event("replace_redis")
+
     def run_writer_cutover(self, update_id: str) -> None:
         self._event(("writer_cutover", update_id))
 
@@ -91,6 +94,7 @@ def test_backend_apply_migrates_then_replaces_fixed_services_without_mock() -> N
         ("mode", "live"),
         ("pauses", "test-api"),
         ("migrate", "0015", "0016"),
+        "replace_redis",
         ("writer_cutover", "test-api"),
         ("replace_backend", BACKEND_SERVICES),
     ]
@@ -129,6 +133,7 @@ def test_backend_without_migration_skips_migration_and_checkpoint_state() -> Non
         "lock",
         ("mode", "live"),
         ("pauses", "test-api"),
+        "replace_redis",
         ("writer_cutover", "test-api"),
         ("replace_backend", BACKEND_SERVICES),
     ]
@@ -179,6 +184,45 @@ def test_backend_no_migration_apply_failure_restores_previous_image() -> None:
     assert store.state is State.ROLLED_BACK
     assert operations.events[-1] == ("rollback", "backend-safe", "test-api")
     assert not any(event == ("hold", "test-api") for event in operations.events)
+
+
+def test_backend_no_migration_replace_redis_failure_rolls_back() -> None:
+    store = FakeStore(State.PREPARED)
+    operations = FakeApplyOperations(fail_at="replace_redis")
+
+    with pytest.raises(ApplyError, match="rolled back at replace_redis"):
+        UpdateApply(store, operations).apply(
+            "backend-safe",
+            update_id="test-api",
+            commit="0" * 40,
+            migration_from="0015",
+            migration_target="0015",
+        )
+
+    assert store.state is State.ROLLED_BACK
+    assert operations.events[-1] == ("rollback", "backend-safe", "test-api")
+
+
+def test_backend_writer_cutover_failure_keeps_replaced_redis() -> None:
+    store = FakeStore(State.PREPARED)
+    operations = FakeApplyOperations(fail_at=("writer_cutover", "test-api"))
+
+    with pytest.raises(ApplyError, match="blocked at writer_cutover"):
+        UpdateApply(store, operations).apply(
+            "backend-safe",
+            update_id="test-api",
+            commit="0" * 40,
+            migration_from="0015",
+            migration_target="0015",
+        )
+
+    assert store.state is State.BLOCKED
+    assert operations.events[-1] == ("hold", "test-api")
+    assert "replace_redis" in operations.events
+    assert not any(
+        isinstance(event, tuple) and event[0] == "rollback"
+        for event in operations.events
+    )
 
 
 def test_backend_apply_revalidates_pre_live_mode_before_migration() -> None:

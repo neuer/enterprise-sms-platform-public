@@ -1295,6 +1295,7 @@ class HostTestUpdateOperations:
         if _UPDATE_PAUSE_RE.fullmatch(self.pause_value) is None:
             raise TestUpdateManagerError("update pause value is invalid")
         self.pending_pause_owner: str | None = None
+        self._redis_services_replaced = False
         self.host = HostUpdateOperations(
             root=root,
             runtime_root=runtime_root,
@@ -2360,7 +2361,7 @@ class HostTestUpdateOperations:
                 "--force-recreate",
                 *services,
             )
-        if has_redis:
+        if has_redis and not getattr(self, "_redis_services_replaced", False):
             self._replace_redis_services()
         if "web" in self.request.components:
             self._activate_source_and_image("web")
@@ -2375,6 +2376,15 @@ class HostTestUpdateOperations:
                 "120",
                 "web",
             )
+
+    def replace_redis_services(self) -> None:
+        """Daily redis applies pin the new image before writer-cutover Lua needs TIME/TYPE."""
+
+        if "redis" not in self.request.components:
+            return
+        self._prepare_rollback_images(frozenset({"redis"}))
+        self._replace_redis_services()
+        self._redis_services_replaced = True
 
     def _replace_redis_services(self) -> None:
         self._activate_source_and_image("redis")

@@ -1090,6 +1090,9 @@ class BaselineUpdateOperations:
     def run_writer_cutover(self, update_id: str) -> None:
         self.delegate.run_writer_cutover(update_id)
 
+    def replace_redis_services(self) -> None:
+        self.delegate.replace_redis_services()
+
     def run_expand_migration(self, source: str, target: str) -> str:
         raise PublicBaselineManagerError("baseline migration is forbidden")
 
