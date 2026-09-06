@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, h, onMounted, ref } from "vue"
+import { ElMessage } from "element-plus"
+import { computed, onMounted, ref } from "vue"
 
 import { listApps, type ManagedApp } from "../api/apps"
 import {
@@ -15,6 +15,8 @@ import {
 } from "../api/signs"
 import EmptyState from "../components/EmptyState.vue"
 import StatusTag from "../components/StatusTag.vue"
+import { confirmAuditedAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
 import { useSessionStore } from "../stores/session"
 
@@ -158,7 +160,7 @@ async function load(): Promise<void> {
   try {
     items.value = await listSigns()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "签名列表加载失败"
+    errorMessage.value = errorText(error, "签名列表加载失败")
   } finally {
     loading.value = false
   }
@@ -220,7 +222,7 @@ async function submit(): Promise<void> {
     editorOpen.value = false
     await load()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "签名提交失败")
+    ElMessage.error(errorText(error, "签名提交失败"))
   } finally {
     saving.value = false
   }
@@ -234,7 +236,7 @@ async function sync(item: SmsSign): Promise<void> {
     ElMessage.success("审核状态同步请求已入队")
     await load()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "审核状态同步失败")
+    ElMessage.error(errorText(error, "审核状态同步失败"))
   } finally {
     syncingId.value = null
   }
@@ -269,38 +271,29 @@ async function adopt(): Promise<void> {
       detail.value = items.value.find((candidate) => candidate.id === item.id) ?? detail.value
     }
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "关联已有厂商签名失败")
+    ElMessage.error(errorText(error, "关联已有厂商签名失败"))
   } finally {
     adopting.value = false
   }
 }
 
 async function remove(item: SmsSign): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "删除签名",
+      body: `确认删除签名「${item.name}」？删除后不可恢复；已通过、被应用设为默认签名或已被批次引用的签名不可删除。`,
+      auditNote: "删除行为与操作人将写入审计日志。",
+      confirmText: "确认删除",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "sign-delete-dialog" }, [
-        h(
-          "p",
-          `确认删除签名「${item.name}」？删除后不可恢复；已通过、被应用设为默认签名或已被批次引用的签名不可删除。`,
-        ),
-        h("p", { class: "sign-delete-audit" }, "删除行为与操作人将写入审计日志。"),
-      ]),
-      "删除签名",
-      {
-        type: "warning",
-        confirmButtonText: "确认删除",
-        cancelButtonText: "取消",
-        customClass: "sign-delete-box",
-      },
-    )
     await deleteSign(item.id)
     ElMessage.success("签名已删除 · 本次操作已记入审计")
     if (detail.value?.id === item.id) detailOpen.value = false
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "签名删除失败")
-    }
+    ElMessage.error(errorText(error, "签名删除失败"))
   }
 }
 

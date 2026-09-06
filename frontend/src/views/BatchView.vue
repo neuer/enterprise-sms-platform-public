@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
+import { ElMessage } from "element-plus"
 import { computed, onMounted, ref, watch } from "vue"
 import { useRoute } from "vue-router"
 
@@ -21,7 +21,9 @@ import {
   type BatchMessage,
 } from "../api/queries"
 import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { confirmAction } from "../lib/confirm"
 import { formatDateTime, formatDateTimeMinute } from "../lib/time"
+import { errorText } from "../lib/error"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -205,7 +207,7 @@ async function load(): Promise<void> {
     appliedFiltersKey.value = currentFiltersKey.value
   } catch (error) {
     if (token !== listToken) return
-    errorMessage.value = error instanceof Error ? error.message : "批次列表加载失败"
+    errorMessage.value = errorText(error, "批次列表加载失败")
   } finally {
     if (token === listToken) loading.value = false
   }
@@ -227,7 +229,7 @@ async function loadDetails(): Promise<void> {
   } catch (error) {
     if (token !== detailToken) return
     // 抽屉打开时列表卡片的 el-alert 被遮挡，此处必须用浮层消息。
-    ElMessage.error(error instanceof Error ? error.message : "批次明细加载失败")
+    ElMessage.error(errorText(error, "批次明细加载失败"))
   } finally {
     if (token === detailToken) detailsLoading.value = false
   }
@@ -247,7 +249,7 @@ async function openBatch(item: BatchItem): Promise<void> {
     selected.value = batch
   } catch (error) {
     if (token !== openToken) return
-    ElMessage.error(error instanceof Error ? error.message : "批次详情加载失败")
+    ElMessage.error(errorText(error, "批次详情加载失败"))
   }
 }
 
@@ -267,16 +269,15 @@ const canResendFailed = computed(() => canWrite.value && (selected.value?.failed
 
 async function cancelSelected(): Promise<void> {
   if (!selected.value || !canScheduleOps.value) return
+  if (!(await confirmAction({ title: "确认取消", body: `取消批次 ${selected.value.batch_no}？配额将按规则回补。` })))
+    return
   try {
-    await ElMessageBox.confirm(`取消批次 ${selected.value.batch_no}？配额将按规则回补。`, "确认取消", {
-      type: "warning",
-    })
     await cancelBatch(selected.value.batch_no)
     drawer.value = false
     ElMessage.success("批次已取消")
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "取消失败")
+    ElMessage.error(errorText(error, "取消失败"))
   }
 }
 
@@ -295,20 +296,20 @@ async function saveReschedule(): Promise<void> {
     ElMessage.success("批次已改期并重新执行审批判定")
     await load()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "改期失败")
+    ElMessage.error(errorText(error, "改期失败"))
   }
 }
 
 async function resendFailed(): Promise<void> {
   if (!selected.value || !canResendFailed.value) return
+  if (!(await confirmAction({ title: "确认重发", body: "失败号码将生成新批次并完整重走频控、审批和时间窗。" }))) return
   try {
-    await ElMessageBox.confirm("失败号码将生成新批次并完整重走频控、审批和时间窗。", "确认重发", { type: "warning" })
     const result = await resendFailedBatch(selected.value.batch_no)
     ElMessage.success(`重发批次 ${result.batch_no} 已创建`)
     drawer.value = false
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") ElMessage.error(error instanceof Error ? error.message : "重发失败")
+    ElMessage.error(errorText(error, "重发失败"))
   }
 }
 

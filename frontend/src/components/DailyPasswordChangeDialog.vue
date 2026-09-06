@@ -4,6 +4,7 @@ import { computed, ref, watch } from "vue"
 
 import { AuthApiError, passwordPolicyRequest, type PasswordPolicy } from "../api/auth"
 import { useSessionStore } from "../stores/session"
+import { errorText } from "../lib/error"
 
 const props = defineProps<{ modelValue: boolean }>()
 const emit = defineEmits<{
@@ -80,7 +81,7 @@ async function submit(): Promise<void> {
       visible.value = false
       return
     }
-    errorMessage.value = error instanceof Error ? error.message : "密码修改失败"
+    errorMessage.value = errorText(error, "密码修改失败")
   } finally {
     submitting.value = false
   }

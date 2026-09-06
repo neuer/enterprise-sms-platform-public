@@ -20,6 +20,7 @@ import ApprovalList from "../components/ApprovalList.vue"
 import { usePolling } from "../composables/usePolling"
 import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime, formatDurationHms, formatHms } from "../lib/time"
+import { errorText } from "../lib/error"
 import { useApprovalBadgeStore } from "../stores/approvalBadge"
 import { useSessionStore } from "../stores/session"
 
@@ -182,7 +183,7 @@ async function load(options: { silent?: boolean } = {}): Promise<void> {
     lastUpdatedAt.value = new Date().toISOString()
   } catch (error) {
     if (token !== loadToken) return
-    errorMessage.value = error instanceof Error ? error.message : "审批列表加载失败"
+    errorMessage.value = errorText(error, "审批列表加载失败")
   } finally {
     if (token === loadToken) loading.value = false
   }
@@ -236,7 +237,7 @@ async function showDetail(item: ApprovalListItem): Promise<void> {
     } else if (error instanceof ApiRequestError && error.status === 404) {
       ElMessage.warning("该审批单已不存在，列表已刷新")
     } else {
-      ElMessage.error(error instanceof Error ? error.message : "审批详情加载失败，请稍后重试")
+      ElMessage.error(errorText(error, "审批详情加载失败，请稍后重试"))
     }
     void load({ silent: true })
   } finally {
@@ -288,7 +289,7 @@ async function submitDecision(id: number, action: ApprovalAction, reason?: strin
     } else if (error instanceof ApiRequestError && error.status === 403) {
       ElMessage.error(error.message || "不能审批本人提交的审批单")
     } else {
-      ElMessage.error(error instanceof Error ? error.message : "审批操作失败，请稍后重试")
+      ElMessage.error(errorText(error, "审批操作失败，请稍后重试"))
     }
   } finally {
     decidingId.value = null

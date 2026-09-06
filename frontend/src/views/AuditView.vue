@@ -8,6 +8,7 @@ import EmptyState from "../components/EmptyState.vue"
 import { copyText } from "../lib/clipboard"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
+import { errorText } from "../lib/error"
 
 type DiffState = "added" | "removed" | "changed" | "same"
 
@@ -122,7 +123,7 @@ async function load(): Promise<void> {
     total.value = result.total
   } catch (error) {
     if (token !== loadToken) return
-    errorMessage.value = error instanceof Error ? error.message : "审计日志加载失败"
+    errorMessage.value = errorText(error, "审计日志加载失败")
   } finally {
     if (token === loadToken) loading.value = false
   }

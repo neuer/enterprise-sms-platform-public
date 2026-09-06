@@ -10,6 +10,7 @@ import { usePolling } from "../composables/usePolling"
 import { jobDescription } from "../lib/jobDescriptions"
 import { CATEGORY_LABELS } from "../lib/labels"
 import { formatDateTime, formatHm, formatHms } from "../lib/time"
+import { errorText } from "../lib/error"
 
 const snapshot = ref<DashboardSnapshot | null>(null)
 const loading = ref(false)
@@ -112,7 +113,7 @@ async function load(): Promise<void> {
       // 快照已被就地标记陈旧，指纹随之失效：下次成功响应即使内容相同也必须整体替换。
       lastFingerprint = ""
     }
-    errorMessage.value = error instanceof Error ? error.message : "仪表盘加载失败"
+    errorMessage.value = errorText(error, "仪表盘加载失败")
   } finally {
     loading.value = false
   }

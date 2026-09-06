@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, h, onMounted, reactive, ref, watch } from "vue"
+import { ElMessage } from "element-plus"
+import { computed, onMounted, reactive, ref, watch } from "vue"
 import { useRouter } from "vue-router"
 
 import {
@@ -15,6 +15,8 @@ import {
 } from "../api/templates"
 import EmptyState from "../components/EmptyState.vue"
 import StatusTag from "../components/StatusTag.vue"
+import { confirmAuditedAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
 import { useSessionStore } from "../stores/session"
 
@@ -247,7 +249,7 @@ async function load(): Promise<void> {
   try {
     items.value = await listTemplates()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : "模板列表加载失败"
+    errorMessage.value = errorText(error, "模板列表加载失败")
   } finally {
     loading.value = false
   }
@@ -296,7 +298,7 @@ async function submit(): Promise<void> {
     editorOpen.value = false
     await load()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "模板提交失败")
+    ElMessage.error(errorText(error, "模板提交失败"))
   } finally {
     saving.value = false
   }
@@ -310,34 +312,28 @@ async function sync(item: SmsTemplate): Promise<void> {
     ElMessage.success("审核状态同步请求已入队")
     await load()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "审核状态同步失败")
+    ElMessage.error(errorText(error, "审核状态同步失败"))
   } finally {
     syncingId.value = null
   }
 }
 
 async function remove(item: SmsTemplate): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "删除模板",
+      body: `确认删除模板「${item.name}」？删除后不可恢复；已绑定厂商编号或已被批次引用的模板不可删除。`,
+      auditNote: "删除行为与操作人将写入审计日志。",
+      confirmText: "确认删除",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "template-delete-dialog" }, [
-        h("p", `确认删除模板「${item.name}」？删除后不可恢复；已绑定厂商编号或已被批次引用的模板不可删除。`),
-        h("p", { class: "template-delete-audit" }, "删除行为与操作人将写入审计日志。"),
-      ]),
-      "删除模板",
-      {
-        type: "warning",
-        confirmButtonText: "确认删除",
-        cancelButtonText: "取消",
-        customClass: "template-delete-box",
-      },
-    )
     await deleteTemplate(item.id)
     ElMessage.success("模板已删除 · 本次操作已记入审计")
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "模板删除失败")
-    }
+    ElMessage.error(errorText(error, "模板删除失败"))
   }
 }
 

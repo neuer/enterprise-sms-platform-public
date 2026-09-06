@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from "vue"
 
 import { AuthApiError, initialPasswordChangeRequest, passwordPolicyRequest, type PasswordPolicy } from "../api/auth"
 import loginMarkUrl from "../assets/brand/login-egret-icon.png"
+import { errorText } from "../lib/error"
 
 const props = defineProps<{ changeToken: string; expiresAt: number }>()
 const emit = defineEmits<{
@@ -69,9 +70,7 @@ async function submit() {
     errorMessage.value =
       error instanceof AuthApiError && error.status >= 500
         ? "密码修改未提交，请稍后使用当前改密会话重试"
-        : error instanceof Error
-          ? error.message
-          : "密码修改失败，请重新登录"
+        : errorText(error, "密码修改失败，请重新登录")
   } finally {
     submitting.value = false
   }

@@ -125,8 +125,8 @@ describe("回调任务", () => {
     expect(body).toContain("重置为待投递并清零重试计数")
     expect(body).toContain("审计日志")
     expect(confirm.mock.calls[0][2]).toMatchObject({
+      type: "warning",
       confirmButtonText: "重推任务",
-      customClass: "callback-confirm-box",
     })
     expect(
       fetch.mock.calls.some(([url, init]) => String(url).endsWith("/callbacks/9/retry") && init?.method === "POST"),

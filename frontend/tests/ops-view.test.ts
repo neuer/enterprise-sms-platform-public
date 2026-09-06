@@ -229,7 +229,7 @@ function tab(wrapper: ReturnType<typeof mount>, label: string) {
   return wrapper.findAll(".ops-tabs button").find((item) => item.text().includes(label))!
 }
 
-// ElMessageBox.confirm 的消息为 h() VNode（ops-confirm-dialog），递归提取文本用于断言。
+// ElMessageBox.confirm 的消息为 h() VNode（lib/confirm.ts confirm-dialog），递归提取文本用于断言。
 function vnodeText(node: unknown): string {
   if (typeof node === "string") return node
   if (Array.isArray(node)) return node.map(vnodeText).join("")

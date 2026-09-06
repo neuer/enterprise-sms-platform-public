@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
-import { computed, h, onMounted, ref } from "vue"
+import { ElMessage } from "element-plus"
+import { computed, onMounted, ref } from "vue"
 
 import {
   addBlacklist,
@@ -12,6 +12,8 @@ import {
 import EmptyState from "../components/EmptyState.vue"
 import PhoneMask from "../components/PhoneMask.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
+import { confirmAuditedAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
@@ -103,7 +105,7 @@ async function load(): Promise<void> {
     total.value = result.total
   } catch (error) {
     if (token !== loadToken) return
-    errorMessage.value = error instanceof Error ? error.message : "黑名单加载失败"
+    errorMessage.value = errorText(error, "黑名单加载失败")
   } finally {
     if (token === loadToken) loading.value = false
   }
@@ -154,35 +156,29 @@ async function add(): Promise<void> {
     page.value = 1
     await load()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "添加失败")
+    ElMessage.error(errorText(error, "添加失败"))
   } finally {
     saving.value = false
   }
 }
 
 async function remove(item: BlacklistItem): Promise<void> {
+  if (
+    !(await confirmAuditedAction({
+      title: "移出黑名单确认",
+      body: `将 ${item.phone_mask} 移出黑名单？移出后通知与营销发送不再拦截该号码（验证码本就不拦截）。`,
+      auditNote: "移除行为与操作人将写入审计日志；审计只记数量，不记号码。",
+      confirmText: "移出黑名单",
+    }))
+  )
+    return
   try {
-    await ElMessageBox.confirm(
-      h("div", { class: "blacklist-delete-dialog" }, [
-        h("p", `将 ${item.phone_mask} 移出黑名单？移出后通知与营销发送不再拦截该号码（验证码本就不拦截）。`),
-        h("p", { class: "blacklist-delete-audit" }, "移除行为与操作人将写入审计日志；审计只记数量，不记号码。"),
-      ]),
-      "移出黑名单确认",
-      {
-        type: "warning",
-        confirmButtonText: "移出黑名单",
-        cancelButtonText: "取消",
-        customClass: "blacklist-delete-box",
-      },
-    )
     await deleteBlacklist(item.phone_hmac)
     ElMessage.success("已移出黑名单 · 本次操作已记入审计")
     if (items.value.length === 1 && page.value > 1) page.value -= 1
     await load()
   } catch (error) {
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "移除失败")
-    }
+    ElMessage.error(errorText(error, "移除失败"))
   }
 }
 

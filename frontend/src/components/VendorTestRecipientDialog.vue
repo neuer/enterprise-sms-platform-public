@@ -4,6 +4,7 @@ import { ref, watch } from "vue"
 
 import { addVendorTestRecipient, type VendorTestRecipient } from "../api/admin"
 import { PHONE_RE } from "../lib/phone"
+import { errorText } from "../lib/error"
 
 const props = defineProps<{ modelValue: boolean }>()
 
@@ -39,7 +40,7 @@ async function submit(): Promise<void> {
     emit("update:modelValue", false)
     ElMessage.success("测试号码已加密登记")
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "测试号码登记失败")
+    ElMessage.error(errorText(error, "测试号码登记失败"))
   } finally {
     clear()
     submitting.value = false

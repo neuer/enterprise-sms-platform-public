@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ElMessage, ElMessageBox } from "element-plus"
+import { ElMessage } from "element-plus"
 import { computed, onMounted, ref, watch } from "vue"
 
 import {
@@ -14,6 +14,8 @@ import { listSigns, type SmsSign } from "../api/signs"
 import { listTemplates, type SmsTemplate } from "../api/templates"
 import type { BillingPreview } from "../api/webMessages"
 import PhoneMask from "./PhoneMask.vue"
+import { confirmAction } from "../lib/confirm"
+import { errorText } from "../lib/error"
 import { CATEGORY_LABELS } from "../lib/labels"
 
 const props = defineProps<{
@@ -157,7 +159,7 @@ async function runPreview(): Promise<boolean> {
     })
     return true
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : "计费预览失败")
+    ElMessage.error(errorText(error, "计费预览失败"))
     return false
   } finally {
     previewing.value = false
@@ -172,17 +174,17 @@ async function send(): Promise<void> {
   if (!preview.value && !(await runPreview())) return
   const billing = preview.value
   if (!billing) return
+  if (
+    !(await confirmAction({
+      title: "确认发送真实 UAT",
+      body: `将向 ${selectedRecipient.value.label}（${selectedRecipient.value.phone_mask}）发送 1 个真实号码。本次预计消耗 ${billing.quota_cost} 条计费额度（${billing.est_segments} 个计费段）；受控联调每日总上限为 ${props.dailyLimit} 条。`,
+      confirmText: `确认发送（预计 ${billing.quota_cost} 条）`,
+      cancelText: "继续检查",
+    }))
+  )
+    return
+  sending.value = true
   try {
-    await ElMessageBox.confirm(
-      `将向 ${selectedRecipient.value.label}（${selectedRecipient.value.phone_mask}）发送 1 个真实号码。本次预计消耗 ${billing.quota_cost} 条计费额度（${billing.est_segments} 个计费段）；受控联调每日总上限为 ${props.dailyLimit} 条。`,
-      "确认发送真实 UAT",
-      {
-        type: "warning",
-        confirmButtonText: `确认发送（预计 ${billing.quota_cost} 条）`,
-        cancelButtonText: "继续检查",
-      },
-    )
-    sending.value = true
     const bizId = pendingBizId || crypto.randomUUID().replaceAll("-", "")
     if (!pendingBizId) rememberPendingBizId(bizId)
     const operation = await sendVendorTestUat({
@@ -201,9 +203,7 @@ async function send(): Promise<void> {
     if (error instanceof VendorRequestError && error.status >= 400 && error.status < 500) {
       clearPendingBizId()
     }
-    if (error !== "cancel" && error !== "close") {
-      ElMessage.error(error instanceof Error ? error.message : "真实 UAT 提交失败")
-    }
+    ElMessage.error(errorText(error, "真实 UAT 提交失败"))
   } finally {
     sending.value = false
   }

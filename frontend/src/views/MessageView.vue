@@ -20,6 +20,7 @@ import {
 import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { maskPhone, PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
+import { errorText } from "../lib/error"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -151,7 +152,7 @@ async function run(): Promise<void> {
     badge.value = null
     total.value = 0
     decryptId.value = undefined
-    errorMessage.value = error instanceof Error ? error.message : "号码查询失败"
+    errorMessage.value = errorText(error, "号码查询失败")
   } finally {
     if (token === runToken) loading.value = false
   }
