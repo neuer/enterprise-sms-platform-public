@@ -1,3 +1,8 @@
+// 工作区壳样式随本模块懒加载：登录/公开页只带 theme.css（登录壳样式本就在
+// theme.css 一侧），进入首个非公开路由前由 main.ts 守卫加载本模块。
+// 本 import 保持在 el-* 样式之前，维持搬家前的级联顺序不变。
+import "./styles/workspace.css"
+
 import "element-plus/theme-chalk/el-alert.css"
 import "element-plus/theme-chalk/el-card.css"
 import "element-plus/theme-chalk/el-checkbox.css"
@@ -13,7 +18,6 @@ import "element-plus/theme-chalk/el-overlay.css"
 import "element-plus/theme-chalk/el-pagination.css"
 import "element-plus/theme-chalk/el-popover.css"
 import "element-plus/theme-chalk/el-popper.css"
-import "element-plus/theme-chalk/el-radio.css"
 import "element-plus/theme-chalk/el-scrollbar.css"
 import "element-plus/theme-chalk/el-segmented.css"
 import "element-plus/theme-chalk/el-select.css"
@@ -43,8 +47,6 @@ import {
   ElOption,
   ElPagination,
   ElPopover,
-  ElRadioButton,
-  ElRadioGroup,
   ElSegmented,
   ElSelect,
   ElSkeleton,
@@ -83,8 +85,6 @@ export function registerWorkspaceElement(app: App): void {
     ElOption,
     ElPagination,
     ElPopover,
-    ElRadioButton,
-    ElRadioGroup,
     ElSegmented,
     ElSelect,
     ElSkeleton,

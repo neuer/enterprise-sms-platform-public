@@ -10,10 +10,6 @@ body {
   background: var(--paper);
 }
 
-.public-shell {
-  min-height: 100vh;
-}
-
 .logout-button,
 .toolbar-action {
   padding: 4px 0;
