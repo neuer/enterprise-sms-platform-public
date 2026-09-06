@@ -122,6 +122,7 @@ def fixture(tmp_path: Path):
         "test_update_promote.py",
         "test_update_store.py",
         "test_update_verify.py",
+        "writer_cutover.py",
         "protected_path_policy.py",
         "check_public_readiness.py",
         "export_public_snapshot.py",

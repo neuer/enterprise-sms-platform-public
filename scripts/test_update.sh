@@ -97,6 +97,7 @@ HOST_CONTROL_PATHS=(
   "deploy/scripts/test_update_promote.py"
   "deploy/scripts/test_update_store.py"
   "deploy/scripts/test_update_verify.py"
+  "deploy/scripts/writer_cutover.py"
   "deploy/scripts/protected_path_policy.py"
   "scripts/check_public_readiness.py"
   "scripts/export_public_snapshot.py"

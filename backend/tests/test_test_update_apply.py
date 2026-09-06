@@ -48,6 +48,9 @@ class FakeApplyOperations:
     def require_owned_update_pauses(self, update_id: str) -> None:
         self._event(("pauses", update_id))
 
+    def run_writer_cutover(self, update_id: str) -> None:
+        self._event(("writer_cutover", update_id))
+
     def run_expand_migration(self, source: str, target: str) -> str:
         self._event(("migrate", source, target))
         return target
@@ -88,6 +91,7 @@ def test_backend_apply_migrates_then_replaces_fixed_services_without_mock() -> N
         ("mode", "live"),
         ("pauses", "test-api"),
         ("migrate", "0015", "0016"),
+        ("writer_cutover", "test-api"),
         ("replace_backend", BACKEND_SERVICES),
     ]
     assert store.state is State.APPLIED
@@ -125,6 +129,7 @@ def test_backend_without_migration_skips_migration_and_checkpoint_state() -> Non
         "lock",
         ("mode", "live"),
         ("pauses", "test-api"),
+        ("writer_cutover", "test-api"),
         ("replace_backend", BACKEND_SERVICES),
     ]
     assert store.state is State.APPLIED

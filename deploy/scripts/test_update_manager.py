@@ -2241,6 +2241,104 @@ class HostTestUpdateOperations:
             self.host._run("run", "--rm", "migrate")
         return self.current_migration_head()
 
+    def run_writer_cutover(self, update_id: str, *, rollback: bool = False) -> None:
+        """先隔离当前 writer 并排空窗口，再允许启动目标版本。"""
+
+        if update_id != self.request.update_id:
+            raise TestUpdateManagerError("writer cutover request is invalid")
+        backend_root = self.root / "backend"
+        if str(backend_root) not in sys.path:
+            sys.path.insert(0, str(backend_root))
+        from writer_cutover import ComposeWriterExecutor, write_local_marker
+
+        from app.services.app_ratelimit_cutover import (
+            CutoverError,
+            read_cutover_marker,
+        )
+        from app.services.app_ratelimit_cutover import (
+            run_writer_cutover as advance,
+        )
+
+        class _HostRunAdapter:
+            def __init__(self, host: HostUpdateOperations) -> None:
+                self.host = host
+
+            def run(self, argv: list[str], *, timeout_s: int = 30) -> str:
+                _ = timeout_s
+                return self.host._run(*argv)
+
+        class _HostControlRedis:
+            def __init__(self, host: HostUpdateOperations) -> None:
+                self.host = host
+
+            def eval(self, script: object, numkeys: object, *args: object) -> object:
+                raw = self.host._redis(
+                    "EVAL",
+                    str(script),
+                    str(numkeys),
+                    *[str(item) for item in args],
+                )
+                lines = [line for line in raw.splitlines()]
+                if len(lines) == 1:
+                    try:
+                        return int(lines[0])
+                    except ValueError:
+                        return lines[0]
+                return lines
+
+            def hgetall(self, key: str) -> dict[str, str]:
+                raw = self.host._redis("HGETALL", key)
+                values = list(raw.splitlines())
+                if len(values) % 2 != 0:
+                    raise CutoverError("cutover marker is corrupt")
+                return {
+                    values[index]: values[index + 1]
+                    for index in range(0, len(values), 2)
+                }
+
+        executor = ComposeWriterExecutor(
+            runner=_HostRunAdapter(self.host),
+            # host._run 已带 docker compose 前缀；这里只拼 stop/ps 子命令。
+            compose=(),
+            root=self.root,
+            rollback=rollback,
+        )
+        redis = _HostControlRedis(self.host)
+        sleeper = getattr(self, "_writer_cutover_sleep", time.sleep)
+        deadline = time.monotonic() + 90
+        while True:
+            result = advance(
+                redis=redis,
+                executor=executor,
+                release_binding=update_id,
+                root=self.root,
+                rollback=rollback,
+            )
+            if result.error == "waiting for not_before":
+                if time.monotonic() >= deadline:
+                    raise TestUpdateManagerError(
+                        "writer cutover is waiting for redis window"
+                    )
+                sleeper(1)
+                continue
+            break
+        if not result.ok:
+            raise TestUpdateManagerError(result.error or "writer cutover failed")
+        if rollback:
+            if result.state != "preparing":
+                raise TestUpdateManagerError("writer rollback did not finish")
+            marker = read_cutover_marker(redis)
+            if marker is not None:
+                with contextlib.suppress(OSError):
+                    write_local_marker(marker)
+            return
+        if result.state != "active_v2":
+            raise TestUpdateManagerError("writer cutover did not activate")
+        marker = read_cutover_marker(redis)
+        if marker is not None:
+            with contextlib.suppress(OSError):
+                write_local_marker(marker)
+
     def replace_backend_services(self, services: tuple[str, ...]) -> None:
         if "mock-vendor" in services:
             raise TestUpdateManagerError("backend service plan is invalid")
@@ -2378,6 +2476,7 @@ class HostTestUpdateOperations:
             raise TestUpdateManagerError("rollback cannot cross a migration")
         if kind == "backend-safe":
             self.hold_fail_closed(update_id)
+            self.run_writer_cutover(update_id, rollback=True)
         components = (
             self.request.components
             if kind == "backend-safe"

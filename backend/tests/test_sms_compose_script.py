@@ -174,6 +174,17 @@ raise SystemExit(int(os.environ.get("FAKE_RESET_EXIT", "0")))
 """,
         encoding="utf-8",
     )
+    writer_cutover = platform_root / "deploy" / "scripts" / "writer_cutover.py"
+    writer_cutover.write_text(
+        "from __future__ import annotations\n"
+        "import os\n"
+        "import sys\n"
+        "from pathlib import Path\n"
+        "with Path(os.environ['COMMAND_LOG']).open('a', encoding='utf-8') as stream:\n"
+        "    stream.write('|'.join(['python3', __file__, *sys.argv[1:]]) + '\\n')\n"
+        "raise SystemExit(int(os.environ.get('FAKE_WRITER_CUTOVER_EXIT', '0')))\n",
+        encoding="utf-8",
+    )
     for script_name in (
         "host_python_preflight.py",
         "lifecycle_manager.py",
@@ -421,6 +432,57 @@ def expected_line(arguments: list[str], *, runtime: Path | None = None) -> str:
     if runtime is not None:
         line += f"|runtime={runtime / 'current'}"
     return line
+
+
+def expected_writer_cutover_check_launch(
+    platform_root: Path, *, environment: str
+) -> str:
+    return expected_line(
+        [
+            "python3",
+            str(platform_root / "deploy" / "scripts" / "writer_cutover.py"),
+            "check-launch",
+            "--root",
+            str(platform_root),
+            "--environment",
+            environment,
+        ]
+    )
+
+
+def expected_redis_control_ps(
+    platform_root: Path, *, production: bool = False, runtime: Path
+) -> str:
+    return expected_line(
+        [
+            *compose_prefix(platform_root, production=production),
+            "ps",
+            "--status",
+            "running",
+            "--format",
+            "{{.Service}}",
+            "redis-control",
+        ],
+        runtime=runtime,
+    )
+
+
+def expected_writer_cutover_bootstrap(
+    platform_root: Path, *, environment: str, production: bool = False
+) -> str:
+    return expected_line(
+        [
+            "python3",
+            str(platform_root / "deploy" / "scripts" / "writer_cutover.py"),
+            "bootstrap",
+            "--root",
+            str(platform_root),
+            "--environment",
+            environment,
+            "--compose",
+            *compose_prefix(platform_root, production=production),
+        ]
+    )
 
 
 def expected_prepare(platform_root: Path, runtime: Path, *, mode: str = "development") -> str:
@@ -1963,10 +2025,12 @@ def test_production_up_accepts_only_safe_non_secret_settings(
         expected_release_manager(platform_root, "production", "start-gate"),
         expected_prepare(platform_root, runtime, mode="production"),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
+        expected_writer_cutover_check_launch(platform_root, environment="production"),
         expected_line(
             [*prefix, "up", "--no-build", "-d", "--remove-orphans"],
             runtime=runtime,
         ),
+        expected_redis_control_ps(platform_root, production=True, runtime=runtime),
     ]
 
 
@@ -1993,7 +2057,9 @@ def test_production_existing_generation_runs_redis_tls_guard_before_compose(
         expected_prepare(platform_root, runtime, mode="production"),
         expected_redis_tls_rotation_guard(platform_root, runtime, baseline),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
+        expected_writer_cutover_check_launch(platform_root, environment="production"),
         expected_line([*prefix, "up", "--no-build", "-d"], runtime=runtime),
+        expected_redis_control_ps(platform_root, production=True, runtime=runtime),
     ]
 
 
@@ -2325,7 +2391,9 @@ def test_production_external_tls_bind_requires_private_address_and_proxy_acl(
         expected_release_manager(platform_root, "production", "start-gate"),
         expected_prepare(platform_root, runtime, mode="production"),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
+        expected_writer_cutover_check_launch(platform_root, environment="production"),
         expected_line([*prefix, "up", "--no-build", "-d"], runtime=runtime),
+        expected_redis_control_ps(platform_root, production=True, runtime=runtime),
     ]
 
 
@@ -2414,7 +2482,9 @@ def test_production_up_allows_dba_fixed_service_recreate(
         expected_release_manager(platform_root, "production", "start-gate"),
         expected_prepare(platform_root, runtime, mode="production"),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
+        expected_writer_cutover_check_launch(platform_root, environment="production"),
         expected_line([*prefix, "up", "--no-build", *arguments], runtime=runtime),
+        expected_redis_control_ps(platform_root, production=True, runtime=runtime),
     ]
 
 
@@ -2515,7 +2585,34 @@ def test_up_prepares_then_validates_then_starts(
     assert command_lines(log) == [
         expected_revoke_vendor(platform_root, runtime),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
+        expected_writer_cutover_check_launch(platform_root, environment="development"),
         expected_line([*prefix, "up", "-d"], runtime=runtime),
+        expected_redis_control_ps(platform_root, runtime=runtime),
+    ]
+
+
+def test_up_bootstraps_writer_cutover_when_control_redis_is_running(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+) -> None:
+    platform_root, log, environment = fake_environment
+    runtime = Path(environment["SMS_RUNTIME_ROOT"])
+
+    result = run_wrapper(
+        fake_environment,
+        "up",
+        "-d",
+        extra_environment={"FAKE_PS_OUTPUT": "redis-control"},
+    )
+
+    assert result.returncode == 0
+    prefix = compose_prefix(platform_root)
+    assert command_lines(log) == [
+        expected_revoke_vendor(platform_root, runtime),
+        expected_line([*prefix, "config", "--quiet"], runtime=runtime),
+        expected_writer_cutover_check_launch(platform_root, environment="development"),
+        expected_line([*prefix, "up", "-d"], runtime=runtime),
+        expected_redis_control_ps(platform_root, runtime=runtime),
+        expected_writer_cutover_bootstrap(platform_root, environment="development"),
     ]
 
 
@@ -2542,7 +2639,9 @@ def test_first_up_safely_creates_missing_nested_lock_parent(
     assert command_lines(log) == [
         expected_prepare(platform_root, runtime),
         expected_line([*compose_prefix(platform_root), "config", "--quiet"], runtime=runtime),
+        expected_writer_cutover_check_launch(platform_root, environment="development"),
         expected_line([*compose_prefix(platform_root), "up", "-d"], runtime=runtime),
+        expected_redis_control_ps(platform_root, runtime=runtime),
     ]
 
 
@@ -3217,6 +3316,7 @@ def test_rotate_backend_recreates_only_runtime_backend_services(
         expected_preprocessor(platform_root, runtime, "current-target"),
         expected_prepare(platform_root, runtime),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
+        expected_writer_cutover_check_launch(platform_root, environment="development"),
         expected_line(
             [
                 *prefix,
@@ -3497,8 +3597,10 @@ def test_rotate_backend_failure_reactivates_old_generation_and_recovers_services
         expected_preprocessor(platform_root, runtime, "current-target"),
         expected_prepare(platform_root, runtime),
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
+        expected_writer_cutover_check_launch(platform_root, environment="development"),
         expected_line(recreate, runtime=runtime),
         expected_preprocessor(platform_root, runtime, "activate", "--target", old_target),
+        expected_writer_cutover_check_launch(platform_root, environment="development"),
         expected_line(recreate, runtime=runtime),
     ]
 
