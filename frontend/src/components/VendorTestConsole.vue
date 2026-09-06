@@ -24,6 +24,7 @@ import PhoneMask from "./PhoneMask.vue"
 import VendorCredentialDialog from "./VendorCredentialDialog.vue"
 import VendorTestRecipientDialog from "./VendorTestRecipientDialog.vue"
 import VendorTestUatPanel from "./VendorTestUatPanel.vue"
+import { usePolling } from "../composables/usePolling"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
 
@@ -47,12 +48,19 @@ const stepUpPassword = ref("")
 const resetConfirmation = ref("")
 const stepUpAction = ref<"activate" | "reset_configuration" | "resume_critical" | null>(null)
 const controlBusy = ref(false)
-let pollTimer: ReturnType<typeof setTimeout> | undefined
-let completionRefreshTimer: ReturnType<typeof setTimeout> | undefined
 let loadGeneration = 0
 let disposed = false
-// 轮询连续失败只提示一次，恢复成功后重置；避免控制代理短暂不可用时每 1.6s 弹一条错误。
+// 轮询连续失败只提示一次，恢复成功后重置；避免控制代理短暂不可用时每个轮询周期弹一条错误。
 let pollFailureNotified = false
+
+// ── 三条轮询链统一收编 usePolling（#593 语义）：页面隐藏自动暂停、恢复可见补一次。
+// 操作轮询固定 800ms，出错续轮（任务内吞错返回 false）不扩 backoff；10 分钟未终态兜底停止，
+// sessionStorage 记录保留，刷新页面可重新恢复确认。
+const OPERATION_POLL_INTERVAL_MS = 800
+const OPERATION_POLL_MAX_DURATION_MS = 10 * 60_000
+// 恢复 / 完成态刷新重试：固定 1.6s，30 次（≈48s）后停止并提示，页面保留手动重连入口。
+const RETRY_INTERVAL_MS = 1_600
+const RETRY_MAX_ATTEMPTS = 30
 
 const OPERATION_SESSION_KEY = "sms-platform:vendor-test:operation:v1"
 const RESET_CONFIRMATION = "切回Mock"
@@ -148,11 +156,6 @@ async function load(): Promise<boolean> {
   }
 }
 
-function stopPolling(): void {
-  if (pollTimer !== undefined) clearTimeout(pollTimer)
-  pollTimer = undefined
-}
-
 function terminal(operation: VendorTestOperation): boolean {
   return operation.status === "succeeded" || operation.status === "failed"
 }
@@ -209,49 +212,69 @@ function rememberedOperation(): Pick<VendorTestOperation, "operation_id" | "oper
   }
 }
 
-async function restoreOperation(): Promise<void> {
+async function restoreOperation(): Promise<boolean> {
   const remembered = rememberedOperation()
-  if (!remembered) return
+  if (!remembered) return true
   operationRestoring.value = true
   try {
     const operation =
       remembered.operation_type === "uat_send"
         ? await getVendorTestUat(remembered.operation_id)
         : await getVendorTestOperation(remembered.operation_id)
-    if (disposed) return
+    if (disposed) return true
     activeOperation.value = operation
     restoreErrorMessage.value = ""
     operationRestoring.value = false
     if (terminal(operation)) finishOperation(operation)
-    else pollTimer = setTimeout(() => void pollOperation(), 800)
+    else operationPolling.start()
+    return true
   } catch (error) {
-    if (disposed) return
+    if (disposed) return true
     if (isGoneOperation(error)) {
       forgetOperation()
       operationRestoring.value = false
       restoreErrorMessage.value = error instanceof Error ? error.message : "上次操作已不存在，已停止恢复"
-      return
+      return true
     }
     restoreErrorMessage.value = error instanceof Error ? error.message : "操作状态恢复失败"
-    pollTimer = setTimeout(() => void restoreOperation(), 1600)
+    return false
   }
 }
 
-async function refreshCompletedProjection(): Promise<void> {
+// 刷新后恢复在途操作：仅在确有已保存操作时由 onMounted 启动，立即执行一次。
+const restorePolling = usePolling(restoreOperation, {
+  intervalMs: RETRY_INTERVAL_MS,
+  immediate: true,
+  maxAttempts: RETRY_MAX_ATTEMPTS,
+  onTimeout: () => {
+    operationRestoring.value = false
+    ElMessage.error("操作状态恢复多次失败，已停止自动重试；请确认控制代理恢复后刷新页面重试")
+  },
+})
+
+async function refreshCompletedProjection(): Promise<boolean> {
   operationCompletionRefreshing.value = true
   const refreshed = await load()
-  if (disposed) return
+  if (disposed) return true
   if (refreshed) {
     forgetOperation()
     operationCompletionRefreshing.value = false
-    completionRefreshTimer = undefined
-    return
+    return true
   }
-  completionRefreshTimer = setTimeout(() => void refreshCompletedProjection(), 1600)
+  return false
 }
 
+// 终态后的权威投影刷新：失败按固定间隔续轮直至完整刷新成功或达到兜底上限。
+const completionRefreshPolling = usePolling(refreshCompletedProjection, {
+  intervalMs: RETRY_INTERVAL_MS,
+  maxAttempts: RETRY_MAX_ATTEMPTS,
+  onTimeout: () => {
+    operationCompletionRefreshing.value = false
+    ElMessage.error("完成态刷新多次失败，已停止自动重试；请确认控制代理恢复后刷新页面")
+  },
+})
+
 function finishOperation(operation: VendorTestOperation): void {
-  stopPolling()
   if (operation.status === "failed") {
     if (operation.operation_type === "reset_configuration") {
       ElMessage.error(
@@ -272,39 +295,55 @@ function finishOperation(operation: VendorTestOperation): void {
           : "受控操作成功",
     )
   }
-  void refreshCompletedProjection()
+  completionRefreshPolling.restart()
 }
 
-async function pollOperation(): Promise<void> {
+async function pollOperation(): Promise<boolean> {
   const current = activeOperation.value
-  if (!current || disposed) return
+  if (!current || terminal(current)) return true
   try {
     const next =
       current.operation_type === "uat_send"
         ? await getVendorTestUat(current.operation_id)
         : await getVendorTestOperation(current.operation_id)
-    if (disposed || activeOperation.value?.operation_id !== next.operation_id) return
+    if (disposed || activeOperation.value?.operation_id !== next.operation_id) return true
     pollFailureNotified = false
     activeOperation.value = next
-    if (terminal(next)) finishOperation(next)
-    else pollTimer = setTimeout(() => void pollOperation(), 800)
+    if (terminal(next)) {
+      finishOperation(next)
+      return true
+    }
   } catch (error) {
-    if (disposed) return
+    if (disposed) return true
+    // 出错续轮：吞错返回 false，按固定间隔等下一周期；连续失败只提示一次。
     if (!pollFailureNotified) {
       pollFailureNotified = true
       ElMessage.error(error instanceof Error ? error.message : "操作状态查询失败")
     }
-    pollTimer = setTimeout(() => void pollOperation(), 1600)
   }
+  return false
 }
 
+// 操作在途轮询：enabled 挂在操作在途状态上，终态自动停；超时兜底后记录仍在 sessionStorage。
+const operationPolling = usePolling(pollOperation, {
+  intervalMs: OPERATION_POLL_INTERVAL_MS,
+  enabled: computed(() => {
+    const operation = activeOperation.value
+    return operation !== null && !terminal(operation)
+  }),
+  maxDurationMs: OPERATION_POLL_MAX_DURATION_MS,
+  onTimeout: () => {
+    ElMessage.error("操作状态确认超时（已超过 10 分钟）；操作记录保留，刷新页面可重新确认结果")
+  },
+})
+
 function trackOperation(operation: VendorTestOperation): void {
-  stopPolling()
+  operationPolling.stop()
   pollFailureNotified = false
   rememberOperation(operation)
   activeOperation.value = operation
   if (terminal(operation)) finishOperation(operation)
-  else pollTimer = setTimeout(() => void pollOperation(), 800)
+  else operationPolling.start()
 }
 
 async function requestActivation(): Promise<void> {
@@ -483,14 +522,11 @@ async function submitIndexRefresh(): Promise<void> {
 }
 
 onMounted(() => {
-  void restoreOperation()
+  if (rememberedOperation()) restorePolling.start()
   void load()
 })
 onBeforeUnmount(() => {
   disposed = true
-  stopPolling()
-  if (completionRefreshTimer !== undefined) clearTimeout(completionRefreshTimer)
-  completionRefreshTimer = undefined
   clearStepUp()
 })
 </script>
