@@ -145,6 +145,7 @@ def fixture(tmp_path: Path):
         "test_update_promote.py",
         "test_update_store.py",
         "test_update_verify.py",
+        "writer_cutover.py",
         "protected_path_policy.py",
     ):
         source = root / "deploy/scripts" / name
@@ -311,6 +312,7 @@ def test_first_install_normalizes_git_archive_modes_before_installer() -> None:
         "deploy/scripts/test_update_promote.py",
         "deploy/scripts/test_update_store.py",
         "deploy/scripts/test_update_verify.py",
+        "deploy/scripts/writer_cutover.py",
         "deploy/scripts/protected_path_policy.py",
         "scripts/check_public_readiness.py",
         "scripts/export_public_snapshot.py",

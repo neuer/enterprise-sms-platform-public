@@ -427,6 +427,7 @@ git -C "$SOURCE_GIT" archive "$TARGET_COMMIT" -- \
   deploy/scripts/test_update_promote.py \
   deploy/scripts/test_update_store.py \
   deploy/scripts/test_update_verify.py \
+  deploy/scripts/writer_cutover.py \
   deploy/scripts/protected_path_policy.py \
   scripts/check_public_readiness.py \
   scripts/export_public_snapshot.py \
@@ -455,6 +456,7 @@ sudo chmod 0644 \
   "$SOURCE_ROOT/deploy/scripts/test_update_promote.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_store.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_verify.py" \
+  "$SOURCE_ROOT/deploy/scripts/writer_cutover.py" \
   "$SOURCE_ROOT/deploy/scripts/protected_path_policy.py" \
   "$SOURCE_ROOT/scripts/check_public_readiness.py" \
   "$SOURCE_ROOT/scripts/export_public_snapshot.py" \

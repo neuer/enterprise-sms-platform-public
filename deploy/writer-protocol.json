@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "writer_version": 2,
+  "window_seconds": 60,
+  "safety_margin_seconds": 5
+}
