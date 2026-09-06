@@ -774,12 +774,13 @@ describe("系统配置页真实联调控制台", () => {
     expect(error).toHaveBeenCalledTimes(1)
     expect(error).toHaveBeenCalledWith("控制代理暂不可用")
 
-    await vi.advanceTimersByTimeAsync(1600)
+    // 出错续轮按固定 800ms 间隔：不再扩 backoff，连续失败仍只提示一次
+    await vi.advanceTimersByTimeAsync(800)
     await flushPromises()
     expect(lookups).toBe(3)
     expect(error).toHaveBeenCalledTimes(1)
 
-    await vi.advanceTimersByTimeAsync(1600)
+    await vi.advanceTimersByTimeAsync(800)
     await flushPromises()
     expect(lookups).toBe(4)
 
@@ -836,6 +837,105 @@ describe("系统配置页真实联调控制台", () => {
     await vi.advanceTimersByTimeAsync(5000)
     await flushPromises()
     expect(lookups).toBe(2)
+  })
+
+  it("操作轮询持续失败达到兜底时长上限后停止，操作记录保留可刷新恢复", async () => {
+    vi.useFakeTimers()
+    const operation = {
+      operation_id: "00000000-0000-4000-8000-000000000506",
+      operation_type: "activate" as const,
+      status: "running",
+      safe_code: null,
+      vendor_code: null,
+      batch_no: null,
+      checkpoint_id: null,
+      requested_at: "2026-07-17T09:31:00+08:00",
+      completed_at: null,
+    }
+    let lookups = 0
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
+        lookups += 1
+        if (lookups === 1) return response(operation)
+        return response({ code: "TEMPORARY", message: "控制代理暂不可用" }, 503)
+      }),
+    )
+    const error = vi.spyOn(ElMessage, "error")
+
+    const wrapper = mountConsole()
+    await flushPromises()
+    expect(lookups).toBe(1)
+
+    // 轮询自恢复成功起算 10 分钟（800ms 固定间隔）后兜底停止，不再打控制代理
+    await vi.advanceTimersByTimeAsync(10 * 60_000 + 800)
+    await flushPromises()
+    const stoppedAt = lookups
+    expect(stoppedAt).toBeGreaterThan(1)
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("操作状态确认超时"))
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    await flushPromises()
+    expect(lookups).toBe(stoppedAt)
+    // 操作未确认终态：sessionStorage 记录保留，刷新页面可重新恢复确认
+    expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).not.toBeNull()
+    wrapper.unmount()
+  })
+
+  it("恢复操作持续失败达到重试上限后停止并提示", async () => {
+    vi.useFakeTimers()
+    const operation = {
+      operation_id: "00000000-0000-4000-8000-000000000507",
+      operation_type: "activate" as const,
+      status: "running",
+      safe_code: null,
+      vendor_code: null,
+      batch_no: null,
+      checkpoint_id: null,
+      requested_at: "2026-07-17T09:31:00+08:00",
+      completed_at: null,
+    }
+    let lookups = 0
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({
+        operation_id: operation.operation_id,
+        operation_type: operation.operation_type,
+      }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
+        lookups += 1
+        return response({ code: "TEMPORARY", message: "暂时不可用" }, 503)
+      }),
+    )
+    const error = vi.spyOn(ElMessage, "error")
+
+    const wrapper = mountConsole()
+    await flushPromises()
+    expect(lookups).toBe(1)
+
+    // 1.6s 固定间隔重试 30 次后停止；非 404/410 错误不清除本地记录
+    await vi.advanceTimersByTimeAsync(1_600 * 31)
+    await flushPromises()
+    expect(lookups).toBe(30)
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("已停止自动重试"))
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    await flushPromises()
+    expect(lookups).toBe(30)
+    expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).not.toBeNull()
+    wrapper.unmount()
   })
 
   it("刷新恢复 pending reset 时在 operation GET 返回前同步禁用危险动作", async () => {

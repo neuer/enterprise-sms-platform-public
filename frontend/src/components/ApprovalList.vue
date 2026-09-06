@@ -69,8 +69,15 @@ function countdownOf(item: ApprovalListItem): Countdown {
   return { text, caption: "后过期", level }
 }
 
+/** 倒计时随父级 now 变化一次算全表；行模板只查表，不再每行重复解析 Date。 */
+const countdownMap = computed(() => new Map(props.items.map((item) => [item.id, countdownOf(item)])))
+
+function rowCountdown(item: ApprovalListItem): Countdown {
+  return countdownMap.value.get(item.id) ?? { text: "—", caption: "有效期暂不可用", level: "unknown" }
+}
+
 function rowClass(item: ApprovalListItem): Record<string, boolean> {
-  const level = countdownOf(item).level
+  const level = rowCountdown(item).level
   return {
     "is-urgent": level === "urgent" || level === "expired",
     "is-soon": level === "soon",
@@ -165,8 +172,8 @@ function confirmQuick(item: ApprovalListItem): void {
           :data-testid="`approval-row-${item.id}`"
         >
           <div class="approval-cd">
-            <b>{{ countdownOf(item).text }}</b>
-            <span>{{ countdownOf(item).caption }}</span>
+            <b>{{ rowCountdown(item).text }}</b>
+            <span>{{ rowCountdown(item).caption }}</span>
           </div>
           <div class="approval-row-main">
             <div class="approval-row-title">

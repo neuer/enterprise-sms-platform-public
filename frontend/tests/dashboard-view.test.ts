@@ -233,6 +233,42 @@ describe("仪表盘", () => {
     wrapper.unmount()
     vi.unstubAllGlobals()
   })
+
+  it("轮询内容未变时跳过快照替换与余额广播，内容变化后正常更新", async () => {
+    vi.useFakeTimers()
+    const fetch = vi.fn().mockResolvedValue(response(snapshot))
+    vi.stubGlobal("fetch", fetch)
+    const balanceEvents: CustomEvent[] = []
+    const listener = (event: Event) => balanceEvents.push(event as CustomEvent)
+    window.addEventListener("sms:dashboard-balance", listener)
+
+    const wrapper = mountDashboard()
+    await flushPromises()
+    const setOptionCalls = chart.setOption.mock.calls.length
+    expect(balanceEvents).toHaveLength(1)
+
+    // 10s 轮询返回相同内容（仅 refreshed_at 不同）：不替换快照、不重画图表、不重复广播
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flushPromises()
+    expect(chart.setOption.mock.calls.length).toBe(setOptionCalls)
+    expect(balanceEvents).toHaveLength(1)
+
+    // 内容变化（余额不同）→ 替换快照并再次广播
+    const changed = JSON.parse(JSON.stringify(snapshot)) as typeof snapshot
+    changed.refreshed_at = "2026-07-12T08:02:00+08:00"
+    changed.operations.current_balance = 8000
+    fetch.mockResolvedValue(response(changed))
+    await vi.advanceTimersByTimeAsync(10_000)
+    await flushPromises()
+    expect(balanceEvents).toHaveLength(2)
+    expect(balanceEvents[1].detail).toEqual({ currentBalance: 8000 })
+    expect(wrapper.text()).toContain("8,000")
+
+    window.removeEventListener("sms:dashboard-balance", listener)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
+  })
 })
 
 describe("余额图表", () => {

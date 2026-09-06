@@ -11,6 +11,7 @@ import {
 } from "../api/blacklist"
 import EmptyState from "../components/EmptyState.vue"
 import PhoneMask from "../components/PhoneMask.vue"
+import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
@@ -51,12 +52,15 @@ function sourceType(source: BlacklistSource): "primary" | "warning" | "info" {
 }
 
 /** 与服务端 BlacklistService.add 同口径拆分：空白/中英文逗号分号分隔，行号即拆分序号。 */
-const entries = computed(() =>
-  phonesText.value
+function parsePhoneEntries(text: string): string[] {
+  return text
     .split(/[\s,，;；]+/)
     .map((value) => value.trim())
-    .filter(Boolean),
-)
+    .filter(Boolean)
+}
+
+// 上限 5 万个号码的大文本粘贴走 useDebouncedEntries 防抖解析（#596 模式单点），号码只在内存处理。
+const { entries, flush: flushEntries } = useDebouncedEntries(phonesText, { parse: parsePhoneEntries })
 
 /** 格式错误行的 1 基序号；服务端 400 报错同样只带行号。 */
 const invalidLines = computed(() => entries.value.flatMap((value, index) => (PHONE_RE.test(value) ? [] : [index + 1])))
@@ -131,6 +135,8 @@ function openDrawer(): void {
 }
 
 async function add(): Promise<void> {
+  // 大文本粘贴后防抖窗口内也可能点击提交：先落盘最新解析，再做校验与组包。
+  flushEntries()
   if (!entries.value.length) {
     ElMessage.warning("请先输入要添加的手机号")
     return

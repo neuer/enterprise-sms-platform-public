@@ -64,6 +64,13 @@ function channelMonitorError(reason: DashboardChannelMonitor["degraded_reason"])
   return "Redis 控制快照暂不可用，信道指标已降级"
 }
 
+/** 内容指纹不含 refreshed_at（每次响应的请求时刻，不代表数据变化），仅刻画实际展示数据。 */
+function contentFingerprint(value: DashboardSnapshot): string {
+  return JSON.stringify({ ...value, refreshed_at: null })
+}
+
+let lastFingerprint = ""
+
 async function load(): Promise<void> {
   if (loading.value) return
   loading.value = true
@@ -76,13 +83,18 @@ async function load(): Promise<void> {
     } else if (channelMonitor?.stale) {
       errorMessage.value = channelMonitorError(channelMonitor.degraded_reason)
     }
-    snapshot.value = result
-    if (result.operations) {
-      window.dispatchEvent(
-        new CustomEvent("sms:dashboard-balance", {
-          detail: { currentBalance: result.operations.current_balance },
-        }),
-      )
+    // 内容未变时跳过快照替换与余额广播：避免 10s 轮询空转整树重渲、图表 setOption 与顶栏事件。
+    const fingerprint = contentFingerprint(result)
+    if (fingerprint !== lastFingerprint) {
+      lastFingerprint = fingerprint
+      snapshot.value = result
+      if (result.operations) {
+        window.dispatchEvent(
+          new CustomEvent("sms:dashboard-balance", {
+            detail: { currentBalance: result.operations.current_balance },
+          }),
+        )
+      }
     }
   } catch (error) {
     if (snapshot.value?.operations) {
@@ -97,6 +109,8 @@ async function load(): Promise<void> {
           },
         },
       }
+      // 快照已被就地标记陈旧，指纹随之失效：下次成功响应即使内容相同也必须整体替换。
+      lastFingerprint = ""
     }
     errorMessage.value = error instanceof Error ? error.message : "仪表盘加载失败"
   } finally {

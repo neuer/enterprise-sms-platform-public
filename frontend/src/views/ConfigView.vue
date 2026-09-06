@@ -53,7 +53,12 @@ const providerDirty = ref(false)
 const advancedOpen = ref(false)
 const disabledPreserved = ref(false)
 const mappingsSaving = ref(false)
-const roleMappings = ref<ExternalRoleMapping[]>([])
+/** 可编辑行附本地自增 key：行可增删，index 作 key 会让 el-input 状态串行复用错位。 */
+interface EditableRoleMapping extends ExternalRoleMapping {
+  rowKey: number
+}
+let roleMappingKeySeq = 0
+const roleMappings = ref<EditableRoleMapping[]>([])
 const adForm = reactive<LdapProviderConfig>({
   server: "",
   base_dn: "",
@@ -174,7 +179,7 @@ async function loadProvider(): Promise<void> {
   try {
     const [provider, mappings] = await Promise.all([getAuthProvider("ad"), listAuthProviderRoleMappings("ad")])
     hydrateProvider(provider)
-    roleMappings.value = mappings.mappings.map((item) => ({ ...item }))
+    roleMappings.value = mappings.mappings.map((item) => ({ ...item, rowKey: ++roleMappingKeySeq }))
   } catch (error) {
     providerError.value = errorText(error, "认证源配置加载失败")
   } finally {
@@ -324,7 +329,7 @@ async function disableProvider(): Promise<void> {
 }
 
 function addRoleMapping(): void {
-  roleMappings.value.push({ external_group: "", role: "viewer", dept: "" })
+  roleMappings.value.push({ external_group: "", role: "viewer", dept: "", rowKey: ++roleMappingKeySeq })
 }
 
 function removeRoleMapping(index: number): void {
@@ -342,7 +347,7 @@ async function saveRoleMappings(): Promise<void> {
       }))
       .filter((item) => item.external_group)
     const result = await replaceAuthProviderRoleMappings("ad", mappings)
-    roleMappings.value = result.mappings.map((item) => ({ ...item }))
+    roleMappings.value = result.mappings.map((item) => ({ ...item, rowKey: ++roleMappingKeySeq }))
     ElMessage.success("AD 目录组角色映射已更新 · 本次操作已记入审计")
   } catch (error) {
     ElMessage.error(errorText(error, "角色映射保存失败"))
@@ -547,7 +552,7 @@ onMounted(() => {
           ><el-button @click="addRoleMapping">添加映射</el-button></header
         >
         <div v-if="roleMappings.length" class="role-mapping-list">
-          <div v-for="(mapping, index) in roleMappings" :key="index" class="role-mapping-row">
+          <div v-for="(mapping, index) in roleMappings" :key="mapping.rowKey" class="role-mapping-row">
             <el-input
               v-model="mapping.external_group"
               :data-testid="`mapping-group-${index}`"

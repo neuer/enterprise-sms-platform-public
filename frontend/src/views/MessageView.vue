@@ -70,7 +70,9 @@ const groupedEvents = computed(() => {
   const groups = new Map<string, TimelineEvent[]>()
   for (const event of timeline.value?.events || []) {
     const day = formatDateTime(event.ts).slice(0, 10)
-    groups.set(day, [...(groups.get(day) || []), event])
+    const bucket = groups.get(day)
+    if (bucket) bucket.push(event)
+    else groups.set(day, [event])
   }
   return [...groups.entries()].map(([day, events]) => ({
     day,

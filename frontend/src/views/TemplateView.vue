@@ -101,6 +101,24 @@ function stateSub(item: SmsTemplate): VendorReviewSub {
   return vendorReviewSub(item.vendor_state, item.vendor_template_id, item.vendor_reject_reason)
 }
 
+// 渲染期查表：内容分段与状态副行随 items 一次性预计算；关键词过滤只换行集，
+// 不再每个按键触发的整表重渲中对每行新建 Map + matchAll。
+const rowRenderInfo = computed(() => {
+  const info = new Map<number, { parts: ContentPart[]; sub: VendorReviewSub }>()
+  for (const item of items.value) {
+    info.set(item.id, { parts: contentParts(item.content, item.var_specs), sub: stateSub(item) })
+  }
+  return info
+})
+
+function rowParts(row: SmsTemplate): ContentPart[] {
+  return rowRenderInfo.value.get(row.id)?.parts ?? []
+}
+
+function rowSub(row: SmsTemplate): VendorReviewSub {
+  return rowRenderInfo.value.get(row.id)?.sub ?? { text: "" }
+}
+
 /** 详情抽屉标题副行：平台编号 / 已绑定厂商编号。 */
 function detailHeadMeta(item: SmsTemplate): string {
   const parts = [`平台 #${item.id}`]
@@ -399,7 +417,7 @@ onMounted(load)
       <el-table-column label="内容" min-width="320">
         <template #default="{ row }">
           <span class="template-inline-content">
-            <template v-for="(part, index) in contentParts(row.content, row.var_specs)" :key="index">
+            <template v-for="(part, index) in rowParts(row)" :key="index">
               <span
                 v-if="part.pos !== undefined"
                 class="var-chip"
@@ -414,9 +432,7 @@ onMounted(load)
       <el-table-column label="厂商状态" width="170">
         <template #default="{ row }">
           <StatusTag :status="row.vendor_state" :label="stateLabel(row.vendor_state)" />
-          <span class="cell-sub" :class="{ 'cell-sub-verm': stateSub(row).tone === 'verm' }">{{
-            stateSub(row).text
-          }}</span>
+          <span class="cell-sub" :class="{ 'cell-sub-verm': rowSub(row).tone === 'verm' }">{{ rowSub(row).text }}</span>
         </template>
       </el-table-column>
       <el-table-column v-if="canWrite" label="操作" width="150" fixed="right">
@@ -470,7 +486,7 @@ onMounted(load)
           <StatusTag :status="row.vendor_state" :label="stateLabel(row.vendor_state)" />
         </header>
         <p class="template-inline-content">
-          <template v-for="(part, index) in contentParts(row.content, row.var_specs)" :key="index">
+          <template v-for="(part, index) in rowParts(row)" :key="index">
             <span
               v-if="part.pos !== undefined"
               class="var-chip"
@@ -480,7 +496,7 @@ onMounted(load)
             <template v-else>{{ part.text }}</template>
           </template>
         </p>
-        <p class="cell-sub" :class="{ 'cell-sub-verm': stateSub(row).tone === 'verm' }">{{ stateSub(row).text }}</p>
+        <p class="cell-sub" :class="{ 'cell-sub-verm': rowSub(row).tone === 'verm' }">{{ rowSub(row).text }}</p>
         <footer v-if="canWrite" @click.stop>
           <el-button
             v-if="canUse(row)"
