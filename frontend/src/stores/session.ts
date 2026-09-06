@@ -13,27 +13,21 @@ import {
   type UserRole,
 } from "../api/auth"
 import { detectSessionMode, isAccessOnlySessionMode } from "../api/refreshLock"
+import { defaultSessionDocument, type SessionDocument } from "../api/sessionDocument"
+import { SessionGenerationStaleError } from "../api/sessionGeneration"
+import { applyIncomingSessionSignal, type SessionLogoutResult } from "../api/sessionNavigation"
 import {
-  invalidateSessionGeneration,
-  SessionGenerationStaleError,
-  withSessionGeneration,
-} from "../api/sessionGeneration"
-import {
-  bootstrapLegacyAccessSession,
-  clearAccessSession,
-  clearRefreshTabBinding,
-  getAccessToken,
-  getSessionMode,
-  getSessionUser,
-  LEGACY_TOKEN_KEY,
-  LEGACY_USER_KEY,
-  setAccessSession,
-} from "../api/sessionTokens"
+  createSessionInstanceId,
+  isSessionInstanceId,
+  parseSessionRetiredMessage,
+  SESSION_CLEAR_SIGNAL_KEY,
+} from "../api/sessionSignals"
+import { LEGACY_TOKEN_KEY, LEGACY_USER_KEY } from "../api/sessionTokens"
 import { ROLE_LABELS } from "../lib/labels"
 
 const CHANGE_TOKEN_KEY = "sms_change_token"
 const CHANGE_TOKEN_EXPIRES_AT_KEY = "sms_change_token_expires_at"
-export const SESSION_CLEAR_SIGNAL_KEY = "sms_session_clear"
+export { SESSION_CLEAR_SIGNAL_KEY }
 
 function readStorage(name: "localStorage" | "sessionStorage"): Storage | null {
   try {
@@ -50,17 +44,6 @@ function storageRemove(name: "localStorage" | "sessionStorage", key: string): vo
     storage.removeItem(key)
   } catch {
     // 单个 Storage 失败不得跳过其余清理或内存凭据销毁。
-  }
-}
-
-function broadcastSessionClear(): void {
-  try {
-    const storage = readStorage("localStorage")
-    if (!storage) return
-    storage.setItem(SESSION_CLEAR_SIGNAL_KEY, String(Date.now()))
-    storage.removeItem(SESSION_CLEAR_SIGNAL_KEY)
-  } catch {
-    // 当前标签页仍由服务端权威会话保护；受限存储环境无法通知兄弟标签页。
   }
 }
 
@@ -97,185 +80,245 @@ function isPlatformUser(value: unknown): value is PlatformUser {
   )
 }
 
-export const useSessionStore = defineStore("session", {
-  state: () => ({
-    token: getAccessToken() ?? "",
-    accountId: getSessionUser()?.account_id ?? 0,
-    identityId: getSessionUser()?.identity_id ?? 0,
-    providerCode: getSessionUser()?.provider_code ?? "",
-    username: getSessionUser()?.username ?? "",
-    displayName: getSessionUser()?.display_name ?? "",
-    dept: getSessionUser()?.dept ?? "",
-    role: (getSessionUser()?.role ?? null) as UserRole | null,
-    sessionMode: (getSessionMode() ?? null) as SessionMode | null,
-    providers: [] as AuthProvider[],
-  }),
-  getters: {
-    isAuthenticated: (state) => Boolean(state.token && state.accountId > 0 && state.identityId > 0 && state.role),
-    roleLabel: (state) => (state.role ? ROLE_LABELS[state.role] : "未登录"),
-  },
-  actions: {
-    resetIdentity() {
-      this.token = ""
-      this.accountId = 0
-      this.identityId = 0
-      this.providerCode = ""
-      this.username = ""
-      this.displayName = ""
-      this.dept = ""
-      this.role = null
-      this.sessionMode = null
-      clearAccessSession()
+export function createSessionStore(doc: SessionDocument = defaultSessionDocument, storeId = "session") {
+  return defineStore(storeId, {
+    state: () => ({
+      token: doc.getAccessToken() ?? "",
+      accountId: doc.getSessionUser()?.account_id ?? 0,
+      identityId: doc.getSessionUser()?.identity_id ?? 0,
+      providerCode: doc.getSessionUser()?.provider_code ?? "",
+      username: doc.getSessionUser()?.username ?? "",
+      displayName: doc.getSessionUser()?.display_name ?? "",
+      dept: doc.getSessionUser()?.dept ?? "",
+      role: (doc.getSessionUser()?.role ?? null) as UserRole | null,
+      sessionMode: (doc.sessionMode ?? null) as SessionMode | null,
+      sessionInstanceId: doc.getSessionInstanceId() ?? "",
+      providers: [] as AuthProvider[],
+    }),
+    getters: {
+      isAuthenticated: (state) => Boolean(state.token && state.accountId > 0 && state.identityId > 0 && state.role),
+      roleLabel: (state) => (state.role ? ROLE_LABELS[state.role] : "未登录"),
     },
-    apply(token: string, user: PlatformUser, mode: SessionMode = "refresh") {
-      clearLegacyPersistence()
-      this.token = token
-      this.accountId = user.account_id
-      this.identityId = user.identity_id
-      this.providerCode = user.provider_code
-      this.username = user.username
-      this.displayName = user.display_name
-      this.dept = user.dept
-      this.role = user.role
-      this.sessionMode = mode === "access_only" ? "access_only" : "refresh"
-      setAccessSession(token, user, this.sessionMode)
-    },
-    clear() {
-      try {
-        // 先推进本页代际并取消在途 Refresh，避免旧响应在清状态后写回。
-        invalidateSessionGeneration()
-      } finally {
-        this.resetIdentity()
-        clearRefreshTabBinding()
+    actions: {
+      resetIdentity() {
+        this.token = ""
+        this.accountId = 0
+        this.identityId = 0
+        this.providerCode = ""
+        this.username = ""
+        this.displayName = ""
+        this.dept = ""
+        this.role = null
+        this.sessionMode = null
+        this.sessionInstanceId = ""
+        doc.clearAccessSession()
+      },
+      apply(token: string, user: PlatformUser, mode: SessionMode = "refresh", sessionInstanceId?: string) {
+        clearLegacyPersistence()
+        const instanceId = isSessionInstanceId(sessionInstanceId)
+          ? sessionInstanceId
+          : (doc.getSessionInstanceId() ?? createSessionInstanceId())
+        this.token = token
+        this.accountId = user.account_id
+        this.identityId = user.identity_id
+        this.providerCode = user.provider_code
+        this.username = user.username
+        this.displayName = user.display_name
+        this.dept = user.dept
+        this.role = user.role
+        this.sessionMode = mode === "access_only" ? "access_only" : "refresh"
+        this.sessionInstanceId = instanceId
+        doc.setAccessSession(token, user, this.sessionMode, instanceId)
+      },
+      clear() {
         try {
-          window.dispatchEvent(new Event("sms:session-clearing"))
+          doc.invalidateGeneration()
         } finally {
-          clearLegacyPersistence()
-        }
-      }
-    },
-    clearAllTabs() {
-      this.clear()
-      broadcastSessionClear()
-    },
-    restore() {
-      // 历史凭据只允许当前 Document 扫描一次；clear/logout 后不得再从 Storage 导入。
-      bootstrapLegacyAccessSession()
-      clearLegacyPersistence()
-      const memoryToken = getAccessToken()
-      const memoryUser = getSessionUser()
-      if (memoryToken && memoryUser && isPlatformUser(memoryUser)) {
-        this.apply(memoryToken, memoryUser, getSessionMode() ?? "refresh")
-        return
-      }
-      this.resetIdentity()
-    },
-    async restoreFromCookie(): Promise<boolean> {
-      if (this.token) return true
-      if (isAccessOnlySessionMode() || this.sessionMode === "access_only") return false
-      try {
-        return await withSessionGeneration({}, async ({ isLive, signal }) => {
-          if (this.token) return true
-          const result = await refreshRequest(signal)
-          if (!isLive()) return false
-          this.apply(result.token, result.user, result.session_mode)
-          return true
-        })
-      } catch (error) {
-        if (isSessionAbort(error)) return false
-        if (error instanceof AuthApiError && error.code === "AUTH_REAUTH_REQUIRED") {
-          window.dispatchEvent(new Event("sms:reauth-required"))
-        }
-        this.clear()
-        return false
-      }
-    },
-    async revalidateOnResume(): Promise<boolean> {
-      if (isAccessOnlySessionMode() || this.sessionMode === "access_only") {
-        this.clearAllTabs()
-        return false
-      }
-      try {
-        return await withSessionGeneration({ invalidateFirst: true }, async ({ isLive, signal }) => {
-          const result = await refreshRequest(signal)
-          if (!isLive()) return false
-          this.apply(result.token, result.user, result.session_mode)
-          return true
-        })
-      } catch (error) {
-        if (isSessionAbort(error)) return false
-        if (error instanceof AuthApiError && error.code === "AUTH_REAUTH_REQUIRED") {
-          window.dispatchEvent(new Event("sms:reauth-required"))
-        }
-        this.clearAllTabs()
-        return false
-      }
-    },
-    async loadProviders() {
-      this.providers = await providerRequest()
-    },
-    async login(
-      providerCode: string,
-      username: string,
-      password: string,
-    ): Promise<
-      { nextAction: "authenticated" } | { nextAction: "change_password"; changeToken: string; expiresAt: number }
-    > {
-      try {
-        return await withSessionGeneration({ invalidateFirst: true }, async ({ isLive, signal }) => {
-          const response = await loginRequest(providerCode, username, password, signal)
-          if (!isLive()) throw new SessionGenerationStaleError()
-          if ("next_action" in response) {
-            this.clear()
-            return {
-              nextAction: "change_password",
-              changeToken: response.change_token,
-              expiresAt: Date.now() + response.expires_in * 1000,
-            }
+          this.resetIdentity()
+          doc.clearRefreshTabBinding()
+          try {
+            window.dispatchEvent(new Event("sms:session-clearing"))
+          } finally {
+            clearLegacyPersistence()
           }
-          const mode =
-            response.session_mode === "access_only" || response.session_mode === "refresh"
-              ? response.session_mode
-              : detectSessionMode()
-          this.apply(response.token, response.user, mode)
-          // Refresh 登录会覆盖浏览器级 Cookie；Access-Only 也会清旧 Cookie。兄弟标签页销毁旧主体。
-          broadcastSessionClear()
-          return { nextAction: "authenticated" }
-        })
-      } catch (error) {
-        if (error instanceof SessionGenerationStaleError) {
-          this.clear()
         }
-        throw error
-      }
-    },
-    async changePassword(currentPassword: string, newPassword: string) {
-      if (!this.token || this.providerCode !== "local") {
-        throw new Error("仅已登录的本地账号可修改密码")
-      }
-      try {
-        await passwordChangeRequest(this.token, currentPassword, newPassword)
-      } catch (error) {
-        if (error instanceof AuthApiError && error.code === "AUTH_CONTEXT_CHANGED") {
-          this.clearAllTabs()
-          window.dispatchEvent(new Event("sms:unauthorized"))
+      },
+      /**
+       * 仅当当前内存会话仍是预期实例/代际时清理。
+       * 不匹配说明已有更新会话：返回 false，不广播、不跳转。
+       */
+      clearIfCurrent(
+        expectedInstance: string | null,
+        expectedGeneration: number,
+        options: { broadcast?: boolean } = {},
+      ): boolean {
+        if (!isSessionInstanceId(expectedInstance)) return false
+        if (doc.getSessionInstanceId() !== expectedInstance && this.sessionInstanceId !== expectedInstance) {
+          return false
         }
-        throw error
-      }
-      this.clear()
-    },
-    async logout() {
-      const token = this.token
-      try {
-        if (token) {
-          await withSessionGeneration({ invalidateFirst: true }, async ({ signal }) => {
-            await logoutRequest(token, signal)
+        if (doc.generation !== expectedGeneration) return false
+        this.clear()
+        if (options.broadcast !== false) {
+          doc.broadcastRetired(expectedInstance)
+        }
+        return true
+      },
+      clearAllTabs() {
+        const instance =
+          doc.getSessionInstanceId() ?? (isSessionInstanceId(this.sessionInstanceId) ? this.sessionInstanceId : null)
+        this.clearIfCurrent(instance, doc.generation)
+      },
+      applyRemoteSessionRetired(raw: unknown): boolean {
+        const message = parseSessionRetiredMessage(raw)
+        if (!message) return false
+        if (this.sessionInstanceId !== message.target_instance_id) return false
+        if (!doc.rememberEventId(message.event_id)) return false
+        this.clear()
+        return true
+      },
+      applyStorageSessionSignal(event: { key?: string | null; newValue?: string | null }): boolean {
+        return applyIncomingSessionSignal(this, event)
+      },
+      restore() {
+        doc.bootstrapLegacyAccessSession()
+        clearLegacyPersistence()
+        const memoryToken = doc.getAccessToken()
+        const memoryUser = doc.getSessionUser()
+        if (memoryToken && memoryUser && isPlatformUser(memoryUser)) {
+          this.apply(memoryToken, memoryUser, doc.sessionMode ?? "refresh", doc.getSessionInstanceId() ?? undefined)
+          return
+        }
+        this.resetIdentity()
+      },
+      async restoreFromCookie(): Promise<boolean> {
+        if (this.token) return true
+        if (isAccessOnlySessionMode() || this.sessionMode === "access_only") return false
+        const origin = doc.captureOrigin()
+        try {
+          return await doc.withSessionGeneration({ origin }, async ({ isLive, signal }) => {
+            if (this.token) return true
+            const result = await refreshRequest(signal)
+            if (!isLive()) return false
+            const instance = doc.getSessionInstanceId() ?? doc.readPublishedInstance() ?? createSessionInstanceId()
+            this.apply(result.token, result.user, result.session_mode, instance)
+            return true
           })
+        } catch (error) {
+          if (isSessionAbort(error)) return false
+          if (error instanceof AuthApiError && error.code === "AUTH_REAUTH_REQUIRED") {
+            window.dispatchEvent(new Event("sms:reauth-required"))
+          }
+          this.clearIfCurrent(origin.sessionInstanceId, origin.localGeneration)
+          return false
         }
-      } finally {
-        // 无论服务端是否确认撤销，本地凭据都必须先销毁。
-        this.clearAllTabs()
-      }
+      },
+      async revalidateOnResume(): Promise<boolean> {
+        const origin = doc.captureOrigin()
+        if (isAccessOnlySessionMode() || this.sessionMode === "access_only") {
+          this.clearIfCurrent(origin.sessionInstanceId, origin.localGeneration)
+          return false
+        }
+        try {
+          return await doc.withSessionGeneration({ invalidateFirst: true, origin }, async ({ isLive, signal }) => {
+            const result = await refreshRequest(signal)
+            if (!isLive()) return false
+            this.apply(
+              result.token,
+              result.user,
+              result.session_mode,
+              doc.getSessionInstanceId() ?? origin.sessionInstanceId ?? createSessionInstanceId(),
+            )
+            return true
+          })
+        } catch (error) {
+          if (isSessionAbort(error)) return false
+          if (error instanceof AuthApiError && error.code === "AUTH_REAUTH_REQUIRED") {
+            window.dispatchEvent(new Event("sms:reauth-required"))
+          }
+          this.clearIfCurrent(origin.sessionInstanceId, origin.localGeneration)
+          return false
+        }
+      },
+      async loadProviders() {
+        this.providers = await providerRequest()
+      },
+      async login(
+        providerCode: string,
+        username: string,
+        password: string,
+      ): Promise<
+        { nextAction: "authenticated" } | { nextAction: "change_password"; changeToken: string; expiresAt: number }
+      > {
+        const origin = doc.captureOrigin()
+        const replacedInstance =
+          doc.getSessionInstanceId() ??
+          (isSessionInstanceId(this.sessionInstanceId) ? this.sessionInstanceId : null) ??
+          doc.readPublishedInstance()
+        try {
+          return await doc.withSessionGeneration({ invalidateFirst: true, origin }, async ({ isLive, signal }) => {
+            const response = await loginRequest(providerCode, username, password, signal)
+            if (!isLive()) throw new SessionGenerationStaleError()
+            if ("next_action" in response) {
+              this.clearIfCurrent(origin.sessionInstanceId, origin.localGeneration)
+              return {
+                nextAction: "change_password",
+                changeToken: response.change_token,
+                expiresAt: Date.now() + response.expires_in * 1000,
+              }
+            }
+            const mode =
+              response.session_mode === "access_only" || response.session_mode === "refresh"
+                ? response.session_mode
+                : detectSessionMode()
+            const nextInstance = createSessionInstanceId()
+            this.apply(response.token, response.user, mode, nextInstance)
+            if (replacedInstance && replacedInstance !== nextInstance) {
+              doc.broadcastRetired(replacedInstance)
+            }
+            return { nextAction: "authenticated" }
+          })
+        } catch (error) {
+          if (error instanceof SessionGenerationStaleError) {
+            this.clearIfCurrent(origin.sessionInstanceId, origin.localGeneration)
+          }
+          throw error
+        }
+      },
+      async changePassword(currentPassword: string, newPassword: string) {
+        if (!this.token || this.providerCode !== "local") {
+          throw new Error("仅已登录的本地账号可修改密码")
+        }
+        const origin = doc.captureOrigin()
+        try {
+          await passwordChangeRequest(this.token, currentPassword, newPassword)
+        } catch (error) {
+          if (error instanceof AuthApiError && error.code === "AUTH_CONTEXT_CHANGED") {
+            this.clearIfCurrent(origin.sessionInstanceId, origin.localGeneration)
+            if (!this.isAuthenticated) window.dispatchEvent(new Event("sms:unauthorized"))
+          }
+          throw error
+        }
+        this.clearIfCurrent(origin.sessionInstanceId, origin.localGeneration, { broadcast: false })
+      },
+      async logout(): Promise<SessionLogoutResult> {
+        const origin = doc.captureOrigin()
+        const token = this.token
+        let networkError: unknown = null
+        try {
+          if (token) {
+            await doc.withSessionGeneration({ invalidateFirst: true, origin }, async ({ signal }) => {
+              await logoutRequest(token, signal)
+            })
+          }
+        } catch (error) {
+          if (!isSessionAbort(error)) networkError = error
+        }
+        const cleared = this.clearIfCurrent(origin.sessionInstanceId, origin.localGeneration)
+        if (networkError) throw networkError
+        return { cleared }
+      },
     },
-  },
-})
+  })
+}
+
+export const useSessionStore = createSessionStore()

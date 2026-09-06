@@ -25,6 +25,7 @@ from tests.test_auth_runtime import FakeAuthService, FakeHasher, FakeUserReposit
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_AUTH = ROOT / "frontend/src/api/auth.ts"
 FRONTEND_LOCK = ROOT / "frontend/src/api/refreshLock.ts"
+FRONTEND_SESSION_MODE = ROOT / "frontend/src/api/sessionMode.ts"
 
 
 def _cookie_header(response) -> str:
@@ -412,8 +413,12 @@ def test_access_only_mode_is_reflected_in_openapi_and_frontend_types() -> None:
     }
     auth_types = FRONTEND_AUTH.read_text(encoding="utf-8")
     lock = FRONTEND_LOCK.read_text(encoding="utf-8")
+    session_mode = FRONTEND_SESSION_MODE.read_text(encoding="utf-8")
     assert 'session_mode: "access_only"' in auth_types
     assert 'session_mode: "refresh"' in auth_types
     assert "detectSessionMode" in lock
-    assert "navigator.locks.request" in lock
+    assert "hasWebLocks" in session_mode
+    assert "navigator?.locks?.request" in session_mode
+    assert "locks.request" in lock
+    assert "userAgent" not in session_mode
     assert "userAgent" not in lock

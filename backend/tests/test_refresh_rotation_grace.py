@@ -13,9 +13,9 @@ from app.core.auth.backends import (
     SessionStateUnavailable,
 )
 from app.core.auth.jwt import (
-    _REVOKE_SESSION_LUA,
     _ROTATE_REFRESH_LUA,
     REFRESH_GRACE_SECONDS,
+    ROTATE_REFRESH_LUA_TAG,
     JwtClaims,
     JwtService,
 )
@@ -51,41 +51,24 @@ class FakeAtomicStore:
         self.values.pop(key, None)
 
     async def eval(self, script: str, numkeys: int, *args: object) -> object:
+        from app.core.auth.jwt import eval_memory_jwt_script
         from app.core.auth.session_policy import eval_memory_session_policy
 
         policy_result = eval_memory_session_policy(self.values, script, args)
         if policy_result is not None or "auth-session-policy-" in script:
             return policy_result
-        if script != _ROTATE_REFRESH_LUA:
-            raise AssertionError("unexpected Lua script")
-        assert numkeys == 2
-        family_key, session_state_key = map(str, args[:2])
-        expected, replacement, family_ttl, revoke_ttl = map(str, args[2:])
-        assert int(family_ttl) > 0
-        assert int(revoke_ttl) > 0
         async with self.lock:
-            current = self.values.get(family_key)
-            if current is None:
-                self.values[session_state_key] = "1"
-                self.values.pop(family_key, None)
-                return [0, ""]
-            if current == expected:
-                self.values[family_key] = replacement
-                self.values[session_state_key] = "grace\n" + expected + "\n" + replacement
-                self.grace_writes += 1
-                return [1, replacement]
-            state = self.values.get(session_state_key, "")
-            parts = state.split("\n", 2)
-            if (
-                len(parts) == 3
-                and parts[0] == "grace"
-                and parts[1] == expected
-                and parts[2] == current
-            ):
-                return [2, parts[2]]
-            self.values[session_state_key] = "1"
-            self.values.pop(family_key, None)
-            return [-1, ""]
+            result = eval_memory_jwt_script(self.values, script, args)
+        if result is None:
+            raise AssertionError("unexpected Lua script")
+        if (
+            ROTATE_REFRESH_LUA_TAG in script
+            and isinstance(result, list)
+            and result
+            and int(result[0]) == 1
+        ):
+            self.grace_writes += 1
+        return result
 
 
 def claims() -> JwtClaims:
@@ -296,29 +279,17 @@ def test_replacement_is_stable_across_display_name_only_changes() -> None:
 
 
 def test_lua_updates_family_and_grace_atomically_without_storing_token() -> None:
-    success = _ROTATE_REFRESH_LUA.split("if current == ARGV[1] then", 1)[1].split(
-        "end", 1
-    )[0]
-    assert "SET', KEYS[1]" in success
-    assert "SET', KEYS[2]" in success
-    assert "local grace = 'grace\\n'" in success
-    assert str(REFRESH_GRACE_SECONDS) in success
+    assert ROTATE_REFRESH_LUA_TAG in _ROTATE_REFRESH_LUA
+    assert "apply_session_revocation" in _ROTATE_REFRESH_LUA
+    assert "local grace = 'grace\\n'" in _ROTATE_REFRESH_LUA
+    assert str(REFRESH_GRACE_SECONDS) in _ROTATE_REFRESH_LUA
     assert "replacement_token" not in _ROTATE_REFRESH_LUA
     assert "ARGV[1] == previous_binding" in _ROTATE_REFRESH_LUA
+    assert "existing == '1'" in _ROTATE_REFRESH_LUA
 
 
 class RevokingAtomicStore(FakeAtomicStore):
-    async def eval(self, script: str, numkeys: int, *args: object) -> object:
-        if script == _REVOKE_SESSION_LUA:
-            assert numkeys == 3
-            revoked_jti, revoked_session, refresh_family = map(str, args[:3])
-            async with self.lock:
-                self.values[revoked_jti] = "1"
-                self.values[revoked_session] = "1"
-                self.values.pop(refresh_family, None)
-            return 1
-        return await super().eval(script, numkeys, *args)
-
+    """登录吊销与轮换共用同一单调撤销语义。"""
 
 @pytest.mark.asyncio
 async def test_login_revokes_old_family_without_self_revoking_new_concurrent_refresh() -> None:

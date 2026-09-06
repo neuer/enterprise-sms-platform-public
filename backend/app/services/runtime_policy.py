@@ -56,6 +56,24 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "report_poll_seconds": ConfigSpec(
         "60", "int", GROUP_SCHEDULING, minimum=10, maximum=3_600, beat_restart=True
     ),
+    "report_timeout_scan_seconds": ConfigSpec(
+        "60", "int", GROUP_SCHEDULING, minimum=10, maximum=3_600, beat_restart=True
+    ),
+    "report_timeout_batch_limit": ConfigSpec(
+        "50", "int", GROUP_SCHEDULING, minimum=1, maximum=500
+    ),
+    "report_timeout_message_limit": ConfigSpec(
+        "200", "int", GROUP_SCHEDULING, minimum=1, maximum=2_000
+    ),
+    "report_timeout_round_seconds": ConfigSpec(
+        "20", "int", GROUP_SCHEDULING, minimum=1, maximum=120
+    ),
+    "report_timeout_statement_ms": ConfigSpec(
+        "5000", "int", GROUP_SCHEDULING, minimum=100, maximum=30_000
+    ),
+    "report_timeout_lock_ms": ConfigSpec(
+        "1000", "int", GROUP_SCHEDULING, minimum=50, maximum=10_000
+    ),
     "reply_poll_seconds": ConfigSpec(
         "300", "int", GROUP_SCHEDULING, minimum=30, maximum=86_400, beat_restart=True
     ),
