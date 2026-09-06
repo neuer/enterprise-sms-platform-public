@@ -52,6 +52,8 @@ ENVELOPE_SCHEMA_VERSION = "1"
 MAX_TRANSITION_ATTEMPTS = 20
 MAX_TRANSITION_RECOVERY_MS = AUDIT_RECOVERY_TTL_S * 1000
 INTEGRITY_SCAN_COUNT = 32
+INTEGRITY_STATS_PAGE_SIZE = 32
+INTEGRITY_STATS_PAGE_MAX = 64
 _SAFE_PROVIDER_CODE = re.compile(r"[a-z][a-z0-9_-]{0,63}")
 LOGGER = logging.getLogger(__name__)
 
@@ -491,29 +493,38 @@ class LoginGuard:
     )
     """
 
-    _INTEGRITY_STATS_LUA = (
+    _INTEGRITY_STATS_PAGE_LUA = (
         _ENVELOPE_LUA
         + """
-    -- auth-audit-integrity-stats-v1
-    local pending_without_due = 0
-    local due_without_payload = 0
-    local open = redis.call('ZRANGE', OPEN, 0, -1)
-    for i = 1, #open do
-      local tid = open[i]
-      local audit_key = PREFIX .. tid
-      local state = redis.call('HGET', audit_key, 'state')
-      if (state == 'pending' or state == 'writing')
-         and not redis.call('ZSCORE', DUE, tid) then
-        pending_without_due = pending_without_due + 1
+    -- auth-audit-integrity-stats-page-v1
+    local index = ARGV[1]
+    local offset = tonumber(ARGV[2]) or 0
+    local limit = tonumber(ARGV[3]) or 32
+    if offset < 0 then offset = 0 end
+    if limit < 1 then limit = 1 end
+    if limit > 64 then limit = 64 end
+    local key = OPEN
+    if index == 'due' then key = DUE end
+    local stop = offset + limit - 1
+    local members = redis.call('ZRANGE', key, offset, stop)
+    local matches = 0
+    if index == 'due' then
+      for i = 1, #members do
+        if redis.call('EXISTS', PREFIX .. members[i]) == 0 then
+          matches = matches + 1
+        end
+      end
+    else
+      for i = 1, #members do
+        local tid = members[i]
+        local state = redis.call('HGET', PREFIX .. tid, 'state')
+        if (state == 'pending' or state == 'writing')
+           and not redis.call('ZSCORE', DUE, tid) then
+          matches = matches + 1
+        end
       end
     end
-    local due = redis.call('ZRANGE', DUE, 0, -1)
-    for i = 1, #due do
-      if redis.call('EXISTS', PREFIX .. due[i]) == 0 then
-        due_without_payload = due_without_payload + 1
-      end
-    end
-    return {pending_without_due, due_without_payload}
+    return {#members, matches}
     """
     )
 
@@ -1057,8 +1068,8 @@ class LoginGuard:
             str(INTEGRITY_SCAN_COUNT),
         )
         if not isinstance(raw, (list, tuple)) or len(raw) < 2:
-            return "0", ()
-        next_cursor = str(raw[0] or "0")
+            raise SessionStateUnavailable("auth transition hash scan unavailable")
+        next_cursor = str(raw[0] if raw[0] is not None else "0")
         keys = raw[1] if isinstance(raw[1], (list, tuple)) else ()
         return next_cursor, tuple(str(item) for item in keys if item)
 
@@ -1071,10 +1082,33 @@ class LoginGuard:
             return (text,) if text else ()
         return tuple(str(item) for item in raw if item)
 
-    async def integrity_stats(self) -> tuple[int, int]:
-        raw = await self.store.eval(self._INTEGRITY_STATS_LUA, 0)
+    async def storage_identity(self) -> str:
+        """当前存储实例标识；测试替身可覆盖，生产默认不合成游标。"""
+
+        identity = getattr(self.store, "storage_identity", "")
+        if callable(identity):
+            identity = identity()
+        return str(identity or "")
+
+    async def integrity_stats_page(
+        self,
+        index: str,
+        offset: int,
+        limit: int = INTEGRITY_STATS_PAGE_SIZE,
+    ) -> tuple[int, int]:
+        """按偏移读取一页 Open/Due 完整性计数，禁止无界 ZRANGE 0 -1。"""
+
+        kind = "due" if index == "due" else "open"
+        page_limit = min(INTEGRITY_STATS_PAGE_MAX, max(1, int(limit)))
+        raw = await self.store.eval(
+            self._INTEGRITY_STATS_PAGE_LUA,
+            0,
+            kind,
+            str(max(0, int(offset))),
+            str(page_limit),
+        )
         if not isinstance(raw, (list, tuple)) or len(raw) < 2:
-            return 0, 0
+            raise SessionStateUnavailable("auth transition integrity stats unavailable")
         return int(raw[0] or 0), int(raw[1] or 0)
 
     async def due_stats(self) -> tuple[int, int]:

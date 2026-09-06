@@ -399,22 +399,30 @@ class FakeKeyValue:
         if "auth-audit-open-scan-v1" in script:
             limit = int(args[0]) if args else 32
             return list(self._open().keys())[:limit]
-        if "auth-audit-integrity-stats-v1" in script:
-            pending_without_due = 0
-            due_without_payload = 0
-            due = self._due()
-            for tid, _score in self._open().items():
-                current = self.values.get(self._audit_key(tid))
-                if (
-                    isinstance(current, dict)
-                    and current.get("state") in {"pending", "writing"}
-                    and tid not in due
-                ):
-                    pending_without_due += 1
-            for tid in due:
-                if not isinstance(self.values.get(self._audit_key(tid)), dict):
-                    due_without_payload += 1
-            return [pending_without_due, due_without_payload]
+        if "auth-audit-integrity-stats-page-v1" in script:
+            index = str(args[0]) if args else "open"
+            offset = int(args[1]) if len(args) > 1 else 0
+            limit = int(args[2]) if len(args) > 2 else 32
+            members = list(self._due().keys() if index == "due" else self._open().keys())
+            page = members[max(0, offset) : max(0, offset) + max(1, limit)]
+            matches = 0
+            if index == "due":
+                matches = sum(
+                    1
+                    for tid in page
+                    if not isinstance(self.values.get(self._audit_key(tid)), dict)
+                )
+            else:
+                due = self._due()
+                for tid in page:
+                    current = self.values.get(self._audit_key(tid))
+                    if (
+                        isinstance(current, dict)
+                        and current.get("state") in {"pending", "writing"}
+                        and tid not in due
+                    ):
+                        matches += 1
+            return [len(page), matches]
         if "auth-audit-integrity-v1" in script:
             transition_id = str(args[0])
             field = self._field_class(transition_id)

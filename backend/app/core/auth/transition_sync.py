@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from contextlib import suppress
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Any, Protocol
 
 from app.build_info import APP_VERSION
@@ -14,6 +16,8 @@ from app.core.auth.observability import (
     observe_transition_envelope_invalid,
     observe_transition_integrity_gauges,
     observe_transition_integrity_repair,
+    observe_transition_integrity_scan,
+    observe_transition_integrity_stats_complete,
     observe_transition_lease_expired,
     observe_transition_orphan,
     observe_transition_pending,
@@ -26,12 +30,18 @@ from app.core.auth.security_events import (
     transition_dead_letter_hmac,
 )
 from app.core.auth.service import (
+    INTEGRITY_STATS_PAGE_SIZE,
     LoginGuard,
     RedisKeyValue,
     TransitionClaimResult,
     writer_lease_ms,
 )
 from app.settings import Settings, get_settings
+
+INTEGRITY_SCAN_CALLS_PER_TICK = 8
+INTEGRITY_HASH_PROCESS_BUDGET = 64
+INTEGRITY_SCAN_TIME_BUDGET_S = 1.0
+INTEGRITY_STATS_PAGES_PER_TICK = 4
 
 LOGGER = logging.getLogger(__name__)
 
@@ -94,6 +104,25 @@ class AuthTransitionReconciler:
         self.interval_s = interval_s
         self.build_version = build_version or APP_VERSION
         self._task: asyncio.Task[None] | None = None
+        self._reconcile_lock = asyncio.Lock()
+        self._clock = monotonic
+        self.scan_calls_per_tick = INTEGRITY_SCAN_CALLS_PER_TICK
+        self.hash_process_budget = INTEGRITY_HASH_PROCESS_BUDGET
+        self.scan_time_budget_s = INTEGRITY_SCAN_TIME_BUDGET_S
+        self.stats_pages_per_tick = INTEGRITY_STATS_PAGES_PER_TICK
+        self.stats_page_size = INTEGRITY_STATS_PAGE_SIZE
+        self._hash_scan_cursor = "0"
+        self._pending_scan_batch: deque[str] = deque()
+        self._scan_cycle_started_monotonic: float | None = None
+        self._last_completed_scan_monotonic: float | None = None
+        self._scan_cycles_completed = 0
+        self._storage_identity: str | None = None
+        self._open_stats_offset = 0
+        self._due_stats_offset = 0
+        self._stats_pending_acc = 0
+        self._stats_due_acc = 0
+        self._stats_open_done = False
+        self._stats_due_done = False
 
     def _guard(self) -> LoginGuard:
         store = self.store
@@ -120,6 +149,10 @@ class AuthTransitionReconciler:
     async def reconcile(self) -> int:
         """补写到期 transition，并修复 Hash/Due 反向不一致。"""
 
+        async with self._reconcile_lock:
+            return await self._reconcile_once()
+
+    async def _reconcile_once(self) -> int:
         guard = self._guard()
         count, oldest = await guard.due_stats()
         observe_transition_pending(count, float(oldest))
@@ -140,11 +173,7 @@ class AuthTransitionReconciler:
                 LOGGER.exception("auth transition reconcile failed")
                 continue
             settled += 1
-        pending_without_due, due_without_payload = await guard.integrity_stats()
-        observe_transition_integrity_gauges(
-            pending_without_due=pending_without_due,
-            due_without_payload=due_without_payload,
-        )
+        await self._refresh_integrity_stats(guard)
         return settled
 
     async def _settle(self, guard: LoginGuard, transition_id: str) -> None:
@@ -239,28 +268,193 @@ class AuthTransitionReconciler:
         except Exception:
             LOGGER.exception("auth transition orphan alert failed")
 
-    async def _repair_integrity(self, guard: LoginGuard) -> list[str]:
-        seen: set[str] = set()
-        repaired: list[str] = []
-        for transition_id in await guard.scan_open_transitions():
-            if transition_id in seen:
+    def reset_integrity_scan(self) -> None:
+        """存储实例或拓扑重置后，从游标 0 开始新的完整遍历。"""
+
+        self._hash_scan_cursor = "0"
+        self._pending_scan_batch.clear()
+        self._scan_cycle_started_monotonic = None
+        self._open_stats_offset = 0
+        self._due_stats_offset = 0
+        self._stats_pending_acc = 0
+        self._stats_due_acc = 0
+        self._stats_open_done = False
+        self._stats_due_done = False
+
+    @property
+    def scan_in_progress(self) -> bool:
+        return (
+            self._scan_cycle_started_monotonic is not None
+            or self._hash_scan_cursor != "0"
+            or bool(self._pending_scan_batch)
+        )
+
+    async def _maybe_reset_storage(self, guard: LoginGuard) -> None:
+        identity = await guard.storage_identity()
+        if self._storage_identity is None:
+            self._storage_identity = identity
+            return
+        if identity != self._storage_identity:
+            self._storage_identity = identity
+            self.reset_integrity_scan()
+
+    def _observe_scan(self, processed: int) -> None:
+        age = 0.0
+        if self._last_completed_scan_monotonic is not None:
+            age = max(0.0, self._clock() - self._last_completed_scan_monotonic)
+        observe_transition_integrity_scan(
+            cycles_completed=self._scan_cycles_completed,
+            in_progress=self.scan_in_progress,
+            processed=processed,
+            age_seconds=age,
+        )
+
+    def _mark_scan_cycle_started(self) -> None:
+        if self._scan_cycle_started_monotonic is None:
+            self._scan_cycle_started_monotonic = self._clock()
+
+    def _maybe_complete_scan_cycle(self) -> None:
+        if self._hash_scan_cursor != "0" or self._pending_scan_batch:
+            return
+        if self._scan_cycle_started_monotonic is None:
+            return
+        self._last_completed_scan_monotonic = self._clock()
+        self._scan_cycles_completed += 1
+        self._scan_cycle_started_monotonic = None
+
+    def _budget_exhausted(self, started: float, processed: int) -> bool:
+        return processed >= self.hash_process_budget or (
+            self._clock() - started
+        ) >= self.scan_time_budget_s
+
+    async def _drain_pending(
+        self,
+        guard: LoginGuard,
+        seen: set[str],
+        repaired: list[str],
+        *,
+        started: float,
+        processed: int,
+    ) -> int:
+        drained = 0
+        while self._pending_scan_batch:
+            if self._budget_exhausted(started, processed + drained):
+                break
+            key = self._pending_scan_batch.popleft()
+            drained += 1
+            transition_id = key.rsplit(":", 1)[-1]
+            if not transition_id or transition_id in seen:
                 continue
             seen.add(transition_id)
             if await self._repair_one(guard, transition_id):
                 repaired.append(transition_id)
-        cursor = "0"
-        for _ in range(8):
-            cursor, keys = await guard.scan_transition_hashes(cursor)
-            for key in keys:
-                transition_id = key.rsplit(":", 1)[-1]
+        return drained
+
+    async def _repair_integrity(self, guard: LoginGuard) -> list[str]:
+        """从上次游标继续反向 Hash 扫描；单轮有界，不丢未处理批次。"""
+
+        await self._maybe_reset_storage(guard)
+        seen: set[str] = set()
+        repaired: list[str] = []
+        started = self._clock()
+        processed = 0
+        try:
+            for transition_id in await guard.scan_open_transitions():
+                if self._budget_exhausted(started, processed):
+                    break
                 if transition_id in seen:
                     continue
                 seen.add(transition_id)
+                processed += 1
                 if await self._repair_one(guard, transition_id):
                     repaired.append(transition_id)
-            if cursor == "0":
-                break
+            had_pending = bool(self._pending_scan_batch)
+            if had_pending or self._hash_scan_cursor != "0":
+                self._mark_scan_cycle_started()
+            processed += await self._drain_pending(
+                guard, seen, repaired, started=started, processed=processed
+            )
+            if (
+                had_pending
+                and self._hash_scan_cursor == "0"
+                and not self._pending_scan_batch
+            ):
+                self._maybe_complete_scan_cycle()
+                return repaired
+            scan_calls = 0
+            while (
+                scan_calls < self.scan_calls_per_tick
+                and not self._budget_exhausted(started, processed)
+            ):
+                cursor = self._hash_scan_cursor
+                try:
+                    next_cursor, keys = await guard.scan_transition_hashes(cursor)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    LOGGER.exception("auth transition hash scan failed")
+                    break
+                scan_calls += 1
+                self._mark_scan_cycle_started()
+                self._pending_scan_batch.extend(str(key) for key in keys)
+                self._hash_scan_cursor = next_cursor
+                processed += await self._drain_pending(
+                    guard, seen, repaired, started=started, processed=processed
+                )
+                if next_cursor == "0":
+                    self._maybe_complete_scan_cycle()
+                    break
+            self._maybe_complete_scan_cycle()
+        finally:
+            self._observe_scan(processed)
         return repaired
+
+    async def _refresh_integrity_stats(self, guard: LoginGuard) -> None:
+        """有界翻页累积 Open/Due 统计，完整周期后才发布精确值。"""
+
+        pages = 0
+        try:
+            while pages < self.stats_pages_per_tick and not self._stats_open_done:
+                page_len, matches = await guard.integrity_stats_page(
+                    "open", self._open_stats_offset, self.stats_page_size
+                )
+                pages += 1
+                self._open_stats_offset += page_len
+                self._stats_pending_acc += matches
+                if page_len < self.stats_page_size:
+                    self._stats_open_done = True
+                    break
+            while pages < self.stats_pages_per_tick and not self._stats_due_done:
+                page_len, matches = await guard.integrity_stats_page(
+                    "due", self._due_stats_offset, self.stats_page_size
+                )
+                pages += 1
+                self._due_stats_offset += page_len
+                self._stats_due_acc += matches
+                if page_len < self.stats_page_size:
+                    self._stats_due_done = True
+                    break
+        except asyncio.CancelledError:
+            observe_transition_integrity_stats_complete(False)
+            raise
+        except Exception:
+            LOGGER.exception("auth transition integrity stats failed")
+            observe_transition_integrity_stats_complete(False)
+            return
+        if self._stats_open_done and self._stats_due_done:
+            observe_transition_integrity_gauges(
+                pending_without_due=self._stats_pending_acc,
+                due_without_payload=self._stats_due_acc,
+            )
+            observe_transition_integrity_stats_complete(True)
+            self._open_stats_offset = 0
+            self._due_stats_offset = 0
+            self._stats_pending_acc = 0
+            self._stats_due_acc = 0
+            self._stats_open_done = False
+            self._stats_due_done = False
+            return
+        observe_transition_integrity_stats_complete(False)
 
     async def _repair_one(self, guard: LoginGuard, transition_id: str) -> bool:
         try:
