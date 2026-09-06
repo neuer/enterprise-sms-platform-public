@@ -18,7 +18,10 @@ from sqlalchemy import text
 
 from app.core.apikey import require_api_key_pepper_keyring
 from app.core.audit_context import decode_audit_context_key
-from app.core.auth.session_policy_sync import AuthSessionPolicyReconciler
+from app.core.auth.session_policy_sync import (
+    AuthSessionPolicyReconciler,
+    get_auth_session_policy_runtime,
+)
 from app.core.bounded_executor import run_bounded
 from app.core.runtime_resources import database_engine, redis_client
 from app.services.crypto import CryptoService
@@ -227,7 +230,11 @@ class AuthSessionPolicyReadinessCheck:
         *,
         reconciler: AuthSessionPolicyReconciler | None = None,
     ) -> None:
-        self.reconciler = reconciler or AuthSessionPolicyReconciler(settings)
+        self.reconciler = (
+            reconciler
+            if reconciler is not None
+            else get_auth_session_policy_runtime(settings).reconciler
+        )
 
     async def __call__(self) -> None:
         await self.reconciler.ensure_ready()
