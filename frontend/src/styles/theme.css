@@ -1,3 +1,50 @@
+/* Noto Serif SC 只渲染固定品牌文案（登录/改密品牌名、首次改密标题、侧栏"青鸾"），
+   由 scripts/subset_fonts.py 从 @fontsource-variable/noto-serif-sc 分片实例化并合并
+   子集为 400/600 两个静态字重文件；字符清单见 src/assets/fonts/serif-subset-glyphs.txt。
+   fontTools 无法合并可变字体，故以静态实例替代；family 名保持不变，--serif 无需调整。 */
+@font-face {
+  font-family: "Noto Serif SC Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("../assets/fonts/noto-serif-sc-subset-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Noto Serif SC Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("../assets/fonts/noto-serif-sc-subset-600.woff2") format("woff2");
+}
+
+/* IBM Plex Mono 只取 latin woff2：fontsource 官方 css 会拖入 5 子集 × 2 格式
+   共 30 个文件；mono 只渲染 ASCII（batch_no、HMAC、掩码号码），CJK 本就回退
+   系统 monospace，latin 子集之外的字形没有使用场景。 */
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2") format("woff2");
+}
+
 :root {
   color-scheme: dark;
   --bg: #101814;

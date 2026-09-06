@@ -29,9 +29,12 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     const theme = source("src/styles/theme.css")
     const workspace = readWorkspaceCss()
 
-    expect(main).toContain("@fontsource/ibm-plex-mono/400.css")
-    expect(main).toContain("@fontsource/ibm-plex-mono/500.css")
-    expect(main).toContain("@fontsource/ibm-plex-mono/600.css")
+    // IBM Plex Mono 手写 @font-face 只取 latin woff2（theme.css 顶部），
+    // 不再引入 fontsource 官方按子集×格式拆分的 css。
+    expect(main).not.toContain("@fontsource/ibm-plex-mono")
+    expect(theme).toContain("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2")
+    expect(theme).toContain("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2")
+    expect(theme).toContain("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2")
     expect(html).toContain('<meta name="color-scheme" content="dark light" />')
     // 防闪烁内联脚本：样式加载前恢复主题偏好
     expect(html).toContain("documentElement.dataset.theme")
