@@ -8,8 +8,8 @@ import { getDashboard } from "./api/dashboard"
 import { usePolling } from "./composables/usePolling"
 import { getTheme, toggleTheme, type ThemeMode } from "./lib/theme"
 import { useApprovalBadgeStore } from "./stores/approvalBadge"
-import { invalidateSessionGeneration } from "./api/sessionGeneration"
-import { SESSION_CLEAR_SIGNAL_KEY, useSessionStore } from "./stores/session"
+import { applyIncomingSessionSignal, redirectToLoginIfCleared, runAppLogout } from "./api/sessionNavigation"
+import { useSessionStore } from "./stores/session"
 import egretMarkUrl from "./assets/brand/login-egret-watermark.png"
 
 // 日常改密弹窗只在认证壳内点开：异步加载，登录首屏不背 ElDialog/ElForm 的组件代码。
@@ -96,22 +96,18 @@ const visibleNavigation = computed(() =>
 )
 
 function handleUnauthorized(): void {
-  session.clearAllTabs()
-  if (route.path !== "/login") void router.replace("/login")
+  if (!session.isAuthenticated && route.path !== "/login") void router.replace("/login")
 }
 
 function handleReauthenticationRequired(): void {
-  session.clearAllTabs()
+  if (session.isAuthenticated) return
   ElMessage.warning("AD 会话已到期，请重新登录")
   if (route.path !== "/login") void router.replace("/login")
 }
 
 function handleSessionStorageSignal(event: StorageEvent): void {
-  if (event.key !== SESSION_CLEAR_SIGNAL_KEY) return
-  // 信号只含无凭据时间戳。先推进本页代际并取消在途 Refresh，再清状态。
-  invalidateSessionGeneration()
-  session.clear()
-  if (route.path !== "/login") void router.replace("/login")
+  const changed = applyIncomingSessionSignal(session, event)
+  if (changed && route.path !== "/login") void router.replace("/login")
 }
 
 function handleSessionRefreshed(): void {
@@ -202,13 +198,14 @@ onBeforeUnmount(() => {
 })
 
 async function logout() {
-  try {
-    await session.logout()
-  } catch {
-    ElMessage.warning("本地会话已清除，但服务端撤销未确认；请勿继续使用当前浏览器")
-  } finally {
-    await router.replace("/login")
-  }
+  await runAppLogout({
+    logout: () => session.logout(),
+    isAuthenticated: () => session.isAuthenticated,
+    redirectToLogin: () => redirectToLoginIfCleared(true, router),
+    onUnconfirmedRevoke: () => {
+      ElMessage.warning("本地会话已清除，但服务端撤销未确认；请勿继续使用当前浏览器")
+    },
+  })
 }
 
 async function handlePasswordChanged(): Promise<void> {

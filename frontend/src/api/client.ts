@@ -16,15 +16,19 @@ import {
 } from "./httpDeadline"
 import { detectSessionMode, withRefreshLock } from "./refreshLock"
 import {
+  captureSessionOperationOrigin,
   getSessionGeneration,
   invalidateSessionGeneration,
   isCurrentSessionGeneration,
+  isSessionOperationOriginCurrent,
+  type SessionOperationOrigin,
   trackSessionController,
 } from "./sessionGeneration"
 import {
   clearAccessSession,
   clearRefreshTabBinding,
   getAccessToken,
+  getSessionInstanceId,
   getSessionMode,
   getSessionUser,
   setAccessSession,
@@ -171,15 +175,19 @@ function classifyAuthDecision(status: number, body: unknown): AuthDecision {
   return "none"
 }
 
-function applyAuthDecision(decision: AuthDecision): void {
+function applyAuthDecision(decision: AuthDecision, origin: SessionOperationOrigin): void {
   if (decision === "account-locked" || decision === "context-changed") {
-    clearSession()
+    clearSession("unauthorized", origin)
   } else if (decision === "reauth-required") {
-    clearSession("reauth-required")
+    clearSession("reauth-required", origin)
   }
 }
 
-function clearSession(broadcast: "unauthorized" | "reauth-required" | "none" = "unauthorized"): void {
+function clearSession(
+  broadcast: "unauthorized" | "reauth-required" | "none" = "unauthorized",
+  origin?: SessionOperationOrigin,
+): boolean {
+  if (origin && !isSessionOperationOriginCurrent(origin)) return false
   invalidateSessionGeneration()
   cancelSessionRequests()
   clearAccessSession()
@@ -189,17 +197,19 @@ function clearSession(broadcast: "unauthorized" | "reauth-required" | "none" = "
   } else if (broadcast === "reauth-required") {
     window.dispatchEvent(new Event("sms:reauth-required"))
   }
+  return true
 }
 
 async function refreshSession(): Promise<RefreshResult> {
+  const origin = captureSessionOperationOrigin()
   if (detectSessionMode() === "access_only" || getSessionMode() === "access_only") {
-    clearSession()
+    clearSession("unauthorized", origin)
     return "unauthorized"
   }
   if (refreshInFlight) return refreshInFlight
   const epochAtRequest = getSessionGeneration()
   refreshInFlight = withRefreshLock(async () => {
-    if (!isCurrentSessionGeneration(epochAtRequest)) {
+    if (!isCurrentSessionGeneration(epochAtRequest) || origin.sessionInstanceId !== getSessionInstanceId()) {
       return "unauthorized"
     }
     const epoch = getSessionGeneration()
@@ -213,7 +223,7 @@ async function refreshSession(): Promise<RefreshResult> {
       } finally {
         releaseTrack()
       }
-      if (!isCurrentSessionGeneration(epoch)) {
+      if (!isCurrentSessionGeneration(epoch) || origin.sessionInstanceId !== getSessionInstanceId()) {
         return "unauthorized"
       }
       if (
@@ -224,22 +234,22 @@ async function refreshSession(): Promise<RefreshResult> {
         currentUser.identity_id > 0 &&
         (currentUser.account_id !== result.user.account_id || currentUser.identity_id !== result.user.identity_id)
       ) {
-        clearSession()
+        clearSession("unauthorized", origin)
         return "unauthorized"
       }
-      setAccessSession(result.token, result.user, result.session_mode)
+      setAccessSession(result.token, result.user, result.session_mode, getSessionInstanceId() ?? undefined)
       window.dispatchEvent(new Event("sms:session-refreshed"))
       return "refreshed"
     } catch (error) {
-      if (!isCurrentSessionGeneration(epoch)) {
+      if (!isCurrentSessionGeneration(epoch) || origin.sessionInstanceId !== getSessionInstanceId()) {
         return "unauthorized"
       }
       if (error instanceof AuthApiError && error.status === 401) {
         if (error.code === "AUTH_REAUTH_REQUIRED") {
-          clearSession("reauth-required")
+          clearSession("reauth-required", origin)
           return "reauth-required"
         }
-        clearSession()
+        clearSession("unauthorized", origin)
         return "unauthorized"
       }
       return "unavailable"
@@ -290,10 +300,11 @@ export async function authorizedJsonResult<T>(
   init: RequestInit,
   timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<AuthorizedJsonResult<T>> {
+  const origin = captureSessionOperationOrigin()
   const attemptedToken = getAccessToken()
   const first = await jsonAttempt<T>(url, init, timeoutMs)
   const decision = classifyAuthDecision(first.status, first.body)
-  applyAuthDecision(decision)
+  applyAuthDecision(decision, origin)
   if (decision !== "unauthorized") return first
   try {
     return await replayAfterUnauthorized(
@@ -355,10 +366,11 @@ export async function authorizedFetch(
   init: RequestInit,
   timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
+  const origin = captureSessionOperationOrigin()
   const attemptedToken = getAccessToken()
   const first = await rawAttempt(url, init, timeoutMs)
   const decision = classifyAuthDecision(first.response.status, first.body)
-  applyAuthDecision(decision)
+  applyAuthDecision(decision, origin)
   if (decision !== "unauthorized") return first.response
   try {
     const replayed = await replayAfterUnauthorized(
@@ -432,11 +444,12 @@ export async function authorizedBlob(
   init: RequestInit,
   timeoutMs: number = DOWNLOAD_TIMEOUT_MS,
 ): Promise<Blob> {
+  const origin = captureSessionOperationOrigin()
   const attemptedToken = getAccessToken()
   const first = await blobAttempt(url, init, timeoutMs)
   if (first.kind === "blob") return first.blob
   const decision = classifyAuthDecision(first.status, first.body)
-  applyAuthDecision(decision)
+  applyAuthDecision(decision, origin)
   if (decision !== "unauthorized") throwDownloadError(first.status, first.body)
   try {
     const replayed = await replayAfterUnauthorized(
