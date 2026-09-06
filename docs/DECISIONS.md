@@ -1539,15 +1539,13 @@
   `:v2` 环形槽，有效用量取 max 而非相加，只写 v2。首次放行把
   `v1-v2` 差额写入当前环形槽，避免只加新请求权重时 max(v1,v2增长)
   再放出一整份额度。v1 畸形、非 Hash 或
-  窗口内未来字段失败关闭。首次成功写入 `cost:mig` marker
-  （schema_version/cutover_epoch/generation/state=active），不 `DEL` 活动
-  v1。control ACL 增加 `+type`，不增加 `KEYS/FLUSH*`。
+  窗口内未来字段失败关闭。不 `DEL` 活动 v1。control ACL 增加 `+type`，
+  不增加 `KEYS/FLUSH*`。
 - 原因：直接切 v2 会把空环形槽当零，滚动升级时同一窗口获得第二份额度。
 - 影响：`app_ratelimit.py`、control Redis ACL、
   `docs/runbooks/app-rate-limit-cutover.md`。
-  本期不做新旧二进制混跑拓扑、Redis failover 旧主复活、readiness
-  `minimum_writer_version` 或新 Prometheus 家族。旧实例仍只写 v1，新实例
-  双读可继承；旧实例本身仍可能超发，需尽快抽干。
+- 修订：max 只表示「旧 writer 已冻结后的静态 v1 基线继承」，不是混跑时
+  两边独立增量的并集。业务请求不得把空 marker 写成 active；见 D115。
 
 ## D113 Transition Envelope 是 Canonical 事实，Due 索引不得单独存活
 
@@ -1564,3 +1562,23 @@
   `auth_transition_dead_letter`、auth Redis ACL（`+scan`/`+zscore`）、
   `docs/runbooks/auth-transition-audit.md`。
   本期不把首次信封再抄一份 PostgreSQL Outbox；ACK 成功前信封仍只在 Redis。
+
+## D115 成本限流 v2 必须先冻结旧 writer 再激活
+
+- 决策：采用 #676 方案 A。全局 marker
+  `ratelimit:cost:writer_cutover` 由受控切换入口按
+  `preparing → old_writers_fenced → waiting_window → active_v2`
+  （失败 `aborted_closed`）推进。记录 schema_version、单调 generation、
+  目标 writer 版本、fence_time、not_before、state、release_binding。
+  时钟只用 Redis TIME；`not_before = fence_time + 60s + 5s`。
+  支持的 test-update/sms-compose 先关发送入口，再用 compose/进程探测
+  隔离旧 writer；探测超时/错误/仍有旧进程则保持关闭。
+  `minimum_writer_version` 由启动包装器对照 `deploy/writer-protocol.json`
+  拒绝旧树，不假设旧二进制会读 Admission。激活后只写 v2；活动 v1 键
+  不删除。回滚必须再次冻结当前 writer 并排空窗口；finally 不得无条件
+  OPEN，也不得清掉无关的更严 CLOSED。
+- 原因：新旧 writer 各自增量时 max(v1,v2) 漏计，限额会被突破。
+- 影响：`app_ratelimit.py`、`app_ratelimit_cutover.py`、
+  `deploy/scripts/writer_cutover.py`、`test_update_apply.py`、
+  `test_update_manager.py`、`deploy/sms-compose`、
+  `docs/runbooks/app-rate-limit-cutover.md`。

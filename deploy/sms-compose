@@ -90,6 +90,7 @@ VENDOR_RUNTIME_RESET="$CONTROL_ROOT/deploy/scripts/vendor_runtime_reset.py"
 VENDOR_CONTROL_RELOAD="$CONTROL_ROOT/deploy/scripts/vendor_control_reload.py"
 TEST_UPDATE_MANAGER="$CONTROL_ROOT/deploy/scripts/test_update_manager.py"
 TEST_UPDATE_PROMOTE="$CONTROL_ROOT/deploy/scripts/test_update_promote.py"
+WRITER_CUTOVER="$CONTROL_ROOT/deploy/scripts/writer_cutover.py"
 PUBLIC_CUTOVER_BOOTSTRAP="$CONTROL_ROOT/deploy/scripts/public_cutover_bootstrap.py"
 PUBLIC_BASELINE_MANAGER=""
 STORAGE_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/storage_preflight.py"
@@ -106,6 +107,7 @@ if [[ "$WRAPPER_PATH" == "$HOST_CONTROL_ROOT/sms-compose-bootstrap" ]]; then
   LOCK_RUNNER="$HOST_CONTROL_ROOT/run_with_lifecycle_lock.py"
   TEST_UPDATE_MANAGER="$HOST_CONTROL_ROOT/test_update_manager.py"
   TEST_UPDATE_PROMOTE="$HOST_CONTROL_ROOT/test_update_promote.py"
+  WRITER_CUTOVER="$HOST_CONTROL_ROOT/writer_cutover.py"
   PUBLIC_CUTOVER_BOOTSTRAP="$HOST_CONTROL_ROOT/public_cutover_bootstrap.py"
   PUBLIC_BASELINE_MANAGER="$HOST_CONTROL_ROOT/public_baseline_manager.py"
 fi
@@ -258,7 +260,7 @@ usage() {
   echo "production root units only: host-lifecycle backup|drill|backup-status; security-report" >&2
   echo "development root unit only: vendor-agent-preflight" >&2
   echo "development only: vendor-test bootstrap|activate|pause|resume|rotate|recover-rotation|reset-runtime|reload-agent|status" >&2
-  echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|recover-rebaseline|recover-rebaseline-prepare|status|capability|promote origin/BRANCH COMMIT; cp [args...]" >&2
+  echo "development only: test-update bootstrap-public-cutover|prepare|apply|verify|writer-cutover|recover-rebaseline|recover-rebaseline-prepare|status|capability|promote origin/BRANCH COMMIT; cp [args...]" >&2
   echo "host bootstrap only: test-update baseline-prepare|baseline-apply|baseline-verify|baseline-status|baseline-finalize|baseline-cleanup|recover-rebaseline-verify" >&2
   echo "development only: secure-access start|status|stop (test-only HTTPS transport)" >&2
   echo "development only: cloudflare-tunnel install|configure --hostname HOST|install-token|start|status|verify|stop" >&2
@@ -843,6 +845,7 @@ recreate_backend_services() {
   if [[ "$SECRETS_MODE" == production ]]; then
     build_guard=(--no-build)
   fi
+  assert_writer_launch_allowed || return $?
   "${COMPOSE[@]}" up -d "${build_guard[@]}" --no-deps --force-recreate \
     --wait --wait-timeout "$ROTATE_WAIT_TIMEOUT" \
     "${BACKEND_SERVICES[@]}"
@@ -884,6 +887,16 @@ rotate_backend() {
   return "$rotate_status"
 }
 
+assert_writer_launch_allowed() {
+  local environment=development
+  if [[ "$SECRETS_MODE" == production ]]; then
+    environment=production
+  fi
+  "${CONTROL_PYTHON[@]}" "$WRITER_CUTOVER" check-launch \
+    --root "$ROOT" \
+    --environment "$environment"
+}
+
 start_stack() {
   local external_tls_mode trusted_proxy_cidrs trusted_proxy_conf
   local build_guard=()
@@ -904,6 +917,7 @@ start_stack() {
     --cidrs "$trusted_proxy_cidrs" \
     --output "$trusted_proxy_conf"
   "${COMPOSE[@]}" config --quiet
+  assert_writer_launch_allowed || return $?
   "${COMPOSE[@]}" up "${build_guard[@]}" "$@"
 }
 
@@ -1514,6 +1528,10 @@ run_locked_test_update() {
     run_public_baseline_manager recover-verify
     return
   fi
+  if [[ "$command" == writer-cutover ]]; then
+    "${CONTROL_PYTHON[@]}" "$WRITER_CUTOVER" status --root "$ROOT"
+    return
+  fi
   [[ "$command" == prepare || "$command" == apply || "$command" == verify ||
       "$command" == recover-rebaseline ||
       "$command" == recover-rebaseline-prepare ||
@@ -1546,6 +1564,10 @@ dispatch_test_update() {
       run_test_update_manager "$command"
       ;;
     bootstrap-public-cutover | prepare | apply | verify | recover-rebaseline)
+      [[ $# -eq 0 ]] || return 2
+      run_with_lifecycle_lock test-update "$command"
+      ;;
+    writer-cutover)
       [[ $# -eq 0 ]] || return 2
       run_with_lifecycle_lock test-update "$command"
       ;;

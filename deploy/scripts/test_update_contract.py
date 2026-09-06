@@ -118,6 +118,7 @@ HOST_CONTROL_PATHS = frozenset(
         "deploy/scripts/test_update_promote.py",
         "deploy/scripts/test_update_store.py",
         "deploy/scripts/test_update_verify.py",
+        "deploy/scripts/writer_cutover.py",
         "deploy/scripts/protected_path_policy.py",
         "scripts/check_public_readiness.py",
         "scripts/export_public_snapshot.py",
@@ -438,6 +439,7 @@ _INFRA_HIGH_RISK_EXACT = frozenset(
         "deploy/scripts/collect_security_daily_evidence.py",
         "deploy/systemd/security-report-collector.service",
         "deploy/systemd/security-report-collector.timer",
+        "deploy/writer-protocol.json",
     }
 )
 _PUBLIC_CUTOVER_SAFE_NON_RUNTIME_EXACT = frozenset(

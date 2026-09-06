@@ -955,6 +955,9 @@ def test_host_no_migration_rollback_restores_old_images_without_data_commands(
         return ""
 
     operations._command = command  # type: ignore[method-assign]
+    operations.run_writer_cutover = (  # type: ignore[method-assign]
+        lambda update_id, rollback=False: calls.append(("writer_cutover", update_id, rollback))
+    )
 
     actual = operations.rollback_no_migration("backend-safe", update_id)
 

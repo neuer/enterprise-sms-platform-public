@@ -1679,6 +1679,14 @@ def test_every_host_control_asset_is_high_risk_outside_cutover(path: str) -> Non
     assert change.high_risk_paths == (path,)
 
 
+def test_writer_protocol_metadata_is_high_risk() -> None:
+    change = classify_changed_paths(["deploy/writer-protocol.json"])
+
+    assert change.risk == "high-risk"
+    assert change.components == frozenset({"api"})
+    assert change.high_risk_paths == ("deploy/writer-protocol.json",)
+
+
 def test_public_cutover_accepts_the_complete_host_control_asset_set() -> None:
     change = classify_public_cutover_paths(
         [
