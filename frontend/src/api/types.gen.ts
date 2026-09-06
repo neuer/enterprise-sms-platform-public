@@ -806,7 +806,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["LoginSuccess"];
+                        "application/json": components["schemas"]["RefreshLoginSuccess"];
                     };
                 };
                 /** @description refresh 令牌无效、过期、已使用，或 AD family 超期要求 AUTH_REAUTH_REQUIRED；所有 401 均删除 refresh Cookie */
@@ -899,12 +899,16 @@ export interface paths {
          * @description 必须显式提交 provider_code，服务端只调用该认证源且不回退。
          *     账号锁与来源 IP 限流由所有认证源共享；错误提示不区分用户是否存在。
          *     本地临时密码验证成功只返回十分钟单用途改密令牌，不签发访问 JWT。
-         *     登录成功将 refresh 写入 HttpOnly Cookie（path=/api/v1/web/auth，SameSite=Lax，
-         *     生产 Secure），JSON 只返回 Bearer access token。
-         *     成功签发新会话前，若请求携带既有 sms_refresh_token Cookie，先吊销该 Cookie
-         *     family（与登出共用 Redis family 吊销），再签发新 family；过期或无效 Cookie
-         *     忽略。登录失败或仅返回首次改密令牌时不吊销。被吊销 family 的后续 refresh
-         *     按无效令牌 401，且不写 Set-Cookie。
+         *     登录必须显式提交 session_mode。Web Locks 可用时为 refresh：refresh 写入
+         *     HttpOnly Cookie（path=/api/v1/web/auth，SameSite=Lax，生产 Secure），JSON
+         *     只返回 Bearer access token，且必须携带 tab_id。Web Locks 不可用时为
+         *     access_only：只签发短期 Access，不签发 Refresh、不创建 Family、不要求
+         *     tab_id、不写 Refresh Cookie，响应 session_mode=access_only。成功签发前若
+         *     请求携带既有 sms_refresh_token Cookie，先吊销该 Cookie family；access_only
+         *     还会删除旧 Cookie。撤销存储故障失败关闭。过期或无效 Cookie 忽略。登录失败
+         *     或仅返回首次改密令牌时不吊销。Access-Only 不能经 /auth/refresh 或补交
+         *     tab_id 升级，必须在支持 Web Locks 的客户端重新登录。被吊销 family 的后续
+         *     refresh 按无效令牌 401。
          */
         post: {
             parameters: {
@@ -927,7 +931,7 @@ export interface paths {
                         [name: string]: unknown;
                     };
                     content: {
-                        "application/json": components["schemas"]["LoginSuccess"] | components["schemas"]["PasswordChangeRequired"];
+                        "application/json": components["schemas"]["RefreshLoginSuccess"] | components["schemas"]["AccessOnlyLoginSuccess"] | components["schemas"]["PasswordChangeRequired"];
                     };
                 };
                 /** @description 用户名或密码错误（UNAUTHORIZED统一话术） */
@@ -6729,8 +6733,13 @@ export interface components {
             provider_code: string;
             username: string;
             password: string;
-            /** @description 当前浏览器标签页生成的随机非凭据绑定值 */
-            tab_id: string;
+            /**
+             * @description 官方前端按 navigator.locks.request 能力检测选择，不用 UA 猜测
+             * @enum {string}
+             */
+            session_mode: "refresh" | "access_only";
+            /** @description refresh 必须提供；access_only 必须省略或为 null，禁止事后补参升级 */
+            tab_id?: string | null;
         };
         AuthUser: {
             account_id: number;
@@ -6742,7 +6751,9 @@ export interface components {
             /** @enum {string} */
             role: "admin" | "approver" | "operator" | "viewer";
         };
-        LoginSuccess: {
+        RefreshLoginSuccess: {
+            /** @constant */
+            session_mode: "refresh";
             /** @description 15 分钟 Bearer access JWT */
             token: string;
             /** @description Access Token 实际剩余秒数，AD 会话会被截断到绝对重新认证截止 */
@@ -6751,6 +6762,17 @@ export interface components {
             refresh_expires_in: number;
             user: components["schemas"]["AuthUser"];
         };
+        AccessOnlyLoginSuccess: {
+            /** @constant */
+            session_mode: "access_only";
+            /** @description 15 分钟 Bearer access JWT，无 Refresh 能力 */
+            token: string;
+            /** @description Access Token 实际剩余秒数，AD 会话会被截断到绝对重新认证截止 */
+            expires_in: number;
+            user: components["schemas"]["AuthUser"];
+        };
+        /** @description 兼容别名；登录成功响应是 RefreshLoginSuccess 或 AccessOnlyLoginSuccess */
+        LoginSuccess: components["schemas"]["RefreshLoginSuccess"] | components["schemas"]["AccessOnlyLoginSuccess"];
         RefreshRequest: {
             /** @description 必须与 refresh family 登录时绑定的标签页一致 */
             tab_id: string;
