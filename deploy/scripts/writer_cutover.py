@@ -231,6 +231,9 @@ class CliRedis:
 
     def hgetall(self, key: str) -> dict[str, str]:
         raw = self.eval_impl.run([*self.prefix, "HGETALL", key], timeout_s=15)
+        # redis-cli --raw 对不存在的 Hash 输出单独换行；不能删掉真实字段中的空值。
+        if raw in {"", "\n", "\r\n"}:
+            return {}
         # 保留空行：greenfield bootstrap 的 release_binding 就是空字符串。
         values = list(raw.splitlines())
         if len(values) % 2 != 0:

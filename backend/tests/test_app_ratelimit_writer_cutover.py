@@ -755,6 +755,20 @@ def test_writer_cutover_bootstrap_requires_compose() -> None:
     assert main(["bootstrap", "--root", str(REPO_ROOT)]) == 2
 
 
+@pytest.mark.parametrize("raw", ["", "\n", "\r\n"])
+def test_cli_redis_hgetall_accepts_missing_marker(
+    monkeypatch: pytest.MonkeyPatch, raw: str,
+) -> None:
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "deploy" / "scripts"))
+    from writer_cutover import CliRedis
+
+    class Runner:
+        def run(self, argv: list[str], *, timeout_s: int = 30) -> str:
+            return raw
+
+    assert CliRedis(Runner()).hgetall("ratelimit:cost:writer_cutover") == {}
+
+
 def test_cli_redis_hgetall_keeps_empty_release_binding() -> None:
     import sys
 
