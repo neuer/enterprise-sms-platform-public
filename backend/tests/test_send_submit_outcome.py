@@ -31,6 +31,7 @@ from app.tasks.send import (
 from app.vendor.codes import SAFE_TO_FAILOVER_CODES, policy_for
 from app.vendor.routing import PRIMARY_VENDOR_ID, VendorHealth, VendorRouter
 from app.vendor.zhihui import VendorApiError, VendorTransportError
+from tests.vendor_failover_r5_support import two_vendor_registry
 
 
 @pytest.mark.asyncio
@@ -153,6 +154,7 @@ async def test_pre_invoke_unavailability_uses_secondary_without_calling_primary(
         store,
         FakeBucket(),
         gateways={PRIMARY_VENDOR_ID: primary, "secondary": secondary},
+        registry=two_vendor_registry(),
         router=VendorRouter((PRIMARY_VENDOR_ID, "secondary")),
         health=lambda: _health(False, True),
     ).submit(chunk(), lane="realtime")
@@ -173,6 +175,7 @@ async def test_safe_reject_failsover_to_secondary() -> None:
         store,
         FakeBucket(),
         gateways={PRIMARY_VENDOR_ID: primary, "secondary": secondary},
+        registry=two_vendor_registry(),
         router=VendorRouter((PRIMARY_VENDOR_ID, "secondary")),
         health=lambda: _health(True, True),
     ).submit(chunk(), lane="realtime")

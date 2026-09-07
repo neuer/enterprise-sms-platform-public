@@ -19,6 +19,7 @@ from app.tasks.send import (
 from app.vendor.failover import InvokeAuthorization, InvokeClaim, InvokeClaimKind, NextAction
 from app.vendor.routing import PRIMARY_VENDOR_ID, VendorAttempt, VendorRouter
 from app.vendor.zhihui import VendorApiError, VendorProtocolError, VendorTransportError
+from tests.vendor_failover_r5_support import two_vendor_registry
 
 
 class FakeGateway:
@@ -210,6 +211,8 @@ class FakeStore:
         previous_attempt_id: int,
         expected_next_vendor: str,
         expected_route_policy_version: int,
+        segments: int = 1,
+        enforce_live_test_budget: bool = False,
     ) -> InvokeClaim:
         if self.claim_gate is not None:
             await self.claim_gate.wait()
@@ -402,7 +405,7 @@ async def test_stale_control_state_blocks_before_claim_vendor_and_uncertain() ->
 
 
 @pytest.mark.asyncio
-async def test_state_that_stales_after_claim_is_released_retryable_not_uncertain() -> None:
+async def test_state_that_stales_after_token_is_paused_before_claim() -> None:
     gateway = FakeGateway(["must-not-send"])
     store = FakeStore()
     bucket = FakeBucket()
@@ -414,18 +417,15 @@ async def test_state_that_stales_after_claim_is_released_retryable_not_uncertain
         control_guard=ControlGuard([True, False]),
     ).submit(chunk(), lane="realtime")
 
-    assert store.events == [
-        ("submitting", 3),
-        ("control_pause", None),
-        ("control_release", 3),
-    ]
+    assert store.events == [("control_pause", None)]
+    assert store.claim_counts == []
     assert bucket.refund_epochs == [1000]
     assert gateway.calls == 0
     assert not any(event[0] == "uncertain" for event in store.events)
 
 
 @pytest.mark.asyncio
-async def test_pause_persistence_failure_still_releases_claim_and_refunds_token() -> None:
+async def test_pause_persistence_failure_still_refunds_unused_token() -> None:
     class FailingPauseStore(FakeStore):
         async def pause_control_agent_stale(self) -> None:
             self.events.append(("control_pause", None))
@@ -443,11 +443,8 @@ async def test_pause_persistence_failure_still_releases_claim_and_refunds_token(
             control_guard=ControlGuard([True, False]),
         ).submit(chunk(), lane="realtime")
 
-    assert store.events == [
-        ("submitting", 3),
-        ("control_pause", None),
-        ("control_release", 3),
-    ]
+    assert store.events == [("control_pause", None)]
+    assert store.claim_counts == []
     assert bucket.refund_epochs == [1000]
     assert gateway.calls == 0
     assert not any(event[0] == "uncertain" for event in store.events)
@@ -491,6 +488,10 @@ async def test_live_worker_rejects_recipient_disabled_in_postgres_before_vendor(
     store = FakeStore()
     bucket = FakeBucket()
 
+    async def reload(_chunk_id: int) -> ChunkPayload:
+        return denied
+
+    store.refresh_invoke_payload = reload
     await SendWorker(
         gateway,
         store,
@@ -747,7 +748,7 @@ async def test_backoff_retry_rechecks_dynamic_allowlist_before_next_vendor_call(
     class DenySecondGuard(AllowGuard):
         def require_allowed(self, phones: tuple[str, ...]) -> None:
             self.calls.append(phones)
-            if len(self.calls) == 2:
+            if len(self.calls) >= 4:
                 raise VendorTestRecipientDenied(1)
 
     async def no_wait(_seconds: float) -> None:
@@ -778,7 +779,7 @@ async def test_backoff_retry_rechecks_dynamic_allowlist_before_next_vendor_call(
     )
     await worker.submit(retried, lane="realtime")
 
-    assert len(guard.calls) == 2
+    assert len(guard.calls) == 4
     assert gateway.calls == 1
     assert public_events(store) == [
         ("submitting", 3),
@@ -1255,6 +1256,7 @@ async def test_safe_failover_does_not_refund_token_after_invoke() -> None:
         primary,
         store,
         bucket,
+        registry=two_vendor_registry(),
         router=VendorRouter((PRIMARY_VENDOR_ID, "secondary")),
         health=health,
         gateways={PRIMARY_VENDOR_ID: primary, "secondary": secondary},

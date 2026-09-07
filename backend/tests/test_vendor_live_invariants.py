@@ -25,7 +25,8 @@ def test_static_gate_covers_all_live_test_safety_boundaries() -> None:
     for token in (
         "vendor_test_console_only=settings.vendor_live_test",
         "require_allowed(request.mobiles)",
-        "_guard_chunk(chunk)",
+        "_guard_chunk(chunk, persist_rejection=not authorized)",
+        "chunk, lane, vendor_id, authorized=True",
         "LIVE_TEST_DAILY_SEGMENT_LIMIT",
         "DAILY_SEGMENT_LIMIT",
         "pause_queues=True",

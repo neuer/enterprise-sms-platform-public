@@ -663,7 +663,7 @@ async def test_claim_reserves_segments_and_marks_submitting_in_one_transaction(
     store = chunk_store()
     connection = SequenceConnection(
         [
-            FakeResult({"id": 7, "batch_id": 11}),
+            FakeResult({"id": 7, "batch_id": 11, "vendor_attempt_count": 2}),
             FakeResult(),
             FakeResult(
                 {
@@ -672,9 +672,9 @@ async def test_claim_reserves_segments_and_marks_submitting_in_one_transaction(
                     "uncertain_segments": 10,
                 }
             ),
-            FakeResult(scalar=3),
             FakeResult(),
             FakeResult(),
+            FakeResult(scalar=7),
             FakeResult(),
         ]
     )
@@ -696,15 +696,15 @@ async def test_claim_reserves_segments_and_marks_submitting_in_one_transaction(
     assert "FOR UPDATE" in connection.calls[0][0]
     assert "vendor_test_daily_usage" in connection.calls[1][0]
     assert "FOR UPDATE" in connection.calls[2][0]
-    assert "status='submitting'" in connection.calls[3][0]
-    assert "vendor_attempt_count=vendor_attempt_count+1" in connection.calls[3][0]
-    assert connection.calls[4][1] == {
+    assert "status='submitting'" in connection.calls[5][0]
+    assert "vendor_attempt_count=vendor_attempt_count+1" in connection.calls[5][0]
+    assert connection.calls[3][1] == {
         "usage_date": datetime(2026, 7, 16, 8, tzinfo=UTC).date(),
         "chunk_id": 7,
         "attempt_no": 3,
         "segments": 5,
     }
-    assert "in_flight_segments=in_flight_segments+:segments" in connection.calls[5][0]
+    assert "in_flight_segments=in_flight_segments+:segments" in connection.calls[4][0]
     assert "UPDATE sms_batch" in connection.calls[6][0]
 
 
@@ -715,7 +715,7 @@ async def test_claim_at_daily_limit_leaves_chunk_sendable(
     store = chunk_store()
     connection = SequenceConnection(
         [
-            FakeResult({"id": 7, "batch_id": 11}),
+            FakeResult({"id": 7, "batch_id": 11, "vendor_attempt_count": 2}),
             FakeResult(),
             FakeResult(
                 {
@@ -760,7 +760,7 @@ class ConcurrentBudgetConnection:
         sql = str(statement)
         values = cast(dict[str, object], params or {})
         if "SELECT c.id,c.batch_id" in sql:
-            return FakeResult({"id": values["id"], "batch_id": 11})
+            return FakeResult({"id": values["id"], "batch_id": 11, "vendor_attempt_count": 0})
         if "SELECT in_flight_segments" in sql:
             return FakeResult(
                 {
@@ -769,7 +769,7 @@ class ConcurrentBudgetConnection:
                     "uncertain_segments": 0,
                 }
             )
-        if "RETURNING vendor_attempt_count" in sql:
+        if "UPDATE sms_chunk SET status='submitting'" in sql:
             return FakeResult(scalar=1)
         if "in_flight_segments=in_flight_segments+:segments" in sql:
             self.state.in_flight += int(values["segments"])
@@ -1457,7 +1457,7 @@ async def test_guard_denial_fails_unclaimed_chunk_without_budget_attempt(
     await store.reject_disallowed_recipient(7, 1)
 
     statements = [sql for sql, _params in connection.calls]
-    assert "status IN ('pending','retrying')" in statements[0]
+    assert "status IN ('pending','retrying','failover_pending')" in statements[0]
     assert "status='failed'" in statements[2]
     assert "vendor_test_send_attempt" not in " ".join(statements)
     assert connection.calls[2][1] == {
@@ -1498,7 +1498,7 @@ async def test_daily_limit_defers_unclaimed_chunk_until_reset(
     await store.defer_daily_limit(7, "bulk", reset_at)
 
     sql, params = connection.calls[0]
-    assert "status IN ('pending','retrying')" in sql
+    assert "status IN ('pending','retrying','failover_pending')" in sql
     assert "retry_not_before=:reset_at" in sql
     assert params == {"id": 7, "reset_at": reset_at}
     assert enqueued == [("app.tasks.send.process_chunk", [7], "bulk", 60)]

@@ -48,6 +48,15 @@ Provider、应用 Key 或 `sys_config` 写权限。
 非载荷列，`sms_send` 与 `sms_accept` 持有该视图 SELECT，用于生成脱敏审计摘要；
 审计主表的 `before_val/after_val` 载荷仍不对任何运行 worker 开放。
 
+历史人工重发核验复用视图 `uncertain_resend_creation_evidence`（迁移 0110），仅向
+`sms_send` 暴露带 `uncertain_resend=true` 标记的内部 `message_send` 审计的
+`actor/object_id`。恢复仍需核对原请求指纹、完整批准上下文和子批次来源；视图不暴露审计载荷。
+同一内部受理链路补充 `idempotency_claim` 的 SELECT/INSERT/UPDATE、
+`idempotency_record` 的 INSERT 和对应两个序列权限；不授予 Claim DELETE/TRUNCATE。
+内部重发审计沿用 realtime worker 已挂载的签名域，仅允许 `sms_send/realtime` 的
+`system_resend:<resolution_id>` 写 `message_send`。数据库同时核验可信 child 关系、
+批准状态及 generation；原有审计 HMAC 与不可修改权限保持生效。
+
 自动日报任务运行在 bulk worker（`sms_send`），因此 `sms_send` 除
 `security_daily_report` 外，还持有 `security_daily_delivery_request` 的
 SELECT/INSERT/UPDATE（迁移 0041 起报告表、0051 起投递请求表），用于生成记录并

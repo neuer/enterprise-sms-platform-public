@@ -565,7 +565,7 @@ def test_ad_reauthentication_required_clears_refresh_cookie() -> None:
     assert "Max-Age=0" in cookie
 
 
-def test_business_api_returns_auth_reauth_required_and_clears_cookie() -> None:
+def test_business_api_returns_auth_reauth_required_without_cookie_mutation() -> None:
     class ExpiredAccessFacade(FakeAuthFacade):
         async def verify(self, token: str) -> object:
             del token
@@ -586,12 +586,11 @@ def test_business_api_returns_auth_reauth_required_and_clears_cookie() -> None:
 
     assert expired.status_code == 401
     assert expired.json()["code"] == "AUTH_REAUTH_REQUIRED"
-    cookie = expired.headers.get("set-cookie", "")
-    assert "sms_refresh_token=" in cookie
-    assert "Max-Age=0" in cookie
+    assert expired.headers["cache-control"] == "no-store"
+    assert expired.headers.get_list("set-cookie") == []
 
 
-def test_password_change_auth_context_changed_clears_refresh_cookie() -> None:
+def test_password_change_auth_context_changed_without_cookie_mutation() -> None:
     class ChangedFacade(FakeAuthFacade):
         async def change_password(
             self,
@@ -619,9 +618,8 @@ def test_password_change_auth_context_changed_clears_refresh_cookie() -> None:
 
     assert changed.status_code == 409
     assert changed.json()["code"] == "AUTH_CONTEXT_CHANGED"
-    cookie = changed.headers.get("set-cookie", "")
-    assert "sms_refresh_token=" in cookie
-    assert "Max-Age=0" in cookie
+    assert changed.headers["cache-control"] == "no-store"
+    assert changed.headers.get_list("set-cookie") == []
 
 
 def _real_login_facade() -> AuthFacade:

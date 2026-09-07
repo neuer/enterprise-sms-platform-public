@@ -25,11 +25,10 @@ async def test_token_bucket_passes_lane_capacity_and_reservation_to_one_lua_call
         lane="bulk",
         vendor_qps=5,
         reserved_realtime_qps=2,
-        now_ms=12345,
     ) == 12000
     call = redis.calls[0]
     assert call[1:3] == (1, "vendor:tokens")
-    assert call[3:] == ("bulk", "5", "2", "12345")
+    assert call[3:] == ("bulk", "5", "2")
 
 
 @pytest.mark.asyncio
@@ -75,7 +74,6 @@ async def test_rejected_acquire_returns_no_lease_for_refund() -> None:
             lane="realtime",
             vendor_qps=5,
             reserved_realtime_qps=2,
-            now_ms=13000,
         )
         is None
     )

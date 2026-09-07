@@ -14,6 +14,7 @@ import pytest
 
 import app.core.runtime_resources as runtime_resources
 from app.core.apikey import ApiAppContext
+from app.core.auth.accounts import ApplicationPrincipal
 from app.services.batch_query import BatchAccessScope
 from app.services.category import policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
@@ -157,7 +158,7 @@ async def test_resend_uses_stable_cross_actor_action_scope() -> None:
             )
 
     request = await ResendService(Repository(), crypto).build_request(
-        "original-1", BatchAccessScope(app_id=7)
+        "original-1", BatchAccessScope(app_id=7), actor=ApplicationPrincipal(7, "app", "平台部")
     )
 
     assert request.biz_id == "failed-recipients-v1"
