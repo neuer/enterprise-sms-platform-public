@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from types import SimpleNamespace
 from typing import Any, cast
@@ -906,7 +907,7 @@ async def test_worker_crash_recovers_same_child(
             {"id": resolution_id},
         )
     assert len(rows) == 1
-    assert rows[0]["recovered"] is True
+    assert rows[0]["recovered"] is False  # 关系已与创建事务原子提交
     assert int(usage) == 1
 
 
@@ -1173,3 +1174,433 @@ async def test_late_evidence_and_callback_preserved(
     assert chunk["status"] == "unknown_terminal"
     assert chunk["late"] is True
     assert int(callbacks) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("same_app", [True, False])
+async def test_ordinary_legacy_named_candidate_is_not_claimed(
+    env: Any, monkeypatch: pytest.MonkeyPatch, same_app: bool
+) -> None:
+    from app.services.pipeline import SendRequest
+
+    source_app = await _insert_api_app(env.engine, env.nonce)
+    _source, chunk_id = await _insert_unknown(
+        env.engine,
+        _crypto(),
+        channel="api",
+        dept="运营一部",
+        app_id=source_app,
+        phone=_phone(env.nonce, 100),
+    )
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    app_id = source_app if same_app else await _insert_api_app(env.engine, env.nonce + "other")
+    app = ApiAppContext(
+        app_id,
+        f"system_resend:{resolution_id}",
+        "运营一部",
+        frozenset({"notice"}),
+        daily_quota=1000,
+    )
+    pipeline = _pipeline(env.store, env.ledger, env.redis)
+    # 实际普通 Pipeline 创建；仅夹具把幂等记录移入旧版本可污染的命名空间。
+    from app.core.auth.accounts import ApplicationPrincipal
+
+    with (
+        audit_principal_scope(ApplicationPrincipal(app.app_id, app.name, app.dept)),
+        correlation_scope(uuid4()),
+    ):
+        result = await pipeline.accept(
+            app,
+            SendRequest(
+                "notice",
+                (_phone(env.nonce, 101),),
+                content="普通通知",
+                biz_id=f"manual-resend:{resolution_id}:1",
+            ),
+        )
+    async with env.engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE idempotency_record SET scope_kind='uncertain-resend',scope_id=:scope "
+                "WHERE biz_id=:biz AND app_id=:app"
+            ),
+            {"scope": str(resolution_id), "biz": f"manual-resend:{resolution_id}:1", "app": app_id},
+        )
+    with pytest.raises(UncertainResolutionConflict):
+        await _apply(env, resolution_id, pipeline, monkeypatch)
+    async with env.engine.connect() as connection:
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM sms_uncertain_child WHERE resolution_id=:id"),
+                {"id": resolution_id},
+            )
+            == 0
+        )
+        assert (
+            await connection.scalar(
+                text("SELECT state FROM sms_uncertain_resolution WHERE id=:id"),
+                {"id": resolution_id},
+            )
+            == "manual_intervention_required"
+        )
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM sms_batch WHERE batch_no=:no"), {"no": result.batch_no}
+            )
+            == 1
+        )
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM sms_batch WHERE biz_id=:biz"),
+                {"biz": f"manual-resend:{resolution_id}:1"},
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("when", ["before", "after"])
+async def test_child_relation_failure_rolls_back_entire_acceptance(
+    env: Any, monkeypatch: pytest.MonkeyPatch, when: str
+) -> None:
+    import app.services.uncertain_resolution as resolution_module
+
+    _source, chunk_id = await _insert_unknown(
+        env.engine,
+        _crypto(),
+        channel="web",
+        dept="运营一部",
+        app_id=None,
+        phone=_phone(env.nonce, 102),
+    )
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    original = resolution_module.bind_uncertain_child
+
+    async def fail(*args: Any, **kwargs: Any) -> None:
+        if when == "after":
+            await original(*args, **kwargs)
+        raise RuntimeError("synthetic relation failure")
+
+    monkeypatch.setattr(resolution_module, "bind_uncertain_child", fail)
+    with pytest.raises(RuntimeError, match="synthetic relation failure"):
+        await _apply(env, resolution_id, _pipeline(env.store, env.ledger, env.redis), monkeypatch)
+    async with env.engine.connect() as connection:
+        params = {
+            "id": resolution_id,
+            "scope": str(resolution_id),
+            "biz": f"manual-resend:{resolution_id}:1",
+        }
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM sms_uncertain_child WHERE resolution_id=:id"), params
+            )
+            == 0
+        )
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM sms_batch WHERE biz_id=:biz"), params
+            )
+            == 0
+        )
+        assert (
+            await connection.scalar(
+                text(
+                    "SELECT count(*) FROM idempotency_record WHERE scope_kind='uncertain-resend' "
+                    "AND scope_id=:scope"
+                ),
+                params,
+            )
+            == 0
+        )
+        assert (
+            await connection.scalar(
+                text(
+                    "SELECT count(*) FROM idempotency_claim WHERE scope_kind='uncertain-resend' "
+                    "AND scope_id=:scope AND (state='completed' OR batch_id IS NOT NULL)"
+                ),
+                params,
+            )
+            == 0
+        )
+        assert (
+            await connection.scalar(
+                text("SELECT child_batch_id FROM sms_uncertain_resolution WHERE id=:id"), params
+            )
+            is None
+        )
+
+
+@pytest.mark.asyncio
+async def test_proven_legacy_child_can_recover_using_system_audit_and_fingerprint(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _source, chunk_id = await _insert_unknown(
+        env.engine,
+        _crypto(),
+        channel="web",
+        dept="运营一部",
+        app_id=None,
+        phone=_phone(env.nonce, 103),
+    )
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    pipeline = _pipeline(env.store, env.ledger, env.redis)
+    closed = await _apply(env, resolution_id, pipeline, monkeypatch)
+    async with env.engine.begin() as connection:
+        # 保留不可变审计和完整指纹，模拟旧版本 COMMIT 后、写关系前崩溃。
+        await connection.execute(
+            text("DELETE FROM sms_uncertain_child WHERE resolution_id=:id"), {"id": resolution_id}
+        )
+        await connection.execute(
+            text(
+                "UPDATE sms_uncertain_resolution SET state='effect_pending',child_batch_id=NULL "
+                "WHERE id=:id"
+            ),
+            {"id": resolution_id},
+        )
+    recovered = await _apply(env, resolution_id, pipeline, monkeypatch)
+    assert recovered.child_batch_id == closed.child_batch_id
+    async with env.engine.connect() as connection:
+        assert (
+            await connection.execute(
+                text(
+                    "SELECT recovered,provenance_verified FROM sms_uncertain_child WHERE "
+                    "resolution_id=:id"
+                ),
+                {"id": resolution_id},
+            )
+        ).one() == (True, True)
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM sms_batch WHERE biz_id=:biz"),
+                {"biz": f"manual-resend:{resolution_id}:1"},
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_effect_lost_accept_response_recovers_atomic_child(
+    env: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _source, chunk_id = await _insert_unknown(
+        env.engine,
+        _crypto(),
+        channel="web",
+        dept="运营一部",
+        app_id=None,
+        phone=_phone(env.nonce, 104),
+    )
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    pipeline = _pipeline(env.store, env.ledger, env.redis)
+    accept = pipeline.accept
+    calls = 0
+
+    async def lost_response(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        await accept(*args, **kwargs)
+        raise ConnectionError("synthetic response lost after commit")
+
+    pipeline.accept = lost_response
+    with pytest.raises(ConnectionError):
+        await _apply(env, resolution_id, pipeline, monkeypatch)
+    closed = await _apply(env, resolution_id, pipeline, monkeypatch)
+    assert closed.state == "closed" and closed.child_batch_id is not None
+    assert calls == 1
+    async with env.engine.connect() as connection:
+        assert (
+            await connection.scalar(
+                text("SELECT count(*) FROM sms_batch WHERE biz_id=:biz"),
+                {"biz": f"manual-resend:{resolution_id}:1"},
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_effect_uses_send_runtime_permissions(
+    env: Any, monkeypatch: pytest.MonkeyPatch, legacy: bool
+) -> None:
+    _source, chunk_id = await _insert_unknown(
+        env.engine,
+        _crypto(),
+        channel="web",
+        dept="运营一部",
+        app_id=None,
+        phone=_phone(env.nonce, 105),
+    )
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    pipeline = _pipeline(env.store, env.ledger, env.redis)
+    child_id = None
+    if legacy:
+        child_id = (await _apply(env, resolution_id, pipeline, monkeypatch)).child_batch_id
+        async with env.engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM sms_uncertain_child WHERE resolution_id=:id"),
+                {"id": resolution_id},
+            )
+            await connection.execute(
+                text(
+                    "UPDATE sms_uncertain_resolution SET "
+                    "state='effect_pending',child_batch_id=NULL "
+                    "WHERE id=:id"
+                ),
+                {"id": resolution_id},
+            )
+
+    runtime = await _send_runtime(env, monkeypatch)
+    try:
+        result = await _apply_as_send(runtime, resolution_id, monkeypatch)
+        assert result.state == "closed"
+        if legacy:
+            assert result.child_batch_id == child_id
+        async with runtime.engine.connect() as connection:
+            assert (await connection.execute(text("SELECT current_user,session_user"))).one() == (
+                "sms_send",
+                "sms_send",
+            )
+            assert not await connection.scalar(
+                text("SELECT has_table_privilege(current_user,'audit_log','SELECT')")
+            )
+            for privilege in ("DELETE", "TRUNCATE"):
+                assert not await connection.scalar(
+                    text("SELECT has_table_privilege(current_user,'idempotency_claim',:privilege)"),
+                    {"privilege": privilege},
+                )
+        assert set(runtime.key_reads) <= {"audit_system_realtime_context_key"}
+        if not legacy:
+            assert runtime.key_reads
+    finally:
+        await runtime.engine.dispose()
+
+
+async def _send_runtime(env: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """只在官方一次性库创建合成登录；不补业务 GRANT 或覆盖待测迁移函数。"""
+    from app.settings import get_settings
+
+    password = uuid4().hex
+    key = bytes.fromhex("35" * 32)
+    async with env.engine.begin() as connection:
+        await connection.execute(text(f"ALTER ROLE sms_send WITH LOGIN PASSWORD '{password}'"))
+        await connection.execute(
+            text(
+                "INSERT INTO audit_context_signing_key(key_kind,key_material,updated_at) "
+                "VALUES ('system:realtime',:key,now()) ON CONFLICT (key_kind) DO UPDATE "
+                "SET key_material=EXCLUDED.key_material,updated_at=now()"
+            ),
+            {"key": key},
+        )
+    settings = get_settings().model_copy(update={"audit_producer_domain": "realtime"})
+    monkeypatch.setattr("app.settings.get_settings", lambda: settings)
+    key_reads = []
+
+    def read_key(name: str) -> bytes:
+        key_reads.append(name)
+        assert name == "audit_system_realtime_context_key"
+        return key
+
+    monkeypatch.setattr("app.core.runtime_resources._audit_context_key", read_key)
+    url = env.settings.database_url.set(username="sms_send", password=password)
+    engine = create_async_engine(url, hide_parameters=True)
+    store_settings = SimpleNamespace(
+        database_url=url, redis_control_url=env.settings.redis_control_url, vendor_mock=True
+    )
+    store = PolicyStore(engine, store_settings)
+    ledger = EngineBoundLedger(engine, env.redis, store_settings)
+    return SimpleNamespace(
+        engine=engine,
+        service=EngineBoundResolution(engine, _crypto()),
+        pipeline=_pipeline(store, ledger, env.redis),
+        key_reads=key_reads,
+    )
+
+
+async def _apply_as_send(runtime: Any, resolution_id: int, monkeypatch: pytest.MonkeyPatch) -> Any:
+    async def pipeline(_app: ApiAppContext) -> SendPipeline:
+        return runtime.pipeline
+
+    monkeypatch.setattr("app.api.messages._pipeline", pipeline)
+    # 实际 Outbox worker 没有人类请求上下文，系统审计在写入事务单独绑定。
+    with audit_principal_scope(), correlation_scope(uuid4()):
+        return await runtime.service.apply_effect(resolution_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change", ["actor", "generation", "marker", "relation", "provenance", "closed", "signature"]
+)
+async def test_send_audit_rejects_unproven_internal_creation(
+    env: Any, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    from sqlalchemy.exc import DBAPIError
+
+    _source, chunk_id = await _insert_unknown(
+        env.engine,
+        _crypto(),
+        channel="web",
+        dept="运营一部",
+        app_id=None,
+        phone=_phone(env.nonce, 106),
+    )
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    runtime = await _send_runtime(env, monkeypatch)
+    try:
+        result = await _apply_as_send(runtime, resolution_id, monkeypatch)
+        async with env.engine.begin() as connection:
+            batch_no = await connection.scalar(
+                text("SELECT trim(batch_no) FROM sms_batch WHERE id=:id"),
+                {"id": result.child_batch_id},
+            )
+            if change != "closed":
+                await connection.execute(
+                    text("UPDATE sms_uncertain_resolution SET state='applying' WHERE id=:id"),
+                    {"id": resolution_id},
+                )
+            if change == "relation":
+                await connection.execute(
+                    text("DELETE FROM sms_uncertain_child WHERE resolution_id=:id"),
+                    {"id": resolution_id},
+                )
+            if change == "provenance":
+                await connection.execute(
+                    text(
+                        "UPDATE sms_uncertain_child SET provenance_verified=false "
+                        "WHERE resolution_id=:id"
+                    ),
+                    {"id": resolution_id},
+                )
+        actor = f"system_resend:{resolution_id + int(change == 'actor')}"
+        marker = change != "marker"
+        generation = 2 if change == "generation" else 1
+        with (
+            pytest.raises(DBAPIError, match="system audit|signature"),
+            audit_principal_scope(),
+            correlation_scope(uuid4()),
+        ):
+            async with runtime.engine.begin() as connection:
+                await bind_connection_system_audit(
+                    connection, actor_name=actor, action="message_send"
+                )
+                if change == "signature":
+                    await connection.execute(
+                        text("SELECT set_config('sms.audit_context_signature','',TRUE)")
+                    )
+                await connection.execute(
+                    text(
+                        "INSERT INTO audit_log"
+                        "(actor,actor_subject_kind,action,object_type,object_id,after_val) "
+                        "VALUES (:actor,'system','message_send','batch',"
+                        ":batch_no,CAST(:after AS jsonb))"
+                    ),
+                    {
+                        "actor": actor,
+                        "batch_no": batch_no,
+                        "after": json.dumps(
+                            {"uncertain_resend": marker, "effect_generation": generation}
+                        ),
+                    },
+                )
+    finally:
+        await runtime.engine.dispose()

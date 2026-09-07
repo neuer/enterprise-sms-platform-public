@@ -19,6 +19,15 @@ IDEMPOTENCY_WAIT_INTERVAL_S = 0.05
 IDEMPOTENCY_WAIT_MARGIN_S = 5
 
 
+def uncertain_resend_biz_id(resolution_id: int, generation: int) -> str:
+    """由数据库主键生成完整操作键；长 ID 使用无截断的十六进制编码。"""
+
+    if not 0 < resolution_id < 2**63 or not 0 < generation < 2**31:
+        raise ValueError("uncertain effect identity invalid")
+    legacy = f"manual-resend:{resolution_id}:{generation}"
+    return legacy if len(legacy) <= 32 else f"ur:{resolution_id:x}:{generation:x}"
+
+
 @dataclass(frozen=True, slots=True)
 class IdempotencyScope:
     """稳定幂等主体：API 为 app，Web 为稳定账号/身份。"""

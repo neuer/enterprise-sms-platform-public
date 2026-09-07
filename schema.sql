@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.96  2026-09-07
+-- v1.6.96：uncertain child 保存事务来源证明；存量默认待核验，不自动认领。
 -- v1.6.95  2026-09-07
 -- v1.6.95：回执超时领取代际、退避及公平调度随批次持久化，跨任务共享。
 -- v1.6.94  2026-09-06
@@ -875,6 +877,7 @@ CREATE TABLE sms_uncertain_child (
       REFERENCES sms_batch(id) ON DELETE RESTRICT,
     generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
     recovered BOOLEAN NOT NULL DEFAULT false,
+    provenance_verified BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE send_inflight_balance (
@@ -3017,6 +3020,23 @@ BEGIN
                   'operator:usage-projection-cli')
                 AND NEW.action='usage_projection_rebuild')))))
       OR (context_domain='realtime' AND session_user='sms_send' AND (
+          (NEW.action='message_send' AND NEW.object_type='batch'
+           AND NEW.actor ~ '^system_resend:[1-9][0-9]*$'
+           AND NEW.after_val @> '{"uncertain_resend": true}'::jsonb
+           AND EXISTS (
+             SELECT 1 FROM sms_uncertain_resolution r
+             JOIN sms_uncertain_child uc ON uc.resolution_id=r.id
+             JOIN sms_batch child ON child.id=uc.child_batch_id
+             WHERE NEW.actor='system_resend:' || r.id::text
+               AND NEW.object_id=trim(child.batch_no)
+               AND uc.provenance_verified AND r.child_batch_id=child.id
+               AND uc.generation=r.effect_generation
+               AND NEW.after_val->>'effect_generation'=r.effect_generation::text
+               AND r.action='resend_new_batch'
+               AND r.state IN ('approved','effect_pending','applying','retryable_effect_error')
+               AND r.proposer_account_id<>r.confirmer_account_id
+           ))
+          OR
           (NEW.actor='vendor-state-sync'
            AND NEW.action IN ('template_sync','sign_sync','sign_adopt'))
           OR (NEW.actor='vendor-test-reconciler' AND NEW.action IN (
@@ -3059,6 +3079,14 @@ SELECT created_at, actor, actor_subject_kind, role, ip, action, object_type, obj
 FROM audit_log;
 GRANT SELECT ON security_daily_audit_evidence TO sms_send;
 GRANT SELECT ON security_daily_audit_evidence TO sms_accept;
+
+-- v1.6.96：历史 uncertain child 核验只读内部创建证据，不开放审计正文。
+CREATE VIEW uncertain_resend_creation_evidence AS
+SELECT actor, object_id
+FROM audit_log
+WHERE action='message_send' AND object_type='batch'
+  AND actor_subject_kind='system' AND after_val @> '{"uncertain_resend": true}'::jsonb;
+GRANT SELECT ON uncertain_resend_creation_evidence TO sms_send;
 
 -- ─────────────── 导出任务 ───────────────
 CREATE TABLE export_task (
@@ -3244,6 +3272,10 @@ GRANT SELECT, INSERT, UPDATE ON security_daily_delivery_request TO sms_send;
 GRANT UPDATE, DELETE ON import_task TO sms_send;
 GRANT INSERT, DELETE ON import_phone TO sms_send;
 GRANT DELETE ON idempotency_record TO sms_send;
+-- 内部 uncertain effect 的受理、续租与完成 CAS；不授予 Claim 删除权限。
+GRANT SELECT, INSERT, UPDATE ON idempotency_claim TO sms_send;
+GRANT INSERT ON idempotency_record TO sms_send;
+GRANT USAGE, SELECT ON SEQUENCE idempotency_claim_id_seq, idempotency_record_id_seq TO sms_send;
 GRANT SELECT, INSERT, DELETE ON stat_dirty_date TO sms_send;
 GRANT INSERT ON
     report_event, reply_event, worker_lease_event, audit_log

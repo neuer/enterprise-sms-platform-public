@@ -639,6 +639,27 @@ class SqlPipelineStore:
 
     @staticmethod
     async def _insert(connection: AsyncConnection, command: BatchCommand, batch_no: str) -> int:
+        uncertain = None
+        if isinstance(command.principal, UncertainEffectPrincipal):
+            from app.services.idempotency import uncertain_resend_biz_id
+            from app.services.uncertain_resolution import (
+                UncertainResolutionConflict,
+                lock_uncertain_resend,
+            )
+
+            uncertain, context, _app = await lock_uncertain_resend(connection, command.principal)
+            if (
+                command.app_id != context.usage_subject.app_id
+                or command.channel != context.source_channel
+                or command.dept != context.source_dept
+                or command.category != context.source_category
+                or command.scope_kind != "uncertain-resend"
+                or command.scope_id != str(uncertain.id)
+                or command.biz_id
+                != uncertain_resend_biz_id(uncertain.id, uncertain.effect_generation)
+                or command.resend_of is not None
+            ):
+                raise UncertainResolutionConflict("重发命令来源无法证明")
         if command.biz_id:
             await connection.execute(
                 text(
@@ -918,12 +939,15 @@ class SqlPipelineStore:
                     dedup_key=f"batch.ready:{batch_no}",
                 ),
             )
+        if uncertain is not None:
+            from app.services.uncertain_resolution import bind_uncertain_child
+
+            await bind_uncertain_child(connection, uncertain, batch_id, recovered=False)
         if isinstance(command.principal, UncertainEffectPrincipal):
             await bind_connection_system_audit(
                 connection,
                 actor_name=command.principal.actor_name,
                 action="message_send",
-                producer_domain="api",
             )
         after_val: dict[str, object] = {
             "batch_no": batch_no,
@@ -932,6 +956,7 @@ class SqlPipelineStore:
         }
         if isinstance(command.principal, UncertainEffectPrincipal):
             after_val["uncertain_resend"] = True
+            after_val["effect_generation"] = command.principal.effect_generation
         await connection.execute(
             text(
                 """

@@ -45,10 +45,7 @@ async def api_error_handler(request: Request, error: ApiError) -> JSONResponse:
         path = request.url.path
         if path.startswith("/api/v1/web"):
             response.headers["Cache-Control"] = "no-store"
-            response.delete_cookie(
-                key="sms_refresh_token",
-                path="/api/v1/web/auth",
-            )
+            # 旧 Bearer 请求的迟到响应无权删除新登录 Cookie；仅显式认证入口管理它。
     return response
 
 

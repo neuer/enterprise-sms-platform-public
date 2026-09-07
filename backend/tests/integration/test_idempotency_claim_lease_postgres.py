@@ -665,3 +665,54 @@ async def test_mixed_old_api_set_nx_cannot_cover_new_generation(
     restored = parse_claim_payload(raw)
     assert restored.token == token
     assert restored.generation == viewed.generation
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["admission", "limit", "cancel"])
+async def test_pipeline_rejection_immediately_releases_authoritative_claim(
+    claim_env: Any, stage: str
+) -> None:
+    from app.core.apikey import ApiAppContext
+    from app.services.app_ratelimit import ApplicationRateLimitExceeded
+    from app.services.pipeline import PipelineConfig, SendPipeline, SendRequest
+    from app.services.send_admission import SendAdmissionRejected
+    from tests.test_send_pipeline import FakeFrequency, FakePublisher, FakeQuota
+
+    engine, store, redis, app_id = claim_env
+    coordinator = IdempotencyCoordinator(redis, store)
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=coordinator,
+        crypto=_crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    error = (
+        asyncio.CancelledError()
+        if stage == "cancel"
+        else ApplicationRateLimitExceeded("limited")
+        if stage == "limit"
+        else SendAdmissionRejected("closed", "test", 30)
+    )
+
+    async def reject(*_args: Any) -> None:
+        raise error
+
+    if stage == "limit":
+        pipeline._consume_request_limit = reject
+    else:
+        pipeline._authorize_new_send = reject
+    biz = uuid4().hex
+    scope = IdempotencyScope("app", str(app_id))
+    with pytest.raises(type(error)) as raised:
+        await pipeline.accept(
+            ApiAppContext(app_id, "app", "平台部", frozenset({"notice"})),
+            SendRequest("notice", (), content="test", biz_id=biz),
+        )
+    assert raised.value is error
+    row = await _claim_row(engine, scope, biz)
+    assert row["state"] == "released" and row["batch_id"] is None
+    assert await redis.get(coordinator.claim_key(scope, biz)) is None
+    assert await coordinator.claim(scope, biz, fingerprint="a" * 64) is not None

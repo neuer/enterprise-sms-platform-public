@@ -7,8 +7,8 @@ import hmac
 import json
 import logging
 import re
+import sys
 from collections.abc import Awaitable, Callable, Sequence
-from contextlib import suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from math import ceil
@@ -34,6 +34,7 @@ from app.services.freq import FrequencyLimits
 from app.services.idempotency import (
     IdempotencyFingerprint,
     IdempotencyScope,
+    uncertain_resend_biz_id,
     usage_request_key,
 )
 from app.services.masking import mask_phone_text, mask_verify_otp
@@ -44,6 +45,7 @@ from app.settings import get_settings
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 LOGGER = logging.getLogger(__name__)
+CLAIM_CLEANUP_TIMEOUT_S = 2.0
 PHONE_NUMBER = re.compile(r"^1\d{10}$")
 
 
@@ -737,14 +739,27 @@ class SendPipeline:
     ) -> IdempotencyScope:
         """稳定幂等主体：API=app，Web=稳定账号/身份复合作用域。"""
 
-        if request.biz_id and request.biz_id.startswith("manual-resend:"):
-            resolution_id = request.biz_id.split(":")[1]
-            if isinstance(request.actor, UncertainEffectPrincipal):
-                expected = f"{request.actor.resolution_id}"
-                if resolution_id != expected:
-                    raise ValueError("system resend principal is not forgeable")
-            return IdempotencyScope("uncertain-resend", resolution_id)
+        if isinstance(request.actor, UncertainEffectPrincipal):
+            actor = request.actor
+            if request.biz_id != uncertain_resend_biz_id(
+                actor.resolution_id, actor.effect_generation
+            ):
+                raise ValueError("system resend principal is not forgeable")
+            if request.resend_of is not None or request.usage_subject is None:
+                raise ValueError("system resend requires its own usage subject")
+            if request.usage_subject.app_id != app.app_id:
+                raise ValueError("system resend usage app mismatch")
+            return IdempotencyScope("uncertain-resend", str(actor.resolution_id))
         if request.resend_of is not None:
+            web_actor = isinstance(request.actor, SecurityPrincipal) and request.channel == "web"
+            api_actor = (
+                isinstance(request.actor, ApplicationPrincipal)
+                and request.channel == "api"
+                and request.actor.app_id == app.app_id
+                and app.app_id > 0
+            )
+            if not (web_actor or api_actor):
+                raise ValueError("失败重发必须绑定稳定授权主体")
             return IdempotencyScope("resend", request.resend_of)
         if request.channel == "web":
             if isinstance(request.actor, UncertainEffectPrincipal):
@@ -917,8 +932,16 @@ class SendPipeline:
             return
         if not isinstance(request.actor, UncertainEffectPrincipal):
             raise ValueError("usage subject is not forgeable")
-        if request.usage_subject.app_id < 1:
-            raise ValueError("usage subject app_id must be a positive id")
+        actor = request.actor
+        usage = request.usage_subject
+        if (
+            request.biz_id != uncertain_resend_biz_id(actor.resolution_id, actor.effect_generation)
+            or usage.resolution_id != actor.resolution_id
+            or usage.effect_generation != actor.effect_generation
+            or usage.dept != actor.dept
+            or usage.category != request.category
+        ):
+            raise ValueError("system resend principal is not forgeable")
 
     @staticmethod
     def _quota_clock(now: datetime) -> tuple[str, int]:
@@ -1194,10 +1217,8 @@ class SendPipeline:
             token = await self._claim_owner(idem_scope, biz_id, request_hash)
         if token is None:
             raise RuntimeError("idempotency coordination unavailable")
-        await self._authorize_new_send(request)
-        await self._consume_request_limit(app, request, preauthorization)
         lost = asyncio.Event()
-        heartbeat = asyncio.create_task(self.idempotency.heartbeat(idem_scope, biz_id, token, lost))
+        heartbeat: asyncio.Task[None] | None = None
 
         async def check_ownership() -> None:
             if lost.is_set():
@@ -1212,6 +1233,14 @@ class SendPipeline:
                 raise IdempotencyClaimLost("idempotency claim lost")
 
         try:
+            await self._authorize_new_send(request)
+            await self._consume_request_limit(app, request, preauthorization)
+            renewal = self.idempotency.heartbeat(idem_scope, biz_id, token, lost)
+            try:
+                heartbeat = asyncio.create_task(renewal)
+            except BaseException:
+                renewal.close()
+                raise
             existing = await self.idempotency.lookup(idem_scope, biz_id)
             if existing is not None:
                 await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
@@ -1237,16 +1266,52 @@ class SendPipeline:
                 request_hash_key_version=request_hash_key_version,
             )
         finally:
+            original_error = sys.exception()
+            lost.set()
+            # 只 shield 当前请求拥有的有界清理，等待其结束，绝不遗留后台释放任务。
+            cleanup = asyncio.get_running_loop().create_task(
+                self._cleanup_claim(heartbeat, idem_scope, biz_id, token, app.app_id)
+            )
+            cancelled = False
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    cancelled = True
+            cleanup.result()
+            if cancelled and original_error is None:
+                raise asyncio.CancelledError
+
+    async def _cleanup_claim(
+        self,
+        heartbeat: asyncio.Task[None] | None,
+        scope: IdempotencyScope,
+        biz_id: str,
+        token: str,
+        app_id: int,
+    ) -> None:
+        """先有界停止自己的续租，再独立尝试权威 CAS 释放；保留业务异常。"""
+
+        if heartbeat is not None:
             heartbeat.cancel()
-            with suppress(asyncio.CancelledError):
-                await heartbeat
             try:
-                await self.idempotency.release(idem_scope, biz_id, token)
+                async with asyncio.timeout(CLAIM_CLEANUP_TIMEOUT_S):
+                    await heartbeat
+            except asyncio.CancelledError:
+                pass
             except Exception as exc:
                 LOGGER.error(
-                    "idempotency claim release unavailable",
-                    extra={"app_id": app.app_id, "error_type": type(exc).__name__},
+                    "idempotency heartbeat stop unavailable",
+                    extra={"app_id": app_id, "error_type": type(exc).__name__},
                 )
+        try:
+            async with asyncio.timeout(CLAIM_CLEANUP_TIMEOUT_S):
+                await self.idempotency.release(scope, biz_id, token)
+        except (Exception, asyncio.CancelledError) as exc:
+            LOGGER.error(
+                "idempotency claim release unavailable",
+                extra={"app_id": app_id, "error_type": type(exc).__name__},
+            )
 
     async def _accept_claimed(
         self,
@@ -1647,8 +1712,6 @@ class SendPipeline:
                 ):
                     raise ValueError("Web 发送必须绑定稳定账号与身份")
                 if isinstance(principal, UncertainEffectPrincipal):
-                    if request.biz_id is None or not request.biz_id.startswith("manual-resend:"):
-                        raise ValueError("system resend principal is not forgeable")
                     verifier = getattr(self.store, "verify_uncertain_effect", None)
                     if verifier is None:
                         raise ValueError("system resend principal is not forgeable")

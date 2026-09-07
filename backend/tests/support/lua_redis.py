@@ -77,7 +77,7 @@ function redis.call(cmd, ...)
     hashes[key][field] = tostring(next_value)
     return next_value
   end
-  if cmd == 'EXPIRE' then
+  if cmd == 'EXPIRE' or cmd == 'PEXPIRE' then
     expires[key] = tonumber(args[2])
     return 1
   end

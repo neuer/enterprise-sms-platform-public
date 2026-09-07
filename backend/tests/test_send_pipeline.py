@@ -2093,7 +2093,6 @@ async def test_verify_pipeline_deduplicates_encrypts_masks_and_enqueues_referenc
             ["13800138000", "13800138000", "13900139000"],
             content="验证码123456",
             biz_id="biz-2",
-            resend_of="original-batch",
         ),
     )
 
@@ -2127,7 +2126,6 @@ async def test_verify_pipeline_deduplicates_encrypts_masks_and_enqueues_referenc
         == "验证码123456"
     )
     assert command.sign_name == "【青鸾】"
-    assert command.resend_of == "original-batch"
     assert all(message.phone_mask in {"138****8000", "139****9000"} for message in command.messages)
     assert all(not hasattr(message, "phone") for message in command.messages)
     assert quota.reservations[0]["cost"] == 2

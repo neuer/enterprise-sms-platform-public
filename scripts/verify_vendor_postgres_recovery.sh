@@ -205,7 +205,8 @@ SQL
       tests/integration/test_inflight_ambiguous_commit_postgres.py \
       tests/integration/test_inflight_balance_conservation_postgres.py \
       tests/integration/test_inflight_split_capacity_postgres.py \
-      tests/integration/test_app_ratelimit_cutover_redis.py
+      tests/integration/test_app_ratelimit_cutover_redis.py \
+      tests/integration/test_vendor_bucket_redis.py
 )
 
 printf '%s\n' "真实 PostgreSQL 恢复、稳定主体授权与安全会话合同通过：一次性数据库，仅合成数据"
