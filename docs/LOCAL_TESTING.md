@@ -8,10 +8,12 @@ cd <repository-root>
 
 ## 一键启动
 
-首次运行或需要清空测试数据时：
+首次启动前确认目标是本机 Mock 环境，且不会占用其他会话的服务或数据卷。使用现有入口：
 
 ```bash
-scripts/local_test.sh reset
+scripts/local_test.sh prepare
+scripts/local_test.sh up
+scripts/local_test.sh status
 ```
 
 脚本会创建缺失的开发 `.env` 和 26 件 mock secrets，使用 dev profile 构建全栈，等待 API/mock 健康并执行幂等 `seed-dev`。已有 secret 内容不会被覆盖或打印。默认端口为：
@@ -46,15 +48,16 @@ scripts/local_test.sh up
 
 密码由测试负责人从本机 `deploy/secrets/ldap_bind_password` 的 0600 文件通过受控渠道提供；不要把值复制到聊天、截图、Issue 或命令参数。浏览器打开 Web 登录地址，输入任一用户名与该轮密码即可。登录使用现有 `/api/v1/web/auth/login` 获取 Bearer access JWT，refresh 由 HttpOnly Cookie 保存；退出会调用服务端吊销接口、清除 refresh Cookie 并清理浏览器会话。切换角色时先点击右上角“退出”，不要手工复用旧 token。
 
-连续五次输错密码会建立可恢复的账号失败标记并在当次返回 423；从未触发 IP 限流的出口提交正确凭据并完成账号绑定后会自动清除该标记，无需重置数据。同 IP 高频失败仍会独立触发限流；仅在需要整体恢复本地测试数据时执行 `scripts/local_test.sh reset`。
+连续五次输错密码会建立可恢复的账号失败标记并在当次返回 423；从未触发 IP 限流的出口提交正确凭据并完成账号绑定后会自动清除该标记，无需重置数据。同 IP 高频失败仍会独立触发限流；登录失败不需要销毁测试数据，按认证状态定位原因。
 
 ## 状态与停止
 
 ```bash
 scripts/local_test.sh status  # 容器、API 和 mock 健康状态
 scripts/local_test.sh down    # 停止容器，保留数据卷
-scripts/local_test.sh reset   # 销毁本地测试卷并重新 seed
 ```
+
+`scripts/local_test.sh reset` 会删除本地测试卷并重新 seed；仅在操作者明确要求重建该环境数据时使用，不作为首次运行、修复测试或处理登录失败的默认步骤。
 
 查看安全日志时禁止开启 shell trace，也不要输出 `deploy/secrets/` 或 `dev-apikeys.txt` 内容：
 

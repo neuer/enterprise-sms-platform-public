@@ -2,7 +2,7 @@
 
 1. 从公开仓库的默认分支创建短生命周期分支。
 2. 不提交真实手机号、邮件地址、主机地址、凭据、运行日志、截图或内部测试证据。
-3. 接口或数据库变更必须同步 `openapi.yaml`、Alembic、`schema.sql` 与对应测试。
+3. 接口新增或字段变更在同一 commit 同步 `openapi.yaml`，并按需重新生成前端 API 类型；库表变更手写 Alembic 并同步 `schema.sql`。运行与本次变更对应的契约和回归检查；同时涉及两类时两组要求都适用。
 4. 涉及发送结果未知、手机号保护、审计不可变或文件型 secrets 的改动必须保持 fail closed。
 5. 首次克隆运行 `scripts/install_git_hooks.sh`（启用本仓库 git pre-commit/pre-push，
    不是 Cursor Settings）；提交前运行：

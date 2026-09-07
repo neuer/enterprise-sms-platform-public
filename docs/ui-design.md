@@ -4,7 +4,7 @@
 
 ## 1. 设计立场
 
-深色内部安全运营监视台：**信息密度优先、状态可读优先、克制的装饰**。深色不是装饰主题切换，而是青鸾唯一界面基准。全站记忆点是信道监视条（双队列深度 + QPS 令牌），发送页计费分段块与之呼应；系统机制直接成为界面语言。
+深色内部安全运营监视台：**信息密度优先、状态可读优先、克制的装饰**。默认使用深色，并支持明亮主题；两种主题共用现有组件和工作区样式分片。全站记忆点是信道监视条（双队列深度 + QPS 令牌），发送页计费分段块与之呼应；系统机制直接成为界面语言。
 
 ## 2. 设计令牌（Design Tokens）
 
@@ -22,7 +22,7 @@
 | --amber | #D8A35C | market 类、warning |
 | --verm | #E46A4F | danger、失败 |
 
-Element Plus 映射以 `frontend/src/styles/theme.css` 为唯一实现：页面、浮层、输入、禁用态、遮罩和文字层级都必须映射到上述深色令牌；禁止组件回退到默认白色背景。根元素固定 `color-scheme: dark`。
+上表为默认深色令牌。主题由 `frontend/src/lib/theme.ts` 设置根元素 `data-theme`；`frontend/src/styles/theme.css` 提供深色默认值和明亮覆写，`color-scheme` 随主题切换。页面、浮层、输入、禁用态、遮罩和文字层级复用当前主题 token，避免硬编码背景绕过主题。工作区规则与加载顺序见第 8 节。
 
 **类别三色是硬约定**：verify=verdi、notice=slate、market=amber，出现在类别标签左竖条、统计分段条、图表系列色，任何页面不得混用其他色相表达类别。
 
@@ -50,7 +50,8 @@ Element Plus 映射以 `frontend/src/styles/theme.css` 为唯一实现：页面�
 |---|---|
 | `<CategoryTag>` | 左侧 3px 竖色条 + 类别名；三色见 2.1 |
 | `<StatusTag>` | 状态→色：queued/sending/在途=info 灰；delivered/completed=verdi；failed/rejected=verm；pending_approval/scheduled=amber；balance_blocked/uncertain 使用更高对比的 danger 组合，表示“需要人来” |
-| `<PhoneMask>` | mono 显示 `138****2041` + 眼睛图标；点击→调解密接口→行内替换明文并 toast「已记入审计」；无权限则图标隐藏 |
+| `<PhoneMask>` | 仅展示掩码（如 `138****2041`），不承担解密交互 |
+| `<PhoneReveal>` | 按权限提供「授权查看」入口，成功后提示已记入审计；明文仅存组件易失状态，组件销毁时清空 |
 | `<SegmentBar>` | 计费分段可视化：满段实心 verdi 块、末段斜纹块（title 显示 n/67 字）、恒显 1 个灰色 ghost 块提示下一段边界；数据只来自 /billing 预估接口 |
 | `<ChannelStrip>` | 顶栏签名组件：实时(verdi)/批量(amber)两条深度条 + 5 枚 QPS 令牌点（占用=verdi 实心） |
 | 结果构成条 | 批次列表与 560 抽屉共用六段条（待处理 tx-3 / 待回执 slate / 送达 verdi / 失败 verm / 未知 amber / 其他中性灰）；各段直接使用服务端消息状态计数，禁止用总数减法反推。列表 5px、抽屉 9px。明示占受理总数份额，不是成功率；禁止 donut |
@@ -86,3 +87,16 @@ Element Plus 映射以 `frontend/src/styles/theme.css` 为唯一实现：页面�
 8d. **回调任务**：页头副文写明安全边界事实（任务仅存事件引用与无 PII 元数据，目标 URL、签名密钥和消息 body 永不进入管理界面，写操作全部写入审计）+ 右侧 dead 脉冲（dead_total 全库口径、不受筛选影响，danger 变红；与用户页撤下的当前页摘要不同，不构成翻页失真）→ 单行检索条（投递状态 seg 全部/待投递/重试中/已完成/已死亡 + 事件 seg 全部/批次终态/明细报告，点选即重查直接映射现有 status/event 参数；应用可过滤下拉 168px 挂载时拉取、失败不阻塞；批次号关键词 220px 走「查询」按钮；条底说明 ILIKE 通配符转义与安全边界）→ 规则条 slim 常驻三格（重试序列 60s→5m→15m→1h→1h 以 callback_retry_schedule 为准、beat 启动时读取；租约接管即停滞超时未续约；手动重推前提：仅 dead、应用启用、URL/密钥未变更）→ 投递台账八列（任务/应用=名称 13px/600 + CB-id mono 副行；事件；批次/引用=mono 批次号 + 明细引用副行；状态=tag + 停滞 verm 小 tag 副行；尝试/下次重试 mono；最近结果=HTTP code + 错误摘要；创建时间 mono；操作=详情 + dead 行手动重推 link danger）→ 底栏「共 N 项 · 每页 20 · dead 总计 M」+ 分页。440 详情抽屉（头=标题 + CB-id · GET /admin/callbacks 行投影，无独立详情端点；subject 块 + 松散事实格承接表格撤下的关联 RID/事件 ID/租约/接管/完成时间；底栏安全脚注 + dead 时手动重推按钮）；手动重推确认拆后果正文（重置为待投递并清零重试计数、按应用当前回调配置重新投递、应用停用或 URL/密钥变更将被 409 拒绝）与审计细字，toast「回调任务已重新入队 · 本次操作已记入审计」，成功后重查列表并同步抽屉选中行（行离开当前列表即收起抽屉）。空态两行规约分空库/筛选无结果（后者带清除筛选）；加载失败 el-alert 内联重新加载。/callbacks 独立路由与 /ops?tab=callbacks 嵌入态共用同一组件，嵌入态隐藏页头、dead 总计由底栏常驻。H1 19px 无衬线。admin 专属；检索条并入 reply-* 共享组、规则条与 user-rules 同组、确认框与抽屉骨架并入 sign-* 共享组；零契约变更；不得虚构目标 URL、签名密钥、消息 body、成功率或全量统计计数（dead_total 除外，为现有响应字段）。
 8e. **安全日报**：页头副文写明机制事实（固定 08:00 北京时间汇总前一自然日、页面只展示脱敏结构化证据、手机号与密钥永不进入界面、Resend Key 保存后不回显、写操作全审计）+ 右侧 配置邮件 / 立即生成 / 刷新 三枚操作，页头不放页级计数 → 紧凑概览两段式（上=slim 状态横条：sec-label + 状态 strong + 配置 tag + 机制说明 + 右侧下次调度 mono em，linear-gradient(90deg) 底；下=七格事实 flex 横排带：调度 / 收件人数只展示数量 / 发件域名 / 最近日报状态 / 最近成功生成 / 最近成功投递 / 最近失败（Beat 配置格已撤下：该字段为硬编码常量、无真实开关对应，API 字段保留零契约变更），格间 hair-2 右边线、dd mono 单行截断；均为页级专属样式）→ 紧凑单行检索条（标签左内联不换行 + 报告日期起止两枚 112px date 输入经「查询」按钮生效并先校验起止先后 + 安全状态 seg 全部/正常/关注/高风险 + 生成状态 seg 全部/生成中/已生成/生成失败/数据不可用 + 投递状态 seg 全部/未投递/等待 mailer/投递中/已投递/投递失败，seg 高 30px 点选即重查直接映射现有 status/generation_status/delivery_status 参数，查询/重置 margin-left:auto 与筛选条件同一行；说明细字在条下一行，写明服务端分页过滤与脱敏边界，不走「接口全量返回 · 前端过滤」；桌面单行优先、视口不足允许折行兜底，760px 断点整体纵排）→ 规则条 slim 常驻三格（脱敏边界：只展示脱敏结构化证据、手机号与密钥永不进入界面、详情与预览同样只是只读投影；配置例外：Resend Key 明文仅存专用配置并同步独立 mailer、审计只记 configured 状态与收件人数量、Key 不回显；投递语义：独立 mailer 投递并回写状态、页面查询时惰性同步、失败可重试、同日重复投递有幂等保护）→ 结果面板日报台账十二列（记录 / 报告日期 / 安全状态 / 生成方式 / 生成 / 投递 / 收件人数 / 生成时间 / 投递时间 / 重试 / 最新错误 / 操作=查看详情 + 投递失败行「处理失败」link；行点击开抽屉）→ 底栏「共 N 条 · 每页 20」+ 分页（原 total>20 才渲染分页的限制退役，与回调任务同语言）。760 详情抽屉维持现有区块（统计窗口、状态信息、管理摘要、核心指标、SSH 与主机安全 / Web·API / 管理审计 / 运行状态证据面、建议处置、证据范围与覆盖缺口告警、投递时间线）；「立即生成」「手动投递」「重试投递」三处确认改 h() VNode 拆后果正文（立即生成：新增一条记录不覆盖历史、生成后立即投递、该日处理中投递会拒绝重生成；投递：邮件正文只来自已脱敏结构化报告、状态由独立 mailer 回写、同日重复投递有幂等保护）与审计细字，成功 toast 统一带「本次操作已记入审计」（配置保存同样带上）。配置邮件 dialog（启用开关 + Resend Key 密码输入不回显 + 清空勾选 + 收件人 ≤3 预检）与纯文本预览 dialog 维持现状。空态两行规约三变体（未启用引导配置邮件 / 配置不完整 / 筛选无结果带清除筛选）+ 列表失败空态与 el-alert 内联重新加载。H1 19px 无衬线。admin 专属；概览与检索条为页级专属紧凑样式（不再并 reply-* 共享尺寸组），结果面板/分页仍并 reply-* 共享组、规则条与 user-rules 同组、确认框并入 sign-* 共享组；移动端断点对齐 760px；零契约变更；不得虚构收件人地址、投递成功率或接口没有的字段。
 8f. **审计日志**：页头副文写明机制事实（覆盖全部写操作与敏感读取、append-only、运行角色只有新增与查询权限、载荷受数据库 PII 约束保护）+ 右侧「APPEND ONLY · 36 MONTHS」徽标，页头不放页级计数 → 单行检索条（操作人 220px + 动作下拉选项来自 GET /admin/audit-logs/actions 可输入新值 + 对象类型 + 对象 ID + 时间范围 datetimerange + 更多筛选气泡：稳定账号 ID / 关联 ID 两枚精确匹配字段且激活带角标计数，与批次列表同语言 + 查询/重置；条底细字写明全部筛选为服务端等值/精确匹配与分页，不走「接口全量返回 · 前端过滤」）→ 规则条 slim 常驻两格（不可变账本：append-only、七个运行角色均无 UPDATE/DELETE/TRUNCATE 权限、保留 36 个月由 DBA 变更单驱动清理；PII 边界：手机号、逐号密文与 HMAC 列表无法写入 audit_log、载荷只记数量与引用）→ 结果面板事件台账七列（稳定主体 / 操作人快照 / 动作 mono / 对象 / IP / 时间 mono / 详情 link），撤下「操作事件流」卡头 → 底栏「共 N 条 · 每页 20」+ 分页常驻（原 total>0 才渲染分页的限制退役，与回调任务同语言）。560 详情抽屉维持现有区块（描述格 + 关联 ID 复制/同链路追踪 + before/after 三列差异按 变更→新增→删除→不变 排序 + PII 保护提示）；「同链路事件」重查时自动展开更多筛选气泡，如实展示激活的关联 ID 过滤。空态两行规约分空库/筛选无结果（后者带清除筛选）；加载失败 el-alert 内联重新加载。H1 19px 无衬线。admin 专属；移动端 760px 表格↔卡片双渲染与差异格纵排折叠保留。检索条/结果面板/分页并入 reply-* 共享组、规则条与 user-rules 同组、更多筛选触发器与 batch-more 同组；filter-grid 十二列栅格随本页改造全站退役；零契约变更；不得虚构全量统计计数或接口没有的字段。
+
+
+## 8. 工程实现
+
+前端改动复用以下组件与单点；路径以 `frontend/` 为根。
+
+- 布局：左侧固定导航（PRD 附录 A 页面清单分组）+ 顶栏（用户/角色/登出）；内容区 Element Plus `el-card`
+- 列表页：`el-table` + 顶部筛选区 + 分页（默认20，常量 `DEFAULT_PAGE_SIZE`）；行操作用文字按钮；详情一律右侧 `el-drawer`，不用整页跳转
+- 手机号展示统一 `<PhoneMask>` 组件（默认 mask）；授权解密统一 `<PhoneReveal>` 组件（「授权查看」入口，成功提示记审计，明文只存组件易失状态）
+- 状态用 `el-tag` 色彩语义：queued/sending=info、completed/delivered=success、failed/rejected=danger、pending_approval/scheduled=warning、balance_blocked/uncertain=danger 深色
+- 图表 ECharts；时间显示本地 +08:00 `YYYY-MM-DD HH:mm:ss`；全站中文文案；空态/加载用 Element 内置组件，不引第三方 UI 库
+- 前端共享单点：时间格式化 `src/lib/time.ts`；手机号正则/掩码 `src/lib/phone.ts`；类别/角色/状态/厂商审核文案与默认分页 `src/lib/labels.ts`；请求基建 `src/api/client.ts`（`auth.ts` 为 pre-auth 例外）；剪贴板 `src/lib/clipboard.ts`；错误文案提取 `src/lib/error.ts`（errorText，ESLint 拦截内联回潮）；确认对话框 `src/lib/confirm.ts`（confirmAuditedAction 审计两段式 / confirmAction 纯文本，内部吞 cancel/close 返回布尔）；Blob 下载 `src/lib/download.ts`（saveBlob）；导出任务流 `src/composables/useExportTask.ts`（创建→轮询→step-up 下载）；ECharts 装配 `src/composables/useChart.ts`；统一轮询 `src/composables/usePolling.ts`；批量录入大文本防抖解析 `src/composables/useDebouncedEntries.ts`；壳样式只在 `workspace.css` 聚合入口（由 `element-workspace.ts` 随首个非公开路由懒加载引入，视图不重复 import，且保持在该模块 el-* 样式之前），规则本体按主题分片在 `src/styles/workspace/`（@import 顺序即级联顺序，`overrides-light.css` 明亮覆写层必须末位；新增壳样式进对应分片，禁止另起新文件或页面级拷贝），`theme.css` 只留 token、登录页与 Element 覆写。新增同关注点逻辑一律进单点，禁止页面级拷贝
+- API 契约类型：`src/api/types.gen.ts` 由 `npm run gen:api-types` 从根 `openapi.yaml` 生成（openapi-typescript），CI frontend job 对生成产物做 `git diff --exit-code` 零漂移门禁，禁止手改；`src/api/` 手写 interface 逐步迁移为生成类型引用（范例见 `webMessages.ts` 的 SendResult）
