@@ -1,10 +1,5 @@
-# CLAUDE.md — Claude Code 入口
+# Claude Code 入口
 
-本仓库不再维护第二份工程规则。开始工作前必须完整读取并遵循
-[AGENTS.md](AGENTS.md)，其中包含技术栈、41 条安全与可靠性硬规则、前端约定及工作方式。
-
-日常开发与交付从 [MAINTENANCE.md](MAINTENANCE.md) 开始，当前外部阻塞看
-[PROGRESS.md](PROGRESS.md)。
-
-需求、接口、数据与厂商契约分别以 `PRD.md`、`openapi.yaml`、`schema.sql` 和
-`docs/vendor-api.md` 为准；冲突时以 `PRD.md` 为准。
+工程约定见 [AGENTS.md](AGENTS.md)，开始工作时读取；同一任务已加载的
+同版本内容无需重复读取。日常交付按 [MAINTENANCE.md](MAINTENANCE.md)
+对应章节执行。其他契约和按需资料由 AGENTS.md 路由。

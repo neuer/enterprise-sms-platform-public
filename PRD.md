@@ -77,6 +77,8 @@
 | 认证源（Provider） | 可独立完成身份认证的来源；本期实现内置 local 与可配置 AD，未来 IAM Provider 仅预留扩展能力，本期不实现 |
 | 平台主体 / 外部身份 / 凭据 | `user_account` 是稳定授权主体，`auth_identity` 绑定认证源身份，`local_credential` 仅保存本地 Argon2 密码摘要与强制改密状态 |
 
+<a id="auth-contract"></a>
+
 ## 3. 用户与角色
 
 | 角色 | 来源 | 权限 |
@@ -93,7 +95,7 @@
 - 平台使用**全局不区分大小写登录名空间**，用户名规范化后唯一，归属按**先到先得**确定。本地账号创建时不探测 AD；后续真实 AD 登录若与既有本地身份冲突，则拒绝并审计 `ACCOUNT_SOURCE_CONFLICT`，由管理员线下处理。
 - 平台**不开放自助注册**，本地账号仅由管理员维护；管理员可创建、启停、重置临时密码、设置角色与强制下线，但不得重命名或硬删除账号。禁止停用自己，且不得停用或降级最后一个有效管理员。
 - 本地密码为 12–128 位，大小写字母、数字、特殊字符至少三类，不能包含用户名，且新密码不得与当前密码或临时密码相同；管理员创建/重置后均标记为临时密码，用户**首次登录必须修改密码**。首次改密令牌只以哈希写入 PostgreSQL，并与主体、认证源、用途和签发时安全版本绑定；高成本校验前必须以短事务取得带 UUID fencing 的 `processing` 租约，只有有效租约可在同一最终事务完成令牌消费、密码更新、`must_change_password` 清除、`security_version` 递增及审计。已消费、过期、上下文失效或被未过期租约占用的令牌不得进入 Argon2；数据库结果不可确认时保持租约至到期并 fail closed。交互式登录 Argon2 必须使用独立有界池，重新认证、首次/日常改密及管理员密码创建/重置不得占用登录池。密码与用户名规则在登录、改密和用户管理界面提交前可见。
-- Web 会话保持 Bearer Header 契约承载 **access JWT**：access 与用户快照仅保存在当前页面易失内存，禁止写入 Pinia 持久化或 Web Storage；历史 `sessionStorage`/`localStorage` 凭据只允许同步迁移一次并立即清除。官方前端以 `navigator.locks.request` 能力检测提交 `session_mode`，不用 UA。Web Locks 可用时 **refresh JWT** 以受限路径的 HttpOnly Cookie 承载（生产必须 Secure，SameSite=Lax），且 refresh 请求体不得接受令牌；refresh/logout 必须校验规范化同源 Origin/Referer。Web Locks 不可用时为 Access-Only：只签发短期 Access，不签发 Refresh、不创建 Family、不写 Refresh Cookie；登录须吊销请求携带的旧 Family 并删除旧 Cookie，撤销失败关闭。Access-Only 不能经 `/auth/refresh` 或补交 `tab_id` 升级，必须在支持 Web Locks 的客户端重新登录；页面刷新、Access 到期和 BFCache 恢复均要求重新登录。注销、401、会话超时和强制下线后必须清理内存会话与 refresh Cookie，并用不含凭据的浏览器存储事件同步其他标签页。首次改密、导出 step-up 等高风险短期令牌只允许存在于发起操作的组件局部易失内存，不得进入 Pinia、浏览器存储、URL、日志或 DOM 持久节点；组件销毁或到期立即清空。生产入口的 HTTP 只能跳转到同一受控 HTTPS origin，最终响应必须满足 TLS 1.2+、HSTS、收紧后的 CSP 与证书到期监控门禁。
+- Web 会话由前端请求层统一注入 `Authorization: Bearer` Header 承载 **access JWT**：access 与用户快照仅保存在当前页面易失内存，禁止写入 Pinia 持久化、Web Storage、IndexedDB、URL 或日志；历史 `sessionStorage`/`localStorage` 凭据只允许同步迁移一次并立即清除。官方前端以 `navigator.locks.request` 能力检测提交 `session_mode`，不用 UA。Web Locks 可用时 **refresh JWT** 以受限路径的 HttpOnly Cookie 承载（生产必须 Secure，SameSite=Lax），保持 tab binding、单次轮换、grace 与重放检测，且 refresh 请求体不得接受令牌；refresh/logout 必须校验规范化同源 Origin/Referer。Web Locks 不可用时为 Access-Only：只签发短期 Access，不签发 Refresh、不创建 Family、不要求 `tab_id`、不写 Refresh Cookie，401 不得 refresh/replay；登录须吊销请求携带的旧 Family 并删除旧 Cookie，撤销失败关闭。Access-Only 不能经 `/auth/refresh` 或补交 `tab_id` 升级，必须在支持 Web Locks 的客户端重新登录；页面刷新、Access 到期和 BFCache 恢复均要求重新登录。注销、401、会话超时和强制下线后必须清理内存会话与 refresh Cookie，并用不含凭据的浏览器存储事件同步其他标签页。首次改密、导出 step-up 等高风险短期令牌只允许存在于发起操作的组件局部易失内存，不得进入 Pinia、浏览器存储、URL、日志或 DOM 持久节点；组件销毁或到期立即清空。生产入口的 HTTP 只能跳转到同一受控 HTTPS origin，最终响应必须满足 TLS 1.2+、HSTS、收紧后的 CSP 与证书到期监控门禁。
 - 首个管理员由空系统执行 `sms-compose init-admin --show-temporary-password` 创建，与 AD 完全无关；命令生成 20 位临时密码并在当前 TTY 一次显示，可由 Codex 通过 PTY 代为执行并转告操作者。
 - AD 默认禁用；管理员登录后在**系统配置页**维护非敏感草稿，依次保存、测试当前版本并激活。Bind 密码仍仅来自 Docker secret，CA 仅来自受控文件。AD 角色默认由组映射计算，允许管理员单人覆盖或恢复跟随。
 
@@ -269,6 +271,8 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - sys_config：v1.1 全量 + v1.2 新增（退订语、频控、导入边界、测试发送上限）；改动记审计
 - 认证源：本地 Provider 固定启用且不可修改；AD 在系统配置页按“保存草稿 → 测试连接 → 启用配置”生效，编辑草稿立即使旧测试资格失效；“禁用 AD”只隐藏登录入口并保留生效配置与角色映射
 - 页面只显示 LDAP bind secret 与 CA 文件是否就绪，不接收、不回显凭据或文件内容
+<a id="vendor-uat-contract"></a>
+
 #### FR-19a 真实联调控制台与受控 API UAT（v1.6.3）
 - 单机开发测试环境的正式运营商生命周期控制全部在 admin 的系统配置页完成：状态、正式 Key 安装/轮换、加密测试号码、激活/暂停/恢复、页面单号码 UAT 与结果查看
 - 正式 Key 明文只可在页面组件的浏览器易失内存中短暂存在，由 WebCrypto 封装后普通 API 只转发密文；root `vendor-control-agent` 经固定 Unix Socket 解密并原子安装版本化凭据，API/worker 不得获得 root、sudo 或 Docker Socket
@@ -279,7 +283,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - 已配置且无暂停的测试环境允许管理员二次认证后从 `controlled|inactive` 切回内置 Mock：先停止并确认测试侧真实发送与报告/回复消费者均不再运行，再删除测试环境正式厂商凭据并重建纯 Mock 服务；不等待已停止消费者无法自行收敛的测试 backlog，既有 queued/scheduled/pending/retrying 后续只允许命中 Mock，遗留 submitting 按既有恢复规则转 uncertain，uncertain 仍禁止自动重发；保留加密测试号码、短信业务数据、审计、当日 UAT/uncertain 事实、数据库与 volume；不得修改生产环境，也不得自动修复切换前历史未决状态
 #### FR-19b 安全日报配置与投递（v1.6.40）
 - admin 的 `/security-daily` 页面提供启停、Resend Key 和最多 3 个收件人配置；Key 留空表示保持原值，页面只显示“已配置/未配置”，不回显 Key
-- 配置写入 `sys_config.security_daily_resend_api_key` 与 `security_daily_recipient`，配置变更写审计但审计只包含 configured 状态、启停状态和收件人数；配置保存后由 API 原子同步 `resend.json` 给独立 mailer
+- Resend Key 允许明文写入专用 `sys_config.security_daily_resend_api_key`，收件人写入 `security_daily_recipient`；该例外不得用于其他平台凭据。配置变更写审计但审计只包含 configured 状态、启停状态和收件人数；配置保存后由 API 原子同步 `resend.json` 给独立 mailer
 - 独立 mailer 仍固定使用 `reports.neuer.cn` 发件域名和 `api.resend.com`，平台 API/worker/beat 不直接访问 Resend；日报正文只允许已脱敏结构化 payload，发送、重试、预览和 `unavailable` 语义保持不变
 - 主机侧 `security-report-collector` 在 08:00 前把前一上海自然日的日志聚合为脱敏结构化快照；缺少全部证据源时必须保持 `generation_status=unavailable`，不得用示例或零值替代。部分来源缺失但仍有真实来源时可生成 `attention` 报告，并在 `coverage` 明确列出缺口。
 #### FR-20 审计日志
@@ -404,3 +408,55 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 | 16 | /audit | 审计日志 | 多条件检索（只读） | admin |
 | 17 | /reports | 统计报表 | 日/周/月 × 应用/部门 × 类别，消息数+计费条，导出 | viewer+ |
 | 18 | /ops | 运维中心 | Tab：告警记录 / 回调任务（重推）/ 原始报文（重放）/ uncertain 分片 / unmatched 报告 / **任务健康（v1.5）** / 队列恢复 | admin |
+
+<a id="platform-error-codes"></a>
+
+## 平台错误码
+
+接口响应结构与各路径定义见 `openapi.yaml`；平台错误语义如下。厂商数值码仍以 `docs/vendor-api.md` 为准。
+
+| code | HTTP | 场景 |
+|---|---|---|
+| INVALID_PARAM | 400 | 参数校验失败 |
+| UNAUTHORIZED | 401 | Key/JWT 无效或已吊销 |
+| AUTH_REAUTH_REQUIRED | 401 | AD 完整重新认证绝对截止已到，Access/Refresh 均须重新登录 |
+| STEP_UP_REQUIRED | 401 | 高风险操作缺少有效二次认证 |
+| STEP_UP_EXPIRED | 401 | 二次认证令牌已过期或已使用 |
+| FORBIDDEN | 403 | 角色/数据权限不足 |
+| AUTH_PROVIDER_DISABLED | 403 | 所选认证源未启用 |
+| CATEGORY_NOT_ALLOWED | 403 | 应用无该消息类别权限 |
+| SELF_APPROVAL_DENIED | 403 | 审批回避：不能审批本人提交 |
+| IP_NOT_ALLOWED | 403 | 来源 IP 不在应用白名单 |
+| VENDOR_TEST_CONSOLE_ONLY | 403 | live-test 下普通发送入口关闭，仅真实联调控制台/UAT |
+| VENDOR_TEST_MODE_REQUIRED | 403 | 该操作仅允许在受控真实联调模式执行 |
+| NOT_FOUND | 404 | 资源不存在 |
+| STATE_CONFLICT | 409 | 状态机非法流转/重复审批/导入包已使用或过期 |
+| IDEMPOTENCY_CONFLICT | 409 | 同一幂等键已用于不同请求 |
+| AUTH_CONTEXT_CHANGED | 409 | 日常改密 CAS 失败：安全版本或凭据版本已变化，须重新登录 |
+| ACCOUNT_SOURCE_CONFLICT | 409 | 规范化登录名已由其他认证源先占用 |
+| LAST_ADMIN_PROTECTED | 409 | 禁止停用或降级最后一个有效管理员 |
+| PROVIDER_CONFIG_UNTESTED | 409 | 当前认证源草稿尚未通过连接测试 |
+| PROVIDER_CONFIG_STALE | 409 | 测试期间认证源草稿已发生变化 |
+| ACCOUNT_LOCKED | 423 | 错误凭据达到账号失败阈值；正确凭据完成权威绑定后可恢复 |
+| SENSITIVE_WORD | 422 | 敏感词命中(block) |
+| PASSWORD_POLICY_VIOLATION | 422 | 本地密码不符合长度、字符类别或用户名限制 |
+| INVALID_PROVIDER_CONFIG | 422 | 认证源非敏感配置格式或范围无效 |
+| TEMPLATE_PARAM_MISMATCH | 422 | 模板参数个数不符或渲染超长(v1.2) |
+| CONSENT_REQUIRED | 422 | Web 营销未勾选用户同意(v1.2) |
+| ALL_FILTERED | 422 | 号码全部被去重/黑名单/频控剔除 |
+| QUOTA_EXCEEDED | 429 | 日配额不足 |
+| RATE_LIMITED | 429 | 请求频率超限 / 登录IP封禁 |
+| PAYLOAD_TOO_LARGE | 413 | 请求体超过 Nginx/ASGI 对齐的字节上限 |
+| INTERNAL_ERROR | 500 | 结构化内部错误（禁止裸 500） |
+| VENDOR_ERROR | 502 | 厂商适配透传/测试控制台（附厂商数值 code）；不是通用业务 API 的默认 502 |
+| AUTH_SESSION_UNAVAILABLE | 503 | 数据库权威会话投影或 Redis 吊销/轮换状态不可用 |
+| AUTH_PROVIDER_UNAVAILABLE | 503 | 所选认证源暂时不可用 |
+| DEPENDENCY_UNAVAILABLE | 503 | 必要依赖不可用 |
+| CONTROL_AGENT_UNAVAILABLE | 503 | vendor-control-agent 或控制状态不可用 |
+| CONTROL_AGENT_PAUSE_UNAVAILABLE | 503 | agent-stale critical pause 键写入未确认 |
+| IMPORT_UNAVAILABLE | 503 | 导入登记超时或导入面不可用 |
+| SECURITY_DAILY_UNAVAILABLE | 503 | 安全日报控制面或数据源不可用 |
+| USAGE_PROJECTION_UNAVAILABLE | 503 | 配额/频控事实投影缺失、重建中或 Redis 不可确认 |
+| BALANCE_BLOCKED | 503 | 批次/队列状态与熔断结果（余额不足暂停）；不是普通发送 HTTP 响应 |
+
+注：幂等命中不是错误，返回 200 + `idempotent: true`；营销窗外转定时不是错误，返回 200 + `deferred_reason`。
