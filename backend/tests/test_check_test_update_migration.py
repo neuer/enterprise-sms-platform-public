@@ -124,6 +124,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0109_report_timeout_fairness",
         "0110_uncertain_child_provenance",
         "0111_report_batch_active_count",
+        "0112_auth_admission_policy",
     ]
 
 

@@ -51,7 +51,7 @@ def test_config_specs_groups_and_types_are_consistent() -> None:
     assert set(CONFIG_SPECS) == set(DEFAULTS)
     for key, spec in CONFIG_SPECS.items():
         assert spec.group in CONFIG_GROUP_ORDER, key
-        assert spec.value_type in {"str", "int", "bool"}, key
+        assert spec.value_type in {"str", "int", "bool", "json"}, key
         if spec.value_type != "int":
             assert spec.minimum is None and spec.maximum is None, key
         if spec.minimum is not None and spec.maximum is not None:

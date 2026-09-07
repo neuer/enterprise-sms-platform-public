@@ -27,6 +27,7 @@ from app.core.auth.jwt import (
     JwtService,
 )
 from app.core.auth.ldap_real import LdapConfig, LdapPasswordProvider
+from app.core.auth.ldap_timing import LdapTimingProfile
 from app.core.auth.mock import MockLdapProvider
 from app.core.auth.providers import AuthProviderRegistry
 from app.core.auth.roles import ExistingUser, RoleResolver
@@ -36,6 +37,16 @@ from app.services.auth_provider import ProviderRecord, ProviderTestResult
 from app.services.runtime_policy import RuntimePolicy
 
 TAB_ID = "a" * 32
+
+
+def _ldap_config(**kwargs: Any) -> LdapConfig:
+    profile = LdapTimingProfile(
+        version=1, server=kwargs["server"], service_bind_dn=kwargs["bind_dn"],
+        sink_dn="CN=timing-sink,OU=NoAccounts,DC=example,DC=com",
+        safety_contract="non_account_rejection", approval_ref="test-only",
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    return LdapConfig(**kwargs, timing_profile=profile)
 
 
 class FakeKeyValue:
@@ -798,6 +809,7 @@ async def test_ldap_backend_searches_then_binds_user_with_ldap3_monkeypatch(
         def __init__(self, server: object, **kwargs: Any) -> None:
             calls.append(kwargs)
             self.entries = [Entry()]
+            self.result = {"result": 0}
             self.socket = object()
 
         def open(self) -> None:
@@ -826,7 +838,7 @@ async def test_ldap_backend_searches_then_binds_user_with_ldap3_monkeypatch(
     monkeypatch.setattr(ldap_module, "Server", server_factory)
     monkeypatch.setattr(ldap_module, "Connection", FakeConnection)
     backend = LdapPasswordProvider(
-        LdapConfig(
+        _ldap_config(
             provider_code="ad",
             server="ldaps://dc.example:636",
             base_dn="DC=xtc,DC=com",
@@ -892,6 +904,7 @@ async def test_ldap_invalid_credentials_result_is_uniform_auth_failure(
             del server
             self.user = kwargs["user"]
             self.entries = [Entry()]
+            self.result = {"result": 0}
             self.socket = object()
 
         def open(self) -> None:
@@ -914,7 +927,7 @@ async def test_ldap_invalid_credentials_result_is_uniform_auth_failure(
     monkeypatch.setattr(ldap_module, "Server", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(ldap_module, "Connection", FakeConnection)
     backend = LdapPasswordProvider(
-        LdapConfig(
+        _ldap_config(
             provider_code="ad",
             server="ldaps://dc.example:636",
             base_dn="DC=xtc,DC=com",
@@ -967,7 +980,7 @@ async def test_ldap_connection_test_binds_and_performs_bounded_directory_lookup(
     monkeypatch.setattr(ldap_module, "Server", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(ldap_module, "Connection", FakeConnection)
     backend = LdapPasswordProvider(
-        LdapConfig(
+        _ldap_config(
             provider_code="ad",
             server="ldaps://dc.example:636",
             base_dn="DC=xtc,DC=com",
@@ -1082,7 +1095,7 @@ async def test_ldap_failure_uses_isolated_pool_and_aligned_deadline(
 
     monkeypatch.setattr(ldap_module, "run_bounded", fail_bounded)
     provider = LdapPasswordProvider(
-        LdapConfig(
+        _ldap_config(
             provider_code="ad",
             server="ldaps://dc.example:636",
             base_dn="DC=example,DC=com",

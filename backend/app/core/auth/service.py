@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from time import monotonic
 from typing import Any, NamedTuple, Protocol, cast
 from uuid import uuid4
@@ -12,6 +13,7 @@ from uuid import uuid4
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
+from app.core.auth.admission import AdmissionReservation, LoginAdmission
 from app.core.auth.backends import (
     AuthenticatedIdentity,
     AuthenticationPurpose,
@@ -35,6 +37,7 @@ from app.core.auth.security_events import (
     AuthSecurityEventWriter,
     AuthSecurityTransition,
 )
+from app.core.bounded_executor import bounded_work_scope
 from app.core.runtime_resources import redis_client
 
 ACCOUNT_WINDOW_S = 15 * 60
@@ -582,6 +585,9 @@ class LoginGuard:
 
     -- 用户名失败阈值只在凭据校验失败后评估。若在这里按用户名拒绝，
     -- 远程攻击者只需知道登录名即可阻断正确凭据。
+    if ARGV[13] == 'source-policy' then
+      return {0, '', 0, '', 0, 0, 0, '', '', '', ''}
+    end
 
     local long_count = tonumber(redis.call('GET', KEYS[4]) or '0')
     if long_count >= tonumber(ARGV[5]) then
@@ -717,12 +723,14 @@ class LoginGuard:
         security_events: AuthSecurityEventWriter | None = None,
         lease_ms: int | None = None,
         owner: TransitionOwner = "api",
+        admission: LoginAdmission | None = None,
     ) -> None:
         self.store = store
         self.policy_loader = policy_loader
         self.security_events = security_events
         self.lease_ms = writer_lease_ms() if lease_ms is None else lease_ms
         self.owner = owner
+        self.admission = admission
 
     async def snapshot(self) -> AuthGuardPolicy:
         """仅在凭据失败后取得阈值快照；准入路径不得调用。"""
@@ -750,7 +758,10 @@ class LoginGuard:
             return normalized
         return "invalid"
 
-    async def admit(self, provider_code: str, username: str, ip: str) -> None:
+    async def admit(
+        self, provider_code: str, username: str, ip: str,
+        *, purpose: AuthenticationPurpose = "login",
+    ) -> AdmissionReservation | None:
         """在读取密码摘要或连接目录前原子执行封禁与 IP 准入。"""
 
         del username
@@ -773,8 +784,12 @@ class LoginGuard:
             ENVELOPE_SCHEMA_VERSION,
             self._safe_provider(provider_code),
             ip,
+            "source-policy" if self.admission is not None else "strict-default",
         )
         await self._enforce_result(result, provider_code=provider_code, ip=ip)
+        if self.admission is not None:
+            return await self.admission.admit(provider_code, ip, purpose=purpose)
+        return None
 
     async def check_provider_capacity(self, provider_code: str) -> None:
         """在调度同步 Provider 工作前拒绝仍处于容量退避期的请求。"""
@@ -1157,26 +1172,34 @@ class AuthService:
         purpose: AuthenticationPurpose = "login",
     ) -> AuthenticatedIdentity:
         normalized = normalize_login_name(login_name)
-        await self.guard.admit(provider_code, normalized, ip)
-        if provider_code.casefold() != "local":
-            await self.guard.check_provider_capacity(provider_code)
-        try:
-            identity = await self.providers.authenticate(
-                provider_code,
-                normalized,
-                password,
-                purpose=purpose,
-            )
-        except InvalidCredentials:
-            policy = await self.guard.snapshot()
-            await self.guard.record_failure(normalized, ip, provider_code, policy=policy)
-            raise
-        except ProviderCapacityUnavailable:
-            if provider_code.casefold() != "local":
-                await self.guard.record_capacity_failure(provider_code)
-            raise
-        await self.guard.record_provider_success(provider_code)
-        return identity
+        reservation = await self.guard.admit(provider_code, normalized, ip, purpose=purpose)
+        with bounded_work_scope() as work:
+            try:
+                if provider_code.casefold() != "local":
+                    await self.guard.check_provider_capacity(provider_code)
+                try:
+                    identity = await self.providers.authenticate(
+                        provider_code, normalized, password, purpose=purpose,
+                    )
+                except InvalidCredentials:
+                    policy = await self.guard.snapshot()
+                    await self.guard.record_failure(normalized, ip, provider_code, policy=policy)
+                    raise
+                except ProviderCapacityUnavailable:
+                    if provider_code.casefold() != "local":
+                        await self.guard.record_capacity_failure(provider_code)
+                    raise
+                await self.guard.record_provider_success(provider_code)
+                return replace(identity, admission=reservation)
+            finally:
+                if reservation is not None and self.guard.admission is not None:
+                    await self.guard.admission.release_work(reservation, work)
+
+    async def record_completed_success(self, identity: AuthenticatedIdentity, ip: str) -> None:
+        """仅门面确认完整登录/重认证后，结算本次来源预留。"""
+
+        if identity.admission is not None and self.guard.admission is not None:
+            await self.guard.admission.complete(identity.admission, ip)
 
     async def record_bound_success(self, username: str) -> None:
         """由应用门面在 resolve_identity 成功后确认登录主体。"""

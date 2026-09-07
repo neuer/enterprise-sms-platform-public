@@ -970,9 +970,11 @@ export interface paths {
                         "application/json": components["schemas"]["Error"];
                     };
                 };
-                /** @description IP 已被临时封禁（RATE_LIMITED） */
+                /** @description RATE_LIMITED：IP 封禁或认证准入繁忙。仅在 Provider 尚未执行的准入拒绝中返回 detail.auth_admission_retry=true、detail.retry_after_seconds（1–300 秒）和 Retry-After。 浏览器仅对此标记进行最多 30 次且累计等待不超过 30 秒的有界重试；IP ban、密码错误和 503 不自动重试。 */
                 429: {
                     headers: {
+                        /** @description 准入重试建议秒数 */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {

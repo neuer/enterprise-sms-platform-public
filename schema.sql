@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.98  2026-09-07
+-- v1.6.98：来源准入策略阈值及单调 revision，复用 sys_config 权限和审计。
 -- v1.6.97  2026-09-07
 -- v1.6.97：批次活跃消息计数惰性初始化，回执按锁内差值更新，终态无需逐条扫消息。
 -- v1.6.96  2026-09-07
@@ -2673,6 +2675,7 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 ('export_retention_days',     '7',     'int',  '导出文件保留天数'),
 ('sensitive_hit_action',      'block', 'str',  '敏感词命中策略: block/audit'),
 ('key_grace_hours',           '72',    'int',  'APIKey轮换旧Key宽限期(小时)'),
+('auth_admission_policy', '{"version":1,"shared_burst":100,"shared_window":200,"shared_refill_ms":1000,"global_burst":8,"global_refill_ms":250,"global_concurrent":4,"source_concurrent":2}', 'json', '登录来源准入阈值；可信出口由部署文件批准'),
 ('login_fail_limit',          '5',     'int',  '同账号15分钟内失败次数上限'),
 ('login_lock_minutes',        '15',    'int',  '账号锁定时长(分钟)'),
 ('login_ip_fail_limit',       '20',    'int',  '同IP5分钟内失败次数上限'),
@@ -3435,3 +3438,18 @@ BEGIN
   END IF;
 END
 $legacy_role$;
+
+-- 单个准入策略的 updated_at 是微秒 revision；包括相同值更新也必须前移。
+CREATE OR REPLACE FUNCTION advance_auth_admission_revision()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog AS $$
+BEGIN
+  IF NEW.key = 'auth_admission_policy' THEN
+    NEW.updated_at := GREATEST(clock_timestamp(), OLD.updated_at + interval '1 microsecond');
+  END IF;
+  RETURN NEW;
+END
+$$;
+REVOKE ALL ON FUNCTION advance_auth_admission_revision() FROM PUBLIC;
+CREATE TRIGGER trg_auth_admission_revision
+BEFORE UPDATE ON sys_config FOR EACH ROW
+EXECUTE FUNCTION advance_auth_admission_revision();
