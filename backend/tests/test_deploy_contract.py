@@ -813,6 +813,7 @@ def test_control_redis_acl_allows_admission_recovery_budget() -> None:
 
 def test_control_redis_acl_allows_weighted_send_cost_lua() -> None:
     from app.services.app_ratelimit import SLIDING_WINDOW_LUA, WEIGHTED_WINDOW_LUA
+    from app.services.app_ratelimit_cutover import CUTOVER_CAS_LUA
 
     entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
         encoding="utf-8"
@@ -822,7 +823,7 @@ def test_control_redis_acl_allows_weighted_send_cost_lua() -> None:
         f"+{name.lower()}"
         for name in re.findall(
             r"redis\.call\('([A-Z]+)'",
-            SLIDING_WINDOW_LUA + WEIGHTED_WINDOW_LUA,
+            SLIDING_WINDOW_LUA + WEIGHTED_WINDOW_LUA + CUTOVER_CAS_LUA,
         )
     }
     assert "+hincrby" in required

@@ -140,7 +140,10 @@ def submit_outcome_from_finalize(
         FinalizeKind.APPLIED,
         FinalizeKind.ALREADY_FINALIZED_SAME_RESULT,
     }:
-        return requested
+        try:
+            return SubmitOutcome(report.result)
+        except ValueError:
+            return SubmitOutcome.UNCERTAIN
     if report.kind is FinalizeKind.RECOVERY_MARKED_UNCERTAIN:
         return SubmitOutcome.UNCERTAIN
     if requested is SubmitOutcome.RETRY_SCHEDULED:

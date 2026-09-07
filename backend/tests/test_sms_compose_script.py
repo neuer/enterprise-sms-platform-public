@@ -2030,7 +2030,6 @@ def test_production_up_accepts_only_safe_non_secret_settings(
             [*prefix, "up", "--no-build", "-d", "--remove-orphans"],
             runtime=runtime,
         ),
-        expected_redis_control_ps(platform_root, production=True, runtime=runtime),
     ]
 
 
@@ -2059,7 +2058,6 @@ def test_production_existing_generation_runs_redis_tls_guard_before_compose(
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
         expected_writer_cutover_check_launch(platform_root, environment="production"),
         expected_line([*prefix, "up", "--no-build", "-d"], runtime=runtime),
-        expected_redis_control_ps(platform_root, production=True, runtime=runtime),
     ]
 
 
@@ -2393,7 +2391,6 @@ def test_production_external_tls_bind_requires_private_address_and_proxy_acl(
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
         expected_writer_cutover_check_launch(platform_root, environment="production"),
         expected_line([*prefix, "up", "--no-build", "-d"], runtime=runtime),
-        expected_redis_control_ps(platform_root, production=True, runtime=runtime),
     ]
 
 
@@ -2484,7 +2481,6 @@ def test_production_up_allows_dba_fixed_service_recreate(
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
         expected_writer_cutover_check_launch(platform_root, environment="production"),
         expected_line([*prefix, "up", "--no-build", *arguments], runtime=runtime),
-        expected_redis_control_ps(platform_root, production=True, runtime=runtime),
     ]
 
 
@@ -2587,11 +2583,10 @@ def test_up_prepares_then_validates_then_starts(
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
         expected_writer_cutover_check_launch(platform_root, environment="development"),
         expected_line([*prefix, "up", "-d"], runtime=runtime),
-        expected_redis_control_ps(platform_root, runtime=runtime),
     ]
 
 
-def test_up_bootstraps_writer_cutover_when_control_redis_is_running(
+def test_up_cannot_bootstrap_missing_marker_with_running_services(
     fake_environment: tuple[Path, Path, dict[str, str]],
 ) -> None:
     platform_root, log, environment = fake_environment
@@ -2611,8 +2606,6 @@ def test_up_bootstraps_writer_cutover_when_control_redis_is_running(
         expected_line([*prefix, "config", "--quiet"], runtime=runtime),
         expected_writer_cutover_check_launch(platform_root, environment="development"),
         expected_line([*prefix, "up", "-d"], runtime=runtime),
-        expected_redis_control_ps(platform_root, runtime=runtime),
-        expected_writer_cutover_bootstrap(platform_root, environment="development"),
     ]
 
 
@@ -2641,7 +2634,6 @@ def test_first_up_safely_creates_missing_nested_lock_parent(
         expected_line([*compose_prefix(platform_root), "config", "--quiet"], runtime=runtime),
         expected_writer_cutover_check_launch(platform_root, environment="development"),
         expected_line([*compose_prefix(platform_root), "up", "-d"], runtime=runtime),
-        expected_redis_control_ps(platform_root, runtime=runtime),
     ]
 
 

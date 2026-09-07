@@ -121,6 +121,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0106_auth_transition_dead_letter",
         "0107_report_timeout_sweep",
         "0108_chunk_failover_pending",
+        "0109_report_timeout_fairness",
     ]
 
 

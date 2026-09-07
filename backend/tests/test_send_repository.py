@@ -1129,8 +1129,8 @@ async def test_long_delay_persists_due_time_before_enqueue(
     assert "retry_not_before=now()+make_interval(secs=>:delay_s)" in sql
     assert "status='submitting'" in sql
     assert "retry_count=retry_count+1" in sql
-    assert "retry_count<8" in sql
-    assert params == {"id": 7, "code": 1011, "delay_s": 1800}
+    assert "retry_count<:retry_limit" in sql
+    assert params == {"id": 7, "code": 1011, "delay_s": 1800, "retry_limit": 8}
     assert connection.calls[1][1] == {"chunk_id": 7, "status": "released"}
     assert enqueued == [("app.tasks.send.process_chunk", [7], "bulk", 1800)]
 
@@ -1197,7 +1197,7 @@ async def test_mark_failed_aggregates_batch_and_only_enqueues_terminal_callback(
             FakeResult(),
             FakeResult(scalar=11),
             FakeResult(rowcount=1),
-            FakeResult(),
+            FakeResult(rowcount=1),
             FakeResult({"id": 11, "status": aggregate_status}),
             FakeResult(),
         ]
@@ -1441,7 +1441,7 @@ async def test_guard_denial_fails_unclaimed_chunk_without_budget_attempt(
             FakeResult(scalar=11),
             FakeResult(),
             FakeResult(scalar=11),
-            FakeResult(),
+            FakeResult(rowcount=1),
             FakeResult({"id": 11, "status": "completed"}),
             FakeResult(),
         ]
@@ -1536,7 +1536,7 @@ async def test_delay_exhaustion_fails_submitting_chunk(
             FakeResult(),
             FakeResult(scalar=11),
             FakeResult(rowcount=1),
-            FakeResult(),
+            FakeResult(rowcount=1),
             FakeResult({"id": 11, "status": "sending"}),
         ]
     )
@@ -1545,17 +1545,19 @@ async def test_delay_exhaustion_fails_submitting_chunk(
     await store.delay(7, 1011, 1800)
 
     delay_sql, delay_params = connection.calls[0]
-    assert "retry_count<8" in delay_sql
-    assert delay_params == {"id": 7, "code": 1011, "delay_s": 1800}
+    assert "retry_count<:retry_limit" in delay_sql
+    assert delay_params == {"id": 7, "code": 1011, "delay_s": 1800, "retry_limit": 8}
     assert "SELECT batch_id FROM sms_chunk" in connection.calls[1][0]
     assert "status='submitting'" in connection.calls[1][0]
     assert "FOR UPDATE" in connection.calls[2][0]
     assert "sms_batch" in connection.calls[2][0]
     fail_sql, fail_params = connection.calls[3]
     assert "status='failed'" in fail_sql
-    assert "delayed retry exhausted" in fail_sql
+    assert "vendor_msg=:reason" in fail_sql
     assert "retry_not_before=NULL" in fail_sql
-    assert fail_params == {"id": 7, "code": 1011}
+    assert fail_params == {
+        "id": 7, "code": 1011, "reason": "delayed_retry_exhausted",
+    }
     assert connection.calls[4][1] == {"chunk_id": 7, "status": "released"}
     assert connection.calls[5][1] == {"id": 7}
     aggregate_sql = connection.calls[6][0]

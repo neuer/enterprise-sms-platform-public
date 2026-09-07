@@ -118,18 +118,32 @@ def _eval_weighted(
     if last_raw is not None and now_sec < int(last_raw):
         now_sec = int(last_raw)
     if require_active:
+        from app.services.app_ratelimit_cutover import CutoverError, parse_cutover_marker
+
         marker_typ = store.typ(marker_key)
         if marker_typ == "none":
             return -3
         if marker_typ != "hash":
             return -2
+        try:
+            marker = parse_cutover_marker(store.hashes[marker_key])
+        except CutoverError:
+            return -4
+        if marker.requires_recovery or marker.target_writer_version != 2:
+            return -4
         state = store.hget(marker_key, "state")
         schema = store.hget(marker_key, "schema_version")
         try:
             generation = int(store.hget(marker_key, "generation") or "")
         except ValueError:
             generation = 0
-        if state != "active_v2" or schema != "1" or generation < 1:
+        try:
+            fence = int(store.hget(marker_key, "fence_time") or "")
+            after = int(store.hget(marker_key, "not_before") or "")
+        except ValueError:
+            return -4
+        if (state != "active_v2" or schema != "1" or generation < 1
+                or after < fence + 65 or store.now_sec < after):
             return -4
     try:
         v1_rec = _v1_active(store, v1_rec_key, now_sec)
@@ -197,207 +211,111 @@ def _eval_v1(store: _Store, keys: list[str], args: list[str]) -> int:
 
 
 def _eval_cas(store: _Store, args: list[str]) -> list[object]:
-    action = args[0]
-    expect_generation = args[1]
-    expect_state = args[2]
-    release_binding = args[3]
-    target_writer = args[4]
-    min_writer = args[5]
-    admission_reason = args[6]
-    window_seconds = args[7]
-    safety_margin = args[8]
-    marker = "ratelimit:cost:writer_cutover"
-    now_sec = store.now_sec
+    from app.services.app_ratelimit_cutover import CutoverError, parse_cutover_marker
 
-    def field(name: str) -> str:
-        raw = store.hget(marker, name)
-        return "" if raw is None else str(raw)
+    action, expected_gen, expected_state, binding, target, minimum, reason, window, margin = args
+    key = "ratelimit:cost:writer_cutover"
+    now = store.now_sec
+    kind = store.typ(key)
+    if kind not in {"none", "hash"}:
+        return [-2, "", "", str(now)]
+    exists = kind == "hash"
+    fields = store.hashes.get(key, {})
+    generation, state = fields.get("generation", ""), fields.get("state", "")
+    active = state in {"active_v1", "active_v2"}
+    legacy = False
 
-    typ = store.typ(marker)
-    if typ not in {"none", "hash"}:
-        return [-2, "", "", str(now_sec)]
-    exists = typ == "hash"
-    current_generation = field("generation")
-    current_state = field("state")
+    def result(code: int) -> list[object]:
+        return [code, state, generation, str(now)]
+
     if exists:
-        if field("schema_version") != "1":
-            return [-2, current_state, current_generation, str(now_sec)]
-        if current_generation == "" or current_state == "":
-            return [-2, current_state, current_generation, str(now_sec)]
         try:
-            if int(current_generation) < 1:
-                return [-2, current_state, current_generation, str(now_sec)]
-        except ValueError:
-            return [-2, current_state, current_generation, str(now_sec)]
-        if current_state not in {
-            "preparing",
-            "old_writers_fenced",
-            "waiting_window",
-            "active_v2",
-            "aborted_closed",
-        }:
-            return [-2, current_state, current_generation, str(now_sec)]
-        if action == "bootstrap" and current_state == "active_v2":
-            return [1, current_state, current_generation, str(now_sec)]
-        bound = field("release_binding")
-        if action != "takeover_prepare" and bound not in {"", release_binding}:
-            return [-6, current_state, current_generation, str(now_sec)]
-    if expect_generation and (not exists or current_generation != expect_generation):
-        return [0, current_state, current_generation, str(now_sec)]
-    if expect_state and (not exists or current_state != expect_state):
-        return [0, current_state, current_generation, str(now_sec)]
+            marker = parse_cutover_marker(fields)
+            legacy = marker.requires_recovery
+        except CutoverError:
+            return result(-2)
+    try:
+        valid = int(target) >= 1 and int(minimum) >= 1
+    except ValueError:
+        valid = False
+    if not valid or not binding or reason != "writer_cutover" or window != "60" or margin != "5":
+        return result(-2)
+    if exists and (not expected_gen or not expected_state):
+        return result(0)
+    if expected_gen and expected_gen != generation or expected_state and expected_state != state:
+        return result(0)
+    begin = action in {"prepare", "rollback_prepare"}
+    if begin and active and not legacy and fields["target_writer_version"] == target:
+        return result(-5 if now < int(fields["not_before"]) else 2)
+    new_operation = begin and (active or state == "aborted_closed")
+    if (exists and not new_operation and action != "takeover_prepare"
+            and fields["release_binding"] != binding):
+        return result(-6)
 
-    def write_fields(
-        generation: str,
-        state: str,
-        fence_time: str,
-        not_before: str,
-        minimum: str,
-    ) -> None:
-        store.hset(marker, "schema_version", "1")
-        store.hset(marker, "generation", generation)
-        store.hset(marker, "target_writer_version", target_writer)
-        store.hset(marker, "minimum_writer_version", minimum)
-        store.hset(marker, "fence_time", fence_time)
-        store.hset(marker, "not_before", not_before)
-        store.hset(marker, "state", state)
-        store.hset(marker, "release_binding", release_binding)
-        store.hset(marker, "admission_reason", admission_reason)
-        store.hset(marker, "window_seconds", window_seconds)
-        store.hset(marker, "safety_margin_seconds", safety_margin)
+    def write(gen: str, next_state: str, fence: str, after: str, min_version: str) -> list[object]:
+        nonlocal generation, state, fields
+        fields = {
+            "schema_version": "1", "generation": gen, "state": next_state,
+            "target_writer_version": target, "minimum_writer_version": min_version,
+            "fence_time": fence, "not_before": after, "release_binding": binding,
+            "admission_reason": reason, "window_seconds": window, "safety_margin_seconds": margin,
+        }
+        for name, value in fields.items():
+            store.hset(key, name, value)
+        generation, state = gen, next_state
+        return result(1)
 
     if action == "takeover_prepare":
-        if (not exists) or current_state != "preparing":
-            return [0, current_state, current_generation, str(now_sec)]
-        generation = str(int(current_generation) + 1)
-        write_fields(generation, "preparing", "", "", min_writer)
-        return [1, "preparing", generation, str(now_sec)]
-    if action == "prepare":
-        if (
-            exists
-            and current_state == "active_v2"
-            and field("target_writer_version") == target_writer
-        ):
-            return [1, current_state, current_generation, str(now_sec)]
-        if exists and current_state in {
-            "preparing",
-            "old_writers_fenced",
-            "waiting_window",
-        }:
-            return [1, current_state, current_generation, str(now_sec)]
-        generation = "1"
-        if exists:
-            generation = str(int(current_generation))
-            if current_state == "aborted_closed":
-                generation = str(int(current_generation) + 1)
-            else:
-                return [0, current_state, current_generation, str(now_sec)]
-        write_fields(generation, "preparing", "", "", min_writer)
-        return [1, "preparing", generation, str(now_sec)]
-    if action == "fence":
-        if exists and current_state in {
-            "old_writers_fenced",
-            "waiting_window",
-            "active_v2",
-        }:
-            return [1, current_state, current_generation, str(now_sec)]
-        if not exists or current_state != "preparing":
-            return [0, current_state, current_generation, str(now_sec)]
-        window = int(window_seconds)
-        margin = int(safety_margin)
-        write_fields(
-            current_generation,
-            "old_writers_fenced",
-            str(now_sec),
-            str(now_sec + window + margin),
-            min_writer,
-        )
-        return [1, "old_writers_fenced", current_generation, str(now_sec)]
+        if not exists or state != "preparing":
+            return result(0)
+        return write(str(int(generation)+1), "preparing", "", "", minimum)
+    if begin:
+        if not exists:
+            if action == "rollback_prepare":
+                return result(0)
+            return write("1", "preparing", "", "", minimum)
+        if new_operation:
+            if int(minimum) < int(fields["minimum_writer_version"]):
+                return result(-2)
+            return write(str(int(generation)+1), "preparing", "", "", minimum)
+        if fields["target_writer_version"] != target:
+            return result(-6)
+        return result(1 if state in {"preparing", "old_writers_fenced", "waiting_window"} else 0)
+    if not exists or fields["target_writer_version"] != target:
+        return result(0)
+    if action == "invalidate_fence":
+        if state not in {"old_writers_fenced", "waiting_window"}:
+            return result(0)
+        return write(generation, "preparing", "", "", minimum)
+    if action in {"fence", "refence"}:
+        if action == "fence" and state in {"old_writers_fenced", "waiting_window"}:
+            return result(1)
+        if state != "preparing" and not (action == "refence" and state in {
+            "old_writers_fenced", "waiting_window",
+        }):
+            return result(0)
+        return write(generation, "old_writers_fenced", str(now), str(now+65), minimum)
     if action == "wait":
-        if exists and current_state in {"waiting_window", "active_v2"}:
-            return [1, current_state, current_generation, str(now_sec)]
-        if not exists or current_state != "old_writers_fenced":
-            return [0, current_state, current_generation, str(now_sec)]
-        fence_time = int(field("fence_time"))
-        if now_sec < fence_time:
-            return [-5, current_state, current_generation, str(now_sec)]
-        write_fields(
-            current_generation,
-            "waiting_window",
-            field("fence_time"),
-            field("not_before"),
-            field("minimum_writer_version"),
+        if state == "waiting_window":
+            return result(1)
+        if state != "old_writers_fenced":
+            return result(0)
+        if now < int(fields["fence_time"]):
+            return result(-5)
+        return write(
+            generation, "waiting_window", fields["fence_time"], fields["not_before"], minimum,
         )
-        return [1, "waiting_window", current_generation, str(now_sec)]
-    if action == "activate":
-        if exists and current_state == "active_v2":
-            return [1, current_state, current_generation, str(now_sec)]
-        if not exists or current_state != "waiting_window":
-            return [0, current_state, current_generation, str(now_sec)]
-        fence_time = int(field("fence_time"))
-        not_before = int(field("not_before"))
-        if now_sec < fence_time:
-            return [-5, current_state, current_generation, str(now_sec)]
-        if now_sec < not_before:
-            return [-3, current_state, current_generation, str(now_sec)]
-        write_fields(
-            current_generation,
-            "active_v2",
-            field("fence_time"),
-            field("not_before"),
-            target_writer,
-        )
-        return [1, "active_v2", current_generation, str(now_sec)]
+    if action in {"activate", "rollback_finish"}:
+        if state != "waiting_window":
+            return result(0)
+        if now < int(fields["fence_time"]):
+            return result(-5)
+        if now < int(fields["not_before"]):
+            return result(-3)
+        return write(generation, "active_v1" if target == "1" else "active_v2",
+                     fields["fence_time"], fields["not_before"], target)
     if action == "abort":
-        generation = current_generation if exists else "1"
-        write_fields(
-            generation,
-            "aborted_closed",
-            field("fence_time"),
-            field("not_before"),
-            min_writer,
+        return write(
+            generation, "aborted_closed", fields["fence_time"], fields["not_before"], minimum,
         )
-        return [1, "aborted_closed", generation, str(now_sec)]
-    if action == "rollback_prepare":
-        if exists and current_state in {
-            "preparing",
-            "old_writers_fenced",
-            "waiting_window",
-        }:
-            return [1, current_state, current_generation, str(now_sec)]
-        if not exists or current_state != "active_v2":
-            return [0, current_state, current_generation, str(now_sec)]
-        generation = str(int(current_generation) + 1)
-        write_fields(generation, "preparing", "", "", min_writer)
-        return [1, "preparing", generation, str(now_sec)]
-    if action == "rollback_finish":
-        if (
-            exists
-            and current_state == "preparing"
-            and field("target_writer_version") == target_writer
-        ):
-            return [1, current_state, current_generation, str(now_sec)]
-        if not exists or current_state != "waiting_window":
-            return [0, current_state, current_generation, str(now_sec)]
-        fence_time = int(field("fence_time"))
-        not_before = int(field("not_before"))
-        if now_sec < fence_time:
-            return [-5, current_state, current_generation, str(now_sec)]
-        if now_sec < not_before:
-            return [-3, current_state, current_generation, str(now_sec)]
-        write_fields(
-            current_generation,
-            "preparing",
-            field("fence_time"),
-            field("not_before"),
-            target_writer,
-        )
-        return [1, "preparing", current_generation, str(now_sec)]
-    if action == "bootstrap":
-        if exists and current_state == "active_v2":
-            return [1, current_state, current_generation, str(now_sec)]
-        if exists:
-            return [0, current_state, current_generation, str(now_sec)]
-        write_fields("1", "active_v2", str(now_sec), str(now_sec), target_writer)
-        return [1, "active_v2", "1", str(now_sec)]
-    return [-4, current_state, current_generation, str(now_sec)]
+    return result(-4)

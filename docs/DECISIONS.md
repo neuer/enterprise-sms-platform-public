@@ -1592,6 +1592,10 @@
   不删除。回滚必须再次冻结当前 writer 并排空窗口；finally 不得无条件
   OPEN，也不得清掉无关的更严 CLOSED。
 - 原因：新旧 writer 各自增量时 max(v1,v2) 漏计，限额会被突破。
+- R6 修订（#693/#694）：普通 up 不再把 marker 缺失当作首装证明；初始化
+  也走正式隔离与 65 秒窗口。已完成的同协议更新只读通过历史绑定，真实
+  协议变化才 CAS 取得下一代。回滚读取目标 commit 的协议，协议降为 v1
+  的完成态为 active_v1；本地 marker 投影写失败必须报错。
 - 影响：`app_ratelimit.py`、`app_ratelimit_cutover.py`、
   `deploy/scripts/writer_cutover.py`、`test_update_apply.py`、
   `test_update_manager.py`、`deploy/sms-compose`、

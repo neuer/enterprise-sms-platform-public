@@ -2254,6 +2254,7 @@ class HostTestUpdateOperations:
 
         from app.services.app_ratelimit_cutover import (
             CutoverError,
+            parse_writer_protocol,
             read_cutover_marker,
         )
         from app.services.app_ratelimit_cutover import (
@@ -2297,14 +2298,23 @@ class HostTestUpdateOperations:
                     for index in range(0, len(values), 2)
                 }
 
+        redis = _HostControlRedis(self.host)
         executor = ComposeWriterExecutor(
             runner=_HostRunAdapter(self.host),
             # host._run 已带 docker compose 前缀；这里只拼 stop/ps 子命令。
             compose=(),
             root=self.root,
+            redis=redis,
             rollback=rollback,
         )
-        redis = _HostControlRedis(self.host)
+        if rollback:
+            metadata_path = "deploy/writer-protocol.json"
+            exists = self._command("git", "-C", str(self.root), "ls-tree", "--name-only",
+                                   self.request.base_commit, "--", metadata_path)
+            executor.writer_version = (parse_writer_protocol(self._command(
+                "git", "-C", str(self.root), "show",
+                f"{self.request.base_commit}:{metadata_path}",
+            )) if exists.strip() else 1)
         if not rollback:
             self._takeover_blocked_cutover_marker(redis, update_id)
         sleeper = getattr(self, "_writer_cutover_sleep", time.sleep)
@@ -2328,19 +2338,17 @@ class HostTestUpdateOperations:
         if not result.ok:
             raise TestUpdateManagerError(result.error or "writer cutover failed")
         if rollback:
-            if result.state != "preparing":
+            if result.state not in {"active_v1", "active_v2"}:
                 raise TestUpdateManagerError("writer rollback did not finish")
             marker = read_cutover_marker(redis)
             if marker is not None:
-                with contextlib.suppress(OSError):
-                    write_local_marker(marker)
+                write_local_marker(marker)
             return
         if result.state != "active_v2":
             raise TestUpdateManagerError("writer cutover did not activate")
         marker = read_cutover_marker(redis)
         if marker is not None:
-            with contextlib.suppress(OSError):
-                write_local_marker(marker)
+            write_local_marker(marker)
 
     def _takeover_blocked_cutover_marker(self, redis: object, update_id: str) -> None:
         from app.services.app_ratelimit_cutover import (
@@ -2373,6 +2381,7 @@ class HostTestUpdateOperations:
             release_binding=update_id,
             target_writer_version=WRITER_PROTOCOL_VERSION,
             minimum_writer_version=WRITER_PROTOCOL_VERSION,
+            expect_generation=marker.generation,
             expect_state="preparing",
         )
         if code < 0:

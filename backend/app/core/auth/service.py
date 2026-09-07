@@ -107,10 +107,18 @@ local function is_terminal(state)
   return state == 'audited' or state == 'dead' or state == 'orphaned'
 end
 
+local function audit_type(audit_key)
+  local kind = redis.call('TYPE', audit_key)
+  if type(kind) == 'table' then return kind.ok end
+  return kind
+end
+
 local function field_class(audit_key, expected_id)
-  if redis.call('EXISTS', audit_key) == 0 then
+  local kind = audit_type(audit_key)
+  if kind == 'none' then
     return 'missing_hash'
   end
+  if kind ~= 'hash' then return 'schema' end
   local tid = redis.call('HGET', audit_key, 'transition_id') or ''
   if tid ~= '' and tid ~= expected_id then return 'id' end
   local schema = redis.call('HGET', audit_key, 'schema_version') or ''
@@ -157,7 +165,7 @@ local function mark_orphan(transition_id, field, now_ms, terminal_ttl)
   redis.call('ZREM', DUE, transition_id)
   redis.call('ZREM', OPEN, transition_id)
   local audit_key = PREFIX .. transition_id
-  if redis.call('EXISTS', audit_key) == 1 then
+  if audit_type(audit_key) == 'hash' then
     redis.call('HSET', audit_key, 'state', 'orphaned', 'last_error_class', reason)
     redis.call('HDEL', audit_key, 'lease_id', 'lease_expires_ms', 'next_retry_at_ms')
     redis.call('EXPIRE', audit_key, terminal_ttl)
@@ -420,7 +428,10 @@ class LoginGuard:
     local transition_id = ARGV[1]
     local audit_key = PREFIX .. transition_id
     local terminal_ttl = tonumber(ARGV[4])
-    local previous = redis.call('HGET', audit_key, 'state') or ''
+    local previous = ''
+    if audit_type(audit_key) == 'hash' then
+      previous = redis.call('HGET', audit_key, 'state') or ''
+    end
     local field = field_class(audit_key, transition_id)
     if field ~= '' then
       local reason = mark_orphan(transition_id, field, now_ms, terminal_ttl)
@@ -461,7 +472,7 @@ class LoginGuard:
     local in_due = redis.call('ZSCORE', DUE, transition_id)
     local field = field_class(audit_key, transition_id)
     if field ~= '' then
-      if in_due then
+      if in_due or (field == 'schema' and audit_type(audit_key) ~= 'hash') then
         local reason = mark_orphan(transition_id, field, now_ms, terminal_ttl)
         return {'due_to_hash', 'orphaned', field, reason}
       end

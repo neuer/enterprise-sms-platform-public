@@ -66,7 +66,46 @@ export interface AuthorizedJsonResult<T> {
 
 type RefreshResult = "refreshed" | "unauthorized" | "reauth-required" | "unavailable"
 type AuthDecision = "account-locked" | "reauth-required" | "context-changed" | "unauthorized" | "none"
-let refreshInFlight: Promise<RefreshResult> | null = null
+class RequestScope {
+  readonly origin: SessionOperationOrigin
+  retiredGeneration: number | null = null
+
+  constructor() {
+    // 一次性历史迁移必须先完成，随后固定本次逻辑请求的来源。
+    getAccessToken()
+    this.origin = captureSessionOperationOrigin()
+  }
+
+  assertCurrent(): void {
+    if (isSessionOperationOriginCurrent(this.origin)) return
+    if (this.retiredGeneration === getSessionGeneration() && getSessionInstanceId() === null) return
+    throw new DOMException("会话已切换", "AbortError")
+  }
+
+  retire(reason: "unauthorized" | "reauth-required"): void {
+    this.assertCurrent()
+    if (clearSession(reason, this.origin)) this.retiredGeneration = getSessionGeneration()
+  }
+}
+
+interface AttemptContext {
+  scope: RequestScope
+  token: string | null
+}
+
+const resultScopes = new WeakMap<object, RequestScope>()
+
+function bindResult<T extends object>(result: T, scope: RequestScope): T {
+  scope.assertCurrent()
+  resultScopes.set(result, scope)
+  return result
+}
+
+export function assertAuthorizedResultCurrent(result: object): void {
+  resultScopes.get(result)?.assertCurrent()
+}
+
+let refreshInFlight: { scope: RequestScope; promise: Promise<RefreshResult> } | null = null
 const sessionControllers = new Set<AbortController>()
 window.addEventListener("sms:session-clearing", () => {
   invalidateSessionGeneration()
@@ -130,7 +169,7 @@ function startAuthorizedAttempt(
   }
 }
 
-function authorizedHeaders(init: RequestInit): Record<string, string> {
+function authorizedHeaders(init: RequestInit, token: string | null): Record<string, string> {
   const headers: Record<string, string> = {}
   if (init.headers instanceof Headers) {
     init.headers.forEach((value, key) => {
@@ -144,14 +183,28 @@ function authorizedHeaders(init: RequestInit): Record<string, string> {
   for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === "authorization") delete headers[key]
   }
-  const token = getAccessToken()
   if (token) headers.Authorization = `Bearer ${token}`
   return headers
 }
 
-async function fetchAuthorizedOnce(url: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
+async function fetchAuthorizedOnce(
+  url: string,
+  init: RequestInit,
+  signal: AbortSignal,
+  context: AttemptContext,
+): Promise<Response> {
   assertSameOrigin(url)
-  return fetch(url, { ...init, headers: authorizedHeaders(init), signal })
+  const headers = authorizedHeaders(init, context.token)
+  context.scope.assertCurrent()
+  if (signal.aborted) throw signal.reason
+  return fetch(url, { ...init, headers, signal })
+}
+
+function attemptContext(scope: RequestScope): AttemptContext {
+  scope.assertCurrent()
+  const token = getAccessToken()
+  scope.assertCurrent()
+  return { scope, token }
 }
 
 function rebuildJsonResponse(response: Response, body: unknown): Response {
@@ -175,11 +228,12 @@ function classifyAuthDecision(status: number, body: unknown): AuthDecision {
   return "none"
 }
 
-function applyAuthDecision(decision: AuthDecision, origin: SessionOperationOrigin): void {
+function applyAuthDecision(decision: AuthDecision, scope: RequestScope): void {
+  scope.assertCurrent()
   if (decision === "account-locked" || decision === "context-changed") {
-    clearSession("unauthorized", origin)
+    scope.retire("unauthorized")
   } else if (decision === "reauth-required") {
-    clearSession("reauth-required", origin)
+    scope.retire("reauth-required")
   }
 }
 
@@ -200,78 +254,99 @@ function clearSession(
   return true
 }
 
-async function refreshSession(): Promise<RefreshResult> {
-  const origin = captureSessionOperationOrigin()
+async function refreshSession(scope: RequestScope): Promise<RefreshResult> {
+  scope.assertCurrent()
+  const origin = scope.origin
   if (detectSessionMode() === "access_only" || getSessionMode() === "access_only") {
-    clearSession("unauthorized", origin)
+    scope.retire("unauthorized")
     return "unauthorized"
   }
-  if (refreshInFlight) return refreshInFlight
+  if (refreshInFlight && isSessionOperationOriginCurrent(refreshInFlight.scope.origin)) {
+    const joined = refreshInFlight
+    const result = await joined.promise
+    scope.retiredGeneration = joined.scope.retiredGeneration
+    scope.assertCurrent()
+    return result
+  }
   const epochAtRequest = getSessionGeneration()
-  refreshInFlight = withRefreshLock(async () => {
-    if (!isCurrentSessionGeneration(epochAtRequest) || origin.sessionInstanceId !== getSessionInstanceId()) {
-      return "unauthorized"
-    }
-    const epoch = getSessionGeneration()
-    try {
-      const currentUser = getSessionUser()
-      const controller = new AbortController()
-      const releaseTrack = trackSessionController(controller)
-      let result: Awaited<ReturnType<typeof refreshRequest>>
+  const flight = {
+    scope,
+    promise: withRefreshLock(async () => {
+      scope.assertCurrent()
+      if (!isCurrentSessionGeneration(epochAtRequest) || origin.sessionInstanceId !== getSessionInstanceId()) {
+        return "unauthorized"
+      }
+      const epoch = getSessionGeneration()
       try {
-        result = await refreshRequest(controller.signal)
-      } finally {
-        releaseTrack()
-      }
-      if (!isCurrentSessionGeneration(epoch) || origin.sessionInstanceId !== getSessionInstanceId()) {
-        return "unauthorized"
-      }
-      if (
-        currentUser &&
-        Number.isInteger(currentUser.account_id) &&
-        currentUser.account_id > 0 &&
-        Number.isInteger(currentUser.identity_id) &&
-        currentUser.identity_id > 0 &&
-        (currentUser.account_id !== result.user.account_id || currentUser.identity_id !== result.user.identity_id)
-      ) {
-        clearSession("unauthorized", origin)
-        return "unauthorized"
-      }
-      setAccessSession(result.token, result.user, result.session_mode, getSessionInstanceId() ?? undefined)
-      window.dispatchEvent(new Event("sms:session-refreshed"))
-      return "refreshed"
-    } catch (error) {
-      if (!isCurrentSessionGeneration(epoch) || origin.sessionInstanceId !== getSessionInstanceId()) {
-        return "unauthorized"
-      }
-      if (error instanceof AuthApiError && error.status === 401) {
-        if (error.code === "AUTH_REAUTH_REQUIRED") {
-          clearSession("reauth-required", origin)
-          return "reauth-required"
+        const currentUser = getSessionUser()
+        const controller = new AbortController()
+        const releaseTrack = trackSessionController(controller)
+        let result: Awaited<ReturnType<typeof refreshRequest>>
+        try {
+          result = await refreshRequest(controller.signal)
+        } finally {
+          releaseTrack()
         }
-        clearSession("unauthorized", origin)
-        return "unauthorized"
+        if (!isCurrentSessionGeneration(epoch) || origin.sessionInstanceId !== getSessionInstanceId()) {
+          return "unauthorized"
+        }
+        if (
+          currentUser &&
+          Number.isInteger(currentUser.account_id) &&
+          currentUser.account_id > 0 &&
+          Number.isInteger(currentUser.identity_id) &&
+          currentUser.identity_id > 0 &&
+          (currentUser.account_id !== result.user.account_id || currentUser.identity_id !== result.user.identity_id)
+        ) {
+          scope.retire("unauthorized")
+          return "unauthorized"
+        }
+        setAccessSession(result.token, result.user, result.session_mode, getSessionInstanceId() ?? undefined)
+        window.dispatchEvent(new Event("sms:session-refreshed"))
+        return "refreshed"
+      } catch (error) {
+        if (!isCurrentSessionGeneration(epoch) || origin.sessionInstanceId !== getSessionInstanceId()) {
+          return "unauthorized"
+        }
+        if (error instanceof AuthApiError && error.status === 401) {
+          if (error.code === "AUTH_REAUTH_REQUIRED") {
+            scope.retire("reauth-required")
+            return "reauth-required"
+          }
+          scope.retire("unauthorized")
+          return "unauthorized"
+        }
+        return "unavailable"
       }
-      return "unavailable"
-    }
-  })
+    }),
+  }
+  refreshInFlight = flight
   try {
-    return await refreshInFlight
+    const result = await flight.promise
+    scope.assertCurrent()
+    return result
   } finally {
-    refreshInFlight = null
+    if (refreshInFlight === flight) refreshInFlight = null
   }
 }
 
 async function replayAfterUnauthorized<T>(
+  scope: RequestScope,
   attemptedToken: string | null,
   retry: () => Promise<T>,
   fallback: () => T,
 ): Promise<T> {
+  scope.assertCurrent()
+  if (getSessionMode() === "access_only" || detectSessionMode() === "access_only") {
+    scope.retire("unauthorized")
+    return fallback()
+  }
   const currentToken = getAccessToken()
   if (currentToken && attemptedToken && currentToken !== attemptedToken) {
     return retry()
   }
-  const refreshed = await refreshSession()
+  const refreshed = await refreshSession(scope)
+  scope.assertCurrent()
   if (refreshed === "refreshed") return retry()
   if (refreshed === "unavailable") {
     throw new ApiRequestError(503, "AUTH_SESSION_UNAVAILABLE", "会话权威状态暂不可用，请稍后重试")
@@ -282,13 +357,21 @@ async function replayAfterUnauthorized<T>(
   return fallback()
 }
 
-async function jsonAttempt<T>(url: string, init: RequestInit, timeoutMs: number): Promise<AuthorizedJsonResult<T>> {
+async function jsonAttempt<T>(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  context: AttemptContext,
+): Promise<AuthorizedJsonResult<T>> {
   const attempt = startAuthorizedAttempt(timeoutMs, init.signal ?? undefined, "请求超时")
   try {
-    const response = await fetchAuthorizedOnce(url, init, attempt.signal)
+    const response = await fetchAuthorizedOnce(url, init, attempt.signal, context)
     const body = await readJsonBody<T | ApiErrorBody>(response, attempt.signal, API_JSON_MAX_BYTES)
-    return { status: response.status, ok: response.ok, headers: response.headers, body }
+    const result = { status: response.status, ok: response.ok, headers: response.headers, body }
+    return bindResult(result, context.scope)
   } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error
+    context.scope.assertCurrent()
     mapHttpBodyError(error)
   } finally {
     attempt.cleanup()
@@ -300,42 +383,54 @@ export async function authorizedJsonResult<T>(
   init: RequestInit,
   timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<AuthorizedJsonResult<T>> {
-  const origin = captureSessionOperationOrigin()
-  const attemptedToken = getAccessToken()
-  const first = await jsonAttempt<T>(url, init, timeoutMs)
+  const scope = new RequestScope()
+  const context = attemptContext(scope)
+  const attemptedToken = context.token
+  const first = await jsonAttempt<T>(url, init, timeoutMs, context)
+  scope.assertCurrent()
   const decision = classifyAuthDecision(first.status, first.body)
-  applyAuthDecision(decision, origin)
+  applyAuthDecision(decision, scope)
   if (decision !== "unauthorized") return first
   try {
-    return await replayAfterUnauthorized(
+    const replayed = await replayAfterUnauthorized(
+      scope,
       attemptedToken,
-      () => jsonAttempt<T>(url, init, timeoutMs),
+      () => jsonAttempt<T>(url, init, timeoutMs, attemptContext(scope)),
       () => first,
     )
+    scope.assertCurrent()
+    return replayed
   } catch (error) {
+    scope.assertCurrent()
     if (error instanceof ApiRequestError && error.code === "AUTH_SESSION_UNAVAILABLE") {
-      return {
-        status: 503,
-        ok: false,
-        headers: new Headers({ "Content-Type": "application/json" }),
-        body: {
-          code: "AUTH_SESSION_UNAVAILABLE",
-          message: "会话权威状态暂不可用，请稍后重试",
-          detail: null,
+      return bindResult(
+        {
+          status: 503,
+          ok: false,
+          headers: new Headers({ "Content-Type": "application/json" }),
+          body: {
+            code: "AUTH_SESSION_UNAVAILABLE",
+            message: "会话权威状态暂不可用，请稍后重试",
+            detail: null,
+          },
         },
-      }
+        scope,
+      )
     }
     if (error instanceof ApiRequestError && error.code === "AUTH_REAUTH_REQUIRED") {
-      return {
-        status: 401,
-        ok: false,
-        headers: new Headers({ "Content-Type": "application/json" }),
-        body: {
-          code: "AUTH_REAUTH_REQUIRED",
-          message: "AD 会话已到期，请重新登录",
-          detail: null,
+      return bindResult(
+        {
+          status: 401,
+          ok: false,
+          headers: new Headers({ "Content-Type": "application/json" }),
+          body: {
+            code: "AUTH_REAUTH_REQUIRED",
+            message: "AD 会话已到期，请重新登录",
+            detail: null,
+          },
         },
-      }
+        scope,
+      )
     }
     throw error
   }
@@ -345,16 +440,21 @@ async function rawAttempt(
   url: string,
   init: RequestInit,
   timeoutMs: number,
+  context: AttemptContext,
 ): Promise<{ response: Response; body: ApiErrorBody | null }> {
   const attempt = startAuthorizedAttempt(timeoutMs, init.signal ?? undefined, "请求超时")
   try {
-    const response = await fetchAuthorizedOnce(url, init, attempt.signal)
+    const response = await fetchAuthorizedOnce(url, init, attempt.signal, context)
     if (response.status === 401 || response.status === 409 || response.status === 423) {
       const body = await readJsonBody<ApiErrorBody>(response, attempt.signal, API_JSON_MAX_BYTES)
+      context.scope.assertCurrent()
       return { response: rebuildJsonResponse(response, body), body }
     }
+    context.scope.assertCurrent()
     return { response, body: null }
   } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error
+    context.scope.assertCurrent()
     mapHttpBodyError(error)
   } finally {
     attempt.cleanup()
@@ -366,20 +466,25 @@ export async function authorizedFetch(
   init: RequestInit,
   timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
-  const origin = captureSessionOperationOrigin()
-  const attemptedToken = getAccessToken()
-  const first = await rawAttempt(url, init, timeoutMs)
+  const scope = new RequestScope()
+  const context = attemptContext(scope)
+  const attemptedToken = context.token
+  const first = await rawAttempt(url, init, timeoutMs, context)
+  scope.assertCurrent()
   const decision = classifyAuthDecision(first.response.status, first.body)
-  applyAuthDecision(decision, origin)
+  applyAuthDecision(decision, scope)
   if (decision !== "unauthorized") return first.response
   try {
     const replayed = await replayAfterUnauthorized(
+      scope,
       attemptedToken,
-      () => rawAttempt(url, init, timeoutMs),
+      () => rawAttempt(url, init, timeoutMs, attemptContext(scope)),
       () => first,
     )
+    scope.assertCurrent()
     return replayed.response
   } catch (error) {
+    scope.assertCurrent()
     if (error instanceof ApiRequestError && error.code === "AUTH_SESSION_UNAVAILABLE") {
       return new Response(
         JSON.stringify({
@@ -406,10 +511,15 @@ export async function authorizedFetch(
 
 type BlobAttempt = { kind: "blob"; blob: Blob } | { kind: "error"; status: number; body: ApiErrorBody | null }
 
-async function blobAttempt(url: string, init: RequestInit, timeoutMs: number): Promise<BlobAttempt> {
+async function blobAttempt(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  context: AttemptContext,
+): Promise<BlobAttempt> {
   const attempt = startAuthorizedAttempt(timeoutMs, init.signal ?? undefined, "请求超时")
   try {
-    const response = await fetchAuthorizedOnce(url, init, attempt.signal)
+    const response = await fetchAuthorizedOnce(url, init, attempt.signal, context)
     if (!response.ok) {
       let body: ApiErrorBody | null = null
       try {
@@ -417,13 +527,15 @@ async function blobAttempt(url: string, init: RequestInit, timeoutMs: number): P
       } catch (error) {
         if (!(error instanceof HttpBodyError)) throw error
       }
+      context.scope.assertCurrent()
       return { kind: "error", status: response.status, body }
     }
-    return {
-      kind: "blob",
-      blob: await readLimitedBlob(response, attempt.signal, DOWNLOAD_MAX_BYTES),
-    }
+    const blob = await readLimitedBlob(response, attempt.signal, DOWNLOAD_MAX_BYTES)
+    context.scope.assertCurrent()
+    return { kind: "blob", blob }
   } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") throw error
+    context.scope.assertCurrent()
     mapHttpBodyError(error)
   } finally {
     attempt.cleanup()
@@ -444,22 +556,27 @@ export async function authorizedBlob(
   init: RequestInit,
   timeoutMs: number = DOWNLOAD_TIMEOUT_MS,
 ): Promise<Blob> {
-  const origin = captureSessionOperationOrigin()
-  const attemptedToken = getAccessToken()
-  const first = await blobAttempt(url, init, timeoutMs)
+  const scope = new RequestScope()
+  const context = attemptContext(scope)
+  const attemptedToken = context.token
+  const first = await blobAttempt(url, init, timeoutMs, context)
+  scope.assertCurrent()
   if (first.kind === "blob") return first.blob
   const decision = classifyAuthDecision(first.status, first.body)
-  applyAuthDecision(decision, origin)
+  applyAuthDecision(decision, scope)
   if (decision !== "unauthorized") throwDownloadError(first.status, first.body)
   try {
     const replayed = await replayAfterUnauthorized(
+      scope,
       attemptedToken,
-      () => blobAttempt(url, init, timeoutMs),
+      () => blobAttempt(url, init, timeoutMs, attemptContext(scope)),
       () => first,
     )
+    scope.assertCurrent()
     if (replayed.kind === "blob") return replayed.blob
     throwDownloadError(replayed.status, replayed.body)
   } catch (error) {
+    scope.assertCurrent()
     if (error instanceof ApiRequestError && error.code === "AUTH_SESSION_UNAVAILABLE") {
       throwDownloadError(503, {
         code: "AUTH_SESSION_UNAVAILABLE",
@@ -479,6 +596,7 @@ export async function authorizedBlob(
 }
 
 function unwrapAuthorizedJson<T>(result: AuthorizedJsonResult<T>): T {
+  assertAuthorizedResultCurrent(result)
   if (!result.ok) {
     const body = (result.body ?? {}) as ApiErrorBody
     throw new ApiRequestError(

@@ -215,6 +215,9 @@ export class SessionDocument {
         this.sessionUser = null
       }
     }
+    if (this.accessToken && !isSessionInstanceId(this.logicalSessionInstanceId)) {
+      this.logicalSessionInstanceId = createSessionInstanceId()
+    }
   }
 
   broadcastRetired(targetInstanceId: string): SessionRetiredMessage | null {

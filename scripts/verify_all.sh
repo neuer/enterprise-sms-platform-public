@@ -133,6 +133,25 @@ wait_api_ready(){
   echo "readyz 超时" >&2
   return 1
 }
+activate_writer_cutover(){
+  local attempt result
+  for attempt in $(seq 1 16); do
+    if result="$(compose test-update writer-cutover)"; then
+      printf '%s\n' "$result"
+      return 0
+    fi
+    printf '%s\n' "$result" | python3 -c '
+import json, sys
+result = json.load(sys.stdin)
+assert result["state"] == "waiting_window"
+assert result["error"] == "waiting for not_before"
+assert result["admission_state"] == "closed"
+' || return 1
+    sleep 5
+  done
+  echo "writer cutover 窗口等待超时" >&2
+  return 1
+}
 metrics_gate(){
   metrics_token="$(tr -d '\r\n' < deploy/secrets/metrics_scrape_token)"
   metrics_body="$(curl -sf -H "Authorization: Bearer ${metrics_token}" \
@@ -206,6 +225,8 @@ else
   compose up -d --build
 fi
 bash scripts/verify_redis_domains.sh
+activate_writer_cutover
+compose up -d api
 wait_api_ready
 metrics_gate
 compose exec -T api test ! -e /run/secrets/db_owner_password

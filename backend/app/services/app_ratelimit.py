@@ -97,8 +97,19 @@ end
 local marker_state = redis.call('HGET', marker_key, 'state')
 local marker_schema = redis.call('HGET', marker_key, 'schema_version')
 local marker_generation = tonumber(redis.call('HGET', marker_key, 'generation'))
+local marker_fence = tonumber(redis.call('HGET', marker_key, 'fence_time'))
+local marker_not_before = tonumber(redis.call('HGET', marker_key, 'not_before'))
 if marker_state ~= 'active_v2' or marker_schema ~= '1'
-    or marker_generation == nil or marker_generation < 1 then
+    or marker_generation == nil or marker_generation < 1
+    or marker_generation ~= math.floor(marker_generation)
+    or redis.call('HLEN', marker_key) ~= 11
+    or redis.call('HGET', marker_key, 'target_writer_version') ~= '2'
+    or redis.call('HGET', marker_key, 'minimum_writer_version') ~= '2'
+    or redis.call('HGET', marker_key, 'window_seconds') ~= '60'
+    or redis.call('HGET', marker_key, 'safety_margin_seconds') ~= '5'
+    or redis.call('HGET', marker_key, 'admission_reason') ~= 'writer_cutover'
+    or marker_fence == nil or marker_not_before == nil
+    or marker_not_before < marker_fence + 65 or tonumber(t[1]) < marker_not_before then
   return -4
 end
 local v2_rec = ring_total(rec_key)

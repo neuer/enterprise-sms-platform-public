@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.95  2026-09-07
+-- v1.6.95：回执超时领取代际、退避及公平调度随批次持久化，跨任务共享。
 -- v1.6.94  2026-09-06
 -- v1.6.94：sms_chunk 增加 failover_pending，safe reject 后持久化下一跳；
 --          无下一供应商时按失败合同收敛，禁止留下 rejected+submitting。
@@ -610,6 +612,12 @@ CREATE TABLE sms_batch (
     delivered         INTEGER      NOT NULL DEFAULT 0,
     failed            INTEGER      NOT NULL DEFAULT 0,
     unknown_cnt       INTEGER      NOT NULL DEFAULT 0,
+    report_timeout_last_attempt_at TIMESTAMPTZ,
+    report_timeout_next_attempt_at TIMESTAMPTZ,
+    report_timeout_generation BIGINT NOT NULL DEFAULT 0
+      CONSTRAINT ck_batch_timeout_generation CHECK (report_timeout_generation>=0),
+    report_timeout_failures INTEGER NOT NULL DEFAULT 0
+      CONSTRAINT ck_batch_timeout_failures CHECK (report_timeout_failures BETWEEN 0 AND 16),
     scheduled_at      TIMESTAMPTZ,
     selected_vendor   VARCHAR(32)  NOT NULL DEFAULT 'zhihui',
     routing_reason    VARCHAR(64),
@@ -637,6 +645,8 @@ CREATE TABLE sms_batch (
 CREATE INDEX idx_batch_app_biz ON sms_batch(app_id, biz_id)
     WHERE biz_id IS NOT NULL AND app_id IS NOT NULL;
 CREATE INDEX idx_batch_created  ON sms_batch(created_at);
+CREATE INDEX idx_batch_timeout_fairness
+    ON sms_batch(report_timeout_last_attempt_at NULLS FIRST,id);
 CREATE INDEX idx_batch_dept     ON sms_batch(dept, created_at);
 CREATE INDEX idx_batch_app      ON sms_batch(app_id, created_at);
 CREATE INDEX idx_batch_category ON sms_batch(category, created_at);

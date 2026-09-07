@@ -56,8 +56,17 @@ function redis.call(cmd, ...)
   if cmd == 'HSET' then
     kinds[key] = 'hash'
     hashes[key] = hashes[key] or {}
-    hashes[key][tostring(args[2])] = tostring(args[3])
-    return 1
+    local added = 0
+    for i = 2, #args, 2 do
+      if hashes[key][tostring(args[i])] == nil then added = added + 1 end
+      hashes[key][tostring(args[i])] = tostring(args[i+1])
+    end
+    return added
+  end
+  if cmd == 'HLEN' then
+    local count = 0
+    for _ in pairs(hashes[key] or {}) do count = count + 1 end
+    return count
   end
   if cmd == 'HINCRBY' then
     kinds[key] = 'hash'

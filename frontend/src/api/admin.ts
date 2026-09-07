@@ -1,6 +1,6 @@
 import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS, type UserRole } from "./auth"
 import type { VendorCredentialEnvelope, VendorSealSession } from "../lib/vendorSeal"
-import { apiRequest, authorizedJsonResult } from "./client"
+import { apiRequest, assertAuthorizedResultCurrent, authorizedJsonResult } from "./client"
 import type { BillingPreview } from "./webMessages"
 
 export interface AuditItem {
@@ -271,6 +271,7 @@ export class VendorRequestError extends Error {
 
 async function vendorRequest<T>(path: string, init: RequestInit, timeoutMs?: number): Promise<T> {
   const result = await authorizedJsonResult<T>(`/api/v1/web/admin/vendor-test${path}`, init, timeoutMs)
+  assertAuthorizedResultCurrent(result)
   if (!result.ok) {
     const body = (result.body ?? {}) as VendorApiErrorBody
     throw new VendorRequestError(

@@ -19,6 +19,7 @@ from app.services.category import queue_for_category
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
+from app.services.report_projection import NO_REPORT_EVIDENCE
 from app.services.vendor_test_budget import (
     LIVE_TEST_DAILY_SEGMENT_LIMIT,
     SubmissionClaim,
@@ -39,6 +40,7 @@ from app.tasks.send import (
     FinalizeReport,
     classify_finalize_conflict,
 )
+from app.vendor.codes import DELAYED_RETRY_EXHAUSTED, DELAYED_RETRY_LIMIT
 from app.vendor.failover import (
     FIRST_INVOKE_CHUNK_STATES,
     ISOLATING_CHUNK_STATES,
@@ -768,7 +770,10 @@ class SqlChunkStore:
                     return
                 await settle_live_test_attempt(connection, chunk_id, "confirmed")
                 await connection.execute(
-                    text("UPDATE sms_message SET status='sent' WHERE chunk_id=:id"),
+                    text(
+                        "UPDATE sms_message SET status='sent' WHERE chunk_id=:id "
+                        f"AND status='pending' AND {NO_REPORT_EVIDENCE}"
+                    ),
                     {"id": chunk_id},
                 )
         finally:
@@ -782,10 +787,15 @@ class SqlChunkStore:
     ) -> None:
         """在已锁定批次的事务内完成消息失败聚合与终态回调。"""
 
-        await connection.execute(
-            text("UPDATE sms_message SET status='failed' WHERE chunk_id=:id"),
+        messages = await connection.execute(
+            text(
+                "UPDATE sms_message SET status='failed' WHERE chunk_id=:id "
+                f"AND status IN ('pending','sent') AND {NO_REPORT_EVIDENCE}"
+            ),
             {"id": chunk_id},
         )
+        if messages.rowcount == 0:
+            return
         aggregate = await connection.execute(
             text(
                 """
@@ -827,7 +837,8 @@ class SqlChunkStore:
         try:
             async with engine.begin() as connection:
                 candidate = await connection.execute(
-                    text("SELECT batch_id FROM sms_chunk WHERE id=:id AND status='submitting'"),
+                    text("SELECT batch_id FROM sms_chunk WHERE id=:id "
+                         "AND status='submitting' FOR UPDATE"),
                     {"id": chunk_id},
                 )
                 batch_id = candidate.scalar_one_or_none()
@@ -1023,11 +1034,12 @@ class SqlChunkStore:
                           retry_not_before=now()+make_interval(secs=>:delay_s)
                         FROM sms_batch b
                         WHERE c.id=:id AND c.status='submitting' AND b.id=c.batch_id
-                          AND c.retry_count<8
+                          AND c.retry_count<:retry_limit
                         RETURNING b.category
                         """
                     ),
-                    {"id": chunk_id, "code": code, "delay_s": delay_s},
+                    {"id": chunk_id, "code": code, "delay_s": delay_s,
+                     "retry_limit": DELAYED_RETRY_LIMIT},
                 )
                 category = result.scalar_one_or_none()
                 if category is not None:
@@ -1049,12 +1061,13 @@ class SqlChunkStore:
                         failed = await connection.execute(
                             text(
                                 "UPDATE sms_chunk SET status='failed',vendor_code=:code,"
-                                "vendor_msg='delayed retry exhausted',"
+                                "vendor_msg=:reason,"
                                 "submitting_since=NULL,retry_not_before=NULL "
                                 "WHERE id=:id AND status='submitting' "
                                 "RETURNING batch_id"
                             ),
-                            {"id": chunk_id, "code": code},
+                            {"id": chunk_id, "code": code,
+                             "reason": DELAYED_RETRY_EXHAUSTED},
                         )
                         transitioned_batch_id = failed.scalar_one_or_none()
                         if transitioned_batch_id is not None:
@@ -1345,6 +1358,7 @@ class SqlChunkStore:
                         text(
                             """
                             SELECT c.id, c.status, c.batch_id, c.route_generation,
+                                   c.retry_count, c.vendor_msg,
                                    c.next_vendor, c.route_policy_version,
                                    c.failover_from_attempt_id, b.category,
                                    b.route_policy_version AS batch_policy_version,
@@ -1370,6 +1384,13 @@ class SqlChunkStore:
                         chunk=chunk,
                         requested=result,
                     )
+                exhausted = (
+                    result == "delayed"
+                    and int(chunk["retry_count"]) >= DELAYED_RETRY_LIMIT
+                )
+                if exhausted:
+                    result = "failed"
+                    safe_to_failover = False
                 updated = (
                     await connection.execute(
                         text(
@@ -1429,7 +1450,10 @@ class SqlChunkStore:
                         raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
                     await settle_live_test_attempt(connection, chunk_id, "confirmed")
                     await connection.execute(
-                        text("UPDATE sms_message SET status='sent' WHERE chunk_id=:id"),
+                        text(
+                            "UPDATE sms_message SET status='sent' WHERE chunk_id=:id "
+                            f"AND status='pending' AND {NO_REPORT_EVIDENCE}"
+                        ),
                         {"id": chunk_id},
                     )
                 elif result == "uncertain":
@@ -1477,11 +1501,12 @@ class SqlChunkStore:
                                   retry_not_before=now()+make_interval(secs=>:delay_s)
                                 FROM sms_batch b
                                 WHERE c.id=:id AND c.status='submitting'
-                                  AND b.id=c.batch_id AND c.retry_count<8
+                                  AND b.id=c.batch_id AND c.retry_count<:retry_limit
                                 RETURNING b.category
                                 """
                             ),
-                            {"id": chunk_id, "code": vendor_code, "delay_s": delay_s},
+                            {"id": chunk_id, "code": vendor_code, "delay_s": delay_s,
+                             "retry_limit": DELAYED_RETRY_LIMIT},
                         )
                     category = changed.scalar_one_or_none()
                     if category is None:
@@ -1528,6 +1553,7 @@ class SqlChunkStore:
                         result=result,
                         vendor_code=vendor_code,
                         safe_to_failover=safe_to_failover,
+                        failure_reason=DELAYED_RETRY_EXHAUSTED if exhausted else None,
                     )
                     report = FinalizeReport(
                         FinalizeKind.APPLIED,
@@ -1568,8 +1594,12 @@ class SqlChunkStore:
         """按已落库组合分类，并带回权威 next action。"""
 
         chunk_status = str(chunk["status"])
+        actual = str(attempt["outcome"])
+        if (requested == "delayed" and actual == "failed" and chunk_status == "failed"
+                and chunk.get("vendor_msg") == DELAYED_RETRY_EXHAUSTED):
+            requested = actual
         kind = classify_finalize_conflict(
-            attempt_outcome=str(attempt["outcome"]),
+            attempt_outcome=actual,
             chunk_status=chunk_status,
             requested=requested,
         )
@@ -1586,7 +1616,7 @@ class SqlChunkStore:
             next_action = NextAction.RETRYING.value
         return FinalizeReport(
             kind,
-            requested,
+            actual,
             next_action=next_action,
             next_vendor=next_vendor,
             route_generation=(
@@ -1648,6 +1678,7 @@ class SqlChunkStore:
         result: str,
         vendor_code: int | None,
         safe_to_failover: bool,
+        failure_reason: str | None = None,
     ) -> Any:
         """把 rejected 与下一动作写进同一事务；永不留下 rejected+submitting。"""
 
@@ -1728,7 +1759,7 @@ class SqlChunkStore:
             {
                 "id": chunk_id,
                 "code": vendor_code,
-                "message": result,
+                "message": failure_reason or result,
             },
         )
         transitioned_batch_id = failed.scalar_one_or_none()
