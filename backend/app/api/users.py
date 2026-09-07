@@ -15,6 +15,7 @@ from app.core.auth.accounts import AccountSourceConflict
 from app.core.auth.backends import ProviderCapacityUnavailable
 from app.core.auth.identity import InvalidLoginName
 from app.core.auth.jwt import JwtClaims
+from app.core.auth.password_screening import PasswordScreeningUnavailable
 from app.core.auth.passwords import PasswordPolicyViolation
 from app.core.auth.roles import Role
 from app.core.auth.runtime import AuthFacade, get_auth_facade
@@ -129,6 +130,7 @@ async def get_user_management_service(
     return UserManagementService(
         SqlUserManagementRepository(get_settings()),
         passwords=facade.passwords,
+        policy=facade.policy,
     )
 
 
@@ -175,6 +177,10 @@ def _raise_user_error(error: Exception) -> NoReturn:
             "登录名已由其他认证源占用",
             None,
         ) from None
+    if isinstance(error, PasswordScreeningUnavailable):
+        raise ApiError(
+            503, "AUTH_PROVIDER_UNAVAILABLE", "密码安全检查暂不可用，请联系管理员", None,
+        ) from None
     if isinstance(error, PasswordPolicyViolation):
         raise ApiError(
             422,
@@ -211,6 +217,7 @@ USER_ERRORS = (
     UserNotFound,
     AccountSourceConflict,
     PasswordPolicyViolation,
+    PasswordScreeningUnavailable,
     InvalidLoginName,
     LastAdminProtected,
     SelfDisableDenied,

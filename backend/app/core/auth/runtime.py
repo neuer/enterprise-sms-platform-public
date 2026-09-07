@@ -36,6 +36,7 @@ from app.core.auth.observability import (
     observe_old_refresh_revoked_on_access_only_login,
     observe_web_session_mode,
 )
+from app.core.auth.password_screening import OfflinePasswordScreen, PasswordScreeningUnavailable
 from app.core.auth.passwords import (
     LocalPasswordHasher,
     PasswordPolicy,
@@ -52,6 +53,7 @@ from app.core.auth.service import (
     RedisKeyValue,
 )
 from app.core.auth.session_policy_sync import get_auth_session_policy_runtime
+from app.core.auth.spray import PasswordSprayGuard
 from app.core.auth.users import (
     AuthContextChanged,
     PasswordChangeAuthorization,
@@ -536,6 +538,10 @@ class AuthFacade:
                 actor=claims.login_name,
                 ip=ip,
             )
+        except PasswordScreeningUnavailable:
+            raise ApiError(
+                503, "AUTH_PROVIDER_UNAVAILABLE", "密码安全检查暂不可用，请联系管理员", None,
+            ) from None
         except PasswordPolicyViolation as error:
             raise ApiError(
                 422,
@@ -611,6 +617,10 @@ class AuthFacade:
             )
         try:
             self.policy.validate(new_password, username=claims.login_name)
+        except PasswordScreeningUnavailable:
+            raise ApiError(
+                503, "AUTH_PROVIDER_UNAVAILABLE", "密码安全检查暂不可用，请联系管理员", None,
+            ) from None
         except PasswordPolicyViolation as error:
             raise ApiError(
                 422,
@@ -807,6 +817,10 @@ def create_auth_facade(settings: Settings) -> AuthFacade:
             store,
             policy_loader=guard_policy.load,
             security_events=SqlAuthSecurityEventRepository(settings),
+            spray=PasswordSprayGuard(
+                store, get_admission_policy_runtime(settings).load,
+                key=settings.credential("jwt_secret").encode("utf-8"),
+            ),
             admission=LoginAdmission(
                 store, get_admission_policy_runtime(settings).load,
                 key=settings.credential("jwt_secret").encode("utf-8"),
@@ -826,6 +840,7 @@ def create_auth_facade(settings: Settings) -> AuthFacade:
         users,
         tokens,
         passwords=passwords,
+        policy=PasswordPolicy(screening=OfflinePasswordScreen.from_settings(settings)),
         providers=AuthProviderService(provider_repository, providers),
     )
 

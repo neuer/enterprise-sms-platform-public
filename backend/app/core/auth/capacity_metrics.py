@@ -11,6 +11,7 @@ _ADMIT = {(p, o): 0 for p in ("internet", "shared") for o in ("allowed", "limite
 _REFUND = {
     (p, o): 0 for p in ("internet", "shared") for o in ("refunded", "skipped", "unavailable")
 }
+_SPRAY = {level: 0 for level in ("elevated", "high", "unavailable")}
 _LDAP = {"count": 0.0, "duration": 0.0, "sink_failure": 0.0, "deadline": 0.0}
 
 
@@ -19,6 +20,12 @@ def observe_source(profile: str, outcome: str, *, refund: bool = False) -> None:
         target = _REFUND if refund else _ADMIT
         if (profile, outcome) in target:
             target[profile, outcome] += 1
+
+
+def observe_spray(level: str) -> None:
+    with _LOCK:
+        if level in _SPRAY:
+            _SPRAY[level] += 1
 
 
 def observe_ldap(outcome: str, seconds: float = 0) -> None:
@@ -34,7 +41,7 @@ def append_capacity_metrics(registry: CollectorRegistry) -> None:
     """向既有隔离 Registry 输出快照，不按来源地址或用户名创建标签。"""
 
     with _LOCK:
-        admit, refund, ldap = dict(_ADMIT), dict(_REFUND), dict(_LDAP)
+        admit, refund, ldap, spray = dict(_ADMIT), dict(_REFUND), dict(_LDAP), dict(_SPRAY)
     for name, values in (("auth_source_admit_total", admit), ("auth_prehash_refund_total", refund)):
         metric = Gauge(
             name,
@@ -44,6 +51,12 @@ def append_capacity_metrics(registry: CollectorRegistry) -> None:
         )
         for (profile, outcome), count in values.items():
             metric.labels(profile=profile, outcome=outcome).set(count)
+    signal = Gauge(
+        "auth_password_spray_signal_total", "Credential failure behavior signals.",
+        ("risk_level",), registry=registry,
+    )
+    for level, count in spray.items():
+        signal.labels(risk_level=level).set(count)
     for key, name in {
         "count": "ldap_auth_failure_duration_seconds_count",
         "duration": "ldap_auth_failure_duration_seconds_sum",

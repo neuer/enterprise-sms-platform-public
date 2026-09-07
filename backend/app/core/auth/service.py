@@ -37,6 +37,7 @@ from app.core.auth.security_events import (
     AuthSecurityEventWriter,
     AuthSecurityTransition,
 )
+from app.core.auth.spray import PasswordSprayGuard
 from app.core.bounded_executor import bounded_work_scope
 from app.core.runtime_resources import redis_client
 
@@ -724,6 +725,7 @@ class LoginGuard:
         lease_ms: int | None = None,
         owner: TransitionOwner = "api",
         admission: LoginAdmission | None = None,
+        spray: PasswordSprayGuard | None = None,
     ) -> None:
         self.store = store
         self.policy_loader = policy_loader
@@ -731,6 +733,7 @@ class LoginGuard:
         self.lease_ms = writer_lease_ms() if lease_ms is None else lease_ms
         self.owner = owner
         self.admission = admission
+        self.spray = spray
 
     async def snapshot(self) -> AuthGuardPolicy:
         """仅在凭据失败后取得阈值快照；准入路径不得调用。"""
@@ -1173,6 +1176,7 @@ class AuthService:
     ) -> AuthenticatedIdentity:
         normalized = normalize_login_name(login_name)
         reservation = await self.guard.admit(provider_code, normalized, ip, purpose=purpose)
+        failure_delay = 0.0
         with bounded_work_scope() as work:
             try:
                 if provider_code.casefold() != "local":
@@ -1182,6 +1186,8 @@ class AuthService:
                         provider_code, normalized, password, purpose=purpose,
                     )
                 except InvalidCredentials:
+                    if self.guard.spray is not None:
+                        failure_delay = await self.guard.spray.record_failure(normalized, ip)
                     policy = await self.guard.snapshot()
                     await self.guard.record_failure(normalized, ip, provider_code, policy=policy)
                     raise
@@ -1194,6 +1200,8 @@ class AuthService:
             finally:
                 if reservation is not None and self.guard.admission is not None:
                     await self.guard.admission.release_work(reservation, work)
+                if failure_delay and self.guard.spray is not None:
+                    await self.guard.spray.delay(failure_delay)
 
     async def record_completed_success(self, identity: AuthenticatedIdentity, ip: str) -> None:
         """仅门面确认完整登录/重认证后，结算本次来源预留。"""

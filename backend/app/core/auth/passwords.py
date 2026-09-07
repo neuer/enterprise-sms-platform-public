@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 from argon2 import PasswordHasher, Type
 from argon2.exceptions import InvalidHashError, VerificationError
 
 from app.core.auth.identity import normalize_login_name
+from app.core.auth.password_screening import OfflinePasswordScreen
 
 PASSWORD_DESCRIPTION: Final = (
-    "12–128 位，至少包含大小写字母、数字、特殊字符中的三类，不能包含用户名"
+    "12–128 位，至少包含大小写字母、数字、特殊字符中的三类，不能包含用户名；"
+    "服务端检查常见或泄露密码"
 )
 LOWERCASE: Final = "abcdefghijkmnopqrstuvwxyz"
 UPPERCASE: Final = "ABCDEFGHJKLMNPQRSTUVWXYZ"
@@ -35,6 +37,7 @@ class PasswordPolicy:
     min_length: int = 12
     max_length: int = 128
     required_character_classes: int = 3
+    screening: OfflinePasswordScreen | None = field(default=None, repr=False)
 
     def validate(self, password: str, *, username: str) -> None:
         if not self.min_length <= len(password) <= self.max_length:
@@ -54,6 +57,9 @@ class PasswordPolicy:
         normalized_username = normalize_login_name(username)
         if normalized_username and normalized_username in password.casefold():
             raise PasswordPolicyViolation("密码不能包含用户名")
+
+        if self.screening is not None and self.screening.contains(password):
+            raise PasswordPolicyViolation("密码已出现在常见或泄露密码库中，请选择其他密码")
 
     def public_contract(self) -> dict[str, int | bool | str]:
         return {
