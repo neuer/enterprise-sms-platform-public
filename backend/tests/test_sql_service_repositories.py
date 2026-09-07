@@ -1053,9 +1053,11 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
                         "id": 8,
                         "created_at": report.report_time,
                         "batch_id": 3,
+                        "chunk_id": 7,
                     }
                 ]
             ),
+            FakeResult(rows=[{"selected_vendor": "zhihui", "irreversible_vendors": []}]),
             FakeResult(),
             FakeResult(
                 rows=[
@@ -1063,6 +1065,7 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
                         "id": 8,
                         "created_at": report.report_time,
                         "batch_id": 3,
+                        "chunk_id": 7,
                     }
                 ]
             ),
@@ -1080,22 +1083,23 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
     assert "ON CONFLICT(event_key) DO NOTHING" in connection.calls[0][0]
     assert "m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))" in connection.calls[1][0]
     assert connection.calls[1][1]["phone_hmacs"] == ["b" * 64, "a" * 64]  # type: ignore[index]
-    assert "sms_batch" in connection.calls[2][0]
-    assert "FOR UPDATE" in connection.calls[2][0]
-    assert "FOR UPDATE OF m" in connection.calls[3][0]
-    assert "report_event_projection" in connection.calls[4][0]
-    assert connection.calls[5][1]["status"] == "delivered"  # type: ignore[index]
-    assert "report_event_key" in connection.calls[5][0]
-    assert "m.report_status IS DISTINCT FROM 1" in connection.calls[5][0]
-    assert "m.report_status = 1" not in connection.calls[5][0]
-    assert "WHEN CAST(:report_status AS smallint)=1 THEN 4" in connection.calls[5][0]
+    assert "FOR UPDATE OF c" in connection.calls[2][0]
+    assert "sms_batch" in connection.calls[3][0]
+    assert "FOR UPDATE" in connection.calls[3][0]
+    assert "FOR UPDATE OF m" in connection.calls[4][0]
+    assert "report_event_projection" in connection.calls[5][0]
+    assert connection.calls[6][1]["status"] == "delivered"  # type: ignore[index]
+    assert "report_event_key" in connection.calls[6][0]
+    assert "m.report_status IS DISTINCT FROM 1" in connection.calls[6][0]
+    assert "m.report_status = 1" not in connection.calls[6][0]
+    assert "WHEN CAST(:report_status AS smallint)=1 THEN 4" in connection.calls[6][0]
     # 应用成功后把消息归属日标脏，供窗口外统计补算（#342）。
-    assert "stat_dirty_date" in connection.calls[7][0]
-    assert "ON CONFLICT(stat_date) DO NOTHING" in connection.calls[7][0]
-    assert "WHEN b.status='completed_unknown' THEN 'completed_unknown'" in connection.calls[8][0]
-    assert "SELECT status FROM sms_batch" in connection.calls[9][0]
-    assert "late_evidence_at" in connection.calls[10][0]
-    assert "unknown_terminal" in connection.calls[10][0]
+    assert "stat_dirty_date" in connection.calls[8][0]
+    assert "ON CONFLICT(stat_date) DO NOTHING" in connection.calls[8][0]
+    assert "WHEN b.status='completed_unknown' THEN 'completed_unknown'" in connection.calls[9][0]
+    assert "SELECT status FROM sms_batch" in connection.calls[10][0]
+    assert "late_evidence_at" in connection.calls[11][0]
+    assert "unknown_terminal" in connection.calls[11][0]
     assert callback_events == [
         ("batch", 3),
         ("message", (3, 8, report.report_time)),

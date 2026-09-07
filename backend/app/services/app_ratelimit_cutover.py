@@ -31,6 +31,7 @@ CUTOVER_STATES = (
     "old_writers_fenced",
     "waiting_window",
     "active_v2",
+    "active_v1",
     "aborted_closed",
 )
 CutoverState = Literal[
@@ -38,6 +39,7 @@ CutoverState = Literal[
     "old_writers_fenced",
     "waiting_window",
     "active_v2",
+    "active_v1",
     "aborted_closed",
 ]
 ProbeStatus = Literal["absent", "present", "timeout", "error"]
@@ -58,264 +60,125 @@ MARKER_FIELDS = (
 
 CUTOVER_CAS_LUA = """
 local marker = KEYS[1]
-local action = ARGV[1]
-local expect_generation = ARGV[2]
-local expect_state = ARGV[3]
-local release_binding = ARGV[4]
-local target_writer = ARGV[5]
-local min_writer = ARGV[6]
-local admission_reason = ARGV[7]
-local window_seconds = ARGV[8]
-local safety_margin = ARGV[9]
-local t = redis.call('TIME')
-local now_sec = tonumber(t[1])
-if now_sec == nil then
-  return {-1, '', '', ''}
-end
-local function redis_type(key)
-  local typ = redis.call('TYPE', key)
-  if type(typ) == 'table' and typ.ok ~= nil then
-    return typ.ok
-  end
-  return typ
-end
+local action, expected_generation, expected_state = ARGV[1], ARGV[2], ARGV[3]
+local binding, target, minimum = ARGV[4], ARGV[5], ARGV[6]
+local reason, window, margin = ARGV[7], ARGV[8], ARGV[9]
+local now = tonumber(redis.call('TIME')[1])
 local function field(name)
   local raw = redis.call('HGET', marker, name)
-  if raw == false then
-    return ''
-  end
+  if raw == false then return '' end
   return tostring(raw)
 end
-local typ = redis_type(marker)
-if typ ~= 'none' and typ ~= 'hash' then
-  return {-2, '', '', tostring(now_sec)}
-end
+local typ = redis.call('TYPE', marker)
+if type(typ) == 'table' then typ = typ.ok end
+if typ ~= 'none' and typ ~= 'hash' then return {-2,'','',tostring(now)} end
 local exists = typ == 'hash'
-local current_generation = field('generation')
-local current_state = field('state')
+local generation, state = field('generation'), field('state')
+local function result(code) return {code,state,generation,tostring(now)} end
+local function positive(raw)
+  local n = tonumber(raw)
+  return n ~= nil and n >= 1 and n == math.floor(n)
+end
+local active = state == 'active_v2' or state == 'active_v1'
+local legacy_bootstrap = state == 'active_v2' and field('release_binding') == ''
+  and field('target_writer_version') == '2' and field('minimum_writer_version') == '2'
+  and field('fence_time') ~= '' and field('fence_time') == field('not_before')
 if exists then
-  if field('schema_version') ~= '1' then
-    return {-2, current_state, current_generation, tostring(now_sec)}
+  for _, name in ipairs({'schema_version','generation','target_writer_version',
+    'minimum_writer_version','fence_time','not_before','state','release_binding',
+    'admission_reason','window_seconds','safety_margin_seconds'}) do
+    if redis.call('HGET',marker,name) == false then return result(-2) end
   end
-  if current_generation == '' or current_state == '' then
-    return {-2, current_state, current_generation, tostring(now_sec)}
-  end
-  if tonumber(current_generation) == nil or tonumber(current_generation) < 1 then
-    return {-2, current_state, current_generation, tostring(now_sec)}
-  end
-  if current_state ~= 'preparing' and current_state ~= 'old_writers_fenced'
-      and current_state ~= 'waiting_window' and current_state ~= 'active_v2'
-      and current_state ~= 'aborted_closed' then
-    return {-2, current_state, current_generation, tostring(now_sec)}
-  end
-  if action == 'bootstrap' and current_state == 'active_v2' then
-    return {1, current_state, current_generation, tostring(now_sec)}
-  end
-  local bound = field('release_binding')
-  if action ~= 'takeover_prepare' and bound ~= '' and bound ~= release_binding then
-    return {-6, current_state, current_generation, tostring(now_sec)}
-  end
-end
-if expect_generation ~= '' then
-  if (not exists) or current_generation ~= expect_generation then
-    return {0, current_state, current_generation, tostring(now_sec)}
+  if redis.call('HLEN',marker) ~= 11 or field('schema_version') ~= '1'
+      or not positive(generation) or not positive(field('target_writer_version'))
+      or not positive(field('minimum_writer_version'))
+      or field('window_seconds') ~= window or field('safety_margin_seconds') ~= margin
+      or field('admission_reason') ~= reason then return result(-2) end
+  if not active and state ~= 'preparing' and state ~= 'old_writers_fenced'
+      and state ~= 'waiting_window' and state ~= 'aborted_closed' then return result(-2) end
+  if active or state == 'old_writers_fenced' or state == 'waiting_window' then
+    local fence, after = tonumber(field('fence_time')), tonumber(field('not_before'))
+    if fence == nil or after == nil or fence < 0
+        or (not legacy_bootstrap and after < fence + tonumber(window) + tonumber(margin))
+        then return result(-2) end
+    if active and field('minimum_writer_version') ~= field('target_writer_version')
+        then return result(-2) end
+    if (state == 'active_v1') ~= (active and field('target_writer_version') == '1')
+        then return result(-2) end
   end
 end
-if expect_state ~= '' then
-  if (not exists) or current_state ~= expect_state then
-    return {0, current_state, current_generation, tostring(now_sec)}
-  end
+if not positive(target) or not positive(minimum) or binding == ''
+    or reason ~= 'writer_cutover' or window ~= '60' or margin ~= '5' then return result(-2) end
+if exists and (expected_generation == '' or expected_state == '') then return result(0) end
+if expected_generation ~= '' and generation ~= expected_generation then return result(0) end
+if expected_state ~= '' and state ~= expected_state then return result(0) end
+local begin = action == 'prepare' or action == 'rollback_prepare'
+if begin and active and not legacy_bootstrap and field('target_writer_version') == target then
+  if now < tonumber(field('not_before')) then return result(-5) end
+  return result(2)
 end
-local function write_fields(generation, state, fence_time, not_before, minimum)
-  redis.call('HSET', marker, 'schema_version', '1')
-  redis.call('HSET', marker, 'generation', generation)
-  redis.call('HSET', marker, 'target_writer_version', target_writer)
-  redis.call('HSET', marker, 'minimum_writer_version', minimum)
-  redis.call('HSET', marker, 'fence_time', fence_time)
-  redis.call('HSET', marker, 'not_before', not_before)
-  redis.call('HSET', marker, 'state', state)
-  redis.call('HSET', marker, 'release_binding', release_binding)
-  redis.call('HSET', marker, 'admission_reason', admission_reason)
-  redis.call('HSET', marker, 'window_seconds', window_seconds)
-  redis.call('HSET', marker, 'safety_margin_seconds', safety_margin)
+local new_operation = begin and (active or state == 'aborted_closed')
+if exists and not new_operation and action ~= 'takeover_prepare'
+    and field('release_binding') ~= binding then return result(-6) end
+local function write(gen, next_state, fence, after, min)
+  redis.call('HSET',marker,'schema_version','1','generation',gen,
+    'target_writer_version',target,'minimum_writer_version',min,
+    'fence_time',fence,'not_before',after,'state',next_state,
+    'release_binding',binding,'admission_reason',reason,
+    'window_seconds',window,'safety_margin_seconds',margin)
+  generation, state = tostring(gen), next_state
+  return result(1)
 end
 if action == 'takeover_prepare' then
-  if (not exists) or current_state ~= 'preparing' then
-    return {0, current_state, current_generation, tostring(now_sec)}
-  end
-  local generation = tostring(tonumber(current_generation) + 1)
-  write_fields(generation, 'preparing', '', '', min_writer)
-  return {1, 'preparing', generation, tostring(now_sec)}
+  if not exists or state ~= 'preparing' then return result(0) end
+  return write(tonumber(generation)+1,'preparing','','',minimum)
 end
-if action == 'prepare' then
-  if exists and current_state == 'active_v2'
-      and field('target_writer_version') == target_writer then
-    return {1, current_state, current_generation, tostring(now_sec)}
+if begin then
+  if not exists then
+    if action == 'rollback_prepare' then return result(0) end
+    return write(1,'preparing','','',minimum)
   end
-  if exists and (
-      current_state == 'preparing'
-      or current_state == 'old_writers_fenced'
-      or current_state == 'waiting_window'
-    ) then
-    return {1, current_state, current_generation, tostring(now_sec)}
+  if new_operation then
+    if tonumber(minimum) < tonumber(field('minimum_writer_version')) then return result(-2) end
+    return write(tonumber(generation)+1,'preparing','','',minimum)
   end
-  local generation = '1'
-  if exists then
-    generation = tostring(tonumber(current_generation))
-    if current_state == 'aborted_closed' then
-      generation = tostring(tonumber(current_generation) + 1)
-    else
-      return {0, current_state, current_generation, tostring(now_sec)}
-    end
-  end
-  write_fields(generation, 'preparing', '', '', min_writer)
-  return {1, 'preparing', generation, tostring(now_sec)}
+  if field('target_writer_version') ~= target then return result(-6) end
+  if state == 'preparing' or state == 'old_writers_fenced' or state == 'waiting_window'
+      then return result(1) end
+  return result(0)
 end
-if action == 'fence' then
-  if exists and current_state == 'old_writers_fenced' then
-    return {1, current_state, current_generation, tostring(now_sec)}
-  end
-  if exists and current_state == 'waiting_window' then
-    return {1, current_state, current_generation, tostring(now_sec)}
-  end
-  if exists and current_state == 'active_v2' then
-    return {1, current_state, current_generation, tostring(now_sec)}
-  end
-  if (not exists) or current_state ~= 'preparing' then
-    return {0, current_state, current_generation, tostring(now_sec)}
-  end
-  local window = tonumber(window_seconds)
-  local margin = tonumber(safety_margin)
-  if window == nil or margin == nil or window < 1 or margin < 0 then
-    return {-2, current_state, current_generation, tostring(now_sec)}
-  end
-  local not_before = now_sec + window + margin
-  write_fields(
-    current_generation,
-    'old_writers_fenced',
-    tostring(now_sec),
-    tostring(not_before),
-    min_writer
-  )
-  return {1, 'old_writers_fenced', current_generation, tostring(now_sec)}
+if not exists or field('target_writer_version') ~= target then return result(0) end
+if action == 'invalidate_fence' then
+  if state ~= 'old_writers_fenced' and state ~= 'waiting_window' then return result(0) end
+  return write(generation,'preparing','','',minimum)
+end
+if action == 'fence' or action == 'refence' then
+  if action == 'fence' and (state == 'old_writers_fenced' or state == 'waiting_window')
+      then return result(1) end
+  if state ~= 'preparing' and not (action == 'refence'
+      and (state == 'old_writers_fenced' or state == 'waiting_window')) then return result(0) end
+  return write(generation,'old_writers_fenced',tostring(now),
+    tostring(now+tonumber(window)+tonumber(margin)),minimum)
 end
 if action == 'wait' then
-  if exists and current_state == 'waiting_window' then
-    return {1, current_state, current_generation, tostring(now_sec)}
-  end
-  if exists and current_state == 'active_v2' then
-    return {1, current_state, current_generation, tostring(now_sec)}
-  end
-  if (not exists) or current_state ~= 'old_writers_fenced' then
-    return {0, current_state, current_generation, tostring(now_sec)}
-  end
-  local fence_time = tonumber(field('fence_time'))
-  if fence_time == nil then
-    return {-2, current_state, current_generation, tostring(now_sec)}
-  end
-  if now_sec < fence_time then
-    return {-5, current_state, current_generation, tostring(now_sec)}
-  end
-  write_fields(
-    current_generation,
-    'waiting_window',
-    field('fence_time'),
-    field('not_before'),
-    field('minimum_writer_version')
-  )
-  return {1, 'waiting_window', current_generation, tostring(now_sec)}
+  if state == 'waiting_window' then return result(1) end
+  if state ~= 'old_writers_fenced' then return result(0) end
+  if now < tonumber(field('fence_time')) then return result(-5) end
+  return write(generation,'waiting_window',field('fence_time'),field('not_before'),minimum)
 end
-if action == 'activate' then
-  if exists and current_state == 'active_v2' then
-    return {1, current_state, current_generation, tostring(now_sec)}
-  end
-  if (not exists) or current_state ~= 'waiting_window' then
-    return {0, current_state, current_generation, tostring(now_sec)}
-  end
-  local fence_time = tonumber(field('fence_time'))
-  local not_before = tonumber(field('not_before'))
-  if fence_time == nil or not_before == nil then
-    return {-2, current_state, current_generation, tostring(now_sec)}
-  end
-  if now_sec < fence_time then
-    return {-5, current_state, current_generation, tostring(now_sec)}
-  end
-  if now_sec < not_before then
-    return {-3, current_state, current_generation, tostring(now_sec)}
-  end
-  write_fields(
-    current_generation,
-    'active_v2',
-    field('fence_time'),
-    field('not_before'),
-    target_writer
-  )
-  return {1, 'active_v2', current_generation, tostring(now_sec)}
+if action == 'activate' or action == 'rollback_finish' then
+  if state ~= 'waiting_window' then return result(0) end
+  if now < tonumber(field('fence_time')) then return result(-5) end
+  if now < tonumber(field('not_before')) then return result(-3) end
+  local completed = 'active_v2'
+  if target == '1' then completed = 'active_v1' end
+  return write(generation,completed,field('fence_time'),field('not_before'),target)
 end
 if action == 'abort' then
-  local generation = current_generation
-  if not exists then
-    generation = '1'
-  end
-  write_fields(generation, 'aborted_closed', field('fence_time'), field('not_before'), min_writer)
-  return {1, 'aborted_closed', generation, tostring(now_sec)}
+  return write(generation,'aborted_closed',field('fence_time'),field('not_before'),minimum)
 end
-if action == 'rollback_prepare' then
-  if exists and (
-      current_state == 'preparing'
-      or current_state == 'old_writers_fenced'
-      or current_state == 'waiting_window'
-    ) then
-    return {1, current_state, current_generation, tostring(now_sec)}
-  end
-  if (not exists) or current_state ~= 'active_v2' then
-    return {0, current_state, current_generation, tostring(now_sec)}
-  end
-  local generation = tostring(tonumber(current_generation) + 1)
-  write_fields(generation, 'preparing', '', '', min_writer)
-  return {1, 'preparing', generation, tostring(now_sec)}
-end
-if action == 'rollback_finish' then
-  if exists and current_state == 'preparing'
-      and field('target_writer_version') == target_writer then
-    return {1, current_state, current_generation, tostring(now_sec)}
-  end
-  if (not exists) or current_state ~= 'waiting_window' then
-    return {0, current_state, current_generation, tostring(now_sec)}
-  end
-  local fence_time = tonumber(field('fence_time'))
-  local not_before = tonumber(field('not_before'))
-  if fence_time == nil or not_before == nil then
-    return {-2, current_state, current_generation, tostring(now_sec)}
-  end
-  if now_sec < fence_time then
-    return {-5, current_state, current_generation, tostring(now_sec)}
-  end
-  if now_sec < not_before then
-    return {-3, current_state, current_generation, tostring(now_sec)}
-  end
-  write_fields(
-    current_generation,
-    'preparing',
-    field('fence_time'),
-    field('not_before'),
-    target_writer
-  )
-  return {1, 'preparing', current_generation, tostring(now_sec)}
-end
-if action == 'bootstrap' then
-  if exists and current_state == 'active_v2' then
-    return {1, current_state, current_generation, tostring(now_sec)}
-  end
-  if exists then
-    return {0, current_state, current_generation, tostring(now_sec)}
-  end
-  write_fields('1', 'active_v2', tostring(now_sec), tostring(now_sec), target_writer)
-  return {1, 'active_v2', '1', tostring(now_sec)}
-end
-return {-4, current_state, current_generation, tostring(now_sec)}
+return result(-4)
 """
-
 
 class CutoverError(RuntimeError):
     """切换状态机失败关闭。"""
@@ -340,6 +203,13 @@ class CutoverMarker:
     admission_reason: str
     window_seconds: int
     safety_margin_seconds: int
+
+    @property
+    def requires_recovery(self) -> bool:
+        """识别旧 bootstrap 表示，仅允许重新隔离排空，不能作为完成证据。"""
+        return (self.state == "active_v2" and self.release_binding == ""
+                and self.target_writer_version == self.minimum_writer_version == 2
+                and self.fence_time is not None and self.fence_time == self.not_before)
 
     def as_hash(self) -> dict[str, str]:
         return {
@@ -442,7 +312,7 @@ def parse_cutover_marker(fields: Mapping[str, str]) -> CutoverMarker:
     state = values["state"]
     if state not in CUTOVER_STATES:
         raise CutoverError("cutover marker state is corrupt")
-    return CutoverMarker(
+    marker = CutoverMarker(
         schema_version=_required_int(values["schema_version"], "schema_version"),
         generation=_required_int(values["generation"], "generation"),
         target_writer_version=_required_int(
@@ -466,6 +336,23 @@ def parse_cutover_marker(fields: Mapping[str, str]) -> CutoverMarker:
         ),
     )
 
+    if (marker.schema_version != CUTOVER_SCHEMA_VERSION
+            or marker.window_seconds != COST_WINDOW_SECONDS
+            or marker.safety_margin_seconds != CUTOVER_SAFETY_MARGIN_SECONDS
+            or marker.admission_reason != CUTOVER_ADMISSION_REASON):
+        raise CutoverError("cutover marker is inconsistent")
+    if (marker.state in {"active_v1", "active_v2", "old_writers_fenced", "waiting_window"}
+            and not marker.requires_recovery
+            and (marker.fence_time is None or marker.not_before is None
+                or marker.not_before < marker.fence_time + marker.window_seconds
+                    + marker.safety_margin_seconds)):
+        raise CutoverError("cutover marker window is inconsistent")
+    if (marker.state in {"active_v1", "active_v2"}
+            and (marker.minimum_writer_version != marker.target_writer_version
+                or (marker.state == "active_v1") != (marker.target_writer_version == 1))):
+        raise CutoverError("cutover marker protocol is inconsistent")
+    return marker
+
 
 def read_cutover_marker(redis: CutoverRedis) -> CutoverMarker | None:
     raw = redis.hgetall(CUTOVER_MARKER_KEY)
@@ -485,6 +372,12 @@ def trusted_writer_version(root: Path) -> int:
         return 1
     except OSError as exc:
         raise CutoverError("writer protocol metadata is unreadable") from exc
+    return parse_writer_protocol(payload)
+
+
+def parse_writer_protocol(payload: str) -> int:
+    """解析受信任 Git 对象或工作树中的固定协议元数据。"""
+
     try:
         import json
 
@@ -521,61 +414,18 @@ def bootstrap_greenfield_cutover(
     root: Path,
     target_writer_version: int = WRITER_PROTOCOL_VERSION,
 ) -> CutoverResult:
-    """空 marker 的受控绿地激活：没有旧 writer 可排空，直接写入 active_v2。
+    """兼容旧调用名，仅只读确认；缺失 marker 必须走正式隔离与窗口切换。"""
 
-    已是 active_v2 时幂等成功。进行中的切换不得覆盖。业务请求不得调用。
-    """
-
-    admission = AdmissionView(state="open", reason="ok", owned=False)
-    version = trusted_writer_version(root)
-    if version < target_writer_version:
+    if trusted_writer_version(root) < target_writer_version:
         raise CutoverError("unsupported old writer binary")
-    try:
-        code, _, _, redis_time = cas_cutover(
-            redis,
-            action="bootstrap",
-            release_binding="",
-            target_writer_version=target_writer_version,
-            minimum_writer_version=target_writer_version,
-        )
-    except CutoverError as exc:
-        return _result(
-            ok=False,
-            marker=None,
-            admission=admission,
-            redis_time=0,
-            error=str(exc),
-        )
-    if code < 0:
-        return _result(
-            ok=False,
-            marker=read_cutover_marker(redis),
-            admission=admission,
-            redis_time=redis_time,
-            error="cutover control plane is unavailable",
-        )
-    if code == 0:
-        return _result(
-            ok=False,
-            marker=read_cutover_marker(redis),
-            admission=admission,
-            redis_time=redis_time,
-            error="cutover state conflict",
-        )
     marker = read_cutover_marker(redis)
-    if marker is None or marker.state != "active_v2":
-        return _result(
-            ok=False,
-            marker=marker,
-            admission=admission,
-            redis_time=redis_time,
-            error="cutover did not activate",
-        )
+    valid = (marker is not None and marker.state == "active_v2" and not marker.requires_recovery
+             and marker.target_writer_version == target_writer_version
+             and trusted_writer_version(root) == target_writer_version)
     return _result(
-        ok=True,
-        marker=marker,
-        admission=admission,
-        redis_time=redis_time,
+        ok=valid, marker=marker,
+        admission=AdmissionView("open" if valid else "closed", CUTOVER_ADMISSION_REASON, False),
+        redis_time=0, error="" if valid else "controlled writer cutover required",
     )
 
 
@@ -684,7 +534,7 @@ def run_writer_cutover(
     executor: WriterCutoverExecutor,
     release_binding: str,
     root: Path,
-    target_writer_version: int = WRITER_PROTOCOL_VERSION,
+    target_writer_version: int | None = None,
     rollback: bool = False,
 ) -> CutoverResult:
     """推进冻结→窗口等待→激活；每步可重入，失败保持关闭且不自动开闸。"""
@@ -705,29 +555,25 @@ def run_writer_cutover(
             error=str(exc),
         )
 
-    if rollback:
-        if marker is None:
-            return _result(
-                ok=False,
-                marker=None,
-                admission=admission,
-                redis_time=0,
-                error="cutover marker is missing",
-            )
-        action = "rollback_prepare"
-        target_writer_version = 1
-        min_writer = max(marker.minimum_writer_version, WRITER_PROTOCOL_VERSION)
-    else:
-        action = "prepare"
-        min_writer = target_writer_version
+    try:
+        trusted_version = executor.trusted_writer_version(root)
+        if target_writer_version is not None and target_writer_version != trusted_version:
+            raise CutoverError("target writer protocol does not match trusted metadata")
+        target_writer_version = trusted_version
+    except CutoverError as exc:
+        return _result(ok=False, marker=marker, admission=admission, redis_time=0, error=str(exc))
+    action = "rollback_prepare" if rollback else "prepare"
+    min_writer = max(target_writer_version, marker.minimum_writer_version if marker else 1)
 
     try:
-        code, _, _, redis_time = cas_cutover(
+        code, cas_state, cas_generation, redis_time = cas_cutover(
             redis,
             action=action,
             release_binding=release_binding,
             target_writer_version=target_writer_version,
             minimum_writer_version=min_writer,
+            expect_generation=marker.generation if marker else None,
+            expect_state=marker.state if marker else "",
         )
         if code < 0:
             raise CutoverError("cutover marker conflict")
@@ -736,6 +582,23 @@ def run_writer_cutover(
         marker = read_cutover_marker(redis)
         if marker is None:
             raise CutoverError("cutover marker is missing")
+        if marker.generation != int(cas_generation) or marker.state != cas_state:
+            raise CutoverError("cutover state conflict")
+        if code == 2:
+            return _result(ok=True, marker=marker, admission=executor.query_admission(),
+                           redis_time=redis_time)
+        operation_generation = marker.generation
+
+        def owned_marker(state: str) -> CutoverMarker:
+            """每次 CAS 回读均绑定本次代际，禁止读到后继操作后继续推进。"""
+            current = read_cutover_marker(redis)
+            if (current is None or current.generation != operation_generation
+                    or current.release_binding != release_binding or current.state != state
+                    or current.target_writer_version != target_writer_version):
+                raise CutoverError("cutover state conflict")
+            return current
+
+        marker = owned_marker(cas_state)
         admission = executor.close_admission(
             reason=CUTOVER_ADMISSION_REASON,
             generation=marker.generation,
@@ -743,19 +606,29 @@ def run_writer_cutover(
         admission = executor.query_admission()
         if admission.state != "closed":
             raise CutoverError("send admission did not stay closed")
-        if marker.state == "active_v2" and not rollback:
-            if admission.owned:
-                admission = executor.open_admission_if_owned(reason=CUTOVER_ADMISSION_REASON)
-                opened = admission.state == "open"
-            return _result(
-                ok=True,
-                marker=marker,
-                admission=admission,
-                redis_time=redis_time,
-                opened=opened,
+        def invalidate_fence(probe: ProbeResult) -> None:
+            """隔离证据失效先持久化，再执行任何可能失败的后续探测。"""
+            nonlocal marker, redis_time
+            if marker is None:
+                raise CutoverError("cutover marker is missing")
+            if probe.confirmed_absent or marker.state not in {
+                "old_writers_fenced", "waiting_window",
+            }:
+                return
+            changed, state, _, redis_time = cas_cutover(
+                redis, action="invalidate_fence", release_binding=release_binding,
+                target_writer_version=trusted_version, minimum_writer_version=min_writer,
+                expect_generation=operation_generation, expect_state=marker.state,
             )
+            if changed != 1:
+                raise CutoverError("cutover fence invalidation rejected")
+            marker = owned_marker(state)
 
-        isolate = _reprobe(executor.isolate_writers(), executor.probe_writers)
+        if marker.state in {"old_writers_fenced", "waiting_window"}:
+            invalidate_fence(executor.probe_writers())
+        isolate = executor.isolate_writers()
+        invalidate_fence(isolate)
+        isolate = _reprobe(isolate, executor.probe_writers)
         if not isolate.confirmed_absent:
             return _result(
                 ok=False,
@@ -764,10 +637,9 @@ def run_writer_cutover(
                 redis_time=redis_time,
                 error=f"old writer probe {isolate.status}",
             )
-        inflight = _reprobe(
-            executor.probe_in_flight_accepts(),
-            executor.probe_in_flight_accepts,
-        )
+        inflight = executor.probe_in_flight_accepts()
+        invalidate_fence(inflight)
+        inflight = _reprobe(inflight, executor.probe_in_flight_accepts)
         if not inflight.confirmed_absent:
             return _result(
                 ok=False,
@@ -777,6 +649,7 @@ def run_writer_cutover(
                 error=f"in-flight probe {inflight.status}",
             )
         isolate = executor.probe_writers()
+        invalidate_fence(isolate)
         if not isolate.confirmed_absent:
             return _result(
                 ok=False,
@@ -786,38 +659,40 @@ def run_writer_cutover(
                 error=f"old writer probe {isolate.status}",
             )
 
-        code, _, _, redis_time = cas_cutover(
+        code, cas_state, _, redis_time = cas_cutover(
             redis,
             action="fence",
             release_binding=release_binding,
             target_writer_version=target_writer_version,
             minimum_writer_version=min_writer,
+            expect_generation=marker.generation, expect_state=marker.state,
         )
         if code == -5:
             raise CutoverError("redis time anomaly")
         if code <= 0:
             raise CutoverError("cutover fence rejected")
-        code, _, _, redis_time = cas_cutover(
+        marker = owned_marker(cas_state)
+        code, cas_state, _, redis_time = cas_cutover(
             redis,
             action="wait",
             release_binding=release_binding,
             target_writer_version=target_writer_version,
             minimum_writer_version=min_writer,
+            expect_generation=marker.generation, expect_state=marker.state,
         )
         if code == -5:
             raise CutoverError("redis time anomaly")
         if code <= 0:
             raise CutoverError("cutover wait rejected")
-        marker = read_cutover_marker(redis)
-        if marker is None:
-            raise CutoverError("cutover marker is missing")
+        marker = owned_marker(cas_state)
         finish_action = "rollback_finish" if rollback else "activate"
-        code, _, _, redis_time = cas_cutover(
+        code, cas_state, _, redis_time = cas_cutover(
             redis,
             action=finish_action,
             release_binding=release_binding,
             target_writer_version=target_writer_version,
             minimum_writer_version=target_writer_version,
+            expect_generation=marker.generation, expect_state=marker.state,
         )
         if code == -3:
             admission = executor.query_admission()
@@ -832,11 +707,9 @@ def run_writer_cutover(
             raise CutoverError("redis time anomaly")
         if code <= 0:
             raise CutoverError("cutover activate rejected")
-        marker = read_cutover_marker(redis)
-        if marker is None:
-            raise CutoverError("cutover marker is missing")
-        if rollback:
-            if marker.state != "preparing" or marker.minimum_writer_version != 1:
+        marker = owned_marker(cas_state)
+        if target_writer_version == 1:
+            if marker.state != "active_v1" or marker.minimum_writer_version != 1:
                 raise CutoverError("cutover rollback did not finish")
         elif marker.state != "active_v2":
             raise CutoverError("cutover did not activate")

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
 from dataclasses import dataclass
 from time import monotonic, time
 from typing import Any, Literal
@@ -260,6 +259,9 @@ class AuthSessionPolicyReconciler:
         self._task: asyncio.Task[None] | None = None
         self._inflight: asyncio.Task[str] | None = None
         self._flight_gate = asyncio.Lock()
+        self._accepting_probes = True
+        self._lifecycle = 0
+        self._stopping: asyncio.Task[None] | None = None
 
     def _store(self) -> Any:
         if self.store is None:
@@ -273,7 +275,12 @@ class AuthSessionPolicyReconciler:
             return await self.postgres_loader()
         return await load_postgres_session_policy(self.settings)
 
-    def _publish_ready(self, policy: AuthSessionPolicy) -> None:
+    def _require_lifecycle(self, lifecycle: int) -> None:
+        if not self._accepting_probes or lifecycle != self._lifecycle:
+            raise asyncio.CancelledError
+
+    def _publish_ready(self, policy: AuthSessionPolicy, lifecycle: int) -> None:
+        self._require_lifecycle(lifecycle)
         current = self.snapshot.current()
         self.snapshot.publish(
             AuthSessionPolicySnapshot(
@@ -284,9 +291,11 @@ class AuthSessionPolicyReconciler:
             )
         )
 
-    async def _reconcile_body(self) -> str:
+    async def _reconcile_body(self, lifecycle: int) -> str:
         postgres = await self._postgres()
+        self._require_lifecycle(lifecycle)
         redis = await load_redis_session_policy(self._store())
+        self._require_lifecycle(lifecycle)
         outcome = compare_authoritative_policy(postgres, redis)
         now = time()
         if outcome == "aligned" and redis is not None:
@@ -300,7 +309,8 @@ class AuthSessionPolicyReconciler:
                     postgres.ad_session_max_age_minutes,
                     postgres.updated_at_epoch,
                     postgres.min_accepted_policy_revision,
-                )
+                ),
+                lifecycle,
             )
             return outcome
         if outcome in {"missing", "behind"}:
@@ -308,6 +318,7 @@ class AuthSessionPolicyReconciler:
                 await publish_auth_session_policy(self._store(), postgres)
             except AuthSessionPolicyConflict:
                 observe_session_policy_reconcile("conflict")
+                self._require_lifecycle(lifecycle)
                 self.snapshot.mark_unavailable(health="conflict")
                 raise
             except SessionStateUnavailable:
@@ -317,19 +328,20 @@ class AuthSessionPolicyReconciler:
                 0 if postgres.updated_at_epoch <= 0 else max(0.0, now - postgres.updated_at_epoch)
             )
             observe_session_policy_reconcile(outcome)
-            self._publish_ready(postgres)
+            self._publish_ready(postgres, lifecycle)
             return outcome
         observe_session_policy_reconcile(outcome)
+        self._require_lifecycle(lifecycle)
         if outcome == "conflict":
             self.snapshot.mark_unavailable(health="conflict")
         else:
             self.snapshot.mark_unavailable(health="unavailable")
         raise SessionStateUnavailable(f"AD session policy {outcome}")
 
-    async def _reconcile_once(self) -> str:
+    async def _reconcile_once(self, lifecycle: int) -> str:
         try:
             async with asyncio.timeout(self.reconcile_timeout_s):
-                return await self._reconcile_body()
+                return await self._reconcile_body(lifecycle)
         except TimeoutError:
             raise SessionStateUnavailable("AD session policy reconcile timeout") from None
 
@@ -337,16 +349,21 @@ class AuthSessionPolicyReconciler:
         """单飞对账：并发调用共用一次权威读取，失败不续期 verified_at。"""
 
         async with self._flight_gate:
+            if not self._accepting_probes:
+                raise SessionStateUnavailable("AD session policy reconciler stopped")
             inflight = self._inflight
             if inflight is None or inflight.done():
-                inflight = asyncio.create_task(self._reconcile_once())
+                inflight = asyncio.create_task(self._reconcile_once(self._lifecycle))
                 self._inflight = inflight
-        try:
-            return await asyncio.shield(inflight)
-        finally:
-            async with self._flight_gate:
-                if self._inflight is inflight:
-                    self._inflight = None
+                inflight.add_done_callback(self._probe_done)
+        return await asyncio.shield(inflight)
+
+    def _probe_done(self, task: asyncio.Task[str]) -> None:
+        """内部任务自己释放引用；无人等待时仍消费异常。"""
+        if self._inflight is task:
+            self._inflight = None
+        if not task.cancelled():
+            task.exception()
 
     async def ensure_ready(self) -> None:
         """启动/就绪门禁：缺失或落后时同步一次，超前或冲突保持 503。"""
@@ -357,17 +374,32 @@ class AuthSessionPolicyReconciler:
             raise SessionStateUnavailable("AD session policy unavailable")
 
     def start(self) -> None:
+        if self._stopping is not None and not self._stopping.done():
+            raise SessionStateUnavailable("AD session policy reconciler stopping")
+        if not self._accepting_probes:
+            self._lifecycle += 1
+            self._accepting_probes = True
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run(), name="auth-session-policy-reconciler")
 
     async def stop(self) -> None:
-        if self._task is None:
-            return
-        if not self._task.done():
-            self._task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._task
+        async with self._flight_gate:
+            if self._stopping is None or self._stopping.done():
+                self._accepting_probes = False
+                self._lifecycle += 1
+                self.snapshot.mark_unavailable()
+                self._stopping = asyncio.create_task(self._stop_owned())
+        await asyncio.shield(self._stopping)
+
+    async def _stop_owned(self) -> None:
+        """停止任务拥有调度器和内部探测；不持创建锁等待任务退出。"""
+        tasks = [task for task in (self._task, self._inflight) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         self._task = None
+        self._inflight = None
 
     async def _run(self) -> None:
         backoff = POLICY_RECONCILE_BACKOFF_MIN_S

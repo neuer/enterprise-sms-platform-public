@@ -31,6 +31,72 @@ from tests.test_auth import FakeKeyValue, RecordingSecurityEvents
 _GUARD_ERRORS = (AccountLocked, RateLimited, SessionStateUnavailable)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pending", [False, True])
+async def test_busy_open_prefix_cannot_starve_hash_work(
+    monkeypatch: pytest.MonkeyPatch, pending: bool,
+) -> None:
+    store = ScriptedHashScanStore({})
+    writer = RecordingSecurityEvents()
+    prefix = [_put_hash_only(store, ip=f"10.0.6.{i}") for i in (1, 2)]
+    for tid in prefix:
+        store._open()[tid] = 0
+        store._due()[tid] = 10**15
+        store.values[_audit_key(tid)]["next_retry_at_ms"] = 10**15
+    target = _put_hash_only(store, ip="10.0.6.3", created_at_ms=7777)
+    store.pages = _scan_pages((_audit_key(target),), ())
+    reconciler = _reconciler(store, writer)
+    if pending:
+        reconciler._pending_scan_batch.append(_audit_key(target))
+    clock = [0.0]
+    reconciler._clock = lambda: clock[0]
+    original = LoginGuard.repair_transition_integrity
+
+    async def costly(guard: LoginGuard, transition_id: str) -> Any:
+        if transition_id in prefix:
+            clock[0] += 0.6
+        return await original(guard, transition_id)
+
+    monkeypatch.setattr(LoginGuard, "repair_transition_integrity", costly)
+    await reconciler.reconcile()
+    assert store.values[_audit_key(target)]["state"] == "pending"
+    await reconciler.reconcile()
+    assert store.values[_audit_key(target)]["state"] == "audited"
+    assert len(writer.transitions) == 1
+    assert store.values[_audit_key(target)]["created_at_ms"] == 7777
+    await reconciler.reconcile()
+    assert len(writer.transitions) == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_hash_item_is_kept_until_confirmed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = ScriptedHashScanStore({})
+    target = _put_hash_only(store, ip="10.0.6.4")
+    writer = RecordingSecurityEvents()
+    reconciler = _reconciler(store, writer)
+    reconciler._pending_scan_batch.append(_audit_key(target))
+    entered = asyncio.Event()
+    original = LoginGuard.repair_transition_integrity
+
+    async def blocked(_guard: LoginGuard, _transition_id: str) -> Any:
+        entered.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(LoginGuard, "repair_transition_integrity", blocked)
+    task = asyncio.create_task(reconciler.reconcile())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert list(reconciler._pending_scan_batch) == [_audit_key(target)]
+    monkeypatch.setattr(LoginGuard, "repair_transition_integrity", original)
+    await reconciler.reconcile()
+    assert store.values[_audit_key(target)]["state"] == "audited"
+    assert len(writer.transitions) == 1
+
+
 class RecordingAlerter:
     def __init__(self) -> None:
         self.events: list[tuple[str, str]] = []
@@ -516,6 +582,42 @@ def test_dead_letter_hmac_is_stable_and_not_raw_uuid() -> None:
     assert len(digest) == 64
     assert transition_dead_letter_hmac(tid) == digest
     assert UUID(tid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    "AUTH_GUARD_REDIS_URL" not in __import__("os").environ,
+    reason="requires isolated Redis 7",
+)
+async def test_real_redis_wrong_type_does_not_block_pending_hash_tail() -> None:
+    import os
+
+    from redis.asyncio import Redis
+
+    from app.core.auth.service import AUDIT_OPEN_KEY, RedisKeyValue
+
+    client = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
+    fixture = FakeKeyValue()
+    healthy = _put_hash_only(fixture, ip="10.0.6.8")
+    poison = str(uuid4())
+    writer = RecordingSecurityEvents()
+    try:
+        await client.set(_audit_key(poison), "synthetic-wrong-type")
+        await client.hset(_audit_key(healthy), mapping=fixture.values[_audit_key(healthy)])
+        reconciler = _reconciler(RedisKeyValue(client), writer)
+        reconciler._pending_scan_batch.extend([_audit_key(poison), _audit_key(healthy)])
+        await reconciler.reconcile()
+        assert not reconciler._pending_scan_batch
+        assert await client.hget(_audit_key(healthy), "state") == "audited"
+        assert len(writer.transitions) == 1
+        assert writer.dead_letters
+        assert await client.type(_audit_key(poison)) == "string"
+    finally:
+        await client.zrem(AUDIT_DUE_KEY, poison, healthy)
+        await client.zrem(AUDIT_OPEN_KEY, poison, healthy)
+        await client.delete(_audit_key(poison), _audit_key(healthy),
+                            f"auth:audit:dead-letter:{poison}")
+        await client.aclose()
 
 
 @pytest.mark.asyncio

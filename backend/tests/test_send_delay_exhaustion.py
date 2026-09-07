@@ -83,7 +83,7 @@ async def test_exhaustion_finalizes_messages_batch_and_callback(
             FakeResult(scalar=11),
             FakeResult(),
             FakeResult(scalar=11),
-            FakeResult(),
+            FakeResult(rowcount=1),
             FakeResult(row={"id": 11, "status": "completed"}),
             FakeResult(),
         ]
@@ -190,7 +190,7 @@ async def test_exhaustion_keeps_batch_sending_when_other_messages_are_active(
             FakeResult(scalar=11),
             FakeResult(),
             FakeResult(scalar=11),
-            FakeResult(),
+            FakeResult(rowcount=1),
             FakeResult(row={"id": 11, "status": "sending"}),
         ]
     )

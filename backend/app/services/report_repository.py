@@ -47,6 +47,11 @@ from app.services.report_ingest import (
     ProtectedReport,
     ReportApplyResult,
 )
+from app.services.report_projection import (
+    NO_REPORT_EVIDENCE,
+    TRUSTED_REPORT_EVIDENCE,
+    repair_message_projection_from_report,
+)
 from app.settings import Settings, get_settings
 from app.vendor.routing import report_may_apply
 
@@ -57,8 +62,6 @@ class SqlReportRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self._leases: dict[int, RawProcessingLease] = {}
-        self._timeout_backoff_until: dict[int, float] = {}
-        self._timeout_fail_counts: dict[int, int] = {}
         self.on_claimed_batch: Callable[[Any, int], Awaitable[None]] | None = None
 
     def remember_lease(self, lease: RawProcessingLease) -> None:
@@ -402,11 +405,29 @@ class SqlReportRepository:
                     )
                     return None
                 row = matches[0]
-                raw_vendors = row.get("irreversible_vendors") or ()
+                # 与发送终结保持 chunk → batch → message 的锁顺序。
+                # 锁后再读供应商归属，避免锁外快照跨过 failover 转换。
+                authority = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT COALESCE(c.selected_vendor,'zhihui') selected_vendor,
+                              (SELECT coalesce(array_agg(a.vendor_id), '{}')
+                               FROM sms_vendor_attempt a WHERE a.chunk_id=c.id
+                               AND a.outcome IN ('submitted','uncertain')) irreversible_vendors
+                            FROM sms_chunk c WHERE c.id=:id FOR UPDATE OF c
+                            """
+                        ),
+                        {"id": row["chunk_id"]},
+                    )
+                ).mappings().one_or_none()
+                if authority is None:
+                    return None
+                raw_vendors = authority.get("irreversible_vendors") or ()
                 irreversible = frozenset(str(item) for item in raw_vendors)
                 if not report_may_apply(
                     report_vendor_id=getattr(report, "vendor_id", "zhihui"),
-                    selected_vendor=str(row.get("selected_vendor") or "zhihui"),
+                    selected_vendor=str(authority.get("selected_vendor") or "zhihui"),
                     irreversible_vendors=irreversible,
                 ):
                     return None
@@ -451,7 +472,10 @@ class SqlReportRepository:
                     },
                 )
                 if projection.scalar_one_or_none() is None:
-                    return ReportApplyResult(batch_id, changed=False)
+                    repaired = await self._repair_report_projection(
+                        connection, batch_id, [(int(row["id"]), row["created_at"])]
+                    )
+                    return ReportApplyResult(batch_id, changed=bool(repaired))
                 updated = await connection.execute(
                     text(
                         """
@@ -623,6 +647,38 @@ class SqlReportRepository:
         finally:
             await engine.dispose()
 
+    async def _repair_report_projection(
+        self,
+        connection: AsyncConnection,
+        batch_id: int,
+        identities: list[tuple[int, datetime]],
+    ) -> bool:
+        """在既有锁内修复投影，并沿用同一报告事件的回调及容量幂等身份。"""
+
+        repaired = await repair_message_projection_from_report(
+            connection, batch_id=batch_id, identities=identities
+        )
+        if repaired:
+            await self._refresh_batch(
+                connection,
+                batch_id,
+                batch_locked=True,
+                source_report_event_key=str(repaired[-1]["report_event_key"]),
+            )
+        for row in repaired:
+            event_key = str(row["report_event_key"])
+            await enqueue_message_report(
+                connection,
+                batch_id=batch_id,
+                message_id=int(row["id"]),
+                created_at=row["created_at"],
+                event_key=event_key,
+                message_status=str(row["status"]),
+                report_desc=str(row["report_desc"]),
+                report_time=row["report_time"],
+            )
+        return bool(repaired)
+
     async def failure_rate_candidate(self, batch_id: int) -> FailureRateAlert | None:
         engine = self._engine()
         try:
@@ -774,7 +830,7 @@ class SqlReportRepository:
         deadline = monotonic() + max_round_seconds
         try:
             async with asyncio.timeout(max_round_seconds):
-                while len(visited) < batch_limit:
+                for _attempt in range(batch_limit):
                     remaining_s = deadline - monotonic()
                     if remaining_s <= 0:
                         more_remaining = True
@@ -785,7 +841,7 @@ class SqlReportRepository:
                             engine,
                             timeout_hours=hours,
                             message_limit=message_limit_per_batch,
-                            exclude_ids=visited | self._active_timeout_backoff(),
+                            exclude_ids=visited,
                             statement_timeout_ms=min(statement_timeout_ms, remaining_ms),
                             lock_timeout_ms=min(lock_timeout_ms, remaining_ms),
                         )
@@ -797,8 +853,8 @@ class SqlReportRepository:
                     except Exception:
                         failed += 1
                         more_remaining = True
-                        LOGGER.exception("report timeout batch failed")
-                        continue
+                        LOGGER.warning("report timeout storage unavailable")
+                        break
                     if outcome.kind == "empty":
                         if await self._due_batches_exist(
                             engine,
@@ -834,20 +890,6 @@ class SqlReportRepository:
             more_remaining=more_remaining,
         )
 
-    def _active_timeout_backoff(self) -> set[int]:
-        now = monotonic()
-        return {
-            batch_id
-            for batch_id, until in self._timeout_backoff_until.items()
-            if until > now
-        }
-
-    def _record_timeout_backoff(self, batch_id: int) -> None:
-        count = self._timeout_fail_counts.get(batch_id, 0) + 1
-        self._timeout_fail_counts[batch_id] = count
-        delay = min(60.0, float(2 ** min(count, 6)))
-        self._timeout_backoff_until[batch_id] = monotonic() + delay
-
     async def _due_batches_exist(
         self,
         engine: Any,
@@ -878,6 +920,79 @@ class SqlReportRepository:
             )
             return bool(result.scalar_one())
 
+    async def _claim_due_timeout_batch(
+        self, engine: Any, *, timeout_hours: int, exclude_ids: set[int],
+        statement_timeout_ms: int, lock_timeout_ms: int,
+    ) -> tuple[int, int] | None:
+        """独立提交领取代际和调度位置；租约覆盖最大 120 秒轮次及清理余量。"""
+
+        async with engine.begin() as connection:
+            await _apply_local_timeouts(
+                connection, statement_timeout_ms=statement_timeout_ms,
+                lock_timeout_ms=lock_timeout_ms,
+            )
+            claimed = await connection.execute(
+                text(
+                    """
+                    SELECT b.id
+                    FROM sms_batch b
+                    WHERE EXISTS (
+                      SELECT 1
+                      FROM sms_message m
+                      JOIN sms_chunk c ON c.id=m.chunk_id
+                      WHERE m.batch_id=b.id
+                        AND m.status='sent'
+                        AND c.submitted_at < now() - make_interval(hours=>:hours)
+                    )
+                    AND NOT (b.id = ANY(CAST(:exclude_ids AS bigint[])))
+                    AND (b.report_timeout_next_attempt_at IS NULL
+                      OR b.report_timeout_next_attempt_at <= now())
+                    ORDER BY b.report_timeout_last_attempt_at NULLS FIRST, b.id
+                    LIMIT 1
+                    FOR UPDATE OF b SKIP LOCKED
+                    """
+                ),
+                {"hours": timeout_hours, "exclude_ids": list(exclude_ids)},
+            )
+            raw_id = claimed.scalar_one_or_none()
+            if raw_id is None:
+                return None
+            row = (await connection.execute(
+                text("""
+                    UPDATE sms_batch SET
+                      report_timeout_generation=report_timeout_generation+1,
+                      report_timeout_last_attempt_at=clock_timestamp(),
+                      report_timeout_next_attempt_at=clock_timestamp()+interval '150 seconds'
+                    WHERE id=:id RETURNING id,report_timeout_generation
+                """), {"id": int(raw_id)},
+            )).one()
+            return int(row[0]), int(row[1])
+
+    async def _record_timeout_failure(
+        self, engine: Any, *, batch_id: int, generation: int,
+        statement_timeout_ms: int, lock_timeout_ms: int,
+    ) -> None:
+        """业务回滚后独立保存退避；旧代际或已终结批次不得被迟到失败覆盖。"""
+
+        async with engine.begin() as connection:
+            await _apply_local_timeouts(
+                connection, statement_timeout_ms=statement_timeout_ms,
+                lock_timeout_ms=lock_timeout_ms,
+            )
+            await connection.execute(text("""
+                UPDATE sms_batch b SET
+                  report_timeout_generation=report_timeout_generation+1,
+                  report_timeout_failures=LEAST(report_timeout_failures+1,16),
+                  report_timeout_next_attempt_at=clock_timestamp()+make_interval(
+                    secs=>LEAST(300, power(2,LEAST(report_timeout_failures+1,9)))
+                  )
+                WHERE b.id=:id AND b.report_timeout_generation=:generation
+                  AND b.report_timeout_next_attempt_at IS NOT NULL
+                  AND EXISTS (
+                    SELECT 1 FROM sms_message m WHERE m.batch_id=b.id AND m.status='sent'
+                  )
+            """), {"id": batch_id,"generation": generation})
+
     async def _expire_one_due_batch(
         self,
         engine: Any,
@@ -888,50 +1003,38 @@ class SqlReportRepository:
         statement_timeout_ms: int,
         lock_timeout_ms: int,
     ) -> _BatchSweepOutcome:
-        batch_id = 0
+        claim = await self._claim_due_timeout_batch(
+            engine, timeout_hours=timeout_hours, exclude_ids=exclude_ids,
+            statement_timeout_ms=statement_timeout_ms, lock_timeout_ms=lock_timeout_ms,
+        )
+        if claim is None:
+            return _BatchSweepOutcome("empty", 0, 0, False)
+        batch_id, generation = claim
         try:
             async with engine.begin() as connection:
                 await _apply_local_timeouts(
-                    connection,
-                    statement_timeout_ms=statement_timeout_ms,
+                    connection, statement_timeout_ms=statement_timeout_ms,
                     lock_timeout_ms=lock_timeout_ms,
                 )
-                claimed = await connection.execute(
-                    text(
-                        """
-                        SELECT b.id
-                        FROM sms_batch b
-                        WHERE EXISTS (
-                          SELECT 1
-                          FROM sms_message m
-                          JOIN sms_chunk c ON c.id=m.chunk_id
-                          WHERE m.batch_id=b.id
-                            AND m.status='sent'
-                            AND c.submitted_at < now() - make_interval(hours=>:hours)
-                        )
-                        AND NOT (b.id = ANY(CAST(:exclude_ids AS bigint[])))
-                        ORDER BY b.id
-                        LIMIT 1
-                        FOR UPDATE OF b SKIP LOCKED
-                        """
-                    ),
-                    {"hours": timeout_hours, "exclude_ids": list(exclude_ids)},
-                )
-                raw_id = claimed.scalar_one_or_none()
-                if raw_id is None:
-                    return _BatchSweepOutcome("empty", 0, 0, False)
-                batch_id = int(raw_id)
+                owned = (await connection.execute(text("""
+                    SELECT id FROM sms_batch
+                    WHERE id=:id AND report_timeout_generation=:generation
+                    FOR UPDATE SKIP LOCKED
+                """), {"id": batch_id,"generation": generation})).scalar_one_or_none()
+                if owned is None:
+                    return _BatchSweepOutcome("deferred", batch_id, 0, True)
                 try:
                     if self.on_claimed_batch is not None:
                         await self.on_claimed_batch(connection, batch_id)
                     picked = await connection.execute(
                         text(
-                            """
+                            f"""
                             SELECT m.id, m.created_at
                             FROM sms_message m
                             JOIN sms_chunk c ON c.id=m.chunk_id
                             WHERE m.batch_id=:batch_id
                               AND m.status='sent'
+                              AND ({NO_REPORT_EVIDENCE} OR {TRUSTED_REPORT_EVIDENCE})
                               AND c.submitted_at < now() - make_interval(hours=>:hours)
                             ORDER BY m.id, m.created_at
                             LIMIT :message_limit
@@ -945,11 +1048,14 @@ class SqlReportRepository:
                         },
                     )
                     rows = list(picked.mappings())
-                    if not rows:
-                        return _BatchSweepOutcome("changed", batch_id, 0, False)
+                    await self._repair_report_projection(
+                        connection,
+                        batch_id,
+                        [(int(row["id"]), row["created_at"]) for row in rows],
+                    )
                     updated = await connection.execute(
                         text(
-                            """
+                            f"""
                             WITH expired AS (
                               UPDATE sms_message m SET status='unknown'
                               FROM sms_chunk c,
@@ -961,6 +1067,7 @@ class SqlReportRepository:
                                 AND m.chunk_id=c.id
                                 AND m.batch_id=:batch_id
                                 AND m.status='sent'
+                                AND {NO_REPORT_EVIDENCE}
                                 AND c.submitted_at < now()-make_interval(hours=>:hours)
                               RETURNING m.created_at
                             ), dirty AS (
@@ -981,32 +1088,34 @@ class SqlReportRepository:
                         },
                     )
                     changed = int(updated.scalar_one())
-                    remaining = False
+                    remaining = await self._batch_has_due_sent(
+                        connection, batch_id=batch_id, timeout_hours=timeout_hours
+                    )
                     if changed:
-                        remaining = await self._batch_has_due_sent(
-                            connection,
-                            batch_id=batch_id,
-                            timeout_hours=timeout_hours,
-                        )
                         await self._refresh_batch(
                             connection,
                             batch_id,
                             batch_locked=True,
                             unknown_delta=changed,
                         )
+                    await connection.execute(text("""
+                        UPDATE sms_batch SET report_timeout_failures=0,
+                          report_timeout_next_attempt_at=NULL
+                        WHERE id=:id AND report_timeout_generation=:generation
+                    """), {"id": batch_id,"generation": generation})
                     return _BatchSweepOutcome("changed", batch_id, changed, remaining)
                 except asyncio.CancelledError:
-                    self._record_timeout_backoff(batch_id)
                     raise
                 except Exception:
-                    self._record_timeout_backoff(batch_id)
                     raise
         except asyncio.CancelledError:
             raise
         except Exception:
-            if batch_id:
-                return _BatchSweepOutcome("failed", batch_id, 0, False)
-            raise
+            await self._record_timeout_failure(
+                engine, batch_id=batch_id, generation=generation,
+                statement_timeout_ms=statement_timeout_ms, lock_timeout_ms=lock_timeout_ms,
+            )
+            return _BatchSweepOutcome("failed", batch_id, 0, False)
 
     @staticmethod
     async def _batch_has_due_sent(

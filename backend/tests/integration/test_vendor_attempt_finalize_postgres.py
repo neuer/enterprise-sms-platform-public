@@ -18,9 +18,11 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.core.runtime_resources import bind_connection_system_audit
 from app.services.crypto import CryptoService
 from app.services.reconcile_repository import SqlRecoveryRepository
-from app.tasks.send import FinalizeKind
+from app.services.report_repository import SqlReportRepository
+from app.tasks.send import FinalizeKind, SubmitOutcome, submit_outcome_from_finalize
 from app.tasks.send_repository import SqlChunkStore
 from scripts_support.maintain_partitions import maintain
+from tests.integration.test_vendor_event_facts_postgres import _report
 
 pytestmark = pytest.mark.skipif(
     "OUTBOX_POSTGRES_DSN" not in os.environ,
@@ -30,6 +32,197 @@ pytestmark = pytest.mark.skipif(
 _AES = base64.b64encode(b"v" * 32).decode()
 _HMAC = base64.b64encode(b"v" * 32).decode()
 _BACKEND_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("report_status", [1, 2])
+@pytest.mark.parametrize("early", [False, True])
+async def test_report_and_finalize_converge_and_duplicate_repairs_projection(
+    report_status: int,
+    early: bool,
+) -> None:
+    from datetime import UTC, datetime
+
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    nonce = uuid4().hex
+    event_key = nonce + uuid4().hex
+    app_id, batch_id, chunk_id = None, 0, 0
+    try:
+        await _prepare_db(engine)
+        app_id = await _insert_app(engine, nonce)
+        batch_id, chunk_id = await _seed_chunk(engine, app_id=app_id, nonce=nonce, index=91)
+        store = _store(database_url)
+        reports = SqlReportRepository(_settings(database_url))
+        attempt = await store.begin_vendor_invoke(
+            chunk_id, vendor_id="zhihui", adapter_id="zhihui", reason="primary"
+        )
+        report = _report(
+            _crypto(),
+            event_key=event_key,
+            custom_id=f"{nonce[:24]}{91:08d}",
+            status=report_status,
+            event_time=datetime.now(UTC),
+        )
+        release, entered = asyncio.Event(), asyncio.Event()
+
+        async def finalize() -> Any:
+            entered.set()
+            await release.wait()
+            return await store.finalize_vendor_attempt(
+                attempt.id,
+                chunk_id,
+                expected_generation=attempt.generation,
+                result="submitted",
+                vendor_task_id="synthetic-task",
+            )
+
+        task = asyncio.create_task(finalize())
+        await entered.wait()
+        if early:
+            applied = await reports.apply_report(1, report)
+            assert applied is not None and applied.changed
+        release.set()
+        assert (await task).kind is FinalizeKind.APPLIED
+        if not early:
+            applied = await reports.apply_report(1, report)
+            assert applied is not None and applied.changed
+        expected = "delivered" if report_status == 1 else "failed"
+        state = await _snapshot(engine, chunk_id)
+        assert (state["outcome"], state["chunk_status"], state["message_status"]) == (
+            "submitted",
+            "submitted",
+            expected,
+        )
+        # 模拟历史无条件提交写造成的矛盾，原事件重放必须修复且不新增事实。
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE sms_message SET status='sent' WHERE chunk_id=:id"), {"id": chunk_id}
+            )
+        repaired = await reports.apply_report(1, report)
+        assert repaired is not None and repaired.changed
+        assert (await _snapshot(engine, chunk_id))["message_status"] == expected
+        replay = await reports.apply_report(1, report)
+        assert replay is not None and not replay.changed
+        # 超时路径也必须恢复同一可信事实，不能把矛盾 sent 降为 unknown。
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE sms_message SET status='sent' WHERE chunk_id=:id"), {"id": chunk_id}
+            )
+            await connection.execute(
+                text("UPDATE sms_chunk SET submitted_at=now()-interval '72 hours' WHERE id=:id"),
+                {"id": chunk_id},
+            )
+        await reports.expire_due_reports(
+            timeout_hours=48,
+            batch_limit=10,
+            message_limit_per_batch=20,
+            max_round_seconds=10,
+            statement_timeout_ms=5000,
+            lock_timeout_ms=1000,
+        )
+        assert (await _snapshot(engine, chunk_id))["message_status"] == expected
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text("SELECT status,delivered,failed,unknown_cnt FROM sms_batch WHERE id=:id"),
+                    {"id": batch_id},
+                )
+            ).one()
+            assert row == ("completed", int(report_status == 1), int(report_status == 2), 0)
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM report_event_projection WHERE event_key=:key"), {"key": event_key}
+            )
+            await connection.execute(
+                text("DELETE FROM callback_report_event WHERE batch_id=:id"), {"id": batch_id}
+            )
+        await _cleanup(
+            engine,
+            app_id=app_id,
+            batch_ids=[batch_id] if batch_id else [],
+            chunk_ids=[chunk_id] if chunk_id else [],
+        )
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM report_event WHERE event_key=:key"), {"key": event_key}
+            )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_count", [7, 8, 9])
+@pytest.mark.parametrize("vendor_code", [1011, 10010])
+async def test_delayed_budget_is_atomic_and_reports_actual_result(
+    retry_count: int,
+    vendor_code: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    nonce = uuid4().hex
+    app_id, batch_id, chunk_id = None, 0, 0
+    enqueued: list[int] = []
+
+    async def enqueue(chunk: int, _lane: str, _countdown: int) -> None:
+        enqueued.append(chunk)
+
+    try:
+        await _prepare_db(engine)
+        app_id = await _insert_app(engine, nonce)
+        batch_id, chunk_id = await _seed_chunk(engine, app_id=app_id, nonce=nonce, index=92)
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE sms_chunk SET retry_count=:count WHERE id=:id"),
+                {"id": chunk_id, "count": retry_count},
+            )
+        store = _store(database_url)
+        monkeypatch.setattr(store, "_enqueue_retry", enqueue)
+        attempt = await store.begin_vendor_invoke(
+            chunk_id, vendor_id="zhihui", adapter_id="zhihui", reason="primary"
+        )
+        for index in range(2):
+            report = await store.finalize_vendor_attempt(
+                attempt.id,
+                chunk_id,
+                expected_generation=attempt.generation,
+                result="delayed",
+                vendor_code=vendor_code,
+                retry_delay_s=300,
+            )
+            assert report.kind is (
+                FinalizeKind.APPLIED if index == 0 else FinalizeKind.ALREADY_FINALIZED_SAME_RESULT
+            )
+            expected = SubmitOutcome.DELAYED if retry_count < 8 else SubmitOutcome.FAILED
+            assert submit_outcome_from_finalize(report, SubmitOutcome.DELAYED) is expected
+        reloaded = await store.load_authoritative_next_action(
+            chunk_id, attempt_id=attempt.id, expected_generation=attempt.generation
+        )
+        assert reloaded is not None
+        assert submit_outcome_from_finalize(reloaded, SubmitOutcome.DELAYED) is expected
+        state = await _snapshot(engine, chunk_id)
+        if retry_count < 8:
+            assert state["chunk_status"] == "retrying"
+            assert enqueued == [chunk_id]
+        else:
+            assert state["outcome"] == state["chunk_status"] == state["message_status"] == "failed"
+            assert not enqueued
+            async with engine.connect() as connection:
+                row = (
+                    await connection.execute(
+                        text("SELECT status,failed FROM sms_batch WHERE id=:id"), {"id": batch_id}
+                    )
+                ).one()
+                assert row == ("completed", 1)
+    finally:
+        await _cleanup(
+            engine,
+            app_id=app_id,
+            batch_ids=[batch_id] if batch_id else [],
+            chunk_ids=[chunk_id] if chunk_id else [],
+        )
+        await engine.dispose()
 
 
 def _crypto() -> CryptoService:
@@ -197,9 +390,10 @@ async def _seed_chunk(
 async def _snapshot(engine: Any, chunk_id: int) -> dict[str, Any]:
     async with engine.connect() as connection:
         row = (
-            await connection.execute(
-                text(
-                    """
+            (
+                await connection.execute(
+                    text(
+                        """
                     SELECT c.status AS chunk_status, c.vendor_task_id,
                            c.route_generation, c.next_vendor,
                            c.failover_from_attempt_id, a.outcome, a.generation,
@@ -215,10 +409,13 @@ async def _snapshot(engine: Any, chunk_id: int) -> dict[str, Any]:
                     ORDER BY a.generation DESC NULLS LAST
                     LIMIT 1
                     """
-                ),
-                {"chunk_id": chunk_id},
+                    ),
+                    {"chunk_id": chunk_id},
+                )
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
     return dict(row)
 
 
@@ -266,9 +463,7 @@ async def test_finalize_submitted_is_atomic_on_postgres() -> None:
     try:
         await _prepare_db(engine)
         app_id = await _insert_app(engine, nonce)
-        batch_id, chunk_id = await _seed_chunk(
-            engine, app_id=app_id, nonce=nonce, index=1
-        )
+        batch_id, chunk_id = await _seed_chunk(engine, app_id=app_id, nonce=nonce, index=1)
         batch_ids.append(batch_id)
         chunk_ids.append(chunk_id)
         store = _store(database_url)
@@ -293,9 +488,7 @@ async def test_finalize_submitted_is_atomic_on_postgres() -> None:
                 chunk_id, vendor_id="secondary", adapter_id="zhihui", reason="failover"
             )
 
-        batch_id, stuck_id = await _seed_chunk(
-            engine, app_id=app_id, nonce=nonce, index=2
-        )
+        batch_id, stuck_id = await _seed_chunk(engine, app_id=app_id, nonce=nonce, index=2)
         batch_ids.append(batch_id)
         chunk_ids.append(stuck_id)
         stuck = await store.begin_vendor_invoke(
@@ -336,9 +529,7 @@ async def test_finalize_uncertain_and_rejects_on_postgres() -> None:
         app_id = await _insert_app(engine, nonce)
         store = _store(database_url)
 
-        batch_id, uncertain_id = await _seed_chunk(
-            engine, app_id=app_id, nonce=nonce, index=1
-        )
+        batch_id, uncertain_id = await _seed_chunk(engine, app_id=app_id, nonce=nonce, index=1)
         batch_ids.append(batch_id)
         chunk_ids.append(uncertain_id)
         attempt = await store.begin_vendor_invoke(
@@ -359,9 +550,7 @@ async def test_finalize_uncertain_and_rejects_on_postgres() -> None:
                 uncertain_id, vendor_id="secondary", adapter_id="zhihui", reason="failover"
             )
 
-        batch_id, safe_id = await _seed_chunk(
-            engine, app_id=app_id, nonce=nonce, index=2
-        )
+        batch_id, safe_id = await _seed_chunk(engine, app_id=app_id, nonce=nonce, index=2)
         batch_ids.append(batch_id)
         chunk_ids.append(safe_id)
         attempt = await store.begin_vendor_invoke(
@@ -386,9 +575,7 @@ async def test_finalize_uncertain_and_rejects_on_postgres() -> None:
                 safe_id, vendor_id="secondary", adapter_id="zhihui", reason="failover"
             )
 
-        batch_id, unsafe_id = await _seed_chunk(
-            engine, app_id=app_id, nonce=nonce, index=3
-        )
+        batch_id, unsafe_id = await _seed_chunk(engine, app_id=app_id, nonce=nonce, index=3)
         batch_ids.append(batch_id)
         chunk_ids.append(unsafe_id)
         attempt = await store.begin_vendor_invoke(
@@ -425,9 +612,7 @@ async def test_reconcile_repairs_or_isolates_submitted_invoking_on_postgres() ->
         app_id = await _insert_app(engine, nonce)
         store = _store(database_url)
         recovery = SqlRecoveryRepository(_settings(database_url))
-        task_id = _crypto().stable_hmac_fingerprint(
-            b"task-repair", domain="vendor-task-id"
-        )[1]
+        task_id = _crypto().stable_hmac_fingerprint(b"task-repair", domain="vendor-task-id")[1]
 
         proven_batch, proven_id = await _seed_chunk(
             engine,
@@ -492,9 +677,7 @@ async def test_reconcile_repairs_or_isolates_submitted_invoking_on_postgres() ->
                 {"id": unproven_id},
             )
 
-        fresh_batch, fresh_id = await _seed_chunk(
-            engine, app_id=app_id, nonce=nonce, index=3
-        )
+        fresh_batch, fresh_id = await _seed_chunk(engine, app_id=app_id, nonce=nonce, index=3)
         batch_ids.append(fresh_batch)
         chunk_ids.append(fresh_id)
         fresh = await store.begin_vendor_invoke(
@@ -590,9 +773,7 @@ async def test_two_finalizers_and_kill_before_commit_on_postgres(
         app_id = await _insert_app(engine, nonce)
         store = _store(database_url)
 
-        race_batch, race_id = await _seed_chunk(
-            engine, app_id=app_id, nonce=nonce, index=1
-        )
+        race_batch, race_id = await _seed_chunk(engine, app_id=app_id, nonce=nonce, index=1)
         batch_ids.append(race_batch)
         chunk_ids.append(race_id)
         race = await store.begin_vendor_invoke(
@@ -616,9 +797,7 @@ async def test_two_finalizers_and_kill_before_commit_on_postgres(
         )
         kinds = {first.kind, second.kind}
         assert FinalizeKind.APPLIED in kinds
-        assert kinds - {FinalizeKind.APPLIED} <= {
-            FinalizeKind.ALREADY_FINALIZED_SAME_RESULT
-        }
+        assert kinds - {FinalizeKind.APPLIED} <= {FinalizeKind.ALREADY_FINALIZED_SAME_RESULT}
         state = await _snapshot(engine, race_id)
         assert state["chunk_status"] == "submitted"
         assert state["outcome"] == "submitted"
@@ -637,9 +816,7 @@ async def test_two_finalizers_and_kill_before_commit_on_postgres(
             ).scalar_one()
         assert int(attempt_count) == 1
 
-        kill_batch, kill_id = await _seed_chunk(
-            engine, app_id=app_id, nonce=nonce, index=2
-        )
+        kill_batch, kill_id = await _seed_chunk(engine, app_id=app_id, nonce=nonce, index=2)
         batch_ids.append(kill_batch)
         chunk_ids.append(kill_id)
         kill_attempt = await store.begin_vendor_invoke(

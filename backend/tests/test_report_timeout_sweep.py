@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS sms_batch (
   delivered INTEGER NOT NULL DEFAULT 0,
   failed INTEGER NOT NULL DEFAULT 0,
   unknown_cnt INTEGER NOT NULL DEFAULT 0,
+  report_timeout_last_attempt_at TIMESTAMPTZ,
+  report_timeout_next_attempt_at TIMESTAMPTZ,
+  report_timeout_generation BIGINT NOT NULL DEFAULT 0,
+  report_timeout_failures INTEGER NOT NULL DEFAULT 0,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS sms_chunk (
@@ -992,6 +996,72 @@ async def test_poison_batch_does_not_starve_other_candidates(
         if await _statuses(engine, batch_id) == ["unknown"]:
             changed += 1
     assert changed == 1
+
+
+@pytest.mark.asyncio
+async def test_poison_prefix_yields_across_fresh_tasks_even_when_backoff_expires(
+    timeout_env: tuple[Any, EngineBoundRepository, ReportTimeoutService, str],
+) -> None:
+    engine, _, _, nonce = timeout_env
+    ids = [await _add_batch(engine, nonce=nonce, index=180+i, statuses=["sent"])
+           for i in range(5)]
+
+    async def poison(_connection: Any, batch_id: int) -> None:
+        if batch_id in ids[:3]:
+            raise RuntimeError("poison")
+
+    for tick in range(3):
+        repository = EngineBoundRepository(engine)
+        repository.on_claimed_batch = poison
+        result = await repository.expire_due_reports(**_bounds(batch_limit=2))
+        if tick == 0:
+            assert result.failed == 2
+        async with engine.begin() as connection:
+            await connection.execute(text("""
+                UPDATE sms_batch SET report_timeout_next_attempt_at=now()-interval '1 second'
+                WHERE id=ANY(:ids) AND report_timeout_next_attempt_at IS NOT NULL
+            """), {"ids": ids})
+    for batch_id in ids[3:]:
+        assert await _statuses(engine, batch_id) == ["unknown"]
+    for batch_id in ids[:3]:
+        assert await _statuses(engine, batch_id) == ["sent"]
+
+
+@pytest.mark.asyncio
+async def test_stale_timeout_failure_cannot_override_newer_success(
+    timeout_env: tuple[Any, EngineBoundRepository, ReportTimeoutService, str],
+) -> None:
+    engine, repository, service, nonce = timeout_env
+    batch_id = await _add_batch(engine, nonce=nonce, index=190, statuses=["sent"])
+    await service.expire_due_reports(**_bounds())
+    await repository._record_timeout_failure(
+        engine, batch_id=batch_id, generation=1, statement_timeout_ms=1000, lock_timeout_ms=500
+    )
+    async with engine.connect() as connection:
+        row = (await connection.execute(text("""
+            SELECT report_timeout_failures,report_timeout_next_attempt_at
+            FROM sms_batch WHERE id=:id
+        """), {"id": batch_id})).one()
+    assert row == (0, None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_key", [None, "f" * 64])
+async def test_untrusted_report_prefix_does_not_starve_timeout_tail(
+    timeout_env: tuple[Any, EngineBoundRepository, ReportTimeoutService, str],
+    event_key: str | None,
+) -> None:
+    engine, _, _, nonce = timeout_env
+    batch_id = await _add_batch(engine, nonce=nonce, index=195, statuses=["sent", "sent"])
+    async with engine.begin() as connection:
+        await connection.execute(text("""
+            UPDATE sms_message SET report_status=1,report_event_key=:event_key
+            WHERE id=(SELECT min(id) FROM sms_message WHERE batch_id=:id)
+        """), {"id": batch_id, "event_key": event_key})
+    repository = EngineBoundRepository(engine)
+    result = await repository.expire_due_reports(**_bounds(message_limit_per_batch=1))
+    assert await _statuses(engine, batch_id) == ["sent", "unknown"]
+    assert result.messages_changed == 1 and result.more_remaining
 
 
 @pytest.mark.asyncio

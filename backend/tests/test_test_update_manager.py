@@ -50,6 +50,49 @@ class FakeStore:
         self.state = State.BLOCKED
 
 
+@pytest.mark.parametrize("rollback", [False, True])
+def test_update_manager_preserves_completed_protocol_for_new_update(
+    rollback: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import writer_cutover
+
+    from app.services.app_ratelimit_cutover import CUTOVER_MARKER_KEY
+    from tests.support.lua_redis import LuaRedis
+    from tests.test_app_ratelimit_writer_cutover import _seed_active_marker
+
+    redis = LuaRedis(1_778_202_000)
+    _seed_active_marker(redis, generation=7)
+    before = redis.hgetall(CUTOVER_MARKER_KEY)
+    projected: list[object] = []
+    monkeypatch.setattr(writer_cutover, "write_local_marker", projected.append)
+
+    def control(*argv: str) -> str:
+        if argv[0] == "HGETALL":
+            return "\n".join(item for pair in redis.hgetall(argv[1]).items() for item in pair)
+        assert argv[0] == "EVAL"
+        result = redis.eval(argv[1], int(argv[2]), *argv[3:])
+        return "\n".join(str(item) for item in result)
+
+    def command(*argv: str) -> str:
+        assert "base-commit" in " ".join(argv)
+        if "ls-tree" in argv:
+            return "deploy/writer-protocol.json"
+        assert "show" in argv
+        return (ROOT / "deploy/writer-protocol.json").read_text(encoding="utf-8")
+
+    def unexpected_command(*_args: object) -> str:
+        pytest.fail("compatible update must not stop or reopen writers")
+
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = ROOT
+    operations.request = SimpleNamespace(update_id="U2", base_commit="base-commit")
+    operations.host = SimpleNamespace(_redis=control, _run=unexpected_command)
+    operations._command = command  # type: ignore[method-assign]
+    operations.run_writer_cutover("U2", rollback=rollback)
+    assert redis.hgetall(CUTOVER_MARKER_KEY) == before
+    assert len(projected) == 1
+
+
 def test_restore_operator_git_read_access_repairs_checkout_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

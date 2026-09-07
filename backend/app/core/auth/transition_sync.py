@@ -111,6 +111,7 @@ class AuthTransitionReconciler:
         self.scan_time_budget_s = INTEGRITY_SCAN_TIME_BUDGET_S
         self.stats_pages_per_tick = INTEGRITY_STATS_PAGES_PER_TICK
         self.stats_page_size = INTEGRITY_STATS_PAGE_SIZE
+        self._hash_first = False
         self._hash_scan_cursor = "0"
         self._pending_scan_batch: deque[str] = deque()
         self._scan_cycle_started_monotonic: float | None = None
@@ -271,6 +272,7 @@ class AuthTransitionReconciler:
     def reset_integrity_scan(self) -> None:
         """存储实例或拓扑重置后，从游标 0 开始新的完整遍历。"""
 
+        self._hash_first = False
         self._hash_scan_cursor = "0"
         self._pending_scan_batch.clear()
         self._scan_cycle_started_monotonic = None
@@ -337,37 +339,51 @@ class AuthTransitionReconciler:
         processed: int,
     ) -> int:
         drained = 0
-        while self._pending_scan_batch:
+        pending_count = len(self._pending_scan_batch)
+        while self._pending_scan_batch and drained < pending_count:
             if self._budget_exhausted(started, processed + drained):
                 break
-            key = self._pending_scan_batch.popleft()
+            key = self._pending_scan_batch[0]
             drained += 1
             transition_id = key.rsplit(":", 1)[-1]
             if not transition_id or transition_id in seen:
+                self._pending_scan_batch.popleft()
                 continue
+            outcome = await self._repair_one(guard, transition_id)
+            if outcome is None:
+                self._pending_scan_batch.rotate(-1)
+                continue
+            self._pending_scan_batch.popleft()
             seen.add(transition_id)
-            if await self._repair_one(guard, transition_id):
+            if outcome:
                 repaired.append(transition_id)
         return drained
 
     async def _repair_integrity(self, guard: LoginGuard) -> list[str]:
         """从上次游标继续反向 Hash 扫描；单轮有界，不丢未处理批次。"""
 
-        await self._maybe_reset_storage(guard)
         seen: set[str] = set()
         repaired: list[str] = []
         started = self._clock()
         processed = 0
-        try:
+
+        async def open_stage() -> None:
+            nonlocal processed
             for transition_id in await guard.scan_open_transitions():
                 if self._budget_exhausted(started, processed):
                     break
                 if transition_id in seen:
                     continue
-                seen.add(transition_id)
                 processed += 1
-                if await self._repair_one(guard, transition_id):
+                outcome = await self._repair_one(guard, transition_id)
+                if outcome is None:
+                    break
+                seen.add(transition_id)
+                if outcome:
                     repaired.append(transition_id)
+
+        async def hash_stage() -> None:
+            nonlocal processed
             had_pending = bool(self._pending_scan_batch)
             if had_pending or self._hash_scan_cursor != "0":
                 self._mark_scan_cycle_started()
@@ -380,7 +396,9 @@ class AuthTransitionReconciler:
                 and not self._pending_scan_batch
             ):
                 self._maybe_complete_scan_cycle()
-                return repaired
+                return
+            if self._pending_scan_batch:
+                return
             scan_calls = 0
             while (
                 scan_calls < self.scan_calls_per_tick
@@ -401,10 +419,25 @@ class AuthTransitionReconciler:
                 processed += await self._drain_pending(
                     guard, seen, repaired, started=started, processed=processed
                 )
+                if self._pending_scan_batch:
+                    break
                 if next_cursor == "0":
                     self._maybe_complete_scan_cycle()
                     break
             self._maybe_complete_scan_cycle()
+
+        try:
+            async with asyncio.timeout(self.scan_time_budget_s):
+                await self._maybe_reset_storage(guard)
+                hash_first = self._hash_first
+                self._hash_first = not hash_first
+                stages = (hash_stage, open_stage) if hash_first else (open_stage, hash_stage)
+                for stage in stages:
+                    if self._budget_exhausted(started, processed):
+                        break
+                    await stage()
+        except TimeoutError:
+            LOGGER.warning("auth transition integrity budget exhausted")
         finally:
             self._observe_scan(processed)
         return repaired
@@ -456,14 +489,14 @@ class AuthTransitionReconciler:
             return
         observe_transition_integrity_stats_complete(False)
 
-    async def _repair_one(self, guard: LoginGuard, transition_id: str) -> bool:
+    async def _repair_one(self, guard: LoginGuard, transition_id: str) -> bool | None:
         try:
             direction, outcome, field_class = await guard.repair_transition_integrity(
                 transition_id
             )
         except Exception:
-            LOGGER.exception("auth transition integrity repair failed")
-            return False
+            LOGGER.warning("auth transition integrity repair unavailable")
+            return None
         observe_transition_integrity_repair(direction, outcome)
         if outcome == "orphaned":
             await self._handle_orphan(

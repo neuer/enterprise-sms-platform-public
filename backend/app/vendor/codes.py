@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 BACKOFF_DELAYS_S = (1, 2, 4, 8, 16)
+DELAYED_RETRY_LIMIT = 8
+DELAYED_RETRY_EXHAUSTED = "delayed_retry_exhausted"
 
 
 @dataclass(frozen=True, slots=True)

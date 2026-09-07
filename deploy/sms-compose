@@ -897,28 +897,6 @@ assert_writer_launch_allowed() {
     --environment "$environment"
 }
 
-activate_greenfield_writer_cutover() {
-  local environment=development
-  local running attempt
-  if [[ "$SECRETS_MODE" == production ]]; then
-    environment=production
-  fi
-  running="$("${COMPOSE[@]}" ps --status running --format '{{.Service}}' redis-control || true)"
-  if [[ "$running" != *redis-control* ]]; then
-    return 0
-  fi
-  for attempt in 1 2 3 4 5 6 7 8 9 10; do
-    if "${CONTROL_PYTHON[@]}" "$WRITER_CUTOVER" bootstrap \
-      --root "$ROOT" \
-      --environment "$environment" \
-      --compose "${COMPOSE[@]}"; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
-
 start_stack() {
   local external_tls_mode trusted_proxy_cidrs trusted_proxy_conf
   local build_guard=()
@@ -941,7 +919,6 @@ start_stack() {
   "${COMPOSE[@]}" config --quiet
   assert_writer_launch_allowed || return $?
   "${COMPOSE[@]}" up "${build_guard[@]}" "$@" || return $?
-  activate_greenfield_writer_cutover || return $?
 }
 
 stop_stack() {
@@ -1552,7 +1529,9 @@ run_locked_test_update() {
     return
   fi
   if [[ "$command" == writer-cutover ]]; then
-    "${CONTROL_PYTHON[@]}" "$WRITER_CUTOVER" status --root "$ROOT"
+    "${CONTROL_PYTHON[@]}" "$WRITER_CUTOVER" advance --root "$ROOT" \
+      --release-binding "writer-$(git -C "$ROOT" rev-parse HEAD)" \
+      --compose "${COMPOSE[@]}"
     return
   fi
   [[ "$command" == prepare || "$command" == apply || "$command" == verify ||

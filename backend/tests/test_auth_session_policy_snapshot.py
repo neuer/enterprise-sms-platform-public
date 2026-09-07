@@ -34,6 +34,113 @@ from tests.test_auth_ad_deadline import SECRET, ad_claims
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=UTC)
 
 
+@pytest.mark.asyncio
+async def test_cancelled_waiter_preserves_owned_single_flight() -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def loader() -> AuthSessionPolicy:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        await release.wait()
+        return _policy()
+
+    reconciler = AuthSessionPolicyReconciler(store=FakeKeyValue(), postgres_loader=loader)
+    first = asyncio.create_task(reconciler.reconcile())
+    await entered.wait()
+    owned = reconciler._inflight
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert reconciler._inflight is owned
+    second = asyncio.create_task(reconciler.reconcile())
+    await asyncio.sleep(0)
+    assert calls == 1
+    release.set()
+    assert await second == "missing"
+    await reconciler.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("periodic", [False, True])
+async def test_stop_waits_for_all_owned_probes_and_fences_late_publication(periodic: bool) -> None:
+    entered, cancelled, cleaned = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def loader() -> AuthSessionPolicy:
+        entered.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            cancelled.set()
+            await cleaned.wait()
+        return _policy()
+
+    reconciler = AuthSessionPolicyReconciler(store=FakeKeyValue(), postgres_loader=loader)
+    waiter = None
+    if periodic:
+        reconciler.start()
+    else:
+        waiter = asyncio.create_task(reconciler.reconcile())
+    await entered.wait()
+    owned = reconciler._inflight
+    stop_a = asyncio.create_task(reconciler.stop())
+    await cancelled.wait()
+    stop_b = asyncio.create_task(reconciler.stop())
+    await asyncio.sleep(0)
+    assert not stop_a.done() and not stop_b.done()
+    with pytest.raises(SessionStateUnavailable):
+        await reconciler.reconcile()
+    with pytest.raises(SessionStateUnavailable):
+        reconciler.start()
+    stop_a.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stop_a
+    cleaned.set()
+    await stop_b
+    assert owned is not None and owned.done()
+    assert reconciler._task is None and reconciler._inflight is None
+    assert reconciler.snapshot.current().health == "unavailable"
+    if waiter is not None:
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+    reconciler.postgres_loader = CountingPostgres(_policy())
+    reconciler.start()
+    await reconciler.ensure_ready()
+    assert reconciler.snapshot.current().health == "ready"
+    await reconciler.stop()
+
+
+@pytest.mark.asyncio
+async def test_unobserved_probe_failure_is_consumed() -> None:
+    entered, release, done = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    errors: list[dict[str, Any]] = []
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: errors.append(context))
+
+    async def loader() -> AuthSessionPolicy:
+        entered.set()
+        await release.wait()
+        raise SessionStateUnavailable("unavailable")
+
+    reconciler = AuthSessionPolicyReconciler(store=FakeKeyValue(), postgres_loader=loader)
+    try:
+        waiter = asyncio.create_task(reconciler.reconcile())
+        await entered.wait()
+        assert reconciler._inflight is not None
+        reconciler._inflight.add_done_callback(lambda _: done.set())
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        release.set()
+        await done.wait()
+        assert reconciler._inflight is None and not errors
+    finally:
+        await reconciler.stop()
+        loop.set_exception_handler(previous)
+
+
 def _policy(
     revision: int = 1,
     minutes: int = 480,

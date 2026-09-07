@@ -8,10 +8,9 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -78,43 +77,44 @@ class SubprocessRunner:
 
 
 @dataclass
-class MemoryAdmission:
-    state: str = "open"
-    reason: str = "ok"
-    owned_reason: str | None = None
-
-
-@dataclass
 class ComposeWriterExecutor:
     """用受支持的 compose/进程控制隔离旧 writer，并回查权威探测结果。"""
 
     runner: CommandRunner
     compose: tuple[str, ...]
     root: Path
-    admission: MemoryAdmission = field(default_factory=MemoryAdmission)
+    redis: object | None = None
     rollback: bool = False
+    writer_version: int | None = None
+    owned_operation: tuple[int, str] | None = None
+
+    def _marker(self):
+        if self.redis is None:
+            raise _cutover().CutoverError("cutover control plane is unavailable")
+        return _cutover().read_cutover_marker(self.redis)
 
     def close_admission(self, *, reason: str, generation: int):
         cutover = _cutover()
-        current = self.query_admission()
-        if current.state == "closed" and current.reason not in {reason, ""}:
-            return cutover.AdmissionView(state="closed", reason=current.reason, owned=False)
-        self.admission.state = "closed"
-        self.admission.reason = reason
-        self.admission.owned_reason = reason
-        _ = generation
+        marker = self._marker()
+        if (marker is None or marker.generation != generation
+                or marker.admission_reason != reason
+                or marker.state not in {"preparing", "old_writers_fenced", "waiting_window"}):
+            raise cutover.CutoverError("cutover admission ownership conflict")
+        self.owned_operation = (marker.generation, marker.release_binding)
         return self.query_admission()
 
     def query_admission(self):
         cutover = _cutover()
-        owned = (
-            self.admission.state == "closed"
-            and self.admission.reason == self.admission.owned_reason
-            and self.admission.reason == cutover.CUTOVER_ADMISSION_REASON
+        # 成本准入的权威事实就是业务 Lua 读取的 marker；独立 Send Admission 不改写。
+        marker = self._marker()
+        active = (marker is not None and marker.state in {"active_v1", "active_v2"}
+                  and not marker.requires_recovery)
+        owned = marker is not None and self.owned_operation == (
+            marker.generation, marker.release_binding,
         )
         return cutover.AdmissionView(
-            state=self.admission.state,
-            reason=self.admission.reason,
+            state="open" if active else "closed",
+            reason=cutover.CUTOVER_ADMISSION_REASON,
             owned=owned,
         )
 
@@ -122,10 +122,8 @@ class ComposeWriterExecutor:
         current = self.query_admission()
         if not current.owned or current.reason != reason:
             return current
-        self.admission.state = "open"
-        self.admission.reason = "ok"
-        self.admission.owned_reason = None
-        return self.query_admission()
+        # activate CAS 已改变权威准入；这里仅回查同一操作，不存在本地开闸旁路。
+        return current
 
     def isolate_writers(self):
         cutover = _cutover()
@@ -182,12 +180,12 @@ class ComposeWriterExecutor:
         return cutover.ProbeResult("absent")
 
     def trusted_writer_version(self, root: Path) -> int:
-        return _cutover().trusted_writer_version(root)
+        return self.writer_version or _cutover().trusted_writer_version(root)
 
 
 @dataclass
 class ComposeControlRunner:
-    """通过 compose exec 访问 control Redis，供绿地 bootstrap 使用。"""
+    """通过受支持的 compose exec 访问 control Redis。"""
 
     runner: CommandRunner
     compose: tuple[str, ...]
@@ -327,16 +325,36 @@ def main(argv: list[str] | None = None) -> int:
         if result.ok:
             marker = cutover.read_cutover_marker(redis)
             if marker is not None:
-                with contextlib.suppress(OSError):
+                try:
                     write_local_marker(marker)
+                except OSError:
+                    print("local writer marker could not be persisted", file=sys.stderr)
+                    return 1
         return _print(result)
     if args.command == "status":
+        if not args.compose:
+            print("compose command is required for authoritative status", file=sys.stderr)
+            return 2
+        try:
+            redis = CliRedis(ComposeControlRunner(SubprocessRunner(), tuple(args.compose)))
+            marker = cutover.read_cutover_marker(redis)
+            version = cutover.trusted_writer_version(root)
+        except cutover.CutoverError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        ready = (marker is not None and marker.state in {"active_v1", "active_v2"}
+                 and not marker.requires_recovery
+                 and marker.target_writer_version == version)
         print(
             json.dumps(
                 {
                     "marker_key": cutover.CUTOVER_MARKER_KEY,
                     "writer_protocol_version": cutover.WRITER_PROTOCOL_VERSION,
-                    "trusted_writer_version": cutover.trusted_writer_version(root),
+                    "trusted_writer_version": version,
+                    "state": marker.state if marker else "missing",
+                    "generation": marker.generation if marker else 0,
+                    "ready": ready,
+                    "error": "" if ready else "controlled writer cutover required",
                 },
                 separators=(",", ":"),
                 sort_keys=True,
@@ -359,8 +377,27 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
-    print("writer cutover requires an injected redis and executor", file=sys.stderr)
-    return 2
+    if not args.compose:
+        print("compose command is required", file=sys.stderr)
+        return 2
+    runner = SubprocessRunner()
+    redis = CliRedis(ComposeControlRunner(runner, tuple(args.compose)))
+    executor = ComposeWriterExecutor(runner, tuple(args.compose), root, redis=redis)
+    try:
+        result = cutover.run_writer_cutover(
+            redis=redis, executor=executor, release_binding=args.release_binding,
+            root=root, rollback=args.command == "rollback",
+        )
+        marker = cutover.read_cutover_marker(redis)
+        if marker is not None:
+            write_local_marker(marker)
+    except (cutover.CutoverError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if result.error == "waiting for not_before":
+        _print(result)
+        return 1
+    return _print(result)
 
 
 if __name__ == "__main__":

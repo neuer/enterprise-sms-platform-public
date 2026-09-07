@@ -27,6 +27,7 @@ from app.services.app_ratelimit_cutover import (
     CutoverError,
     ProbeResult,
     bootstrap_greenfield_cutover,
+    cas_cutover,
     check_supported_launch,
     parse_cutover_marker,
     read_cutover_marker,
@@ -536,17 +537,12 @@ async def test_missing_or_conflicting_marker_does_not_auto_activate() -> None:
     assert redis.hashes[WRITER_CUTOVER_MARKER_KEY]["state"] == "active"
 
 
-def test_greenfield_bootstrap_activates_empty_marker() -> None:
+def test_greenfield_bootstrap_cannot_activate_empty_marker() -> None:
     redis = LuaRedis(1_778_201_000)
     result = bootstrap_greenfield_cutover(redis=redis, root=REPO_ROOT)
-    marker = read_cutover_marker(redis)
-    assert result.ok is True
-    assert result.state == "active_v2"
-    assert marker is not None
-    assert marker.state == "active_v2"
-    assert marker.generation == 1
-    assert marker.release_binding == ""
-    assert result.admission_state == "open"
+    assert result.ok is False
+    assert read_cutover_marker(redis) is None
+    assert result.admission_state == "closed"
 
 
 def test_greenfield_bootstrap_is_idempotent_when_active_v2() -> None:
@@ -581,14 +577,18 @@ def test_greenfield_bootstrap_does_not_clobber_in_progress() -> None:
     )
     result = bootstrap_greenfield_cutover(redis=redis, root=REPO_ROOT)
     assert result.ok is False
-    assert result.error == "cutover state conflict"
+    assert result.error == "controlled writer cutover required"
     assert read_cutover_marker(redis).state == "preparing"  # type: ignore[union-attr]
 
 
 @pytest.mark.asyncio
-async def test_consume_works_after_greenfield_bootstrap() -> None:
+async def test_consume_works_only_after_controlled_cutover() -> None:
     redis = LuaRedis(1_778_201_300)
-    assert bootstrap_greenfield_cutover(redis=redis, root=REPO_ROOT).ok is True
+    assert bootstrap_greenfield_cutover(redis=redis, root=REPO_ROOT).ok is False
+    executor = RecordingExecutor()
+    assert _advance(redis, executor).error == "waiting for not_before"
+    redis.now_sec = read_cutover_marker(redis).not_before
+    assert _advance(redis, executor).ok is True
     limiter = ApplicationRateLimiter(AsyncLuaRedis(redis), nonce=lambda: "n")
     await limiter.consume_send_cost(
         app_id=7,
@@ -624,19 +624,21 @@ async def test_rollback_after_v2_spend_requires_same_freeze_and_drain() -> None:
     redis.now_sec = read_cutover_marker(redis).not_before  # type: ignore[union-attr]
     assert _advance(redis, executor).state == "active_v2"
     _seed_v2(redis, 7, 70)
-    blocked = _advance(redis, RecordingExecutor(old_writer_present=True), rollback=True)
+    blocked = _advance(
+        redis, RecordingExecutor(old_writer_present=True, root_version=1), rollback=True,
+    )
     assert blocked.ok is False
     assert blocked.opened is False
     assert read_cutover_marker(redis).generation >= 1  # type: ignore[union-attr]
     redis.now_sec += 1
-    waiting = _advance(redis, RecordingExecutor(), rollback=True)
+    waiting = _advance(redis, RecordingExecutor(root_version=1), rollback=True)
     assert waiting.error == "waiting for not_before"
     redis.now_sec = read_cutover_marker(redis).not_before  # type: ignore[union-attr]
-    finished = _advance(redis, RecordingExecutor(), rollback=True)
+    finished = _advance(redis, RecordingExecutor(root_version=1), rollback=True)
     marker = read_cutover_marker(redis)
     assert finished.ok is True
     assert marker is not None
-    assert marker.state == "preparing"
+    assert marker.state == "active_v1"
     assert marker.minimum_writer_version == 1
     assert _v2_total(redis, 7) == 70
 
@@ -806,3 +808,198 @@ def test_writer_cutover_bootstrap_parses_compose_option_tokens() -> None:
         "-f",
         "/tmp/docker-compose.yml",
     ]
+
+
+@pytest.mark.parametrize("rollback", [False, True])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_completed_u1_allows_compatible_u2_without_mutation(rollback: bool, fallback: bool) -> None:
+    redis = LuaRedis(1_778_201_500)
+    if fallback:
+        redis._lua = None
+    executor = RecordingExecutor()
+    _advance(redis, executor, binding="U1")
+    redis.now_sec += 65
+    assert _advance(redis, executor, binding="U1").state == "active_v2"
+    _seed_v2(redis, 7, 80)
+    before = {key: dict(value) for key, value in redis.hashes.items()}
+    executor = RecordingExecutor(preexisting_closed="outbox_backlog")
+    executor.admission_state, executor.admission_reason = "closed", "outbox_backlog"
+    result = _advance(redis, executor, binding="U2", rollback=rollback)
+    assert result.ok and not result.opened
+    assert result.admission_reason == "outbox_backlog"
+    assert executor.events == []
+    assert redis.hashes == before
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.asyncio
+async def test_legacy_bootstrap_requires_controlled_recovery(fallback: bool) -> None:
+    redis = LuaRedis(1_778_201_550)
+    if fallback:
+        redis._lua = None
+    legacy = _active_marker_fields(generation=9, now=redis.now_sec)
+    legacy.update(release_binding="", fence_time=str(redis.now_sec), not_before=str(redis.now_sec))
+    redis.seed_hash(WRITER_CUTOVER_MARKER_KEY, legacy)
+    _seed_v2(redis, 7, 30)
+    limiter = ApplicationRateLimiter(AsyncLuaRedis(redis), nonce=lambda: "n")
+    with pytest.raises(ControlPlaneUnavailable):
+        await limiter.consume_send_cost(app_id=7, recipient_count=1, segment_count=1,
+                                        recipient_limit=100, segment_limit=100)
+    assert not bootstrap_greenfield_cutover(redis=redis, root=REPO_ROOT).ok
+    assert _advance(redis, RecordingExecutor(), binding="recovery").state == "waiting_window"
+    assert read_cutover_marker(redis).generation == 10  # type: ignore[union-attr]
+    redis.now_sec += 65
+    assert _advance(redis, RecordingExecutor(), binding="recovery").state == "active_v2"
+    assert _v2_total(redis, 7) == 30
+
+
+def test_new_operation_is_generation_fenced_and_resumes_once() -> None:
+    redis = LuaRedis(1_778_201_600)
+    _seed_active_marker(redis, generation=4)
+    first = read_cutover_marker(redis)
+    assert first is not None
+    assert cas_cutover(redis, action="prepare", release_binding="U2",
+        target_writer_version=3, minimum_writer_version=3,
+        expect_generation=4, expect_state="active_v2")[0] == 1
+    second = read_cutover_marker(redis)
+    assert second is not None and second.generation == 5
+    assert (
+        cas_cutover(
+            redis,
+            action="prepare",
+            release_binding="U3",
+            target_writer_version=3,
+            minimum_writer_version=3,
+            expect_generation=4,
+            expect_state="active_v2",
+        )[0]
+        == 0
+    )
+    assert not _advance(redis, RecordingExecutor(root_version=3), binding="U3").ok
+    assert _advance(redis, RecordingExecutor(root_version=3), binding="U2").ok
+    assert _advance(redis, RecordingExecutor(root_version=3), binding="U2").generation == 5
+    before = redis.hgetall(WRITER_CUTOVER_MARKER_KEY)
+    for action in ["prepare", "fence", "refence", "wait", "activate", "abort", "rollback_finish"]:
+        assert (
+            cas_cutover(
+                redis,
+                action=action,
+                release_binding=first.release_binding,
+                target_writer_version=2,
+                minimum_writer_version=2,
+                expect_generation=4,
+                expect_state="active_v2",
+            )[0]
+            == 0
+        )
+        assert redis.hgetall(WRITER_CUTOVER_MARKER_KEY) == before
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("not_before", "1"),
+        ("minimum_writer_version", "1"),
+        ("schema_version", "99"),
+        ("admission_reason", "unknown"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_corrupt_completed_marker_cannot_authorize_u2(field: str, value: str) -> None:
+    redis = LuaRedis(1_778_201_700)
+    _seed_active_marker(redis)
+    redis.hashes[WRITER_CUTOVER_MARKER_KEY][field] = value
+    assert not _advance(redis, RecordingExecutor(), binding="U2").ok
+    limiter = ApplicationRateLimiter(AsyncLuaRedis(redis), nonce=lambda: "n")
+    with pytest.raises(ControlPlaneUnavailable):
+        await limiter.consume_send_cost(app_id=7, recipient_count=1, segment_count=1,
+                                        recipient_limit=100, segment_limit=100)
+
+
+def test_real_cutover_cli_rechecks_fence_and_reports_projection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scripts = str(REPO_ROOT / "deploy" / "scripts")
+    monkeypatch.syspath_prepend(scripts)
+    import writer_cutover as cli
+
+    redis = LuaRedis(1_778_201_800)
+    calls: list[list[str]] = []
+
+    class Runner:
+        running = True
+        refuses_stop = True
+
+        def run(self, argv: list[str], *, timeout_s: int = 30) -> str:
+            calls.append(argv)
+            if "stop" in argv:
+                assert argv[-1] == "api"
+                if not self.refuses_stop:
+                    self.running = False
+                return ""
+            assert "ps" in argv and argv[-1] == "api"
+            return "api\n" if self.running else ""
+
+    runner = Runner()
+    projected: list[object] = []
+    monkeypatch.setattr(cli, "SubprocessRunner", lambda: runner)
+    monkeypatch.setattr(cli, "CliRedis", lambda _: redis)
+    monkeypatch.setattr(cli, "write_local_marker", projected.append)
+    args = [
+        "advance",
+        "--root",
+        str(REPO_ROOT),
+        "--release-binding",
+        "U1",
+        "--compose",
+        "docker",
+        "compose",
+    ]
+    assert cli.main(args) == 1
+    marker = read_cutover_marker(redis)
+    assert marker is not None and marker.state == "preparing" and marker.fence_time is None
+    assert any("stop" in call for call in calls) and any("ps" in call for call in calls)
+    runner.refuses_stop = False
+    assert cli.main(args) == 1
+    marker = read_cutover_marker(redis)
+    assert marker is not None and marker.not_before == redis.now_sec + 65
+    redis.now_sec += 40
+    runner.running = True
+    real_probe = cli.ComposeWriterExecutor.probe_in_flight_accepts
+    monkeypatch.setattr(cli.ComposeWriterExecutor, "probe_in_flight_accepts",
+                        lambda _: ProbeResult("error", "synthetic probe failure"))
+    assert cli.main(args) == 1
+    marker = read_cutover_marker(redis)
+    assert marker is not None and marker.state == "preparing" and marker.fence_time is None
+    monkeypatch.setattr(cli.ComposeWriterExecutor, "probe_in_flight_accepts", real_probe)
+    redis.now_sec += 25  # 原窗口已到，但曾中断；新命令不能沿用旧 fence。
+    assert cli.main(args) == 1
+    marker = read_cutover_marker(redis)
+    assert marker is not None and marker.not_before == redis.now_sec + 65
+    redis.now_sec += 65
+    assert cli.main(args) == 0
+
+    def fail_projection(_: object) -> None:
+        raise OSError("synthetic write failure")
+
+    monkeypatch.setattr(cli, "write_local_marker", fail_projection)
+    assert cli.main(args) == 1
+    executor = cli.ComposeWriterExecutor(runner, ("docker", "compose"), REPO_ROOT, redis)
+    executor.owned_operation = (1, "U1")
+    assert executor.query_admission().state == "open"
+    assert (
+        cas_cutover(
+            redis,
+            action="prepare",
+            release_binding="U2",
+            target_writer_version=3,
+            minimum_writer_version=3,
+            expect_generation=1,
+            expect_state="active_v2",
+        )[0]
+        == 1
+    )
+    assert executor.open_admission_if_owned(reason=CUTOVER_ADMISSION_REASON).state == "closed"
+    assert not executor.query_admission().owned
+
+    assert read_cutover_marker(redis).release_binding == "U2"  # type: ignore[union-attr]
