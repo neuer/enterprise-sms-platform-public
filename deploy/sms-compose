@@ -69,6 +69,8 @@ SOURCE_SECRETS_OVERRIDE_NAME="SMS_SOURCE_SECRETS_ROOT"
 SOURCE_SECRETS_OVERRIDE_WAS_SET=0
 [[ ${SMS_SOURCE_SECRETS_ROOT+x} ]] && SOURCE_SECRETS_OVERRIDE_WAS_SET=1
 SECURITY_REPORT_PATH_OVERRIDE_WAS_SET=0
+AUTH_POLICY_PATH_OVERRIDE_WAS_SET=0
+[[ ${SMS_AUTH_POLICY_DIR+x} ]] && AUTH_POLICY_PATH_OVERRIDE_WAS_SET=1
 for SECURITY_REPORT_PATH_NAME in \
   SMS_SECURITY_REPORT_CONTROL_DIR \
   SMS_SECURITY_REPORT_CONFIG_DIR \
@@ -361,10 +363,44 @@ configure_security_report_paths() {
   export SMS_SECURITY_REPORT_NGINX_DIR="$PRODUCTION_SECURITY_REPORT_NGINX_DIR"
 }
 
+configure_auth_policy_path() {
+  # 信任文件只读进入 API；生产路径由受控入口固定，不能由应用配置扩张。
+  if [[ "$SECRETS_MODE" != production || "$PRODUCTION_CONTROL_SMOKE" == 1 ]]; then
+    export SMS_AUTH_POLICY_DIR="$ROOT/deploy/auth-policy"
+    return 0
+  fi
+  local directory=/etc/sms-platform/auth-policy
+  local file metadata
+  if [[ ! -d "$directory" || -L "$directory" ||
+        "$(readlink -f -- "$directory")" != "$directory" ]]; then
+    echo "sms-compose: production auth-policy directory is unsafe" >&2
+    return 1
+  fi
+  metadata="$(stat -c '%u:%g:%a:%F' -- "$directory")" || return 1
+  if [[ "$metadata" != "0:10001:750:directory" ]]; then
+    echo "sms-compose: production auth-policy directory metadata is unsafe" >&2
+    return 1
+  fi
+  for file in "$directory/ldap-timing.json" "$directory/sources.json"; do
+    if [[ ! -e "$file" && ! -L "$file" ]]; then continue; fi
+    if [[ ! -f "$file" || -L "$file" || "$(readlink -f -- "$file")" != "$file" ]]; then
+      echo "sms-compose: production auth-policy file is unsafe" >&2
+      return 1
+    fi
+    metadata="$(stat -c '%u:%g:%a:%F' -- "$file")" || return 1
+    if [[ "$metadata" != "0:10001:640:regular file" ]]; then
+      echo "sms-compose: production auth-policy file metadata is unsafe" >&2
+      return 1
+    fi
+  done
+  export SMS_AUTH_POLICY_DIR="$directory"
+}
+
 configure_compose_topology() {
   COMPOSE=(docker compose --env-file "$PLATFORM_ENV_FILE" -f "$BASE_COMPOSE_FILE")
   PRODUCTION_REDIS_HA_MODE=""
   if [[ "$SECRETS_MODE" != production ]]; then
+    configure_auth_policy_path || return $?
     return 0
   fi
 
@@ -406,7 +442,7 @@ configure_compose_topology() {
     return 1
   fi
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$line" =~ ^[[:space:]]*(COMPOSE_FILE|COMPOSE_PROJECT_NAME|SMS_SECURITY_REPORT_CONTROL_DIR|SMS_SECURITY_REPORT_CONFIG_DIR|SMS_SECURITY_REPORT_NGINX_DIR)[[:space:]]*= ]]; then
+    if [[ "$line" =~ ^[[:space:]]*(COMPOSE_FILE|COMPOSE_PROJECT_NAME|SMS_AUTH_POLICY_DIR|SMS_SECURITY_REPORT_CONTROL_DIR|SMS_SECURITY_REPORT_CONFIG_DIR|SMS_SECURITY_REPORT_NGINX_DIR)[[:space:]]*= ]]; then
       echo "sms-compose: production Compose topology overrides are forbidden" >&2
       return 1
     fi
@@ -467,8 +503,13 @@ configure_compose_topology() {
     echo "sms-compose: shell security-report path overrides are forbidden in production" >&2
     return 1
   fi
+  if [[ "$AUTH_POLICY_PATH_OVERRIDE_WAS_SET" == 1 ]]; then
+    echo "sms-compose: shell auth-policy path overrides are forbidden in production" >&2
+    return 1
+  fi
 
   configure_security_report_paths || return $?
+  configure_auth_policy_path || return $?
 
   COMPOSE+=( -f "$PRODUCTION_STORAGE_COMPOSE_FILE" )
   COMPOSE+=( -f "$PRODUCTION_RESTART_COMPOSE_FILE" )
@@ -1296,6 +1337,7 @@ run_with_lifecycle_lock() {
   unset SMS_SECURITY_REPORT_CONTROL_DIR
   unset SMS_SECURITY_REPORT_CONFIG_DIR
   unset SMS_SECURITY_REPORT_NGINX_DIR
+  unset SMS_AUTH_POLICY_DIR
   "${LOCK_PYTHON[@]}" "$LOCK_RUNNER" \
     --runtime-root "$RUNTIME_ROOT" \
     --wrapper "$WRAPPER_PATH" \

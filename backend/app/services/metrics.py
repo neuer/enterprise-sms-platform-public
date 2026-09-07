@@ -10,6 +10,7 @@ from typing import Protocol
 
 from prometheus_client import CollectorRegistry, Gauge, generate_latest
 
+from app.core.auth.capacity_metrics import append_capacity_metrics
 from app.core.auth.observability import auth_observability_snapshot
 from app.core.runtime_telemetry import (
     RuntimeTelemetrySnapshot,
@@ -513,6 +514,7 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         )
 
     auth = auth_observability_snapshot()
+    append_capacity_metrics(registry)
     created = Gauge(
         "auth_transition_created_total",
         "Auth lock/ban transitions that attempted persistent audit.",

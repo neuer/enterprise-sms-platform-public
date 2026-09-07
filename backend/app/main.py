@@ -34,6 +34,8 @@ from app.api.users import router as users_router
 from app.api.vendor_test import router as vendor_test_router
 from app.api.web_messages import router as web_messages_router
 from app.build_info import APP_VERSION
+from app.core.auth.admission import drain_login_admissions
+from app.core.auth.admission_policy import get_admission_policy_runtime
 from app.core.auth.session_policy_sync import get_auth_session_policy_runtime
 from app.core.auth.transition_sync import (
     create_auth_transition_reconciler,
@@ -96,6 +98,7 @@ def create_lifespan(
         heartbeat = None
         runtime_monitor = None
         session_policy = None
+        admission_policy = None
         transition_audit = None
         try:
             register_task_modules()
@@ -111,6 +114,7 @@ def create_lifespan(
             runtime_monitor = create_runtime_monitor()
             policy_runtime = get_auth_session_policy_runtime(selected)
             session_policy = policy_runtime.reconciler
+            admission_policy = get_admission_policy_runtime(selected)
             transition_audit = create_auth_transition_reconciler(selected)
             application.state.job_heartbeat = heartbeat
             application.state.runtime_monitor = runtime_monitor
@@ -120,9 +124,12 @@ def create_lifespan(
             heartbeat.start()
             runtime_monitor.start()
             session_policy.start()
+            admission_policy.start()
             transition_audit.start()
             yield
         finally:
+            if admission_policy is not None:
+                await admission_policy.stop()
             if session_policy is not None:
                 await session_policy.stop()
             if transition_audit is not None:
@@ -131,6 +138,7 @@ def create_lifespan(
                 await runtime_monitor.stop()
             if heartbeat is not None:
                 await heartbeat.stop()
+            await drain_login_admissions()
             await close_runtime_resources()
             close_bounded_executor()
 

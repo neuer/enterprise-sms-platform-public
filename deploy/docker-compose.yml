@@ -242,6 +242,8 @@ services:
     volumes:
       - importdata:/var/lib/sms/imports
       - exportdata:/var/lib/sms/exports
+      # 非凭据的目录/来源批准文件；API 无写权限，不与 mailer 配置共用。
+      - ${SMS_AUTH_POLICY_DIR:-./auth-policy}:/run/auth-policy:ro
       # API 写入脱敏日报控制请求，并同步管理员在 UI 配置的 mailer 配置。
       - ${SMS_SECURITY_REPORT_CONTROL_DIR:-./security-report-control}:/run/security-report:rw
       - ${SMS_SECURITY_REPORT_CONFIG_DIR:-./security-report-config}:/run/security-report-config:rw

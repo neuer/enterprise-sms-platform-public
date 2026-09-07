@@ -209,6 +209,13 @@ class AdminService:
             if normalized not in {"true", "false"}:
                 raise InvalidAdminQuery(f"配置 {row.key} 必须为布尔值 true/false")
             return normalized
+        if row.value_type == "json" and row.key == "auth_admission_policy":
+            from app.core.auth.admission_policy import AdmissionLimits
+
+            try:
+                return AdmissionLimits.model_validate_json(value).model_dump_json()
+            except ValueError:
+                raise InvalidAdminQuery("登录准入策略格式或容量上界无效") from None
         if row.value_type != "str":
             raise InvalidAdminQuery(f"配置 {row.key} 类型不受支持")
         if row.key == "sensitive_hit_action" and value not in {"block", "audit"}:

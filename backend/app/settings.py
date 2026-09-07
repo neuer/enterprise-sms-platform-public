@@ -200,6 +200,8 @@ class Settings(BaseSettings):
     auth_session_policy_reconcile_timeout_s: float = 2.0
     trusted_hosts: str = "*"
     ldap_bind_password_file: Path = Path("/run/secrets/ldap_bind_password")
+    ldap_timing_profile_file: Path | None = None
+    auth_source_profile_file: Path | None = None
     metrics_scrape_token_file: Path = Path("/run/secrets/metrics_scrape_token")
     ldap_ca_certs_file: Path = Path("/etc/ssl/certs/ca-certificates.crt")
     callback_mtls_cert_file: Path | None = None

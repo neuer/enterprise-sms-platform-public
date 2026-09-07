@@ -38,7 +38,7 @@ class ExecutorBackpressure(RuntimeError):
 
 
 class BoundedWorkScope:
-    """记录单个 bulk 工作仍在执行的线程 Future，取消协程不代表线程结束。"""
+    """记录单次受控工作仍在执行的线程 Future，取消协程不代表线程结束。"""
 
     def __init__(self) -> None:
         self._pending: set[asyncio.Future[Any]] = set()
@@ -79,7 +79,7 @@ _WORK_SCOPE: ContextVar[BoundedWorkScope | None] = ContextVar("bounded_work_scop
 
 @contextmanager
 def bounded_work_scope() -> Iterator[BoundedWorkScope]:
-    """仅 bulk 准入显式启用；共享对象随 ContextVar 传入 worker 常驻 loop。"""
+    """由 bulk/认证准入显式启用；共享对象跟踪该作用域的同步工作。"""
 
     scope = BoundedWorkScope()
     token = _WORK_SCOPE.set(scope)

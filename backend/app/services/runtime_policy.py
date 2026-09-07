@@ -42,6 +42,11 @@ class ConfigSpec:
 
 # 系统参数唯一注册表：新增参数只需在此登记并同步 schema.sql seed。
 CONFIG_SPECS: dict[str, ConfigSpec] = {
+    "auth_admission_policy": ConfigSpec(
+        '{"version":1,"shared_burst":100,"shared_window":200,"shared_refill_ms":1000,'
+        '"global_burst":8,"global_refill_ms":250,"global_concurrent":4,"source_concurrent":2}',
+        "json", GROUP_SECURITY,
+    ),
     "approval_threshold": ConfigSpec("100", "int", GROUP_SENDING, maximum=1_000_000),
     "market_approval_threshold": ConfigSpec(
         "50", "int", GROUP_SENDING, maximum=1_000_000
@@ -314,6 +319,12 @@ class RuntimePolicy:
     @classmethod
     def from_mapping(cls, supplied: Mapping[str, Any]) -> RuntimePolicy:
         values = DEFAULTS | {key: str(value) for key, value in supplied.items()}
+        from app.core.auth.admission_policy import AdmissionLimits
+
+        try:
+            AdmissionLimits.model_validate_json(values["auth_admission_policy"])
+        except ValueError:
+            raise InvalidRuntimePolicy("auth_admission_policy 格式或容量上界无效") from None
         parsed: dict[str, int] = {}
         for key, spec in CONFIG_SPECS.items():
             if spec.value_type == "int":
