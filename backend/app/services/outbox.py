@@ -268,12 +268,8 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         and not spec.aggregate_id.startswith("0")
         and int(spec.aggregate_id) <= 2_147_483_647
         and spec.args == ("app.tasks.sync_signs", int(spec.aggregate_id))
-        and spec.dedup_key.startswith(
-            f"job.trigger:sync_signs:{spec.aggregate_id}:"
-        )
-        and spec.dedup_key.removeprefix(
-            f"job.trigger:sync_signs:{spec.aggregate_id}:"
-        ).isdecimal()
+        and spec.dedup_key.startswith(f"job.trigger:sync_signs:{spec.aggregate_id}:")
+        and spec.dedup_key.removeprefix(f"job.trigger:sync_signs:{spec.aggregate_id}:").isdecimal()
         and not spec.dedup_key.removeprefix(
             f"job.trigger:sync_signs:{spec.aggregate_id}:"
         ).startswith("0")
@@ -357,8 +353,7 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         _assert_safe(spec.args)
         _assert_safe(spec.dedup_key)
     if not isinstance(spec.args, tuple) or any(
-        isinstance(item, bool) or not isinstance(item, (str, int))
-        for item in spec.args
+        isinstance(item, bool) or not isinstance(item, (str, int)) for item in spec.args
     ):
         raise ValueError("outbox args must be string or integer references")
 
@@ -408,24 +403,25 @@ class OutboxDispatcher:
         *,
         lease_seconds: int = 60,
         batch_size: int = 100,
+        publish_concurrency: int = 4,
     ) -> None:
-        if lease_seconds < 5 or not 1 <= batch_size <= 1000:
+        if lease_seconds < 5 or not 1 <= batch_size <= 1000 or not 1 <= publish_concurrency <= 16:
             raise ValueError("invalid outbox dispatcher settings")
         self.repository = repository
         self.publisher = publisher
         self.lease_seconds = lease_seconds
         self.batch_size = batch_size
+        self.publish_concurrency = publish_concurrency
 
     async def dispatch_once(self) -> int:
         from app.services.runtime_heartbeat import touch_runtime_heartbeat
 
         await touch_runtime_heartbeat("outbox-dispatcher")
-        leases = await self.repository.lease_due(
-            limit=self.batch_size,
-            lease_seconds=self.lease_seconds,
-        )
-        published = 0
-        for event in leases:
+        # 只有取得发布槽的 worker 才领取下一条；慢 broker 不再消耗整批尾部租约。
+        # 总领取预算仍由 batch_size 约束，future 数量只与发布并发有关。
+        budget = iter(range(self.batch_size))
+
+        async def publish_one(event: OutboxLease) -> int:
             try:
                 await self.publisher.publish(event)
             except Exception as exc:
@@ -444,9 +440,33 @@ class OutboxDispatcher:
                     event.lease_id,
                     type(exc).__name__,
                 )
-                continue
+                return 0
             await self.repository.mark_published(event.event_id, event.lease_id)
-            published += 1
+            return 1
+
+        async def publish_worker() -> int:
+            count = 0
+            for _ in budget:
+                leases = await self.repository.lease_due(
+                    limit=1,
+                    lease_seconds=self.lease_seconds,
+                )
+                if not leases:
+                    break
+                count += await publish_one(leases[0])
+            return count
+
+        workers = [
+            asyncio.create_task(publish_worker())
+            for _ in range(min(self.batch_size, self.publish_concurrency))
+        ]
+        try:
+            published = sum(await asyncio.gather(*workers))
+        finally:
+            # 取消或单个回写失败时收拢同轮任务；已发布未回写的事实由租约回收兜底。
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
         if published:
             await touch_runtime_heartbeat("outbox-dispatcher", success=True)
         return published

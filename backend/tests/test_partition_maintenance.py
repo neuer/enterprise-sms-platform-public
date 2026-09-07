@@ -130,6 +130,8 @@ async def test_partition_dry_run_plans_without_ddl_or_audit() -> None:
     sql = "\n".join(statement for statement, _ in connection.statements)
     assert "CREATE TABLE" not in sql
     assert "DROP TABLE" not in sql
+    assert "UPDATE sms_batch" not in sql
+    assert "LOCK TABLE" not in sql
     assert "INSERT INTO audit_log" not in sql
 
 
@@ -145,6 +147,16 @@ async def test_partition_maintenance_executes_safe_plan_and_audits_counts() -> N
     assert sql.count('CREATE TABLE "public"') == 7
     assert sql.count("DROP TABLE") == 2
     assert 'DROP TABLE "public"."sms_message_2025_06"' in sql
+    parent_lock = sql.index('LOCK TABLE ONLY "public"."sms_message"')
+    child_lock = sql.index('LOCK TABLE "public"."sms_message_2025_06"')
+    invalidate = sql.index("UPDATE sms_batch")
+    drop = sql.index('DROP TABLE "public"."sms_message_2025_06"')
+    assert parent_lock < child_lock < invalidate < drop
+    assert sql.count("ACCESS EXCLUSIVE MODE NOWAIT") == 2
+    assert sql.index("ORDER BY b.id FOR UPDATE OF b NOWAIT") < invalidate
+    assert "active_message_count=NULL,active_message_count_token=NULL" in sql
+    assert sql.count("UPDATE sms_batch") == 1
+    assert 'SELECT batch_id FROM "public"."sms_message_2025_06"' in sql
     audit = next(
         parameters
         for statement, parameters in connection.statements

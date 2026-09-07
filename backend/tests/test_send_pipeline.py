@@ -1722,6 +1722,7 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
         wait_attempts=30,
         wait_interval_s=1,
         sleeper=advance,
+        clock=lambda: redis.now,
     )
     pipeline = SendPipeline(
         store=store,

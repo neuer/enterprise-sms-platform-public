@@ -35,6 +35,7 @@ import {
 } from "../api/ops"
 import { confirmAuditedAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
+import { useLatestRead } from "../composables/useLatestRead"
 import { jobDescription } from "../lib/jobDescriptions"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
@@ -240,84 +241,99 @@ function resolutionStateLabel(state: string | null | undefined): string {
   return (state && labels[state]) || state || "—"
 }
 
+const listRead = useLatestRead()
+
 let loadToken = 0
 
 async function load(tab: TabName = activeTab.value): Promise<void> {
-  if (tab === "callbacks") return
+  if (tab === "callbacks") {
+    listRead.cancel()
+    return
+  }
   const token = ++loadToken
+  const signal = listRead.start()
   loading.value = true
   errorMessage.value = ""
   try {
     if (tab === "alerts") {
       if (alertMode.value === "current") {
-        const result = await getCurrentAlerts()
-        if (token !== loadToken || activeTab.value !== tab || alertMode.value !== "current") return
+        const result = await getCurrentAlerts(signal)
+        if (signal.aborted || token !== loadToken || activeTab.value !== tab || alertMode.value !== "current") return
         currentAlerts.value = result
         return
       }
-      const result = await listAlerts({
-        page: alertPage.value,
-        alertType: alertType.value,
-        level: alertLevel.value || undefined,
-        ...rangeValues(alertRange.value),
-      })
-      if (token !== loadToken || activeTab.value !== tab) return
+      const result = await listAlerts(
+        {
+          page: alertPage.value,
+          alertType: alertType.value,
+          level: alertLevel.value || undefined,
+          ...rangeValues(alertRange.value),
+        },
+        signal,
+      )
+      if (signal.aborted || token !== loadToken || activeTab.value !== tab) return
       alerts.value = result.items
       alertPage.value = result.page
       alertTotal.value = result.total
     }
     if (tab === "raw") {
-      const result = await listRawLogs({
-        page: rawPage.value,
-        source: rawSource.value || undefined,
-        processed: rawProcessed.value === "" ? undefined : rawProcessed.value === "true",
-      })
-      if (token !== loadToken || activeTab.value !== tab) return
+      const result = await listRawLogs(
+        {
+          page: rawPage.value,
+          source: rawSource.value || undefined,
+          processed: rawProcessed.value === "" ? undefined : rawProcessed.value === "true",
+        },
+        signal,
+      )
+      if (signal.aborted || token !== loadToken || activeTab.value !== tab) return
       rawLogs.value = result.items
       rawPage.value = result.page
       rawTotal.value = result.total
     }
     if (tab === "uncertain") {
-      const result = await listUncertain({ page: uncertainPage.value })
-      if (token !== loadToken || activeTab.value !== tab) return
+      const result = await listUncertain({ page: uncertainPage.value }, signal)
+      if (signal.aborted || token !== loadToken || activeTab.value !== tab) return
       uncertain.value = result.items
       uncertainPage.value = result.page
       uncertainTotal.value = result.total
     }
     if (tab === "unmatched") {
-      const result = await listUnmatched({
-        page: unmatchedPage.value,
-        phone: unmatchedPhone.value,
-        ...rangeValues(unmatchedRange.value),
-      })
-      if (token !== loadToken || activeTab.value !== tab) return
+      const result = await listUnmatched(
+        {
+          page: unmatchedPage.value,
+          phone: unmatchedPhone.value,
+          ...rangeValues(unmatchedRange.value),
+        },
+        signal,
+      )
+      if (signal.aborted || token !== loadToken || activeTab.value !== tab) return
       unmatched.value = result.items
       unmatchedPage.value = result.page
       unmatchedTotal.value = result.total
     }
     if (tab === "jobs") {
-      const items = await listJobs()
-      if (token !== loadToken || activeTab.value !== tab) return
+      const items = await listJobs(signal)
+      if (signal.aborted || token !== loadToken || activeTab.value !== tab) return
       jobs.value = items
     }
     if (tab === "queue") {
-      const snapshot = await getQueueStatus()
-      if (token !== loadToken || activeTab.value !== tab) return
+      const snapshot = await getQueueStatus(signal)
+      if (signal.aborted || token !== loadToken || activeTab.value !== tab) return
       queue.value = snapshot
     }
     if (tab === "outbox") {
       const [stats, events] = await Promise.all([
-        getOutboxStatus(),
-        listOutboxEvents({ page: outboxPage.value, state: outboxState.value || undefined }),
+        getOutboxStatus(signal),
+        listOutboxEvents({ page: outboxPage.value, state: outboxState.value || undefined }, signal),
       ])
-      if (token !== loadToken || activeTab.value !== tab) return
+      if (signal.aborted || token !== loadToken || activeTab.value !== tab) return
       outboxStats.value = stats
       outboxEvents.value = events.items
       outboxPage.value = events.page
       outboxTotal.value = events.total
     }
   } catch (error) {
-    if (token !== loadToken) return
+    if (signal.aborted || token !== loadToken) return
     errorMessage.value = errorText(error, "运维数据加载失败")
   } finally {
     if (token === loadToken) loading.value = false

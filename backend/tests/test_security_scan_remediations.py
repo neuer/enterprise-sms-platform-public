@@ -19,7 +19,7 @@ from app.services.batch_query import BatchAccessScope
 from app.services.category import policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
 from app.services.export_file import ExportFileCodec
-from app.services.housekeeping_repository import SqlHousekeepingRepository
+from app.services.housekeeping_repository import PLANS
 from app.services.idempotency import IdempotencyScope
 from app.services.pipeline import PipelineConfig, SendPipeline, SendRequest
 from app.services.pipeline_repository import (
@@ -175,7 +175,9 @@ async def test_resend_uses_stable_cross_actor_action_scope() -> None:
 
 def test_live_sms_keeps_idempotency_fact_past_nominal_expiry() -> None:
     pipeline_source = IDEMPOTENCY_LIVE_SQL
-    housekeeping_source = inspect.getsource(SqlHousekeepingRepository.cleanup)
+    housekeeping_source = PLANS["idempotency"].predicate
+    assert "p.expires_at<=CAST(:cutoff AS timestamptz) AND NOT EXISTS" in housekeeping_source
+    assert "b.id=p.batch_id" in housekeeping_source
     scheduling_source = inspect.getsource(SqlSchedulingRepository.reschedule)
 
     for status in ("pending_approval", "scheduled", "queued", "sending", "balance_blocked"):

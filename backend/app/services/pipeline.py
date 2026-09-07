@@ -808,6 +808,8 @@ class SendPipeline:
         request: SendRequest,
         app: ApiAppContext,
         policy: CategoryPolicy,
+        *,
+        computed: IdempotencyFingerprint | None = None,
     ) -> None:
         """用记录绑定的 HMAC 版本复算；旧记录无指纹时沿用原幂等行为。"""
 
@@ -815,12 +817,13 @@ class SendPipeline:
         if stored is None:
             raise IdempotencyConflict("同一幂等键缺少请求指纹，拒绝复用，请更换 biz_id")
         try:
-            request_hash = self._request_hash(
-                request,
-                app,
-                policy,
-                key_version=stored.key_version,
+            request_hash = (
+                computed.digest
+                if computed is not None and computed.key_version == stored.key_version
+                else self._request_hash(request, app, policy, key_version=stored.key_version)
             )
+            if _same_digest(stored.digest, request_hash):
+                return
             legacy_hash = self._request_hash(
                 request,
                 app,
@@ -836,10 +839,7 @@ class SendPipeline:
                 "同一幂等键的请求指纹版本已退役，无法验证同请求；"
                 "请先查询原批次状态，勿直接更换 biz_id 重发"
             ) from None
-        if _same_digest(stored.digest, request_hash) or _same_digest(
-            stored.digest,
-            legacy_hash,
-        ):
+        if _same_digest(stored.digest, legacy_hash):
             return
         raise IdempotencyConflict("同一幂等键已用于不同请求，请更换 biz_id 或复用原请求")
 
@@ -1188,7 +1188,14 @@ class SendPipeline:
         )
         existing = await self.idempotency.lookup(idem_scope, biz_id)
         if existing is not None:
-            await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
+            await self._ensure_same_request(
+                idem_scope,
+                biz_id,
+                request,
+                app,
+                policy,
+                computed=IdempotencyFingerprint(request_hash, request_hash_key_version),
+            )
             await self._consume_replay_limit(app)
             return await self.store.response_for(existing)
         inspect = getattr(self.idempotency, "inspect", None)
@@ -1199,7 +1206,14 @@ class SendPipeline:
             await self._consume_replay_limit(app)
             existing = await self.idempotency.wait(idem_scope, biz_id)
             if existing is not None:
-                await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
+                await self._ensure_same_request(
+                    idem_scope,
+                    biz_id,
+                    request,
+                    app,
+                    policy,
+                    computed=IdempotencyFingerprint(request_hash, request_hash_key_version),
+                )
                 return await self.store.response_for(existing)
         token = await self._claim_owner(idem_scope, biz_id, request_hash)
         if token is None:
@@ -1212,7 +1226,14 @@ class SendPipeline:
             await self._consume_replay_limit(app)
             existing = await self.idempotency.wait(idem_scope, biz_id)
             if existing is not None:
-                await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
+                await self._ensure_same_request(
+                    idem_scope,
+                    biz_id,
+                    request,
+                    app,
+                    policy,
+                    computed=IdempotencyFingerprint(request_hash, request_hash_key_version),
+                )
                 return await self.store.response_for(existing)
             token = await self._claim_owner(idem_scope, biz_id, request_hash)
         if token is None:
@@ -1224,7 +1245,8 @@ class SendPipeline:
             if lost.is_set():
                 raise IdempotencyClaimLost("idempotency claim lost")
             try:
-                owned = await self.idempotency.renew(idem_scope, biz_id, token)
+                renewer = getattr(self.idempotency, "renew_if_due", self.idempotency.renew)
+                owned = await renewer(idem_scope, biz_id, token)
             except Exception:
                 lost.set()
                 raise IdempotencyClaimLost("idempotency claim unavailable") from None
@@ -1243,7 +1265,14 @@ class SendPipeline:
                 raise
             existing = await self.idempotency.lookup(idem_scope, biz_id)
             if existing is not None:
-                await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
+                await self._ensure_same_request(
+                    idem_scope,
+                    biz_id,
+                    request,
+                    app,
+                    policy,
+                    computed=IdempotencyFingerprint(request_hash, request_hash_key_version),
+                )
                 return await self.store.response_for(existing)
             await check_ownership()
             viewed = await inspect(idem_scope, biz_id) if inspect is not None else None
@@ -1558,45 +1587,49 @@ class SendPipeline:
             try:
                 if ownership_check is not None:
                     await ownership_check()
-                frequency_batch = 200
-                for offset in range(0, len(after_blacklist), frequency_batch):
-                    if ownership_check is not None and offset > 0:
-                        await ownership_check()
-                    batch = after_blacklist[offset : offset + frequency_batch]
-                    if self.usage_ledger is not None and usage_reservation_id is not None:
-                        decisions = await self.usage_ledger.allow_frequency_many(
-                            usage_reservation_id,
-                            request.category,
-                            app_id=self._usage_app_id(app, request),
-                            items=tuple(
-                                FrequencyDecisionItem(
-                                    phone_hmac=frequency_hmac_by_active[item.phone_hmac],
-                                    hmac_aliases=frequency_aliases_by_active[item.phone_hmac],
-                                )
-                                for item in batch
-                            ),
-                            limits=limits,
-                            now=now,
-                        )
-                    else:
-                        decisions = []
-                        for index, item in enumerate(batch):
-                            if ownership_check is not None and index > 0 and index % 25 == 0:
-                                await ownership_check()
-                            decisions.append(
-                                await self.frequency.allow(
-                                    request.category,
-                                    app_id=self._usage_app_id(app, request),
-                                    phone_hmac=frequency_hmac_by_active[item.phone_hmac],
-                                    limits=limits,
-                                    claim_key=claim_key,
-                                    claim_token=claim_token,
-                                    result_key=frequency_result_key,
-                                )
+                if request.category == "notice" and self.usage_ledger is not None:
+                    # notice 无频控维度；保留前后副作用边界的 claim 校验。
+                    accepted.extend(after_blacklist)
+                else:
+                    frequency_batch = 200
+                    for offset in range(0, len(after_blacklist), frequency_batch):
+                        if ownership_check is not None and offset > 0:
+                            await ownership_check()
+                        batch = after_blacklist[offset : offset + frequency_batch]
+                        if self.usage_ledger is not None and usage_reservation_id is not None:
+                            decisions = await self.usage_ledger.allow_frequency_many(
+                                usage_reservation_id,
+                                request.category,
+                                app_id=self._usage_app_id(app, request),
+                                items=tuple(
+                                    FrequencyDecisionItem(
+                                        phone_hmac=frequency_hmac_by_active[item.phone_hmac],
+                                        hmac_aliases=frequency_aliases_by_active[item.phone_hmac],
+                                    )
+                                    for item in batch
+                                ),
+                                limits=limits,
+                                now=now,
                             )
-                    accepted.extend(
-                        item for item, allowed in zip(batch, decisions, strict=True) if allowed
-                    )
+                        else:
+                            decisions = []
+                            for index, item in enumerate(batch):
+                                if ownership_check is not None and index > 0 and index % 25 == 0:
+                                    await ownership_check()
+                                decisions.append(
+                                    await self.frequency.allow(
+                                        request.category,
+                                        app_id=self._usage_app_id(app, request),
+                                        phone_hmac=frequency_hmac_by_active[item.phone_hmac],
+                                        limits=limits,
+                                        claim_key=claim_key,
+                                        claim_token=claim_token,
+                                        result_key=frequency_result_key,
+                                    )
+                                )
+                        accepted.extend(
+                            item for item, allowed in zip(batch, decisions, strict=True) if allowed
+                        )
             except Exception:
                 await release_usage("acceptance-failed")
                 raise

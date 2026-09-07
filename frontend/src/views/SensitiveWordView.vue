@@ -13,6 +13,7 @@ import EmptyState from "../components/EmptyState.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { confirmAuditedAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
+import { useLatestRead } from "../composables/useLatestRead"
 import { formatDateTime } from "../lib/time"
 
 const MAX_WORD_LENGTH = 64
@@ -21,7 +22,10 @@ const items = ref<SensitiveWordItem[]>([])
 const total = ref(0)
 const page = ref(1)
 const keyword = ref("")
-const policy = ref("block")
+const policy = ref("")
+const policyLoading = ref(false)
+const policyError = ref("")
+const policyRead = useLatestRead()
 const loading = ref(false)
 const saving = ref(false)
 const policySaving = ref(false)
@@ -71,26 +75,44 @@ const emptyState = computed(() =>
     : { title: "敏感词库为空", description: "点击右上「添加敏感词」批量录入后，命中词将按当前策略阻断或仅审计。" },
 )
 
+const listRead = useLatestRead()
+
 let loadToken = 0
 
 async function load(): Promise<void> {
   const token = ++loadToken
+  const signal = listRead.start()
   loading.value = true
   errorMessage.value = ""
   try {
-    const [pageResult, configs] = await Promise.all([
-      listSensitiveWords({ keyword: keyword.value.trim(), page: page.value }),
-      listConfigs(),
-    ])
-    if (token !== loadToken) return
+    const pageResult = await listSensitiveWords({ keyword: keyword.value.trim(), page: page.value }, signal)
+    if (signal.aborted || token !== loadToken) return
     items.value = pageResult.items
     total.value = pageResult.total
-    policy.value = configs.find((item) => item.key === "sensitive_hit_action")?.value || "block"
   } catch (error) {
-    if (token !== loadToken) return
+    if (signal.aborted || token !== loadToken) return
     errorMessage.value = errorText(error, "敏感词加载失败")
   } finally {
     if (token === loadToken) loading.value = false
+  }
+}
+
+/** 策略首次加载及主动刷新独立于词库分页；外部变更通过「刷新策略」重新读取。 */
+async function loadPolicy(): Promise<void> {
+  const signal = policyRead.start()
+  policyLoading.value = true
+  policyError.value = ""
+  try {
+    const configs = await listConfigs(signal)
+    if (signal.aborted) return
+    const next = configs.find((item) => item.key === "sensitive_hit_action")?.value
+    if (next !== "block" && next !== "audit") throw new Error("命中策略暂不可用")
+    policy.value = next
+  } catch (error) {
+    if (signal.aborted) return
+    policyError.value = errorText(error, "命中策略加载失败")
+  } finally {
+    if (!signal.aborted) policyLoading.value = false
   }
 }
 
@@ -107,7 +129,8 @@ function reset(): void {
 
 /** 命中策略 seg 点选即写配置；失败回退原值。 */
 async function setPolicy(next: string): Promise<void> {
-  if (next === policy.value || policySaving.value) return
+  if (next === policy.value || policySaving.value || policyLoading.value || !policy.value) return
+  policyRead.cancel()
   const previous = policy.value
   policy.value = next
   policySaving.value = true
@@ -173,7 +196,10 @@ async function remove(item: SensitiveWordItem): Promise<void> {
   }
 }
 
-onMounted(() => void load())
+onMounted(() => {
+  void load()
+  void loadPolicy()
+})
 </script>
 
 <template>
@@ -196,15 +222,24 @@ onMounted(() => void load())
             type="button"
             :class="{ on: policy === option.value }"
             :data-testid="`sensitive-policy-${option.value}`"
-            :disabled="policySaving"
+            :disabled="policySaving || policyLoading || !policy || Boolean(policyError)"
             @click="setPolicy(option.value)"
             >{{ option.label }}</button
           >
         </div>
       </div>
+      <el-button
+        data-testid="sensitive-policy-refresh"
+        :loading="policyLoading"
+        :disabled="policySaving"
+        @click="loadPolicy"
+        >刷新策略</el-button
+      >
       <el-button data-testid="sensitive-add-open" type="primary" @click="openDrawer">添加敏感词</el-button>
     </div>
   </section>
+
+  <el-alert v-if="policyError" :title="policyError" type="error" :closable="false" />
 
   <form class="sensitive-filter-bar" @submit.prevent="search">
     <label class="sensitive-fld">

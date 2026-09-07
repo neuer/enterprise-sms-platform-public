@@ -177,6 +177,16 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
 
     vendor_lint_commands = job_commands(jobs["backend-vendor-lint"])
     coverage_commands = job_commands(jobs["backend-coverage"])
+    coverage_steps = jobs["backend-coverage"]["steps"]
+    reader_runtime = next(
+        step for step in coverage_steps
+        if str(step.get("uses", "")).startswith("actions/setup-node@")
+    )
+    assert reader_runtime["with"]["node-version"] == "24"
+    assert coverage_steps.index(reader_runtime) < next(
+        index for index, step in enumerate(coverage_steps)
+        if "verify_vendor_postgres_recovery.sh" in str(step.get("run", ""))
+    )
     assert "LOCAL_SKIP_RUFF_FILES" in yaml.safe_dump(jobs["backend-vendor-lint"])
     assert "--ruff-exclude-args" in vendor_lint_commands
     assert "ruff_excludes[@]" in vendor_lint_commands

@@ -827,6 +827,8 @@ class SqlChunkStore:
                 """
                 UPDATE sms_batch b SET
                   delivered=s.delivered,failed=s.failed,unknown_cnt=s.unknown_cnt,
+                  active_message_count=s.active,
+                  active_message_count_token=gen_random_uuid(),
                   status=CASE
                     WHEN b.status='completed_unknown' THEN 'completed_unknown'
                     WHEN s.active=0 THEN 'completed'

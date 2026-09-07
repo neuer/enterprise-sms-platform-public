@@ -115,7 +115,7 @@ export interface ExternalRoleMappingUpdate {
   dept: string
 }
 
-export function listAudits(filters: AuditFilters): Promise<AuditPage> {
+export function listAudits(filters: AuditFilters, signal?: AbortSignal): Promise<AuditPage> {
   const query = new URLSearchParams({
     page: String(filters.page),
     page_size: String(filters.pageSize),
@@ -128,12 +128,13 @@ export function listAudits(filters: AuditFilters): Promise<AuditPage> {
   if (filters.correlationId.trim()) query.set("correlation_id", filters.correlationId.trim())
   if (filters.start) query.set("start", filters.start)
   if (filters.end) query.set("end", filters.end)
-  return apiRequest<AuditPage>(`/admin/audit-logs?${query}`, { method: "GET" })
+  return apiRequest<AuditPage>(`/admin/audit-logs?${query}`, { method: "GET", signal })
 }
 
 export const listAuditActions = () => apiRequest<string[]>("/admin/audit-logs/actions", { method: "GET" })
 
-export const listConfigs = () => apiRequest<ConfigItem[]>("/admin/configs", { method: "GET" })
+export const listConfigs = (signal?: AbortSignal) =>
+  apiRequest<ConfigItem[]>("/admin/configs", { method: "GET", signal })
 
 export function updateConfigs(items: ConfigUpdate[]): Promise<ConfigItem[]> {
   return apiRequest<ConfigItem[]>("/admin/configs", {

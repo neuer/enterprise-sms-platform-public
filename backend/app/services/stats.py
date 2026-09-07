@@ -28,6 +28,15 @@ def success_rate(delivered: int, failed: int) -> float:
     return delivered / denominator if denominator else 0.0
 
 
+def success_rate_sql(delivered: str, failed: str) -> str:
+    """仅为内部固定 SQL 表达式生成同一成功率口径；禁止传入用户值。"""
+
+    return (
+        f"COALESCE(CAST(({delivered}) AS double precision) "
+        f"/ NULLIF(({delivered})+({failed}),0),0)"
+    )
+
+
 def recent_stat_dates(now: datetime) -> tuple[date, ...]:
     """返回上海时区今天及前四个自然日，覆盖迟到回执回补。"""
 

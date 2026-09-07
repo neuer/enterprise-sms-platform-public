@@ -6241,6 +6241,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/web/reports/balance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 管理员页头最新余额（单次快照查询） */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 无快照时余额和采集时间均为 null，不能解释为零余额 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BalanceSnapshotModel"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/web/reports/stats": {
         parameters: {
             query?: never;
@@ -6257,6 +6295,11 @@ export interface paths {
                     category?: "verify" | "notice" | "market" | "all";
                     start?: string | null;
                     end?: string | null;
+                    page?: number;
+                    size?: number;
+                    sort?: "period_start" | "total" | "total_segments" | "success_rate";
+                    order?: "asc" | "desc";
+                    metric?: "total" | "total_segments";
                 };
                 header?: never;
                 path?: never;
@@ -7378,7 +7421,7 @@ export interface components {
             unknown: number;
             success_rate: number;
         };
-        /** @description 维度级区间汇总；success_rate 为服务端 stats.py 口径，前端不得自行重算 */
+        /** @description 全区间按 metric 排名前五维度及其他维度合计，is_other 明确标识合并；完整维度明细仍可分页或导出；success_rate 为服务端 stats.py 口径 */
         ReportingDimSummaryModel: {
             dim_value: string;
             dim_label: string;
@@ -7388,6 +7431,7 @@ export interface components {
             failed: number;
             unknown: number;
             success_rate: number;
+            is_other: boolean;
         };
         ReportingModel: {
             /** @enum {string} */
@@ -7401,9 +7445,33 @@ export interface components {
             /** Format: date */
             end: string;
             can_export_decrypted: boolean;
+            /** @description 全筛选区间的周期与维度明细总行数 */
+            total: number;
+            page: number;
+            size: number;
+            /** @enum {string} */
+            metric: "total" | "total_segments";
+            dimension_total: number;
+            trend: components["schemas"]["ReportingTrendModel"];
             summary: components["schemas"]["ReportingSummaryModel"];
             dim_summary: components["schemas"]["ReportingDimSummaryModel"][];
             items: components["schemas"]["ReportingRowModel"][];
+        };
+        ReportingTrendSeriesModel: {
+            dim_value: string;
+            dim_label: string;
+            total: number[];
+            total_segments: number[];
+            is_other: boolean;
+        };
+        /** @description 全区间紧凑趋势，最多366个周期与Top5加其他的6个系列；数值数组与periods位置一一对应，缺失周期为零 */
+        ReportingTrendModel: {
+            periods: string[];
+            series: components["schemas"]["ReportingTrendSeriesModel"][];
+        };
+        BalanceSnapshotModel: {
+            current_balance: number | null;
+            checked_at: string | null;
         };
         ReportingSummaryModel: {
             total: number;

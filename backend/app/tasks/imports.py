@@ -12,6 +12,7 @@ from cryptography.exceptions import InvalidTag
 from redis.asyncio import Redis
 
 from app.core.bounded_executor import run_bounded
+from app.core.bulk_admission import bulk_task_admission
 from app.core.jobtrack import tracked_job
 from app.core.worker_runtime import run_worker_async
 from app.services.blacklist import RedisBlacklistCache
@@ -226,6 +227,7 @@ async def dispatch_imports_once(
     name="app.tasks.process_import",
     **background_task_options(soft_time_limit=120, time_limit=150),
 )
+@bulk_task_admission
 def process_import(import_id: str) -> int:
     return run_worker_async(process_import_once(import_id))
 
@@ -234,6 +236,7 @@ def process_import(import_id: str) -> int:
     name="app.tasks.dispatch_imports",
     **background_task_options(soft_time_limit=120, time_limit=150),
 )
+@bulk_task_admission
 @tracked_job("dispatch_imports", expect_interval_s=30)
 def dispatch_imports() -> int:
     return run_worker_async(dispatch_imports_once(SqlImportRepository(), ImportSender()))

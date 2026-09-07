@@ -80,6 +80,26 @@ class FakeRepository:
 
 
 @pytest.mark.asyncio
+async def test_reusable_read_exposes_only_trusted_same_request_database_facts() -> None:
+    facts = database_facts()
+    service = CurrentAlertService(
+        FakeRepository(facts, RuntimeError("control unavailable")), SPECS, clock=lambda: NOW,
+    )
+    result = await service.read()
+    assert result.database is facts
+    assert result.snapshot.unknown_sources == ("control_redis",)
+    assert not result.snapshot.complete
+
+    failed = await CurrentAlertService(
+        FakeRepository(RuntimeError("database unavailable"), ControlCurrentFacts(None, None, 0)),
+        SPECS, clock=lambda: NOW,
+    ).read()
+    assert failed.database is None
+    assert failed.snapshot.unknown_sources == ("postgresql",)
+    assert not failed.snapshot.complete
+
+
+@pytest.mark.asyncio
 async def test_current_alerts_are_derived_from_live_facts_and_sorted_by_severity() -> None:
     facts = database_facts(
         uncertain_overdue=2,

@@ -15,6 +15,7 @@ import {
 } from "../api/templates"
 import EmptyState from "../components/EmptyState.vue"
 import StatusTag from "../components/StatusTag.vue"
+import { useMobileLayout } from "../composables/useMobileLayout"
 import { confirmAuditedAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
 import { VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
@@ -38,6 +39,7 @@ interface TrailStep {
 }
 
 const session = useSessionStore()
+const isMobile = useMobileLayout()
 // 测试环境未安装路由时 useRouter 返回 undefined，「用于发送」跳转入口做空值守卫。
 const router = useRouter()
 
@@ -393,7 +395,14 @@ onMounted(load)
   <el-alert v-if="errorMessage" class="template-alert" :title="errorMessage" type="error" :closable="false" />
 
   <section class="template-results">
-    <el-table v-loading="loading" class="template-table" :data="filtered" row-key="id" @row-click="openDetail">
+    <el-table
+      v-if="!isMobile"
+      v-loading="loading"
+      class="template-table"
+      :data="filtered"
+      row-key="id"
+      @row-click="openDetail"
+    >
       <el-table-column label="模板名称" min-width="180">
         <template #default="{ row }">
           <button
@@ -467,7 +476,7 @@ onMounted(load)
       </el-table-column>
       <template #empty><EmptyState :title="emptyTitle" :description="emptyDescription" /></template>
     </el-table>
-    <div v-loading="loading" class="template-mobile-list">
+    <div v-else v-loading="loading" class="template-mobile-list">
       <article v-for="row in filtered" :key="row.id">
         <header>
           <button
@@ -476,6 +485,8 @@ onMounted(load)
             type="button"
             :aria-label="`查看模板 ${row.name} 的详情`"
             @click="openDetail(row)"
+            @keydown.enter.stop.prevent="openDetail(row)"
+            @keydown.space.stop.prevent="openDetail(row)"
           >
             {{ row.name }}
           </button>

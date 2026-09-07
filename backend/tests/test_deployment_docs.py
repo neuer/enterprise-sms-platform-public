@@ -711,7 +711,9 @@ def test_phase0_redis_decision_cannot_masquerade_as_current_managed_ha() -> None
         "整台生产 VM 丢失",
         "SendAdmissionGuard",
         "pg_try_advisory_lock",
-        "usage:projection:rebuild:{date}",
+        "全局 `usage:projection:rebuild` 锁",
+        "共享事务锁",
+        "`usage:projection:rebuilding` 作为跨日的 300 秒可见屏障",
         "platform_recovery_elapsed",
         "禁止 secret、手机号",
     ):

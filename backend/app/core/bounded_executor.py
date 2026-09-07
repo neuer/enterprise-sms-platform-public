@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from contextvars import ContextVar
 from functools import partial
 from threading import BoundedSemaphore, Lock
-from typing import Literal, TypeVar
+from typing import Any, Literal, TypeVar
 
 T = TypeVar("T")
 ExecutorPool = Literal[
@@ -33,6 +35,58 @@ _POOL_BOUNDS: dict[ExecutorPool, tuple[int, int]] = {
 
 class ExecutorBackpressure(RuntimeError):
     """执行器工作槽与排队预算均已耗尽。"""
+
+
+class BoundedWorkScope:
+    """记录单个 bulk 工作仍在执行的线程 Future，取消协程不代表线程结束。"""
+
+    def __init__(self) -> None:
+        self._pending: set[asyncio.Future[Any]] = set()
+        self._lock = Lock()
+
+    @property
+    def has_pending(self) -> bool:
+        with self._lock:
+            return bool(self._pending)
+
+    def track(self, future: asyncio.Future[Any]) -> None:
+        with self._lock:
+            self._pending.add(future)
+
+        def completed(item: asyncio.Future[Any]) -> None:
+            with self._lock:
+                self._pending.discard(item)
+            if not item.cancelled():
+                item.exception()  # 原调用已超时也必须观察后台线程的异常。
+
+        future.add_done_callback(completed)
+
+    async def wait_finished(self) -> None:
+        """在原协程退出后等待线程事实收尾；不向线程 Future 传播取消。"""
+
+        while True:
+            with self._lock:
+                pending = tuple(self._pending)
+            if not pending:
+                return
+            await asyncio.gather(
+                *(asyncio.shield(item) for item in pending), return_exceptions=True
+            )
+
+
+_WORK_SCOPE: ContextVar[BoundedWorkScope | None] = ContextVar("bounded_work_scope", default=None)
+
+
+@contextmanager
+def bounded_work_scope() -> Iterator[BoundedWorkScope]:
+    """仅 bulk 准入显式启用；共享对象随 ContextVar 传入 worker 常驻 loop。"""
+
+    scope = BoundedWorkScope()
+    token = _WORK_SCOPE.set(scope)
+    try:
+        yield scope
+    finally:
+        _WORK_SCOPE.reset(token)
 
 
 class BoundedExecutor:
@@ -80,6 +134,9 @@ class BoundedExecutor:
 
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(self._executor, invoke)
+        scope = _WORK_SCOPE.get()
+        if scope is not None:
+            scope.track(future)
         try:
             return await asyncio.wait_for(asyncio.shield(future), timeout_s)
         except TimeoutError:

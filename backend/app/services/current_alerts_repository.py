@@ -126,37 +126,41 @@ class SqlCurrentAlertRepository:
                 operation_result = await connection.execute(
                     text(
                         """
-                        SELECT
-                          (SELECT balance FROM balance_snapshot
-                           ORDER BY fetched_at DESC,id DESC LIMIT 1) balance,
-                          (SELECT fetched_at FROM balance_snapshot
-                           ORDER BY fetched_at DESC,id DESC LIMIT 1) balance_checked_at,
-                          (SELECT count(*) FROM sms_chunk
-                           WHERE status='uncertain' AND uncertain_since <=
-                             now()-make_interval(hours=>:uncertain_hours)) uncertain_overdue,
-                          (SELECT min(uncertain_since) FROM sms_chunk
-                           WHERE status='uncertain' AND uncertain_since <=
-                             now()-make_interval(hours=>:uncertain_hours)) uncertain_since,
-                          (SELECT count(*) FROM callback_task WHERE status='dead') callback_dead,
-                          (SELECT min(created_at) FROM callback_task
-                           WHERE status='dead') callback_dead_since,
-                          (SELECT count(*) FROM outbox_event WHERE state='dead') outbox_dead,
-                          (SELECT min(created_at) FROM outbox_event
-                           WHERE state='dead') outbox_dead_since,
-                          (SELECT count(*) FROM outbox_event
-                           WHERE state IN ('pending','leased','published','processing'))
-                             outbox_active,
-                          (SELECT min(created_at) FROM outbox_event
-                           WHERE state IN ('pending','leased','published','processing'))
-                             outbox_oldest_active_at,
-                          (SELECT count(*) FROM raw_vendor_log
-                           WHERE processed=false
-                             AND capture_state='complete_too_large'
-                             AND replay_eligibility='manual') raw_manual,
-                          (SELECT min(fetched_at) FROM raw_vendor_log
-                           WHERE processed=false
-                             AND capture_state='complete_too_large'
-                             AND replay_eligibility='manual') raw_manual_since
+                        SELECT balance.balance,balance.fetched_at balance_checked_at,
+                          uncertain.*,callback.*,outbox.*,raw.*
+                        FROM (
+                          SELECT count(*) uncertain,
+                            count(*) FILTER (WHERE uncertain_since<=
+                              now()-make_interval(hours=>:uncertain_hours)) uncertain_overdue,
+                            min(uncertain_since) FILTER (WHERE uncertain_since<=
+                              now()-make_interval(hours=>:uncertain_hours)) uncertain_since
+                          FROM sms_chunk WHERE status='uncertain'
+                        ) uncertain
+                        CROSS JOIN (
+                          SELECT count(*) callback_dead,min(created_at) callback_dead_since
+                          FROM callback_task WHERE status='dead'
+                        ) callback
+                        CROSS JOIN (
+                          SELECT count(*) FILTER (WHERE state='dead') outbox_dead,
+                            min(created_at) FILTER (WHERE state='dead') outbox_dead_since,
+                            count(*) FILTER (WHERE state<>'dead') outbox_active,
+                            min(created_at) FILTER (WHERE state<>'dead') outbox_oldest_active_at,
+                            count(*) FILTER (WHERE state<>'dead' AND queue='realtime')
+                              realtime_queue,
+                            count(*) FILTER (WHERE state<>'dead' AND queue='bulk') bulk_queue
+                          FROM outbox_event
+                          WHERE state IN ('dead','pending','leased','published','processing')
+                        ) outbox
+                        CROSS JOIN (
+                          SELECT count(*) raw_manual,min(fetched_at) raw_manual_since
+                          FROM raw_vendor_log WHERE processed=false
+                            AND capture_state='complete_too_large'
+                            AND replay_eligibility='manual'
+                        ) raw
+                        LEFT JOIN LATERAL (
+                          SELECT balance,fetched_at FROM balance_snapshot
+                          ORDER BY fetched_at DESC,id DESC LIMIT 1
+                        ) balance ON true
                         """
                     ),
                     {"uncertain_hours": policy.uncertain_alert_hours},
@@ -203,6 +207,9 @@ class SqlCurrentAlertRepository:
                     int(operation["raw_manual"]),
                     cast(datetime | None, operation["raw_manual_since"]),
                     spill_alerts,
+                    int(operation["uncertain"]),
+                    int(operation["realtime_queue"]),
+                    int(operation["bulk_queue"]),
                 )
         finally:
             await engine.dispose()

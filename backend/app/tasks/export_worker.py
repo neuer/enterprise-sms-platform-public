@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.core.bulk_admission import bulk_task_admission
 from app.core.worker_runtime import run_worker_async
 from app.services.crypto import CryptoService
 from app.services.export_file import ExportFileCodec
@@ -23,6 +24,7 @@ async def _build(task_id: int) -> int:
 
 
 @celery_app.task(name="app.tasks.build_export")  # type: ignore[untyped-decorator]
+@bulk_task_admission
 def build_export(task_id: int) -> int:
     """Celery 参数只含 export_task.id。"""
 

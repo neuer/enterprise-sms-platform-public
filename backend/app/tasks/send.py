@@ -1251,9 +1251,8 @@ class SendWorker:
                 await self._refund_token(lease_epoch, vendor_id)
 
 
-async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
-    """按 worker 启动时配置构造运行组件，凭据只从 secret 文件读取。"""
-
+async def _store_components() -> tuple[Any, Any, Any, int, int, int]:
+    """准备和发送共用当前存储配置；准备分片不构造厂商连接。"""
     from app.tasks.send_repository import SqlChunkStore
 
     settings = get_settings()
@@ -1261,6 +1260,13 @@ async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
     redis: Any = redis_client(settings.redis_control_url)
     store = SqlChunkStore(crypto, settings, redis)
     batch_size, vendor_qps, reserved = await store.load_worker_config()
+    return settings, redis, store, batch_size, vendor_qps, reserved
+
+
+async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
+    """按任务重读凭据及控制配置，仅复用本进程常驻 loop 的 HTTP 连接池。"""
+
+    settings, redis, store, batch_size, vendor_qps, reserved = await _store_components()
     control_guard = VendorControlStateGuard() if settings.vendor_live_test else None
     if control_guard is not None:
         try:
@@ -1269,7 +1275,7 @@ async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
             if error.requires_critical_pause:
                 await store.pause_control_agent_stale()
             raise RuntimeError("真实联调控制状态不可用") from None
-    gateway = ZhihuiClient.from_settings(settings)
+    gateway = ZhihuiClient.from_settings(settings, shared_http=True)
     worker = SendWorker(
         gateway,
         store,
@@ -1286,12 +1292,9 @@ async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
 
 
 async def _process_batch(batch_no: str) -> int:
-    _worker, store, gateway, batch_size = await _components()
-    try:
-        chunk_ids, _lane = await store.prepare_chunks(batch_no, batch_size)
-        return len(chunk_ids)
-    finally:
-        await gateway.aclose()
+    _settings, _redis, store, batch_size, _qps, _reserved = await _store_components()
+    chunk_ids, _lane = await store.prepare_chunks(batch_no, batch_size)
+    return len(chunk_ids)
 
 
 async def _process_batch_event(batch_no: str, event_id: str) -> int:

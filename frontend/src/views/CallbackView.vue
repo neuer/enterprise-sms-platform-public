@@ -13,6 +13,7 @@ import {
 import EmptyState from "../components/EmptyState.vue"
 import { confirmAuditedAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
+import { useLatestRead } from "../composables/useLatestRead"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 
@@ -69,6 +70,8 @@ function statusType(value: CallbackStatus): "warning" | "success" | "danger" | "
   return statusMeta[value].type
 }
 
+const listRead = useLatestRead()
+
 let loadToken = 0
 
 /** 抽屉选中行随每次重查同步：重推成功或筛选变化导致行离开当前列表时即收起抽屉。 */
@@ -84,23 +87,27 @@ function syncSelected(): void {
 
 async function load(): Promise<void> {
   const token = ++loadToken
+  const signal = listRead.start()
   loading.value = true
   errorMessage.value = ""
   try {
-    const result = await listCallbacks({
-      status: filters.status,
-      appId: filters.appId,
-      event: filters.event,
-      batchNo: filters.batchNo,
-      page: filters.page,
-    })
-    if (token !== loadToken) return
+    const result = await listCallbacks(
+      {
+        status: filters.status,
+        appId: filters.appId,
+        event: filters.event,
+        batchNo: filters.batchNo,
+        page: filters.page,
+      },
+      signal,
+    )
+    if (signal.aborted || token !== loadToken) return
     items.value = result.items
     total.value = result.total
     deadTotal.value = result.dead_total
     syncSelected()
   } catch (error) {
-    if (token !== loadToken) return
+    if (signal.aborted || token !== loadToken) return
     errorMessage.value = errorText(error, "回调任务加载失败")
   } finally {
     if (token === loadToken) loading.value = false

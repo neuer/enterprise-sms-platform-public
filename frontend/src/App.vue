@@ -4,8 +4,9 @@ import zhCn from "element-plus/es/locale/lang/zh-cn"
 import { computed, defineAsyncComponent, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import type { UserRole } from "./api/auth"
-import { getDashboard } from "./api/dashboard"
+import { getBalance } from "./api/dashboard"
 import { usePolling } from "./composables/usePolling"
+import { useLatestRead } from "./composables/useLatestRead"
 import { getTheme, toggleTheme, type ThemeMode } from "./lib/theme"
 import { useApprovalBadgeStore } from "./stores/approvalBadge"
 import { applyIncomingSessionSignal, redirectToLoginIfCleared, runAppLogout } from "./api/sessionNavigation"
@@ -131,19 +132,22 @@ function handleKeydown(event: KeyboardEvent): void {
 
 function handleDashboardBalance(event: Event): void {
   const balance = (event as CustomEvent<{ currentBalance?: number | null }>).detail?.currentBalance
-  if (authenticatedShell.value && (balance === null || Number.isFinite(balance))) {
+  if (authenticatedShell.value && session.role === "admin" && (balance === null || Number.isFinite(balance))) {
     currentBalance.value = balance ?? null
   }
 }
 
+const balanceRead = useLatestRead()
+
 async function refreshBalance(): Promise<void> {
+  const signal = balanceRead.start()
   try {
-    const snapshot = await getDashboard()
-    if (authenticatedShell.value) {
-      currentBalance.value = snapshot.operations?.current_balance ?? null
+    const snapshot = await getBalance(signal)
+    if (!signal.aborted && authenticatedShell.value && session.role === "admin") {
+      currentBalance.value = snapshot.current_balance
     }
   } catch {
-    currentBalance.value = null
+    if (!signal.aborted) currentBalance.value = null
   }
 }
 
@@ -151,7 +155,7 @@ async function refreshBalance(): Promise<void> {
 const balancePolling = usePolling(refreshBalance, {
   intervalMs: 60_000,
   immediate: true,
-  enabled: computed(() => authenticatedShell.value && !dashboardRoute.value),
+  enabled: computed(() => authenticatedShell.value && session.role === "admin" && !dashboardRoute.value),
 })
 
 function syncApprovalBadgePolling(): void {
@@ -163,6 +167,10 @@ function syncApprovalBadgePolling(): void {
   }
 }
 
+watch([authenticatedShell, dashboardRoute, () => session.role], () => {
+  if (!authenticatedShell.value || session.role !== "admin" || dashboardRoute.value) balanceRead.cancel()
+  if (!authenticatedShell.value || session.role !== "admin") currentBalance.value = null
+})
 watch(() => route.fullPath, closeNavigation)
 watch(
   authenticatedShell,

@@ -101,7 +101,7 @@ export interface TimelineResult {
   truncated: boolean
 }
 
-export function listBatches(filters: BatchFilters): Promise<BatchPage> {
+export function listBatches(filters: BatchFilters, signal?: AbortSignal): Promise<BatchPage> {
   const query = new URLSearchParams({ page: String(filters.page), size: String(DEFAULT_PAGE_SIZE) })
   if (filters.category) query.set("category", filters.category)
   if (filters.status) query.set("status", filters.status)
@@ -112,11 +112,11 @@ export function listBatches(filters: BatchFilters): Promise<BatchPage> {
   if (filters.batch_no) query.set("batch_no", filters.batch_no)
   if (filters.start) query.set("start", filters.start)
   if (filters.end) query.set("end", filters.end)
-  return apiRequest<BatchPage>(`/batches?${query}`, { method: "GET" })
+  return apiRequest<BatchPage>(`/batches?${query}`, { method: "GET", signal })
 }
 
-export function getBatch(batchNo: string): Promise<BatchItem> {
-  return apiRequestAbs<BatchItem>(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}`, { method: "GET" })
+export function getBatch(batchNo: string, signal?: AbortSignal): Promise<BatchItem> {
+  return apiRequestAbs<BatchItem>(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}`, { method: "GET", signal })
 }
 
 export interface BatchMessageFilters {
@@ -124,11 +124,16 @@ export interface BatchMessageFilters {
   page?: number
 }
 
-export function getBatchMessages(batchNo: string, filters: BatchMessageFilters = {}): Promise<BatchMessagePage> {
+export function getBatchMessages(
+  batchNo: string,
+  filters: BatchMessageFilters = {},
+  signal?: AbortSignal,
+): Promise<BatchMessagePage> {
   const query = new URLSearchParams({ page: String(filters.page ?? 1), size: String(DEFAULT_PAGE_SIZE) })
   if (filters.status) query.set("status", filters.status)
   return apiRequestAbs<BatchMessagePage>(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/details?${query}`, {
     method: "GET",
+    signal,
   })
 }
 

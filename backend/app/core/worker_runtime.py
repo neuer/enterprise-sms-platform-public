@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import logging
 from collections.abc import Coroutine
 from concurrent.futures import Future
 from contextlib import suppress
@@ -13,6 +14,16 @@ from typing import Any, TypeVar
 from app.core.runtime_resources import close_runtime_resources
 
 T = TypeVar("T")
+CANCELLATION_DRAIN_SECONDS = 10.0
+LOGGER = logging.getLogger(__name__)
+
+
+class WorkerCancellationPending(RuntimeError):
+    """取消尚未完成，准入锁必须保持到原协程退出。"""
+
+    def __init__(self, completion: Future[None]) -> None:
+        super().__init__("worker coroutine cancellation is still pending")
+        self.completion = completion
 
 
 class WorkerAsyncRuntime:
@@ -24,6 +35,7 @@ class WorkerAsyncRuntime:
         self._ready = Event()
         self._lock = Lock()
         self._periodic: list[Future[Any]] = []
+        self._deferred: set[Future[None]] = set()
 
     def _serve(self) -> None:
         loop = asyncio.new_event_loop()
@@ -54,7 +66,23 @@ class WorkerAsyncRuntime:
         if loop is None or not loop.is_running():
             coroutine.close()
             raise RuntimeError("worker async runtime is unavailable")
-        future: Future[T] = asyncio.run_coroutine_threadsafe(coroutine, loop)
+        task: asyncio.Task[T] | None = None
+
+        async def invoke() -> T:
+            nonlocal task
+            task = asyncio.current_task()
+            return await coroutine
+
+        async def drain() -> None:
+            # cancel Future 只通知取消，不代表 loop 上的 finally 已执行。
+            await asyncio.sleep(0)
+            if task is None:
+                coroutine.close()
+                return
+            with suppress(BaseException):
+                await task
+
+        future: Future[T] = asyncio.run_coroutine_threadsafe(invoke(), loop)
         try:
             return future.result()
         except BaseException:
@@ -63,9 +91,46 @@ class WorkerAsyncRuntime:
             # 或在 worker 回收时被硬杀在厂商调用中途。已取消的发送分片由
             # reconcile 的 stale-submitting 扫描按规则 4 转 uncertain。
             future.cancel()
-            with suppress(BaseException):
-                future.result(timeout=10)
+            completion = asyncio.run_coroutine_threadsafe(drain(), loop)
+            try:
+                completion.result(timeout=CANCELLATION_DRAIN_SECONDS)
+            except TimeoutError as error:
+                raise WorkerCancellationPending(completion) from error
             raise
+
+    def defer_cleanup(
+        self, pending: WorkerCancellationPending | None, coroutine: Coroutine[Any, Any, None]
+    ) -> None:
+        """软超时后仍在收尾的工作持有原准入锁，真正退出后再释放。"""
+
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            coroutine.close()
+            raise RuntimeError("worker async runtime is unavailable")
+
+        async def finish() -> None:
+            try:
+                if pending is not None:
+                    await asyncio.wrap_future(pending.completion)
+                await coroutine
+            finally:
+                coroutine.close()
+
+        future = asyncio.run_coroutine_threadsafe(finish(), loop)
+        with self._lock:
+            self._deferred.add(future)
+
+        def completed(item: Future[None]) -> None:
+            with self._lock:
+                self._deferred.discard(item)
+            if not item.cancelled():
+                error = item.exception()
+                if error is not None:
+                    LOGGER.error(
+                        "worker_deferred_cleanup_failed", extra={"error_type": type(error).__name__}
+                    )
+
+        future.add_done_callback(completed)
 
     def schedule_periodic(
         self,
@@ -91,6 +156,8 @@ class WorkerAsyncRuntime:
         with self._lock:
             periodic = list(self._periodic)
             self._periodic.clear()
+            periodic.extend(self._deferred)
+            self._deferred.clear()
             thread = self._thread
             loop = self._loop
             self._thread = None
@@ -122,6 +189,12 @@ _WORKER_RUNTIME = WorkerAsyncRuntime()
 
 def run_worker_async[T](coroutine: Coroutine[Any, Any, T]) -> T:
     return _WORKER_RUNTIME.run(coroutine)
+
+
+def defer_worker_cleanup(
+    pending: WorkerCancellationPending | None, coroutine: Coroutine[Any, Any, None]
+) -> None:
+    _WORKER_RUNTIME.defer_cleanup(pending, coroutine)
 
 
 def start_worker_runtime() -> None:

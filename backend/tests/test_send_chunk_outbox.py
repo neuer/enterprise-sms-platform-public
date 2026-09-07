@@ -53,10 +53,10 @@ async def test_process_batch_only_plans_chunks_and_does_not_submit(
             prepared.append((batch_no, batch_size))
             return [8, 9], "bulk"
 
-    async def components() -> tuple[Any, Any, Any, int]:
-        return _Worker(submitted), Store(), _Gateway(), 500
+    async def components() -> tuple[Any, Any, Any, int, int, int]:
+        return None, None, Store(), 500, 50, 10
 
-    monkeypatch.setattr(send_module, "_components", components)
+    monkeypatch.setattr(send_module, "_store_components", components)
 
     assert await send_module._process_batch("batch-1") == 2
     assert prepared == [("batch-1", 500)]

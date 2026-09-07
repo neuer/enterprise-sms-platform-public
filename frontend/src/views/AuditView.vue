@@ -9,6 +9,7 @@ import { copyText } from "../lib/clipboard"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 import { errorText } from "../lib/error"
+import { useLatestRead } from "../composables/useLatestRead"
 
 type DiffState = "added" | "removed" | "changed" | "same"
 
@@ -110,19 +111,22 @@ function diffRows(before: Record<string, unknown> | null, after: Record<string, 
     .sort((a, b) => DIFF_RANK[a.state] - DIFF_RANK[b.state] || a.key.localeCompare(b.key))
 }
 
+const listRead = useLatestRead()
+
 let loadToken = 0
 
 async function load(): Promise<void> {
   const token = ++loadToken
+  const signal = listRead.start()
   loading.value = true
   errorMessage.value = ""
   try {
-    const result = await listAudits(filters)
-    if (token !== loadToken) return
+    const result = await listAudits(filters, signal)
+    if (signal.aborted || token !== loadToken) return
     items.value = result.items
     total.value = result.total
   } catch (error) {
-    if (token !== loadToken) return
+    if (signal.aborted || token !== loadToken) return
     errorMessage.value = errorText(error, "审计日志加载失败")
   } finally {
     if (token === loadToken) loading.value = false

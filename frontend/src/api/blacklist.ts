@@ -22,11 +22,11 @@ export interface BlacklistFilters {
   page: number
 }
 
-export const listBlacklist = (filters: BlacklistFilters) => {
+export const listBlacklist = (filters: BlacklistFilters, signal?: AbortSignal) => {
   const query = new URLSearchParams({ page: String(filters.page), size: String(DEFAULT_PAGE_SIZE) })
   if (filters.source) query.set("source", filters.source)
   if (filters.keyword) query.set("keyword", filters.keyword)
-  return apiRequest<BlacklistPage>(`/admin/blacklist?${query}`, { method: "GET" })
+  return apiRequest<BlacklistPage>(`/admin/blacklist?${query}`, { method: "GET", signal })
 }
 
 export const addBlacklist = (phones: string[], remark: string | null) =>

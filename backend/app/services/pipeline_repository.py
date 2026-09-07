@@ -28,10 +28,13 @@ from app.services.import_repository import consume_import_reservation
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.pipeline import BatchCommand, BatchResponse, StoredBatch
+from app.services.runtime_policy import CONFIG_SPECS
 from app.services.sensitive import SENSITIVE_WORD_REVISION_KEY, sensitive_word_index
 from app.services.template import render_template
 from app.services.usage_ledger import commit_usage_reservation, shanghai_day
 from app.settings import Settings, get_settings
+
+PIPELINE_CONFIG_KEYS = tuple(sorted(set(CONFIG_SPECS) | {"vendor_batch_size"}))
 
 IDEMPOTENCY_LIVE_SQL = """
 (
@@ -65,8 +68,13 @@ class SqlPipelineStore:
         return database_engine(self.settings.database_url)
 
     async def load_config(self, dept: str) -> dict[str, Any]:
+        """每次读取策略所需键与当前部门配额，不跨请求缓存配置或凭据。"""
+
         async with self._engine().connect() as connection:
-            config_result = await connection.execute(text("SELECT key, value FROM sys_config"))
+            config_result = await connection.execute(
+                text("SELECT key, value FROM sys_config WHERE key=ANY(CAST(:keys AS text[]))"),
+                {"keys": PIPELINE_CONFIG_KEYS},
+            )
             config = {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
             quota_result = await connection.execute(
                 text("SELECT daily_quota FROM dept_quota WHERE dept=:dept"),
