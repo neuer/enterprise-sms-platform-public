@@ -1088,6 +1088,29 @@ def test_report_timeout_sweep_is_expand_only() -> None:
     assert "return" in source.split("def downgrade", 1)[1]
 
 
+def test_report_batch_active_count_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    source = (BACKEND / "migrations/versions/0111_report_batch_active_count.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "-- v1.6.97：" in schema
+    for contract in (schema, source):
+        assert "active_message_count INTEGER" in contract
+        assert "active_message_count_token UUID" in contract
+        assert "invalidate_legacy_batch_active_count" in contract
+        assert "BEFORE UPDATE OF delivered,failed,unknown_cnt ON sms_batch" in contract
+        assert (
+            "NEW.active_message_count_token IS NOT DISTINCT FROM OLD.active_message_count_token"
+        ) in contract
+    assert 'revision = "0111_report_batch_active_count"' in source
+    assert 'down_revision = "0110_uncertain_child_provenance"' in source
+    upgrade = source.split("def downgrade", 1)[0]
+    assert "ADD COLUMN IF NOT EXISTS active_message_count INTEGER" in upgrade
+    assert "DEFAULT" not in upgrade and "UPDATE sms_batch" not in upgrade
+    assert "DELETE FROM" not in upgrade and "DROP TABLE" not in upgrade
+
+
 def test_chunk_failover_pending_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0108_chunk_failover_pending.py"

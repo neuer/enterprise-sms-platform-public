@@ -152,6 +152,7 @@ class DenyAdmission:
 
 class DenyFreqLedger(EngineBoundLedger):
     async def allow_frequency_many(self, *_args: object, **_kwargs: object) -> list[bool]:
+        assert _args[1] in {"verify", "market"}
         items = _kwargs.get("items") or ()
         return [False] * len(tuple(items))
 
@@ -276,6 +277,7 @@ async def _insert_unknown(
     dept: str,
     app_id: int | None,
     phone: str,
+    category: str = "notice",
 ) -> tuple[int, int, int]:
     batch_no = uuid4().hex
     custom_id = uuid4().hex
@@ -310,13 +312,14 @@ async def _insert_unknown(
                           display_content_enc,send_content_enc,segments,quota_cost,
                           status,total,unknown_cnt
                         ) VALUES(
-                          :batch_no,'notice',:channel,:app_id,'integration',:dept,
+                          :batch_no,:category,:channel,:app_id,'integration',:dept,
                           '[encrypted]',:display,:send,1,1,'completed_unknown',1,1
                         ) RETURNING id
                         """
                     ),
                     {
                         "batch_no": batch_no,
+                        "category": category,
                         "channel": channel,
                         "app_id": app_id,
                         "dept": dept,
@@ -762,6 +765,7 @@ async def test_blacklist_sensitive_admission_inflight_reject(
         dept="运营一部",
         app_id=None,
         phone=_phone(env.nonce, 31),
+        category="verify",  # notice 不适用号码频控；用真实受控类别验证频控阻断。
     )
     freq_id = await _approve(env.service, chunk_freq, env.proposer, env.confirmer)
     with pytest.raises(AllFiltered):

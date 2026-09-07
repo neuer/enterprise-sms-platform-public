@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import gzip
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -117,6 +118,45 @@ def report() -> dict[str, Any]:
         "reportDescription": "DELIVRD",
         "reportTime": "2026-07-11T08:00:00Z",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size, expected_checks", [(1, 1), (100, 1), (251, 3)])
+async def test_failure_candidates_are_bounded_by_report_slices(
+    monkeypatch: pytest.MonkeyPatch,
+    size: int,
+    expected_checks: int,
+) -> None:
+    repository = FakeRepository()
+    monkeypatch.setattr(report_ingest_module, "time", SimpleNamespace(monotonic=lambda: 0.0))
+    service = ReportIngestService(
+        FakeGateway([report()] * size), repository, crypto(), alerts=FakeAlerts()
+    )
+    assert await service.poll_once() == size
+    names = [event[0] for event in repository.events]
+    assert names.count("failure_rate") == expected_checks
+    assert names.count("apply") == size
+    assert names[0] == "persist_raw" and names[-1] == "processed"
+
+
+@pytest.mark.asyncio
+async def test_failure_candidate_slice_flushes_on_elapsed_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [0.0]
+
+    class SlowRepository(FakeRepository):
+        async def apply_report(self, raw_id: int, report: Any) -> ReportApplyResult | None:
+            clock[0] += 1.01
+            return await super().apply_report(raw_id, report)
+
+    repository = SlowRepository()
+    monkeypatch.setattr(report_ingest_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    service = ReportIngestService(
+        FakeGateway([report()] * 3), repository, crypto(), alerts=FakeAlerts()
+    )
+    await service.poll_once()
+    assert [event[0] for event in repository.events].count("failure_rate") == 3
 
 
 @pytest.mark.asyncio

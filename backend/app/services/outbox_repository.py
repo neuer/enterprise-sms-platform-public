@@ -219,6 +219,7 @@ class SqlOutboxRepository:
                     UPDATE outbox_event SET
                       state='published',published_at=now(),updated_at=now()
                     WHERE id=:event_id AND state='leased' AND lease_id=:lease_id
+                      AND lease_expires_at>now()
                     """
                 ),
                 {"event_id": event_id, "lease_id": lease_id},
@@ -253,6 +254,7 @@ class SqlOutboxRepository:
                       failure_count=failure_count+1,
                       last_error=:error,updated_at=now()
                     WHERE id=:event_id AND state='leased' AND lease_id=:lease_id
+                      AND lease_expires_at>now()
                     """
                 ),
                 {

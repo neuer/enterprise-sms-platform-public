@@ -7,6 +7,7 @@ import hashlib
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -198,6 +199,7 @@ class IdempotencyCoordinator:
         wait_attempts: int | None = None,
         wait_interval_s: float = IDEMPOTENCY_WAIT_INTERVAL_S,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = monotonic,
     ) -> None:
         selected_heartbeat = (
             claim_ttl_s / 3 if heartbeat_interval_s is None else heartbeat_interval_s
@@ -226,6 +228,9 @@ class IdempotencyCoordinator:
         self.wait_attempts = wait_attempts
         self.wait_interval_s = wait_interval_s
         self.sleeper = sleeper
+        self.clock = clock
+        self._renew_lock = asyncio.Lock()
+        self._renewed_until: dict[tuple[str, str], float] = {}
         self._payloads: dict[str, str] = {}
         self._local_generations: dict[str, int] = {}
 
@@ -489,6 +494,23 @@ class IdempotencyCoordinator:
         )
         return bool(renewed)
 
+    async def renew_if_due(self, scope: IdempotencyScope, biz_id: str, token: str) -> bool:
+        """合并同租约的主动检查和心跳；首检、到期及失败仍走权威续租。"""
+
+        key = (self.claim_key(scope, biz_id), token)
+        async with self._renew_lock:
+            started = self.clock()
+            if started < self._renewed_until.get(key, float("-inf")):
+                return True
+            self._renewed_until.pop(key, None)
+            renewed = await self.renew(scope, biz_id, token)
+            if renewed:
+                # 从请求开始计时，数据库/Redis 的等待不延长本地可复用期限。
+                self._renewed_until[key] = started + min(
+                    self.heartbeat_interval_s, self.claim_ttl_s / 3
+                )
+            return renewed
+
     async def heartbeat(
         self,
         scope: IdempotencyScope,
@@ -499,7 +521,7 @@ class IdempotencyCoordinator:
         while not lost.is_set():
             try:
                 await self.sleeper(self.heartbeat_interval_s)
-                if not await self.renew(scope, biz_id, token):
+                if not await self.renew_if_due(scope, biz_id, token):
                     lost.set()
                     return
             except asyncio.CancelledError:
@@ -511,6 +533,7 @@ class IdempotencyCoordinator:
     async def release(
         self, scope: IdempotencyScope, biz_id: str, token: str
     ) -> None:
+        self._renewed_until.pop((self.claim_key(scope, biz_id), token), None)
         payload = self._payload_for(scope, biz_id, token)
         if payload is None:
             viewed = await self.inspect(scope, biz_id)

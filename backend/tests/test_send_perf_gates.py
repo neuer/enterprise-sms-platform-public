@@ -30,6 +30,22 @@ from test_frequency_batch_sql import RecordingConnection, decision_item  # noqa:
 
 def _metrics(recipient_count: int, *, sql_count: int = 8, p99_ms: float = 900) -> dict[str, object]:
     return {
+        "measurement": {
+            "source": "isolated-runtime-capture",
+            "commit": "c" * 40,
+            "collector_commit": "d" * 40,
+            "image_digests": {"api": "sha256:" + "a" * 64},
+            "config_sha256": "sha256:" + "b" * 64,
+            "scenario": f"recipients_{recipient_count}",
+            "started_at": "2026-09-07T00:00:00+00:00",
+            "finished_at": "2026-09-07T00:01:00+00:00",
+            "latency_unit": "ms",
+            "sample_count": 100,
+            "accepted_count": 100,
+            "rejected_count": 0,
+            "failed_count": 0,
+            "request_count": 100,
+        },
         "recipient_count": recipient_count,
         "accepted_recipients_per_s": 120.0,
         "segments_per_s": 120.0,

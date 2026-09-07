@@ -18,7 +18,8 @@ import {
   type ManagedApp,
 } from "../api/apps"
 import { listConfigs } from "../api/admin"
-import { getReport, type ReportDimSummary } from "../api/reports"
+import { getReport, type ReportRow } from "../api/reports"
+import { useLatestRead } from "../composables/useLatestRead"
 import { listSigns, type SmsSign } from "../api/signs"
 import { listTemplates, type SmsTemplate, type VarSpec } from "../api/templates"
 import CategoryTag from "../components/CategoryTag.vue"
@@ -63,9 +64,10 @@ const keyGraceHours = ref<number | null>(null)
 const secretOperation = ref<SecretOperation | null>(null)
 const rotatingKeyId = ref<number | null>(null)
 const rotatingCallbackId = ref<number | null>(null)
-/** 今日用量联查结果（dim_value = app.id 字符串）；调用失败时置 unavailable，单元格显示「—」。 */
-const dailyUsage = ref<Map<string, ReportDimSummary>>(new Map())
-const usageUnavailable = ref(false)
+/** 今日用量联查结果（dim_value = app.id 字符串）；完整联查成功前单元格显示「—」。 */
+const dailyUsage = ref<Map<string, ReportRow>>(new Map())
+const usageRead = useLatestRead()
+const usageUnavailable = ref(true)
 /** 已通过厂商审核的签名清单；加载失败不阻塞表单，下拉显示不可用并可重试。 */
 const approvedSigns = ref<SmsSign[]>([])
 const signsLoading = ref(false)
@@ -531,21 +533,54 @@ async function load(): Promise<void> {
   }
 }
 
-/** 今日用量一次联查（stat_daily 按应用维度），失败只影响用量单元格，不拖垮列表。 */
+/** 今日用量按应用维度读取有界分页；完整读完后发布，失败不把部分结果显示为完整用量。 */
 async function loadDailyUsage(): Promise<void> {
+  const signal = usageRead.start()
   const today = shanghaiDateKey()
   try {
-    const result = await getReport({
-      granularity: "day",
-      groupBy: "app",
-      category: "all",
-      start: today,
-      end: today,
-    })
-    if (!result || !Array.isArray(result.dim_summary)) throw new Error("用量统计响应无效")
-    dailyUsage.value = new Map(result.dim_summary.map((row) => [row.dim_value, row]))
+    const usage = new Map<string, ReportRow>()
+    const pageSize = 100
+    let expectedTotal: number | undefined
+    let currentPage = 1
+    while (true) {
+      const result = await getReport(
+        {
+          granularity: "day",
+          groupBy: "app",
+          category: "all",
+          start: today,
+          end: today,
+        },
+        { page: currentPage, size: pageSize },
+        signal,
+      )
+      if (signal.aborted) return
+      if (
+        !Array.isArray(result.items) ||
+        !Number.isSafeInteger(result.total) ||
+        result.total < 0 ||
+        result.size !== pageSize ||
+        result.page !== currentPage
+      ) {
+        throw new Error("用量统计响应无效")
+      }
+      expectedTotal ??= result.total
+      const expectedRows = Math.min(pageSize, expectedTotal - (currentPage - 1) * pageSize)
+      if (result.total !== expectedTotal || result.items.length !== expectedRows) {
+        throw new Error("用量统计分页不完整")
+      }
+      for (const row of result.items) {
+        if (usage.has(row.dim_value)) throw new Error("用量统计分页存在重复应用")
+        usage.set(row.dim_value, row)
+      }
+      if (currentPage * pageSize >= expectedTotal) break
+      currentPage += 1
+    }
+    if (usage.size !== expectedTotal) throw new Error("用量统计分页不完整")
+    dailyUsage.value = usage
     usageUnavailable.value = false
   } catch {
+    if (signal.aborted) return
     dailyUsage.value = new Map()
     usageUnavailable.value = true
   }

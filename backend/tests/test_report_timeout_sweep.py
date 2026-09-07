@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS sms_batch (
   delivered INTEGER NOT NULL DEFAULT 0,
   failed INTEGER NOT NULL DEFAULT 0,
   unknown_cnt INTEGER NOT NULL DEFAULT 0,
+  active_message_count INTEGER,
+  active_message_count_token UUID,
   report_timeout_last_attempt_at TIMESTAMPTZ,
   report_timeout_next_attempt_at TIMESTAMPTZ,
   report_timeout_generation BIGINT NOT NULL DEFAULT 0,
@@ -1156,3 +1158,236 @@ async def test_round_budget_and_sql_timeout_stop_work_safely(
     for batch_id in ids:
         remaining_sent += (await _statuses(engine, batch_id)).count("sent")
     assert remaining_sent >= 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("size", [1, 12])
+async def test_report_state_deltas_match_facts_without_per_message_aggregation(
+    timeout_env: tuple[Any, EngineBoundRepository, ReportTimeoutService, str],
+    size: int,
+) -> None:
+    """真实 SQL 验证首次全量初始化、更正、重复及投影修复后计数一致。"""
+
+    from dataclasses import replace
+
+    engine, repository, _service, nonce = timeout_env
+    batch_id = await _add_batch(engine, nonce=nonce, index=80, statuses=["sent"] * size)
+    crypto = _crypto()
+    reports: list[ProtectedReport] = []
+    async with engine.begin() as connection:
+        rows = list(
+            (
+                await connection.execute(
+                    text(
+                        "SELECT m.id,m.created_at,c.custom_id FROM sms_message m "
+                        "JOIN sms_chunk c ON c.id=m.chunk_id WHERE m.batch_id=:id ORDER BY m.id"
+                    ),
+                    {"id": batch_id},
+                )
+            ).mappings()
+        )
+        for index, row in enumerate(rows):
+            phone = crypto.protect_phone(f"139{index:08d}")
+            await connection.execute(
+                text(
+                    "UPDATE sms_message SET phone_enc=:enc,phone_hmac=:hmac,phone_mask=:mask "
+                    "WHERE id=:id AND created_at=:at"
+                ),
+                {
+                    "id": row["id"],
+                    "at": row["created_at"],
+                    "enc": phone.phone_enc,
+                    "hmac": phone.phone_hmac,
+                    "mask": phone.phone_mask,
+                },
+            )
+            status = (2, 1, 0, 3)[index % 4]
+            reports.append(
+                ProtectedReport(
+                    event_key=uuid4().hex + uuid4().hex,
+                    vendor_task_id="b" * 64,
+                    custom_id="c" * 64,
+                    match_custom_id=str(row["custom_id"]),
+                    phone_enc=phone.phone_enc,
+                    phone_hmac=phone.phone_hmac,
+                    phone_mask=phone.phone_mask,
+                    key_version=phone.key_version,
+                    report_status=status,
+                    message_status={2: "failed", 1: "delivered", 0: "unknown", 3: "other"}[status],
+                    report_desc="synthetic",
+                    report_time=CREATED_AT,
+                    phone_hmacs=(phone.phone_hmac,),
+                )
+            )
+
+    statements: list[str] = []
+
+    def executed(_connection: Any, _cursor: Any, statement: str, *_: Any) -> None:
+        statements.append(statement)
+
+    async def assert_counts(expected_status: str) -> None:
+        async with engine.connect() as connection:
+            actual = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT delivered,failed,unknown_cnt,status,active_message_count,"
+                            "active_message_count_token IS NOT NULL count_trusted "
+                            "FROM sms_batch WHERE id=:id"
+                        ),
+                        {"id": batch_id},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            facts = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT count(*) FILTER (WHERE status='delivered') delivered,"
+                            "count(*) FILTER (WHERE status='failed') failed,"
+                            "count(*) FILTER (WHERE status='unknown') unknown_cnt,"
+                            "count(*) FILTER (WHERE status IN ('pending','sent')) "
+                            "active_message_count "
+                            "FROM sms_message WHERE batch_id=:id"
+                        ),
+                        {"id": batch_id},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert {key: actual[key] for key in facts} == dict(facts)
+        assert actual["status"] == expected_status
+        assert actual["count_trusted"] is True
+
+    event.listen(engine.sync_engine, "before_cursor_execute", executed)
+    try:
+        for report in reports:
+            result = await repository.apply_report(1, report)
+            assert result is not None and result.changed
+        await assert_counts("completed")
+        assert sum("active_message_count=s.active" in sql for sql in statements) == 1
+        assert sum("delivered=b.delivered +" in sql for sql in statements) == size
+
+        # 重复和低优先级旧事件不会二次记差值；失败→送达更正记 -failed/+delivered。
+        repeated = await repository.apply_report(1, reports[0])
+        assert repeated is not None and not repeated.changed
+        corrected = replace(
+            reports[0],
+            event_key=uuid4().hex + uuid4().hex,
+            report_status=1,
+            message_status="delivered",
+        )
+        assert (await repository.apply_report(1, corrected)).changed
+        stale = replace(reports[0], event_key=uuid4().hex + uuid4().hex)
+        assert not (await repository.apply_report(1, stale)).changed
+        await assert_counts("completed")
+        assert sum("active_message_count=s.active" in sql for sql in statements) == 1
+
+        # 已完成 uncertain 批次仍保守保留状态；相同状态的新事件仍保留修订身份。
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE sms_batch SET status='completed_unknown' WHERE id=:id"),
+                {"id": batch_id},
+            )
+        late = replace(
+            corrected, event_key=uuid4().hex + uuid4().hex,
+            report_time=CREATED_AT.replace(day=16),
+        )
+        assert (await repository.apply_report(1, late)).changed
+        await assert_counts("completed_unknown")
+
+        # 消息投影漂移后，更晚的新事件不能把已计送达再次增记。
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE sms_message SET status='sent' WHERE id=:id AND created_at=:at"),
+                {"id": rows[0]["id"], "at": rows[0]["created_at"]},
+            )
+        newer = replace(
+            late, event_key=uuid4().hex + uuid4().hex,
+            report_time=CREATED_AT.replace(day=17),
+        )
+        rejected_new = replace(stale, event_key=uuid4().hex + uuid4().hex)
+        assert not (await repository.apply_report(1, rejected_new)).changed
+        assert sum("active_message_count=s.active" in sql for sql in statements) == 1
+        assert (await repository.apply_report(1, newer)).changed
+        await assert_counts("completed_unknown")
+        assert sum("active_message_count=s.active" in sql for sql in statements) == 2
+
+        # 相同事件的既有可信投影修复仍保留全量校正。
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE sms_message SET status='sent' WHERE id=:id AND created_at=:at"),
+                {"id": rows[0]["id"], "at": rows[0]["created_at"]},
+            )
+        assert (await repository.apply_report(1, newer)).changed
+        await assert_counts("completed_unknown")
+        assert sum("active_message_count=s.active" in sql for sql in statements) == 3
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", executed)
+
+
+@pytest.mark.asyncio
+async def test_partition_cache_invalidation_never_waits_on_sender_batch_lock(
+    timeout_env: tuple[Any, EngineBoundRepository, ReportTimeoutService, str],
+) -> None:
+    """发送已持 batch 后再读消息时，分区维护以 NOWAIT 退出而非形成死锁。"""
+
+    from sqlalchemy.exc import DBAPIError
+
+    from scripts_support.maintain_partitions import _invalidate_message_partition_counts
+
+    engine, _repository, _service, nonce = timeout_env
+    batch_id = await _add_batch(engine, nonce=nonce, index=95, statuses=["sent"])
+    # 该模块的专属临时 PG 使用无分区最小 schema；此表只模拟过期分区的批次引用。
+    async with engine.begin() as connection:
+        await connection.execute(text("CREATE TABLE sms_message_2025_06(batch_id bigint)"))
+        await connection.execute(
+            text("INSERT INTO sms_message_2025_06 VALUES (:id)"), {"id": batch_id}
+        )
+        await connection.execute(
+            text(
+                "UPDATE sms_batch SET active_message_count=1,"
+                "active_message_count_token=gen_random_uuid() WHERE id=:id"
+            ),
+            {"id": batch_id},
+        )
+    try:
+        async with engine.begin() as sender:
+            await sender.execute(
+                text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"), {"id": batch_id}
+            )
+            with pytest.raises(DBAPIError) as caught:
+                async with engine.begin() as maintenance, asyncio.timeout(1):
+                    await _invalidate_message_partition_counts(maintenance, "sms_message_2025_06")
+            assert caught.value.orig.sqlstate == "55P03"  # NOWAIT，而非 deadlock_detected。
+            async with asyncio.timeout(1):
+                assert (
+                    await sender.execute(
+                        text("SELECT count(*) FROM sms_message WHERE batch_id=:id"),
+                        {"id": batch_id},
+                    )
+                ).scalar_one() == 1
+            # sender 已读 parent 的情形也应在取得表锁时立即退出。
+            with pytest.raises(DBAPIError) as caught:
+                async with engine.begin() as maintenance, asyncio.timeout(1):
+                    await _invalidate_message_partition_counts(maintenance, "sms_message_2025_06")
+            assert caught.value.orig.sqlstate == "55P03"
+
+        async with engine.begin() as connection:
+            await _invalidate_message_partition_counts(connection, "sms_message_2025_06")
+            invalidated = (
+                await connection.execute(
+                    text(
+                        "SELECT active_message_count,active_message_count_token "
+                        "FROM sms_batch WHERE id=:id"
+                    ),
+                    {"id": batch_id},
+                )
+            ).one()
+            assert invalidated == (None, None)
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(text("DROP TABLE sms_message_2025_06"))

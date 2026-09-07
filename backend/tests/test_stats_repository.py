@@ -68,8 +68,9 @@ async def test_day_rebuild_is_locked_atomic_and_contains_all_rollups() -> None:
     assert "('dept', f.dept)" in insert_sql
     assert "('all', '')" in insert_sql
     assert "(f.category), ('all')" in insert_sql
-    assert "sum(f.segments)" in insert_sql
-    assert "f.status IN ('unknown','other')" in insert_sql
+    assert "sum(f.segments*f.total)" in insert_sql
+    assert "GROUP BY m.batch_id" in insert_sql
+    assert "m.status IN ('unknown','other')" in insert_sql
     assert params == {
         "stat_date": date(2026, 7, 12),
         "start_at": datetime(2026, 7, 11, 16, 0, tzinfo=UTC),

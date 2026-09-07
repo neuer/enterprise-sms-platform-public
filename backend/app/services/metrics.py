@@ -143,6 +143,7 @@ class MetricsService:
             return replace(
                 self._cached,
                 snapshot_age_seconds=max(0.0, now - self._cached_at),
+                runtime=self.runtime(),
             )
         async with self._refresh_lock:
             now = self.clock()
@@ -154,6 +155,7 @@ class MetricsService:
                 return replace(
                     self._cached,
                     snapshot_age_seconds=max(0.0, now - self._cached_at),
+                    runtime=self.runtime(),
                 )
             async with asyncio.timeout(self.collection_timeout_s):
                 facts = await self.repository.load()
@@ -395,90 +397,120 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
     pending_audit.set(max(0, snapshot.facts.system_replay_audit_pending))
 
     if snapshot.runtime is not None:
+        process_instance = snapshot.runtime.process_instance
         loop_delay = Gauge(
             "sms_runtime_event_loop_delay_seconds",
-            "Most recently observed API event loop scheduling delay.",
+            "Most recently completed API event loop scheduling delay sample; process local.",
+            ("process_instance",),
             registry=registry,
         )
-        loop_delay.set(snapshot.runtime.event_loop_delay_seconds)
+        loop_delay.labels(process_instance=process_instance).set(
+            snapshot.runtime.event_loop_delay_seconds
+        )
+        loop_peak = Gauge(
+            "sms_runtime_event_loop_delay_peak_seconds",
+            "API event loop scheduling delay high-water mark since monitor start; process local.",
+            ("process_instance",),
+            registry=registry,
+        )
+        loop_peak.labels(process_instance=process_instance).set(
+            snapshot.runtime.event_loop_delay_peak_seconds
+        )
         resident_memory = Gauge(
             "sms_runtime_process_resident_memory_bytes",
-            "API process resident memory high-water mark in bytes.",
+            "API process resident memory high-water mark in bytes, not current RSS.",
+            ("process_instance",),
             registry=registry,
         )
-        resident_memory.set(snapshot.runtime.resident_memory_bytes)
+        resident_memory.labels(process_instance=process_instance).set(
+            snapshot.runtime.resident_memory_bytes
+        )
         database_connections = Gauge(
             "sms_runtime_database_connections",
             "API process database pool connections.",
-            ("state",),
+            ("process_instance", "state"),
             registry=registry,
         )
-        database_connections.labels(state="open").set(snapshot.runtime.resources.database_open)
-        database_connections.labels(state="checked_out").set(
+        database_connections.labels(process_instance=process_instance, state="open").set(
+            snapshot.runtime.resources.database_open
+        )
+        database_connections.labels(process_instance=process_instance, state="checked_out").set(
             snapshot.runtime.resources.database_checked_out
         )
         database_pool_connections = Gauge(
             "sms_database_pool_connections",
             "Process database pool connections by bounded component.",
-            ("component", "state"),
+            ("process_instance", "component", "state"),
             registry=registry,
         )
         database_pool_budget = Gauge(
             "sms_database_pool_budget",
             "Maximum process database connections by bounded component.",
-            ("component",),
+            ("process_instance", "component"),
             registry=registry,
         )
         database_pool_acquisitions = Gauge(
             "sms_database_pool_acquisitions_total",
             "Database connection acquisitions observed by component.",
-            ("component",),
+            ("process_instance", "component"),
             registry=registry,
         )
         database_pool_wait = Gauge(
             "sms_database_pool_wait_seconds_total",
             "Cumulative database connection acquisition wait by component.",
-            ("component",),
+            ("process_instance", "component"),
             registry=registry,
         )
         database_pool_timeouts = Gauge(
             "sms_database_pool_timeouts_total",
             "Database pool acquisition timeouts observed by component.",
-            ("component",),
+            ("process_instance", "component"),
             registry=registry,
         )
         database_pool_leaks = Gauge(
             "sms_database_pool_leaked_connections_total",
             "Connections still checked out when a component shut down.",
-            ("component",),
+            ("process_instance", "component"),
             registry=registry,
         )
         for component in snapshot.runtime.resources.database_components:
             database_pool_connections.labels(
+                process_instance=process_instance,
                 component=component.component,
                 state="open",
             ).set(component.open)
             database_pool_connections.labels(
+                process_instance=process_instance,
                 component=component.component,
                 state="checked_out",
             ).set(component.checked_out)
-            database_pool_budget.labels(component=component.component).set(component.budget)
-            database_pool_acquisitions.labels(component=component.component).set(
-                component.acquisitions
-            )
-            database_pool_wait.labels(component=component.component).set(component.wait_seconds)
-            database_pool_timeouts.labels(component=component.component).set(component.timeouts)
-            database_pool_leaks.labels(component=component.component).set(
-                component.leaked_on_shutdown
-            )
+            database_pool_budget.labels(
+                process_instance=process_instance, component=component.component
+            ).set(component.budget)
+            database_pool_acquisitions.labels(
+                process_instance=process_instance, component=component.component
+            ).set(component.acquisitions)
+            database_pool_wait.labels(
+                process_instance=process_instance, component=component.component
+            ).set(component.wait_seconds)
+            database_pool_timeouts.labels(
+                process_instance=process_instance, component=component.component
+            ).set(component.timeouts)
+            database_pool_leaks.labels(
+                process_instance=process_instance, component=component.component
+            ).set(component.leaked_on_shutdown)
         redis_connections = Gauge(
             "sms_runtime_redis_connections",
             "API process Redis pool connections.",
-            ("state",),
+            ("process_instance", "state"),
             registry=registry,
         )
-        redis_connections.labels(state="open").set(snapshot.runtime.resources.redis_open)
-        redis_connections.labels(state="in_use").set(snapshot.runtime.resources.redis_in_use)
+        redis_connections.labels(process_instance=process_instance, state="open").set(
+            snapshot.runtime.resources.redis_open
+        )
+        redis_connections.labels(process_instance=process_instance, state="in_use").set(
+            snapshot.runtime.resources.redis_in_use
+        )
 
     auth = auth_observability_snapshot()
     created = Gauge(

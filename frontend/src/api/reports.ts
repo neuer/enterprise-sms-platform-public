@@ -29,6 +29,7 @@ export interface ReportSummary {
 }
 
 export interface ReportDimSummary {
+  is_other: boolean
   dim_value: string
   dim_label: string
   total: number
@@ -39,7 +40,24 @@ export interface ReportDimSummary {
   success_rate: number
 }
 
+export interface ReportTrend {
+  periods: string[]
+  series: Array<{
+    dim_value: string
+    dim_label: string
+    is_other: boolean
+    total: number[]
+    total_segments: number[]
+  }>
+}
+
 export interface ReportResult {
+  total: number
+  page: number
+  size: number
+  metric: ReportTrendMetric
+  dimension_total: number
+  trend: ReportTrend
   granularity: ReportGranularity
   group_by: ReportGroupBy
   category: ReportCategory
@@ -69,15 +87,34 @@ export interface ReportFilters {
   end: string
 }
 
-export function getReport(filters: ReportFilters): Promise<ReportResult> {
+export type ReportSort = "period_start" | "total" | "total_segments" | "success_rate"
+
+export interface ReportPageOptions {
+  page?: number
+  size?: number
+  sort?: ReportSort
+  order?: "asc" | "desc"
+  metric?: ReportTrendMetric
+}
+
+export function getReport(
+  filters: ReportFilters,
+  options: ReportPageOptions = {},
+  signal?: AbortSignal,
+): Promise<ReportResult> {
   const query = new URLSearchParams({
     granularity: filters.granularity,
     group_by: filters.groupBy,
     category: filters.category,
     start: filters.start,
     end: filters.end,
+    page: String(options.page ?? 1),
+    size: String(options.size ?? 20),
+    sort: options.sort ?? "period_start",
+    order: options.order ?? "desc",
+    metric: options.metric ?? "total",
   })
-  return apiRequest<ReportResult>(`/reports/stats?${query}`, { method: "GET" })
+  return apiRequest<ReportResult>(`/reports/stats?${query}`, { method: "GET", signal })
 }
 
 export function createDetailExport(filters: ReportFilters, decrypted: boolean): Promise<ExportTask> {

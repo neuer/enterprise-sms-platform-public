@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.core.bounded_executor import run_bounded
+from app.core.bulk_admission import bulk_task_admission
 from app.core.jobtrack import tracked_job
 from app.core.worker_runtime import run_worker_async
 from app.services.housekeeping import HousekeepingService, ImportFileStore
@@ -16,6 +18,16 @@ async def _run() -> int:
         SqlHousekeepingRepository(settings),
         ImportFileStore(settings.import_storage_dir),
     ).run()
+    if result.has_more:
+        # 本轮提交后释放 bulk 槽；下一轮重新读取剩余事实，重复投递亦幂等。
+        await run_bounded(
+            celery_app.send_task,
+            "app.tasks.housekeeping",
+            queue="bulk",
+            countdown=30,
+            ignore_result=True,
+            timeout_s=3,
+        )
     return result.total
 
 
@@ -23,6 +35,7 @@ async def _run() -> int:
     name="app.tasks.housekeeping",
     **background_task_options(soft_time_limit=900, time_limit=960),
 )  # type: ignore[untyped-decorator]
+@bulk_task_admission
 @tracked_job("housekeeping", expect_interval_s=86400)
 def housekeeping() -> int:
     return run_worker_async(_run())

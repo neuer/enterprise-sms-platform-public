@@ -74,3 +74,13 @@ export interface DashboardSnapshot {
 export async function getDashboard(): Promise<DashboardSnapshot> {
   return apiRequest<DashboardSnapshot>("/reports/dashboard", { method: "GET" })
 }
+
+export interface BalanceSnapshot {
+  current_balance: number | null
+  checked_at: string | null
+}
+
+/** 管理员顶栏只读取最新余额事实，不触发完整仪表盘聚合。 */
+export function getBalance(signal?: AbortSignal): Promise<BalanceSnapshot> {
+  return apiRequest<BalanceSnapshot>("/reports/balance", { method: "GET", signal })
+}

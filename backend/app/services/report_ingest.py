@@ -899,6 +899,15 @@ class ReportIngestService:
         remember_if_supported(self.repository, lease)
         token = lease or getattr(self.repository, "_leases", {}).get(raw_id)
         async with bind_raw_lease_heartbeat(self.repository, token) as beat:
+            # 事件仍逐条短事务提交；告警候选按 100 行/1 秒片段合并同批查询。
+            changed_batches: set[int] = set()
+            alert_deadline = time.monotonic() + 1.0
+
+            async def flush_failure_rates() -> None:
+                for batch_id in sorted(changed_batches):
+                    await self._alert_failure_rate(batch_id)
+                changed_batches.clear()
+
             try:
                 if not isinstance(data, list) or any(
                     not isinstance(item, dict) for item in data
@@ -919,6 +928,9 @@ class ReportIngestService:
                 for index, item in enumerate(data):
                     if beat is not None:
                         beat.raise_if_lost()
+                    if index and (index % 100 == 0 or time.monotonic() >= alert_deadline):
+                        await flush_failure_rates()
+                        alert_deadline = time.monotonic() + 1.0
                     try:
                         report = self._parse(item)
                     except (ValueError, KeyError, TypeError) as error:
@@ -941,18 +953,20 @@ class ReportIngestService:
                     if applied is None:
                         await self.repository.persist_unmatched(raw_id, report)
                     elif applied.changed:
-                        await self._alert_failure_rate(applied.batch_id)
+                        changed_batches.add(applied.batch_id)
                     if beat is not None:
                         beat.raise_if_lost()
             except RawLeaseLost:
                 raise
             except Exception as error:
+                await flush_failure_rates()
                 await self.repository.mark_error(
                     raw_id,
                     f"{type(error).__name__}: {error}"[:256],
                     **({} if lease is None else {"lease": lease}),
                 )
                 raise
+            await flush_failure_rates()
             if skipped:
                 await self.repository.mark_error(
                     raw_id,

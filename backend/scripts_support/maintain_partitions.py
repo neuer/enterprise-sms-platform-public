@@ -130,6 +130,35 @@ def _validate_partition_bound(name: str, value: str) -> None:
         raise ValueError("attached partition bound does not match its name")
 
 
+async def _invalidate_message_partition_counts(connection: Any, name: str) -> None:
+    """删除消息分区前使计数失效；业务占锁时立即退出，交由既有入口重试。"""
+
+    await connection.execute(
+        text(f"LOCK TABLE ONLY {_qualified('sms_message')} IN ACCESS EXCLUSIVE MODE NOWAIT")
+    )
+    await connection.execute(
+        text(f"LOCK TABLE {_qualified(name)} IN ACCESS EXCLUSIVE MODE NOWAIT")
+    )
+    # sender 可能先持 batch 再读消息，不能在持表锁时阻塞等待它的 batch。
+    # CTE 先按 id 以 NOWAIT 领取每个目标，UPDATE 只操作本事务已取得的行锁。
+    await connection.execute(
+        text(
+            f"""
+            WITH locked AS MATERIALIZED (
+              SELECT b.id FROM sms_batch b
+              WHERE b.id IN (SELECT batch_id FROM {_qualified(name)})
+                AND (b.active_message_count IS NOT NULL
+                  OR b.active_message_count_token IS NOT NULL)
+              ORDER BY b.id FOR UPDATE OF b NOWAIT
+            )
+            UPDATE sms_batch b SET
+              active_message_count=NULL,active_message_count_token=NULL
+            FROM locked WHERE b.id=locked.id
+            """
+        )
+    )
+
+
 async def maintain(
     connection: Any,
     *,
@@ -205,6 +234,8 @@ async def maintain(
                 )
             )
         for name in expired:
+            if existing[name] == "sms_message":
+                await _invalidate_message_partition_counts(connection, name)
             await connection.execute(
                 DDL(  # type: ignore[no-untyped-call]
                     f"DROP TABLE {_qualified(name)}"

@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import ElementPlus, { ElMessageBox } from "element-plus"
+import ElementPlus, { ElMessageBox, ElPagination } from "element-plus"
 import { createPinia } from "pinia"
 import { vi } from "vitest"
 
@@ -23,6 +23,15 @@ function response(body: unknown, status = 200) {
 }
 
 const report = {
+  total: 2,
+  page: 1,
+  size: 20,
+  metric: "total",
+  dimension_total: 1,
+  trend: {
+    periods: ["2026-07-11", "2026-07-12"],
+    series: [{ dim_value: "7", dim_label: "OA应用", is_other: false, total: [5, 10], total_segments: [6, 13] }],
+  },
   granularity: "day",
   group_by: "app",
   category: "all",
@@ -70,6 +79,87 @@ const report = {
 const publicId = "c0a80101-0000-4000-8000-000000000134"
 
 describe("统计报表页", () => {
+  it("明细分页与排序请求服务端，全范围摘要和趋势保持完整，改指标重新请求Top维度", async () => {
+    const first = { ...report.items[0], dim_label: "第一页应用" }
+    const second = { ...report.items[1], dim_label: "第二页应用" }
+    const fetch = vi.fn(async (url: string) => {
+      const query = new URL(url, "http://localhost").searchParams
+      const page = Number(query.get("page"))
+      return new Response(
+        JSON.stringify({
+          ...report,
+          total: 41,
+          page,
+          size: 20,
+          dimension_total: 20,
+          metric: query.get("metric"),
+          items: [page === 1 ? first : second],
+        }),
+      )
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain("共 41 行")
+    expect(wrapper.text()).toContain("共 20 个应用")
+    expect(wrapper.text()).toContain("第一页应用")
+    expect(wrapper.findComponent(ReportTrendChart).props("trend")).toEqual(report.trend)
+    expect(wrapper.findComponent(ReportTrendChart).props()).not.toHaveProperty("items")
+
+    wrapper.findComponent(ElPagination).vm.$emit("current-change", 2)
+    await flushPromises()
+    expect(new URL(fetch.mock.calls.at(-1)![0], "http://localhost").searchParams.get("page")).toBe("2")
+    expect(wrapper.text()).toContain("第二页应用")
+    expect(wrapper.text()).not.toContain("第一页应用")
+    expect(wrapper.findComponent(ReportTrendChart).props("trend")).toEqual(report.trend)
+    expect(wrapper.text()).toContain("78.6%")
+
+    // 编辑但尚未提交的过滤条件不得被翻页或排序偷偷应用。
+    await wrapper.get("[data-testid='report-group-dept']").trigger("click")
+    wrapper.findComponent({ name: "ElTable" }).vm.$emit("sort-change", { prop: "total", order: "ascending" })
+    await flushPromises()
+    const sorted = new URL(fetch.mock.calls.at(-1)![0], "http://localhost").searchParams
+    expect(sorted.get("sort")).toBe("total")
+    expect(sorted.get("order")).toBe("asc")
+    expect(sorted.get("page")).toBe("1")
+    expect(sorted.get("group_by")).toBe("app")
+    await wrapper.get(".metric-switch button:last-child").trigger("click")
+    await flushPromises()
+    const metricQuery = new URL(fetch.mock.calls.at(-1)![0], "http://localhost").searchParams
+    expect(metricQuery.get("metric")).toBe("total_segments")
+    expect(wrapper.findComponent(ReportTrendChart).props("metric")).toBe("total_segments")
+    expect(wrapper.get(".rank-num b").text()).toBe("19")
+    expect(wrapper.get(".rank-num small").text()).toContain("消息数 15")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+  it("按计费条排行时条宽、主数字和占比使用计费条口径", async () => {
+    const fetch = vi.fn(async () =>
+      response({
+        ...report,
+        metric: "total_segments",
+        summary: { ...report.summary, total: 100, total_segments: 200 },
+        dim_summary: [
+          { ...report.dim_summary[0], total: 80, total_segments: 150 },
+          { ...report.dim_summary[0], dim_value: "8", dim_label: "另一应用", total: 20, total_segments: 50 },
+        ],
+      }),
+    )
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
+    try {
+      await flushPromises()
+      const ranks = wrapper.findAll(".rank-list li")
+      expect(ranks[0].get(".rank-num b").text()).toBe("150")
+      expect(ranks[0].get(".rank-num small").text()).toContain("75.0% · 消息数 80")
+      expect(ranks[1].get(".rank-num b").text()).toBe("50")
+      expect(ranks[1].get(".rank-num small").text()).toContain("25.0% · 消息数 20")
+      expect(Number.parseFloat((ranks[1].get(".rank-track i").element as HTMLElement).style.width)).toBeCloseTo(100 / 3)
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
+  })
   it("展示服务端摘要、维度排行和异步明细导出", async () => {
     const fetch = vi
       .fn()
@@ -341,7 +431,7 @@ describe("统计报表页", () => {
 
 describe("报表趋势图", () => {
   it("按维度堆叠并随指标切换改数", async () => {
-    const wrapper = mount(ReportTrendChart, { props: { items: report.items, metric: "total" } })
+    const wrapper = mount(ReportTrendChart, { props: { trend: report.trend, metric: "total" } })
     await flushPromises()
     let option = chart.setOption.mock.calls.at(-1)?.[0]
     expect(option.xAxis.data).toEqual(["2026-07-11", "2026-07-12"])
@@ -362,7 +452,7 @@ describe("报表趋势图", () => {
     chart.setOption.mockClear()
     const wrapper = mount(ReportTrendChart, {
       props: {
-        items: [report.items[1]],
+        trend: { periods: ["2026-07-12"], series: [{ ...report.trend.series[0], total: [10], total_segments: [13] }] },
         metric: "total",
         start: "2026-07-10",
         end: "2026-07-12",
@@ -376,20 +466,19 @@ describe("报表趋势图", () => {
     wrapper.unmount()
   })
 
-  it("维度超过六个时 Top 5 之外归并为其他", async () => {
+  it("直接消费服务端 Top 5 与其他，不在当前页重算或遗漏其他", async () => {
     chart.setOption.mockClear()
-    const items = [70, 60, 50, 40, 30, 20, 10].map((total, index) => ({
-      period_start: "2026-07-12",
-      dim_value: String(index + 1),
-      dim_label: `应用${index + 1}`,
-      total,
-      total_segments: total,
-      delivered: total,
-      failed: 0,
-      unknown: 0,
-      success_rate: 1,
-    }))
-    const wrapper = mount(ReportTrendChart, { props: { items, metric: "total" } })
+    const trend = {
+      periods: ["2026-07-12"],
+      series: [70, 60, 50, 40, 30, 30].map((total, index) => ({
+        dim_value: String(index),
+        dim_label: index === 5 ? "其他" : `应用${index + 1}`,
+        total: [total],
+        total_segments: [total],
+        is_other: index === 5,
+      })),
+    }
+    const wrapper = mount(ReportTrendChart, { props: { trend, metric: "total" } })
     await flushPromises()
     const option = chart.setOption.mock.calls.at(-1)?.[0]
     expect(option.series).toHaveLength(6)

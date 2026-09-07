@@ -24,6 +24,7 @@ import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { confirmAction } from "../lib/confirm"
 import { formatDateTime, formatDateTimeMinute } from "../lib/time"
 import { errorText } from "../lib/error"
+import { useLatestRead } from "../composables/useLatestRead"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -178,35 +179,43 @@ const moreActiveCount = computed(
 )
 const moreActive = computed(() => moreActiveCount.value > 0)
 
+const listRead = useLatestRead()
+const detailRead = useLatestRead()
+const batchRead = useLatestRead()
+
 let listToken = 0
 let detailToken = 0
 let openToken = 0
 
 async function load(): Promise<void> {
   const token = ++listToken
+  const signal = listRead.start()
   loading.value = true
   errorMessage.value = ""
   try {
     const group = statusGroups.find((item) => item.key === statusGroup.value) ?? statusGroups[0]
-    const result = await listBatches({
-      page: page.value,
-      category: category.value || undefined,
-      status: group.statuses.length ? group.statuses.join(",") : undefined,
-      is_test: isTest.value === "" ? undefined : isTest.value === "true",
-      channel: channel.value || undefined,
-      app_id: appId.value.trim() ? Number(appId.value.trim()) : undefined,
-      dept: isAdmin.value && dept.value.trim() ? dept.value.trim() : undefined,
-      batch_no: batchNo.value.trim() || undefined,
-      start: range.value?.[0].toISOString(),
-      end: range.value?.[1].toISOString(),
-    })
-    if (token !== listToken) return
+    const result = await listBatches(
+      {
+        page: page.value,
+        category: category.value || undefined,
+        status: group.statuses.length ? group.statuses.join(",") : undefined,
+        is_test: isTest.value === "" ? undefined : isTest.value === "true",
+        channel: channel.value || undefined,
+        app_id: appId.value.trim() ? Number(appId.value.trim()) : undefined,
+        dept: isAdmin.value && dept.value.trim() ? dept.value.trim() : undefined,
+        batch_no: batchNo.value.trim() || undefined,
+        start: range.value?.[0].toISOString(),
+        end: range.value?.[1].toISOString(),
+      },
+      signal,
+    )
+    if (signal.aborted || token !== listToken) return
     items.value = result.items
     total.value = result.total
     statusCounts.value = result.status_counts ?? null
     appliedFiltersKey.value = currentFiltersKey.value
   } catch (error) {
-    if (token !== listToken) return
+    if (signal.aborted || token !== listToken) return
     errorMessage.value = errorText(error, "批次列表加载失败")
   } finally {
     if (token === listToken) loading.value = false
@@ -216,18 +225,23 @@ async function load(): Promise<void> {
 async function loadDetails(): Promise<void> {
   if (!selected.value) return
   const token = ++detailToken
+  const signal = detailRead.start()
   const batchNoValue = selected.value.batch_no
   detailsLoading.value = true
   try {
-    const result = await getBatchMessages(batchNoValue, {
-      status: detailStatus.value || undefined,
-      page: detailPage.value,
-    })
-    if (token !== detailToken || selected.value?.batch_no !== batchNoValue) return
+    const result = await getBatchMessages(
+      batchNoValue,
+      {
+        status: detailStatus.value || undefined,
+        page: detailPage.value,
+      },
+      signal,
+    )
+    if (signal.aborted || token !== detailToken || selected.value?.batch_no !== batchNoValue) return
     details.value = result.items
     detailTotal.value = result.total
   } catch (error) {
-    if (token !== detailToken) return
+    if (signal.aborted || token !== detailToken) return
     // 抽屉打开时列表卡片的 el-alert 被遮挡，此处必须用浮层消息。
     ElMessage.error(errorText(error, "批次明细加载失败"))
   } finally {
@@ -237,6 +251,7 @@ async function loadDetails(): Promise<void> {
 
 async function openBatch(item: BatchItem): Promise<void> {
   const token = ++openToken
+  const signal = batchRead.start()
   drawer.value = true
   selected.value = item
   details.value = []
@@ -244,11 +259,11 @@ async function openBatch(item: BatchItem): Promise<void> {
   detailPage.value = 1
   detailStatus.value = ""
   try {
-    const [batch] = await Promise.all([getBatch(item.batch_no), loadDetails()])
-    if (token !== openToken) return
+    const [batch] = await Promise.all([getBatch(item.batch_no, signal), loadDetails()])
+    if (signal.aborted || token !== openToken) return
     selected.value = batch
   } catch (error) {
-    if (token !== openToken) return
+    if (signal.aborted || token !== openToken) return
     ElMessage.error(errorText(error, "批次详情加载失败"))
   }
 }
@@ -351,6 +366,13 @@ onMounted(() => {
 
 // 应用下拉仅管理员可用（应用管理接口为管理员域）；懒加载，首次打开更多筛选时拉取
 let appsRequested = false
+watch(drawer, (open) => {
+  if (!open) {
+    detailRead.cancel()
+    batchRead.cancel()
+  }
+})
+
 watch(moreOpen, (open) => {
   if (!open || appsRequested || !isAdmin.value) return
   appsRequested = true

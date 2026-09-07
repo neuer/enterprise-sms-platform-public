@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
@@ -24,6 +25,7 @@ from app.services.outbox import (
     OutboxLeaseLost,
 )
 from app.services.outbox_repository import SqlOutboxRepository, enqueue_outbox
+from tests.integration.outbox_isolation import isolated_outbox
 
 pytestmark = pytest.mark.skipif(
     "OUTBOX_POSTGRES_DSN" not in os.environ,
@@ -36,13 +38,22 @@ class FailingPublisher:
         raise ConnectionError("synthetic broker outage")
 
 
-@pytest.mark.asyncio
-async def test_outbox_concurrency_fencing_recovery_and_privileges() -> None:
+@pytest.fixture
+async def isolated_outbox_environment() -> AsyncIterator[tuple[Any, SqlOutboxRepository]]:
+    """全局领取断言只使用自有表；同库其它集成用例的待投递事实保持不变。"""
+
     database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
-    engine = create_async_engine(database_url)
-    repository = SqlOutboxRepository(
-        cast(Any, SimpleNamespace(database_url=database_url))
-    )
+    repository = SqlOutboxRepository(cast(Any, SimpleNamespace(database_url=database_url)))
+    async with isolated_outbox(database_url, repository._engine()) as (engine, scoped):
+        repository._engine = lambda: scoped  # type: ignore[method-assign]
+        yield engine, repository
+
+
+@pytest.mark.asyncio
+async def test_outbox_concurrency_fencing_recovery_and_privileges(
+    isolated_outbox_environment: tuple[Any, SqlOutboxRepository],
+) -> None:
+    engine, repository = isolated_outbox_environment
     raw_nonce = uuid4().hex
     nonce = "-".join(raw_nonce[index : index + 4] for index in range(0, 32, 4))
     phoneish_batch_id = "13800138000" + "a" * 21
@@ -356,20 +367,20 @@ async def test_outbox_concurrency_fencing_recovery_and_privileges() -> None:
                         SELECT
                           (
                             has_table_privilege(
-                              'sms_scheduler','outbox_event','SELECT'
+                              'sms_scheduler','public.outbox_event','SELECT'
                             )
                             AND has_table_privilege(
-                              'sms_scheduler','outbox_event','INSERT'
+                              'sms_scheduler','public.outbox_event','INSERT'
                             )
                             AND has_table_privilege(
-                              'sms_scheduler','outbox_event','UPDATE'
+                              'sms_scheduler','public.outbox_event','UPDATE'
                             )
                           ) can_write,
                           has_table_privilege(
-                            'sms_scheduler','outbox_event','DELETE'
+                            'sms_scheduler','public.outbox_event','DELETE'
                           ) can_delete,
                           has_table_privilege(
-                            'sms_scheduler','outbox_event','TRUNCATE'
+                            'sms_scheduler','public.outbox_event','TRUNCATE'
                           ) can_truncate
                         """
                     )

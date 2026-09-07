@@ -277,6 +277,10 @@ jobs:
           cache-dependency-glob: backend/uv.lock
       - name: Prepare development-only CI files
         run: bash scripts/local_test.sh prepare
+      - name: Set up Node.js for the report response reader contract
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
       - name: Run complete backend tests with independent coverage gates
         env:
           ENVIRONMENT: "test"

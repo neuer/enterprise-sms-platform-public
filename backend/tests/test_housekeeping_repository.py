@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
 from app.services.housekeeping import LifecyclePolicy
-from app.services.housekeeping_repository import SqlHousekeepingRepository
+from app.services.housekeeping_repository import PLANS, SqlHousekeepingRepository
 
 
 class FakeResult:
@@ -92,49 +93,44 @@ async def test_repository_loads_policy_and_lists_safe_import_file_metadata() -> 
     )
 
     assert await repo.policy() == LifecyclePolicy(91, 92, 31)
-    imports = await repo.expired_imports()
+    imports = await repo.expired_imports(cutoff=datetime.now(UTC), after_id=0, limit=50)
 
     assert imports[0].invalid_file == "safe.csv"
     assert imports[0].source_file == "source.smsx"
-    assert "reservation_expires_at<=now()" in connection.calls[1][0]
-    assert "phone" not in connection.calls[1][0].lower()
+    assert "reservation_expires_at<=CAST(:cutoff AS timestamptz)" in connection.calls[1][0]
+    assert "phone_enc" not in connection.calls[1][0].lower()
+    assert "LIMIT :limit" in connection.calls[1][0]
 
 
 @pytest.mark.asyncio
-async def test_cleanup_is_one_transaction_and_never_touches_audit_log() -> None:
-    row: dict[str, object] = {
-        "raw": 2,
-        "unmatched": 3,
-        "imports": 1,
-        "idempotency": 4,
-        "jobs": 5,
-        "usage": 6,
-    }
-    repo, connection = repository([FakeResult([row])])
-
-    result = await repo.cleanup(LifecyclePolicy(92, 90, 30), (7,))
-
-    sql, params = connection.calls[0]
-    assert result.total == 21
-    assert "raw_vendor_log" in sql and "unmatched_report" in sql
-    assert "processed = TRUE" in sql
-    assert "import_task" in sql and "idempotency_record" in sql and "job_run" in sql
-    assert "purged_consumed_import_phones" in sql
-    assert "payload_purged_at=now()" in sql
-    assert "state='ready'" in sql
-    assert "state='reserved'" in sql
-    assert "reservation_expires_at<=now()" in sql
-    assert "callback_report_event" in sql
-    event_guard = sql.split("deleted_callback_events AS", maxsplit=1)[1]
-    assert "t.status" not in event_guard.split(")\n                        SELECT", maxsplit=1)[0]
-    assert "t.event_keys @>" in sql
-    assert "ARRAY[e.event_key]::char(64)[]" in sql
-    assert sql.count("make_interval(days=>:raw_days)") == 3
+@pytest.mark.parametrize("table", list(PLANS))
+async def test_cleanup_pages_are_bounded_and_use_a_separate_transaction(table: str) -> None:
+    plan = PLANS[table]
+    key = {name: 7 if kind in {"bigint", "smallint"} else "key" for name, kind in plan.keys}
+    repo, connection = repository([FakeResult(), FakeResult(), FakeResult([key])])
+    cutoff = datetime(2026, 1, 1, tzinfo=UTC)
+    cursor = tuple(key.values())
+    result = await repo.cleanup_page(
+        table, LifecyclePolicy(90, 90, 30), cutoff=cutoff, cursor=cursor, limit=5
+    )
+    sql, params = connection.calls[-1]
+    assert result.affected == 1
+    assert result.cursor == cursor
+    assert "LIMIT :limit" in sql
     assert "audit_log" not in sql
-    assert params == {
-        "raw_days": 92,
-        "unmatched_days": 90,
-        "job_days": 30,
-        "usage_days": 90,
-        "import_ids": [7],
-    }
+    assert "now()" not in sql
+    assert params["cutoff"] == cutoff
+    assert params["limit"] == 5
+    assert "after_0" in params
+    assert "SET LOCAL statement_timeout='5s'" in connection.calls[1][0]
+
+
+def test_cleanup_parent_guards_prevent_unbounded_cascade_and_active_fact_deletion() -> None:
+    assert "usage_frequency_entry e" in PLANS["usage"].predicate
+    assert "usage_quota_entry e" in PLANS["usage"].predicate
+    assert "usage_chunk_allocation" in PLANS["usage"].predicate
+    assert "usage_frequency_alias a" in PLANS["usage_subject"].predicate
+    assert "status='uncertain'" in PLANS["raw"].predicate
+    assert "processed = TRUE" in PLANS["raw"].predicate
+    assert "status<>'running'" in PLANS["jobs"].predicate
+    assert "expires_at>CAST(:cutoff AS timestamptz)" in PLANS["usage_frequency"].predicate

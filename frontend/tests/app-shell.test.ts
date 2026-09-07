@@ -5,7 +5,7 @@ import { vi } from "vitest"
 
 import App from "../src/App.vue"
 import DailyPasswordChangeDialog from "../src/components/DailyPasswordChangeDialog.vue"
-import { getDashboard, type DashboardSnapshot } from "../src/api/dashboard"
+import { getBalance, type DashboardSnapshot } from "../src/api/dashboard"
 import { useApprovalBadgeStore } from "../src/stores/approvalBadge"
 import { encodeSessionRetiredMessage } from "../src/api/sessionSignals"
 import { SESSION_CLEAR_SIGNAL_KEY, useSessionStore } from "../src/stores/session"
@@ -19,7 +19,7 @@ function retireSignal(session: { sessionInstanceId: string }, eventId = "e".repe
   })
 }
 
-vi.mock("../src/api/dashboard", () => ({ getDashboard: vi.fn() }))
+vi.mock("../src/api/dashboard", () => ({ getBalance: vi.fn() }))
 
 const dashboardSnapshot = {
   refreshed_at: "2026-07-20T15:00:00+08:00",
@@ -47,12 +47,43 @@ const dashboardSnapshot = {
 
 describe("应用骨架", () => {
   beforeEach(() => {
-    vi.mocked(getDashboard).mockReset()
-    vi.mocked(getDashboard).mockResolvedValue(dashboardSnapshot)
+    vi.mocked(getBalance).mockReset()
+    vi.mocked(getBalance).mockResolvedValue({ current_balance: 5000, checked_at: dashboardSnapshot.refreshed_at })
   })
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+
+  it.each(["operator", "approver", "viewer"] as const)("%s 在非仪表盘页面不会轮询管理员余额", async (role) => {
+    vi.useFakeTimers()
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ counts: { pending: 0 }, items: [], total: 0 }))),
+    )
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/batches", component: { template: "<div />" } }],
+    })
+    const pinia = createPinia()
+    useSessionStore(pinia).apply("jwt", {
+      account_id: 1,
+      identity_id: 11,
+      provider_code: "local",
+      username: "reader",
+      display_name: "查询用户",
+      dept: "测试部门",
+      role,
+    })
+    await router.push("/batches")
+    await router.isReady()
+    const wrapper = mount(App, { global: { plugins: [pinia, router] } })
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(getBalance).not.toHaveBeenCalled()
+    expect(wrapper.text()).not.toContain("5,000")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
   })
 
   it("在非仪表盘页面使用后端快照显示顶栏厂商余额", async () => {
@@ -79,7 +110,7 @@ describe("应用骨架", () => {
     const wrapper = mount(App, { global: { plugins: [pinia, router] } })
     await flushPromises()
 
-    expect(getDashboard).toHaveBeenCalledTimes(1)
+    expect(getBalance).toHaveBeenCalledTimes(1)
     expect(wrapper.get(".balance").text()).toContain("5,000")
     expect(wrapper.get(".balance").attributes("aria-label")).toBe("厂商余额 5,000 计费条")
     wrapper.unmount()
@@ -110,7 +141,7 @@ describe("应用骨架", () => {
     const wrapper = mount(App, { global: { plugins: [pinia, router] } })
     await flushPromises()
 
-    expect(getDashboard).not.toHaveBeenCalled()
+    expect(getBalance).not.toHaveBeenCalled()
 
     window.dispatchEvent(
       new CustomEvent("sms:dashboard-balance", {
@@ -121,7 +152,7 @@ describe("应用骨架", () => {
     expect(wrapper.get(".balance").text()).toContain("4,200")
 
     await vi.advanceTimersByTimeAsync(60_000)
-    expect(getDashboard).not.toHaveBeenCalled()
+    expect(getBalance).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

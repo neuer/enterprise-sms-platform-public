@@ -14,6 +14,7 @@ import PhoneMask from "../components/PhoneMask.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { confirmAuditedAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
+import { useLatestRead } from "../composables/useLatestRead"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
@@ -88,23 +89,29 @@ const emptyState = computed(() =>
     : { title: "黑名单为空", description: "点击右上「添加号码」，或等待用户回复退订后，号码会出现在这里。" },
 )
 
+const listRead = useLatestRead()
+
 let loadToken = 0
 
 async function load(): Promise<void> {
   const token = ++loadToken
+  const signal = listRead.start()
   loading.value = true
   errorMessage.value = ""
   try {
-    const result = await listBlacklist({
-      source: sourceFilter.value === "all" ? "" : sourceFilter.value,
-      keyword: keyword.value.trim(),
-      page: page.value,
-    })
-    if (token !== loadToken) return
+    const result = await listBlacklist(
+      {
+        source: sourceFilter.value === "all" ? "" : sourceFilter.value,
+        keyword: keyword.value.trim(),
+        page: page.value,
+      },
+      signal,
+    )
+    if (signal.aborted || token !== loadToken) return
     items.value = result.items
     total.value = result.total
   } catch (error) {
-    if (token !== loadToken) return
+    if (signal.aborted || token !== loadToken) return
     errorMessage.value = errorText(error, "黑名单加载失败")
   } finally {
     if (token === loadToken) loading.value = false

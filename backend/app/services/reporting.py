@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal, Protocol
 
@@ -12,6 +12,9 @@ from app.services.stats import SHANGHAI, success_rate
 Granularity = Literal["day", "week", "month"]
 GroupBy = Literal["app", "dept"]
 ReportCategory = Literal["verify", "notice", "market", "all"]
+ReportSort = Literal["period_start", "total", "total_segments", "success_rate"]
+ReportOrder = Literal["asc", "desc"]
+ReportMetric = Literal["total", "total_segments"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +25,11 @@ class ReportingQuery:
     start: date
     end: date
     scope_dept: str | None
+    page: int = 1
+    size: int = 20
+    sort: ReportSort = "period_start"
+    order: ReportOrder = "desc"
+    metric: ReportMetric = "total"
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +71,33 @@ class ReportingDimSummary:
     failed: int
     unknown: int
     success_rate: float
+    is_other: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReportingTrendSeries:
+    dim_value: str
+    dim_label: str
+    total: tuple[int, ...]
+    total_segments: tuple[int, ...]
+    is_other: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ReportingTrend:
+    periods: tuple[date, ...] = ()
+    series: tuple[ReportingTrendSeries, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ReportingData:
+    """仓储返回有界全区间概览、趋势和一页明细，禁止用页数据计算摘要。"""
+
+    dimensions: tuple[ReportingDimSummary, ...]
+    trend: ReportingTrend
+    items: tuple[ReportingTotals, ...]
+    total: int
+    dimension_total: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,41 +111,16 @@ class ReportingResult:
     summary: ReportingSummary
     dim_summary: tuple[ReportingDimSummary, ...]
     items: tuple[ReportingRow, ...]
+    total: int = 0
+    page: int = 1
+    size: int = 20
+    metric: ReportMetric = "total"
+    dimension_total: int = 0
+    trend: ReportingTrend = field(default_factory=ReportingTrend)
 
 
 class ReportingRepository(Protocol):
-    async def query(self, query: ReportingQuery) -> tuple[ReportingTotals, ...]: ...
-
-
-def _dim_summary(totals: tuple[ReportingTotals, ...]) -> tuple[ReportingDimSummary, ...]:
-    """把周期×维度明细按维度加总为区间汇总，按消息数降序。
-
-    与 items 共用同一批聚合行（同一事实源）；成功率不在此重造口径，
-    仍调用 services/stats.py 的 success_rate。
-    """
-    buckets: dict[tuple[str, str], list[int]] = {}
-    for item in totals:
-        bucket = buckets.setdefault((item.dim_value, item.dim_label), [0, 0, 0, 0, 0])
-        bucket[0] += item.total
-        bucket[1] += item.total_segments
-        bucket[2] += item.delivered
-        bucket[3] += item.failed
-        bucket[4] += item.unknown
-    return tuple(
-        ReportingDimSummary(
-            dim_value,
-            dim_label,
-            sums[0],
-            sums[1],
-            sums[2],
-            sums[3],
-            sums[4],
-            success_rate(sums[2], sums[3]),
-        )
-        for (dim_value, dim_label), sums in sorted(
-            buckets.items(), key=lambda pair: (-pair[1][0], pair[0][1])
-        )
-    )
+    async def query(self, query: ReportingQuery) -> ReportingData: ...
 
 
 class ReportingService:
@@ -135,7 +145,18 @@ class ReportingService:
         end: date | None,
         role: str,
         dept: str,
+        page: int = 1,
+        size: int = 20,
+        sort: ReportSort = "period_start",
+        order: ReportOrder = "desc",
+        metric: ReportMetric = "total",
     ) -> ReportingResult:
+        if not 1 <= page <= 1_000_000 or not 1 <= size <= 100:
+            raise ValueError("report page or size is out of bounds")
+        if sort not in {"period_start", "total", "total_segments", "success_rate"}:
+            raise ValueError("invalid report sort")
+        if order not in {"asc", "desc"} or metric not in {"total", "total_segments"}:
+            raise ValueError("invalid report order or metric")
         now = self.clock()
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("reporting clock must be timezone-aware")
@@ -152,8 +173,10 @@ class ReportingService:
             resolved_start,
             resolved_end,
             None if role in {"approver", "admin"} else dept,
+            page, size, sort, order, metric,
         )
-        totals = await self.repository.query(query)
+        data = await self.repository.query(query)
+        totals = data.dimensions
         delivered = sum(item.delivered for item in totals)
         failed = sum(item.failed for item in totals)
         return ReportingResult(
@@ -171,7 +194,7 @@ class ReportingService:
                 sum(item.unknown for item in totals),
                 success_rate(delivered, failed),
             ),
-            _dim_summary(totals),
+            data.dimensions,
             tuple(
                 ReportingRow(
                     item.period_start,
@@ -184,6 +207,7 @@ class ReportingService:
                     item.unknown,
                     success_rate(item.delivered, item.failed),
                 )
-                for item in totals
+                for item in data.items
             ),
+            data.total, page, size, metric, data.dimension_total, data.trend,
         )

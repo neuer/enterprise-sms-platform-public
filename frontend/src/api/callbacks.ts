@@ -40,13 +40,13 @@ export interface CallbackFilters {
   page: number
 }
 
-export function listCallbacks(filters: CallbackFilters): Promise<CallbackPage> {
+export function listCallbacks(filters: CallbackFilters, signal?: AbortSignal): Promise<CallbackPage> {
   const query = new URLSearchParams({ page: String(filters.page), size: String(DEFAULT_PAGE_SIZE) })
   if (filters.status) query.set("status", filters.status)
   if (filters.appId) query.set("app_id", String(filters.appId))
   if (filters.event) query.set("event", filters.event)
   if (filters.batchNo?.trim()) query.set("batch_no", filters.batchNo.trim())
-  return apiRequest<CallbackPage>(`/admin/callbacks?${query}`, { method: "GET" })
+  return apiRequest<CallbackPage>(`/admin/callbacks?${query}`, { method: "GET", signal })
 }
 
 export function retryCallback(id: number): Promise<void> {

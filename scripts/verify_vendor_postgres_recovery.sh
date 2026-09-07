@@ -188,6 +188,12 @@ SQL
       tests/integration/test_auth_guard_redis.py \
       tests/integration/test_stable_principal_postgres.py \
       tests/integration/test_outbox_postgres.py \
+      tests/integration/test_reporting_performance_postgres.py \
+      tests/integration/test_report_active_count_postgres.py \
+      tests/integration/test_performance_queries_postgres.py \
+      tests/integration/test_perf_fault_recovery_postgres.py \
+      tests/integration/test_housekeeping_bounded_postgres.py \
+      tests/integration/test_usage_projection_runtime_postgres.py \
       tests/integration/test_worker_fencing_postgres.py \
       tests/integration/test_vendor_event_facts_postgres.py \
       tests/integration/test_import_reservation_postgres.py \
@@ -207,6 +213,13 @@ SQL
       tests/integration/test_inflight_split_capacity_postgres.py \
       tests/integration/test_app_ratelimit_cutover_redis.py \
       tests/integration/test_vendor_bucket_redis.py
+
+  if [[ "${SMS_PERF_FAULT_MATRIX:-0}" == "1" ]]; then
+    # 同一一次性数据库内验证矩阵执行器，避免缺失依赖只跑声明。
+    ENVIRONMENT=test DEBUG=1 AUTH_MOCK=1 VENDOR_MOCK=1 \
+    OUTBOX_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
+      uv run python ../scripts/perf_fault_matrix.py --execute
+  fi
 )
 
 printf '%s\n' "真实 PostgreSQL 恢复、稳定主体授权与安全会话合同通过：一次性数据库，仅合成数据"

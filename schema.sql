@@ -1,5 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.97  2026-09-07
+-- v1.6.97：批次活跃消息计数惰性初始化，回执按锁内差值更新，终态无需逐条扫消息。
 -- v1.6.96  2026-09-07
 -- v1.6.96：uncertain child 保存事务来源证明；存量默认待核验，不自动认领。
 -- v1.6.95  2026-09-07
@@ -614,6 +616,8 @@ CREATE TABLE sms_batch (
     delivered         INTEGER      NOT NULL DEFAULT 0,
     failed            INTEGER      NOT NULL DEFAULT 0,
     unknown_cnt       INTEGER      NOT NULL DEFAULT 0,
+    active_message_count INTEGER,                         -- NULL 表示待在批次锁内按事实初始化
+    active_message_count_token UUID,          -- 每次计数维护换代；兼容旧 writer 自动失效
     report_timeout_last_attempt_at TIMESTAMPTZ,
     report_timeout_next_attempt_at TIMESTAMPTZ,
     report_timeout_generation BIGINT NOT NULL DEFAULT 0
@@ -656,6 +660,22 @@ CREATE INDEX idx_sms_batch_creator_account
     ON sms_batch(creator_account_id, created_at DESC);
 CREATE INDEX idx_batch_active   ON sms_batch(status)
     WHERE status IN ('scheduled','queued','sending','balance_blocked');
+
+-- 旧应用版本仍会更新 D/F/U：未同步换代即令活跃计数失效，下一次在批次锁内重算。
+CREATE OR REPLACE FUNCTION invalidate_legacy_batch_active_count()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog AS $$
+BEGIN
+  IF NEW.active_message_count_token IS NOT DISTINCT FROM OLD.active_message_count_token THEN
+    NEW.active_message_count := NULL;
+    NEW.active_message_count_token := NULL;
+  END IF;
+  RETURN NEW;
+END
+$$;
+REVOKE ALL ON FUNCTION invalidate_legacy_batch_active_count() FROM PUBLIC;
+CREATE TRIGGER trg_batch_invalidate_legacy_active_count
+BEFORE UPDATE OF delivered,failed,unknown_cnt ON sms_batch
+FOR EACH ROW EXECUTE FUNCTION invalidate_legacy_batch_active_count();
 
 -- 失败重发一代一事实：历史重复子批次保留，但新请求只能原子认领一次。
 CREATE TABLE sms_resend_action (

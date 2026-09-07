@@ -15,22 +15,30 @@ SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 AGGREGATE_SQL = text(
     """
-    WITH facts AS (
-      SELECT b.app_id,b.dept,b.category,b.segments,m.status
+    WITH message_totals AS (
+      SELECT m.batch_id,count(*) total,
+        count(*) FILTER (WHERE m.status='delivered') delivered,
+        count(*) FILTER (WHERE m.status='failed') failed,
+        count(*) FILTER (WHERE m.status IN ('unknown','other')) unknown_cnt
       FROM sms_message m
-      JOIN sms_batch b ON b.id=m.batch_id
       WHERE m.created_at>=:start_at AND m.created_at<:end_at
+      GROUP BY m.batch_id
+    ), facts AS (
+      SELECT b.app_id,b.dept,b.category,b.segments,t.total,
+        t.delivered,t.failed,t.unknown_cnt
+      FROM message_totals t
+      JOIN sms_batch b ON b.id=t.batch_id
     )
     INSERT INTO stat_daily(
       stat_date,dim_type,dim_value,category,total,total_segments,
       delivered,failed,unknown_cnt
     )
     SELECT :stat_date,d.dim_type,d.dim_value,c.category,
-      CAST(count(*) AS integer),
-      CAST(sum(f.segments) AS integer),
-      CAST(count(*) FILTER (WHERE f.status='delivered') AS integer),
-      CAST(count(*) FILTER (WHERE f.status='failed') AS integer),
-      CAST(count(*) FILTER (WHERE f.status IN ('unknown','other')) AS integer)
+      CAST(sum(f.total) AS integer),
+      CAST(sum(f.segments*f.total) AS integer),
+      CAST(sum(f.delivered) AS integer),
+      CAST(sum(f.failed) AS integer),
+      CAST(sum(f.unknown_cnt) AS integer)
     FROM facts f
     CROSS JOIN LATERAL (VALUES
       ('app', CAST(f.app_id AS text)),

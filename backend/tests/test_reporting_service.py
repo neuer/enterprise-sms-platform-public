@@ -5,9 +5,12 @@ from datetime import UTC, date, datetime
 import pytest
 
 from app.services.reporting import (
+    ReportingData,
+    ReportingDimSummary,
     ReportingQuery,
     ReportingService,
     ReportingTotals,
+    ReportingTrend,
 )
 
 
@@ -15,10 +18,13 @@ class FakeRepository:
     def __init__(self) -> None:
         self.queries: list[ReportingQuery] = []
 
-    async def query(self, query: ReportingQuery) -> tuple[ReportingTotals, ...]:
+    async def query(self, query: ReportingQuery) -> ReportingData:
         self.queries.append(query)
-        return (
-            ReportingTotals(date(2026, 7, 1), "7", "OA应用", 10, 12, 8, 2, 1),
+        return ReportingData(
+            (ReportingDimSummary("7", "OA应用", 10, 12, 8, 2, 1, 0.8),),
+            ReportingTrend(),
+            (ReportingTotals(date(2026, 7, 1), "7", "OA应用", 10, 12, 8, 2, 1),),
+            1, 1,
         )
 
 
@@ -54,16 +60,20 @@ async def test_defaults_to_recent_thirty_shanghai_days_and_dept_scope() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dim_summary_aggregates_periods_and_orders_by_total() -> None:
+async def test_full_range_summary_is_independent_of_current_detail_page() -> None:
     """维度汇总跨周期加总，成功率沿用 stats.py 口径，按消息数降序。"""
 
     class MultiDimRepository:
-        async def query(self, _query: ReportingQuery) -> tuple[ReportingTotals, ...]:
-            return (
-                ReportingTotals(date(2026, 7, 1), "7", "OA应用", 10, 12, 8, 2, 1),
-                ReportingTotals(date(2026, 7, 2), "7", "OA应用", 6, 7, 4, 1, 0),
-                ReportingTotals(date(2026, 7, 1), "9", "营销平台", 20, 26, 15, 5, 2),
-                ReportingTotals(date(2026, 7, 2), "3", "客服系统", 0, 0, 0, 0, 0),
+        async def query(self, _query: ReportingQuery) -> ReportingData:
+            return ReportingData(
+                (
+                    ReportingDimSummary("9", "营销平台", 20, 26, 15, 5, 2, 0.75),
+                    ReportingDimSummary("7", "OA应用", 16, 19, 12, 3, 1, 0.8),
+                    ReportingDimSummary("3", "客服系统", 0, 0, 0, 0, 0, 0.0),
+                ),
+                ReportingTrend(),
+                (ReportingTotals(date(2026, 7, 1), "7", "OA应用", 10, 12, 8, 2, 1),),
+                4, 3,
             )
 
     service = ReportingService(MultiDimRepository())
@@ -77,6 +87,7 @@ async def test_dim_summary_aggregates_periods_and_orders_by_total() -> None:
         dept="平台部",
     )
 
+    assert result.total == 4 and len(result.items) == 1
     dims = result.dim_summary
     assert [item.dim_value for item in dims] == ["9", "7", "3"]
     marketing = dims[0]

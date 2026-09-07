@@ -2730,6 +2730,20 @@ paths:
               schema: { $ref: '#/components/schemas/DashboardModel' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /api/v1/web/reports/balance:
+    get:
+      tags: [reports]
+      summary: 管理员页头最新余额（单次快照查询）
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: 无快照时余额和采集时间均为 null，不能解释为零余额
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BalanceSnapshotModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /api/v1/web/reports/stats:
     get:
       tags: [reports]
@@ -2741,6 +2755,11 @@ paths:
         - { name: category, in: query, required: false, schema: { type: string, enum: [verify, notice, market, all], default: all } }
         - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date }, { type: 'null' }] } }
         - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 1000000, default: 1 } }
+        - { name: size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: sort, in: query, required: false, schema: { type: string, enum: [period_start, total, total_segments, success_rate], default: period_start } }
+        - { name: order, in: query, required: false, schema: { type: string, enum: [asc, desc], default: desc } }
+        - { name: metric, in: query, required: false, schema: { type: string, enum: [total, total_segments], default: total } }
       responses:
         '200':
           description: OK
@@ -3960,8 +3979,8 @@ components:
 
     ReportingDimSummaryModel:
       type: object
-      description: 维度级区间汇总；success_rate 为服务端 stats.py 口径，前端不得自行重算
-      required: [dim_value, dim_label, total, total_segments, delivered, failed, unknown, success_rate]
+      description: 全区间按 metric 排名前五维度及其他维度合计，is_other 明确标识合并；完整维度明细仍可分页或导出；success_rate 为服务端 stats.py 口径
+      required: [dim_value, dim_label, total, total_segments, delivered, failed, unknown, success_rate, is_other]
       properties:
         dim_value: { type: string }
         dim_label: { type: string }
@@ -3971,10 +3990,11 @@ components:
         failed: { type: integer }
         unknown: { type: integer }
         success_rate: { type: number }
+        is_other: { type: boolean }
 
     ReportingModel:
       type: object
-      required: [granularity, group_by, category, start, end, can_export_decrypted, summary, dim_summary, items]
+      required: [granularity, group_by, category, start, end, can_export_decrypted, summary, dim_summary, items, total, page, size, metric, dimension_total, trend]
       properties:
         granularity: { type: string, enum: [day, week, month] }
         group_by: { type: string, enum: [app, dept] }
@@ -3982,6 +4002,12 @@ components:
         start: { type: string, format: date }
         end: { type: string, format: date }
         can_export_decrypted: { type: boolean }
+        total: { type: integer, description: 全筛选区间的周期与维度明细总行数 }
+        page: { type: integer }
+        size: { type: integer }
+        metric: { type: string, enum: [total, total_segments] }
+        dimension_total: { type: integer }
+        trend: { $ref: '#/components/schemas/ReportingTrendModel' }
         summary: { $ref: '#/components/schemas/ReportingSummaryModel' }
         dim_summary:
           type: array
@@ -3989,6 +4015,31 @@ components:
         items:
           type: array
           items: { $ref: '#/components/schemas/ReportingRowModel' }
+
+    ReportingTrendSeriesModel:
+      type: object
+      required: [dim_value, dim_label, total, total_segments, is_other]
+      properties:
+        dim_value: { type: string }
+        dim_label: { type: string }
+        total: { type: array, items: { type: integer } }
+        total_segments: { type: array, items: { type: integer } }
+        is_other: { type: boolean }
+
+    ReportingTrendModel:
+      type: object
+      required: [periods, series]
+      description: 全区间紧凑趋势，最多366个周期与Top5加其他的6个系列；数值数组与periods位置一一对应，缺失周期为零
+      properties:
+        periods: { type: array, items: { type: string, format: date } }
+        series: { type: array, items: { $ref: '#/components/schemas/ReportingTrendSeriesModel' } }
+
+    BalanceSnapshotModel:
+      type: object
+      required: [current_balance, checked_at]
+      properties:
+        current_balance: { anyOf: [{ type: integer }, { type: 'null' }] }
+        checked_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
 
     ReportingSummaryModel:
       type: object

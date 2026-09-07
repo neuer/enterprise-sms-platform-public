@@ -21,6 +21,7 @@ import { usePolling } from "../composables/usePolling"
 import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime, formatDurationHms, formatHms } from "../lib/time"
 import { errorText } from "../lib/error"
+import { useLatestRead } from "../composables/useLatestRead"
 import { useApprovalBadgeStore } from "../stores/approvalBadge"
 import { useSessionStore } from "../stores/session"
 
@@ -158,31 +159,38 @@ function deciderLabel(item: ApprovalListItem): string | null {
   return null
 }
 
+const listRead = useLatestRead()
+const detailRead = useLatestRead()
+
 let loadToken = 0
 let detailToken = 0
 
 async function load(options: { silent?: boolean } = {}): Promise<void> {
   const token = ++loadToken
+  const signal = listRead.start()
   if (!options.silent) loading.value = true
   errorMessage.value = ""
   try {
-    const result = await listApprovals({
-      status: status.value,
-      page: page.value,
-      size: DEFAULT_PAGE_SIZE,
-      category: category.value || undefined,
-      dept: dept.value,
-      q: q.value,
-      sort: sort.value,
-    })
-    if (token !== loadToken) return
+    const result = await listApprovals(
+      {
+        status: status.value,
+        page: page.value,
+        size: DEFAULT_PAGE_SIZE,
+        category: category.value || undefined,
+        dept: dept.value,
+        q: q.value,
+        sort: sort.value,
+      },
+      signal,
+    )
+    if (signal.aborted || token !== loadToken) return
     items.value = result.items
     total.value = result.total
     counts.value = result.counts
     approvalBadge.pending = result.counts.pending
     lastUpdatedAt.value = new Date().toISOString()
   } catch (error) {
-    if (token !== loadToken) return
+    if (signal.aborted || token !== loadToken) return
     errorMessage.value = errorText(error, "审批列表加载失败")
   } finally {
     if (token === loadToken) loading.value = false
@@ -224,13 +232,14 @@ async function showDetail(item: ApprovalListItem): Promise<void> {
   decisionReason.value = ""
   drawerOpen.value = true
   const token = ++detailToken
+  const signal = detailRead.start()
   detailLoading.value = true
   try {
-    const result = await getApproval(item.id)
-    if (token !== detailToken) return
+    const result = await getApproval(item.id, signal)
+    if (signal.aborted || token !== detailToken) return
     detail.value = result
   } catch (error) {
-    if (token !== detailToken) return
+    if (signal.aborted || token !== detailToken) return
     drawerOpen.value = false
     if (error instanceof ApiRequestError && error.status === 409) {
       ElMessage.warning("该审批单已被处理或状态已变化，列表已刷新")
@@ -246,6 +255,7 @@ async function showDetail(item: ApprovalListItem): Promise<void> {
 }
 
 function closeDrawer(): void {
+  detailRead.cancel()
   drawerOpen.value = false
   selected.value = null
   detail.value = null

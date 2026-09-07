@@ -215,12 +215,14 @@ class FakeApi:
                 200,
                 "\n".join(
                     (
-                        "sms_runtime_event_loop_delay_seconds 0.012",
-                        "sms_runtime_process_resident_memory_bytes 104857600",
-                        'sms_runtime_database_connections{state="open"} 4',
-                        'sms_runtime_database_connections{state="checked_out"} 1',
-                        'sms_runtime_redis_connections{state="open"} 3',
-                        'sms_runtime_redis_connections{state="in_use"} 1',
+                        'sms_runtime_event_loop_delay_seconds{process_instance="test"} 0.012',
+                        'sms_runtime_process_resident_memory_bytes'
+                        '{process_instance="test"} 104857600',
+                        'sms_runtime_database_connections{process_instance="test",state="open"} 4',
+                        'sms_runtime_database_connections'
+                        '{process_instance="test",state="checked_out"} 1',
+                        'sms_runtime_redis_connections{process_instance="test",state="open"} 3',
+                        'sms_runtime_redis_connections{process_instance="test",state="in_use"} 1',
                     )
                 ),
             )
@@ -263,9 +265,7 @@ class ConcurrencyApi(FakeApi):
         if method == "POST" and path.endswith("/cancel"):
             with self.concurrency_lock:
                 self.active_cancellations += 1
-                self.peak_cancellations = max(
-                    self.peak_cancellations, self.active_cancellations
-                )
+                self.peak_cancellations = max(self.peak_cancellations, self.active_cancellations)
             try:
                 time.sleep(0.02)
                 return super().request(method, path, payload=payload, headers=headers)
@@ -515,6 +515,8 @@ def test_scheduled_cleanup_waits_for_queue_drain_and_both_must_finish() -> None:
             return 1, 0.01
 
         def _phase_two(self) -> tuple[int, int, float]:
+            self._verify_acceptance = [0.005]
+            self._verify_post_accept = [0.005]
             return 1, 3, 0.01
 
         def _phase_three(self) -> float:
