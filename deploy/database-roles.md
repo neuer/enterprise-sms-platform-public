@@ -108,3 +108,8 @@ PostgreSQL 16 中验证：
 必须以前滚迁移恢复明确矩阵，禁止临时恢复旧广权限账号。
 
 内部重发与发送查询共享不含凭据的应用策略投影。`sms_send` 仅具有 `app` 业务列的 SELECT；API Key 摘要、前缀、算法、pepper 版本及轮换信息不可读（迁移 0114）。
+
+幂等生命周期锁（迁移 0115）：回调角色仍无 `sms_batch` UPDATE。人工重推仅可调用
+`lock_callback_idempotency_batch(task_id)` 锁定该任务已关联的批次；保护状态触发器
+使用固定 `pg_catalog` 搜索路径与限定表名取得同一批次锁。两函数均撤销 PUBLIC 执行权，
+仅前者向 `sms_callback` 开放 EXECUTE；函数不更新业务字段、不读出批次数据。

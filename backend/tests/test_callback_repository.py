@@ -421,26 +421,27 @@ async def test_admin_page_returns_only_safe_summary_fields() -> None:
 @pytest.mark.asyncio
 async def test_manual_dead_retry_is_audited_and_rejects_invalid_state() -> None:
     repository = SqlCallbackRepository()
-    success = FakeConnection([FakeResult(scalars=[9]), FakeResult(), FakeResult()])
+    success = FakeConnection([FakeResult(), FakeResult(scalars=[9]), FakeResult(), FakeResult()])
     bind(repository, success)
     await repository.manual_retry(9, principal=ADMIN)
-    retry_sql = success.calls[0][0]
+    assert "lock_callback_idempotency_batch(:task_id)" in success.calls[0][0]
+    retry_sql = success.calls[1][0]
     assert "FROM app" in retry_sql
     assert "callback_url" in retry_sql and "callback_secret_enc" in retry_sql
     assert "CallbackConfigRevoked" in retry_sql
-    assert "INSERT INTO audit_log" in success.calls[1][0]
-    assert "worker_lease_event" in success.calls[2][0]
-    assert success.calls[1][1]["actor"] == "admin"
-    assert success.calls[1][1]["account_id"] == 1
-    assert success.calls[1][1]["identity_id"] == 10
-    assert isinstance(success.calls[1][1]["correlation_id"], UUID)
+    assert "INSERT INTO audit_log" in success.calls[2][0]
+    assert "worker_lease_event" in success.calls[3][0]
+    assert success.calls[2][1]["actor"] == "admin"
+    assert success.calls[2][1]["account_id"] == 1
+    assert success.calls[2][1]["identity_id"] == 10
+    assert isinstance(success.calls[2][1]["correlation_id"], UUID)
 
-    conflict = FakeConnection([FakeResult(), FakeResult(scalars=["retrying"])])
+    conflict = FakeConnection([FakeResult(), FakeResult(), FakeResult(scalars=["retrying"])])
     bind(repository, conflict)
     with pytest.raises(CallbackRetryConflict):
         await repository.manual_retry(10, principal=ADMIN)
 
-    missing = FakeConnection([FakeResult(), FakeResult()])
+    missing = FakeConnection([FakeResult(), FakeResult(), FakeResult()])
     bind(repository, missing)
     with pytest.raises(CallbackTaskNotFound):
         await repository.manual_retry(11, principal=ADMIN)

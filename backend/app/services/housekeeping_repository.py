@@ -16,6 +16,7 @@ from app.services.housekeeping import (
     ExpiredImport,
     LifecyclePolicy,
 )
+from app.services.idempotency_lifecycle import IDEMPOTENCY_LIVE_SQL
 from app.settings import Settings, get_settings
 
 # 固定 cutoff 同时约束对象到期、消费/解析租约，运行期间新到期对象留给下轮。
@@ -82,15 +83,8 @@ PLANS = {
         locks="t",
     ),
     "idempotency": _DeletePlan(
-        "idempotency_record",
-        (("id", "bigint"),),
-        """
-        p.expires_at<=CAST(:cutoff AS timestamptz) AND NOT EXISTS (SELECT 1 FROM sms_batch b
-          WHERE b.id=p.batch_id AND b.status IN
-          ('pending_approval','scheduled','queued','sending','balance_blocked'))
-    """,
-        "idempotency",
-        locks="",
+        "idempotency_record", (("id", "bigint"),),
+        "p.expires_at<=CAST(:cutoff AS timestamptz)", "idempotency",
     ),
     "jobs": _DeletePlan(
         "job_run",
@@ -268,6 +262,8 @@ class SqlHousekeepingRepository:
         plan = PLANS[table]
         if cursor is not None and len(cursor) != len(plan.keys):
             raise ValueError("invalid housekeeping cursor")
+        if table == "idempotency":
+            return await self._cleanup_idempotency_page(cutoff, cursor, limit)
         params: dict[str, object] = {
             "cutoff": cutoff,
             "raw_days": policy.raw_days,
@@ -319,5 +315,49 @@ class SqlHousekeepingRepository:
                         usage=count if plan.count_field == "usage" else 0,
                     ),
                 )
+        finally:
+            await engine.dispose()
+
+
+    async def _cleanup_idempotency_page(
+        self, cutoff: datetime, cursor: CleanupCursor | None, limit: int,
+    ) -> CleanupPage:
+        """锁定有限批次页，重验生命周期并保留完成 Claim 的到期证明。"""
+        if cutoff.utcoffset() is None:
+            raise ValueError("housekeeping cutoff must include timezone")
+        engine = self._engine()
+        after_id = cursor[0] if cursor else 0
+        if isinstance(after_id, bool) or not isinstance(after_id, int):
+            raise ValueError("invalid idempotency cleanup cursor")
+        params = {"cutoff": cutoff, "after_id": after_id, "limit": limit}
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(text("SET LOCAL lock_timeout='1s'"))
+                await connection.execute(text("SET LOCAL statement_timeout='5s'"))
+                selected = await connection.execute(text("""
+                    SELECT i.id FROM idempotency_record i JOIN sms_batch b ON b.id=i.batch_id
+                    WHERE i.id>:after_id AND i.expires_at<=CAST(:cutoff AS timestamptz)
+                      AND NOT """ + IDEMPOTENCY_LIVE_SQL + """
+                    ORDER BY i.id LIMIT :limit FOR UPDATE OF b SKIP LOCKED
+                """), params)
+                ids = [int(row["id"]) for row in selected.mappings()]
+                if not ids:
+                    return CleanupPage(0, cursor)
+                # 只从精确关联且指纹一致的结果保留到期时间，不猜测修复历史孤儿。
+                await connection.execute(text("""
+                    UPDATE idempotency_claim q SET result_expires_at=i.expires_at
+                    FROM idempotency_record i
+                    WHERE i.id=ANY(:ids) AND q.state='completed' AND q.batch_id=i.batch_id
+                      AND q.scope_kind=i.scope_kind AND q.scope_id=i.scope_id AND q.biz_id=i.biz_id
+                      AND trim(q.fingerprint)=trim(i.request_hash)
+                      AND i.request_hash_key_version IS NOT NULL
+                """), {"ids": ids})
+                deleted = await connection.execute(text("""
+                    DELETE FROM idempotency_record i USING sms_batch b
+                    WHERE i.id=ANY(:ids) AND i.batch_id=b.id
+                      AND i.expires_at<=CAST(:cutoff AS timestamptz) AND NOT
+                """ + IDEMPOTENCY_LIVE_SQL + " RETURNING i.id"), {"ids": ids, "cutoff": cutoff})
+                count = len(list(deleted.mappings()))
+                return CleanupPage(count, (max(ids),), CleanupCounts(idempotency=count))
         finally:
             await engine.dispose()

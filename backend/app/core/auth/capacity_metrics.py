@@ -14,6 +14,16 @@ _REFUND = {
 _SPRAY = {level: 0 for level in ("elevated", "high", "unavailable")}
 _LDAP = {"count": 0.0, "duration": 0.0, "sink_failure": 0.0, "deadline": 0.0}
 
+_RECOVERY = dict.fromkeys(
+    ("confirmed", "retry", "blocked", "capacity_blocked", "shutdown_incomplete"), 0
+)
+
+
+def observe_recovery(outcome: str) -> None:
+    with _LOCK:
+        if outcome in _RECOVERY:
+            _RECOVERY[outcome] += 1
+
 
 def observe_source(profile: str, outcome: str, *, refund: bool = False) -> None:
     with _LOCK:
@@ -41,6 +51,7 @@ def append_capacity_metrics(registry: CollectorRegistry) -> None:
     """向既有隔离 Registry 输出快照，不按来源地址或用户名创建标签。"""
 
     with _LOCK:
+        recovery = dict(_RECOVERY)
         admit, refund, ldap, spray = dict(_ADMIT), dict(_REFUND), dict(_LDAP), dict(_SPRAY)
     for name, values in (("auth_source_admit_total", admit), ("auth_prehash_refund_total", refund)):
         metric = Gauge(
@@ -51,6 +62,12 @@ def append_capacity_metrics(registry: CollectorRegistry) -> None:
         )
         for (profile, outcome), count in values.items():
             metric.labels(profile=profile, outcome=outcome).set(count)
+    recovery_metric = Gauge(
+        "auth_admission_recovery_total", "Bounded admission owner recovery outcomes.",
+        ("outcome",), registry=registry,
+    )
+    for outcome, count in recovery.items():
+        recovery_metric.labels(outcome=outcome).set(count)
     signal = Gauge(
         "auth_password_spray_signal_total", "Credential failure behavior signals.",
         ("risk_level",), registry=registry,

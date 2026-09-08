@@ -190,7 +190,7 @@ paths:
                   description: 模板 {1}..{n} 占位参数（v1.2，本期全批次同参，平台渲染后下发，个数不符返回 422 TEMPLATE_PARAM_MISMATCH）
                 sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }], description: 缺省用应用默认签名 }
                 scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-                biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，幂等键与对账用 }
+                biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID；24h 后仍有在途、unknown 或待回调时保留原结果，仅可信到期且保护工作结束后允许复用 }
       responses:
         '200':
           description: 受理成功（含幂等命中）
@@ -221,7 +221,7 @@ paths:
           description: CATEGORY_NOT_ALLOWED / IP_NOT_ALLOWED / VENDOR_TEST_CONSOLE_ONLY / FORBIDDEN
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '409':
-          description: 同一幂等键已用于不同请求（IDEMPOTENCY_CONFLICT）
+          description: 同一幂等键已用于不同请求，或原结果缺少可信证明（IDEMPOTENCY_CONFLICT）
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '422':
           description: 敏感词命中 / 全部号码被剔除
@@ -626,7 +626,7 @@ paths:
                 template_params: { anyOf: [{ type: array, maxItems: 20, items: { type: string, maxLength: 200 } }, { type: 'null' }], description: 模板参数（v1.2，预览即渲染结果） }
                 sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
                 scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-                biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，幂等键与对账用 }
+                biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID；24h 后仍有在途、unknown 或待回调时保留原结果，仅可信到期且保护工作结束后允许复用 }
                 is_test: { type: boolean, default: false, description: 测试发送（≤test_send_max 个号码，豁免营销时间窗；与 scheduled_at 同时出现返回 400，v1.2） }
                 consent_confirmed: { type: boolean, default: false, description: market 必须为 true（"已获用户同意"留痕，v1.2），否则 422 CONSENT_REQUIRED }
                 remark: { anyOf: [{ type: string, maxLength: 200 }, { type: 'null' }] }

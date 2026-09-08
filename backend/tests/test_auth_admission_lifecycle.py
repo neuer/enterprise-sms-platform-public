@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from app.core.auth.admission import ADMIT_LUA, RELEASE_LUA, LoginAdmission
+from app.core.auth.admission import ADMIT_LUA, CANCEL_LUA, RELEASE_LUA, TIME_LUA, LoginAdmission
 from app.core.auth.admission_policy import AdmissionLimits, AdmissionPolicy
 from app.core.bounded_executor import bounded_work_scope, run_bounded
 from app.settings import Settings
@@ -51,6 +51,8 @@ async def test_lifespan_drains_timed_out_thread_before_closing_redis(
 
     class Store:
         async def eval(self, script: str, *_args: Any) -> Any:
+            if script == TIME_LUA:
+                return [1000, 0]
             if script == ADMIT_LUA:
                 return [0, 0]
             assert script == RELEASE_LUA
@@ -90,11 +92,13 @@ async def test_cancellation_after_admission_eval_still_releases_owned_slot() -> 
     class Store:
         async def eval(self, script: str, *_args: Any) -> Any:
             nonlocal released
+            if script == TIME_LUA:
+                return [1000, 0]
             if script == ADMIT_LUA:
                 accepted.set()
                 await response.wait()
                 return [0, 0]
-            assert script == RELEASE_LUA
+            assert script == CANCEL_LUA
             released += 1
             return 1
 

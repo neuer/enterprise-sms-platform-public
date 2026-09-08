@@ -1652,7 +1652,9 @@ async def test_pipeline_read_repository_returns_config_filters_and_idempotency(
     assert fingerprint is not None
     assert fingerprint.digest == "a" * 64
     assert fingerprint.key_version == 2
-    assert "balance_blocked" in connection.calls[0][0]
+    assert (
+        "b.status NOT IN ('completed','rejected','expired','cancelled')" in connection.calls[0][0]
+    )
 
     connection = FakeConnection([FakeResult(rows=[])])
     bind_engine(monkeypatch, store, connection)

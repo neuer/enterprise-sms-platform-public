@@ -32,6 +32,10 @@ from app.services.category import CategoryPolicy, coerce_market_dispatch, policy
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
 from app.services.freq import FrequencyLimits
 from app.services.idempotency import (
+    IdempotencyConflict as IdempotencyConflict,
+)
+from app.services.idempotency import (
+    IdempotencyCoordinationTimeout,
     IdempotencyFingerprint,
     IdempotencyScope,
     uncertain_resend_biz_id,
@@ -77,10 +81,6 @@ class AllFiltered(ValueError):
 
 class SensitiveWord(ValueError):
     """内容命中阻断敏感词，对应 SENSITIVE_WORD/422。"""
-
-
-class IdempotencyConflict(RuntimeError):
-    """同一幂等键已用于不同请求，禁止静默复用旧批次。"""
 
 
 class IdempotencyClaimLost(RuntimeError):
@@ -1237,7 +1237,7 @@ class SendPipeline:
                 return await self.store.response_for(existing)
             token = await self._claim_owner(idem_scope, biz_id, request_hash)
         if token is None:
-            raise RuntimeError("idempotency coordination unavailable")
+            raise IdempotencyCoordinationTimeout("幂等协调暂不可用，请保留原业务键重试")
         lost = asyncio.Event()
         heartbeat: asyncio.Task[None] | None = None
 
