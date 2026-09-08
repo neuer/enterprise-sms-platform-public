@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { STATUS_LABELS } from "../lib/labels"
+import { useApprovedResources } from "../composables/useApprovedResources"
+import { renderPreview, splitPreviewParts } from "../lib/templatePreview"
+import FilterSeg from "../components/FilterSeg.vue"
 import type { UploadRequestOptions } from "element-plus"
 import { computed, onBeforeUnmount, onMounted, reactive, ref, toRef, watch } from "vue"
 import { useRouter } from "vue-router"
@@ -14,10 +18,10 @@ import {
   type SendResult,
   type WebMessagePayload,
 } from "../api/webMessages"
-import { listTemplates, type SmsTemplate } from "../api/templates"
-import { listSigns, type SmsSign } from "../api/signs"
+import { listTemplates } from "../api/templates"
+import { listSigns } from "../api/signs"
 import { getDashboard } from "../api/dashboard"
-import SegmentBar from "../components/SegmentBar.vue"
+import BillingSegments from "../components/BillingSegments.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { copyText } from "../lib/clipboard"
@@ -63,38 +67,15 @@ function newIdempotencyKey(): string {
 
 const idempotencyKey = ref(newIdempotencyKey())
 let copiedTimer: number | undefined
-const templates = ref<SmsTemplate[]>([])
+const { items: templates, approved: approvedTemplates, load: loadTemplates } = useApprovedResources(listTemplates)
 const templateParams = ref<string[]>([])
-const signs = ref<SmsSign[]>([])
+const { approved: approvedSigns, load: loadSigns } = useApprovedResources(listSigns)
 const testSendMax = ref<number | null>(null)
-const approvedTemplates = computed(() => templates.value.filter((item) => item.vendor_state === "approved"))
-const approvedSigns = computed(() => signs.value.filter((item) => item.vendor_state === "approved"))
 const selectedTemplate = computed(() => templates.value.find((item) => item.id === Number(form.templateId)) || null)
-const renderedTemplate = computed(() => {
-  const template = selectedTemplate.value
-  if (!template) return ""
-  return template.content.replace(/\{(\d+)\}/g, (placeholder, position: string) => {
-    const value = templateParams.value[Number(position) - 1]?.trim()
-    return value || placeholder
-  })
-})
-
-const renderedTemplateParts = computed(() => {
-  const template = selectedTemplate.value
-  if (!template) return []
-  const parts: { text: string; highlight: boolean }[] = []
-  const pattern = /\{(\d+)\}/g
-  let cursor = 0
-  for (const match of template.content.matchAll(pattern)) {
-    const index = match.index ?? 0
-    if (index > cursor) parts.push({ text: template.content.slice(cursor, index), highlight: false })
-    const value = templateParams.value[Number(match[1]) - 1]?.trim()
-    parts.push({ text: value || match[0], highlight: Boolean(value) })
-    cursor = index + match[0].length
-  }
-  if (cursor < template.content.length) parts.push({ text: template.content.slice(cursor), highlight: false })
-  return parts
-})
+const renderedTemplate = computed(() => renderPreview(selectedTemplate.value?.content ?? "", templateParams.value))
+const renderedTemplateParts = computed(() =>
+  splitPreviewParts(selectedTemplate.value?.content ?? "", templateParams.value),
+)
 
 // ── 号码解析：共享 useDebouncedEntries 单点（#596 模式）——≤2000 字的小文本同步解析，
 // 校验提示与计数即时反馈不变；更大粘贴（可能数万行）300ms 防抖，避免逐键全量 split/Set 阻塞输入。 ──
@@ -162,18 +143,7 @@ const testSendHint = computed(() =>
   testSendMax.value === null ? "号码上限暂不可用" : `≤${testSendMax.value} 个号码 · 豁免营销时间窗 · 其余管控照常`,
 )
 
-const sendStatusLabel: Record<SendResult["status"], string> = {
-  queued: "排队中",
-  scheduled: "已排期",
-  pending_approval: "待审批",
-  sending: "发送中",
-  completed: "已完成",
-  completed_unknown: "完成(含未知)",
-  cancelled: "已取消",
-  rejected: "已驳回",
-  expired: "已过期",
-  balance_blocked: "余额阻断",
-}
+const sendStatusLabel = STATUS_LABELS
 
 function deferredReasonText(reason: string): string {
   if (reason === "market_window") return "超出营销发送时间窗，已转为定时发送"
@@ -412,23 +382,6 @@ watch(
   },
 )
 
-async function loadTemplates(): Promise<void> {
-  try {
-    templates.value = await listTemplates()
-  } catch (error) {
-    errorMessage.value = errorText(error, "模板列表加载失败")
-  }
-}
-
-async function loadSigns(): Promise<void> {
-  try {
-    const result = await listSigns()
-    signs.value = Array.isArray(result) ? result : []
-  } catch {
-    signs.value = []
-  }
-}
-
 async function loadUiPolicy(): Promise<void> {
   try {
     const result = await getDashboard()
@@ -638,14 +591,15 @@ onBeforeUnmount(() => {
           <span class="form-index">02</span>
           <h2>收信号码</h2>
           <small>单次最多 50,000 个</small>
-          <span class="seg" role="group" aria-label="号码来源">
-            <button type="button" :class="{ on: form.source === 'paste' }" @click="form.source = 'paste'"
-              >手工粘贴</button
-            >
-            <button type="button" :class="{ on: form.source === 'import' }" @click="form.source = 'import'"
-              >文件导入</button
-            >
-          </span>
+          <FilterSeg
+            v-model="form.source"
+            :options="[
+              ...[{ label: '手工粘贴', value: 'paste' as const }],
+              ...[{ label: '文件导入', value: 'import' as const }],
+            ]"
+            class="filter-seg--pill"
+            aria-label="号码来源"
+          />
         </header>
         <template v-if="form.source === 'paste'">
           <el-input
@@ -742,17 +696,15 @@ onBeforeUnmount(() => {
           <span class="form-index">03</span>
           <h2>发送内容</h2>
           <small>最终内容（含签名与退订语）不超过 500 字</small>
-          <span class="seg" role="group" aria-label="内容来源">
-            <button type="button" :class="{ on: form.contentMode === 'content' }" @click="form.contentMode = 'content'"
-              >直接编辑</button
-            >
-            <button
-              type="button"
-              :class="{ on: form.contentMode === 'template' }"
-              @click="form.contentMode = 'template'"
-              >审核模板</button
-            >
-          </span>
+          <FilterSeg
+            v-model="form.contentMode"
+            :options="[
+              ...[{ label: '直接编辑', value: 'content' as const }],
+              ...[{ label: '审核模板', value: 'template' as const }],
+            ]"
+            class="filter-seg--pill"
+            aria-label="内容来源"
+          />
         </header>
         <el-input
           v-if="form.contentMode === 'content'"
@@ -879,7 +831,7 @@ onBeforeUnmount(() => {
 
       <section v-if="preview" class="rail-card">
         <header>计费 <small>services/billing.py 单点口径</small></header>
-        <SegmentBar :parts="preview.segment_parts" :next-hint="nextSegmentHint" />
+        <BillingSegments :parts="preview.segment_parts" :next-hint="nextSegmentHint" />
         <div class="cost-line">
           <span class="fx">{{ previewCount.toLocaleString() }} × {{ preview.est_segments }} 段 =</span>
           <strong>{{ preview.quota_cost.toLocaleString() }}<small>计费条</small></strong>

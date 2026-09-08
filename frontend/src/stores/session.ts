@@ -96,6 +96,10 @@ export function createSessionStore(doc: SessionDocument = defaultSessionDocument
       providers: [] as AuthProvider[],
     }),
     getters: {
+      isAdmin: (state) => state.role === "admin",
+      canWrite: (state) => state.role === "admin" || state.role === "operator",
+      canDecrypt: (state) => state.role === "admin" || state.role === "approver",
+      canApprove: (state) => state.role === "admin" || state.role === "approver",
       isAuthenticated: (state) => Boolean(state.token && state.accountId > 0 && state.identityId > 0 && state.role),
       roleLabel: (state) => (state.role ? ROLE_LABELS[state.role] : "未登录"),
     },

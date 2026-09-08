@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { useVendorResourceList } from "../composables/useVendorResourceList"
+import { contentPlaceholders, contentParts, vendorPreviewOf, type ContentPart } from "../lib/templatePreview"
+import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
 import { computed, onMounted, reactive, ref, watch } from "vue"
 import { useRouter } from "vue-router"
@@ -20,17 +23,8 @@ import { confirmAuditedAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
 import { VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
 import { useSessionStore } from "../stores/session"
-
-const PLACEHOLDER_TOKEN = /\{[^{}]*\}/g
-const PLACEHOLDER_POSITION = /^\{([1-9]\d*)\}$/
 const DEFAULT_MAX_LEN = 10
 const EDITOR_FOOTNOTE = "提交后进入厂商人工审核，期间不可编辑；审核结果由轮询同步，也可在列表手动同步。"
-
-interface ContentPart {
-  text: string
-  pos?: number
-  maxLen?: number
-}
 
 interface TrailStep {
   title: string
@@ -43,49 +37,21 @@ const isMobile = useMobileLayout()
 // 测试环境未安装路由时 useRouter 返回 undefined，「用于发送」跳转入口做空值守卫。
 const router = useRouter()
 
-const items = ref<SmsTemplate[]>([])
-const loading = ref(false)
 const saving = ref(false)
 const syncingId = ref<number | null>(null)
-const errorMessage = ref("")
-const stateFilter = ref<TemplateState | "all">("all")
-const keyword = ref("")
 const detail = ref<SmsTemplate | null>(null)
 const detailOpen = ref(false)
 const editorOpen = ref(false)
 /** 编辑入口的源模板：驳回重交时用于回显上次厂商驳回原因。 */
 const editingSource = ref<SmsTemplate | null>(null)
 const form = reactive<TemplatePayload>({ name: "", content: "", var_specs: [] })
-const canWrite = computed(() => session.role === "operator" || session.role === "admin")
+const canWrite = computed(() => session.canWrite)
 
-const STATE_FILTERS: { label: string; value: TemplateState | "all" }[] = [
-  { label: "全部", value: "all" },
-  { label: "待审核", value: "pending" },
-  { label: "已通过", value: "approved" },
-  { label: "已拒绝", value: "rejected" },
-  { label: "草稿", value: "draft" },
-]
-
-/** 接口全量返回，状态计数与关键词过滤均为前端推导，不新增查询参数。 */
-const stateOptions = computed(() =>
-  STATE_FILTERS.map((option) => ({
-    ...option,
-    count:
-      option.value === "all"
-        ? items.value.length
-        : items.value.filter((item) => item.vendor_state === option.value).length,
-  })),
-)
-
-const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  return items.value.filter((item) => {
-    if (stateFilter.value !== "all" && item.vendor_state !== stateFilter.value) return false
-    if (kw && !item.name.toLowerCase().includes(kw) && !item.content.toLowerCase().includes(kw)) {
-      return false
-    }
-    return true
-  })
+const { items, loading, errorMessage, load, stateFilter, keyword, stateOptions, filtered } = useVendorResourceList({
+  fetcher: listTemplates,
+  states: ["pending", "approved", "rejected", "draft"],
+  searchText: (item) => `${item.name} ${item.content}`,
+  errorMessage: "模板列表加载失败",
 })
 
 const emptyTitle = computed(() => (items.value.length === 0 ? "当前没有模板" : "没有符合筛选条件的模板"))
@@ -133,48 +99,6 @@ function detailHeadMeta(item: SmsTemplate): string {
 /** 事实格变量声明：{n} ≤max_len 字，按 pos 顺序。 */
 function varSpecsLine(specs: { pos: number; max_len: number }[]): string {
   return specs.map((spec) => `{${spec.pos}} ≤${spec.max_len} 字`).join(" · ")
-}
-
-/** 提取内容中的 {n} 占位位置；非法 {} 片段单独计数用于内联提示。 */
-function contentPlaceholders(content: string): { positions: number[]; invalidTokens: number } {
-  const tokens = content.match(PLACEHOLDER_TOKEN) ?? []
-  const positions: number[] = []
-  let invalidTokens = 0
-  for (const token of tokens) {
-    const matched = PLACEHOLDER_POSITION.exec(token)
-    if (matched) positions.push(Number(matched[1]))
-    else invalidTokens += 1
-  }
-  return { positions, invalidTokens }
-}
-
-/** 把平台内容拆成正文片段与变量片，供列表/详情内联渲染；非法 {} 片段保持原文。 */
-function contentParts(content: string, specs: { pos: number; max_len: number }[]): ContentPart[] {
-  const maxLenByPos = new Map(specs.map((spec) => [spec.pos, spec.max_len]))
-  const parts: ContentPart[] = []
-  let cursor = 0
-  for (const match of content.matchAll(PLACEHOLDER_TOKEN)) {
-    const matched = PLACEHOLDER_POSITION.exec(match[0])
-    if (!matched) continue
-    const index = match.index ?? 0
-    if (index > cursor) parts.push({ text: content.slice(cursor, index) })
-    const pos = Number(matched[1])
-    parts.push({ text: match[0], pos, maxLen: maxLenByPos.get(pos) })
-    cursor = index + match[0].length
-  }
-  if (cursor < content.length) parts.push({ text: content.slice(cursor) })
-  return parts
-}
-
-/** 厂商格式预览：与服务端 to_vendor_template 同一规则，平台 {n} 按声明最大长度转 {s<max_len>}。 */
-function vendorPreviewOf(content: string, specs: { pos: number; max_len: number }[]): string {
-  const maxLenByPos = new Map(specs.map((spec) => [spec.pos, spec.max_len]))
-  return content.replace(PLACEHOLDER_TOKEN, (token) => {
-    const matched = PLACEHOLDER_POSITION.exec(token)
-    if (!matched) return token
-    const maxLen = maxLenByPos.get(Number(matched[1]))
-    return maxLen === undefined ? token : `{s${maxLen}}`
-  })
 }
 
 const editorVendorPreview = computed(() =>
@@ -244,18 +168,6 @@ const detailTrail = computed<TrailStep[]>(() => {
     result,
   ]
 })
-
-async function load(): Promise<void> {
-  loading.value = true
-  errorMessage.value = ""
-  try {
-    items.value = await listTemplates()
-  } catch (error) {
-    errorMessage.value = errorText(error, "模板列表加载失败")
-  } finally {
-    loading.value = false
-  }
-}
 
 function openDetail(item: SmsTemplate): void {
   detail.value = item
@@ -366,18 +278,16 @@ onMounted(load)
   <div class="template-filter-bar">
     <div class="template-fld">
       <span>厂商状态</span>
-      <div class="template-seg" role="group" aria-label="厂商状态筛选" data-testid="template-state-seg">
-        <button
-          v-for="option in stateOptions"
-          :key="option.value"
-          type="button"
-          :class="{ on: stateFilter === option.value }"
-          :data-testid="`template-state-${option.value}`"
-          @click="stateFilter = option.value"
-        >
-          {{ option.label }} <i>{{ option.count }}</i>
-        </button>
-      </div>
+      <FilterSeg
+        v-model="stateFilter"
+        :options="stateOptions"
+        button-testid-prefix="template-state"
+        aria-label="厂商状态筛选"
+        data-testid="template-state-seg"
+        ><template #option="{ option }"
+          >{{ option.label }} <i>{{ option.count }}</i></template
+        ></FilterSeg
+      >
     </div>
     <label class="template-fld">
       <span>关键词</span>

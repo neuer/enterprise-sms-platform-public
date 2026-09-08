@@ -110,3 +110,8 @@ export function daysAgoDateKey(days: number, now: Date = new Date()): string {
   const midnight = new Date(`${shanghaiDateKey(now)}T00:00:00+08:00`)
   return shanghaiDateKey(new Date(midnight.getTime() - days * 86_400_000))
 }
+
+/** 日期范围转换为接口 ISO 参数；未选范围不发送起止参数。 */
+export function rangeToIsoParams(range: readonly [Date, Date] | null): { start?: string; end?: string } {
+  return { start: range?.[0].toISOString(), end: range?.[1].toISOString() }
+}

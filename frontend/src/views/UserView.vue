@@ -14,16 +14,15 @@ import {
   type UserSyncStatus,
 } from "../api/users"
 import EmptyState from "../components/EmptyState.vue"
+import FilterSeg from "../components/FilterSeg.vue"
+import ListPagination from "../components/ListPagination.vue"
+import { usePagedList } from "../composables/usePagedList"
 import { confirmAuditedAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
 import { DEFAULT_PAGE_SIZE, ROLE_LABELS } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 
-const users = ref<ManagedUser[]>([])
-const total = ref(0)
-const loading = ref(false)
 const saving = ref(false)
-const errorMessage = ref("")
 const selected = ref<ManagedUser | null>(null)
 const createDrawerOpen = ref(false)
 const roleDrawerOpen = ref(false)
@@ -36,7 +35,6 @@ const filters = reactive({
   providerCode: "",
   role: "" as UserRole | "",
   status: "" as 0 | 1 | "",
-  page: 1,
   pageSize: DEFAULT_PAGE_SIZE,
 })
 const createForm = reactive({
@@ -136,24 +134,25 @@ function disabledRowClass({ row }: { row: ManagedUser }): string {
   return row.status === 0 ? "user-row-off" : ""
 }
 
-let loadToken = 0
-
-async function load(): Promise<void> {
-  const token = ++loadToken
-  loading.value = true
-  errorMessage.value = ""
-  try {
-    const page = await listUsers(filters)
-    if (token !== loadToken) return
-    users.value = page.items
-    total.value = page.total
-  } catch (error) {
-    if (token !== loadToken) return
-    errorMessage.value = errorText(error, "用户台账加载失败")
-  } finally {
-    if (token === loadToken) loading.value = false
-  }
-}
+const {
+  items: users,
+  total,
+  page,
+  loading,
+  errorMessage,
+  load,
+  search,
+  reset: resetFilters,
+} = usePagedList({
+  fetcher: (page) => listUsers({ ...filters, page }),
+  errorMessage: "用户台账加载失败",
+  resetFilters: () => {
+    filters.keyword = ""
+    filters.providerCode = ""
+    filters.role = ""
+    filters.status = ""
+  },
+})
 
 async function loadPolicy(): Promise<void> {
   try {
@@ -163,35 +162,18 @@ async function loadPolicy(): Promise<void> {
   }
 }
 
-function search(): void {
-  filters.page = 1
-  void load()
-}
-
-function resetFilters(): void {
-  filters.keyword = ""
-  filters.providerCode = ""
-  filters.role = ""
-  filters.status = ""
-  filters.page = 1
-  void load()
-}
-
 /** 认证源 / 角色 / 状态 seg 点选即重查，与黑名单、上行回复页同一语言。 */
 function setProvider(value: string): void {
-  if (value === filters.providerCode) return
   filters.providerCode = value
   search()
 }
 
 function setRole(value: UserRole | ""): void {
-  if (value === filters.role) return
   filters.role = value
   search()
 }
 
 function setStatus(value: 0 | 1 | ""): void {
-  if (value === filters.status) return
   filters.status = value
   search()
 }
@@ -485,45 +467,36 @@ onMounted(() => {
     </label>
     <div class="user-fld">
       <span>认证源</span>
-      <div class="user-seg" role="group" aria-label="认证源筛选" data-testid="user-provider-seg">
-        <button
-          v-for="option in providerOptions"
-          :key="option.key"
-          type="button"
-          :class="{ on: filters.providerCode === option.value }"
-          :data-testid="`user-provider-${option.key}`"
-          @click="setProvider(option.value)"
-          >{{ option.label }}</button
-        >
-      </div>
+      <FilterSeg
+        :model-value="filters.providerCode"
+        :options="providerOptions"
+        data-testid="user-provider-seg"
+        button-testid-prefix="user-provider"
+        aria-label="认证源筛选"
+        @update:model-value="setProvider"
+      />
     </div>
     <div class="user-fld">
       <span>角色</span>
-      <div class="user-seg" role="group" aria-label="角色筛选" data-testid="user-role-seg">
-        <button
-          v-for="option in roleSegOptions"
-          :key="option.key"
-          type="button"
-          :class="{ on: filters.role === option.value }"
-          :data-testid="`user-role-${option.key}`"
-          @click="setRole(option.value)"
-          >{{ option.label }}</button
-        >
-      </div>
+      <FilterSeg
+        :model-value="filters.role"
+        :options="roleSegOptions"
+        data-testid="user-role-seg"
+        button-testid-prefix="user-role"
+        aria-label="角色筛选"
+        @update:model-value="setRole"
+      />
     </div>
     <div class="user-fld">
       <span>状态</span>
-      <div class="user-seg" role="group" aria-label="状态筛选" data-testid="user-status-seg">
-        <button
-          v-for="option in statusOptions"
-          :key="option.key"
-          type="button"
-          :class="{ on: filters.status === option.value }"
-          :data-testid="`user-status-${option.key}`"
-          @click="setStatus(option.value)"
-          >{{ option.label }}</button
-        >
-      </div>
+      <FilterSeg
+        :model-value="filters.status"
+        :options="statusOptions"
+        data-testid="user-status-seg"
+        button-testid-prefix="user-status"
+        aria-label="状态筛选"
+        @update:model-value="setStatus"
+      />
     </div>
     <div class="user-filter-go">
       <el-button data-testid="user-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
@@ -697,16 +670,7 @@ onMounted(() => {
       <el-button data-testid="empty-create-local-user" type="primary" @click="openCreate">创建本地账号</el-button>
     </div>
 
-    <footer class="user-pagination">
-      <span>共 {{ total }} 名用户 · 每页 20</span>
-      <el-pagination
-        v-model:current-page="filters.page"
-        :page-size="filters.pageSize"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="load"
-      />
-    </footer>
+    <ListPagination v-model:page="page" :total="total" unit="名用户" @change="load" />
   </section>
 
   <el-drawer

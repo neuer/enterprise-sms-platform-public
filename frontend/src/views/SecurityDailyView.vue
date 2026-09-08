@@ -1,10 +1,14 @@
 <script setup lang="ts">
+import SecurityDailyConfigDialog from "../components/SecurityDailyConfigDialog.vue"
+import { apiErrorMessage } from "../lib/securityDaily"
+import { usePagedList } from "../composables/usePagedList"
+import ListPagination from "../components/ListPagination.vue"
+import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
-import { computed, nextTick, onMounted, reactive, ref } from "vue"
+import { computed, nextTick, onMounted, reactive, ref, toRef } from "vue"
 
 import {
   generateSecurityDailyReport,
-  getSecurityDailyConfiguration,
   getSecurityDailyOverview,
   getSecurityDailyReport,
   listSecurityDailyReports,
@@ -13,18 +17,15 @@ import {
   sendSecurityDailyReport,
   type DeliveryStatus,
   type SecurityActionItem,
-  type SecurityDailyConfiguration,
   type GenerationStatus,
   type SecurityDailyConfigurationState,
   type SecurityDailyOverview,
   type SecurityDailyPayload,
   type SecurityDailyReport,
   type SecurityStatus,
-  updateSecurityDailyConfiguration,
 } from "../api/securityDaily"
 import EmptyState from "../components/EmptyState.vue"
 import { confirmAuditedAction } from "../lib/confirm"
-import { errorText } from "../lib/error"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 
@@ -95,28 +96,17 @@ const deliverySegOptions = [
 ]
 
 const overview = ref<SecurityDailyOverview | null>(null)
-const reports = ref<SecurityDailyReport[]>([])
-const total = ref(0)
-const loading = ref(false)
 const detailLoading = ref(false)
 const delivering = ref(false)
 const previewLoading = ref(false)
 const overviewErrorMessage = ref("")
-const reportsErrorMessage = ref("")
 const selected = ref<SecurityDailyReport | null>(null)
 const drawerOpen = ref(false)
 const previewText = ref("")
 const previewOpen = ref(false)
 const configOpen = ref(false)
 const configLoading = ref(false)
-const configSaving = ref(false)
 const generationLoading = ref(false)
-const configErrorMessage = ref("")
-const configEnabled = ref(false)
-const configRecipients = ref("")
-const configApiKey = ref("")
-const clearConfigApiKey = ref(false)
-const currentConfiguration = ref<SecurityDailyConfiguration | null>(null)
 const filters = reactive({
   dateFrom: "",
   dateTo: "",
@@ -202,15 +192,6 @@ function configurationTagType(value: string): "success" | "warning" | "info" {
   return "info"
 }
 
-function apiErrorMessage(error: unknown, fallback: string): string {
-  if (error instanceof Error && "code" in error && typeof error.code === "string") {
-    const status = "status" in error && typeof error.status === "number" ? error.status : 0
-    const retry = status >= 500 ? "，请刷新重试" : ""
-    return `${error.message}（错误码 ${error.code}）${retry}`
-  }
-  return errorText(error, fallback)
-}
-
 function tagType(value: string): "success" | "warning" | "danger" | "info" {
   if (value === "normal" || value === "ready" || value === "sent" || value === "good") return "success"
   if (value === "attention" || value === "pending" || value === "sending" || value === "unknown" || value === "warn")
@@ -239,36 +220,29 @@ function displayMoment(value: string | null | undefined): string {
   return formatDateTime(value)
 }
 
-let loadToken = 0
-
-async function loadReports(): Promise<void> {
-  const token = ++loadToken
-  loading.value = true
-  reportsErrorMessage.value = ""
-  reports.value = []
-  total.value = 0
-  try {
-    const result = await listSecurityDailyReports({
+const {
+  items: reports,
+  total,
+  loading,
+  errorMessage: reportsErrorMessage,
+  load: loadReports,
+} = usePagedList({
+  page: toRef(filters, "page"),
+  fetcher: (page) =>
+    listSecurityDailyReports({
       dateFrom: filters.dateFrom || undefined,
       dateTo: filters.dateTo || undefined,
       status: filters.status || undefined,
       generationStatus: filters.generationStatus || undefined,
       deliveryStatus: filters.deliveryStatus || undefined,
-      page: filters.page,
+      page,
       pageSize: filters.pageSize,
-    })
-    if (token !== loadToken) return
-    reports.value = result.items
-    total.value = result.total
-  } catch (error) {
-    if (token !== loadToken) return
-    reports.value = []
-    total.value = 0
-    reportsErrorMessage.value = apiErrorMessage(error, "安全日报列表暂不可用，请刷新重试")
-  } finally {
-    if (token === loadToken) loading.value = false
-  }
-}
+    }),
+  errorMessage: "安全日报列表暂不可用，请刷新重试",
+  formatError: (error) => apiErrorMessage(error, "安全日报列表暂不可用，请刷新重试"),
+  clearOnLoad: true,
+  clearOnError: true,
+})
 
 async function loadOverview(): Promise<void> {
   overviewErrorMessage.value = ""
@@ -320,78 +294,8 @@ function setDeliveryStatus(value: DeliveryStatus | ""): void {
   search()
 }
 
-function clearConfigurationSecrets(): void {
-  configApiKey.value = ""
-  clearConfigApiKey.value = false
-}
-
-async function openConfiguration(): Promise<void> {
+function openConfiguration(): void {
   configOpen.value = true
-  configLoading.value = true
-  configErrorMessage.value = ""
-  configApiKey.value = ""
-  clearConfigApiKey.value = false
-  try {
-    const configuration = await getSecurityDailyConfiguration()
-    currentConfiguration.value = configuration
-    configEnabled.value = configuration.enabled
-    configRecipients.value = configuration.recipients.join("\n")
-  } catch (error) {
-    configErrorMessage.value = apiErrorMessage(error, "安全日报配置暂不可用，请刷新重试")
-  } finally {
-    configLoading.value = false
-  }
-}
-
-function parseRecipients(): string[] {
-  return configRecipients.value
-    .split(/[\n,]/)
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
-const EMAIL_PATTERN =
-  /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/
-
-function validateRecipients(recipients: string[]): string {
-  if (recipients.length > 3) return "收件人最多 3 个"
-  const invalid = recipients.find(
-    (item) => item.length > 254 || !EMAIL_PATTERN.test(item) || item.split("@")[0].length > 64,
-  )
-  if (invalid) return `收件人地址无效：${invalid}`
-  const seen = new Set<string>()
-  const duplicate = recipients.find((item) => {
-    const key = item.toLowerCase()
-    if (seen.has(key)) return true
-    seen.add(key)
-    return false
-  })
-  return duplicate ? `收件人不能重复：${duplicate}` : ""
-}
-
-async function saveConfiguration(): Promise<void> {
-  const recipients = parseRecipients()
-  const validationError = validateRecipients(recipients)
-  if (validationError) {
-    configErrorMessage.value = validationError
-    return
-  }
-  configSaving.value = true
-  configErrorMessage.value = ""
-  try {
-    currentConfiguration.value = await updateSecurityDailyConfiguration({
-      enabled: configEnabled.value,
-      recipients,
-      resend_api_key: clearConfigApiKey.value ? "" : configApiKey.value.trim() || null,
-    })
-    configOpen.value = false
-    ElMessage.success("安全日报配置已保存 · 本次操作已记入审计")
-    await refresh()
-  } catch (error) {
-    configErrorMessage.value = apiErrorMessage(error, "安全日报配置保存失败，请检查输入")
-  } finally {
-    configSaving.value = false
-  }
 }
 
 async function refresh(): Promise<void> {
@@ -603,55 +507,39 @@ onMounted(() => void refresh())
       </div>
       <div class="security-daily-fld">
         <span>安全状态</span>
-        <div class="security-daily-seg" role="group" aria-label="安全状态筛选" data-testid="security-daily-status-seg">
-          <button
-            v-for="option in statusSegOptions"
-            :key="option.key"
-            type="button"
-            :class="{ on: filters.status === option.value }"
-            :data-testid="`security-daily-status-${option.key}`"
-            @click="setStatus(option.value)"
-            >{{ option.label }}</button
-          >
-        </div>
+        <FilterSeg
+          :model-value="filters.status"
+          :options="statusSegOptions"
+          button-testid-prefix="security-daily-status"
+          class="filter-seg--compact"
+          aria-label="安全状态筛选"
+          data-testid="security-daily-status-seg"
+          @update:model-value="setStatus"
+        />
       </div>
       <div class="security-daily-fld">
         <span>生成状态</span>
-        <div
-          class="security-daily-seg"
-          role="group"
+        <FilterSeg
+          :model-value="filters.generationStatus"
+          :options="generationSegOptions"
+          button-testid-prefix="security-daily-generation"
+          class="filter-seg--compact"
           aria-label="生成状态筛选"
           data-testid="security-daily-generation-seg"
-        >
-          <button
-            v-for="option in generationSegOptions"
-            :key="option.key"
-            type="button"
-            :class="{ on: filters.generationStatus === option.value }"
-            :data-testid="`security-daily-generation-${option.key}`"
-            @click="setGenerationStatus(option.value)"
-            >{{ option.label }}</button
-          >
-        </div>
+          @update:model-value="setGenerationStatus"
+        />
       </div>
       <div class="security-daily-fld">
         <span>投递状态</span>
-        <div
-          class="security-daily-seg"
-          role="group"
+        <FilterSeg
+          :model-value="filters.deliveryStatus"
+          :options="deliverySegOptions"
+          button-testid-prefix="security-daily-delivery"
+          class="filter-seg--compact"
           aria-label="投递状态筛选"
           data-testid="security-daily-delivery-seg"
-        >
-          <button
-            v-for="option in deliverySegOptions"
-            :key="option.key"
-            type="button"
-            :class="{ on: filters.deliveryStatus === option.value }"
-            :data-testid="`security-daily-delivery-${option.key}`"
-            @click="setDeliveryStatus(option.value)"
-            >{{ option.label }}</button
-          >
-        </div>
+          @update:model-value="setDeliveryStatus"
+        />
       </div>
       <div class="security-daily-filter-go">
         <el-button data-testid="security-daily-search" type="primary" native-type="submit" :loading="loading"
@@ -763,16 +651,13 @@ onMounted(() => void refresh())
       <EmptyState :title="reportsEmptyTitle" :description="reportsEmptyDescription" />
     </div>
 
-    <footer class="security-daily-pagination">
-      <span>共 {{ total }} 条 · 每页 20</span>
-      <el-pagination
-        v-model:current-page="filters.page"
-        :page-size="filters.pageSize"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="loadReports"
-      />
-    </footer>
+    <ListPagination
+      v-model:page="filters.page"
+      :total="total"
+      :page-size="filters.pageSize"
+      unit="条"
+      @change="loadReports"
+    ></ListPagination>
   </section>
 
   <el-drawer v-model="drawerOpen" title="安全日报详情" size="min(760px, 92vw)" :teleported="false">
@@ -957,42 +842,5 @@ onMounted(() => void refresh())
     <pre class="security-preview-text">{{ previewText }}</pre>
   </el-dialog>
 
-  <el-dialog
-    v-model="configOpen"
-    title="安全日报邮件配置"
-    width="560px"
-    destroy-on-close
-    @closed="clearConfigurationSecrets"
-  >
-    <el-skeleton v-if="configLoading" :rows="5" animated />
-    <el-form v-else label-position="top" @submit.prevent="saveConfiguration">
-      <el-form-item label="启用安全日报">
-        <el-switch v-model="configEnabled" active-text="启用" inactive-text="停用" />
-      </el-form-item>
-      <el-form-item label="Resend API Key">
-        <el-input
-          v-model="configApiKey"
-          type="password"
-          show-password
-          autocomplete="off"
-          :disabled="clearConfigApiKey"
-          placeholder="留空保持当前 Key"
-        />
-        <div class="form-tip"
-          >当前状态：{{ currentConfiguration?.resend_api_key_configured ? "已配置" : "未配置" }}；Key 不会回显。</div
-        >
-        <el-checkbox v-if="currentConfiguration?.resend_api_key_configured" v-model="clearConfigApiKey"
-          >清空当前 Key</el-checkbox
-        >
-      </el-form-item>
-      <el-form-item label="收件人（每行一个，也可用逗号分隔，最多 3 个）">
-        <el-input v-model="configRecipients" type="textarea" :rows="4" placeholder="security@example.com" />
-      </el-form-item>
-      <el-alert v-if="configErrorMessage" :title="configErrorMessage" type="error" show-icon :closable="false" />
-    </el-form>
-    <template #footer>
-      <el-button @click="configOpen = false">取消</el-button>
-      <el-button type="primary" :loading="configSaving" @click="saveConfiguration">保存</el-button>
-    </template>
-  </el-dialog>
+  <SecurityDailyConfigDialog v-model="configOpen" @saved="refresh" @loading="configLoading = $event" />
 </template>

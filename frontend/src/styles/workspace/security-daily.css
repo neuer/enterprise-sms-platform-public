@@ -106,30 +106,7 @@
   font-family: var(--mono);
   font-size: 11px;
 }
-.security-daily-seg {
-  display: flex;
-  overflow: hidden;
-  height: 30px;
-  border: 1px solid var(--hair);
-  border-radius: 7px;
-}
-.security-daily-seg button {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 8px;
-  color: var(--tx-2);
-  font: inherit;
-  font-size: 10.5px;
-  font-weight: 400;
-  white-space: nowrap;
-  background: var(--sink);
-  border: 0;
-  cursor: pointer;
-}
-.security-daily-seg button.on {
-  color: #eaf1ed;
-  background: var(--verdi);
-}
+/* 安全/生成/投递状态 seg 已并入 FilterSeg 单点，紧凑尺寸由 .filter-seg--compact 变体承载。 */
 .security-daily-filter-go {
   display: flex;
   flex: none;
@@ -478,5 +455,28 @@
   .apps-filter-note {
     width: 100%;
     margin-left: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .security-daily-fld,
+  .security-daily-dates {
+    width: 100%;
+    min-width: 0;
+  }
+  .security-daily-date.el-date-editor {
+    --el-date-editor-width: 100%;
+    flex: 1;
+    width: 0;
+    min-width: 0;
+  }
+  .security-daily-fld .filter-seg {
+    flex-wrap: wrap;
+    width: 100%;
+    height: auto;
+    min-height: 30px;
+  }
+  .security-daily-fld .filter-seg button {
+    min-height: 30px;
   }
 }

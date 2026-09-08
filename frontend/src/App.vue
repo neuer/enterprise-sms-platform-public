@@ -35,7 +35,7 @@ function switchTheme(): void {
 const authenticatedShell = computed(() => !publicRoute.value && session.isAuthenticated)
 const dashboardRoute = computed(() => route.path === "/dashboard")
 const approvalRoute = computed(() => route.path === "/approvals")
-const approverRole = computed(() => session.role === "approver" || session.role === "admin")
+const approverRole = computed(() => session.canDecrypt)
 const balanceLabel = computed(() =>
   currentBalance.value === null ? "厂商余额暂无数据" : `厂商余额 ${currentBalance.value.toLocaleString()} 计费条`,
 )

@@ -26,30 +26,6 @@
 .apps-keyword {
   width: 220px;
 }
-.apps-seg {
-  display: flex;
-  height: 34px;
-  overflow: hidden;
-  border: 1px solid var(--hair);
-  border-radius: 7px;
-}
-.apps-seg button {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  padding: 0 13px;
-  color: var(--tx-2);
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 400;
-  background: var(--sink);
-  border: 0;
-  cursor: pointer;
-}
-.apps-seg button.on {
-  color: #eaf1ed;
-  background: var(--verdi);
-}
 .apps-filter-note {
   margin-left: auto;
   align-self: center;

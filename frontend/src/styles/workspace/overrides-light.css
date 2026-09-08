@@ -103,7 +103,7 @@
 
 /* 按深色面板调优的浅朱红文字（#ef9b89/#f0a08c/#d66b6b）亮底对比不足，向深取 --verm。 */
 [data-theme="light"] .approval-seg-count.is-hot,
-[data-theme="light"] .batch-chip.hot,
+[data-theme="light"] .filter-seg--chips button.hot,
 [data-theme="light"] .message-badge-tag.is-listed,
 [data-theme="light"] .apps-key-tag--revoked,
 [data-theme="light"] .apps-form-alert--verm,

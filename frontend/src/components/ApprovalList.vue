@@ -1,11 +1,16 @@
 <script setup lang="ts">
+import { triggerRule, formatSegments } from "../lib/approvalText"
+
 import { computed, ref } from "vue"
 
 import type { ApprovalAction, ApprovalListItem, ApprovalStatus } from "../api/approvals"
+
 import CategoryTag from "./CategoryTag.vue"
+
 import EmptyState from "./EmptyState.vue"
+
 import StatusTag from "./StatusTag.vue"
-import { CATEGORY_LABELS } from "../lib/labels"
+
 import { formatDateTime, formatDurationHms } from "../lib/time"
 
 const REASON_MAX_LENGTH = 256
@@ -30,22 +35,6 @@ const emptyTitle = computed(() => (props.status === "pending" ? "当前没有待
 
 function isMine(item: ApprovalListItem): boolean {
   return item.applicant === props.currentUsername
-}
-
-function categoryLabel(category: ApprovalListItem["category"]): string {
-  return CATEGORY_LABELS[category]
-}
-
-function triggerRule(item: ApprovalListItem): string {
-  if (item.trigger_threshold_source === "legacy_unknown" || item.trigger_threshold === null) {
-    return "历史阈值不可确认"
-  }
-  const base = `${categoryLabel(item.category)} ≥ ${item.trigger_threshold} 个号码`
-  return item.trigger_threshold_source === "snapshot" ? `${base} · 提交时阈值快照` : base
-}
-
-function formatSegments(value: number | null): string {
-  return value === null ? "—" : `${value.toLocaleString()} 条`
 }
 
 function scheduleChip(item: ApprovalListItem): string {
