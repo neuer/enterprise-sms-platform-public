@@ -69,3 +69,31 @@
 5. 使用已有维护发布入口；本轮不部署、不执行服务器迁移、不启用真实 sink/来源，不修改真实凭据。回退保持严格策略或关闭受影响 AD，不能静默恢复快速缺失用户失败路径。数据库、卷和审计事实保留。
 
 可观测指标包括 `auth_source_admit_total{profile,outcome}`、`auth_prehash_refund_total{profile,outcome}`、统一 LDAP 失败耗时 sum/count、sink 故障与 deadline 次数。Profile 只有 internet/shared；指标不含用户名、IP、DN、CIDR 或 token 标签。
+
+## 非 MFA 失败信号与离线密码库
+
+迁移 `0113_auth_spray_policy` 在保留现有容量值的同时加入喷洒阈值并推进策略 revision。
+升级需按既有迁移发布入口协调 API 切换；旧二进制不接受新增字段，不能混跑或只回退旧镜像。
+本次代码交付不执行迁移、服务器更新或密码库安装。
+
+`auth_admission_policy` 新增 `spray_failures`（默认 12，范围 5–100）、
+`spray_sources`（默认 4，范围 2–32，对双向不同主体位数生效）、
+`spray_delay_ms`（默认 250，范围 50–1000）。达到阈值后失败响应延迟一个单位，
+失败数达到两倍阈值后延迟两个单位，始终不超过 1000ms。Redis 故障或状态损坏时失败关闭。
+窗口内只有匿名化近似行为证据；指标 `auth_password_spray_signal_total{risk_level}`
+仅有 elevated/high/unavailable 标签，不含账号、IP 或凭据。它不是持久审计或外部通知。
+采用固定桶和 32 位去重会发生碰撞或低估，不是精准攻击归因；固定窗口也不能覆盖任意低速攻击。
+信号跨成功登录保留至 TTL，但不阻止正确凭据认证。MFA、挑战、风险新会话降权和新管理动作的
+二次认证产品范围仍待确定；不把密码重复输入等同于独立因素。
+
+生产在受控 auth-policy 目录安装 `password-corpus.json`（root:10001、0640、无符号链接），
+并配置 `AUTH_PASSWORD_CORPUS_FILE=/run/auth-policy/password-corpus.json`。
+文件是 JSON 对象，只允许 version（整数 1）、source_ref（脱敏版本引用）、expires_at
+（带时区 ISO8601）、sha256（不重复的小写 SHA-256 hex 数组）四个字段。
+文件最多 8 MiB、1–100000 条；摘要按原始 UTF-8 密码计算，不做大小写或 Unicode 改写。
+条目应由运维在受控离线流程从批准的常见/泄露语料整理，记录来源、许可、覆盖范围、版本及到期日；
+不可收集本系统的用户密码生成语料，不可把真实密码交给在线检查工具。
+生产发布前必须提供真实批准语料并验证代表性命中与正常控制，测试的合成单条库不具备生产覆盖证明。
+先原子替换完整文件，再重启 API 加载不可变快照；加载失败或到期会拒绝本地密码写入，
+恢复有效文件并重启后才恢复。init-admin 在同一 API 容器文件边界加载库，检查失败不会生成管理员。
+已有账号登录、刷新和 AD 校验不依赖语料；不得为了恢复开户/改密移除生产配置来绕过筛查。

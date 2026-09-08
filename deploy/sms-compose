@@ -381,7 +381,7 @@ configure_auth_policy_path() {
     echo "sms-compose: production auth-policy directory metadata is unsafe" >&2
     return 1
   fi
-  for file in "$directory/ldap-timing.json" "$directory/sources.json"; do
+  for file in "$directory/ldap-timing.json" "$directory/sources.json" "$directory/password-corpus.json"; do
     if [[ ! -e "$file" && ! -L "$file" ]]; then continue; fi
     if [[ ! -f "$file" || -L "$file" || "$(readlink -f -- "$file")" != "$file" ]]; then
       echo "sms-compose: production auth-policy file is unsafe" >&2

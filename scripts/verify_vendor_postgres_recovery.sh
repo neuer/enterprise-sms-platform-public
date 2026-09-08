@@ -187,6 +187,7 @@ SQL
       tests/integration/test_daily_password_cas_postgres.py \
       tests/integration/test_auth_guard_redis.py \
       tests/integration/test_auth_admission_redis.py \
+    tests/integration/test_auth_spray_redis.py \
       tests/integration/test_auth_admission_postgres.py \
       tests/integration/test_stable_principal_postgres.py \
       tests/integration/test_outbox_postgres.py \

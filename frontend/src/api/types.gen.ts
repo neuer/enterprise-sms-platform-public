@@ -6762,6 +6762,7 @@ export interface components {
             /** @enum {string} */
             auth_flow: "password" | "redirect";
         };
+        /** @description 本地密码同时由服务端离线常见或泄露密码库检查；生产库缺失、损坏或过期时，创建、重置和改密返回 AUTH_PROVIDER_UNAVAILABLE/503。 */
         PasswordPolicy: {
             /** @constant */
             min_length: 12;

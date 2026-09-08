@@ -23,7 +23,7 @@ const policy = ref<PasswordPolicy>({
   max_length: 128,
   required_character_classes: 3,
   forbid_username: true,
-  description: "12–128 位，至少包含三类字符，不能包含用户名",
+  description: "12–128 位，至少包含三类字符，不能包含用户名；服务端检查常见或泄露密码",
 })
 
 const visible = computed({

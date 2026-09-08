@@ -64,7 +64,8 @@ class FakeAuthFacade:
             "max_length": 128,
             "required_character_classes": 3,
             "forbid_username": True,
-            "description": "12–128 位，至少包含大小写字母、数字、特殊字符中的三类，不能包含用户名",
+            "description": "12–128 位，至少包含大小写字母、数字、特殊字符中的三类，不能包含用户名；"
+        "服务端检查常见或泄露密码",
         }
 
     async def login(

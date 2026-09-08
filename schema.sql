@@ -1,6 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.98  2026-09-07
+-- v1.6.99  2026-09-07
+-- v1.6.99：密码喷洒失败信号阈值；升级时推进准入策略 revision。
 -- v1.6.98：来源准入策略阈值及单调 revision，复用 sys_config 权限和审计。
 -- v1.6.97  2026-09-07
 -- v1.6.97：批次活跃消息计数惰性初始化，回执按锁内差值更新，终态无需逐条扫消息。
@@ -2675,7 +2676,7 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 ('export_retention_days',     '7',     'int',  '导出文件保留天数'),
 ('sensitive_hit_action',      'block', 'str',  '敏感词命中策略: block/audit'),
 ('key_grace_hours',           '72',    'int',  'APIKey轮换旧Key宽限期(小时)'),
-('auth_admission_policy', '{"version":1,"shared_burst":100,"shared_window":200,"shared_refill_ms":1000,"global_burst":8,"global_refill_ms":250,"global_concurrent":4,"source_concurrent":2}', 'json', '登录来源准入阈值；可信出口由部署文件批准'),
+('auth_admission_policy', '{"version":1,"shared_burst":100,"shared_window":200,"shared_refill_ms":1000,"global_burst":8,"global_refill_ms":250,"global_concurrent":4,"source_concurrent":2,"spray_failures":12,"spray_sources":4,"spray_delay_ms":250}', 'json', '登录来源准入阈值；可信出口由部署文件批准'),
 ('login_fail_limit',          '5',     'int',  '同账号15分钟内失败次数上限'),
 ('login_lock_minutes',        '15',    'int',  '账号锁定时长(分钟)'),
 ('login_ip_fail_limit',       '20',    'int',  '同IP5分钟内失败次数上限'),

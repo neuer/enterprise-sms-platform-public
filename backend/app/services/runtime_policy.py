@@ -44,7 +44,8 @@ class ConfigSpec:
 CONFIG_SPECS: dict[str, ConfigSpec] = {
     "auth_admission_policy": ConfigSpec(
         '{"version":1,"shared_burst":100,"shared_window":200,"shared_refill_ms":1000,'
-        '"global_burst":8,"global_refill_ms":250,"global_concurrent":4,"source_concurrent":2}',
+        '"global_burst":8,"global_refill_ms":250,"global_concurrent":4,"source_concurrent":2,'
+        '"spray_failures":12,"spray_sources":4,"spray_delay_ms":250}',
         "json", GROUP_SECURITY,
     ),
     "approval_threshold": ConfigSpec("100", "int", GROUP_SENDING, maximum=1_000_000),

@@ -27,7 +27,8 @@ ACTIVE_KEY = "auth:admission:active"
 CONFIG_KEY = "auth_admission_policy"
 DEFAULT_CONFIG = (
     '{"version":1,"shared_burst":100,"shared_window":200,"shared_refill_ms":1000,'
-    '"global_burst":8,"global_refill_ms":250,"global_concurrent":4,"source_concurrent":2}'
+    '"global_burst":8,"global_refill_ms":250,"global_concurrent":4,"source_concurrent":2,'
+    '"spray_failures":12,"spray_sources":4,"spray_delay_ms":250}'
 )
 
 
@@ -43,6 +44,10 @@ class AdmissionLimits(BaseModel):
     global_refill_ms: int = Field(default=250, ge=100, le=15000)
     global_concurrent: int = Field(default=4, ge=1, le=16)
     source_concurrent: int = Field(default=2, ge=1, le=8)
+
+    spray_failures: int = Field(default=12, ge=5, le=100)
+    spray_sources: int = Field(default=4, ge=2, le=32)
+    spray_delay_ms: int = Field(default=250, ge=50, le=1000)
 
     @model_validator(mode="after")
     def validate_bounds(self) -> AdmissionLimits:
