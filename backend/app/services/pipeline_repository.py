@@ -50,8 +50,11 @@ PIPELINE_CONFIG_KEYS = tuple(sorted(set(CONFIG_SPECS) | {"vendor_batch_size"}))
 class SqlPipelineStore:
     """在同一事务创建批次、消息三列、幂等记录与无 PII 审计。"""
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self, settings: Settings | None = None, crypto: CryptoService | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self.crypto = crypto
 
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
@@ -630,13 +633,16 @@ class SqlPipelineStore:
                 int(row["request_hash_key_version"]),
             )
 
-    @staticmethod
-    async def _insert(connection: AsyncConnection, command: BatchCommand, batch_no: str) -> int:
+    async def _insert(
+        self, connection: AsyncConnection, command: BatchCommand, batch_no: str,
+    ) -> int | StoredBatch:
         uncertain = None
         if isinstance(command.principal, UncertainEffectPrincipal):
             from app.services.idempotency import uncertain_resend_biz_id
             from app.services.uncertain_resolution import (
                 UncertainResolutionConflict,
+                _check_child_context,
+                _child_relation,
                 lock_uncertain_resend,
             )
 
@@ -653,6 +659,26 @@ class SqlPipelineStore:
                 or command.resend_of is not None
             ):
                 raise UncertainResolutionConflict("重发命令来源无法证明")
+            relation = await _child_relation(connection, uncertain.id)
+            if relation is not None:
+                if not relation["provenance_verified"]:
+                    raise UncertainResolutionConflict("重发子批次来源冲突")
+                _check_child_context(relation, uncertain, context)
+                existing_no = await connection.scalar(text(
+                    "SELECT batch_no FROM sms_batch WHERE id=:id"
+                ), {"id": relation["child_batch_id"]})
+                return StoredBatch(str(existing_no).strip(), True)
+            if uncertain.child_batch_id is not None:
+                raise UncertainResolutionConflict("重发子批次来源无法证明")
+            from app.services.uncertain_source import verify_source_proof
+
+            if self.crypto is None:
+                self.crypto = CryptoService.from_settings(self.settings)
+            await verify_source_proof(
+                connection, self.crypto, command.uncertain_source_proof,
+                resolution_id=uncertain.id, generation=uncertain.effect_generation,
+                batch_id=uncertain.batch_id, chunk_id=uncertain.chunk_id, accepted=command.messages,
+            )
         if command.biz_id:
             # 旧结果清理与状态写入共用批次锁；DELETE 使用获得锁后的新语句快照。
             await connection.execute(text("""
@@ -1015,7 +1041,9 @@ class SqlPipelineStore:
         batch_no = command.batch_no
         try:
             async with self._engine().begin() as connection:
-                await self._insert(connection, command, batch_no)
+                inserted = await self._insert(connection, command, batch_no)
+                if isinstance(inserted, StoredBatch):
+                    return inserted
             return StoredBatch(
                 batch_no,
                 False,

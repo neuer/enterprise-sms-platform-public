@@ -20,6 +20,7 @@ from app.services.idempotency import IdempotencyScope, uncertain_resend_biz_id
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.pipeline import SendRequest
+from app.services.uncertain_source import prepare_source_proof
 from app.services.usage_ledger import request_usage_release_for_batch
 from app.services.usage_subject import (
     UncertainResendContext,
@@ -59,6 +60,10 @@ class UncertainResolutionConflict(RuntimeError):
 
 class UncertainResolutionNotFound(LookupError):
     """处置单或分片不存在。"""
+
+
+class SourceMessageStateChanged(UncertainResolutionConflict):
+    """源消息或其接收人证明已变化，需要重新人工判断。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +160,7 @@ class UncertainResolutionService:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await _lock_resolution_source(connection, resolution_id)
                 current = (
                     await connection.execute(
                         text(
@@ -165,7 +171,7 @@ class UncertainResolutionService:
                               b.app_id,b.channel,b.category,b.dept
                             FROM sms_uncertain_resolution r
                             JOIN sms_batch b ON b.id=r.batch_id
-                            WHERE r.id=:id FOR UPDATE
+                            WHERE r.id=:id
                             """
                         ),
                         {"id": resolution_id},
@@ -545,15 +551,17 @@ class UncertainResolutionService:
             await connection.execute(
                 text(
                     """
-                    SELECT phone_enc,trim(phone_hmac) phone_hmac,key_version
+                    SELECT id,created_at,batch_id,chunk_id,status,report_status,
+                      report_time,report_event_key,phone_enc,trim(phone_hmac) phone_hmac,key_version
                     FROM sms_message
                     WHERE chunk_id=:chunk_id AND status='unknown'
-                    ORDER BY id
+                      AND report_status IS DISTINCT FROM 1
+                    ORDER BY id,created_at
                     """
                 ),
                 {"chunk_id": chunk_id},
             )
-        ).mappings()
+        ).mappings().all()
         mobiles = tuple(
             self.crypto.decrypt_phone(
                 bytes(item["phone_enc"]),
@@ -594,6 +602,9 @@ class UncertainResolutionService:
             is_test=bool(batch["is_test"]),
             resend_dept=str(batch["dept"]),
             usage_subject=usage_subject,
+            uncertain_source_proof=prepare_source_proof(
+                self.crypto, resolution_id, generation, phones, mobiles,
+            ),
         )
 
 
@@ -788,12 +799,33 @@ async def _require_active_dual_control(
             raise UncertainResolutionConflict("确认人或提案人已失效")
 
 
+async def _lock_resolution_source(connection: AsyncConnection, resolution_id: int) -> None:
+    """所有多表处置路径与报告统一为 chunk→batch→resolution，禁止反向等待。"""
+    identity = (await connection.execute(text(
+        "SELECT chunk_id,batch_id FROM sms_uncertain_resolution WHERE id=:id"
+    ), {"id": resolution_id})).mappings().one_or_none()
+    if identity is None:
+        raise UncertainResolutionNotFound
+    for table, key in (("sms_chunk", "chunk_id"), ("sms_batch", "batch_id")):
+        await connection.execute(text(f"SELECT id FROM {table} WHERE id=:id FOR UPDATE"),
+                                 {"id": identity[key]})
+    await connection.execute(text(
+        "SELECT id FROM sms_uncertain_resolution WHERE id=:id FOR UPDATE"
+    ), {"id": resolution_id})
+    current = (await connection.execute(text(
+        "SELECT chunk_id,batch_id FROM sms_uncertain_resolution WHERE id=:id"
+    ), {"id": resolution_id})).mappings().one_or_none()
+    if current is None or dict(current) != dict(identity):
+        raise UncertainResolutionConflict("重发源上下文已变化")
+
+
 async def lock_uncertain_resend(
     connection: AsyncConnection,
     principal: UncertainEffectPrincipal,
 ) -> tuple[UncertainResolution, UncertainResendContext, ApiAppContext]:
     """在创建/恢复事务锁定批准事实及源分片，校验完整来源与当前执行者。"""
 
+    await _lock_resolution_source(connection, principal.resolution_id)
     row = (
         (
             await connection.execute(
@@ -804,7 +836,7 @@ async def lock_uncertain_resend(
         FROM sms_uncertain_resolution r
         JOIN sms_chunk c ON c.id=r.chunk_id
         JOIN sms_batch b ON b.id=r.batch_id
-        WHERE r.id=:id FOR UPDATE OF r, c, b
+        WHERE r.id=:id
     """),
                 {"id": principal.resolution_id},
             )
@@ -977,6 +1009,8 @@ def _is_retryable_effect_error(exc: BaseException) -> bool:
 
 
 def _manual_effect_error(exc: BaseException) -> str:
+    if isinstance(exc, SourceMessageStateChanged):
+        return "source_message_state_changed"
     text_value = str(exc).casefold()
     if "generation" in text_value:
         return "generation_mismatch"

@@ -60,7 +60,7 @@ def _phone(nonce: str, seed: int) -> str:
 
 class EngineBoundStore(SqlPipelineStore):
     def __init__(self, engine: Any, settings: Any) -> None:
-        super().__init__(settings=settings)
+        super().__init__(settings=settings, crypto=_crypto())
         self._bound_engine = engine
         sync_engine = engine.sync_engine
         if not getattr(sync_engine, "_sms_uncertain_audit_begin", False):
@@ -1683,3 +1683,363 @@ async def test_r8_resend_uses_current_cost_policy_and_recovers_same_child(
     second = await _apply(env, resolution_id, pipeline, monkeypatch)
     assert second.child_batch_id == first.child_batch_id
     assert len(limiter.costs) == 1
+
+
+async def _r9_report(env: Any, chunk_id: int, *, status: int = 1) -> None:
+    """通过真实报告仓储提交合成回执，不调用厂商。"""
+    from datetime import UTC, datetime
+
+    from app.services.report_ingest import ProtectedReport
+    from app.services.report_repository import SqlReportRepository
+
+    class Repository(SqlReportRepository):
+        def _engine(self) -> Any:
+            return _NoDisposeEngine(env.engine)
+
+    async with env.engine.begin() as connection:
+        row = (await connection.execute(text("""
+            SELECT m.*,trim(c.custom_id) custom_id FROM sms_message m
+            JOIN sms_chunk c ON c.id=m.chunk_id WHERE c.id=:id ORDER BY m.id LIMIT 1
+        """), {"id": chunk_id})).mappings().one()
+        raw_id = await connection.scalar(text("""
+            INSERT INTO raw_vendor_log(source,payload_enc,payload_sha256,key_version,
+              custom_ids,item_count) VALUES('report',:enc,:digest,1,:ids,1) RETURNING id
+        """), {"enc": _crypto().encrypt_bound_packed_text('{}', EncryptionContext(
+            domain="vendor-raw", table="raw_vendor_log",
+            column="payload_enc", object_id="synthetic",
+        )), "digest": uuid4().hex * 2,
+                "ids": [row["custom_id"]]})
+    report = ProtectedReport(
+        event_key=uuid4().hex * 2, vendor_task_id="b" * 64, custom_id="c" * 64,
+        match_custom_id=row["custom_id"], phone_enc=bytes(row["phone_enc"]),
+        phone_hmac=str(row["phone_hmac"]).strip(), phone_mask=row["phone_mask"],
+        key_version=int(row["key_version"]), report_status=status,
+        message_status="delivered" if status == 1 else "unknown", report_desc="synthetic",
+        report_time=datetime.now(UTC), phone_hmacs=(str(row["phone_hmac"]).strip(),),
+    )
+    result = await Repository(settings=env.settings).apply_report(int(raw_id), report)
+    assert result is not None and result.changed
+
+
+@pytest.mark.asyncio
+async def test_r9_report_before_child_save_rejects_stale_snapshot(
+    env: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    batch_id, chunk_id = await _insert_unknown(
+        env.engine, _crypto(), channel="web", dept="运营一部", app_id=None,
+        phone=_phone(env.nonce, 90),
+    )
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    pipeline = _pipeline(env.store, env.ledger, env.redis)
+    accept = pipeline.accept
+
+    async def report_then_accept(app: Any, request: Any, **kwargs: Any) -> Any:
+        await _r9_report(env, chunk_id)
+        return await accept(app, request, **kwargs)
+
+    monkeypatch.setattr(pipeline, "accept", report_then_accept)
+    with pytest.raises(UncertainResolutionConflict, match="source_message_state_changed"):
+        await _apply(env, resolution_id, pipeline, monkeypatch)
+    async with env.engine.connect() as connection:
+        resolution = (await connection.execute(text(
+            "SELECT state,effect_error,child_batch_id FROM sms_uncertain_resolution WHERE id=:id"
+        ), {"id": resolution_id})).mappings().one()
+        assert dict(resolution) == {
+            "state": "manual_intervention_required", "effect_error": "source_message_state_changed",
+            "child_batch_id": None,
+        }
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM sms_uncertain_child WHERE resolution_id=:id"
+        ), {"id": resolution_id}) == 0
+        assert await connection.scalar(text(
+            "SELECT status FROM sms_message WHERE batch_id=:id"
+        ), {"id": batch_id}) == "delivered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", [
+    "missing_proof", "signature", "identity", "created_at", "generation", "recipient",
+    "deleted", "moved", "report_unknown",
+])
+async def test_r9_source_changes_roll_back_and_release_only_unbound(
+    env: Any, monkeypatch: pytest.MonkeyPatch, change: str,
+) -> None:
+    from dataclasses import replace
+    from datetime import timedelta
+
+    batch_id, chunk_id = await _insert_unknown(
+        env.engine, _crypto(), channel="web", dept="运营一部", app_id=None,
+        phone=_phone(env.nonce, 91),
+    )
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    pipeline = _pipeline(env.store, env.ledger, env.redis)
+    accept, save = pipeline.accept, env.store.save
+    commands: list[Any] = []
+
+    async def record_save(command: Any) -> Any:
+        commands.append(command)
+        return await save(command)
+
+    async def change_then_accept(app: Any, request: Any, **kwargs: Any) -> Any:
+        proof = request.uncertain_source_proof
+        assert proof is not None
+        if change == "missing_proof":
+            request = replace(request, uncertain_source_proof=None)
+        elif change in {"signature", "identity", "created_at", "generation"}:
+            if change == "signature":
+                proof = replace(proof, signature="0" * 64)
+            elif change == "generation":
+                proof = replace(proof, generation=proof.generation + 1)
+            else:
+                source = proof.messages[0]
+                source = replace(source, **(
+                    {"id": source.id + 100000} if change == "identity" else
+                    {"created_at": source.created_at + timedelta(microseconds=1)}
+                ))
+                proof = replace(proof, messages=(source,))
+                # 有效签名的旧身份也必须被真实数据库复核拒绝。
+                proof = replace(proof, signature=_crypto().idempotency_fingerprint(
+                    proof.canonical(), key_version=proof.key_version,
+                ))
+            request = replace(request, uncertain_source_proof=proof)
+        elif change == "recipient":
+            request = replace(request, mobiles=(_phone(env.nonce, 92),))
+        elif change == "report_unknown":
+            await _r9_report(env, chunk_id, status=0)
+        else:
+            async with env.engine.begin() as connection:
+                sql = ("DELETE FROM sms_message WHERE batch_id=:id" if change == "deleted"
+                       else "UPDATE sms_message SET chunk_id=NULL WHERE batch_id=:id")
+                await connection.execute(text(sql), {"id": batch_id})
+        return await accept(app, request, **kwargs)
+
+    monkeypatch.setattr(env.store, "save", record_save)
+    monkeypatch.setattr(pipeline, "accept", change_then_accept)
+    with pytest.raises(UncertainResolutionConflict, match="source_message_state_changed"):
+        await _apply(env, resolution_id, pipeline, monkeypatch)
+    assert len(commands) == 1
+    command = commands[0]
+    async with env.engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM sms_batch WHERE batch_no=:no"
+        ), {"no": command.batch_no}) == 0
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM outbox_event WHERE aggregate_id=:no "
+            "AND event_type='batch.ready'"
+        ), {"no": command.batch_no}) == 0
+        assert await connection.scalar(text(
+            "SELECT state FROM usage_reservation WHERE id=:id"
+        ), {"id": command.usage_reservation_id}) in {"release_requested", "released"}
+        assert await connection.scalar(text(
+            "SELECT state FROM send_inflight_reservation WHERE id=:id"
+        ), {"id": command.inflight_reservation_id}) == "released"
+        assert await connection.scalar(text(
+            "SELECT effect_generation FROM sms_uncertain_resolution WHERE id=:id"
+        ), {"id": resolution_id}) == 1
+
+
+async def _r9_wait_blocked(engine: Any, holder: int) -> None:
+    """以 PostgreSQL 实际等待图证明交错，不把时间延迟当作持锁证据。"""
+    import asyncio
+
+    async with asyncio.timeout(10):
+        while True:
+            async with engine.connect() as connection:
+                blocked = await connection.scalar(text(
+                    "SELECT EXISTS(SELECT 1 FROM pg_stat_activity "
+                    "WHERE :holder=ANY(pg_blocking_pids(pid)))"
+                ), {"holder": holder})
+            if blocked:
+                return
+            await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("winner", ["report", "child"])
+async def test_r9_report_and_child_actual_lock_order(
+    env: Any, monkeypatch: pytest.MonkeyPatch, winner: str,
+) -> None:
+    import asyncio
+
+    from app.services.report_repository import SqlReportRepository
+
+    batch_id, chunk_id = await _insert_unknown(
+        env.engine, _crypto(), channel="web", dept="运营一部", app_id=None,
+        phone=_phone(env.nonce, 93),
+    )
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    pipeline = _pipeline(env.store, env.ledger, env.redis)
+    locked, release = asyncio.Event(), asyncio.Event()
+    holder: list[int] = []
+    original_batch_lock = SqlReportRepository._lock_batch
+    original_insert, original_accept = env.store._insert, pipeline.accept
+    report_tasks: list[Any] = []
+
+    async def hold_report(connection: Any, target: int) -> None:
+        await original_batch_lock(connection, target)
+        if target == batch_id and winner == "report":
+            holder.append(int(await connection.scalar(text("SELECT pg_backend_pid()"))))
+            locked.set()
+            await release.wait()
+
+    async def hold_child(connection: Any, command: Any, number: str) -> Any:
+        result = await original_insert(connection, command, number)
+        if winner == "child":
+            holder.append(int(await connection.scalar(text("SELECT pg_backend_pid()"))))
+            locked.set()
+            await release.wait()
+        return result
+
+    async def start_report(app: Any, request: Any, **kwargs: Any) -> Any:
+        if winner == "report":
+            report_tasks.append(asyncio.create_task(_r9_report(env, chunk_id)))
+            await locked.wait()
+        return await original_accept(app, request, **kwargs)
+
+    monkeypatch.setattr(SqlReportRepository, "_lock_batch", staticmethod(hold_report))
+    monkeypatch.setattr(env.store, "_insert", hold_child)
+    monkeypatch.setattr(pipeline, "accept", start_report)
+    task = asyncio.create_task(_apply(env, resolution_id, pipeline, monkeypatch))
+    try:
+        await asyncio.wait_for(locked.wait(), 10)
+        if winner == "child":
+            report_tasks.append(asyncio.create_task(_r9_report(env, chunk_id)))
+        await _r9_wait_blocked(env.engine, holder[0])
+        release.set()
+        if winner == "report":
+            with pytest.raises(UncertainResolutionConflict, match="source_message_state_changed"):
+                await asyncio.wait_for(task, 15)
+        else:
+            result = await asyncio.wait_for(task, 15)
+            assert result.state == "closed" and result.child_batch_id is not None
+        await asyncio.wait_for(asyncio.gather(*report_tasks), 15)
+    finally:
+        release.set()
+        await asyncio.gather(task, *report_tasks, return_exceptions=True)
+    async with env.engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM sms_uncertain_child WHERE resolution_id=:id"
+        ), {"id": resolution_id}) == (1 if winner == "child" else 0)
+        assert await connection.scalar(text(
+            "SELECT status FROM sms_chunk WHERE id=:id"
+        ), {"id": chunk_id}) == "unknown_terminal"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [False, True])
+async def test_r9_rotated_hmac_filtered_mapping_and_mixed_source(
+    env: Any, monkeypatch: pytest.MonkeyPatch, changed: bool,
+) -> None:
+    import base64
+
+    first, second = _phone(env.nonce, 94), _phone(env.nonce, 95)
+    app_id = await _insert_api_app(env.engine, env.nonce + "r9")
+    batch_id, chunk_id = await _insert_unknown(
+        env.engine, _crypto(), channel="api", dept="运营一部", app_id=app_id, phone=first,
+    )
+    async with env.engine.begin() as connection:
+        for phone in (second, first):
+            protected = _crypto().protect_phone(phone)
+            await connection.execute(text("""
+                INSERT INTO sms_message(batch_id,chunk_id,phone_enc,phone_hmac,phone_mask,
+                  key_version,status) VALUES(:batch,:chunk,:enc,:hmac,:mask,:version,'unknown')
+            """), {"batch": batch_id, "chunk": chunk_id, "enc": protected.phone_enc,
+                    "hmac": protected.phone_hmac, "mask": protected.phone_mask,
+                    "version": protected.key_version})
+        await connection.execute(text(
+            "UPDATE sms_batch SET total=3,unknown_cnt=3,quota_cost=3 WHERE id=:id"
+        ), {"id": batch_id})
+        await connection.execute(text(
+            "UPDATE sms_chunk SET phone_count=3 WHERE id=:id"
+        ), {"id": chunk_id})
+    new_key = base64.b64encode(b"r" * 32).decode()
+    rotated = CryptoService.from_secret_values(
+        json.dumps({"active_version": 2, "keys": {"1": _AES, "2": new_key}}),
+        json.dumps({"active_version": 2, "keys": {"1": _HMAC, "2": new_key}}),
+    )
+    env.service.crypto = rotated
+    env.store.crypto = rotated
+    env.store.blocked = set(rotated.hmac_candidates(first).values())
+    pipeline = _pipeline(env.store, env.ledger, env.redis)
+    pipeline.crypto = rotated
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    accept = pipeline.accept
+
+    async def late_change(app: Any, request: Any, **kwargs: Any) -> Any:
+        if changed:
+            # 修改已被黑名单过滤的源消息也应保守拒绝整个旧快照。
+            async with env.engine.begin() as connection:
+                await connection.execute(text(
+                    "UPDATE sms_message SET report_status=1,status='delivered' "
+                    "WHERE batch_id=:id AND phone_hmac=:hmac"
+                ), {"id": batch_id, "hmac": _crypto().phone_hmac(first)})
+        return await accept(app, request, **kwargs)
+
+    monkeypatch.setattr(pipeline, "accept", late_change)
+    if changed:
+        with pytest.raises(UncertainResolutionConflict, match="source_message_state_changed"):
+            await _apply(env, resolution_id, pipeline, monkeypatch)
+    else:
+        result = await _apply(env, resolution_id, pipeline, monkeypatch)
+        async with env.engine.connect() as connection:
+            child = (await connection.execute(text(
+                "SELECT total,removed_duplicate,removed_blacklist FROM sms_batch WHERE id=:id"
+            ), {"id": result.child_batch_id})).mappings().one()
+            assert dict(child) == {"total": 1, "removed_duplicate": 1, "removed_blacklist": 1}
+            message = (await connection.execute(text(
+                "SELECT phone_hmac,key_version FROM sms_message WHERE batch_id=:id"
+            ), {"id": result.child_batch_id})).mappings().one()
+            assert message["key_version"] == 2
+            assert message["phone_hmac"].strip() == rotated.phone_hmac(second)
+
+
+@pytest.mark.asyncio
+async def test_r9_lost_commit_reply_recovers_child_after_late_report_without_new_proof(
+    env: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, chunk_id = await _insert_unknown(
+        env.engine, _crypto(), channel="web", dept="运营一部", app_id=None,
+        phone=_phone(env.nonce, 96),
+    )
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    pipeline = _pipeline(env.store, env.ledger, env.redis)
+    accept = pipeline.accept
+    commands: list[Any] = []
+    save = env.store.save
+
+    async def record_save(command: Any) -> Any:
+        commands.append(command)
+        return await save(command)
+
+    async def lose_reply(*args: Any, **kwargs: Any) -> Any:
+        await accept(*args, **kwargs)
+        raise ConnectionError("synthetic commit reply loss")
+
+    monkeypatch.setattr(env.store, "save", record_save)
+    monkeypatch.setattr(pipeline, "accept", lose_reply)
+    with pytest.raises(ConnectionError):
+        await _apply(env, resolution_id, pipeline, monkeypatch)
+    await _r9_report(env, chunk_id)
+    # 同一可信 child 的保存恢复也不要求重建旧来源证明。
+    from dataclasses import replace
+
+    command = commands[0]
+    with audit_principal_scope(command.principal), correlation_scope(uuid4()):
+        recovered = await save(replace(command, uncertain_source_proof=None))
+    assert recovered.idempotent and recovered.batch_no == command.batch_no
+
+    async def no_new_prepare(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("trusted child recovery must precede source preparation")
+
+    monkeypatch.setattr(env.service, "_build_resend", no_new_prepare)
+    closed = await _apply(env, resolution_id, pipeline, monkeypatch)
+    repeated = await _apply(env, resolution_id, pipeline, monkeypatch)
+    assert repeated.child_batch_id == closed.child_batch_id
+    assert len(commands) == 1
+    async with env.engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT state FROM usage_reservation WHERE id=:id"
+        ), {"id": command.usage_reservation_id}) == "committed"
+        assert await connection.scalar(text(
+            "SELECT state FROM send_inflight_reservation WHERE id=:id"
+        ), {"id": command.inflight_reservation_id}) == "batch_bound"
