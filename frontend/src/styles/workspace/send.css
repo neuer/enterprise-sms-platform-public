@@ -52,7 +52,8 @@
   margin-bottom: 12px;
 }
 
-.form-panel > header .seg {
+/* 号码/内容来源切换已并入 FilterSeg 的 .filter-seg--pill 变体（见 shared.css 单点）。 */
+.form-panel > header .filter-seg {
   margin-left: auto;
 }
 
@@ -172,31 +173,6 @@
   color: var(--tx-3);
   font-size: 10.5px;
   line-height: 1.5;
-}
-
-.seg {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--sink);
-  border: 1px solid var(--hair);
-  border-radius: 8px;
-}
-
-.seg button {
-  padding: 4px 14px;
-  color: var(--tx-2);
-  font-size: 11.5px;
-  background: none;
-  border: 0;
-  border-radius: 6px;
-  cursor: pointer;
-}
-
-.seg button.on {
-  color: var(--tx-hi);
-  background: var(--panel);
-  border: 1px solid var(--hair);
 }
 
 /* 营销同意面板：琥珀底/边即深色 --amber 同值，就地令牌化。 */

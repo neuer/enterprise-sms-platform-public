@@ -570,7 +570,10 @@ describe("安全日报页面", () => {
       .vm.$emit("closed")
     await flushPromises()
 
-    const state = wrapper.vm as unknown as { configApiKey: string; clearConfigApiKey: boolean }
+    const state = wrapper.findComponent({ name: "SecurityDailyConfigDialog" }).vm as unknown as {
+      configApiKey: string
+      clearConfigApiKey: boolean
+    }
     expect(state.configApiKey).toBe("")
     expect(state.clearConfigApiKey).toBe(false)
     wrapper.unmount()

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { categoryLabel, triggerRule, formatSegments } from "../lib/approvalText"
 import { ElMessage } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 
@@ -17,8 +18,11 @@ import {
 import { ApiRequestError } from "../api/client"
 import type { Category } from "../api/webMessages"
 import ApprovalList from "../components/ApprovalList.vue"
+import FilterSeg from "../components/FilterSeg.vue"
+import ListPagination from "../components/ListPagination.vue"
+import { usePagedList } from "../composables/usePagedList"
 import { usePolling } from "../composables/usePolling"
-import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { statusOptionsOf, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime, formatDurationHms, formatHms } from "../lib/time"
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
@@ -37,8 +41,6 @@ const category = ref<Category | "">("")
 const dept = ref("")
 const q = ref("")
 const sort = ref<ApprovalSort>("expires_asc")
-const page = ref(1)
-const total = ref(0)
 const counts = ref<ApprovalCounts>({
   pending: 0,
   approved: 0,
@@ -46,9 +48,6 @@ const counts = ref<ApprovalCounts>({
   expired: 0,
   pending_urgent: 0,
 })
-const items = ref<ApprovalListItem[]>([])
-const loading = ref(false)
-const errorMessage = ref("")
 const decidingId = ref<number | null>(null)
 const now = ref(Date.now())
 
@@ -58,12 +57,9 @@ const detail = ref<ApprovalDetail | null>(null)
 const detailLoading = ref(false)
 const decisionReason = ref("")
 
-const statusTabs: Array<{ value: ApprovalStatus; label: string }> = [
-  { value: "pending", label: "待审批" },
-  { value: "approved", label: "已通过" },
-  { value: "rejected", label: "已驳回" },
-  { value: "expired", label: "已过期" },
-]
+const statusTabs = statusOptionsOf(["pending", "approved", "rejected", "expired"] as const).map((option) =>
+  option.value === "pending" ? { ...option, label: "待审批" } : option,
+)
 
 function statusLabel(value: ApprovalStatus): string {
   return statusTabs.find((tab) => tab.value === value)?.label ?? value
@@ -76,7 +72,7 @@ const sortOptions: Array<{ value: ApprovalSort; label: string }> = [
   { value: "decided_desc", label: "最近决策" },
 ]
 
-const canApprove = computed(() => session.role !== null && ["approver", "admin"].includes(session.role))
+const canApprove = computed(() => session.canApprove)
 
 const decisionReasonTrimmed = computed(() => decisionReason.value.trim())
 
@@ -101,18 +97,6 @@ function countOf(value: unknown): number {
 
 function urgentOf(value: unknown): number {
   return value === "pending" ? counts.value.pending_urgent : 0
-}
-
-function categoryLabel(category: Category): string {
-  return CATEGORY_LABELS[category]
-}
-
-function triggerRule(item: ApprovalListItem): string {
-  if (item.trigger_threshold_source === "legacy_unknown" || item.trigger_threshold === null) {
-    return "历史阈值不可确认"
-  }
-  const base = `${categoryLabel(item.category)} ≥ ${item.trigger_threshold} 个号码`
-  return item.trigger_threshold_source === "snapshot" ? `${base} · 提交时阈值快照` : base
 }
 
 function laneLabel(category: Category): string {
@@ -149,32 +133,30 @@ function formatSchedule(value: string | null): string {
   return value ? formatDateTime(value) : "立即发送"
 }
 
-function formatSegments(value: number | null): string {
-  return value === null ? "—" : `${value.toLocaleString()} 条`
-}
-
 function deciderLabel(item: ApprovalListItem): string | null {
   if (item.approver) return item.approver
   if (item.status === "expired") return "系统自动"
   return null
 }
 
-const listRead = useLatestRead()
 const detailRead = useLatestRead()
-
-let loadToken = 0
 let detailToken = 0
 
-async function load(options: { silent?: boolean } = {}): Promise<void> {
-  const token = ++loadToken
-  const signal = listRead.start()
-  if (!options.silent) loading.value = true
-  errorMessage.value = ""
-  try {
-    const result = await listApprovals(
+const {
+  items,
+  total,
+  page,
+  loading,
+  errorMessage,
+  load,
+  search,
+  reset: resetFilters,
+} = usePagedList({
+  fetcher: (page, signal) =>
+    listApprovals(
       {
         status: status.value,
-        page: page.value,
+        page,
         size: DEFAULT_PAGE_SIZE,
         category: category.value || undefined,
         dept: dept.value,
@@ -182,48 +164,28 @@ async function load(options: { silent?: boolean } = {}): Promise<void> {
         sort: sort.value,
       },
       signal,
-    )
-    if (signal.aborted || token !== loadToken) return
-    items.value = result.items
-    total.value = result.total
+    ),
+  errorMessage: "审批列表加载失败",
+  onLoaded: (result) => {
     counts.value = result.counts
     approvalBadge.pending = result.counts.pending
     lastUpdatedAt.value = new Date().toISOString()
-  } catch (error) {
-    if (signal.aborted || token !== loadToken) return
-    errorMessage.value = errorText(error, "审批列表加载失败")
-  } finally {
-    if (token === loadToken) loading.value = false
-  }
-}
+  },
+  /** 清空状态/类别/部门/申请人筛选；排序随状态位回到 pending 默认的临期优先。 */
+  resetFilters: () => {
+    status.value = "pending"
+    category.value = ""
+    dept.value = ""
+    q.value = ""
+    sort.value = "expires_asc"
+  },
+})
 
 function onStatusChange(value: string | number): void {
   const next = String(value) as ApprovalStatus
-  if (next === status.value) return
   status.value = next
   sort.value = next === "pending" ? "expires_asc" : "decided_desc"
-  page.value = 1
-  void load()
-}
-
-function applyFilters(): void {
-  page.value = 1
-  void load()
-}
-
-/** 清空状态/类别/部门/申请人筛选并回第一页重查；排序随状态位回到 pending 默认的临期优先。 */
-function resetFilters(): void {
-  status.value = "pending"
-  category.value = ""
-  dept.value = ""
-  q.value = ""
-  sort.value = "expires_asc"
-  page.value = 1
-  void load()
-}
-
-function onPageChange(): void {
-  void load()
+  search()
 }
 
 async function showDetail(item: ApprovalListItem): Promise<void> {
@@ -361,21 +323,21 @@ onMounted(() => {
   <div class="approval-filter-bar">
     <div class="approval-fld">
       <span>状态</span>
-      <div class="approval-seg" role="group" aria-label="审批状态" data-testid="approval-status-seg">
-        <button
-          v-for="opt in statusTabs"
-          :key="opt.value"
-          type="button"
-          :class="{ on: status === opt.value }"
-          :data-testid="`approval-status-${opt.value}`"
-          @click="onStatusChange(opt.value)"
-        >
-          {{ opt.label }}
-          <span class="approval-seg-count" :class="{ 'is-hot': urgentOf(opt.value) > 0 }">{{
-            countOf(opt.value)
+      <FilterSeg
+        :model-value="status"
+        :options="statusTabs"
+        data-testid="approval-status-seg"
+        button-testid-prefix="approval-status"
+        aria-label="审批状态"
+        @update:model-value="onStatusChange"
+      >
+        <template #option="{ option }">
+          {{ option.label }}
+          <span class="approval-seg-count" :class="{ 'is-hot': urgentOf(option.value) > 0 }">{{
+            countOf(option.value)
           }}</span>
-        </button>
-      </div>
+        </template>
+      </FilterSeg>
     </div>
     <div class="approval-fld">
       <label for="approval-category">类别</label>
@@ -384,7 +346,7 @@ onMounted(() => {
         v-model="category"
         class="approval-pill-select"
         data-testid="approval-category-filter"
-        @change="applyFilters"
+        @change="search"
       >
         <el-option label="全部类别" value="" />
         <el-option label="通知" value="notice" />
@@ -400,8 +362,8 @@ onMounted(() => {
         clearable
         maxlength="32"
         data-testid="approval-dept-filter"
-        @change="applyFilters"
-        @clear="applyFilters"
+        @change="search"
+        @clear="search"
       />
     </div>
     <div class="approval-fld">
@@ -414,8 +376,8 @@ onMounted(() => {
         clearable
         maxlength="32"
         data-testid="approval-q-filter"
-        @change="applyFilters"
-        @clear="applyFilters"
+        @change="search"
+        @clear="search"
       />
     </div>
     <div class="approval-fld">
@@ -425,7 +387,7 @@ onMounted(() => {
         v-model="sort"
         class="approval-pill-select"
         data-testid="approval-sort-filter"
-        @change="applyFilters"
+        @change="search"
       >
         <el-option v-for="option in sortOptions" :key="option.value" :label="option.label" :value="option.value" />
       </el-select>
@@ -451,19 +413,13 @@ onMounted(() => {
     @quick="onQuick"
   />
 
-  <div class="approval-list-foot">
-    <span>共 {{ total }} 条 · 每页 {{ DEFAULT_PAGE_SIZE }}</span>
-    <el-pagination
-      v-model:current-page="page"
-      :page-size="DEFAULT_PAGE_SIZE"
-      :total="total"
-      layout="prev, pager, next"
-      @current-change="onPageChange"
-    />
-    <span class="approval-poll-status">
-      <i></i>30s 轮询中<template v-if="lastUpdatedAt"> · 上次更新 {{ formatHms(lastUpdatedAt) }}</template>
-    </span>
-  </div>
+  <ListPagination v-model:page="page" :total="total" class="approval-list-foot" @change="load">
+    <template #after>
+      <span class="approval-poll-status">
+        <i></i>30s 轮询中<template v-if="lastUpdatedAt"> · 上次更新 {{ formatHms(lastUpdatedAt) }}</template>
+      </span>
+    </template>
+  </ListPagination>
 
   <el-drawer v-model="drawerOpen" size="min(560px, 92vw)" :teleported="false" @close="closeDrawer">
     <template #header>

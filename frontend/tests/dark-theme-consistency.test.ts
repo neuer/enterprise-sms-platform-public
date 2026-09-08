@@ -47,14 +47,18 @@ describe("深色主题一致性守卫（前端打磨回归）", () => {
   it("工作区页面不自带 main 包装：骨架只由 App.vue 提供", () => {
     // 登录与首次改密渲染在 public-shell 下，允许自带 <main class="login-screen">。
     const publicViews = new Set(["LoginView.vue", "PasswordChangeView.vue"])
-    for (const file of readdirSync(resolve(process.cwd(), "src/views"))) {
+    for (const file of readdirSync(resolve(process.cwd(), "src/views"), { recursive: true }).filter(
+      (file): file is string => typeof file === "string" && file.endsWith(".vue"),
+    )) {
       if (publicViews.has(file)) continue
       expect(source(`src/views/${file}`), `${file} 不应嵌套 <main>`).not.toContain("<main")
     }
   })
 
   it("全部日期选择器声明青鸾深色弹层", () => {
-    for (const file of readdirSync(resolve(process.cwd(), "src/views"))) {
+    for (const file of readdirSync(resolve(process.cwd(), "src/views"), { recursive: true }).filter(
+      (file): file is string => typeof file === "string" && file.endsWith(".vue"),
+    )) {
       const view = source(`src/views/${file}`)
       const pickers = view.match(/<el-date-picker/g)?.length ?? 0
       const styled = view.match(/popper-class="qingluan-date-popper"/g)?.length ?? 0

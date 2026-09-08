@@ -11,20 +11,17 @@ import {
   type CallbackTask,
 } from "../api/callbacks"
 import EmptyState from "../components/EmptyState.vue"
+import FilterSeg from "../components/FilterSeg.vue"
+import ListPagination from "../components/ListPagination.vue"
+import { usePagedList } from "../composables/usePagedList"
 import { confirmAuditedAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
-import { useLatestRead } from "../composables/useLatestRead"
-import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 
 withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 
-const items = ref<CallbackTask[]>([])
-const total = ref(0)
 const deadTotal = ref(0)
 const apps = ref<ManagedApp[]>([])
-const loading = ref(false)
-const errorMessage = ref("")
 const retryingId = ref<number | null>(null)
 const selected = ref<CallbackTask | null>(null)
 const detailOpen = ref(false)
@@ -33,8 +30,6 @@ const filters = reactive({
   appId: null as number | null,
   event: "" as CallbackEvent | "",
   batchNo: "",
-  page: 1,
-  pageSize: DEFAULT_PAGE_SIZE,
 })
 
 const statusMeta: Record<CallbackStatus, { label: string; type: "warning" | "success" | "danger" | "info" }> = {
@@ -70,10 +65,6 @@ function statusType(value: CallbackStatus): "warning" | "success" | "danger" | "
   return statusMeta[value].type
 }
 
-const listRead = useLatestRead()
-
-let loadToken = 0
-
 /** 抽屉选中行随每次重查同步：重推成功或筛选变化导致行离开当前列表时即收起抽屉。 */
 function syncSelected(): void {
   if (!detailOpen.value || !selected.value) return
@@ -85,34 +76,39 @@ function syncSelected(): void {
   }
 }
 
-async function load(): Promise<void> {
-  const token = ++loadToken
-  const signal = listRead.start()
-  loading.value = true
-  errorMessage.value = ""
-  try {
-    const result = await listCallbacks(
+const {
+  items,
+  total,
+  page,
+  loading,
+  errorMessage,
+  load,
+  search,
+  reset: resetFilters,
+} = usePagedList({
+  fetcher: (page, signal) =>
+    listCallbacks(
       {
         status: filters.status,
         appId: filters.appId,
         event: filters.event,
         batchNo: filters.batchNo,
-        page: filters.page,
+        page,
       },
       signal,
-    )
-    if (signal.aborted || token !== loadToken) return
-    items.value = result.items
-    total.value = result.total
+    ),
+  errorMessage: "回调任务加载失败",
+  onLoaded: (result) => {
     deadTotal.value = result.dead_total
     syncSelected()
-  } catch (error) {
-    if (signal.aborted || token !== loadToken) return
-    errorMessage.value = errorText(error, "回调任务加载失败")
-  } finally {
-    if (token === loadToken) loading.value = false
-  }
-}
+  },
+  resetFilters: () => {
+    filters.status = ""
+    filters.appId = null
+    filters.event = ""
+    filters.batchNo = ""
+  },
+})
 
 async function loadApps(): Promise<void> {
   try {
@@ -123,29 +119,13 @@ async function loadApps(): Promise<void> {
   }
 }
 
-function search(): void {
-  filters.page = 1
-  void load()
-}
-
-function resetFilters(): void {
-  filters.status = ""
-  filters.appId = null
-  filters.event = ""
-  filters.batchNo = ""
-  filters.page = 1
-  void load()
-}
-
 /** 状态 / 事件 seg 点选即重查，与用户与角色、黑名单页同一语言。 */
 function setStatus(value: CallbackStatus | ""): void {
-  if (value === filters.status) return
   filters.status = value
   search()
 }
 
 function setEvent(value: CallbackEvent | ""): void {
-  if (value === filters.event) return
   filters.event = value
   search()
 }
@@ -200,31 +180,25 @@ onMounted(() => {
   <form class="callback-filter-bar" @submit.prevent="search">
     <div class="callback-fld">
       <span>投递状态</span>
-      <div class="callback-seg" role="group" aria-label="投递状态筛选" data-testid="callback-status-seg">
-        <button
-          v-for="option in statusSegOptions"
-          :key="option.key"
-          type="button"
-          :class="{ on: filters.status === option.value }"
-          :data-testid="`callback-status-${option.key}`"
-          @click="setStatus(option.value)"
-          >{{ option.label }}</button
-        >
-      </div>
+      <FilterSeg
+        :model-value="filters.status"
+        :options="statusSegOptions"
+        data-testid="callback-status-seg"
+        button-testid-prefix="callback-status"
+        aria-label="投递状态筛选"
+        @update:model-value="setStatus"
+      />
     </div>
     <div class="callback-fld">
       <span>事件</span>
-      <div class="callback-seg" role="group" aria-label="事件筛选" data-testid="callback-event-seg">
-        <button
-          v-for="option in eventSegOptions"
-          :key="option.key"
-          type="button"
-          :class="{ on: filters.event === option.value }"
-          :data-testid="`callback-event-${option.key}`"
-          @click="setEvent(option.value)"
-          >{{ option.label }}</button
-        >
-      </div>
+      <FilterSeg
+        :model-value="filters.event"
+        :options="eventSegOptions"
+        data-testid="callback-event-seg"
+        button-testid-prefix="callback-event"
+        aria-label="事件筛选"
+        @update:model-value="setEvent"
+      />
     </div>
     <div class="callback-fld">
       <span>应用</span>
@@ -407,16 +381,13 @@ onMounted(() => {
       <EmptyState title="当前没有回调任务" description="启用应用回调后，投递任务会出现在这里。" />
     </div>
 
-    <footer class="callback-pagination">
-      <span>共 {{ total }} 项 · 每页 20 · dead 总计 {{ deadTotal }}</span>
-      <el-pagination
-        v-model:current-page="filters.page"
-        :page-size="filters.pageSize"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="load"
-      />
-    </footer>
+    <ListPagination
+      v-model:page="page"
+      :total="total"
+      unit="项"
+      :count-tail="`· dead 总计 ${deadTotal}`"
+      @change="load"
+    />
   </section>
 
   <el-drawer v-model="detailOpen" size="min(440px, 92vw)" :teleported="false" class="callback-drawer">

@@ -1366,3 +1366,43 @@ def test_backend_requires_a_cryptography_release_fixed_for_scanned_cves() -> Non
     dependencies = pyproject["project"]["dependencies"]
 
     assert "cryptography>=50.0.0,<51" in dependencies
+
+
+def test_metrics_gate_consumes_large_response_and_rejects_invalid_family(tmp_path: Path) -> None:
+    """大响应不得因提前关闭管道误报，缺失或错误类型仍失败关闭。"""
+    source = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
+    function = source.split("metrics_gate(){", 1)[1].split("\n}\n", 1)[0]
+    families = re.search(r"for family in (.*?)\; do", function, re.S)
+    assert families is not None
+    names = families.group(1).replace("\\", " ").split()
+    payload = "".join(f"# TYPE {name} gauge\n{name} 0\n" for name in names)
+    payload += "# synthetic padding for pipe capacity\n" * 100000
+    secrets = tmp_path / "deploy/secrets"
+    secrets.mkdir(parents=True)
+    (secrets / "metrics_scrape_token").write_text("synthetic-test-token")
+    fixture = tmp_path / "metrics.txt"
+    script = (
+        'set -euo pipefail\napi_port=0\ncurl(){ cat "$METRICS_FIXTURE"; }\n'
+        + "metrics_gate(){"
+        + function
+        + "\n}\nmetrics_gate\n"
+    )
+    for body, expected in (
+        (payload, 0),
+        (payload.replace(f"# TYPE {names[0]} gauge\n", ""), 1),
+        (payload.replace(f"# TYPE {names[0]} gauge", f"# TYPE {names[0]} counter"), 1),
+    ):
+        fixture.write_text(body)
+        result = subprocess.run(
+            ["bash", "-c", script],
+            cwd=tmp_path,
+            env={**os.environ, "METRICS_FIXTURE": str(fixture)},
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == expected, result.stderr
+        assert "Broken pipe" not in result.stderr
+        if expected:
+            assert f"Prometheus 指标缺失: {names[0]}" in result.stderr

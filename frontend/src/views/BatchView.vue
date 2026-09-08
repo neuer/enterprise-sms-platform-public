@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { rangeToIsoParams } from "../lib/time"
+import { usePagedList } from "../composables/usePagedList"
+import ListPagination from "../components/ListPagination.vue"
+import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
 import { computed, onMounted, ref, watch } from "vue"
 import { useRoute } from "vue-router"
@@ -18,9 +22,8 @@ import {
   resendFailedBatch,
   rescheduleBatch,
   type BatchItem,
-  type BatchMessage,
 } from "../api/queries"
-import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE, CATEGORY_OPTIONS, MESSAGE_STATUS_OPTIONS } from "../lib/labels"
 import { confirmAction } from "../lib/confirm"
 import { formatDateTime, formatDateTimeMinute } from "../lib/time"
 import { errorText } from "../lib/error"
@@ -31,10 +34,7 @@ const session = useSessionStore()
 // 测试环境未安装路由时 useRoute 返回 undefined；仅用于消费 /batches?batch_no= 深链。
 const route = useRoute()
 
-const items = ref<BatchItem[]>([])
-const total = ref(0)
 const statusCounts = ref<Record<string, number> | null>(null)
-const page = ref(1)
 const category = ref("")
 const statusGroup = ref("all")
 const channel = ref("")
@@ -46,21 +46,15 @@ const appId = ref("")
 const dept = ref("")
 const moreOpen = ref(false)
 const appOptions = ref<ManagedApp[]>([])
-const loading = ref(false)
-const errorMessage = ref("")
 const appliedFiltersKey = ref("")
 const drawer = ref(false)
 const selected = ref<BatchItem | null>(null)
-const details = ref<BatchMessage[]>([])
-const detailTotal = ref(0)
-const detailPage = ref(1)
 const detailStatus = ref("")
-const detailsLoading = ref(false)
 const rescheduleOpen = ref(false)
 const scheduledAt = ref("")
-const canWrite = computed(() => session.role === "operator" || session.role === "admin")
-const canDecrypt = computed(() => session.role === "approver" || session.role === "admin")
-const isAdmin = computed(() => session.role === "admin")
+const canWrite = computed(() => session.canWrite)
+const canDecrypt = computed(() => session.canDecrypt)
+const isAdmin = computed(() => session.isAdmin)
 
 // 状态分组为前端推导；各组计数来自服务端分面 status_counts（不含状态条件本身）
 const statusGroups = [
@@ -75,20 +69,8 @@ const statusGroups = [
 ]
 
 const channelLabel: Record<string, string> = { api: "API", web: "Web" }
-const detailStatusOptions = [
-  { label: "待处理", value: "pending" },
-  { label: "已提交", value: "sent" },
-  { label: "已送达", value: "delivered" },
-  { label: "失败", value: "failed" },
-  { label: "未知", value: "unknown" },
-  { label: "其他", value: "other" },
-]
-const categoryOptions = [
-  { label: "全部", value: "" },
-  { label: "验证码", value: "verify" },
-  { label: "通知", value: "notice" },
-  { label: "营销", value: "market" },
-]
+const detailStatusOptions = MESSAGE_STATUS_OPTIONS
+const categoryOptions = [{ label: "全部", value: "" }, ...CATEGORY_OPTIONS]
 const channelOptions = [
   { label: "全部", value: "" },
   { label: "API", value: "api" },
@@ -149,6 +131,15 @@ function groupCount(key: string, statuses: string[]): number | null {
   return statuses.reduce((sum, status) => sum + (statusCounts.value?.[status] ?? 0), 0)
 }
 
+const statusChipOptions = computed(() =>
+  statusGroups.map((group) => ({
+    value: group.key,
+    label: group.label,
+    count: groupCount(group.key, group.statuses),
+    class: group.key === "balance_blocked" && (groupCount(group.key, group.statuses) ?? 0) > 0 ? "hot" : undefined,
+  })),
+)
+
 function selectGroup(key: string): void {
   if (statusGroup.value === key) return
   statusGroup.value = key
@@ -179,24 +170,17 @@ const moreActiveCount = computed(
 )
 const moreActive = computed(() => moreActiveCount.value > 0)
 
-const listRead = useLatestRead()
-const detailRead = useLatestRead()
 const batchRead = useLatestRead()
 
-let listToken = 0
-let detailToken = 0
 let openToken = 0
 
-async function load(): Promise<void> {
-  const token = ++listToken
-  const signal = listRead.start()
-  loading.value = true
-  errorMessage.value = ""
-  try {
+const { items, total, page, loading, errorMessage, load, search } = usePagedList({
+  fetcher: async (page, signal) => {
+    const filtersKey = currentFiltersKey.value
     const group = statusGroups.find((item) => item.key === statusGroup.value) ?? statusGroups[0]
     const result = await listBatches(
       {
-        page: page.value,
+        page,
         category: category.value || undefined,
         status: group.statuses.length ? group.statuses.join(",") : undefined,
         is_test: isTest.value === "" ? undefined : isTest.value === "true",
@@ -204,50 +188,36 @@ async function load(): Promise<void> {
         app_id: appId.value.trim() ? Number(appId.value.trim()) : undefined,
         dept: isAdmin.value && dept.value.trim() ? dept.value.trim() : undefined,
         batch_no: batchNo.value.trim() || undefined,
-        start: range.value?.[0].toISOString(),
-        end: range.value?.[1].toISOString(),
+        ...rangeToIsoParams(range.value),
       },
       signal,
     )
-    if (signal.aborted || token !== listToken) return
-    items.value = result.items
-    total.value = result.total
+    return { ...result, filtersKey }
+  },
+  errorMessage: "批次列表加载失败",
+  onLoaded: (result) => {
     statusCounts.value = result.status_counts ?? null
-    appliedFiltersKey.value = currentFiltersKey.value
-  } catch (error) {
-    if (signal.aborted || token !== listToken) return
-    errorMessage.value = errorText(error, "批次列表加载失败")
-  } finally {
-    if (token === listToken) loading.value = false
-  }
-}
+    appliedFiltersKey.value = result.filtersKey
+  },
+})
 
-async function loadDetails(): Promise<void> {
-  if (!selected.value) return
-  const token = ++detailToken
-  const signal = detailRead.start()
-  const batchNoValue = selected.value.batch_no
-  detailsLoading.value = true
-  try {
-    const result = await getBatchMessages(
-      batchNoValue,
-      {
-        status: detailStatus.value || undefined,
-        page: detailPage.value,
-      },
-      signal,
-    )
-    if (signal.aborted || token !== detailToken || selected.value?.batch_no !== batchNoValue) return
-    details.value = result.items
-    detailTotal.value = result.total
-  } catch (error) {
-    if (signal.aborted || token !== detailToken) return
-    // 抽屉打开时列表卡片的 el-alert 被遮挡，此处必须用浮层消息。
-    ElMessage.error(errorText(error, "批次明细加载失败"))
-  } finally {
-    if (token === detailToken) detailsLoading.value = false
-  }
-}
+const {
+  items: details,
+  total: detailTotal,
+  page: detailPage,
+  loading: detailsLoading,
+  load: loadDetails,
+  cancel: cancelDetails,
+} = usePagedList({
+  fetcher: async (page, signal) => {
+    const batch = selected.value?.batch_no
+    if (!batch) return null
+    const result = await getBatchMessages(batch, { status: detailStatus.value || undefined, page }, signal)
+    return selected.value?.batch_no === batch ? result : null
+  },
+  errorMessage: "批次明细加载失败",
+  toastError: true,
+})
 
 async function openBatch(item: BatchItem): Promise<void> {
   const token = ++openToken
@@ -337,10 +307,6 @@ function traceResendOf(sourceBatchNo: string): void {
   void load()
 }
 
-function search(): void {
-  page.value = 1
-  void load()
-}
 function reset(): void {
   category.value = ""
   statusGroup.value = "all"
@@ -368,7 +334,7 @@ onMounted(() => {
 let appsRequested = false
 watch(drawer, (open) => {
   if (!open) {
-    detailRead.cancel()
+    cancelDetails()
     batchRead.cancel()
   }
 })
@@ -403,29 +369,11 @@ watch(moreOpen, (open) => {
     </div>
     <div class="batch-fld">
       <span>类别</span>
-      <div class="batch-seg" role="group" aria-label="类别" data-testid="batch-category-filter">
-        <button
-          v-for="opt in categoryOptions"
-          :key="opt.value"
-          type="button"
-          :class="{ on: category === opt.value }"
-          @click="category = opt.value"
-          >{{ opt.label }}</button
-        >
-      </div>
+      <FilterSeg v-model="category" :options="categoryOptions" aria-label="类别" data-testid="batch-category-filter" />
     </div>
     <div class="batch-fld">
       <span>渠道</span>
-      <div class="batch-seg" role="group" aria-label="渠道" data-testid="batch-channel-filter">
-        <button
-          v-for="opt in channelOptions"
-          :key="opt.value"
-          type="button"
-          :class="{ on: channel === opt.value }"
-          @click="channel = opt.value"
-          >{{ opt.label }}</button
-        >
-      </div>
+      <FilterSeg v-model="channel" :options="channelOptions" aria-label="渠道" data-testid="batch-channel-filter" />
     </div>
     <div class="batch-fld">
       <span>创建时间</span>
@@ -453,16 +401,12 @@ watch(moreOpen, (open) => {
         </template>
         <div class="batch-more">
           <label>测试发送</label>
-          <div class="batch-seg" role="group" aria-label="测试发送" data-testid="batch-is-test-filter">
-            <button
-              v-for="opt in isTestOptions"
-              :key="opt.value"
-              type="button"
-              :class="{ on: isTest === opt.value }"
-              @click="isTest = opt.value"
-              >{{ opt.label }}</button
-            >
-          </div>
+          <FilterSeg
+            v-model="isTest"
+            :options="isTestOptions"
+            aria-label="测试发送"
+            data-testid="batch-is-test-filter"
+          />
           <label>应用</label>
           <el-select
             v-if="appOptions.length"
@@ -501,27 +445,26 @@ watch(moreOpen, (open) => {
     </div>
   </form>
 
-  <div class="batch-chips" data-testid="batch-status-chips" role="group" aria-label="按状态分组筛选">
-    <span class="batch-chips-lbl">状态</span>
-    <button
-      v-for="group in statusGroups"
-      :key="group.key"
-      type="button"
-      class="batch-chip"
-      :class="{
-        on: statusGroup === group.key,
-        hot: group.key === 'balance_blocked' && (groupCount(group.key, group.statuses) ?? 0) > 0,
-      }"
-      :data-testid="`batch-chip-${group.key}`"
-      @click="selectGroup(group.key)"
+  <FilterSeg
+    :model-value="statusGroup"
+    :options="statusChipOptions"
+    class="filter-seg--chips"
+    data-testid="batch-status-chips"
+    aria-label="按状态分组筛选"
+    button-testid-prefix="batch-chip"
+    @update:model-value="selectGroup"
+  >
+    <template #prefix><span class="batch-chips-lbl">状态</span></template>
+    <template #option="{ option }"
+      >{{ option.label }}<b v-if="option.count !== null">{{ option.count }}</b></template
     >
-      {{ group.label
-      }}<b v-if="groupCount(group.key, group.statuses) !== null">{{ groupCount(group.key, group.statuses) }}</b>
-    </button>
-    <span class="batch-chips-meta"
-      >分组 = 进行中(queued+sending) · 待审批 · 已排期 · 余额阻断 · 已完成 · 其他终态(cancelled+rejected+expired)</span
+    <template #suffix
+      ><span class="batch-chips-meta"
+        >分组 = 进行中(queued+sending) · 待审批 · 已排期 · 余额阻断 · 已完成 ·
+        其他终态(cancelled+rejected+expired)</span
+      ></template
     >
-  </div>
+  </FilterSeg>
 
   <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="batch-error" />
   <div class="batch-ledger">
@@ -635,8 +578,14 @@ watch(moreOpen, (open) => {
         >
       </article>
     </div>
-    <footer class="batch-pager">
-      <div class="compose-legend" aria-hidden="true">
+    <ListPagination
+      v-model:page="page"
+      :total="total"
+      :page-size="DEFAULT_PAGE_SIZE"
+      unit="个批次"
+      class="batch-pager"
+      @change="load"
+      ><div class="compose-legend" aria-hidden="true">
         <span><i class="compose-p"></i>待处理</span>
         <span><i class="compose-s"></i>待回执</span>
         <span><i class="compose-d"></i>送达</span>
@@ -644,16 +593,8 @@ watch(moreOpen, (open) => {
         <span><i class="compose-u"></i>未知</span>
         <span><i class="compose-o"></i>其他</span>
         <em>构成 = 占受理总数的份额，不是成功率；成功率口径见统计报表</em>
-      </div>
-      <span>共 {{ total }} 个批次 · 每页 20</span>
-      <el-pagination
-        v-model:current-page="page"
-        :page-size="DEFAULT_PAGE_SIZE"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="load"
-      />
-    </footer>
+      </div></ListPagination
+    >
   </div>
 
   <el-drawer v-model="drawer" size="min(560px, 92vw)" :teleported="false" class="batch-drawer">
@@ -836,15 +777,14 @@ watch(moreOpen, (open) => {
           ><template #default="{ row }">{{ formatDateTime(row.report_time) }}</template></el-table-column
         ><template #empty><EmptyState title="没有符合条件的明细" description="调整状态筛选后查看。" /></template
       ></el-table>
-      <footer class="query-pagination batch-detail-pagination"
-        ><span>共 {{ detailTotal }} 条 · 每页 20</span
-        ><el-pagination
-          v-model:current-page="detailPage"
-          :page-size="DEFAULT_PAGE_SIZE"
-          :total="detailTotal"
-          layout="prev, pager, next"
-          @current-change="loadDetails"
-      /></footer>
+      <ListPagination
+        v-model:page="detailPage"
+        :total="detailTotal"
+        :page-size="DEFAULT_PAGE_SIZE"
+        unit="条"
+        class="query-pagination batch-detail-pagination"
+        @change="loadDetails"
+      ></ListPagination>
     </template>
   </el-drawer>
   <el-dialog v-model="rescheduleOpen" title="批次改期" width="min(480px, 92vw)"

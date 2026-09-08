@@ -1,15 +1,16 @@
 <script setup lang="ts">
+import { rangeToIsoParams } from "../lib/time"
 import { computed, onMounted, reactive, ref } from "vue"
 
 import { ElMessage } from "element-plus"
 
 import { listAuditActions, listAudits, type AuditItem } from "../api/admin"
 import EmptyState from "../components/EmptyState.vue"
+import ListPagination from "../components/ListPagination.vue"
+import { usePagedList } from "../composables/usePagedList"
 import { copyText } from "../lib/clipboard"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
-import { errorText } from "../lib/error"
-import { useLatestRead } from "../composables/useLatestRead"
 
 type DiffState = "added" | "removed" | "changed" | "same"
 
@@ -32,19 +33,39 @@ const filters = reactive({
   correlationId: "",
   start: "",
   end: "",
-  page: 1,
   pageSize: DEFAULT_PAGE_SIZE,
 })
-const items = ref<AuditItem[]>([])
-const total = ref(0)
-const loading = ref(false)
-const errorMessage = ref("")
 const selected = ref<AuditItem | null>(null)
 const drawer = ref(false)
 const timeRange = ref<[Date, Date] | null>(null)
 const actionOptions = ref<string[]>([])
 // 更多筛选（低频精确字段：稳定账号 ID / 关联 ID，收进气泡）
 const moreOpen = ref(false)
+
+const {
+  items,
+  total,
+  page,
+  loading,
+  errorMessage,
+  load,
+  search: listSearch,
+  reset,
+} = usePagedList({
+  fetcher: (page, signal) => listAudits({ ...filters, page }, signal),
+  errorMessage: "审计日志加载失败",
+  resetFilters: () => {
+    filters.actor = ""
+    filters.actorAccountId = ""
+    filters.action = ""
+    filters.objectType = ""
+    filters.objectId = ""
+    filters.correlationId = ""
+    timeRange.value = null
+    filters.start = ""
+    filters.end = ""
+  },
+})
 
 const timeShortcuts = [
   { text: "最近 1 小时", value: () => [new Date(Date.now() - 3_600_000), new Date()] as [Date, Date] },
@@ -111,28 +132,6 @@ function diffRows(before: Record<string, unknown> | null, after: Record<string, 
     .sort((a, b) => DIFF_RANK[a.state] - DIFF_RANK[b.state] || a.key.localeCompare(b.key))
 }
 
-const listRead = useLatestRead()
-
-let loadToken = 0
-
-async function load(): Promise<void> {
-  const token = ++loadToken
-  const signal = listRead.start()
-  loading.value = true
-  errorMessage.value = ""
-  try {
-    const result = await listAudits(filters, signal)
-    if (signal.aborted || token !== loadToken) return
-    items.value = result.items
-    total.value = result.total
-  } catch (error) {
-    if (signal.aborted || token !== loadToken) return
-    errorMessage.value = errorText(error, "审计日志加载失败")
-  } finally {
-    if (token === loadToken) loading.value = false
-  }
-}
-
 async function loadActions(): Promise<void> {
   try {
     actionOptions.value = await listAuditActions()
@@ -142,22 +141,12 @@ async function loadActions(): Promise<void> {
   }
 }
 
+/** 「查询」先把时间范围同步进 filters 再回第一页重查；筛选清空由 composable 的 reset 承载。 */
 function search(): void {
-  filters.start = timeRange.value?.[0].toISOString() || ""
-  filters.end = timeRange.value?.[1].toISOString() || ""
-  filters.page = 1
-  void load()
-}
-
-function reset(): void {
-  filters.actor = ""
-  filters.actorAccountId = ""
-  filters.action = ""
-  filters.objectType = ""
-  filters.objectId = ""
-  filters.correlationId = ""
-  timeRange.value = null
-  search()
+  const { start, end } = rangeToIsoParams(timeRange.value)
+  filters.start = start || ""
+  filters.end = end || ""
+  listSearch()
 }
 
 function detail(item: AuditItem): void {
@@ -187,7 +176,7 @@ function traceCorrelation(): void {
   filters.start = ""
   filters.end = ""
   filters.correlationId = correlationId
-  filters.page = 1
+  page.value = 1
   drawer.value = false
   moreOpen.value = true
   void load()
@@ -379,16 +368,7 @@ onMounted(() => {
     <div v-else class="audit-empty-action">
       <EmptyState title="暂无审计事件" description="全部写操作与敏感读取都会在此留下不可变记录。" />
     </div>
-    <footer class="audit-pagination">
-      <span>共 {{ total }} 条 · 每页 20</span>
-      <el-pagination
-        v-model:current-page="filters.page"
-        :page-size="filters.pageSize"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="load"
-      />
-    </footer>
+    <ListPagination v-model:page="page" :total="total" testid="audit-pagination" @change="load" />
   </section>
 
   <el-drawer v-model="drawer" title="审计事件详情" size="min(560px, 92vw)" :teleported="false" class="audit-drawer">

@@ -82,3 +82,25 @@ export function vendorReviewSub(
       return { text: rejectReason || "厂商未附驳回原因", tone: "verm" }
   }
 }
+
+/** 固定键集合派生下拉选项，调用方决定是否附加「全部」。 */
+export function statusOptionsOf<K extends string>(keys: readonly K[]): { value: K; label: string }[] {
+  return keys.map((value) => ({ value, label: STATUS_LABELS[value] ?? value }))
+}
+export const CATEGORY_OPTIONS = (["verify", "notice", "market"] as const).map((value) => ({
+  value,
+  label: CATEGORY_LABELS[value],
+}))
+export const MESSAGE_STATUS_OPTIONS = statusOptionsOf([
+  "pending",
+  "sent",
+  "delivered",
+  "failed",
+  "unknown",
+  "other",
+] as const)
+export const BLACKLIST_SOURCE_LABELS: Record<string, string> = {
+  manual: "人工加入",
+  reply_optout: "回复退订",
+  import: "导入",
+}

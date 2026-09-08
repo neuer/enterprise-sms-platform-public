@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useVendorResourceList } from "../composables/useVendorResourceList"
+import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 
@@ -32,13 +34,8 @@ interface TrailStep {
 const session = useSessionStore()
 const isMobile = useMobileLayout()
 
-const items = ref<SmsSign[]>([])
-const loading = ref(false)
 const saving = ref(false)
 const syncingId = ref<number | null>(null)
-const errorMessage = ref("")
-const stateFilter = ref<SignState | "all">("all")
-const keyword = ref("")
 const detail = ref<SmsSign | null>(null)
 const detailOpen = ref(false)
 const editorOpen = ref(false)
@@ -54,34 +51,14 @@ const signApps = ref<ManagedApp[]>([])
 const signAppsLoading = ref(false)
 const signAppsError = ref(false)
 /** 签名读写入口仅 admin；operator/approver 只读。 */
-const canWrite = computed(() => session.role === "admin")
-const isAdmin = computed(() => session.role === "admin")
+const canWrite = computed(() => session.isAdmin)
+const isAdmin = computed(() => session.isAdmin)
 
-const STATE_FILTERS: { label: string; value: SignState | "all" }[] = [
-  { label: "全部", value: "all" },
-  { label: "待审核", value: "pending" },
-  { label: "已通过", value: "approved" },
-  { label: "已拒绝", value: "rejected" },
-]
-
-/** 接口全量返回，状态计数与关键词过滤均为前端推导，不新增查询参数。 */
-const stateOptions = computed(() =>
-  STATE_FILTERS.map((option) => ({
-    ...option,
-    count:
-      option.value === "all"
-        ? items.value.length
-        : items.value.filter((item) => item.vendor_state === option.value).length,
-  })),
-)
-
-const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase()
-  return items.value.filter((item) => {
-    if (stateFilter.value !== "all" && item.vendor_state !== stateFilter.value) return false
-    if (kw && !item.name.toLowerCase().includes(kw)) return false
-    return true
-  })
+const { items, loading, errorMessage, load, stateFilter, keyword, stateOptions, filtered } = useVendorResourceList({
+  fetcher: listSigns,
+  states: ["pending", "approved", "rejected"],
+  searchText: (item) => item.name,
+  errorMessage: "签名列表加载失败",
 })
 
 const emptyTitle = computed(() => (items.value.length === 0 ? "当前没有签名" : "没有符合筛选条件的签名"))
@@ -155,18 +132,6 @@ const detailTrail = computed<TrailStep[]>(() => {
     result,
   ]
 })
-
-async function load(): Promise<void> {
-  loading.value = true
-  errorMessage.value = ""
-  try {
-    items.value = await listSigns()
-  } catch (error) {
-    errorMessage.value = errorText(error, "签名列表加载失败")
-  } finally {
-    loading.value = false
-  }
-}
 
 async function loadSignApps(signName: string): Promise<void> {
   if (!isAdmin.value) return
@@ -321,18 +286,16 @@ onMounted(load)
   <div class="sign-filter-bar">
     <div class="sign-fld">
       <span>厂商状态</span>
-      <div class="sign-seg" role="group" aria-label="厂商状态筛选" data-testid="sign-state-seg">
-        <button
-          v-for="option in stateOptions"
-          :key="option.value"
-          type="button"
-          :class="{ on: stateFilter === option.value }"
-          :data-testid="`sign-state-${option.value}`"
-          @click="stateFilter = option.value"
-        >
-          {{ option.label }} <i>{{ option.count }}</i>
-        </button>
-      </div>
+      <FilterSeg
+        v-model="stateFilter"
+        :options="stateOptions"
+        button-testid-prefix="sign-state"
+        aria-label="厂商状态筛选"
+        data-testid="sign-state-seg"
+        ><template #option="{ option }"
+          >{{ option.label }} <i>{{ option.count }}</i></template
+        ></FilterSeg
+      >
     </div>
     <label class="sign-fld">
       <span>关键词</span>

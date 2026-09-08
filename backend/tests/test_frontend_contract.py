@@ -211,7 +211,10 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
     assert '"/api/v1/web/auth/password/change"' in auth_api
     for field in ("page_size", "alert_type", "processed", "phone"):
         assert field in ops_api
-    assert "useExportTask" in ops_view
+    assert 'import OpsUnmatchedTab from "./ops/OpsUnmatchedTab.vue"' in ops_view
+    assert "<OpsUnmatchedTab" in ops_view
+    unmatched_tab = read("frontend/src/views/ops/OpsUnmatchedTab.vue")
+    assert "useExportTask" in unmatched_tab
     assert "useExportTask" in report_view
     assert "getExportTask" in export_task
     assert "downloadExport" in export_task
@@ -219,7 +222,7 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
     assert '"X-Export-Step-Up"' in reports_api
     assert "issueExportStepUp" in export_task
     assert 'inputType: "password"' in export_task
-    assert 'data-testid="download-unmatched-export"' in ops_view
+    assert 'data-testid="download-unmatched-export"' in unmatched_tab
     assert "reset_configuration" in admin_api
     assert "correlation_id" in admin_api
     assert "correlation_id" in callback_api
@@ -234,6 +237,9 @@ def test_single_spa_consumes_required_runtime_and_approval_facts() -> None:
     send = read("frontend/src/views/SendView.vue")
     apps = read("frontend/src/views/AppManagementView.vue")
 
+    approval_text = read("frontend/src/lib/approvalText.ts")
+    assert 'from "../lib/approvalText"' in approval_view
+    assert "triggerRule(" in approval_view
     for field in (
         "segments",
         "estimated_segments",
@@ -242,7 +248,10 @@ def test_single_spa_consumes_required_runtime_and_approval_facts() -> None:
         "trigger_threshold_source",
     ):
         assert field in approval_api
-        assert field in approval_view
+        if field.startswith("trigger_threshold"):
+            assert field in approval_text
+        else:
+            assert field in approval_view
 
     assert "channel_monitor" in dashboard
     assert "operations" in dashboard

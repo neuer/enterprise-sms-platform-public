@@ -4,7 +4,7 @@ import ElementPlus from "element-plus"
 import { createMemoryHistory, createRouter } from "vue-router"
 import { vi } from "vitest"
 
-import SegmentBar from "../src/components/SegmentBar.vue"
+import BillingSegments from "../src/components/BillingSegments.vue"
 import SendView from "../src/views/SendView.vue"
 
 describe("人工发送工作台", () => {
@@ -27,8 +27,8 @@ describe("人工发送工作台", () => {
     vi.unstubAllGlobals()
   })
 
-  it("SegmentBar 只按服务端分段数据渲染", () => {
-    const wrapper = mount(SegmentBar, {
+  it("BillingSegments 只按服务端分段数据渲染", () => {
+    const wrapper = mount(BillingSegments, {
       props: {
         parts: [
           { used: 67, capacity: 67, partial: false },

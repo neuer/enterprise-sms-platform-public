@@ -1,5 +1,10 @@
 <script setup lang="ts">
+import { useApprovedResources } from "../composables/useApprovedResources"
+
+import { renderPreview } from "../lib/templatePreview"
+
 import { ElMessage } from "element-plus"
+
 import { computed, onMounted, ref, watch } from "vue"
 
 import {
@@ -9,13 +14,21 @@ import {
   type VendorTestOperation,
   type VendorTestRecipient,
 } from "../api/admin"
+
 import type { ManagedApp } from "../api/apps"
-import { listSigns, type SmsSign } from "../api/signs"
-import { listTemplates, type SmsTemplate } from "../api/templates"
+
+import { listSigns } from "../api/signs"
+
+import { listTemplates } from "../api/templates"
+
 import type { BillingPreview } from "../api/webMessages"
+
 import PhoneMask from "./PhoneMask.vue"
+
 import { confirmAction } from "../lib/confirm"
+
 import { errorText } from "../lib/error"
+
 import { CATEGORY_LABELS } from "../lib/labels"
 
 const props = defineProps<{
@@ -35,10 +48,14 @@ const appId = ref<number | null>(null)
 const category = ref<UatCategory>("notice")
 const contentMode = ref<UatContentMode>("content")
 const content = ref("")
-const templates = ref<SmsTemplate[]>([])
+const { approved: approvedTemplates, load: loadTemplates } = useApprovedResources(listTemplates, () =>
+  ElMessage.error("已审核模板加载失败"),
+)
 const templateId = ref<number | null>(null)
 const templateParams = ref<string[]>([])
-const signs = ref<SmsSign[]>([])
+const { approved: approvedSigns, load: loadSigns } = useApprovedResources(listSigns, () =>
+  ElMessage.error("已审核签名加载失败"),
+)
 const signName = ref("")
 const consentConfirmed = ref(false)
 const preview = ref<BillingPreview | null>(null)
@@ -81,17 +98,8 @@ const categories = computed<UatCategory[]>(() => {
   return allowed.filter((item): item is UatCategory => ["verify", "notice", "market"].includes(item))
 })
 const selectedRecipient = computed(() => props.recipients.find((item) => item.id === recipientId.value) || null)
-const approvedTemplates = computed(() => templates.value.filter((item) => item.vendor_state === "approved"))
-const approvedSigns = computed(() => signs.value.filter((item) => item.vendor_state === "approved"))
 const selectedTemplate = computed(() => approvedTemplates.value.find((item) => item.id === templateId.value) || null)
-const renderedTemplate = computed(() => {
-  const template = selectedTemplate.value
-  if (!template) return ""
-  return template.content.replace(/\{(\d+)\}/g, (placeholder, position: string) => {
-    const value = templateParams.value[Number(position) - 1]?.trim()
-    return value || placeholder
-  })
-})
+const renderedTemplate = computed(() => renderPreview(selectedTemplate.value?.content ?? "", templateParams.value))
 const messageReady = computed(() => {
   if (contentMode.value === "content") return content.value.trim().length > 0
   const specs = selectedTemplate.value?.var_specs
@@ -136,11 +144,7 @@ function messagePayload(): { content: string } | { template_id: number; template
 }
 
 async function loadApprovedOptions(): Promise<void> {
-  const [templateResult, signResult] = await Promise.allSettled([listTemplates(), listSigns()])
-  if (templateResult.status === "fulfilled") templates.value = templateResult.value
-  else ElMessage.error("已审核模板加载失败")
-  if (signResult.status === "fulfilled") signs.value = signResult.value
-  else ElMessage.error("已审核签名加载失败")
+  await Promise.all([loadTemplates(), loadSigns()])
 }
 
 async function runPreview(): Promise<boolean> {

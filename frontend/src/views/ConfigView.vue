@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
 import { computed, nextTick, onMounted, reactive, ref } from "vue"
 
@@ -598,20 +599,17 @@ onMounted(() => {
       </label>
       <div class="config-fld"
         ><span>分组</span>
-        <div class="config-seg" role="group" aria-label="参数分组筛选" data-testid="config-group-seg">
-          <button type="button" :class="{ on: activeGroup === '' }" data-testid="config-group-all" @click="setGroup('')"
-            >全部</button
-          >
-          <button
-            v-for="group in groupOptions"
-            :key="group"
-            type="button"
-            :class="{ on: activeGroup === group }"
-            :data-testid="`config-group-${group}`"
-            @click="setGroup(group)"
-            >{{ group }}</button
-          >
-        </div>
+        <FilterSeg
+          :model-value="activeGroup"
+          :options="[
+            { label: '全部', value: '', key: 'all' },
+            ...groupOptions.map((value) => ({ value, label: value })),
+          ]"
+          button-testid-prefix="config-group"
+          aria-label="参数分组筛选"
+          data-testid="config-group-seg"
+          @update:model-value="setGroup"
+        />
       </div>
       <p class="config-privacy">接口全量返回，关键词与分组均为前端过滤；改动逐键写入审计日志，敏感值不回显。</p>
     </div>

@@ -123,7 +123,7 @@ describe("统计报表页", () => {
     expect(sorted.get("order")).toBe("asc")
     expect(sorted.get("page")).toBe("1")
     expect(sorted.get("group_by")).toBe("app")
-    await wrapper.get(".metric-switch button:last-child").trigger("click")
+    await wrapper.get('[aria-label="趋势指标"] button:last-child').trigger("click")
     await flushPromises()
     const metricQuery = new URL(fetch.mock.calls.at(-1)![0], "http://localhost").searchParams
     expect(metricQuery.get("metric")).toBe("total_segments")
@@ -202,7 +202,7 @@ describe("统计报表页", () => {
 
     const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
-    expect(wrapper.findAll(".report-seg")).toHaveLength(2)
+    expect(wrapper.findAll(".report-filter-bar .filter-seg")).toHaveLength(2)
     expect(wrapper.findAllComponents({ name: "ElSegmented" })).toHaveLength(0)
     expect(wrapper.text()).toContain("统计报表")
     expect(wrapper.text()).toContain("当前口径")

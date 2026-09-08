@@ -88,13 +88,9 @@
   font-size: 11px;
 }
 
-.reply-seg,
-.blacklist-seg,
-.sensitive-policy-seg,
-.user-seg,
-.config-seg,
-.ops-seg,
-.callback-seg {
+/* 分段筛选控件 FilterSeg 的唯一样式（组件见 src/components/FilterSeg.vue，模板手抄即缺陷）。
+   变体：--compact 安全日报紧凑条；--pill 面板头切换（发送页 / 报表趋势指标）；--chips 批次状态分组。 */
+.filter-seg {
   display: flex;
   overflow: hidden;
   height: 34px;
@@ -102,14 +98,9 @@
   border-radius: 7px;
 }
 
-.reply-seg button,
-.blacklist-seg button,
-.sensitive-policy-seg button,
-.user-seg button,
-.config-seg button,
-.ops-seg button,
-.callback-seg button {
+.filter-seg button {
   display: inline-flex;
+  gap: 6px;
   align-items: center;
   padding: 0 12px;
   color: var(--tx-2);
@@ -122,15 +113,118 @@
   cursor: pointer;
 }
 
-.reply-seg button.on,
-.blacklist-seg button.on,
-.sensitive-policy-seg button.on,
-.user-seg button.on,
-.config-seg button.on,
-.ops-seg button.on,
-.callback-seg button.on {
+.filter-seg button.on {
   color: #eaf1ed;
   background: var(--verdi);
+}
+
+/* 模板/签名厂商状态的计数圆点 */
+.filter-seg button i {
+  color: var(--tx-3);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.filter-seg button.on i {
+  color: rgba(234, 241, 237, 0.75);
+}
+
+.filter-seg--compact {
+  height: 30px;
+}
+
+.filter-seg--compact button {
+  padding: 0 8px;
+  font-size: 10.5px;
+}
+
+.filter-seg--pill {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  height: auto;
+  padding: 2px;
+  overflow: visible;
+  background: var(--sink);
+  border-radius: 8px;
+}
+
+.filter-seg--pill button {
+  padding: 4px 14px;
+  white-space: normal;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.filter-seg--pill button.on {
+  color: var(--tx-hi);
+  background: var(--panel);
+  border-color: var(--hair);
+}
+
+.filter-seg--chips {
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  height: auto;
+  padding: 0 2px;
+  margin: 0 0 10px;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+}
+
+.filter-seg--chips button {
+  gap: 5px;
+  padding: 1px 9px;
+  color: var(--tx-2);
+  font: 10.5px/1.6 var(--mono);
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 6px;
+}
+
+.filter-seg--chips button b {
+  color: var(--tx);
+  font-weight: 600;
+}
+
+.filter-seg--chips button:hover {
+  border-color: var(--verdi-l);
+}
+
+.filter-seg--chips button.on {
+  color: var(--verdi-l);
+  background: color-mix(in srgb, var(--verdi) 14%, transparent);
+  border-color: color-mix(in srgb, var(--verdi-l) 55%, transparent);
+}
+
+.filter-seg--chips button.on b {
+  color: var(--verdi-l);
+}
+
+.filter-seg--chips button.hot {
+  color: #f0a08c;
+  border-color: color-mix(in srgb, var(--verm) 55%, transparent);
+}
+
+.filter-seg--chips button.hot b {
+  color: var(--verm);
+}
+
+.filter-seg--chips .batch-chips-lbl {
+  margin-right: 2px;
+  color: var(--tx-3);
+  font-size: 10.5px;
+}
+
+.filter-seg--chips .batch-chips-meta {
+  margin-left: auto;
+  color: var(--tx-3);
+  font-size: 9.5px;
 }
 
 .reply-filter-go,
@@ -262,16 +356,11 @@
   color: var(--tx-3);
 }
 
-.reply-pagination,
-.blacklist-pagination,
-.sensitive-pagination,
-.user-pagination,
-.ops-pagination,
-.callback-pagination,
-.security-daily-pagination,
-.audit-pagination {
+/* 列表分页页脚 ListPagination 的唯一样式（组件见 src/components/ListPagination.vue，手抄页脚即缺陷）。
+   :where() 零优先级：batch-pager / query-pagination / approval-list-foot / report-pager
+   等页面变体类在各自分片按属性覆写，无需提高优先级。 */
+:where(.list-pagination) {
   display: flex;
-  justify-content: space-between;
   align-items: center;
   gap: 14px;
   min-height: 46px;
@@ -279,6 +368,10 @@
   color: var(--tx-3);
   font-size: 11px;
   border-top: 1px solid var(--hair-2);
+}
+
+:where(.list-pagination) > .el-pagination {
+  margin-left: auto;
 }
 
 .reply-mobile-list {
@@ -357,17 +450,14 @@
 }
 
 @media (max-width: 560px) {
-  .reply-pagination,
-  .blacklist-pagination,
-  .sensitive-pagination,
-  .user-pagination,
-  .ops-pagination,
-  .callback-pagination,
-  .security-daily-pagination,
-  .audit-pagination {
+  :where(.list-pagination) {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
+  }
+
+  :where(.list-pagination) > .el-pagination {
+    margin-left: 0;
   }
 
   .reply-table {
@@ -751,4 +841,21 @@ main {
 .el-table__empty-text {
   width: auto;
   line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+  .audit-fld,
+  .ops-fld,
+  .reply-fld {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .audit-dates.el-date-editor,
+  .ops-dates.el-date-editor,
+  .reply-filter-dates.el-date-editor {
+    --el-date-editor-datetimerange-width: 100%;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
 }

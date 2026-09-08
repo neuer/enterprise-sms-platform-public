@@ -591,3 +591,38 @@ describe("统一运维中心", () => {
     vi.restoreAllMocks()
   })
 })
+
+it("拆分后的页签切换取消旧读取，迟到失败不污染当前页签，切回保留筛选", async () => {
+  const reads: { signal: AbortSignal; resolve: (value: ReturnType<typeof response>) => void }[] = []
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string, init: RequestInit = {}) => {
+      if (url.includes("/raw-logs"))
+        return new Promise<ReturnType<typeof response>>((resolve) =>
+          reads.push({ signal: init.signal as AbortSignal, resolve }),
+        )
+      return Promise.resolve(response(result(url, init.method ?? "GET")))
+    }),
+  )
+  const wrapper = await mountOps({ tab: "raw" })
+  await flushPromises()
+  expect(reads).toHaveLength(1)
+  await wrapper.get("#ops-tab-jobs").trigger("click")
+  await flushPromises()
+  expect(reads[0].signal.aborted).toBe(true)
+  reads[0].resolve(response({ code: "STALE_FAILURE", message: "旧页签错误" }, 500))
+  await flushPromises()
+  expect(wrapper.text()).not.toContain("旧页签错误")
+  expect((wrapper.get("#ops-panel-jobs").element.parentElement as HTMLElement).style.display).not.toBe("none")
+  expect((wrapper.get("#ops-panel-raw").element.parentElement as HTMLElement).style.display).toBe("none")
+  await wrapper.get("#ops-tab-raw").trigger("click")
+  await flushPromises()
+  expect(reads).toHaveLength(2)
+  expect((wrapper.get("#ops-panel-raw").element.parentElement as HTMLElement).style.display).not.toBe("none")
+  expect((wrapper.get("#ops-panel-jobs").element.parentElement as HTMLElement).style.display).toBe("none")
+  wrapper.unmount()
+  expect(reads[1].signal.aborted).toBe(true)
+  reads[1].resolve(response({ items: [], total: 0, page: 1, page_size: 20 }))
+  await flushPromises()
+  vi.unstubAllGlobals()
+})

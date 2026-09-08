@@ -1,9 +1,6 @@
-import { readFileSync } from "node:fs"
-import { resolve } from "node:path"
-
 import { readWorkspaceCss } from "./workspace-css"
 
-const source = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
+import { readViewSource as source } from "./view-source"
 
 describe("青鸾 Console 17 屏结构保真", () => {
   it("路由覆盖交接包的 17 个业务屏", () => {
@@ -53,7 +50,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("batch-filter-bar")
     expect(view).toContain("batch-facts")
     expect(view).toContain("batch-scope")
-    expect(view).toContain("共 {{ total }} 个批次 · 每页 20")
+    expect(view).toContain("<ListPagination")
     expect(view).toContain("当前口径 ·")
     expect(view).toContain('class="batch-note"')
     expect(view).not.toContain("batch-donut")
@@ -100,13 +97,13 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("ops-tabs")
     expect(view).toContain('role="tablist"')
     expect(view).toContain("ops-filter-bar")
-    expect(view).toContain("ops-seg")
+    expect(view).toContain("<FilterSeg")
     expect(view).toContain("ops-rules")
     expect(view).toContain("ops-results")
     // 审计确认对话框结构已收编到 lib/confirm.ts 单点（confirm-dialog / confirm-audit-note），视图只调用 confirmAuditedAction
     expect(view).toContain("confirmAuditedAction")
     expect(view).not.toContain("ElMessageBox.confirm")
-    expect(view).toContain("共 {{ alertTotal }} 条 · 每页 20")
+    expect(view).toContain("<ListPagination")
     expect(view).toContain("本次操作已记入审计")
     expect(view).toContain('data-testid="ops-alert-level-seg"')
     expect(view).toContain('data-testid="ops-outbox-state"')
@@ -118,7 +115,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).not.toContain("ops-filter-title")
     expect(workspace).toMatch(/\.config-tabs,\s*\.ops-tabs\s*\{[^}]*overflow-x:\s*auto/s)
     // 告警面板题右侧的 .ops-seg 必须保持横向 flex：.ops-panel-title > div 的网格规则不得把它压成竖排
-    expect(workspace).toMatch(/\.ops-alert-title\s*>\s*\.ops-seg\s*\{[^}]*display:\s*flex/s)
+    expect(workspace).toMatch(/\.ops-alert-title\s*>\s*\.filter-seg\s*\{[^}]*display:\s*flex/s)
     expect(workspace).toMatch(
       /\.user-rules,\s*\.config-rules,\s*\.ops-rules,\s*\.callback-rules,\s*\.security-daily-rules,\s*\.audit-rules\s*\{[^}]*display:\s*flex/s,
     )
@@ -152,7 +149,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("message-filter-bar")
     expect(view).toContain("message-badge")
     expect(view).toContain("message-phone-decrypt")
-    expect(view).toContain("共 {{ total }} 条 · 每页 20")
+    expect(view).toContain("<ListPagination")
     expect(view).toContain("↩ 用户回复")
     expect(view).not.toContain("view-switch")
     expect(view).not.toContain("<el-segmented")
@@ -167,8 +164,8 @@ describe("青鸾 Console 17 屏结构保真", () => {
     const view = source("src/views/ReplyView.vue")
     const workspace = readWorkspaceCss()
     expect(view).toContain("reply-filter-bar")
-    expect(view).toContain("reply-seg")
-    expect(view).toContain("共 {{ total }} 条 · 每页 20")
+    expect(view).toContain("<FilterSeg")
+    expect(view).toContain("<ListPagination")
     expect(view).toContain("未匹配到平台批次")
     expect(view).toContain("已加入退订黑名单 · 本次操作已记入审计")
     expect(view).not.toContain("<el-segmented")
@@ -178,16 +175,14 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(
       /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
-    expect(workspace).toMatch(
-      /\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg\s*\{[^}]*border-radius:\s*7px/s,
-    )
+    expect(workspace).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
   it("签名管理使用单行胶囊工具条和密表格", () => {
     const view = source("src/views/SignView.vue")
     const workspace = readWorkspaceCss()
     expect(view).toContain("sign-filter-bar")
-    expect(view).toContain("sign-seg")
+    expect(view).toContain("<FilterSeg")
     expect(view).toContain("接口全量返回 · 前端过滤")
     expect(view).toContain("共 {{ filtered.length }} 个签名")
     expect(view).toContain("读：operator / approver / admin · 写：admin")
@@ -200,7 +195,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).not.toContain("<el-card")
     expect(view).not.toContain("drawer-intro")
     expect(workspace).toMatch(/\.template-filter-bar,\s*\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(workspace).toMatch(/\.template-seg,\s*\.sign-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(workspace).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(workspace).toMatch(/\.sign-heading p:not\(\.eyebrow\)[\s\S]*font-size:\s*11px/s)
   })
 
@@ -208,7 +203,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     const view = source("src/views/TemplateView.vue")
     const workspace = readWorkspaceCss()
     expect(view).toContain("template-filter-bar")
-    expect(view).toContain("template-seg")
+    expect(view).toContain("<FilterSeg")
     expect(view).toContain("接口全量返回 · 前端过滤")
     expect(view).toContain("未送审（历史数据）")
     expect(view).toContain("共 {{ filtered.length }} 个模板")
@@ -222,7 +217,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).not.toContain("<el-card")
     expect(view).not.toContain("占位与变量必须从 1")
     expect(workspace).toMatch(/\.template-filter-bar,\s*\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(workspace).toMatch(/\.template-seg,\s*\.sign-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(workspace).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(workspace).toMatch(/\.template-heading p:not\(\.eyebrow\)[\s\S]*font-size:\s*11px/s)
   })
 
@@ -230,7 +225,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     const view = source("src/views/AppManagementView.vue")
     const workspace = readWorkspaceCss()
     expect(view).toContain("apps-filter-bar")
-    expect(view).toContain("apps-seg")
+    expect(view).toContain("<FilterSeg")
     expect(view).toContain("接口全量返回 · 前端过滤")
     expect(view).toContain('data-testid="app-table"')
     expect(view).toContain("apps-table")
@@ -248,7 +243,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).not.toContain("filter-toolbar")
     expect(view).not.toContain("<el-card")
     expect(workspace).toMatch(/\.apps-filter-bar\s*\{[^}]*display:\s*flex/s)
-    expect(workspace).toMatch(/\.apps-seg\s*\{[^}]*border-radius:\s*7px/s)
+    expect(workspace).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(workspace).toMatch(/\.apps-quota-bar\s*\{[^}]*height:\s*5px/s)
   })
 
@@ -256,14 +251,14 @@ describe("青鸾 Console 17 屏结构保真", () => {
     const view = source("src/views/UserView.vue")
     const workspace = readWorkspaceCss()
     expect(view).toContain("user-filter-bar")
-    expect(view).toContain("user-seg")
+    expect(view).toContain("<FilterSeg")
     expect(view).toContain("user-rules")
     expect(view).toContain('data-testid="user-provider-seg"')
     expect(view).toContain('data-testid="user-role-seg"')
     expect(view).toContain('data-testid="user-status-seg"')
     expect(view).toContain('data-testid="create-precheck"')
     expect(view).toContain("user-drawer-head")
-    expect(view).toContain("共 {{ total }} 名用户 · 每页 20")
+    expect(view).toContain("<ListPagination")
     expect(view).toContain("本次操作已记入审计")
     expect(view).toContain("security_version")
     expect(view).not.toContain("<el-segmented")
@@ -275,9 +270,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(
       /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
-    expect(workspace).toMatch(
-      /\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg\s*\{[^}]*border-radius:\s*7px/s,
-    )
+    expect(workspace).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(workspace).toMatch(
       /\.user-rules,\s*\.config-rules,\s*\.ops-rules,\s*\.callback-rules,\s*\.security-daily-rules,\s*\.audit-rules\s*\{[^}]*display:\s*flex/s,
     )
@@ -288,7 +281,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     const view = source("src/views/ConfigView.vue")
     const workspace = readWorkspaceCss()
     expect(view).toContain("config-filter-bar")
-    expect(view).toContain("config-seg")
+    expect(view).toContain("<FilterSeg")
     expect(view).toContain('data-testid="config-group-seg"')
     expect(view).toContain("config-rules")
     expect(view).toContain("config-savebar")
@@ -306,9 +299,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(
       /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
-    expect(workspace).toMatch(
-      /\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg\s*\{[^}]*border-radius:\s*7px/s,
-    )
+    expect(workspace).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(workspace).toMatch(/\.config-group\s*\{[^}]*border-radius:\s*12px/s)
   })
 
@@ -316,7 +307,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     const view = source("src/views/CallbackView.vue")
     const workspace = readWorkspaceCss()
     expect(view).toContain("callback-filter-bar")
-    expect(view).toContain("callback-seg")
+    expect(view).toContain("<FilterSeg")
     expect(view).toContain("callback-rules")
     expect(view).toContain('data-testid="callback-status-seg"')
     expect(view).toContain('data-testid="callback-event-seg"')
@@ -325,7 +316,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("callback-drawer")
     expect(view).toContain("confirmAuditedAction")
     expect(view).not.toContain("ElMessageBox.confirm")
-    expect(view).toContain("共 {{ total }} 项 · 每页 20 · dead 总计 {{ deadTotal }}")
+    expect(view).toContain("<ListPagination")
     expect(view).toContain("本次操作已记入审计")
     expect(view).not.toContain('import "../styles/workspace.css"')
     expect(view).not.toContain("<el-segmented")
@@ -337,9 +328,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(
       /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
-    expect(workspace).toMatch(
-      /\.reply-seg,\s*\.blacklist-seg,\s*\.sensitive-policy-seg,\s*\.user-seg,\s*\.config-seg,\s*\.ops-seg,\s*\.callback-seg\s*\{[^}]*border-radius:\s*7px/s,
-    )
+    expect(workspace).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(workspace).toMatch(
       /\.user-rules,\s*\.config-rules,\s*\.ops-rules,\s*\.callback-rules,\s*\.security-daily-rules,\s*\.audit-rules\s*\{[^}]*display:\s*flex/s,
     )
@@ -349,7 +338,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     const view = source("src/views/SecurityDailyView.vue")
     const workspace = readWorkspaceCss()
     expect(view).toContain("security-daily-filter-bar")
-    expect(view).toContain("security-daily-seg")
+    expect(view).toContain("<FilterSeg")
     expect(view).toContain("security-daily-fld")
     expect(view).toContain("security-daily-filter-go")
     expect(view).toContain("security-daily-privacy")
@@ -367,7 +356,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain('data-testid="security-daily-reset"')
     expect(view).toContain("confirmAuditedAction")
     expect(view).not.toContain("ElMessageBox.confirm")
-    expect(view).toContain("共 {{ total }} 条 · 每页 20")
+    expect(view).toContain("<ListPagination")
     expect(view).toContain("本次操作已记入审计")
     expect(view).not.toContain('import "../styles/workspace.css"')
     expect(view).not.toContain("<el-segmented")
@@ -392,7 +381,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(/\.security-daily-fld\s*\{[^}]*display:\s*flex[^}]*align-items:\s*center/s)
     expect(workspace).toMatch(/\.security-daily-fld > span\s*\{[^}]*white-space:\s*nowrap/s)
     expect(workspace).toMatch(/\.security-daily-date\s*\{[^}]*width:\s*112px/s)
-    expect(workspace).toMatch(/\.security-daily-seg\s*\{[^}]*height:\s*30px/s)
+    expect(workspace).toMatch(/\.filter-seg--compact\s*\{[^}]*height:\s*30px/s)
     expect(workspace).toMatch(/\.security-daily-filter-go\s*\{[^}]*margin-left:\s*auto/s)
     expect(workspace).toMatch(/\.security-daily-privacy\s*\{[^}]*font-size:\s*10\.5px/s)
     // 检索条不再并入 reply-* 共享尺寸组；规则条仍与 user-rules 同组
@@ -417,7 +406,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("audit-privacy")
     expect(view).toContain("audit-rules")
     expect(view).toContain("audit-results")
-    expect(view).toContain("audit-pagination")
+    expect(view).toContain("<ListPagination")
     expect(view).toContain("audit-diff")
     expect(view).toContain("audit-mobile-list")
     expect(view).toContain('data-testid="audit-actor"')
@@ -432,7 +421,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain('data-testid="audit-clear-filters"')
     expect(view).toContain('data-testid="audit-copy-correlation"')
     expect(view).toContain('data-testid="audit-trace-correlation"')
-    expect(view).toContain("共 {{ total }} 条 · 每页 20")
+    expect(view).toContain("<ListPagination")
     expect(view).toContain('size="min(560px, 92vw)"')
     expect(view).not.toContain('import "../styles/workspace.css"')
     expect(view).not.toContain("<el-segmented")
@@ -452,9 +441,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
       /\.user-rules,\s*\.config-rules,\s*\.ops-rules,\s*\.callback-rules,\s*\.security-daily-rules,\s*\.audit-rules\s*\{[^}]*display:\s*flex/s,
     )
     expect(workspace).toMatch(/\.batch-more-trigger,\s*\.audit-more-trigger\s*\{/s)
-    expect(workspace).toMatch(
-      /\.reply-pagination,\s*\.blacklist-pagination,\s*\.sensitive-pagination,\s*\.user-pagination,\s*\.ops-pagination,\s*\.callback-pagination,\s*\.security-daily-pagination,\s*\.audit-pagination\s*\{/s,
-    )
+    expect(workspace).toMatch(/:where\(\.list-pagination\)\s*\{/s)
     expect(workspace).not.toMatch(/\.filter-grid\s*\{/s)
     expect(workspace).not.toMatch(/\.audit-filter-card\s*\{/s)
     // 760px 断点保留表格↔卡片双渲染与差异格纵排折叠

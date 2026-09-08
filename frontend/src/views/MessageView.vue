@@ -1,10 +1,14 @@
 <script setup lang="ts">
+import { CATEGORY_OPTIONS, MESSAGE_STATUS_OPTIONS, BLACKLIST_SOURCE_LABELS } from "../lib/labels"
+import { rangeToIsoParams } from "../lib/time"
 import { computed, ref } from "vue"
 
 import { ElMessage } from "element-plus"
 
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
+import FilterSeg from "../components/FilterSeg.vue"
+import ListPagination from "../components/ListPagination.vue"
 import PhoneMask from "../components/PhoneMask.vue"
 import PhoneReveal from "../components/PhoneReveal.vue"
 import StatusTag from "../components/StatusTag.vue"
@@ -17,10 +21,10 @@ import {
   type TimelineEvent,
   type TimelineResult,
 } from "../api/queries"
-import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
-import { maskPhone, PHONE_RE } from "../lib/phone"
+import { usePagedList } from "../composables/usePagedList"
+import { CATEGORY_LABELS } from "../lib/labels"
+import { phoneProblem, maskPhone, PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
-import { errorText } from "../lib/error"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -29,41 +33,22 @@ const range = ref<[Date, Date] | null>(null)
 const category = ref("")
 const status = ref("")
 const mode = ref<"list" | "timeline">("list")
-const items = ref<MessageItem[]>([])
 const timeline = ref<TimelineResult | null>(null)
 const badge = ref<PhoneBadge | null>(null)
-const total = ref(0)
-const page = ref(1)
 const searched = ref(false)
 const searchedPhone = ref("")
 const searchedMask = ref("")
 const decryptId = ref<number>()
-const loading = ref(false)
-const errorMessage = ref("")
 /** 徽标条是否已完成一次授权查看（由 PhoneReveal 的 revealed 事件驱动），仅控制辅助文案。 */
 const badgeRevealed = ref(false)
-const canDecrypt = computed(() => session.role === "approver" || session.role === "admin")
+const canDecrypt = computed(() => session.canDecrypt)
 const displayMask = computed(() => items.value[0]?.phone || searchedMask.value)
 
 /** 手机号即时校验提示：空或合法为 undefined，非法时表单内联展示（与上行回复同规则同文案）。 */
-const phoneError = computed<string | undefined>(() => {
-  const value = phone.value.trim()
-  return value === "" || PHONE_RE.test(value) ? undefined : "手机号须为 11 位以 1 开头的数字"
-})
+const phoneError = computed(() => phoneProblem(phone.value.trim()))
 
-const categoryOptions = [
-  { value: "verify", label: "验证码" },
-  { value: "notice", label: "通知" },
-  { value: "market", label: "营销" },
-]
-const statusOptions = [
-  { value: "pending", label: "待处理" },
-  { value: "sent", label: "已提交" },
-  { value: "delivered", label: "已送达" },
-  { value: "failed", label: "失败" },
-  { value: "unknown", label: "未知" },
-  { value: "other", label: "其他" },
-]
+const categoryOptions = CATEGORY_OPTIONS
+const statusOptions = MESSAGE_STATUS_OPTIONS
 
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
 
@@ -82,11 +67,7 @@ const groupedEvents = computed(() => {
   }))
 })
 
-const blacklistSourceLabel: Record<string, string> = {
-  manual: "人工加入",
-  reply_optout: "回复退订",
-  import: "导入",
-}
+const blacklistSourceLabel = BLACKLIST_SOURCE_LABELS
 
 function isCategory(value: string): value is "verify" | "notice" | "market" {
   return value === "verify" || value === "notice" || value === "market"
@@ -100,63 +81,67 @@ function showReport(item: MessageItem): boolean {
   return Boolean(item.report_desc) && (item.status === "failed" || item.status === "unknown")
 }
 
-let runToken = 0
-
-async function run(): Promise<void> {
-  const token = ++runToken
-  loading.value = true
-  errorMessage.value = ""
-  const queryPhone = searchedPhone.value || phone.value
-  try {
-    const start = range.value?.[0].toISOString()
-    const end = range.value?.[1].toISOString()
+/**
+ * 号码轨迹查询：list / timeline 两种模式共用同一竞态守卫（usePagedList 单点）。
+ * fetcher 返回 null 之外的全部差异（徽标、时间线、解密锚点）经 onLoaded/onError 回写。
+ */
+const {
+  items,
+  total,
+  page,
+  loading,
+  errorMessage,
+  load: run,
+  cancel: cancelQuery,
+} = usePagedList({
+  fetcher: async (page) => {
+    const queryPhone = searchedPhone.value || phone.value
+    const { start, end } = rangeToIsoParams(range.value)
     if (mode.value === "list") {
       const result = await searchMessages(queryPhone, {
         start,
         end,
         category: category.value || undefined,
         status: status.value || undefined,
-        page: page.value,
+        page,
       })
-      if (token !== runToken) return
-      items.value = result.items
-      total.value = result.total
-      badge.value = result.badge
-      timeline.value = null
-      decryptId.value = result.items[0]?.id
-      if (result.items[0]?.phone) searchedMask.value = result.items[0].phone
-    } else {
-      const next = await getTimeline(queryPhone, start, end)
-      if (token !== runToken) return
-      timeline.value = next
-      badge.value = next.badge
-      items.value = []
-      total.value = next.events.length
-      decryptId.value = undefined
-      if (canDecrypt.value) {
-        try {
-          const firstPage = await searchMessages(queryPhone, { page: 1 })
-          if (token !== runToken) return
-          decryptId.value = firstPage.items[0]?.id
-          if (firstPage.items[0]?.phone) searchedMask.value = firstPage.items[0].phone
-        } catch {
-          if (token !== runToken) return
-          decryptId.value = undefined
-        }
+      return {
+        items: result.items,
+        total: result.total,
+        badge: result.badge,
+        timeline: null,
+        decryptId: result.items[0]?.id,
+        firstPhone: result.items[0]?.phone,
       }
     }
-  } catch (error) {
-    if (token !== runToken) return
-    items.value = []
+    const next = await getTimeline(queryPhone, start, end)
+    let firstId: number | undefined
+    let firstPhone: string | undefined
+    if (canDecrypt.value) {
+      try {
+        const firstPage = await searchMessages(queryPhone, { page: 1 })
+        firstId = firstPage.items[0]?.id
+        firstPhone = firstPage.items[0]?.phone
+      } catch {
+        firstId = undefined
+      }
+    }
+    return { items: [], total: next.events.length, badge: next.badge, timeline: next, decryptId: firstId, firstPhone }
+  },
+  errorMessage: "号码查询失败",
+  clearOnError: true,
+  onLoaded: (result) => {
+    badge.value = result.badge
+    timeline.value = result.timeline
+    decryptId.value = result.decryptId
+    if (result.firstPhone) searchedMask.value = result.firstPhone
+  },
+  onError: () => {
     timeline.value = null
     badge.value = null
-    total.value = 0
     decryptId.value = undefined
-    errorMessage.value = errorText(error, "号码查询失败")
-  } finally {
-    if (token === runToken) loading.value = false
-  }
-}
+  },
+})
 
 function search(): void {
   const value = phone.value.trim()
@@ -179,6 +164,7 @@ function search(): void {
 
 /** 重置查询栏条件（手机号/时间范围/视图）并回到未查询态；本页手机号必填，重置不自动查询。 */
 function reset(): void {
+  cancelQuery()
   phone.value = ""
   range.value = null
   mode.value = "list"
@@ -201,13 +187,7 @@ function applyFilters(): void {
   void run()
 }
 
-function changePage(next: number): void {
-  page.value = next
-  void run()
-}
-
 function switchMode(next: "list" | "timeline"): void {
-  if (next === mode.value) return
   mode.value = next
   page.value = 1
   if (searched.value) void run()
@@ -260,22 +240,16 @@ async function revealSearched(): Promise<string> {
     </label>
     <div class="message-fld">
       <span>视图</span>
-      <div class="message-seg" role="group" aria-label="查询视图" data-testid="message-mode-seg">
-        <button
-          type="button"
-          :class="{ on: mode === 'list' }"
-          data-testid="message-view-list"
-          @click="switchMode('list')"
-          >列表</button
-        >
-        <button
-          type="button"
-          :class="{ on: mode === 'timeline' }"
-          data-testid="message-view-timeline"
-          @click="switchMode('timeline')"
-          >时间线</button
-        >
-      </div>
+      <FilterSeg
+        :model-value="mode"
+        :options="[
+          ...[{ label: '列表', value: 'list' as const, testid: 'message-view-list' }],
+          ...[{ label: '时间线', value: 'timeline' as const, testid: 'message-view-timeline' }],
+        ]"
+        aria-label="查询视图"
+        data-testid="message-mode-seg"
+        @update:model-value="switchMode"
+      />
     </div>
     <div class="message-filter-go">
       <el-button type="primary" native-type="submit" :loading="loading">查询</el-button>
@@ -373,8 +347,14 @@ async function revealSearched(): Promise<string> {
         </footer>
       </article>
     </div>
-    <footer v-if="searched" class="query-pagination message-pager">
-      <span>共 {{ total }} 条 · 每页 20</span>
+    <ListPagination
+      v-if="searched"
+      v-model:page="page"
+      :total="total"
+      class="message-pager"
+      testid="message-pagination"
+      @change="run"
+    >
       <span class="result-filters">
         <el-select
           v-model="category"
@@ -404,15 +384,7 @@ async function revealSearched(): Promise<string> {
           <el-option v-for="option in statusOptions" :key="option.value" :value="option.value" :label="option.label" />
         </el-select>
       </span>
-      <el-pagination
-        v-model:current-page="page"
-        data-testid="message-pagination"
-        :page-size="DEFAULT_PAGE_SIZE"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="changePage"
-      />
-    </footer>
+    </ListPagination>
   </section>
 
   <section v-else v-loading="loading" class="timeline-panel">

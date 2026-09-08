@@ -10,40 +10,54 @@ import {
   type BlacklistSource,
 } from "../api/blacklist"
 import EmptyState from "../components/EmptyState.vue"
+import FilterSeg from "../components/FilterSeg.vue"
+import ListPagination from "../components/ListPagination.vue"
 import PhoneMask from "../components/PhoneMask.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
+import { usePagedList } from "../composables/usePagedList"
 import { confirmAuditedAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
-import { useLatestRead } from "../composables/useLatestRead"
-import { DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { BLACKLIST_SOURCE_LABELS } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
 
-const items = ref<BlacklistItem[]>([])
-const total = ref(0)
-const page = ref(1)
 const sourceFilter = ref<BlacklistSource | "all">("all")
 const keyword = ref("")
-const loading = ref(false)
 const saving = ref(false)
-const errorMessage = ref("")
 const drawerOpen = ref(false)
 const phonesText = ref("")
 const remark = ref("")
+
+const { items, total, page, loading, errorMessage, load, search, reset } = usePagedList({
+  fetcher: (page, signal) =>
+    listBlacklist(
+      {
+        source: sourceFilter.value === "all" ? "" : sourceFilter.value,
+        keyword: keyword.value.trim(),
+        page,
+      },
+      signal,
+    ),
+  errorMessage: "黑名单加载失败",
+  resetFilters: () => {
+    sourceFilter.value = "all"
+    keyword.value = ""
+  },
+})
 
 // 与服务端 PHONE_PATTERN 同一规则（硬性规则 8）；服务端仍为权威校验。
 
 const sourceOptions: { label: string; value: BlacklistSource | "all" }[] = [
   { label: "全部", value: "all" },
-  { label: "人工加入", value: "manual" },
-  { label: "回复退订", value: "reply_optout" },
-  { label: "导入", value: "import" },
+  { label: BLACKLIST_SOURCE_LABELS.manual, value: "manual" },
+  { label: BLACKLIST_SOURCE_LABELS.reply_optout, value: "reply_optout" },
+  { label: BLACKLIST_SOURCE_LABELS.import, value: "import" },
 ]
 
 const sourceMeta: Record<BlacklistSource, { label: string; type: "primary" | "warning" | "info" }> = {
-  manual: { label: "人工加入", type: "primary" },
-  reply_optout: { label: "回复退订", type: "warning" },
-  import: { label: "导入", type: "info" },
+  manual: { label: BLACKLIST_SOURCE_LABELS.manual, type: "primary" },
+  reply_optout: { label: BLACKLIST_SOURCE_LABELS.reply_optout, type: "warning" },
+  import: { label: BLACKLIST_SOURCE_LABELS.import, type: "info" },
 }
 
 function sourceLabel(source: BlacklistSource): string {
@@ -89,50 +103,8 @@ const emptyState = computed(() =>
     : { title: "黑名单为空", description: "点击右上「添加号码」，或等待用户回复退订后，号码会出现在这里。" },
 )
 
-const listRead = useLatestRead()
-
-let loadToken = 0
-
-async function load(): Promise<void> {
-  const token = ++loadToken
-  const signal = listRead.start()
-  loading.value = true
-  errorMessage.value = ""
-  try {
-    const result = await listBlacklist(
-      {
-        source: sourceFilter.value === "all" ? "" : sourceFilter.value,
-        keyword: keyword.value.trim(),
-        page: page.value,
-      },
-      signal,
-    )
-    if (signal.aborted || token !== loadToken) return
-    items.value = result.items
-    total.value = result.total
-  } catch (error) {
-    if (signal.aborted || token !== loadToken) return
-    errorMessage.value = errorText(error, "黑名单加载失败")
-  } finally {
-    if (token === loadToken) loading.value = false
-  }
-}
-
-function search(): void {
-  page.value = 1
-  void load()
-}
-
-function reset(): void {
-  sourceFilter.value = "all"
-  keyword.value = ""
-  page.value = 1
-  void load()
-}
-
 /** 来源 seg 点选即重查，与上行回复页同一语言。 */
 function setSource(next: BlacklistSource | "all"): void {
-  if (next === sourceFilter.value) return
   sourceFilter.value = next
   search()
 }
@@ -205,17 +177,14 @@ onMounted(() => void load())
   <form class="blacklist-filter-bar" @submit.prevent="search">
     <div class="blacklist-fld">
       <span>来源</span>
-      <div class="blacklist-seg" role="group" aria-label="来源筛选" data-testid="blacklist-source-seg">
-        <button
-          v-for="option in sourceOptions"
-          :key="option.value"
-          type="button"
-          :class="{ on: sourceFilter === option.value }"
-          :data-testid="`blacklist-source-${option.value}`"
-          @click="setSource(option.value)"
-          >{{ option.label }}</button
-        >
-      </div>
+      <FilterSeg
+        :model-value="sourceFilter"
+        :options="sourceOptions"
+        data-testid="blacklist-source-seg"
+        button-testid-prefix="blacklist-source"
+        aria-label="来源筛选"
+        @update:model-value="setSource"
+      />
     </div>
     <label class="blacklist-fld">
       <span>关键词</span>
@@ -296,17 +265,7 @@ onMounted(() => void load())
       <EmptyState v-if="!loading && !items.length" :title="emptyState.title" :description="emptyState.description" />
     </div>
 
-    <footer class="blacklist-pagination">
-      <span>共 {{ total }} 条 · 每页 20</span>
-      <el-pagination
-        v-model:current-page="page"
-        data-testid="blacklist-pagination"
-        :page-size="DEFAULT_PAGE_SIZE"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="load"
-      />
-    </footer>
+    <ListPagination v-model:page="page" :total="total" testid="blacklist-pagination" @change="load" />
   </section>
 
   <el-drawer v-model="drawerOpen" class="blacklist-drawer" size="min(440px, 92vw)" :teleported="false">

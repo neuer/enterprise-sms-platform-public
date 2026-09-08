@@ -1,31 +1,42 @@
 <script setup lang="ts">
+import { rangeToIsoParams } from "../lib/time"
+
 import { ElMessage } from "element-plus"
+
 import { computed, onMounted, ref } from "vue"
+
 import { useRouter } from "vue-router"
 
 import EmptyState from "../components/EmptyState.vue"
+
+import FilterSeg from "../components/FilterSeg.vue"
+
+import ListPagination from "../components/ListPagination.vue"
+
 import PhoneMask from "../components/PhoneMask.vue"
+
 import { blacklistReply, listReplies, type ReplyDisposition, type ReplyItem } from "../api/replies"
+
+import { usePagedList } from "../composables/usePagedList"
+
 import { confirmAction } from "../lib/confirm"
+
 import { errorText } from "../lib/error"
-import { DEFAULT_PAGE_SIZE } from "../lib/labels"
-import { PHONE_RE } from "../lib/phone"
+
+import { phoneProblem } from "../lib/phone"
+
 import { formatDateTime } from "../lib/time"
+
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
 // 测试环境未安装路由时 useRouter 返回 undefined，跳转入口做空值守卫。
 const router = useRouter()
-const items = ref<ReplyItem[]>([])
-const total = ref(0)
-const page = ref(1)
 const phone = ref("")
 const range = ref<[Date, Date] | null>(null)
 const disposition = ref<ReplyDisposition>("all")
-const loading = ref(false)
-const errorMessage = ref("")
 const optingOutId = ref<number | null>(null)
-const canOptout = computed(() => session.role === "admin" || session.role === "operator")
+const canOptout = computed(() => session.canWrite)
 // 与服务端 Query(pattern=^1\d{10}$) 同一规则（硬性规则 8）；服务端仍为权威校验。
 const OPT_OUT_RE = /^(TD|T|退订)$/i
 
@@ -35,15 +46,37 @@ const dispositionOptions: { label: string; value: ReplyDisposition }[] = [
   { label: "已加黑", value: "blacklisted" },
 ]
 
+const {
+  items,
+  total,
+  page,
+  loading,
+  errorMessage,
+  load,
+  search: listSearch,
+  reset,
+} = usePagedList({
+  fetcher: (page) =>
+    listReplies({
+      phone: phone.value.trim() || undefined,
+      ...rangeToIsoParams(range.value),
+      disposition: disposition.value,
+      page,
+    }),
+  errorMessage: "回复列表加载失败",
+  resetFilters: () => {
+    phone.value = ""
+    range.value = null
+    disposition.value = "all"
+  },
+})
+
 function isOptOutContent(content: string): boolean {
   return OPT_OUT_RE.test(content.trim())
 }
 
 /** 手机号即时校验提示：空或合法为 undefined，非法时表单内联展示。 */
-const phoneError = computed<string | undefined>(() => {
-  const value = phone.value.trim()
-  return value === "" || PHONE_RE.test(value) ? undefined : "手机号须为 11 位以 1 开头的数字"
-})
+const phoneError = computed(() => phoneProblem(phone.value.trim()))
 
 const filtering = computed(() => Boolean(phone.value.trim()) || Boolean(range.value) || disposition.value !== "all")
 const emptyState = computed(() =>
@@ -58,50 +91,16 @@ const emptyState = computed(() =>
       },
 )
 
-let loadToken = 0
-
-async function load(): Promise<void> {
-  const token = ++loadToken
-  loading.value = true
-  errorMessage.value = ""
-  try {
-    const result = await listReplies({
-      phone: phone.value.trim() || undefined,
-      start: range.value?.[0].toISOString(),
-      end: range.value?.[1].toISOString(),
-      disposition: disposition.value,
-      page: page.value,
-    })
-    if (token !== loadToken) return
-    items.value = result.items
-    total.value = result.total
-  } catch (error) {
-    if (token !== loadToken) return
-    errorMessage.value = errorText(error, "回复列表加载失败")
-  } finally {
-    if (token === loadToken) loading.value = false
-  }
-}
-
+/** 查询前先做手机号即时校验；seg 点选与「查询」按钮共用同一入口。 */
 function search(): void {
   if (phoneError.value) {
     ElMessage.warning(phoneError.value)
     return
   }
-  page.value = 1
-  void load()
-}
-
-function reset(): void {
-  phone.value = ""
-  range.value = null
-  disposition.value = "all"
-  page.value = 1
-  void load()
+  listSearch()
 }
 
 function setDisposition(next: ReplyDisposition): void {
-  if (next === disposition.value) return
   disposition.value = next
   search()
 }
@@ -173,17 +172,14 @@ onMounted(load)
     </label>
     <div class="reply-fld">
       <span>处置</span>
-      <div class="reply-seg" role="group" aria-label="处置" data-testid="reply-disposition-seg">
-        <button
-          v-for="option in dispositionOptions"
-          :key="option.value"
-          type="button"
-          :class="{ on: disposition === option.value }"
-          :data-testid="`reply-disposition-${option.value}`"
-          @click="setDisposition(option.value)"
-          >{{ option.label }}</button
-        >
-      </div>
+      <FilterSeg
+        :model-value="disposition"
+        :options="dispositionOptions"
+        data-testid="reply-disposition-seg"
+        button-testid-prefix="reply-disposition"
+        aria-label="处置"
+        @update:model-value="setDisposition"
+      />
     </div>
     <div class="reply-filter-go">
       <el-button data-testid="reply-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
@@ -290,15 +286,6 @@ onMounted(load)
       <EmptyState v-if="!loading && !items.length" :title="emptyState.title" :description="emptyState.description" />
     </div>
 
-    <footer class="reply-pagination">
-      <span>共 {{ total }} 条 · 每页 20</span>
-      <el-pagination
-        v-model:current-page="page"
-        :page-size="DEFAULT_PAGE_SIZE"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="load"
-      />
-    </footer>
+    <ListPagination v-model:page="page" :total="total" @change="load" />
   </section>
 </template>

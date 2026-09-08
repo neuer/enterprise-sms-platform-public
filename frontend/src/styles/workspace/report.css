@@ -55,28 +55,7 @@
   white-space: nowrap;
 }
 
-.report-seg {
-  display: flex;
-  overflow: hidden;
-  border: 1px solid var(--hair);
-  border-radius: 7px;
-}
-
-.report-seg button {
-  padding: 4px 13px;
-  color: var(--tx-2);
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 400;
-  background: var(--sink);
-  border: 0;
-  cursor: pointer;
-}
-
-.report-seg button.on {
-  color: #eaf1ed;
-  background: var(--verdi);
-}
+/* 周期/维度 seg 已并入 FilterSeg 单点（shared.css）。 */
 
 .report-pill-select {
   width: 118px;
@@ -278,31 +257,7 @@
   min-height: 0;
 }
 
-.metric-switch {
-  display: flex;
-  flex: none;
-  gap: 4px;
-  padding: 2px;
-  border: 1px solid var(--hair);
-  border-radius: 6px;
-}
-
-.metric-switch button {
-  padding: 2px 10px;
-  color: var(--tx-3);
-  font: inherit;
-  font-size: 10.5px;
-  font-weight: 400;
-  background: transparent;
-  border: 0;
-  border-radius: 5px;
-  cursor: pointer;
-}
-
-.metric-switch button.on {
-  color: var(--tx-hi);
-  background: var(--sink);
-}
+/* 趋势指标切换已并入 FilterSeg 的 .filter-seg--pill 变体（见 shared.css 单点）。 */
 
 .report-chart-card .trend-legend {
   flex-wrap: wrap;
@@ -413,7 +368,9 @@
 .report-pager {
   display: flex;
   justify-content: flex-end;
+  min-height: 0;
   padding: 10px 14px;
+  border-top: 0;
 }
 
 .report-trend-chart {

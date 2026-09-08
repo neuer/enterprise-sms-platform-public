@@ -10,7 +10,10 @@ import {
   type SensitiveWordItem,
 } from "../api/sensitiveWords"
 import EmptyState from "../components/EmptyState.vue"
+import FilterSeg from "../components/FilterSeg.vue"
+import ListPagination from "../components/ListPagination.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
+import { usePagedList } from "../composables/usePagedList"
 import { confirmAuditedAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
@@ -18,18 +21,13 @@ import { formatDateTime } from "../lib/time"
 
 const MAX_WORD_LENGTH = 64
 
-const items = ref<SensitiveWordItem[]>([])
-const total = ref(0)
-const page = ref(1)
 const keyword = ref("")
 const policy = ref("")
 const policyLoading = ref(false)
 const policyError = ref("")
 const policyRead = useLatestRead()
-const loading = ref(false)
 const saving = ref(false)
 const policySaving = ref(false)
-const errorMessage = ref("")
 const drawerOpen = ref(false)
 const wordsText = ref("")
 
@@ -37,6 +35,14 @@ const policyOptions = [
   { label: "命中阻断", value: "block" },
   { label: "仅审计", value: "audit" },
 ]
+
+const { items, total, page, loading, errorMessage, load, search, reset } = usePagedList({
+  fetcher: (page, signal) => listSensitiveWords({ keyword: keyword.value.trim(), page }, signal),
+  errorMessage: "敏感词加载失败",
+  resetFilters: () => {
+    keyword.value = ""
+  },
+})
 
 /** 与现提交口径一致拆分：换行/中英文逗号分号分隔，行号即拆分序号。 */
 function parseWordEntries(text: string): string[] {
@@ -75,28 +81,6 @@ const emptyState = computed(() =>
     : { title: "敏感词库为空", description: "点击右上「添加敏感词」批量录入后，命中词将按当前策略阻断或仅审计。" },
 )
 
-const listRead = useLatestRead()
-
-let loadToken = 0
-
-async function load(): Promise<void> {
-  const token = ++loadToken
-  const signal = listRead.start()
-  loading.value = true
-  errorMessage.value = ""
-  try {
-    const pageResult = await listSensitiveWords({ keyword: keyword.value.trim(), page: page.value }, signal)
-    if (signal.aborted || token !== loadToken) return
-    items.value = pageResult.items
-    total.value = pageResult.total
-  } catch (error) {
-    if (signal.aborted || token !== loadToken) return
-    errorMessage.value = errorText(error, "敏感词加载失败")
-  } finally {
-    if (token === loadToken) loading.value = false
-  }
-}
-
 /** 策略首次加载及主动刷新独立于词库分页；外部变更通过「刷新策略」重新读取。 */
 async function loadPolicy(): Promise<void> {
   const signal = policyRead.start()
@@ -114,17 +98,6 @@ async function loadPolicy(): Promise<void> {
   } finally {
     if (!signal.aborted) policyLoading.value = false
   }
-}
-
-function search(): void {
-  page.value = 1
-  void load()
-}
-
-function reset(): void {
-  keyword.value = ""
-  page.value = 1
-  void load()
 }
 
 /** 命中策略 seg 点选即写配置；失败回退原值。 */
@@ -215,18 +188,14 @@ onMounted(() => {
     <div class="sensitive-head-ops">
       <div class="sensitive-policy" data-testid="sensitive-policy">
         <span>命中策略</span>
-        <div class="sensitive-policy-seg" role="group" aria-label="命中策略">
-          <button
-            v-for="option in policyOptions"
-            :key="option.value"
-            type="button"
-            :class="{ on: policy === option.value }"
-            :data-testid="`sensitive-policy-${option.value}`"
-            :disabled="policySaving || policyLoading || !policy || Boolean(policyError)"
-            @click="setPolicy(option.value)"
-            >{{ option.label }}</button
-          >
-        </div>
+        <FilterSeg
+          :model-value="policy"
+          :options="policyOptions"
+          button-testid-prefix="sensitive-policy"
+          aria-label="命中策略"
+          :disabled="policySaving || policyLoading || !policy || Boolean(policyError)"
+          @update:model-value="setPolicy"
+        />
       </div>
       <el-button
         data-testid="sensitive-policy-refresh"
@@ -292,18 +261,8 @@ onMounted(() => {
     </div>
     <EmptyState v-else-if="!loading" :title="emptyState.title" :description="emptyState.description" />
 
-    <footer class="sensitive-pagination">
-      <span>共 {{ total }} 条 · 每页 60</span>
-      <!-- 每页 60 为词条墙密度的刻意决策，见 api/sensitiveWords.ts -->
-      <el-pagination
-        v-model:current-page="page"
-        data-testid="sensitive-pagination"
-        :page-size="60"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="load"
-      />
-    </footer>
+    <!-- 每页 60 为词条墙密度的刻意决策，见 api/sensitiveWords.ts -->
+    <ListPagination v-model:page="page" :page-size="60" :total="total" testid="sensitive-pagination" @change="load" />
   </section>
 
   <el-drawer v-model="drawerOpen" class="sensitive-drawer" size="min(440px, 92vw)" :teleported="false">
