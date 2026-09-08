@@ -238,68 +238,39 @@ async def test_concurrent_confirm_is_rejected_after_first_wins(
 async def test_not_accepted_release_is_chunk_fact_and_batch_only_when_all_proven(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    unused = FakeConnection(
-        [
-            FakeResult(
-                {
-                    "reservation_id": "11111111-1111-1111-1111-111111111111",
-                    "recipient_count": 10,
-                    "segment_count": 10,
-                    "request_count": 1,
-                }
-            ),
-            FakeResult(),
-            FakeResult(scalar=False),
-            FakeResult(scalar="11111111-1111-1111-1111-111111111111"),
-        ]
-    )
+    import app.services.uncertain_resolution as module
+
+    reservation = "11111111-1111-1111-1111-111111111111"
     released: list[tuple[int, str]] = []
 
-    async def fake_release(
-        _connection: object,
-        *,
-        batch_id: int,
-        event_id: str,
-    ) -> bool:
+    async def locked(*_args: object) -> dict[str, object]:
+        return {"usage_reservation_id": reservation, "actual_app_id": 7,
+                "usage_state": "committed", **_resolution(action="confirm_not_accepted")}
+
+    async def active(*_args: object) -> None:
+        return None
+
+    async def release(_connection: object, *, batch_id: int, event_id: str) -> bool:
         released.append((batch_id, event_id))
         return True
 
-    import app.services.uncertain_resolution as module
+    monkeypatch.setattr(module, "_lock_not_accepted", locked)
+    monkeypatch.setattr(module, "_require_active_dual_control", active)
+    monkeypatch.setattr(module, "request_usage_release_for_batch", release)
+    for eligible in (True, False):
+        async def eligibility(*_args: object, result: bool = eligible) -> bool:
+            return result
 
-    monkeypatch.setattr(module, "request_usage_release_for_batch", fake_release)
-    await _apply_not_accepted(
-        unused,  # type: ignore[arg-type]
-        resolution_id=4,
-        chunk_id=9,
-        batch_id=3,
-    )
-    assert released == [
-        (3, "usage:11111111-1111-1111-1111-111111111111:uncertain-unused")
-    ]
-    assert unused.calls[1][1]["event_id"] == "resolution:4:not-accepted"
-
-    released.clear()
-    leftover = FakeConnection(
-        [
-            FakeResult(
-                {
-                    "reservation_id": "11111111-1111-1111-1111-111111111111",
-                    "recipient_count": 10,
-                    "segment_count": 10,
-                    "request_count": 0,
-                }
-            ),
-            FakeResult(),
-            FakeResult(scalar=True),
-        ]
-    )
-    await _apply_not_accepted(
-        leftover,  # type: ignore[arg-type]
-        resolution_id=5,
-        chunk_id=10,
-        batch_id=3,
-    )
-    assert released == []
+        monkeypatch.setattr(module, "_all_chunks_not_accepted", eligibility)
+        connection = FakeConnection([
+            FakeResult({"reservation_id": reservation, "batch_id": 3, "app_id": 7,
+                        "recipient_count": 10, "segment_count": 10, "request_count": 1}),
+            FakeResult(), FakeResult(),
+        ])
+        await _apply_not_accepted(connection, resolution_id=4, chunk_id=9, batch_id=3)
+        assert connection.calls[-1][1]["release_event_id"] == "resolution:4:not-accepted"
+        assert connection.calls[-1][1]["effect_generation"] == 1
+    assert released == [(3, f"usage:{reservation}:uncertain-unused")]
 
 
 @pytest.mark.asyncio

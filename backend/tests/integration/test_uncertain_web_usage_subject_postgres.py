@@ -2043,3 +2043,491 @@ async def test_r9_lost_commit_reply_recovers_child_after_late_report_without_new
         assert await connection.scalar(text(
             "SELECT state FROM send_inflight_reservation WHERE id=:id"
         ), {"id": command.inflight_reservation_id}) == "batch_bound"
+
+
+async def _r10_case(env: Any, sibling: str = "split_capacity_blocked") -> Any:
+    """真实 Pipeline/Usage Ledger 受理后构造两个合成生命周期分片。"""
+    from app.core.auth.accounts import ApplicationPrincipal
+    from app.services.pipeline import SendRequest
+    from app.services.send_inflight import materialize_in_flight_reservation
+
+    app_id = await _insert_api_app(env.engine, env.nonce + "r10", categories="verify")
+    app = ApiAppContext(app_id, "r10", "研发部", frozenset({"verify"}), daily_quota=1000)
+    actor = ApplicationPrincipal(app_id, "r10", "研发部")
+    with audit_principal_scope(actor), correlation_scope(uuid4()):
+        response = await _pipeline(env.store, env.ledger, env.redis).accept(app, SendRequest(
+            category="verify", mobiles=tuple(_phone(env.nonce, x) for x in (110, 111, 112)),
+            content="合成验证通知", channel="api", actor=actor, biz_id=uuid4().hex,
+        ))
+    async with env.engine.begin() as connection:
+        batch = (await connection.execute(text(
+            "SELECT id,usage_reservation_id FROM sms_batch WHERE batch_no=:no"
+        ), {"no": response.batch_no})).mappings().one()
+        chunks = []
+        for number, status, count in ((1, "unknown_terminal", 1), (2, sibling, 2)):
+            chunks.append(int(await connection.scalar(text("""
+                INSERT INTO sms_chunk(batch_id,chunk_no,custom_id,phone_count,status)
+                VALUES(:batch,:number,:custom,:count,:status) RETURNING id
+            """), {"batch": batch["id"], "number": number, "custom": uuid4().hex,
+                    "count": count, "status": status})))
+        messages = (await connection.execute(text(
+            "SELECT id,created_at FROM sms_message WHERE batch_id=:id ORDER BY id"
+        ), {"id": batch["id"]})).mappings().all()
+        sibling_message = "unknown" if sibling in {"unknown_terminal", "uncertain"} else (
+            "failed" if sibling == "failed" else "pending"
+        )
+        for index, row in enumerate(messages):
+            await connection.execute(text(
+                "UPDATE sms_message SET chunk_id=:chunk,status=:status "
+                "WHERE id=:id AND created_at=:at"
+            ), {"chunk": chunks[0 if index == 0 else 1],
+                "status": "unknown" if index == 0 else sibling_message,
+                "id": row["id"], "at": row["created_at"]})
+        for chunk_id, count in zip(chunks, (1, 2), strict=True):
+            await connection.execute(text("""
+                INSERT INTO usage_chunk_allocation(chunk_id,batch_id,reservation_id,
+                    recipient_count,segment_count,request_count,app_id)
+                VALUES(:chunk,:batch,:reservation,:count,:count,0,:app)
+            """), {"chunk": chunk_id, "batch": batch["id"],
+                    "reservation": batch["usage_reservation_id"], "count": count, "app": app_id})
+        await materialize_in_flight_reservation(
+            connection, batch_id=batch["id"], actual_chunks=2, limit=200,
+        )
+        await connection.execute(text(
+            "UPDATE sms_batch SET status='sending',unknown_cnt=1 WHERE id=:id"
+        ), {"id": batch["id"]})
+    proposed = await env.service.propose(chunks[0], "confirm_not_accepted", env.proposer)
+    resolution = await env.service.confirm(proposed.id, env.confirmer)
+    return SimpleNamespace(batch_id=batch["id"], reservation=batch["usage_reservation_id"],
+                           chunks=chunks, resolution=resolution.id, app_id=app_id)
+
+
+async def _r10_snapshot(env: Any, case: Any) -> Any:
+    async with env.engine.connect() as connection:
+        state = await connection.scalar(text(
+            "SELECT state FROM usage_reservation WHERE id=:id"
+        ), {"id": case.reservation})
+        projections = (await connection.execute(text("""
+            SELECT dimension_key,value,version FROM usage_projection WHERE dimension_key IN (
+              SELECT projection_key FROM usage_quota_entry WHERE reservation_id=:id
+              UNION SELECT projection_key FROM usage_frequency_entry WHERE reservation_id=:id
+            ) ORDER BY dimension_key
+        """), {"id": case.reservation})).all()
+        outbox = await connection.scalar(text(
+            "SELECT count(*) FROM outbox_event WHERE event_type='usage.release' "
+            "AND aggregate_id=:id"
+        ), {"id": str(case.reservation)})
+        inflight = (await connection.execute(text(
+            "SELECT state,reserved_chunks FROM send_inflight_reservation WHERE batch_id=:id"
+        ), {"id": case.batch_id})).one()
+    return state, projections, outbox, inflight
+
+
+@pytest.mark.asyncio
+async def test_r10_blocked_split_preserves_whole_usage(env: Any) -> None:
+    case = await _r10_case(env)
+    before = await _r10_snapshot(env, case)
+    result = await env.service.apply_effect(case.resolution)
+    assert result.state == "closed"
+    assert await _r10_snapshot(env, case) == before
+    async with env.engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM usage_chunk_release WHERE resolution_id=:id"
+        ), {"id": case.resolution}) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [
+    "pending", "retrying", "submitting", "failover_pending", "split_capacity_blocked",
+    "uncertain", "unknown_terminal", "submitted", "failed",
+])
+async def test_r10_chunk_lifecycle_matrix(env: Any, status: str) -> None:
+    case = await _r10_case(env, status)
+    before = await _r10_snapshot(env, case)
+    await env.service.apply_effect(case.resolution)
+    after = await _r10_snapshot(env, case)
+    if status == "failed":
+        assert after[0] == "release_requested" and after[2] == 1
+        async with env.engine.connect() as connection:
+            amounts = (await connection.execute(text("""
+                SELECT projection_key,sum(amount) FROM (
+                  SELECT projection_key,amount FROM usage_quota_entry WHERE reservation_id=:id
+                  UNION ALL SELECT projection_key,CASE WHEN counted THEN 1 ELSE 0 END
+                  FROM usage_frequency_entry WHERE reservation_id=:id
+                ) e GROUP BY projection_key
+            """), {"id": case.reservation})).all()
+        previous = {row[0]: row[1] for row in before[1]}
+        actual = {row[0]: row[1] for row in after[1]}
+        assert {key: previous[key]-actual[key] for key, _ in amounts} == dict(amounts)
+        assert after[3] == before[3]
+        await env.service.apply_effect(case.resolution)
+        assert await _r10_snapshot(env, case) == after
+        await env.ledger.apply_release(case.reservation)
+        await env.ledger.apply_release(case.reservation)
+        assert (await _r10_snapshot(env, case))[0] == "released"
+    else:
+        assert after == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", [
+    "pending_message", "orphan_message", "report_fields", "allocation", "generation", "legacy",
+])
+async def test_r10_incoherent_facts_fail_closed(env: Any, damage: str) -> None:
+    case = await _r10_case(env, "failed")
+    async with env.engine.begin() as connection:
+        if damage in {"pending_message", "orphan_message", "report_fields"}:
+            assignment = {"pending_message": "status='pending'", "orphan_message": "chunk_id=NULL",
+                          "report_fields": "report_status=1"}[damage]
+            await connection.execute(text(
+                f"UPDATE sms_message SET {assignment} WHERE chunk_id=:id"
+            ), {"id": case.chunks[1]})
+        elif damage == "allocation":
+            await connection.execute(text(
+                "UPDATE usage_chunk_allocation SET app_id=NULL WHERE chunk_id=:id"
+            ), {"id": case.chunks[1]})
+        else:
+            # 不完整历史事实及不同代次的事实均不得被本次 effect 自动认领。
+            await connection.execute(text("""
+                INSERT INTO usage_chunk_release(resolution_id,chunk_id,reservation_id,
+                  effect_generation,recipient_count,segment_count,request_count,release_event_id)
+                SELECT :resolution,chunk_id,reservation_id,:generation,recipient_count,
+                  segment_count,request_count,:event FROM usage_chunk_allocation WHERE chunk_id=:id
+            """), {"resolution": case.resolution, "id": case.chunks[0],
+                    "generation": None if damage == "legacy" else 2,
+                    "event": f"resolution:{case.resolution}:not-accepted"})
+    before = await _r10_snapshot(env, case)
+    if damage in {"legacy", "generation"}:
+        with pytest.raises(UncertainResolutionConflict):
+            await env.service.apply_effect(case.resolution)
+    else:
+        await env.service.apply_effect(case.resolution)
+    assert await _r10_snapshot(env, case) == before
+
+
+@pytest.mark.asyncio
+async def test_r10_split_resume_then_controlled_reevaluation(env: Any) -> None:
+    from app.tasks.send_repository import retry_capacity_blocked_splits
+
+    case = await _r10_case(env)
+    before = await _r10_snapshot(env, case)
+    await env.service.apply_effect(case.resolution)
+    async with env.engine.begin() as connection:
+        assert await retry_capacity_blocked_splits(connection, limit=10000) >= 1
+        children = (await connection.execute(text(
+            "SELECT id FROM sms_chunk WHERE parent_chunk_id=:id"
+        ), {"id": case.chunks[1]})).scalars().all()
+        assert len(children) == 2
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM sms_message WHERE chunk_id=ANY(:ids) AND status='pending'"
+        ), {"ids": list(children)}) == 2
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM usage_chunk_allocation WHERE chunk_id=ANY(:ids)"
+        ), {"ids": list(children)}) == 2
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM outbox_event WHERE event_type='chunk.ready' "
+            "AND aggregate_id=ANY(:ids)"
+        ), {"ids": [str(child) for child in children]}) == 2
+    await env.service.apply_effect(case.resolution)
+    after = await _r10_snapshot(env, case)
+    assert after[:3] == before[:3]
+    assert after[3][1] == before[3][1] + 1
+    # 合成确定性未受理终止；保留 A 的原确认后重放同一受控 effect 结算。
+    async with env.engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE sms_chunk SET status='failed' WHERE id=ANY(:ids)"
+        ), {"ids": list(children)})
+        await connection.execute(text(
+            "UPDATE sms_message SET status='failed' WHERE chunk_id=ANY(:ids)"
+        ), {"ids": list(children)})
+    await env.service.apply_effect(case.resolution)
+    assert (await _r10_snapshot(env, case))[0] == "release_requested"
+
+
+@pytest.mark.asyncio
+async def test_r10_concurrent_confirmations_and_duplicate_effect(env: Any) -> None:
+    import asyncio
+
+    case = await _r10_case(env, "unknown_terminal")
+    proposed = await env.service.propose(case.chunks[1], "confirm_not_accepted", env.proposer)
+    other = await env.service.confirm(proposed.id, env.confirmer)
+    await asyncio.wait_for(asyncio.gather(
+        env.service.apply_effect(case.resolution), env.service.apply_effect(other.id),
+    ), 10)
+    once = await _r10_snapshot(env, case)
+    assert once[0] == "release_requested" and once[2] == 1
+    await asyncio.wait_for(asyncio.gather(
+        env.service.apply_effect(case.resolution), env.service.apply_effect(case.resolution),
+        env.service.apply_effect(other.id),
+    ), 10)
+    assert await _r10_snapshot(env, case) == once
+    async with env.engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM usage_chunk_release WHERE chunk_id=ANY(:ids)"
+        ), {"ids": case.chunks}) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "phase", ["fact", "eligibility", "release", "outbox_before", "outbox_after"],
+)
+async def test_r10_fault_rolls_back_fact_projection_and_outbox(
+    env: Any, monkeypatch: pytest.MonkeyPatch, phase: str,
+) -> None:
+    import app.services.uncertain_resolution as module
+    import app.services.usage_ledger as ledger_module
+
+    case = await _r10_case(env, "failed")
+    before = await _r10_snapshot(env, case)
+    eligibility = module._all_chunks_not_accepted
+    release = module.request_usage_release_for_batch
+    outbox = ledger_module.enqueue_outbox
+
+    async def fail_eligibility(*args: Any, **kwargs: Any) -> Any:
+        if phase == "eligibility":
+            assert await eligibility(*args, **kwargs)
+        raise RuntimeError("synthetic release fault")
+
+    async def fail_release(*args: Any, **kwargs: Any) -> Any:
+        await release(*args, **kwargs)
+        raise RuntimeError("synthetic release fault")
+
+    async def fail_outbox(*args: Any, **kwargs: Any) -> Any:
+        if phase == "outbox_after":
+            await outbox(*args, **kwargs)
+        raise RuntimeError("synthetic release fault")
+
+    with monkeypatch.context() as patch:
+        if phase in {"fact", "eligibility"}:
+            patch.setattr(module, "_all_chunks_not_accepted", fail_eligibility)
+        elif phase == "release":
+            patch.setattr(module, "request_usage_release_for_batch", fail_release)
+        else:
+            patch.setattr(ledger_module, "enqueue_outbox", fail_outbox)
+        with pytest.raises(RuntimeError, match="synthetic release fault"):
+            await env.service.apply_effect(case.resolution)
+    assert await _r10_snapshot(env, case) == before
+    async with env.engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM usage_chunk_release WHERE resolution_id=:id"
+        ), {"id": case.resolution}) == 0
+    await env.service.apply_effect(case.resolution)
+    once = await _r10_snapshot(env, case)
+    await env.service.apply_effect(case.resolution)
+    assert once == await _r10_snapshot(env, case)
+    assert once[0] == "release_requested" and once[2] == 1
+
+
+@pytest.mark.asyncio
+async def test_r10_commit_reply_loss_and_expired_window_preserve_new_window(
+    env: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    import app.services.usage_ledger as ledger_module
+
+    case = await _r10_case(env, "failed")
+    future = datetime.now(UTC) + timedelta(days=2)
+    async with env.engine.begin() as connection:
+        key = await connection.scalar(text(
+            "SELECT projection_key FROM usage_frequency_entry WHERE reservation_id=:id LIMIT 1"
+        ), {"id": case.reservation})
+        assert key is not None
+        await connection.execute(text(
+            "UPDATE usage_projection SET window_key=:window,value=7,expires_at=:expires "
+            "WHERE dimension_key=:key"
+        ), {"key": key, "window": future.strftime("%Y%m%d%H%M"),
+            "expires": future + timedelta(days=1)})
+
+    async def future_now(_connection: Any) -> Any:
+        return future
+
+    monkeypatch.setattr(ledger_module, "_database_now", future_now)
+    run = env.service._run_not_accepted
+
+    async def lose_reply(current: Any) -> None:
+        await run(current)
+        raise ConnectionError("synthetic commit reply lost")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(env.service, "_run_not_accepted", lose_reply)
+        with pytest.raises(ConnectionError):
+            await env.service.apply_effect(case.resolution)
+    once = await _r10_snapshot(env, case)
+    assert once[0] == "release_requested" and once[2] == 1
+    assert await env.service.apply_effect(case.resolution)
+    assert await _r10_snapshot(env, case) == once
+    async with env.engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT value FROM usage_projection WHERE dimension_key=:key"
+        ), {"key": key}) == 7
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("writer", ["report", "split"])
+@pytest.mark.parametrize("winner", ["release", "writer"])
+async def test_r10_actual_writer_and_release_lock_order(
+    env: Any, monkeypatch: pytest.MonkeyPatch, writer: str, winner: str,
+) -> None:
+    import asyncio
+
+    import app.services.uncertain_resolution as resolution_module
+    from app.services.report_repository import SqlReportRepository
+    from app.tasks.send import ChunkPayload
+    from app.tasks.send_repository import complete_vendor_split
+
+    case = await _r10_case(env, "failed" if writer == "report" else "split_capacity_blocked")
+    locked, proceed = asyncio.Event(), asyncio.Event()
+    holder: list[int] = []
+    eligibility = resolution_module._all_chunks_not_accepted
+    batch_lock = SqlReportRepository._lock_batch
+
+    async def hold(connection: Any) -> None:
+        holder.append(int(await connection.scalar(text("SELECT pg_backend_pid()"))))
+        locked.set()
+        await proceed.wait()
+
+    async def held_eligibility(connection: Any, batch_id: int) -> bool:
+        result = await eligibility(connection, batch_id)
+        if winner == "release" and batch_id == case.batch_id:
+            await hold(connection)
+        return result
+
+    async def held_report(connection: Any, batch_id: int) -> None:
+        await batch_lock(connection, batch_id)
+        if winner == "writer" and batch_id == case.batch_id:
+            await hold(connection)
+
+    async def run_writer() -> None:
+        if writer == "report":
+            await _r9_report(env, case.chunks[1])
+        else:
+            async with env.engine.begin() as connection:
+                custom_id = await connection.scalar(text(
+                    "SELECT trim(custom_id) FROM sms_chunk WHERE id=:id"
+                ), {"id": case.chunks[1]})
+                children = await complete_vendor_split(connection, ChunkPayload(
+                    chunk_id=case.chunks[1], batch_id=case.batch_id, custom_id=custom_id,
+                    phones=("1" * 11, "1" * 11), content="", template_id="", sign_name="",
+                ))
+                assert len(children) == 2
+                if winner == "writer":
+                    await hold(connection)
+
+    monkeypatch.setattr(resolution_module, "_all_chunks_not_accepted", held_eligibility)
+    monkeypatch.setattr(SqlReportRepository, "_lock_batch", staticmethod(held_report))
+    async def release_call() -> Any:
+        return await env.service.apply_effect(case.resolution)
+    first = asyncio.create_task(release_call() if winner == "release" else run_writer())
+    tasks = [first]
+    try:
+        await asyncio.wait_for(locked.wait(), 10)
+        tasks.append(asyncio.create_task(run_writer() if winner == "release" else release_call()))
+        await _r9_wait_blocked(env.engine, holder[0])
+        proceed.set()
+        await asyncio.wait_for(asyncio.gather(*tasks), 15)
+    finally:
+        proceed.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    actual = await _r10_snapshot(env, case)
+    if writer == "report" and winner == "release":
+        assert actual[0] == "release_requested" and actual[2] == 1
+    else:
+        assert actual[0] == "committed" and actual[2] == 0
+
+
+@pytest.mark.asyncio
+async def test_r10_generation_changed_after_effect_claim_cannot_write_fact(
+    env: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = await _r10_case(env, "failed")
+    original = env.service._run_not_accepted
+
+    async def change_generation(current: Any) -> None:
+        async with env.engine.begin() as connection:
+            await connection.execute(text(
+                "UPDATE sms_uncertain_resolution SET effect_generation=2 WHERE id=:id"
+            ), {"id": case.resolution})
+        await original(current)
+
+    monkeypatch.setattr(env.service, "_run_not_accepted", change_generation)
+    before = await _r10_snapshot(env, case)
+    with pytest.raises(UncertainResolutionConflict):
+        await env.service.apply_effect(case.resolution)
+    assert await _r10_snapshot(env, case) == before
+    async with env.engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM usage_chunk_release WHERE resolution_id=:id"
+        ), {"id": case.resolution}) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["failed", "split_capacity_blocked"])
+async def test_r10_send_runtime_release_permissions(
+    env: Any, monkeypatch: pytest.MonkeyPatch, status: str,
+) -> None:
+    case = await _r10_case(env, status)
+    runtime = await _send_runtime(env, monkeypatch)
+    try:
+        result = await _apply_as_send(runtime, case.resolution, monkeypatch)
+        assert result.state == "closed"
+        expected = "release_requested" if status == "failed" else "committed"
+        assert (await _r10_snapshot(env, case))[0] == expected
+    finally:
+        await runtime.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_r10_completed_outbox_then_real_failure_finalization_releases_usage(
+    env: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.uncertain_resolution as resolution_module
+    import app.tasks.outbox as tasks
+    from app.services.outbox_repository import SqlOutboxRepository
+    from app.tasks.send_repository import SqlChunkStore, retry_capacity_blocked_splits
+
+    case = await _r10_case(env)
+
+    class Repository(SqlOutboxRepository):
+        def _engine(self) -> Any:
+            return _NoDisposeEngine(env.engine)
+
+    repository = Repository(settings=env.settings)
+    monkeypatch.setattr(tasks, "SqlOutboxRepository", lambda _settings: repository)
+    monkeypatch.setattr(
+        resolution_module, "UncertainResolutionService", lambda _crypto: env.service,
+    )
+    monkeypatch.setattr(
+        CryptoService, "from_settings", classmethod(lambda cls, settings: _crypto()),
+    )
+    async with env.engine.begin() as connection:
+        event_id = await connection.scalar(text(
+            "SELECT id FROM outbox_event WHERE dedup_key=:key"
+        ), {"key": f"uncertain.effect:{case.resolution}:1"})
+        # 队列发布完成的合成边界；实际认领、effect、完成与重复拒绝全部使用仓库代码。
+        await connection.execute(text(
+            "UPDATE outbox_event SET state='published',attempts=1,lease_id=:lease,"
+            "lease_expires_at=now()+interval '60 seconds' WHERE id=:id"
+        ), {"id": event_id, "lease": uuid4()})
+    assert await tasks._apply_uncertain_effect(case.resolution, str(event_id)) == 1
+    async with env.engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT state FROM outbox_event WHERE id=:id"
+        ), {"id": event_id}) == "completed"
+    assert await tasks._apply_uncertain_effect(case.resolution, str(event_id)) == 0
+    assert (await _r10_snapshot(env, case))[0] == "committed"
+    async with env.engine.begin() as connection:
+        await retry_capacity_blocked_splits(connection, limit=10000)
+        children = (await connection.execute(text(
+            "SELECT id FROM sms_chunk WHERE parent_chunk_id=:id ORDER BY id"
+        ), {"id": case.chunks[1]})).scalars().all()
+    store = SqlChunkStore(_crypto(), settings=env.settings, redis=env.redis)
+    monkeypatch.setattr(store, "_engine", lambda: _NoDisposeEngine(env.engine))
+    assert len(children) == 2
+    for child in children:
+        assert await store.mark_submitting(child, 0)
+        await store.mark_failed(child, 1002, "synthetic deterministic reject")
+    settled = await _r10_snapshot(env, case)
+    assert settled[0] == "release_requested" and settled[2] == 1
+    assert await tasks._apply_uncertain_effect(case.resolution, str(event_id)) == 0
+    assert await _r10_snapshot(env, case) == settled
