@@ -9,7 +9,7 @@ import logging
 import re
 import sys
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from math import ceil
 from typing import Any, Literal, Protocol
@@ -43,6 +43,7 @@ from app.services.idempotency import (
 )
 from app.services.masking import mask_phone_text, mask_verify_otp
 from app.services.send_inflight import InFlightInvariantViolation as InFlightInvariantViolation
+from app.services.uncertain_source import UncertainSourceProof
 from app.services.usage_ledger import FrequencyDecisionItem
 from app.services.usage_subject import UsageSubject
 from app.settings import get_settings
@@ -193,6 +194,7 @@ class SendRequest:
     vendor_test_uat: bool = False
     import_reservation_id: UUID | None = None
     usage_subject: UsageSubject | None = None
+    uncertain_source_proof: UncertainSourceProof | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,6 +263,7 @@ class BatchCommand:
     inflight_reservation_generation: int | None = None
     idempotency_claim_token: str | None = None
     idempotency_claim_generation: int | None = None
+    uncertain_source_proof: UncertainSourceProof | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1818,6 +1821,7 @@ class SendPipeline:
                     idempotency_claim_token=(claim_token.split(":", 1)[0] if claim_token else None),
                     idempotency_claim_generation=claim_generation,
                     messages=tuple(accepted),
+                    uncertain_source_proof=request.uncertain_source_proof,
                 )
                 if ownership_check is not None:
                     await ownership_check()

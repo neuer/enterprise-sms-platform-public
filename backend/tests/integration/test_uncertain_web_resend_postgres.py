@@ -47,7 +47,7 @@ def _crypto() -> CryptoService:
 
 class EngineBoundStore(SqlPipelineStore):
     def __init__(self, engine: Any, settings: Any) -> None:
-        super().__init__(settings=settings)
+        super().__init__(settings=settings, crypto=_crypto())
         self._bound_engine = engine
         sync_engine = engine.sync_engine
         if not getattr(sync_engine, "_sms_uncertain_audit_begin", False):

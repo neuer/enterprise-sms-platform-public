@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -50,6 +51,9 @@ class FakeResult:
     def scalar_one_or_none(self) -> object:
         return self.scalar
 
+    def all(self) -> list[dict[str, object]]:
+        return list(self)
+
     def __iter__(self) -> Any:
         if self.rows is not None:
             return iter(self.rows)
@@ -63,6 +67,15 @@ class FakeConnection:
 
     async def execute(self, statement: object, params: object = None) -> FakeResult:
         self.calls.append((str(statement), params))
+        sql = " ".join(str(statement).split())
+        if sql == "SELECT chunk_id,batch_id FROM sms_uncertain_resolution WHERE id=:id":
+            return FakeResult({"chunk_id": 9, "batch_id": 3})
+        if sql in {
+            "SELECT id FROM sms_chunk WHERE id=:id FOR UPDATE",
+            "SELECT id FROM sms_batch WHERE id=:id FOR UPDATE",
+            "SELECT id FROM sms_uncertain_resolution WHERE id=:id FOR UPDATE",
+        }:
+            return FakeResult({"id": 1})
         return self.results.pop(0)
 
 
@@ -172,7 +185,7 @@ async def test_second_admin_confirm_only_enqueues_effect(
     sql = "\n".join(call[0] for call in connection.calls)
     assert "effect_pending" in sql
     assert "source_dept" in sql
-    assert connection.calls[1][1]["dept"] == "平台部"
+    assert connection.calls[-1][1]["dept"] == "平台部"
     assert "SET status='pending'" not in sql
 
 
@@ -294,6 +307,14 @@ async def test_resend_builds_resolution_scoped_biz_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeCrypto:
+        active_version = 1
+
+        def hmac_candidates(self, _phone: str) -> dict[int, str]:
+            return {1: "a" * 64}
+
+        def idempotency_fingerprint(self, *_args: object, **_kwargs: object) -> str:
+            return "b" * 64
+
         def decrypt_phone(self, *_: object) -> str:
             return "13800138000"
 
@@ -316,6 +337,9 @@ async def test_resend_builds_resolution_scoped_biz_id(
             ),
             FakeResult(
                 {
+                    "id": 1, "created_at": datetime.now(UTC),
+                    "batch_id": 3, "chunk_id": 9, "status": "unknown",
+                    "report_status": None, "report_time": None, "report_event_key": None,
                     "phone_enc": b"enc",
                     "phone_hmac": "a" * 64,
                     "key_version": 1,
