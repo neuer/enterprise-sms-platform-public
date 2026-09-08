@@ -174,7 +174,8 @@ metrics_gate(){
     auth_policy_cache_hit_total auth_policy_cache_miss_total \
     auth_policy_load_failure_total auth_policy_snapshot_age_seconds \
     auth_guard_db_queries_total; do
-    printf '%s\n' "$metrics_body" | grep -q "^# TYPE ${family} gauge$" || {
+    # 读完输入，避免 grep -q 提前退出让 printf 在 pipefail 下误报 SIGPIPE。
+    printf '%s\n' "$metrics_body" | grep "^# TYPE ${family} gauge$" >/dev/null || {
       echo "Prometheus 指标缺失: ${family}" >&2
       exit 1
     }
