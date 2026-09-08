@@ -1,6 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.101  2026-09-08
+-- v1.6.102  2026-09-08
+-- v1.6.102：分片未受理确认事实绑定处置代次，旧事实保守保留待核验。
 -- v1.6.101：幂等结果到期证明与生命周期批次锁。
 -- v1.6.100：内部发送的应用 SELECT 限于业务策略列，排除 API Key 认证材料。
 -- v1.6.99：密码喷洒失败信号阈值；升级时推进准入策略 revision。
@@ -2414,6 +2415,7 @@ CREATE TABLE usage_chunk_allocation (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE usage_chunk_release (
+    effect_generation INTEGER CHECK (effect_generation > 0),
     resolution_id BIGINT PRIMARY KEY
       REFERENCES sms_uncertain_resolution(id) ON DELETE RESTRICT,
     chunk_id BIGINT NOT NULL REFERENCES sms_chunk(id) ON DELETE RESTRICT,

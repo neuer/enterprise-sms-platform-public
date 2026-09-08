@@ -39,6 +39,8 @@ class FakeConnection:
 
     async def execute(self, statement: object, params: object = None) -> FakeResult:
         self.calls.append((str(statement), params))
+        if "AND f.effect_generation=r.effect_generation" in str(statement):
+            return FakeResult()  # 本夹具没有既有人工未受理确认。
         if not self.results:
             raise AssertionError(f"unexpected SQL: {statement}")
         return self.results.pop(0)

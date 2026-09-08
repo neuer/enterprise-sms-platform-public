@@ -80,6 +80,8 @@ class SequenceConnection:
 
     async def execute(self, statement: object, params: object = None) -> FakeResult:
         self.calls.append((str(statement), params))
+        if "AND f.effect_generation=r.effect_generation" in str(statement):
+            return FakeResult()  # These fixtures have no prior manual confirmation.
         return self.results.pop(0)
 
     async def scalar(self, statement: object, params: object = None) -> object:
@@ -1261,6 +1263,7 @@ async def test_split_releases_parent_and_preserves_attempt_evidence(
             FakeResult(),
             FakeResult(scalars=[]),
             FakeResult(scalar="submitting"),
+            FakeResult(),  # shared batch serialization lock
             FakeResult(scalar=200),
             FakeResult(scalar=7),
             FakeResult(rowcount=1),

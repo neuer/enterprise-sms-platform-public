@@ -813,6 +813,8 @@ class SqlChunkStore:
     ) -> None:
         """在已锁定批次的事务内完成消息失败聚合与终态回调。"""
 
+        from app.services.uncertain_resolution import reevaluate_confirmed_unused_batch
+
         messages = await connection.execute(
             text(
                 "UPDATE sms_message SET status='failed' WHERE chunk_id=:id "
@@ -821,6 +823,7 @@ class SqlChunkStore:
             {"id": chunk_id},
         )
         if messages.rowcount == 0:
+            await reevaluate_confirmed_unused_batch(connection, batch_id)
             return
         aggregate = await connection.execute(
             text(
@@ -859,6 +862,8 @@ class SqlChunkStore:
                 batch_id=int(batch["id"]),
                 reason="batch-completed",
             )
+
+        await reevaluate_confirmed_unused_batch(connection, batch_id)
 
     async def mark_failed(self, chunk_id: int, code: int, message: str) -> None:
         engine = self._engine()
@@ -2324,6 +2329,10 @@ async def complete_vendor_split(
     ).scalar_one_or_none()
     if parent_status not in {"submitting", "split_capacity_blocked"}:
         return []
+    # 与整批用量补偿、回执应用共享短事务串行点：advisory→chunk→batch。
+    await connection.execute(
+        text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"), {"id": chunk.batch_id},
+    )
     app_limit = await _split_app_limit(connection, chunk.batch_id)
     expanded = False
     if app_limit is not None:

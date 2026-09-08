@@ -242,6 +242,9 @@ class UncertainResolutionService:
 
         current = await self._mark_applying(resolution_id)
         if current.state in {"effect_applied", "closed"}:
+            if current.action == "confirm_not_accepted":
+                # 已确认但整批暂缓时，重复受控 effect 重新结算同一事实。
+                await self._run_not_accepted(current)
             return current
         try:
             if current.action == "confirm_not_accepted":
@@ -249,7 +252,7 @@ class UncertainResolutionService:
             elif current.action == "resend_new_batch":
                 child_id = await self._run_resend(current)
                 return await self._close_resend(current, child_id)
-            return await self._mark_closed(resolution_id)
+            return await self._mark_closed(resolution_id, generation=current.effect_generation)
         except Exception as exc:
             if _is_retryable_effect_error(exc):
                 await self._mark_retryable(resolution_id, generation=current.effect_generation)
@@ -323,6 +326,7 @@ class UncertainResolutionService:
                     resolution_id=current.id,
                     chunk_id=current.chunk_id,
                     batch_id=current.batch_id,
+                    generation=current.effect_generation,
                 )
         finally:
             await engine.dispose()
@@ -428,12 +432,15 @@ class UncertainResolutionService:
         finally:
             await engine.dispose()
 
-    async def _mark_closed(self, resolution_id: int) -> UncertainResolution:
+    async def _mark_closed(
+        self, resolution_id: int, *, generation: int | None = None,
+    ) -> UncertainResolution:
         return await self._set_state(
             resolution_id,
             "closed",
             extra="effect_applied_at=now(), effect_error=NULL",
             from_states=("applying", "effect_applied"),
+            expected_generation=generation,
         )
 
     async def _mark_manual(
@@ -1025,96 +1032,166 @@ def _manual_effect_error(exc: BaseException) -> str:
     return "source_context_invalid"
 
 
+async def _lock_not_accepted(
+    connection: AsyncConnection, resolution_id: int, chunk_id: int, batch_id: int, generation: int,
+) -> Any:
+    """按 chunk→batch→resolution 锁定本次批准，拒绝错配及旧代际。"""
+    await _lock_resolution_source(connection, resolution_id)
+    row = (await connection.execute(text("""
+        SELECT r.*,c.status chunk_status,c.batch_id chunk_batch_id,
+          b.app_id actual_app_id,b.dept actual_dept,b.channel actual_channel,
+          b.category actual_category,b.usage_reservation_id,b.segments,
+          u.state usage_state,u.app_id usage_app_id,u.dept usage_dept,u.category usage_category
+        FROM sms_uncertain_resolution r JOIN sms_chunk c ON c.id=r.chunk_id
+        JOIN sms_batch b ON b.id=r.batch_id
+        LEFT JOIN usage_reservation u ON u.id=b.usage_reservation_id
+        WHERE r.id=:id
+    """), {"id": resolution_id})).mappings().one_or_none()
+    if row is None or (
+        row["effect_generation"] != generation or row["chunk_id"] != chunk_id
+        or row["batch_id"] != batch_id or row["chunk_batch_id"] != batch_id
+        or row["action"] != "confirm_not_accepted"
+        or row["state"] not in APPROVED_EFFECT_STATES | {"closed", "effect_applied"}
+        or row["chunk_status"] != "unknown_terminal"
+        or row["approved_at"] is None or row["confirmed_at"] is None
+        or row["confirmer_account_id"] is None
+        or row["confirmer_account_id"] == row["proposer_account_id"]
+        or row["source_app_id"] != row["actual_app_id"]
+        or row["source_dept"] != row["actual_dept"]
+        or row["source_channel"] != row["actual_channel"]
+        or row["source_category"] != row["actual_category"]
+        or row["usage_reservation_id"] is None or row["usage_state"] is None
+        or row["usage_dept"] != row["actual_dept"]
+        or row["usage_category"] != row["actual_category"]
+        or (row["actual_app_id"] is not None and row["usage_app_id"] != row["actual_app_id"])
+    ):
+        raise UncertainResolutionConflict("not_accepted_source_conflict")
+    return row
+
+
 async def _apply_not_accepted(
-    connection: AsyncConnection,
-    *,
-    resolution_id: int,
-    chunk_id: int,
-    batch_id: int,
+    connection: AsyncConnection, *, resolution_id: int, chunk_id: int, batch_id: int,
+    generation: int = 1,
 ) -> None:
-    allocation = (
-        await connection.execute(
-            text(
-                """
-                SELECT reservation_id,recipient_count,segment_count,request_count
-                FROM usage_chunk_allocation WHERE chunk_id=:chunk_id
-                """
-            ),
-            {"chunk_id": chunk_id},
-        )
-    ).mappings().one_or_none()
-    recipient_count = int(allocation["recipient_count"]) if allocation else 0
-    segment_count = int(allocation["segment_count"]) if allocation else 0
-    request_count = int(allocation["request_count"]) if allocation else 0
-    reservation_id = allocation["reservation_id"] if allocation else None
-    await connection.execute(
-        text(
-            """
-            INSERT INTO usage_chunk_release (
-              resolution_id,chunk_id,reservation_id,recipient_count,
-              segment_count,request_count,release_event_id
-            ) VALUES (
-              :resolution_id,:chunk_id,:reservation_id,:recipients,
-              :segments,:requests,:event_id
-            )
-            ON CONFLICT (resolution_id) DO NOTHING
-            """
-        ),
-        {
-            "resolution_id": resolution_id,
-            "chunk_id": chunk_id,
-            "reservation_id": reservation_id,
-            "recipients": recipient_count,
-            "segments": segment_count,
-            "requests": request_count,
-            "event_id": f"resolution:{resolution_id}:not-accepted",
-        },
-    )
+    """确认事实和整批净释放同事务提交；批次锁后只读兄弟片，不反向锁片。"""
+    current = await _lock_not_accepted(connection, resolution_id, chunk_id, batch_id, generation)
+    allocation = (await connection.execute(text("""
+        SELECT * FROM usage_chunk_allocation WHERE chunk_id=:chunk_id
+    """), {"chunk_id": chunk_id})).mappings().one_or_none()
+    if allocation is None or (
+        allocation["batch_id"] != batch_id
+        or allocation["reservation_id"] != current["usage_reservation_id"]
+        or allocation["app_id"] != current["actual_app_id"]
+    ):
+        raise UncertainResolutionConflict("not_accepted_allocation_conflict")
+    # 不把未知来源的旧行或其他 generation 的事实自动提升为本代批准。
+    existing = (await connection.execute(text(
+        "SELECT * FROM usage_chunk_release WHERE resolution_id=:id"
+    ), {"id": resolution_id})).mappings().one_or_none()
+    proof = {
+        "resolution_id": resolution_id, "chunk_id": chunk_id,
+        "reservation_id": allocation["reservation_id"], "effect_generation": generation,
+        "recipient_count": allocation["recipient_count"],
+        "segment_count": allocation["segment_count"], "request_count": allocation["request_count"],
+        "release_event_id": f"resolution:{resolution_id}:not-accepted",
+    }
+    if existing is not None and any(existing[key] != value for key, value in proof.items()):
+        raise UncertainResolutionConflict("not_accepted_release_proof_conflict")
+    if existing is None:
+        await _require_active_dual_control(connection, _row(current))
+        await connection.execute(text("""
+            INSERT INTO usage_chunk_release(resolution_id,chunk_id,reservation_id,
+              effect_generation,recipient_count,segment_count,request_count,release_event_id)
+            VALUES(:resolution_id,:chunk_id,:reservation_id,:effect_generation,
+              :recipient_count,:segment_count,:request_count,:release_event_id)
+        """), proof)
     if not await _all_chunks_not_accepted(connection, batch_id):
-        return
-    reservation = (
-        await connection.execute(
-            text("SELECT usage_reservation_id FROM sms_batch WHERE id=:batch_id"),
-            {"batch_id": batch_id},
-        )
-    ).scalar_one_or_none()
-    if reservation is None:
+        # 历史矛盾只报告，不自动再扣费或改变待发送工作。
+        if current["usage_state"] in {"released", "release_requested"}:
+            raise UncertainResolutionConflict("not_accepted_usage_state_conflict")
         return
     await request_usage_release_for_batch(
-        connection,
-        batch_id=batch_id,
-        event_id=f"usage:{reservation}:uncertain-unused",
+        connection, batch_id=batch_id,
+        event_id=f"usage:{allocation['reservation_id']}:uncertain-unused",
     )
 
 
-async def _all_chunks_not_accepted(
-    connection: AsyncConnection,
-    batch_id: int,
-) -> bool:
-    """只有整批所有分片都被证明未受理时才允许整批释放。"""
+async def _all_chunks_not_accepted(connection: AsyncConnection, batch_id: int) -> bool:
+    """成本补偿只允许解释完整的终止工作；未列入白名单的状态一律暂缓。"""
+    from app.services.report_projection import NO_REPORT_EVIDENCE
 
-    leftover = await connection.execute(
-        text(
-            """
-            SELECT EXISTS (
-              SELECT 1 FROM sms_chunk
-              WHERE batch_id=:batch_id
-                AND status IN ('submitted','submitting','pending','retrying',
-                               'uncertain','unknown_terminal','failover_pending')
-                AND NOT EXISTS (
-                  SELECT 1 FROM usage_chunk_release r
-                  WHERE r.chunk_id=sms_chunk.id
-                )
-            )
-            OR EXISTS (
-              SELECT 1 FROM sms_message
-              WHERE batch_id=:batch_id AND status IN ('sent','delivered')
-            )
-            """
-        ),
-        {"batch_id": batch_id},
+    # 调用方已按目标 chunk→batch 顺序持锁；这里不锁兄弟 chunk。
+    await connection.execute(text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
+                             {"id": batch_id})
+    result = await connection.execute(text(f"""
+        SELECT EXISTS(SELECT 1 FROM sms_chunk WHERE batch_id=:id)
+        AND EXISTS(SELECT 1 FROM sms_message WHERE batch_id=:id)
+        AND NOT EXISTS (
+          SELECT 1 FROM sms_chunk c JOIN sms_batch b ON b.id=c.batch_id
+          LEFT JOIN usage_chunk_allocation a ON a.chunk_id=c.id
+          WHERE c.batch_id=:id AND (
+            a.chunk_id IS NULL OR a.batch_id<>b.id
+            OR a.reservation_id IS DISTINCT FROM b.usage_reservation_id
+            OR a.app_id IS DISTINCT FROM b.app_id
+            OR a.recipient_count<>(SELECT count(*) FROM sms_message m
+                                  WHERE m.chunk_id=c.id AND m.batch_id=b.id)
+            OR a.segment_count<>a.recipient_count*b.segments
+            OR c.status NOT IN ('failed','unknown_terminal')
+            OR (c.status='unknown_terminal' AND NOT EXISTS (
+              SELECT 1 FROM usage_chunk_release f JOIN sms_uncertain_resolution r
+                ON r.id=f.resolution_id
+              WHERE f.chunk_id=c.id AND r.chunk_id=c.id AND r.batch_id=b.id
+                AND f.effect_generation=r.effect_generation
+                AND f.reservation_id=a.reservation_id
+                AND f.recipient_count=a.recipient_count AND f.segment_count=a.segment_count
+                AND f.request_count=a.request_count
+                AND f.release_event_id=concat('resolution',chr(58),r.id,chr(58),'not-accepted')
+                AND r.action='confirm_not_accepted'
+                AND r.state IN ('approved','effect_pending','applying','retryable_effect_error',
+                                'effect_applied','closed')
+                AND r.approved_at IS NOT NULL AND r.confirmed_at IS NOT NULL
+                AND r.proposer_account_id<>r.confirmer_account_id
+                AND r.source_app_id IS NOT DISTINCT FROM b.app_id
+                AND r.source_dept=b.dept AND r.source_channel=b.channel
+                AND r.source_category=b.category
+            ))
+          )
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM sms_message m LEFT JOIN sms_chunk c ON c.id=m.chunk_id
+          WHERE m.batch_id=:id AND (
+            c.id IS NULL OR c.batch_id<>m.batch_id
+            OR m.status NOT IN ('failed','unknown') OR NOT ({NO_REPORT_EVIDENCE})
+            OR (m.status='unknown' AND c.status<>'unknown_terminal')
+            OR (m.status='failed' AND c.status<>'failed')
+          )
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM report_event_projection p
+          WHERE p.batch_id=:id AND p.projection_changed
+        )
+    """), {"id": batch_id})
+    return bool(result.scalar_one())
+
+
+async def reevaluate_confirmed_unused_batch(connection: AsyncConnection, batch_id: int) -> bool:
+    """确定性失败终结后重新结算已有人工确认；调用方已按 chunk→batch 持锁。"""
+    # 只选择仍为 unknown_terminal 的已确认事实，不扩大普通失败批次的退款范围。
+    result = await connection.execute(text("""
+        SELECT b.usage_reservation_id FROM sms_batch b
+        WHERE b.id=:id AND b.usage_reservation_id IS NOT NULL AND EXISTS (
+          SELECT 1 FROM sms_chunk c JOIN sms_uncertain_resolution r ON r.chunk_id=c.id
+          JOIN usage_chunk_release f ON f.resolution_id=r.id
+          WHERE c.batch_id=b.id AND c.status='unknown_terminal'
+            AND r.action='confirm_not_accepted' AND f.effect_generation=r.effect_generation
+        )
+    """), {"id": batch_id})
+    reservation = result.scalar_one_or_none()
+    if reservation is None or not await _all_chunks_not_accepted(connection, batch_id):
+        return False
+    return await request_usage_release_for_batch(
+        connection, batch_id=batch_id, event_id=f"usage:{reservation}:uncertain-unused",
     )
-    return not bool(leftover.scalar_one())
 
 
 def _row(row: Any) -> UncertainResolution:
