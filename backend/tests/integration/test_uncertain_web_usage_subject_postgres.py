@@ -278,10 +278,10 @@ async def _insert_unknown(
     app_id: int | None,
     phone: str,
     category: str = "notice",
+    content: str = "人工重发通知",
 ) -> tuple[int, int, int]:
     batch_no = uuid4().hex
     custom_id = uuid4().hex
-    content = "人工重发通知"
     display = crypto.encrypt_bound_packed_text(
         content,
         EncryptionContext(
@@ -1608,3 +1608,78 @@ async def test_send_audit_rejects_unproven_internal_creation(
                 )
     finally:
         await runtime.engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_r8_source_policy_matches_auth_and_worker_cannot_read_credentials(env: Any) -> None:
+    from app.core.apikey import SqlApiKeyRepository
+    from app.services.uncertain_resolution import _load_source_api_app
+
+    app_id = await _insert_api_app(env.engine, env.nonce, categories="verify,market")
+    async with env.engine.begin() as connection:
+        await connection.execute(text("""
+            UPDATE app SET recipient_limit_per_min=2,segment_limit_per_min=3,
+              freq_override=CAST(:override AS jsonb),allow_market_api_bulk=true
+            WHERE id=:id
+        """), {"id": app_id, "override": json.dumps({"verify_per_minute": 2})})
+        await connection.execute(text("SET LOCAL ROLE sms_send"))
+        context = await _load_source_api_app(connection, app_id, "verify")
+        for column in ("api_key_hash", "api_key_prev_hash", "api_key_hash_version"):
+            assert not await connection.scalar(text(
+                "SELECT has_column_privilege(current_user,'app',:column,'SELECT')"
+            ), {"column": column})
+    repository = SqlApiKeyRepository()
+    repository._engine = lambda: env.engine
+    candidates = await repository.find_candidates(env.nonce[:8])
+    candidate = next(item for item in candidates if item.app_id == app_id)
+    assert context.recipient_limit_per_min == candidate.recipient_limit_per_min == 2
+    assert context.segment_limit_per_min == candidate.segment_limit_per_min == 3
+    assert context.freq_override == candidate.freq_override == {"verify_per_minute": 2}
+    assert context.allow_market_api_bulk is candidate.allow_market_api_bulk is True
+
+
+@pytest.mark.asyncio
+async def test_r8_resend_uses_current_cost_policy_and_recovers_same_child(
+    env: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_id = await _insert_api_app(env.engine, env.nonce)
+    _, chunk_id = await _insert_unknown(
+        env.engine, _crypto(), channel="api", dept="研发部", app_id=app_id,
+        phone=_phone(env.nonce, 92), content="通" * 70,
+    )
+    resolution_id = await _approve(env.service, chunk_id, env.proposer, env.confirmer)
+    async with env.engine.begin() as connection:
+        await connection.execute(text("""
+            UPDATE app SET recipient_limit_per_min=2,segment_limit_per_min=3,
+              default_sign='后加签名' WHERE id=:id
+        """), {"id": app_id})
+
+    class Limiter:
+        def __init__(self) -> None:
+            self.costs: list[dict[str, Any]] = []
+
+        async def check(self, **values: Any) -> None:
+            pass
+
+        async def check_replay(self, **values: Any) -> None:
+            pass
+
+        async def consume_send_cost(self, **values: Any) -> None:
+            self.costs.append(values)
+
+    limiter = Limiter()
+    pipeline = _pipeline(env.store, env.ledger, env.redis)
+    pipeline.acceptance_limiter = limiter
+    first = await _apply(env, resolution_id, pipeline, monkeypatch)
+    assert first.state == "closed"
+    assert len(limiter.costs) == 1
+    async with env.engine.connect() as connection:
+        child = (await connection.execute(text(
+            "SELECT sign_name,segments FROM sms_batch WHERE id=:id"
+        ), {"id": first.child_batch_id})).mappings().one()
+        assert child["sign_name"] is None and child["segments"] == 1
+    assert limiter.costs[0]["recipient_limit"] == 2
+    assert limiter.costs[0]["segment_limit"] == 3
+    second = await _apply(env, resolution_id, pipeline, monkeypatch)
+    assert second.child_batch_id == first.child_batch_id
+    assert len(limiter.costs) == 1

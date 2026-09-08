@@ -106,3 +106,5 @@ PostgreSQL 16 中验证：
 隔离恢复演练重复角色属性、audit 权限和 `sms_accept` 基础只读查询。若 0034
 需要回滚，downgrade 只撤销七角色权限并保持 `sms_app NOLOGIN`，系统 fail closed；
 必须以前滚迁移恢复明确矩阵，禁止临时恢复旧广权限账号。
+
+内部重发与发送查询共享不含凭据的应用策略投影。`sms_send` 仅具有 `app` 业务列的 SELECT；API Key 摘要、前缀、算法、pepper 版本及轮换信息不可读（迁移 0114）。

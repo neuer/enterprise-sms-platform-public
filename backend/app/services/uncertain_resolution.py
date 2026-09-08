@@ -8,7 +8,7 @@ from typing import Any, Literal
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.core.apikey import ApiAppContext
+from app.core.apikey import APP_SEND_POLICY_COLUMNS, ApiAppContext, load_app_send_policy
 from app.core.auth.accounts import (
     ActorPrincipal,
     SecurityPrincipal,
@@ -652,7 +652,8 @@ async def _load_resend_context(
             loaded.name,
             source_dept,
             loaded.allowed_categories,
-            loaded.default_sign,
+            # 源请求签名已固化；空签名不得被后来新增的默认签名覆盖。
+            None,
             loaded.daily_quota,
             loaded.blacklist_check,
             loaded.freq_override,
@@ -730,10 +731,8 @@ async def _load_source_api_app(
     row = (
         await connection.execute(
             text(
-                """
-                SELECT id,name,dept,allowed_categories,daily_quota,status,
-                       unlimited_quota_exempt_until,max_in_flight_chunks,
-                       rate_limit_per_min,blacklist_check
+                f"""
+                SELECT {APP_SEND_POLICY_COLUMNS}, status
                 FROM app
                 WHERE id=:id AND usage_subject_kind='api_app'
                 """
@@ -743,24 +742,15 @@ async def _load_source_api_app(
     ).mappings().one_or_none()
     if row is None or int(row["status"]) != 1:
         raise UncertainResolutionConflict("源应用不可用")
-    categories = frozenset(
-        item.strip()
-        for item in str(row["allowed_categories"]).split(",")
-        if item.strip()
-    )
+    try:
+        policy = load_app_send_policy(dict(row))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise UncertainResolutionConflict("源应用发送策略不可用") from exc
+    categories = frozenset(item.strip() for item in policy.pop("allowed_categories").split(","))
     if category and category not in categories:
         raise UncertainResolutionConflict("源应用类别权限已收回")
-    return ApiAppContext(
-        int(row["id"]),
-        str(row["name"]),
-        str(row["dept"]),
-        categories,
-        daily_quota=int(row["daily_quota"]),
-        blacklist_check=bool(row["blacklist_check"]),
-        rate_limit_per_min=int(row["rate_limit_per_min"]),
-        max_in_flight_chunks=int(row["max_in_flight_chunks"]),
-        unlimited_quota_exempt_until=row["unlimited_quota_exempt_until"],
-    )
+    return ApiAppContext(**policy, allowed_categories=categories)
+
 
 
 def _resolution_source_dept(current: UncertainResolution) -> str:

@@ -1212,7 +1212,8 @@ def test_background_task_role_matrix_covers_import_and_cleanup_paths() -> None:
         "GRANT USAGE, SELECT ON SEQUENCE import_phone_id_seq TO sms_send",
     ):
         assert fragment in source
-    assert "user_account, app, dept_quota" in schema
+    assert "user_account, dept_quota" in schema
+    assert "GRANT SELECT (id,name,dept,allowed_categories" in schema
     assert "import_task, import_phone, approval" in schema
     assert "GRANT UPDATE, DELETE ON import_task TO sms_send" in schema
     assert "GRANT INSERT, DELETE ON import_phone TO sms_send" in schema
