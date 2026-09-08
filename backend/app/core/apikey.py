@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import ipaddress
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
@@ -283,6 +283,66 @@ class ApiAppContext:
     unlimited_quota_exempt_until: datetime | None = None
 
 
+# 仅发送策略列；内部重发不得复用包含 API Key 凭据的候选查询。
+APP_SEND_POLICY_COLUMNS = """id, name, dept, allowed_categories, default_sign,
+ daily_quota, blacklist_check, freq_override, rate_limit_per_min,
+ recipient_limit_per_min, segment_limit_per_min, max_in_flight_chunks,
+ allow_market_api_bulk, allowed_ips, ip_allowlist_exempt_until,
+ unlimited_quota_exempt_until"""
+
+
+def load_app_send_policy(row: Mapping[str, Any]) -> dict[str, Any]:
+    """严格映射数据库发送策略；遗漏字段与合法空值不得混淆。"""
+    values = {key.strip(): row[key.strip()] for key in APP_SEND_POLICY_COLUMNS.split(",")}
+    bounds = {
+        "id": (1, 2**63 - 1), "daily_quota": (0, 100_000_000),
+        "rate_limit_per_min": (1, 60_000),
+        "recipient_limit_per_min": (1, 100_000_000),
+        "segment_limit_per_min": (1, 100_000_000),
+        "max_in_flight_chunks": (1, 100_000),
+    }
+    for key, (minimum, maximum) in bounds.items():
+        value = values[key]
+        if type(value) is not int or not minimum <= value <= maximum:
+            raise ValueError("invalid app send policy")
+    for key in ("blacklist_check", "allow_market_api_bulk"):
+        if type(values[key]) is not bool:
+            raise ValueError("invalid app send policy")
+    for key in ("name", "dept", "allowed_categories"):
+        if not isinstance(values[key], str) or not values[key].strip():
+            raise ValueError("invalid app send policy")
+    categories = frozenset(item.strip() for item in values["allowed_categories"].split(","))
+    if not categories or not categories.issubset(VALID_CATEGORIES):
+        raise ValueError("invalid app send policy")
+    override = values["freq_override"]
+    frequency_bounds = {"verify_per_minute": 100, "verify_per_day": 10_000,
+                        "market_per_day": 1_000}
+    if override is not None:
+        if not isinstance(override, dict) or any(
+            key not in frequency_bounds or type(value) is not int
+            or not 1 <= value <= frequency_bounds[key]
+            for key, value in override.items()
+        ):
+            raise ValueError("invalid app send policy")
+        values["freq_override"] = dict(override)
+    for key in ("ip_allowlist_exempt_until", "unlimited_quota_exempt_until"):
+        value = values[key]
+        if value is not None and (
+            not isinstance(value, datetime) or value.utcoffset() is None
+        ):
+            raise ValueError("invalid app send policy")
+    if values["default_sign"] is not None and not isinstance(values["default_sign"], str):
+        raise ValueError("invalid app send policy")
+    ips = values["allowed_ips"]
+    if ips is not None and (
+        not isinstance(ips, (list, tuple)) or any(not isinstance(ip, str) for ip in ips)
+    ):
+        raise ValueError("invalid app send policy")
+    values["allowed_ips"] = tuple(ips or ())
+    values["app_id"] = values.pop("id")
+    return values
+
+
 class ApiKeyRepository(Protocol):
     async def find_candidates(self, prefix: str) -> list[ApiKeyCandidate]: ...
 
@@ -319,14 +379,8 @@ class SqlApiKeyRepository:
         async with self._engine().connect() as connection:
             result = await connection.execute(
                 text(
-                    """
-                        SELECT id, name, dept, allowed_categories, default_sign,
-                               daily_quota, blacklist_check, freq_override,
-                               rate_limit_per_min, recipient_limit_per_min,
-                               segment_limit_per_min, max_in_flight_chunks,
-                               allow_market_api_bulk, allowed_ips,
-                               ip_allowlist_exempt_until,
-                               unlimited_quota_exempt_until,
+                    f"""
+                        SELECT {APP_SEND_POLICY_COLUMNS},
                                api_key_hash, api_key_prev_hash, api_key_prev_expires,
                                api_key_hash_version, api_key_prev_hash_version,
                                api_key_hash_algorithm, api_key_prev_hash_algorithm
@@ -340,10 +394,7 @@ class SqlApiKeyRepository:
             )
             return [
                 ApiKeyCandidate(
-                    app_id=int(row["id"]),
-                    name=str(row["name"]),
-                    dept=str(row["dept"]),
-                    allowed_categories=str(row["allowed_categories"]),
+                    **load_app_send_policy(row),
                     current_hash=str(row["api_key_hash"]),
                     previous_hash=(
                         str(row["api_key_prev_hash"])
@@ -373,32 +424,6 @@ class SqlApiKeyRepository:
                         str(row["api_key_prev_hash_algorithm"])
                         if row["api_key_prev_hash_algorithm"] is not None
                         else None
-                    ),
-                    default_sign=(
-                        str(row["default_sign"]) if row["default_sign"] is not None else None
-                    ),
-                    daily_quota=int(row["daily_quota"]),
-                    blacklist_check=bool(row["blacklist_check"]),
-                    freq_override=cast(dict[str, int] | None, row["freq_override"]),
-                    rate_limit_per_min=int(row.get("rate_limit_per_min", 60)),
-                    allowed_ips=tuple(
-                        str(item) for item in (row["allowed_ips"] or ())
-                    ),
-                    recipient_limit_per_min=int(
-                        row.get("recipient_limit_per_min") or 10_000
-                    ),
-                    segment_limit_per_min=int(
-                        row.get("segment_limit_per_min") or 10_000
-                    ),
-                    max_in_flight_chunks=int(row.get("max_in_flight_chunks") or 200),
-                    allow_market_api_bulk=bool(row.get("allow_market_api_bulk") or False),
-                    ip_allowlist_exempt_until=cast(
-                        datetime | None,
-                        row.get("ip_allowlist_exempt_until"),
-                    ),
-                    unlimited_quota_exempt_until=cast(
-                        datetime | None,
-                        row.get("unlimited_quota_exempt_until"),
                     ),
                 )
                 for row in result.mappings()
@@ -534,7 +559,10 @@ class ApiKeyAuthenticator:
         now = self.clock()
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("API Key clock must return timezone-aware datetime")
-        candidates = await self.repository.find_candidates(key[:PREFIX_LENGTH])
+        try:
+            candidates = await self.repository.find_candidates(key[:PREFIX_LENGTH])
+        except (KeyError, TypeError, ValueError):
+            raise InvalidApiKey("API Key 无效") from None
         unclassified_loader = getattr(self.repository, "unclassified_algorithms", None)
         try:
             unclassified = (

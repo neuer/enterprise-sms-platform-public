@@ -1,6 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.99  2026-09-07
+-- v1.6.100  2026-09-08
+-- v1.6.100：内部发送的应用 SELECT 限于业务策略列，排除 API Key 认证材料。
 -- v1.6.99：密码喷洒失败信号阈值；升级时推进准入策略 revision。
 -- v1.6.98：来源准入策略阈值及单调 revision，复用 sys_config 权限和审计。
 -- v1.6.97  2026-09-07
@@ -3257,7 +3258,7 @@ TO sms_accept;
 
 -- 发送、拉取、对账、统计与业务 worker。
 GRANT SELECT ON
-    user_account, app, dept_quota, sms_batch, idempotency_record, sms_chunk, sms_message,
+    user_account, dept_quota, sms_batch, idempotency_record, sms_chunk, sms_message,
     sms_reply, raw_vendor_log, report_event, report_event_projection, reply_event,
     unmatched_report, job_run, import_task, import_phone, approval, sms_template, sms_sign, blacklist,
     blacklist_hmac_alias,
@@ -3275,6 +3276,7 @@ GRANT SELECT ON
     send_inflight_reconcile_fact,
     send_admission_state, send_runtime_heartbeat
 TO sms_send;
+GRANT SELECT (id,name,dept,allowed_categories,default_sign,daily_quota,rate_limit_per_min,recipient_limit_per_min,segment_limit_per_min,max_in_flight_chunks,allow_market_api_bulk,blacklist_check,freq_override,allowed_ips,ip_allowlist_exempt_until,unlimited_quota_exempt_until,admission_exempt_note,usage_subject_kind,callback_url,callback_secret_enc,callback_report_enabled,status,created_by,created_at,updated_at) ON app TO sms_send;
 GRANT UPDATE (vendor_template_id,vendor_state,vendor_reject_reason,updated_at)
 ON sms_template TO sms_send;
 GRANT UPDATE (vendor_sign_id,vendor_state,vendor_reject_reason)
