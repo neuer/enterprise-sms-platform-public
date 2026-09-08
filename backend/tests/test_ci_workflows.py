@@ -105,6 +105,8 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "changes",
         "backend-vendor-lint",
         "backend-coverage",
+        "backend-unit",
+        "backend-postgres",
         "backend",
         "frontend",
         "security",
@@ -121,8 +123,6 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "g2": "${{ steps.classify.outputs.g2 }}",
         "release_control": "${{ steps.classify.outputs.release_control }}",
         "reused_pr_sha": "${{ steps.reuse.outputs.tested_sha }}",
-        "skip_frontend_static": "${{ steps.local_gates.outputs.skip_frontend_static }}",
-        "skip_ruff_files": "${{ steps.local_gates.outputs.skip_ruff_files }}",
     }
     dispatch = next(step for step in changes["steps"] if step.get("id") == "dispatch")
     assert dispatch["env"] == {
@@ -154,8 +154,6 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "scripts/release_metadata.py",
         "scripts/reuse_pr_ci_evidence.py",
         "scripts/classify_ci_changes.py",
-        "scripts/check_pre_vcs_gates.py --evaluate-receipt",
-        "refs/sms-local-gates/${GITHUB_SHA}",
         "github.event.pull_request.head.sha || github.sha",
         'git merge-base origin/main "$GITHUB_SHA"',
         'event_name=pull_request',
@@ -177,38 +175,15 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
 
     vendor_lint_commands = job_commands(jobs["backend-vendor-lint"])
     coverage_commands = job_commands(jobs["backend-coverage"])
-    coverage_steps = jobs["backend-coverage"]["steps"]
-    reader_runtime = next(
-        step for step in coverage_steps
-        if str(step.get("uses", "")).startswith("actions/setup-node@")
-    )
-    assert reader_runtime["with"]["node-version"] == "24"
-    assert coverage_steps.index(reader_runtime) < next(
-        index for index, step in enumerate(coverage_steps)
-        if "verify_vendor_postgres_recovery.sh" in str(step.get("run", ""))
-    )
-    assert "LOCAL_SKIP_RUFF_FILES" in yaml.safe_dump(jobs["backend-vendor-lint"])
-    assert "--ruff-exclude-args" in vendor_lint_commands
-    assert "ruff_excludes[@]" in vendor_lint_commands
-    assert "LOCAL_SKIP_RUFF_FILES" not in coverage_commands
-    assert "skip_frontend_static" not in coverage_commands
+    unit_commands = job_commands(jobs["backend-unit"])
+    pg_commands = job_commands(jobs["backend-postgres"])
+    assert "scripts/run_backend_tests.sh unit" in unit_commands
+    assert "scripts/run_backend_tests.sh postgres" in pg_commands
+    assert "scripts/run_backend_tests.sh merge" in coverage_commands
+    assert "scripts/check_backend_static.py" in vendor_lint_commands
+    assert "scripts/check_gate_contracts.py" in changes_commands
+    assert "LOCAL_SKIP_RUFF_FILES" not in yaml.safe_dump(workflow)
     backend_commands = "\n".join((vendor_lint_commands, coverage_commands))
-    for command in (
-        "scripts/local_test.sh prepare",
-        "npm audit --prefix frontend --audit-level=high",
-        "ruff check",
-        "mypy",
-        "pytest -q",
-        "check_migration.py",
-        "scripts/check_contract.py",
-        "scripts/classify_ci_changes.py",
-        "scripts/verify_ci_results.py",
-        "scripts/g2_timing.py",
-        "scripts/verify_vendor_live_test.sh",
-        "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh",
-        "--cov-append",
-    ):
-        assert command in backend_commands
     vendor_live_step = next(
         step
         for step in jobs["backend-vendor-lint"]["steps"]
@@ -217,14 +192,11 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     assert vendor_live_step["env"] == {"SMS_SKIP_VENDOR_POSTGRES_RECOVERY": "1"}
     assert "verify_vendor_postgres_recovery.sh" not in vendor_lint_commands
     assert vendor_lint_commands.count("verify_vendor_live_test.sh") == 1
-    assert coverage_commands.count(
-        "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh"
-    ) == 1
-    assert coverage_commands.count("verify_vendor_postgres_recovery.sh") == 1
     assert "pytest-xdist" not in backend_commands
     assert "-n auto" not in backend_commands
     assert jobs["backend-vendor-lint"]["needs"] == "changes"
-    assert jobs["backend-coverage"]["needs"] == "changes"
+    assert jobs["backend-coverage"]["needs"] == ["changes", "backend-unit", "backend-postgres"]
+    assert jobs["backend-unit"]["needs"] == jobs["backend-postgres"]["needs"] == "changes"
     assert jobs["backend"]["needs"] == [
         "changes",
         "backend-vendor-lint",
@@ -302,12 +274,8 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         for step in jobs["frontend"]["steps"]
         if step.get("name") == "Run component tests"
     )
-    assert lint_step["if"] == (
-        "${{ needs.changes.outputs.skip_frontend_static != 'true' }}"
-    )
-    assert test_step["if"] == (
-        "${{ needs.changes.outputs.skip_frontend_static != 'true' }}"
-    )
+    assert "if" not in lint_step
+    assert "if" not in test_step
     for name in (
         "Install dependencies",
         "Audit dependency lockfile",
@@ -319,7 +287,7 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
 
     security_commands = job_commands(jobs["security"])
     for command in (
-        "uv run bandit",
+        "uv run --locked bandit",
         "vuln,misconfig,secret,license",
         "--severity HIGH,CRITICAL",
         "--exit-code 1",
@@ -376,19 +344,17 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         if job_name != "backend-coverage":
             assert "LOCAL_SKIP_RUFF_FILES" not in job_text
     assert "skip_pytest_changed" not in source
-    assert "mypy" in vendor_lint_commands
+    assert "check_backend_static.py" in vendor_lint_commands
     assert "npm run build" in frontend_commands
     assert "npm run gen:api-types" in frontend_commands
     assert "npm audit --audit-level=high" in frontend_commands
 
     assert_actions_are_immutable(workflow)
     assert "secrets." not in source
-    assert "upload-artifact" not in source
+    assert "include-hidden-files: true" in source
     assert "pytest-xdist" not in source
-    assert source.count("verify_vendor_postgres_recovery.sh") == 1
-    assert source.count(
-        "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh"
-    ) == 1
+    assert source.count("scripts/run_backend_tests.sh postgres") == 1
+    assert source.count("scripts/run_backend_tests.sh merge") == 1
     assert "ref: ${{ needs.changes.outputs.candidate_sha }}" not in source
     assert "ref: ${{ steps.dispatch.outputs.candidate }}" not in source
 
@@ -518,7 +484,7 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
         "RESUME_QUALITY_RUN_ID",
         "scripts/verify_all.sh",
         "scripts/check_coverage_gates.py",
-        "uv run bandit",
+        "uv run --locked bandit",
         "npm ci",
         "verify_reproducible_build.sh",
         "reproducibility.json",

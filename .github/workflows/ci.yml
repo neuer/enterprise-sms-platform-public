@@ -47,8 +47,6 @@ jobs:
       g2: ${{ steps.classify.outputs.g2 }}
       release_control: ${{ steps.classify.outputs.release_control }}
       reused_pr_sha: ${{ steps.reuse.outputs.tested_sha }}
-      skip_frontend_static: ${{ steps.local_gates.outputs.skip_frontend_static }}
-      skip_ruff_files: ${{ steps.local_gates.outputs.skip_ruff_files }}
     steps:
       - name: Validate post-merge dispatch binding
         id: dispatch
@@ -149,24 +147,25 @@ jobs:
             --head-sha "$head_sha" \
             --trusted-pr-evidence "${{ steps.reuse.outputs.reuse }}" \
             --github-output "$GITHUB_OUTPUT"
-      # Local push hooks may publish refs/sms-local-gates/<sha>. Missing or
-      # mismatched receipts fail closed: cheap overlapping checks still run.
-      # G2, coverage, vendor-pg, mypy, frontend build/types/audit, and
-      # security never honor this receipt.
-      - name: Evaluate local gate receipt
-        id: local_gates
+      - name: Set up Python for gate and frontend contracts
+        if: ${{ steps.reuse.outputs.reuse != 'true' }}
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.7.12"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Check gate and frontend contracts
+        if: ${{ steps.reuse.outputs.reuse != 'true' }}
+        env:
+          ENVIRONMENT: "test"
+          DEBUG: "1"
+          AUTH_MOCK: "1"
+          VENDOR_MOCK: "1"
         run: |
-          set -euo pipefail
-          receipt_ref="refs/sms-local-gates/${GITHUB_SHA}"
-          extra=()
-          if git fetch --no-tags origin "${receipt_ref}:${receipt_ref}"; then
-            extra+=(--receipt-ref "$receipt_ref")
-          fi
-          python3 scripts/check_pre_vcs_gates.py --evaluate-receipt \
-            --event-name "${{ github.event_name }}" \
-            --commit "$GITHUB_SHA" \
-            --github-output "$GITHUB_OUTPUT" \
-            "${extra[@]}"
+          bash scripts/local_test.sh prepare
+          cd backend
+          uv run --locked python ../scripts/check_gate_contracts.py
 
   backend-vendor-lint:
     name: backend-vendor-lint
@@ -211,50 +210,10 @@ jobs:
           SMS_SKIP_VENDOR_POSTGRES_RECOVERY: "1"
         run: bash scripts/verify_vendor_live_test.sh
       - name: Lint and type-check backend
-        env:
-          LOCAL_SKIP_RUFF_FILES: ${{ needs.changes.outputs.skip_ruff_files }}
-        run: |
-          cd backend
-          ruff_excludes=()
-          while IFS= read -r arg; do
-            [[ -n "$arg" ]] || continue
-            ruff_excludes+=("$arg")
-          done < <(
-            python3 ../scripts/check_pre_vcs_gates.py --ruff-exclude-args \
-              --skip-ruff-files "$LOCAL_SKIP_RUFF_FILES"
-          )
-          uv run ruff check app migrations scripts_support tests \
-            ../scripts/classify_ci_changes.py ../scripts/verify_ci_results.py \
-            ../scripts/g2_timing.py \
-            ../scripts/check_public_readiness.py \
-            ../scripts/export_public_snapshot.py \
-            ../scripts/check_coverage_gates.py \
-            ../scripts/release_metadata.py \
-            ../scripts/create_release_manifest.py \
-            ../scripts/create_offline_image_index.py \
-            ../scripts/deploy_release_remote.py \
-            ../deploy/scripts/offline_image_archive.py \
-            ../deploy/scripts/release_manifest.py \
-            ../scripts/check_invariants.py \
-            ../scripts/check_contract.py ../scripts/security_acceptance.py \
-            ../scripts/e2e_api.py ../scripts/perf_smoke.py ../scripts/locustfile.py \
-            "${ruff_excludes[@]}"
-          uv run mypy app migrations scripts_support ../scripts/check_contract.py \
-            ../scripts/classify_ci_changes.py ../scripts/verify_ci_results.py \
-            ../scripts/g2_timing.py \
-            ../scripts/check_public_readiness.py \
-            ../scripts/export_public_snapshot.py \
-            ../scripts/check_coverage_gates.py \
-            ../scripts/release_metadata.py \
-            ../scripts/create_release_manifest.py \
-            ../scripts/create_offline_image_index.py \
-            ../scripts/deploy_release_remote.py \
-            ../deploy/scripts/offline_image_archive.py \
-            ../deploy/scripts/release_manifest.py \
-            ../scripts/security_acceptance.py ../scripts/e2e_api.py ../scripts/perf_smoke.py
+        run: python3 scripts/check_backend_static.py
 
-  backend-coverage:
-    name: backend-coverage
+  backend-unit:
+    name: backend-unit
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-24.04
@@ -281,30 +240,96 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
-      - name: Run complete backend tests with independent coverage gates
-        env:
-          ENVIRONMENT: "test"
-          DEBUG: "1"
-          VENDOR_MOCK: "1"
-          AUTH_MOCK: "1"
+      - name: Enable Lua-backed Redis unit tests
+        run: sudo apt-get update && sudo apt-get install -y lua5.4
+      - name: Run unit test shard
+        run: bash scripts/run_backend_tests.sh unit "${{ runner.temp }}/backend-evidence"
+      - name: Upload unit evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: backend-unit-${{ github.sha }}
+          path: ${{ runner.temp }}/backend-evidence/unit/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  backend-postgres:
+    name: backend-postgres
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Bind backend evidence to candidate
+        id: bind
         run: |
-          cd backend
-          rm -f .coverage
-          SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh
-          uv run pytest -q --cov=app --cov-append --cov-report=term-missing \
-            --cov-report=json:"${{ runner.temp }}/coverage.json"
-          uv run python ../scripts/check_coverage_gates.py \
-            "${{ runner.temp }}/coverage.json"
-      - name: Run critical property, concurrency, fault, auth and idempotency gates
-        env:
-          ENVIRONMENT: "test"
-          DEBUG: "1"
-          VENDOR_MOCK: "1"
-          AUTH_MOCK: "1"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.7.12"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Prepare development-only CI files
+        run: bash scripts/local_test.sh prepare
+      - name: Run postgres test shard
+        run: bash scripts/run_backend_tests.sh postgres "${{ runner.temp }}/backend-evidence"
+      - name: Upload postgres evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: backend-postgres-${{ github.sha }}
+          path: ${{ runner.temp }}/backend-evidence/postgres/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  backend-coverage:
+    name: backend-coverage
+    needs: [changes, backend-unit, backend-postgres]
+    if: ${{ !cancelled() && needs.changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Require both test shards
         run: |
-          cd backend
-          uv run pytest -q --strict-markers \
-            -m "property or concurrency or fault_injection or authorization or idempotency"
+          test "${{ needs.backend-unit.result }}" = success
+          test "${{ needs.backend-postgres.result }}" = success
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Bind backend evidence to candidate
+        id: bind
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.7.12"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+      - name: Prepare development-only CI files
+        run: bash scripts/local_test.sh prepare
+      - name: Download unit evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: backend-unit-${{ github.sha }}
+          path: ${{ runner.temp }}/backend-evidence/unit
+      - name: Download PostgreSQL evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: backend-postgres-${{ github.sha }}
+          path: ${{ runner.temp }}/backend-evidence/postgres
+      - name: Verify complete test inventory and independent coverage gates
+        run: bash scripts/run_backend_tests.sh merge "${{ runner.temp }}/backend-evidence"
       - name: Check migrations and OpenAPI contract
         env:
           ENVIRONMENT: "test"
@@ -313,8 +338,16 @@ jobs:
           AUTH_MOCK: "1"
         run: |
           cd backend
-          uv run python scripts_support/check_migration.py
-          uv run python ../scripts/check_contract.py ../openapi.yaml
+          uv run --locked python scripts_support/check_migration.py
+          uv run --locked python ../scripts/check_contract.py ../openapi.yaml
+      - name: Upload merged coverage and inventory
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: backend-coverage-${{ github.sha }}
+          path: ${{ runner.temp }}/backend-evidence/
+          include-hidden-files: true
+          retention-days: 7
 
   backend:
     name: backend
@@ -378,12 +411,10 @@ jobs:
       - name: Build
         run: npm run build
       - name: Lint and format check
-        if: ${{ needs.changes.outputs.skip_frontend_static != 'true' }}
         run: |
           npm run lint
           npm run format:check
       - name: Run component tests
-        if: ${{ needs.changes.outputs.skip_frontend_static != 'true' }}
         run: npm test
 
   security:
@@ -413,8 +444,8 @@ jobs:
       - name: Run Python SAST
         run: |
           cd backend
-          uv sync --frozen
-          uv run bandit -q -r app -lll -iii
+          uv sync --locked
+          uv run --locked bandit -q -r app -lll -iii
       - name: Audit dependencies, licenses, secrets and configuration
         run: |
           docker run --rm \

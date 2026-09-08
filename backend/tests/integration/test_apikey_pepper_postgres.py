@@ -24,6 +24,8 @@ from app.core.apikey import (
 )
 from app.core.health import ApiKeyPepperReferenceCheck
 from app.services.app_repository import SqlAppRepository
+from tests.integration.audit_fixtures import live_audit_principal  # noqa: F401
+from tests.integration.test_ops_audit_postgres import accept_runtime  # noqa: F401
 from tests.test_apikey_pepper import b64, keyring, settings_with_secrets
 
 pytestmark = pytest.mark.skipif(
@@ -36,6 +38,9 @@ class _ReferenceSettings:
     def __init__(self, inner: Any, database_url: Any) -> None:
         self._inner = inner
         self._database_url = database_url
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
 
     def credential(self, name: str) -> str:
         return self._inner.credential(name)
@@ -64,6 +69,13 @@ async def _insert_app(
         default_sign=None,
         daily_quota=0,
         rate_limit_per_min=60,
+            recipient_limit_per_min=6000,
+            segment_limit_per_min=6000,
+            max_in_flight_chunks=100,
+            allow_market_api_bulk=False,
+            ip_allowlist_exempt_until=None,
+            unlimited_quota_exempt_until=None,
+            admission_exempt_note=None,
         blacklist_check=True,
         freq_override=None,
         allowed_ips=("10.0.0.0/8",),
@@ -237,6 +249,8 @@ async def test_unclassified_hmac_digest_requires_deploy_inventory(
         algorithm=None,
     )
     try:
+        with pytest.raises(InvalidApiKey):
+            await ApiKeyAuthenticator(key_repository, settings=settings).authenticate(key)
         async with engine.begin() as connection:
             await connection.execute(
                 text(
@@ -259,8 +273,13 @@ async def test_unclassified_hmac_digest_requires_deploy_inventory(
                     """
                 )
             )
-        with pytest.raises(InvalidApiKey):
-            await ApiKeyAuthenticator(key_repository, settings=settings).authenticate(key)
+        # 已认证的旧摘要已迁移为独立 pepper，清空旧清单不能撤销这次迁移。
+        migrated = await ApiKeyAuthenticator(key_repository, settings=settings).authenticate(key)
+        assert migrated.app_id == app_id
+        async with engine.connect() as connection:
+            assert await connection.scalar(text(
+                "SELECT api_key_hash_algorithm FROM app WHERE id=:id"
+            ), {"id": app_id}) == "api_pepper"
     finally:
         async with engine.begin() as connection:
             await connection.execute(

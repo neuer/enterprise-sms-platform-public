@@ -28,6 +28,12 @@ git push -u origin <branch>
 ```
 
 `dev_check --changed` 是提交前组件检查，不要求每次保存后运行，也不触发测试服务器部署。
+检查在临时 Git 候选工作树中执行：dev 捕获工作内容，commit 捕获实际 index，push
+逐个检查 Hook stdin 中的提交 SHA。不会把未暂存的修正算作已暂存代码通过。
+同一候选 tree、变更基线、检查选择和工具版本的成功结果只在本机缓存，后续 commit/push
+可复用；内容变化或检查失败不会写成功缓存。临时 index 不修改操作者的暂存区。
+后端依赖使用 `uv --locked`，不允许检查过程改写锁文件。
+
 推送时，`pre-push` Hook 会扫描工作区和即将公开的提交，只报告文件/规则而不回显命中内容。
 owner 分支会自动创建 Draft PR；精确 push CI 成功后，自动化将同一 SHA 的 PR 改为 Ready
 并请求 squash merge。若 PR 落后于 main，自动化明确失败并提示合并 main 后重新推送以生成
@@ -38,6 +44,18 @@ GitHub 强制，禁止管理员绕过。合并完成后，自动化以一次性 
 SHA：PR head tree 与原 `ci-gate` 证据完全吻合时直接复用，否则在合并提交上完整重跑。
 普通手工 `workflow_dispatch` 始终完整运行。已合并的远端分支只有在仍指向原 head SHA
 时才以 lease 删除；若分支已被推进则保留并失败关闭。
+
+CI 每次独立运行检查，不读取本地免检回执。前端与门禁契约在 changes 中执行，
+前端专用变更也能触发 Python 契约。CI 控制入口变更覆盖全部相关 job；README 和
+CONTRIBUTING 等普通根文档走廉价合同检查，未知源代码路径仍保守全检。
+后端单元测试与隔离 PostgreSQL/Redis 测试并行，各自上传同一 SHA 的实际执行清单、
+JUnit 和覆盖数据。隔离分区自动收集 `tests/integration/` 以及显式真实 Redis 用例，
+任何 skip 都失败；各集成模块从同一迁移基线克隆独立临时库，避免状态污染。
+汇总重新独立收集完整清单，验证分区互斥且穷尽、关键 marker 实际通过，
+并核验 app 文件全集及 application/auth/pipeline/export/tasks/api 六项覆盖率，
+同时保留原 full G2 的 services ≥80% 基线。
+full G2 复用 `scripts/run_backend_tests.sh full <临时证据目录>` 和相同静态入口，
+不再重复执行关键 marker 子集。普通分区仅保留公开快照缺失文档与本机无 Lua 的明确例外。
 
 CI 按风险运行组件门禁；认证/授权/审计、加密与 PII、发送/厂商、迁移、部署和控制面等
 受保护变更进入 G2 integration，发布控制烟测仍按路径选择。性能压测不进入 PR、push、

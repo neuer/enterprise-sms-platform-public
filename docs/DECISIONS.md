@@ -1601,7 +1601,7 @@
   `test_update_manager.py`、`deploy/sms-compose`、
   `docs/runbooks/app-rate-limit-cutover.md`。
 
-## D116 本地 hook 回执可跳过 CI 廉价重叠，缺证明则失败关闭
+## D116 本地 hook 回执可跳过 CI 廉价重叠，缺证明则失败关闭（由 D117 替代）
 
 - 决策：push hook 在同一棵树上强制跑过的廉价检查，通过绑定
   `commit`/`tree` 的 `refs/sms-local-gates/<sha>` 回执证明。push
@@ -1619,3 +1619,17 @@
 - 影响：`scripts/check_pre_vcs_gates.py`、`.githooks/pre-push`、
   `.github/workflows/ci.yml`、`test_pre_vcs_gates.py`、
   `test_ci_workflows.py`。
+
+## D117 候选快照、本机复用与 CI 完整执行证据
+
+- 决策：取消 D116 远端回执免检。dev/index/push 的实际候选内容分别捕获到独立
+  Git 工作树，成功缓存绑定 tree、变更基线、检查选择与工具版本，仅供本机复用。
+  push 必须按 Hook stdin 的每个提交检查，Git 分类失败不能当作空变更。
+- CI 单元与 PostgreSQL/Redis 分区并行，自动收集全部 integration 和显式真实 Redis
+  用例；隔离测试 skip 即失败。汇总独立收集完整清单，核对同 SHA、互斥穷尽、
+  实际执行与关键 marker，覆盖率必须包含 app 文件全集。保留原六项覆盖率门槛及
+  full G2 services ≥80% 基线，full G2 与 CI 共用运行入口。
+- 静态范围统一，依赖严格遵守 lock；前端和门禁合同在 changes 执行。CI 控制入口
+  变更覆盖全部 job，普通根文档使用廉价合同，未知路径仍失败关闭。
+- 原因：内容与执行证据比声明回执可靠；自动清单避免新增测试漏接，并行减少串行
+  等待。性能专项、发布镜像安全门禁与测试更新/生产发布边界保持原合同。
