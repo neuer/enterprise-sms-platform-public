@@ -607,6 +607,8 @@ async def send_vendor_test_api_uat(
     try:
         replayed = await pipeline.replay_if_present(app, replay_request)
     except (
+        ControlPlaneUnavailable,
+        IdempotencyCoordinationTimeout,
         CategoryNotAllowed,
         ApplicationRateLimitExceeded,
         IdempotencyConflict,

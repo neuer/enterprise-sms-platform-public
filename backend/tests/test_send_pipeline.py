@@ -80,12 +80,10 @@ def _claim_owned(current: str | None, token: str) -> bool:
 def test_idempotency_live_sql_keeps_unknown_and_unfinished_callback() -> None:
     sql = IDEMPOTENCY_LIVE_SQL.casefold()
     assert "expires_at > now()" in sql
-    assert "uncertain" in sql
-    assert "unknown_terminal" in sql
-    assert "split_capacity_blocked" in sql
-    assert "failover_pending" in sql
+    # 只有可解释的结束状态不受保护，覆盖已知 unknown 与未来新增状态。
+    assert "c.status not in ('submitted','failed')" in sql
     assert "callback_task" in sql
-    assert "pending" in sql and "retrying" in sql
+    assert "t.status not in ('done','dead')" in sql
     assert "phone" not in sql
 
 

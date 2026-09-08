@@ -127,6 +127,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0112_auth_admission_policy",
         "0113_auth_spray_policy",
         "0114_send_app_policy_privileges",
+        "0115_idempotency_result_lifecycle",
     ]
 
 

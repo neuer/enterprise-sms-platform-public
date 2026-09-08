@@ -103,7 +103,7 @@ async def test_repository_loads_policy_and_lists_safe_import_file_metadata() -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("table", list(PLANS))
+@pytest.mark.parametrize("table", [table for table in PLANS if table != "idempotency"])
 async def test_cleanup_pages_are_bounded_and_use_a_separate_transaction(table: str) -> None:
     plan = PLANS[table]
     key = {name: 7 if kind in {"bigint", "smallint"} else "key" for name, kind in plan.keys}
@@ -134,3 +134,23 @@ def test_cleanup_parent_guards_prevent_unbounded_cascade_and_active_fact_deletio
     assert "processed = TRUE" in PLANS["raw"].predicate
     assert "status<>'running'" in PLANS["jobs"].predicate
     assert "expires_at>CAST(:cutoff AS timestamptz)" in PLANS["usage_frequency"].predicate
+
+
+@pytest.mark.asyncio
+async def test_idempotency_cleanup_rechecks_protection_after_bounded_batch_locks() -> None:
+    repo, connection = repository([
+        FakeResult(), FakeResult(), FakeResult([{"id": 7}]), FakeResult(), FakeResult([{"id": 7}]),
+    ])
+    cutoff = datetime(2026, 1, 1, tzinfo=UTC)
+    result = await repo.cleanup_page(
+        "idempotency", LifecyclePolicy(90, 90, 30), cutoff=cutoff, cursor=(6,), limit=5,
+    )
+    assert result.affected == result.counts.idempotency == 1
+    assert result.cursor == (7,)
+    selection, params = connection.calls[2]
+    deletion, values = connection.calls[4]
+    assert "LIMIT :limit FOR UPDATE OF b SKIP LOCKED" in selection
+    assert params["cutoff"] == cutoff and params["limit"] == 5
+    assert "result_expires_at=i.expires_at" in connection.calls[3][0]
+    assert "callback_task" in deletion and "now()" in deletion
+    assert values == {"ids": [7], "cutoff": cutoff}

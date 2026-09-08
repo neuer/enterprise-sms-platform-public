@@ -24,6 +24,14 @@ from app.services.category import queue_for_category
 from app.services.content_protection import decrypt_template_content
 from app.services.crypto import CryptoService
 from app.services.idempotency import IdempotencyFingerprint, IdempotencyScope
+from app.services.idempotency_lifecycle import (
+    CLAIM_RESULT_SQL,
+    reclaim_completed_result,
+    require_completed_result,
+)
+from app.services.idempotency_lifecycle import (
+    IDEMPOTENCY_LIVE_SQL as IDEMPOTENCY_LIVE_SQL,
+)
 from app.services.import_repository import consume_import_reservation
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
@@ -36,26 +44,7 @@ from app.settings import Settings, get_settings
 
 PIPELINE_CONFIG_KEYS = tuple(sorted(set(CONFIG_SPECS) | {"vendor_batch_size"}))
 
-IDEMPOTENCY_LIVE_SQL = """
-(
-  i.expires_at > now()
-  OR b.status IN (
-    'pending_approval','scheduled','queued','sending','balance_blocked'
-  )
-  OR EXISTS (
-    SELECT 1 FROM sms_chunk c
-    WHERE c.batch_id=b.id
-      AND c.status IN (
-        'uncertain','unknown_terminal','submitting','retrying','pending',
-        'split_capacity_blocked','failover_pending'
-      )
-  )
-  OR EXISTS (
-    SELECT 1 FROM callback_task t
-    WHERE t.batch_id=b.id AND t.status IN ('pending','retrying')
-  )
-)
-"""
+
 
 
 class SqlPipelineStore:
@@ -342,9 +331,22 @@ class SqlPipelineStore:
         fingerprint: str,
         ttl_s: int,
     ) -> int | None:
-        """占用或接管可抢占 Claim；completed 不可抢占。"""
+        """占用 Claim；完成态仅在同事务证明结果已退役后推进代次。"""
 
         async with self._engine().begin() as connection:
+            await connection.execute(text("SET LOCAL lock_timeout='1s'"))
+            await connection.execute(text("SET LOCAL statement_timeout='5s'"))
+            params = {
+                "scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id,
+                "token": token, "fingerprint": fingerprint, "ttl_s": ttl_s,
+            }
+            previous = (await connection.execute(text("""
+                SELECT state,batch_id FROM idempotency_claim
+                WHERE scope_kind=:scope_kind AND scope_id=:scope_id AND biz_id=:biz_id
+            """), params)).mappings().one_or_none()
+            if previous is not None and previous["state"] == "completed":
+                return await reclaim_completed_result(connection, params, previous["batch_id"])
+
             row = (
                 await connection.execute(
                     text(
@@ -365,6 +367,7 @@ class SqlPipelineStore:
                           state = 'active',
                           batch_id = NULL,
                           completed_at = NULL,
+                          result_expires_at = NULL,
                           released_at = NULL,
                           release_reason = NULL,
                           updated_at = now()
@@ -481,33 +484,15 @@ class SqlPipelineStore:
         return row is not None
 
     async def load_idempotency_claim(
-        self, scope: IdempotencyScope, biz_id: str
+        self, scope: IdempotencyScope, biz_id: str,
     ) -> dict[str, Any] | None:
-        """读取权威 Claim，供 Redis 缺失时重建或判断可抢占。"""
-
+        """区分有效工作、真正过期结果与来源不足的完成操作。"""
         async with self._engine().connect() as connection:
-            row = (
-                (
-                    await connection.execute(
-                        text(
-                            """
-                        SELECT token, fingerprint, generation, state, batch_id,
-                               expires_at > now() AS lease_valid
-                        FROM idempotency_claim
-                        WHERE scope_kind=:scope_kind AND scope_id=:scope_id
-                          AND biz_id=:biz_id
-                        """
-                        ),
-                        {
-                            "scope_kind": scope.kind,
-                            "scope_id": scope.id,
-                            "biz_id": biz_id,
-                        },
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
+            row = (await connection.execute(text(CLAIM_RESULT_SQL), {
+                "scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id,
+            })).mappings().one_or_none()
+        if row is not None:
+            require_completed_result(dict(row))
         return dict(row) if row is not None else None
 
     async def live_idempotency_claim(self, scope: IdempotencyScope, biz_id: str) -> bool:
@@ -669,6 +654,14 @@ class SqlPipelineStore:
             ):
                 raise UncertainResolutionConflict("重发命令来源无法证明")
         if command.biz_id:
+            # 旧结果清理与状态写入共用批次锁；DELETE 使用获得锁后的新语句快照。
+            await connection.execute(text("""
+                SELECT b.id FROM sms_batch b JOIN idempotency_record i ON i.batch_id=b.id
+                WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id AND i.biz_id=:biz_id
+                FOR UPDATE OF b
+            """), {"scope_kind": command.scope_kind, "scope_id": command.scope_id,
+                    "biz_id": command.biz_id})
+
             await connection.execute(
                 text(
                     """
@@ -875,6 +868,8 @@ class SqlPipelineStore:
                               state='completed',
                               batch_id=:batch_id,
                               completed_at=now(),
+                              result_expires_at=(SELECT expires_at FROM idempotency_record
+                                                WHERE batch_id=:batch_id),
                               updated_at=now()
                             WHERE scope_kind=:scope_kind
                               AND scope_id=:scope_id

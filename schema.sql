@@ -1,6 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.100  2026-09-08
+-- v1.6.101  2026-09-08
+-- v1.6.101：幂等结果到期证明与生命周期批次锁。
 -- v1.6.100：内部发送的应用 SELECT 限于业务策略列，排除 API Key 认证材料。
 -- v1.6.99：密码喷洒失败信号阈值；升级时推进准入策略 revision。
 -- v1.6.98：来源准入策略阈值及单调 revision，复用 sys_config 权限和审计。
@@ -734,6 +735,7 @@ CREATE TABLE idempotency_claim (
     state        VARCHAR(16)  NOT NULL DEFAULT 'active',
     batch_id     BIGINT       REFERENCES sms_batch(id),
     completed_at TIMESTAMPTZ,
+    result_expires_at TIMESTAMPTZ, -- 完成结果的可信到期时间，历史孤儿不猜测回填
     released_at  TIMESTAMPTZ,
     release_reason VARCHAR(32),
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
@@ -3456,3 +3458,47 @@ REVOKE ALL ON FUNCTION advance_auth_admission_revision() FROM PUBLIC;
 CREATE TRIGGER trg_auth_admission_revision
 BEFORE UPDATE ON sys_config FOR EACH ROW
 EXECUTE FUNCTION advance_auth_admission_revision();
+
+CREATE OR REPLACE FUNCTION lock_idempotency_result_batch()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF TG_TABLE_NAME='sms_chunk' THEN
+    IF OLD.status NOT IN ('submitted','failed') OR NEW.status IN ('submitted','failed') THEN
+      RETURN NEW;
+    END IF;
+  ELSIF TG_TABLE_NAME='callback_task' THEN
+    IF NEW.status IN ('done','dead') THEN RETURN NEW; END IF;
+    IF TG_OP='UPDATE' THEN
+      IF OLD.status NOT IN ('done','dead') AND OLD.batch_id IS NOT DISTINCT FROM NEW.batch_id THEN
+        RETURN NEW;
+      END IF;
+    END IF;
+  END IF;
+  PERFORM id FROM public.sms_batch WHERE id=NEW.batch_id FOR UPDATE;
+  RETURN NEW;
+END
+$$;
+DROP TRIGGER IF EXISTS trg_chunk_idempotency_protection ON sms_chunk;
+CREATE TRIGGER trg_chunk_idempotency_protection
+BEFORE UPDATE ON sms_chunk FOR EACH ROW
+EXECUTE FUNCTION lock_idempotency_result_batch();
+DROP TRIGGER IF EXISTS trg_callback_idempotency_protection ON callback_task;
+CREATE TRIGGER trg_callback_idempotency_protection
+BEFORE INSERT OR UPDATE ON callback_task FOR EACH ROW
+EXECUTE FUNCTION lock_idempotency_result_batch();
+
+CREATE OR REPLACE FUNCTION lock_callback_idempotency_batch(p_task_id BIGINT)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  PERFORM b.id FROM public.sms_batch b
+    JOIN public.callback_task t ON t.batch_id=b.id
+    WHERE t.id=p_task_id FOR UPDATE OF b;
+END
+$$;
+REVOKE ALL ON FUNCTION lock_callback_idempotency_batch(BIGINT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION lock_callback_idempotency_batch(BIGINT) TO sms_callback;
+REVOKE ALL ON FUNCTION lock_idempotency_result_batch() FROM PUBLIC;

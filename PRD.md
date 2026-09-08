@@ -100,6 +100,7 @@
 - 非 MFA 喷洒防护：仅凭据失败后，按规范化登录名与可信来源做跨实例、HMAC 固定分桶的近似聚合，同时观察同名多来源及同来源多名称。状态最多 8192 个桶，每桶 32 个匿名位与一个计数，固定 15 分钟 TTL；碰撞可能增加失败响应延迟，不能用于账号锁死、身份存在性判断或稳定 AD 别名归并。`auth_admission_policy` 的 `spray_failures`、`spray_sources`、`spray_delay_ms` 控制有界延迟；延迟只作用于失败响应，释放实际认证工作后执行，正确凭据仍走权威绑定恢复。全局成本预算仍由准入层承担。禁止记录尝试密码、候选摘要或据此关联跨账号密码；不采信未部署验证的 ASN、地域和设备信息。
 - 本地开户、重置、首次/日常改密及 init-admin 的临时密码生成共用离线密码筛查；生产必须提供有效的部署密码库，缺失、损坏或到期返回 503，CLI 拒绝初始化，不得静默跳过。现有密码登录不经过密码库，AD 密码策略由目录负责。库仅保存离线整理的 SHA-256 条目，提交密码和临时候选摘要只在内存中比较，不外传或持久化；库覆盖率由其来源与更新验收决定，不能声称覆盖全部泄露密码。开发/Mock 未配置库时只运行基础复杂度策略。
 - 登录来源准入使用部署批准且未到期的精确出口 Profile；公网保留 5 次突发/5 分钟 20 次。`sys_config.auth_admission_policy` 保存有界容量阈值，匿名路径只读后台验证快照；全局工作成本不退，可信共享出口仅在完整会话或有效重认证后单次结算来源预留。准入繁忙的显式重试标记允许浏览器有界等待，密码错误、IP ban 和 503 不自动重试。正确凭据仍可恢复账号失败状态。
+- 登录准入恢复只由持有原请求所有权的进程执行：ADMIT 前登记有界所有者，使用原 Redis 时间与参数绑定；未知结果以精确取消标记阻止迟到执行，不能重跑 Provider。非终态证明保留到实际线程完成，释放失败有界重试，耗尽后保留阻塞事实并计数告警；只允许原完整成功路径单次退来源预留，全局成本不退。停机阻止新准入、按预算排空并报告未完成状态，在关闭 Redis 前停止其使用任务；不能按 TTL 清空未知 Active。
 - 真实 LDAP 认证须具备部署拥有的安全第二阶段 Profile；缺失/非唯一搜索结果执行受控第二次 TLS/Bind，目标故障和配置失效返回 Provider 503，禁止以真实候选账号作补偿目标。
 - AD 默认禁用；管理员登录后在**系统配置页**维护非敏感草稿，依次保存、测试当前版本并激活。Bind 密码仍仅来自 Docker secret，CA 仅来自受控文件。AD 角色默认由组映射计算，允许管理员单人覆盖或恢复跟随。
 
@@ -161,7 +162,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - `POST /api/v1/messages/send`，X-Api-Key
 - 入参：category（必填）、mobiles（≤10000）、content 或 template_id+template_params、sign_name、scheduled_at、biz_id（幂等键）
 - **模板变量（v1.2）**：模板含 `{1}..{n}` 占位；调用方传 `template_params` 字符串数组（本期全批次同参）；**平台完成渲染**后下发，并校验参数个数与渲染结果长度（≤500 字），从源头规避厂商 10002 模板不匹配
-- 幂等：同作用域同 biz_id 24h 内返回原批次，`idempotent: true`；Redis 键 `idem:{scope_kind}:{scope_id}:{biz_id}` TTL=86400，DB `idempotency_record` 以 `(scope_kind, scope_id, biz_id)` 为唯一键并保存 expires_at；`scope_kind='app'` 时 `scope_id` 绑定 `app_id`。过期记录清理后允许 biz_id 再次使用
+- 幂等：同作用域同 biz_id 24h 内返回原批次，`idempotent: true`；Redis 键 `idem:{scope_kind}:{scope_id}:{biz_id}` TTL=86400，DB `idempotency_record` 以 `(scope_kind, scope_id, biz_id)` 为唯一键并保存 expires_at；`scope_kind='app'` 时 `scope_id` 绑定 `app_id`。名义到期后若批次、分片或回调仍有在途、unknown 或不可解释状态，继续返回原结果并禁止清理；仅有可信到期证明且全部保护工作结束，才在批次与原 Claim 锁内原子退役映射、推进 generation 后允许 biz_id 再次使用。清理先发生与请求先发生遵守同一判定；历史映射丢失且无法证明时返回 409 IDEMPOTENCY_CONFLICT，不自动新建发送；事实源或协调依赖不可用返回 503
 - 免审批；受类别策略、配额（计费条）、限流、频控约束
 
 #### FR-02 Web 人工发送

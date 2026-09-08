@@ -6,7 +6,7 @@ import os
 import signal
 import sys
 import time
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -716,3 +716,565 @@ async def test_pipeline_rejection_immediately_releases_authoritative_claim(
     assert row["state"] == "released" and row["batch_id"] is None
     assert await redis.get(coordinator.claim_key(scope, biz)) is None
     assert await coordinator.claim(scope, biz, fingerprint="a" * 64) is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunk_status", ["failed", "submitted", "unknown_terminal", "pending"])
+async def test_r8_completed_retirement_helper_proves_lifecycle_before_new_generation(
+    claim_env: tuple[Any, SqlPipelineStore, Redis, int], chunk_status: str,
+) -> None:
+    from app.services.idempotency_lifecycle import reclaim_completed_result
+
+    engine, store, redis, app_id = claim_env
+    scope = IdempotencyScope("app", str(app_id))
+    biz_id = "r8-" + uuid4().hex[:16]
+    coordinator = IdempotencyCoordinator(redis, store)
+    token = await coordinator.claim(scope, biz_id, fingerprint="2" * 64)
+    assert token is not None
+    viewed = await coordinator.inspect(scope, biz_id)
+    assert viewed is not None
+    stored = await _complete(store, app_id=app_id, biz_id=biz_id, token=token,
+                             generation=viewed.generation, fingerprint="2" * 64)
+    async with engine.begin() as connection:
+        batch_id = await connection.scalar(text("""
+            UPDATE sms_batch SET status='completed' WHERE batch_no=:no RETURNING id
+        """), {"no": stored.batch_no})
+        await connection.execute(text("""
+            INSERT INTO sms_chunk(batch_id,chunk_no,custom_id,phone_count,status)
+            VALUES(:id,1,:custom,1,:status)
+        """), {"id": batch_id, "custom": uuid4().hex, "status": chunk_status})
+        await connection.execute(text("""
+            UPDATE idempotency_record SET expires_at=now()-interval '1 second'
+            WHERE batch_id=:id
+        """), {"id": batch_id})
+    async with engine.begin() as connection:
+        value = await reclaim_completed_result(connection, {
+            "scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id,
+            "token": uuid4().hex, "fingerprint": "3" * 64, "ttl_s": 30,
+        }, batch_id)
+    if chunk_status in {"failed", "submitted"}:
+        assert value == viewed.generation + 1
+        assert await store.find_existing(scope, biz_id) is None
+        assert await store.renew_idempotency_claim(
+            scope, biz_id, token=token, fingerprint="2" * 64,
+            generation=viewed.generation, ttl_s=30,
+        ) is False
+    else:
+        assert value is None
+        assert await store.find_existing(scope, biz_id) == stored.batch_no
+
+
+@pytest.mark.asyncio
+async def test_r8_projection_repair_cannot_overwrite_newer_redis_generation(
+    claim_env: tuple[Any, SqlPipelineStore, Redis, int],
+) -> None:
+    from app.services.idempotency import IdempotencyClaimView, claim_payload
+
+    _, store, redis, app_id = claim_env
+    scope = IdempotencyScope("app", str(app_id))
+    biz_id = "r8-proj-" + uuid4().hex[:12]
+    key = IdempotencyCoordinator.claim_key(scope, biz_id)
+    authoritative = IdempotencyClaimView("a" * 32, "1" * 64, 1)
+    future = claim_payload(IdempotencyClaimView("b" * 32, "2" * 64, 2))
+    await redis.set(key, claim_payload(IdempotencyClaimView("c" * 32, "1" * 64, 1)))
+
+    class InterleavedRedis:
+        async def eval(self, *args: Any) -> Any:
+            result = await redis.eval(*args)
+            # 固定交错：Lua 已返回、Python 收到回复前，新代次完成投影。
+            await redis.set(key, future)
+            return result
+
+        async def set(self, *args: Any, **kwargs: Any) -> Any:
+            return await redis.set(*args, **kwargs)
+
+    coordinator = IdempotencyCoordinator(InterleavedRedis(), store)
+    await coordinator._project_view(scope, biz_id, authoritative)
+    assert await redis.get(key) == future
+    await redis.delete(key)
+
+
+@pytest.mark.asyncio
+async def test_r8_stale_result_cache_does_not_delete_concurrent_new_result(
+    claim_env: tuple[Any, SqlPipelineStore, Redis, int],
+) -> None:
+    _, _, redis, app_id = claim_env
+    scope = IdempotencyScope("app", str(app_id))
+    biz_id = "r8-cache-" + uuid4().hex[:12]
+    key = IdempotencyCoordinator.key(scope, biz_id)
+    old_result, new_result = uuid4().hex, uuid4().hex
+    await redis.set(key, old_result)
+
+    class Authority:
+        async def exists(self, *args: Any) -> bool:
+            assert args[-1] == old_result
+            await redis.set(key, new_result)
+            return False
+
+        async def find_existing(self, *args: Any) -> str:
+            return new_result
+
+    coordinator = IdempotencyCoordinator(redis, Authority())
+    await coordinator.lookup(scope, biz_id)
+    assert await redis.get(key) == new_result
+    await redis.delete(key)
+
+
+async def _r8_expired_result(
+    claim_env: tuple[Any, SqlPipelineStore, Redis, int], *,
+    batch_status: str = "completed", chunk_status: str = "failed",
+    callback_status: str | None = None, expired: bool = True,
+) -> tuple[IdempotencyScope, str, str, int, IdempotencyCoordinator, str]:
+    engine, store, redis, app_id = claim_env
+    scope = IdempotencyScope("app", str(app_id))
+    biz = "r8-life-" + uuid4().hex[:12]
+    owner = IdempotencyCoordinator(redis, store)
+    token = await owner.claim(scope, biz, fingerprint="4" * 64)
+    assert token is not None
+    viewed = await owner.inspect(scope, biz)
+    assert viewed is not None
+    stored = await _complete(store, app_id=app_id, biz_id=biz, token=token,
+                             generation=viewed.generation, fingerprint="4" * 64)
+    async with engine.begin() as connection:
+        batch_id = int(await connection.scalar(text("""
+            UPDATE sms_batch SET status=:status WHERE batch_no=:no RETURNING id
+        """), {"status": batch_status, "no": stored.batch_no}))
+        await connection.execute(text("""
+            INSERT INTO sms_chunk(batch_id,chunk_no,custom_id,phone_count,status)
+            VALUES(:id,1,:custom,1,:status)
+        """), {"id": batch_id, "custom": uuid4().hex, "status": chunk_status})
+        if expired:
+            await connection.execute(text("""
+                UPDATE idempotency_record SET expires_at=now()-interval '1 second'
+                WHERE batch_id=:id
+            """), {"id": batch_id})
+        if callback_status is not None:
+            await connection.execute(text("""
+                INSERT INTO callback_task(app_id,event,batch_id,url,callback_secret_enc,
+                                          callback_secret_key_version,status)
+                VALUES(:app,'batch.finished',:batch,'http://127.0.0.1/cb',:secret,1,:status)
+            """), {"app": app_id, "batch": batch_id, "secret": b"synthetic",
+                    "status": callback_status})
+    return scope, biz, stored.batch_no, batch_id, owner, token
+
+
+async def _r8_cleanup_one(
+    engine: Any, batch_id: int, *, after_selection: Any = None, fail_after_proof: bool = False,
+) -> Any:
+    from datetime import UTC, datetime
+
+    from app.services.housekeeping import LifecyclePolicy
+    from app.services.housekeeping_repository import SqlHousekeepingRepository
+
+    async with engine.connect() as connection:
+        identity = int(await connection.scalar(text(
+            "SELECT id FROM idempotency_record WHERE batch_id=:id"
+        ), {"id": batch_id}))
+    runtime = create_async_engine(make_url(os.environ["OUTBOX_POSTGRES_DSN"]))
+
+    @event.listens_for(runtime.sync_engine, "connect")
+    def role(connection: Any, _: Any) -> None:
+        cursor = connection.cursor()
+        cursor.execute("SET ROLE sms_send")
+        cursor.close()
+
+    class ConnectionProxy:
+        def __init__(self, connection: Any) -> None:
+            self.connection = connection
+
+        async def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+            result = await self.connection.execute(statement, *args, **kwargs)
+            if "FOR UPDATE OF b SKIP LOCKED" in str(statement) and after_selection is not None:
+                await after_selection()
+            if "UPDATE idempotency_claim" in str(statement) and fail_after_proof:
+                raise RuntimeError("synthetic rollback after proof")
+            return result
+
+    class EngineProxy:
+        @asynccontextmanager
+        async def begin(self) -> Any:
+            async with runtime.begin() as connection:
+                yield ConnectionProxy(connection)
+
+        async def dispose(self) -> None:
+            await runtime.dispose()
+
+    repository = SqlHousekeepingRepository()
+    repository._engine = lambda: EngineProxy()
+    return await repository.cleanup_page(
+        "idempotency", LifecyclePolicy(90, 90, 30), cutoff=datetime.now(UTC),
+        cursor=(identity - 1,), limit=1,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batch,chunk,callback,expired,protected", [
+    ("completed", "failed", None, False, True),
+    ("pending_approval", "failed", None, True, True),
+    ("scheduled", "failed", None, True, True),
+    ("queued", "failed", None, True, True),
+    ("sending", "failed", None, True, True),
+    ("balance_blocked", "failed", None, True, True),
+    ("completed_unknown", "unknown_terminal", None, True, True),
+    *[("completed", state, None, True, True) for state in (
+        "pending", "submitting", "retrying", "uncertain", "unknown_terminal",
+        "split_capacity_blocked", "failover_pending",
+    )],
+    ("completed", "failed", "pending", True, True),
+    ("completed", "submitted", "retrying", True, True),
+    ("completed", "failed", "done", True, False),
+    ("completed", "failed", "dead", True, False),
+    ("completed", "submitted", None, True, False),
+    ("rejected", "failed", None, True, False),
+    ("expired", "failed", None, True, False),
+    ("cancelled", "failed", None, True, False),
+])
+async def test_r8_actual_cleanup_matches_all_lifecycle_readers(
+    claim_env: tuple[Any, SqlPipelineStore, Redis, int],
+    batch: str, chunk: str, callback: str | None, expired: bool, protected: bool,
+) -> None:
+    engine, store, redis, _ = claim_env
+    scope, biz, number, batch_id, coordinator, _ = await _r8_expired_result(
+        claim_env, batch_status=batch, chunk_status=chunk,
+        callback_status=callback, expired=expired,
+    )
+    assert await store.exists(scope, biz, number) is protected
+    assert (await store.find_request_fingerprint(scope, biz) is not None) is protected
+    await redis.set(coordinator.key(scope, biz), number)
+    page = await _r8_cleanup_one(engine, batch_id)
+    assert page.counts.idempotency == (0 if protected else 1)
+    assert await coordinator.lookup(scope, biz) == (number if protected else None)
+    assert await store.find_existing(scope, biz) == (number if protected else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleaned", [False, True])
+async def test_r8_real_coordinator_reuses_expired_key_once_and_fences_old_owner(
+    claim_env: tuple[Any, SqlPipelineStore, Redis, int], cleaned: bool,
+) -> None:
+    engine, store, redis, _ = claim_env
+    scope, biz, _, batch_id, original, old_token = await _r8_expired_result(claim_env)
+    if cleaned:
+        assert (await _r8_cleanup_one(engine, batch_id)).affected == 1
+    first, second = IdempotencyCoordinator(redis, store), IdempotencyCoordinator(redis, store)
+    tokens = await asyncio.gather(
+        first.claim(scope, biz, fingerprint="5" * 64),
+        second.claim(scope, biz, fingerprint="5" * 64),
+    )
+    assert sum(value is not None for value in tokens) == 1
+    current = await first.inspect(scope, biz)
+    assert current is not None and current.generation == 2
+    await original.release(scope, biz, old_token)
+    assert (await second.inspect(scope, biz)).token == current.token
+    assert not await store.renew_idempotency_claim(
+        scope, biz, token=old_token, fingerprint="4" * 64, generation=1, ttl_s=30,
+    )
+
+
+@pytest.mark.asyncio
+async def test_r8_missing_historical_result_is_explicit_conflict_without_reclaim(
+    claim_env: tuple[Any, SqlPipelineStore, Redis, int],
+) -> None:
+    from app.services.idempotency import IdempotencyConflict
+
+    engine, store, redis, _ = claim_env
+    scope, biz, _, batch_id, _, _ = await _r8_expired_result(claim_env)
+    async with engine.begin() as connection:
+        await connection.execute(text("""
+            UPDATE idempotency_claim SET result_expires_at=NULL WHERE batch_id=:id
+        """), {"id": batch_id})
+        await connection.execute(text("DELETE FROM idempotency_record WHERE batch_id=:id"),
+                                 {"id": batch_id})
+    coordinator = IdempotencyCoordinator(redis, store)
+    with pytest.raises(IdempotencyConflict, match="禁止自动重发"):
+        await coordinator.inspect(scope, biz)
+    with pytest.raises(IdempotencyConflict, match="禁止自动重发"):
+        await coordinator.claim(scope, biz, fingerprint="6" * 64)
+    assert (await _claim_row(engine, scope, biz))["generation"] == 1
+
+
+@pytest.mark.parametrize("mutation", [
+    "callback_insert", "callback_retry", "callback_move", "chunk_retry",
+])
+async def test_r8_cleanup_lock_serializes_late_protected_work(
+    claim_env: Any, mutation: str,
+) -> None:
+    from app.services.idempotency import IdempotencyConflict
+
+    engine, store, redis, app_id = claim_env
+    scope, biz, _, batch_id, _, _ = await _r8_expired_result(
+        claim_env, callback_status="dead" if mutation == "callback_retry" else None,
+    )
+    moved_task: int | None = None
+    if mutation == "callback_move":
+        async with engine.begin() as connection:
+            moved_task = await connection.scalar(text("""
+                INSERT INTO callback_task(app_id,event,url,callback_secret_enc,
+                                          callback_secret_key_version,status)
+                VALUES(:app,'batch.finished','http://127.0.0.1/cb',:secret,1,'pending')
+                RETURNING id
+            """), {"app": app_id, "secret": b"synthetic"})
+    selected, resume, writer_ready = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    writer_pid: list[int] = []
+
+    async def after_selection() -> None:
+        selected.set()
+        await resume.wait()
+
+    async def writer() -> None:
+        async with engine.begin() as connection:
+            if mutation.startswith("callback"):
+                await connection.execute(text("SET LOCAL ROLE sms_callback"))
+            writer_pid.append(await connection.scalar(text("SELECT pg_backend_pid()")))
+            writer_ready.set()
+            if mutation == "callback_insert":
+                await connection.execute(text("""
+                    INSERT INTO callback_task(app_id,event,batch_id,url,callback_secret_enc,
+                                              callback_secret_key_version,status)
+                    VALUES(:app,'batch.finished',:id,'http://127.0.0.1/cb',:secret,1,'pending')
+                """), {"app": app_id, "id": batch_id, "secret": b"synthetic"})
+            elif mutation == "callback_move":
+                await connection.execute(text(
+                    "UPDATE callback_task SET batch_id=:batch WHERE id=:task"
+                ), {"batch": batch_id, "task": moved_task})
+            else:
+                table = "callback_task" if mutation == "callback_retry" else "sms_chunk"
+                await connection.execute(text(
+                    f"UPDATE {table} SET status='pending' WHERE batch_id=:id"
+                ), {"id": batch_id})
+
+    cleanup = asyncio.create_task(
+        _r8_cleanup_one(engine, batch_id, after_selection=after_selection)
+    )
+    writer_task: asyncio.Task[Any] | None = None
+    try:
+        await asyncio.wait_for(selected.wait(), 3)
+        writer_task = asyncio.create_task(writer())
+        await asyncio.wait_for(writer_ready.wait(), 3)
+        async with asyncio.timeout(3), engine.connect() as observer:
+            while not await observer.scalar(text(
+                "SELECT cardinality(pg_blocking_pids(:pid)) > 0"
+            ), {"pid": writer_pid[0]}):
+                assert not writer_task.done()
+                await asyncio.sleep(0.01)
+        resume.set()
+        assert (await cleanup).affected == 1
+        await writer_task
+        # 清理先提交后才建立的新保护状态：丢失原映射不得猜测重发。
+        coordinator = IdempotencyCoordinator(redis, store)
+        with pytest.raises(IdempotencyConflict):
+            await coordinator.claim(scope, biz, fingerprint="7" * 64)
+        assert (await _claim_row(engine, scope, biz))["generation"] == 1
+    finally:
+        resume.set()
+        await asyncio.gather(
+            cleanup, *([writer_task] if writer_task else []), return_exceptions=True
+        )
+
+
+async def test_r8_protected_writer_first_skips_locked_batch_then_keeps_result(
+    claim_env: Any,
+) -> None:
+    engine, store, _, _ = claim_env
+    scope, biz, number, batch_id, _, _ = await _r8_expired_result(claim_env, callback_status="dead")
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE callback_task SET status='pending' WHERE batch_id=:id"
+        ), {"id": batch_id})
+        async with asyncio.timeout(2):
+            assert (await _r8_cleanup_one(engine, batch_id)).affected == 0
+    assert (await _r8_cleanup_one(engine, batch_id)).affected == 0
+    assert await store.find_existing(scope, biz) == number
+
+
+async def test_r8_cleanup_proof_and_delete_rollback_together(claim_env: Any) -> None:
+    engine, _, _, _ = claim_env
+    _, _, _, batch_id, _, _ = await _r8_expired_result(claim_env)
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE idempotency_claim SET result_expires_at=NULL WHERE batch_id=:id"
+        ), {"id": batch_id})
+    with pytest.raises(RuntimeError, match="synthetic rollback"):
+        await _r8_cleanup_one(engine, batch_id, fail_after_proof=True)
+    async with engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM idempotency_record WHERE batch_id=:id"
+        ), {"id": batch_id}) == 1
+        assert await connection.scalar(text(
+            "SELECT result_expires_at FROM idempotency_claim WHERE batch_id=:id"
+        ), {"id": batch_id}) is None
+
+
+def _r8_pipeline(store: Any, redis: Any) -> Any:
+    from app.services.pipeline import PipelineConfig, SendPipeline
+    from tests.test_send_pipeline import FakeFrequency, FakePublisher, FakeQuota
+
+    return SendPipeline(
+        store=store, idempotency=IdempotencyCoordinator(redis, store), crypto=_crypto(),
+        frequency=FakeFrequency(), quota=FakeQuota(), publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+
+
+@pytest.mark.parametrize("protected,cleaned", [(True, False), (False, False), (False, True)])
+async def test_r8_actual_pipeline_cleanup_replay_and_new_acceptance(
+    claim_env: Any, protected: bool, cleaned: bool,
+) -> None:
+    from app.core.apikey import ApiAppContext
+    from app.services.pipeline import SendRequest
+
+    engine, store, redis, app_id = claim_env
+    scope, biz, number, batch_id, _, _ = await _r8_expired_result(
+        claim_env, chunk_status="unknown_terminal" if protected else "failed",
+    )
+    pipeline = _r8_pipeline(store, redis)
+    app = ApiAppContext(app_id, "app", "平台部", frozenset({"notice"}), blacklist_check=False)
+    principal = ApplicationPrincipal(app_id, "app", "平台部")
+    request = SendRequest("notice", ["13800138000"], content="合成通知", biz_id=biz,
+                          actor=principal)
+    fingerprint = pipeline._request_hash(request, app, pipeline._resolve_policy(app, request, None))
+    async with engine.begin() as connection:
+        await connection.execute(text(
+            "UPDATE idempotency_record SET request_hash=:fp WHERE batch_id=:id"
+        ), {"fp": fingerprint, "id": batch_id})
+        await connection.execute(text(
+            "UPDATE idempotency_claim SET fingerprint=:fp WHERE batch_id=:id"
+        ), {"fp": fingerprint, "id": batch_id})
+    if protected or cleaned:
+        assert (await _r8_cleanup_one(engine, batch_id)).affected == (0 if protected else 1)
+    # 此次检验始终穿过真实 Coordinator、数据库 Store 和 Pipeline。
+    with audit_principal_scope(principal), correlation_scope(uuid4()):
+        response = await pipeline.accept(app, request)
+    assert response.idempotent is protected
+    assert (response.batch_no == number) is protected
+    replay = await pipeline.accept(app, request)
+    assert replay.idempotent and replay.batch_no == response.batch_no
+    async with engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM sms_batch WHERE app_id=:app AND biz_id=:biz"
+        ), {"app": app_id, "biz": biz}) == (1 if protected else 2)
+        assert await connection.scalar(text("""
+            SELECT count(*) FROM outbox_event e JOIN sms_batch b ON b.batch_no=e.aggregate_id
+            WHERE b.app_id=:app AND b.biz_id=:biz AND e.event_type='batch.ready'
+        """), {"app": app_id, "biz": biz}) == (1 if protected else 2)
+    assert (await _claim_row(engine, scope, biz))["generation"] == (1 if protected else 2)
+
+
+@pytest.mark.parametrize("route", ["send", "uat-send"])
+@pytest.mark.parametrize("failure", ["orphan", "database", "redis"])
+async def test_r8_actual_asgi_preflight_has_stable_conflict_or_unavailable(
+    claim_env: Any, monkeypatch: pytest.MonkeyPatch, route: str, failure: str,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    import app.api.messages as messages_module
+    from app.core.apikey import ApiAppContext, get_api_key_authenticator
+    from tests.test_messages_api import make_app
+
+    engine, store, redis, app_id = claim_env
+    scope, biz, _, batch_id, _, _ = await _r8_expired_result(claim_env)
+    if failure == "orphan":
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "UPDATE idempotency_claim SET result_expires_at=NULL WHERE batch_id=:id"
+            ), {"id": batch_id})
+            await connection.execute(text(
+                "DELETE FROM idempotency_record WHERE batch_id=:id"
+            ), {"id": batch_id})
+    elif failure == "database":
+        async def down(*_args: Any) -> Any:
+            raise OSError("synthetic dependency detail must not escape")
+        monkeypatch.setattr(store, "find_existing", down)
+    else:
+        class RedisDown:
+            async def get(self, *_args: Any) -> Any:
+                raise OSError("synthetic dependency detail must not escape")
+        redis = RedisDown()
+    pipeline = _r8_pipeline(store, redis)
+
+    async def factory(_app: Any) -> Any:
+        return pipeline
+
+    async def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        pytest.fail("preflight must not enter new-send policy, provider, quota or UAT control")
+
+    class Auth:
+        async def authenticate(self, _key: str) -> Any:
+            return ApiAppContext(app_id, "app", "平台部", frozenset({"notice"}))
+
+    pipeline._authorize_new_send = forbidden
+    monkeypatch.setattr(messages_module, "_pipeline", factory)
+    monkeypatch.setattr(messages_module, "_require_vendor_test_api_ready", forbidden)
+    api = make_app()
+    api.dependency_overrides[get_api_key_authenticator] = Auth
+    async with AsyncClient(transport=ASGITransport(api), base_url="http://test") as client:
+        response = await client.post(
+            f"/api/v1/messages/{route}", headers={"X-Api-Key": "synthetic"},
+                                     json={"category": "notice", "mobiles": ["13800138000"],
+                                           "content": "合成通知", "biz_id": biz})
+    assert response.status_code == (409 if failure == "orphan" else 503), response.text
+    assert set(response.json()) == {"code", "message", "detail"}
+    assert "synthetic dependency detail" not in response.text
+    assert (await _claim_row(engine, scope, biz))["generation"] == 1
+    async with engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT count(*) FROM sms_batch WHERE app_id=:app AND biz_id=:biz"
+        ), {"app": app_id, "biz": biz}) == 1
+
+
+async def test_r8_callback_runtime_role_can_lock_and_retry_without_batch_write(
+    claim_env: Any,
+) -> None:
+    from app.services.callback_repository import SqlCallbackRepository
+    from tests.integration.test_ops_audit_postgres import _create_admin
+
+    engine, _, _, app_id = claim_env
+    _, _, _, batch_id, _, _ = await _r8_expired_result(claim_env, callback_status="dead")
+    async with engine.begin() as connection:
+        await connection.execute(text("""
+            UPDATE app SET callback_url='http://127.0.0.1/cb',callback_secret_enc=:secret
+            WHERE id=:id
+        """), {"id": app_id, "secret": b"synthetic"})
+        task_id = await connection.scalar(text(
+            "SELECT id FROM callback_task WHERE batch_id=:id"
+        ), {"id": batch_id})
+    runtime = create_async_engine(make_url(os.environ["OUTBOX_POSTGRES_DSN"]))
+
+    @event.listens_for(runtime.sync_engine, "connect")
+    def role(connection: Any, _: Any) -> None:
+        cursor = connection.cursor()
+        cursor.execute("SET ROLE sms_callback")
+        cursor.close()
+
+    event.listen(runtime.sync_engine, "begin", _set_audit_transaction_context)
+    repository = SqlCallbackRepository()
+    repository._engine = lambda: runtime
+    principal = await _create_admin(engine, login="synthetic-admin-" + uuid4().hex[:8])
+    with audit_principal_scope(principal), correlation_scope(uuid4()):
+        await repository.manual_retry(task_id, principal=principal)
+    async with engine.connect() as connection:
+        assert await connection.scalar(text(
+            "SELECT status FROM callback_task WHERE id=:id"
+        ), {"id": task_id}) == "pending"
+        assert not await connection.scalar(text(
+            "SELECT has_any_column_privilege('sms_callback','sms_batch','UPDATE')"
+        ))
+
+
+@pytest.mark.parametrize("missing", ["chunk", "fingerprint"])
+async def test_r8_missing_result_facts_are_conservatively_retained(
+    claim_env: Any, missing: str,
+) -> None:
+    engine, store, _, _ = claim_env
+    scope, biz, number, batch_id, _, _ = await _r8_expired_result(claim_env)
+    async with engine.begin() as connection:
+        if missing == "chunk":
+            await connection.execute(text("DELETE FROM sms_chunk WHERE batch_id=:id"),
+                                     {"id": batch_id})
+        else:
+            await connection.execute(text("""
+                UPDATE idempotency_record SET request_hash=NULL,request_hash_key_version=NULL
+                WHERE batch_id=:id
+            """), {"id": batch_id})
+    assert (await _r8_cleanup_one(engine, batch_id)).affected == 0
+    assert await store.exists(scope, biz, number)

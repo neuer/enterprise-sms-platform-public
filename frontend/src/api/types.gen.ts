@@ -265,7 +265,7 @@ export interface paths {
                         /** @description 缺省用应用默认签名 */
                         sign_name?: string | null;
                         scheduled_at?: string | null;
-                        /** @description 调用方业务ID，幂等键与对账用 */
+                        /** @description 调用方业务ID；24h 后仍有在途、unknown 或待回调时保留原结果，仅可信到期且保护工作结束后允许复用 */
                         biz_id: string;
                     } & (unknown | unknown);
                 };
@@ -310,7 +310,7 @@ export interface paths {
                         "application/json": components["schemas"]["Error"];
                     };
                 };
-                /** @description 同一幂等键已用于不同请求（IDEMPOTENCY_CONFLICT） */
+                /** @description 同一幂等键已用于不同请求，或原结果缺少可信证明（IDEMPOTENCY_CONFLICT） */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -1237,7 +1237,7 @@ export interface paths {
                         template_params?: string[] | null;
                         sign_name?: string | null;
                         scheduled_at?: string | null;
-                        /** @description 调用方业务ID，幂等键与对账用 */
+                        /** @description 调用方业务ID；24h 后仍有在途、unknown 或待回调时保留原结果，仅可信到期且保护工作结束后允许复用 */
                         biz_id: string;
                         /**
                          * @description 测试发送（≤test_send_max 个号码，豁免营销时间窗；与 scheduled_at 同时出现返回 400，v1.2）
