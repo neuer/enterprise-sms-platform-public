@@ -1,4 +1,8 @@
-FROM python:3.12-alpine@sha256:6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df
+FROM python:3.12-alpine@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a
+
+# Dependencies are built by uv (the mailer uses only stdlib); remove unused installers.
+RUN python -m pip uninstall --yes pip \
+    && rm -rf /usr/local/lib/python3.12/ensurepip
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -7,6 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN apk add --no-cache --upgrade \
       ca-certificates \
       libcrypto3=3.5.8-r0 \
+      libuuid=2.42.3-r1 \
       libssl3=3.5.8-r0 \
     && adduser -D -u 10001 security-report
 
