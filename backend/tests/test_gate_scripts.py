@@ -66,9 +66,8 @@ def test_local_and_mock_gate_scripts_use_secured_compose_wrapper() -> None:
 def test_g2_gate_uses_locked_runtimes_and_safe_seed_copy() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
 
-    assert "uv run pytest" in all_gate
-    assert "uv run ruff" in all_gate
-    assert "uv run mypy" in all_gate
+    assert "scripts/run_backend_tests.sh full" in all_gate
+    assert "scripts/check_backend_static.py" in all_gate
     assert "node:24-alpine" in all_gate
     assert "node:20-alpine" not in all_gate
     assert "--keys-file /tmp/dev-apikeys.txt" in all_gate
@@ -82,11 +81,9 @@ def test_g2_gate_uses_locked_runtimes_and_safe_seed_copy() -> None:
 def test_g2_unit_tests_enable_debug_with_auth_mock() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
 
-    assert "../scripts/g2_timing.py" in all_gate
-    pytest_line = next(
-        line for line in all_gate.splitlines() if "AUTH_MOCK=1 uv run pytest" in line
-    )
-    assert "DEBUG=1" in pytest_line
+    assert "scripts/g2_timing.py" in all_gate
+    runner = (ROOT / "scripts/run_backend_tests.sh").read_text()
+    assert "ENVIRONMENT=test DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1" in runner
 
 
 def test_g2_migration_check_uses_explicit_test_settings() -> None:
@@ -98,7 +95,7 @@ def test_g2_migration_check_uses_explicit_test_settings() -> None:
 
     assert (
         "DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1 "
-        "uv run python scripts_support/check_migration.py"
+        "uv run --locked python scripts_support/check_migration.py"
     ) in " ".join(normalized_stage.split())
 
 
@@ -111,7 +108,7 @@ def test_g2_contract_check_uses_explicit_test_settings() -> None:
 
     assert (
         "DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1 "
-        "uv run python ../scripts/check_contract.py ../openapi.yaml"
+        "uv run --locked python ../scripts/check_contract.py ../openapi.yaml"
     ) in " ".join(normalized_stage.split())
 
 
@@ -127,23 +124,8 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
     assert "check_invariants.py" in gate
     assert "verify_vendor_postgres_recovery.sh" in gate
     assert 'SMS_SKIP_VENDOR_POSTGRES_RECOVERY:-0' in gate
-    assert "test_vendor_uat_recovery_postgres.py" in postgres_gate
-    assert "test_export_authorization_postgres.py" in postgres_gate
-    assert "test_stable_principal_postgres.py" in postgres_gate
-    assert "test_outbox_postgres.py" in postgres_gate
-    assert "test_worker_fencing_postgres.py" in postgres_gate
-    assert "test_raw_capture_legacy_postgres.py" in postgres_gate
-    assert "test_raw_replay_eligibility_postgres.py" in postgres_gate
-    assert "test_raw_replay_fencing_postgres.py" in postgres_gate
-    assert "test_ops_audit_postgres.py" in postgres_gate
-    assert "test_vendor_attempt_finalize_postgres.py" in postgres_gate
-    assert "test_idempotency_claim_lease_postgres.py" in postgres_gate
-    assert "test_inflight_ambiguous_commit_postgres.py" in postgres_gate
-    assert "test_inflight_balance_conservation_postgres.py" in postgres_gate
-    assert "test_inflight_split_capacity_postgres.py" in postgres_gate
-    assert "test_app_ratelimit_cutover_redis.py" in postgres_gate
-    assert "test_uncertain_web_resend_postgres.py" in postgres_gate
-    assert "test_uncertain_web_usage_subject_postgres.py" in postgres_gate
+    assert "--gate-shard postgres" in postgres_gate
+    assert "--gate-evidence" in postgres_gate
     assert "OUTBOX_POSTGRES_DSN" in postgres_gate
     assert "EXPORT_AUTH_POSTGRES_DSN" in postgres_gate
     assert "alert_channel_availability()" in postgres_gate
@@ -152,7 +134,7 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
     assert "https://synthetic.invalid/hook" not in postgres_gate
     assert "SET ROLE sms_callback" in postgres_gate
     assert 'if [[ "${SMS_COVERAGE:-0}" == "1" ]]' in postgres_gate
-    assert "pytest_args+=(--cov=app --cov-report= --cov-append)" in postgres_gate
+    assert "pytest_args+=(--cov=app --cov-report=)" in postgres_gate
     assert "postgres:16-alpine" in postgres_gate
     assert "POSTGRES_PASSWORD_FILE" in postgres_gate
     assert "DB_OWNER_PASSWORD_FILE" in postgres_gate
@@ -303,7 +285,7 @@ def test_g2_bundle_command_avoids_duplicate_typecheck_without_weakening_build() 
 
 
 def test_changed_dev_check_does_not_run_deleted_backend_test_paths() -> None:
-    source = (ROOT / "scripts/dev_check.sh").read_text(encoding="utf-8")
+    source = (ROOT / "scripts/dev_check_impl.sh").read_text(encoding="utf-8")
     changed_test_case = source.split(
         "backend/tests/*.py)",
         maxsplit=1,
@@ -314,7 +296,7 @@ def test_changed_dev_check_does_not_run_deleted_backend_test_paths() -> None:
 
 
 def test_dev_check_requires_local_git_hooks_path() -> None:
-    source = (ROOT / "scripts/dev_check.sh").read_text(encoding="utf-8")
+    source = (ROOT / "scripts/dev_check_impl.sh").read_text(encoding="utf-8")
     header = source.split("run_contract() {", maxsplit=1)[0]
 
     assert "check_pre_vcs_gates.py --require-hooks-path" in header
@@ -324,7 +306,7 @@ def test_dev_check_requires_local_git_hooks_path() -> None:
 
 
 def test_dev_check_avoids_duplicate_frontend_typecheck_and_classifies_shell() -> None:
-    source = (ROOT / "scripts/dev_check.sh").read_text(encoding="utf-8")
+    source = (ROOT / "scripts/dev_check_impl.sh").read_text(encoding="utf-8")
     frontend = source.split("run_frontend() {", maxsplit=1)[1].split(
         "\n}", maxsplit=1
     )[0]
@@ -338,7 +320,7 @@ def test_dev_check_avoids_duplicate_frontend_typecheck_and_classifies_shell() ->
     assert "npm run build" in frontend
     assert "npm run typecheck" not in frontend
     assert "scripts/*.sh" in source
-    assert 'bash -n "${shell_scripts[@]}"' in source
+    assert 'for script in "${shell_scripts[@]}"; do bash -n "$script"; done' in source
     header = source.split("run_contract() {", maxsplit=1)[0]
     assert "scripts/local_test.sh prepare" not in header
     assert "scripts/local_test.sh prepare" in source.split(
@@ -394,17 +376,17 @@ def test_g2_runs_security_acceptance_after_seed_and_before_uat() -> None:
     assert stage_five.rstrip().endswith("seed_dev")
     assert all_gate.index("stage_5(){") < all_gate.index(security)
     assert all_gate.index(security) < all_gate.index(
-        "uv run --project backend python scripts/e2e_api.py"
+        "uv run --locked --project backend python scripts/e2e_api.py"
     )
 
 
 def test_g2_uat_runs_full_default_registry_with_runtime_ports() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
-    assert all_gate.count("../scripts/e2e_api.py") == 2
+    assert all_gate.count("python scripts/e2e_api.py") == 1
     line = next(
         line
         for line in all_gate.splitlines()
-        if line.startswith("uv run --project backend python scripts/e2e_api.py")
+        if line.startswith("uv run --locked --project backend python scripts/e2e_api.py")
     )
     assert '--base "http://localhost:${api_port}"' in line
     assert '--mock-base "http://localhost:${mock_vendor_port}"' in line

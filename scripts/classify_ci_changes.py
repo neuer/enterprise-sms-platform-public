@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath
 DEPLOY_SCRIPTS = Path(__file__).resolve().parents[1] / "deploy" / "scripts"
 sys.path.insert(0, str(DEPLOY_SCRIPTS))
 
+from gate_policy import ORDINARY_ROOT_DOCS  # noqa: E402
 from test_update_contract import protected_change_category  # noqa: E402
 
 
@@ -62,6 +63,10 @@ CI_CONTROL_SCRIPTS = {
     "scripts/classify_ci_changes.py",
     "scripts/reuse_pr_ci_evidence.py",
     "scripts/verify_ci_results.py",
+    "scripts/gate_policy.py",
+    "scripts/check_backend_static.py",
+    "scripts/run_backend_tests.sh",
+    "scripts/check_gate_contracts.py",
 }
 RELEASE_CONTROL_EXACT = {
     ".github/workflows/release-gate.yml",
@@ -98,12 +103,14 @@ def _rule(path: str) -> tuple[RuleResult, bool]:
         return BACKEND_CRITICAL, False
     if protected_category == "frontend-security":
         return FRONTEND_SECURITY, False
+    if path in ORDINARY_ROOT_DOCS:
+        return NONE, False
     if path in ACTIVE_BLOCKER_DOCS:
         return NONE, False
     if path.startswith("docs/plans/") or fnmatchcase(path, "docs/TEST-REPORT-*"):
         return NONE, False
     if path in CI_CONTROL_SCRIPTS or path.startswith(".github/"):
-        return BACKEND_G2, False
+        return FULL, False
     if path in {"frontend/Dockerfile", "deploy/nginx.conf"}:
         return FRONTEND_G2, False
     if path in {"frontend/package.json", "frontend/package-lock.json"}:

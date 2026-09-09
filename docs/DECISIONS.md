@@ -571,7 +571,10 @@
   API、OpenAPI、数据库、Alembic 和浏览器会话键不变；失败时只回退整个上一版 Web 镜像，
   不在新镜像内恢复双前端。
 
-## D056 Owner PR 在精确 push CI 成功后自动合并
+## D056 Owner PR 在精确 push CI 成功后自动合并（历史方案）
+
+> 当前公开仓库不提供此自动合并工作流；以下保留历史设计，现行流程以
+> MAINTENANCE.md 为准：自动 Draft、精确 CI 与独立评审、人工 Ready/合并。
 
 - 决策：owner 的同仓非 `main` 分支继续自动创建 Draft PR；对应 `.github/workflows/ci.yml`
   push run 成功后，独立 `workflow_run` 校验 workflow 路径、事件、actor、head repository、
@@ -600,14 +603,17 @@
 - 元数据分类：`test_update_contract.py` 把 `.github/**` 与受信任的操作文档视为无运行时
   变更，因此包含工作流/文档提交的 main 不再阻塞后续快速更新的差异分类；`.github/` 的
   CI 门禁仍由 `classify_ci_changes.py` 按 G2 全量执行，未放宽受保护变更约束。
-- 测试部署：只有需要共享环境验收时，才默认对自动合并后的精确 `origin/main` 执行
+- 测试部署：只有需要共享环境验收时，才默认对合并后的精确 `origin/main` 执行
   `scripts/test_update.sh apply --ref origin/main`。`apply` 已验证最终 `state=verified`；
   `plan` 和独立 `status` 分别降为可选预览与后续诊断。分支部署仅作为明确例外。
 - 门禁边界：受保护变更的精确 `ci-gate`、G2、迁移 checkpoint、失败关闭、应用镜像回退、
   生产 Release Gate、Trivy/SBOM/镜像身份和所有数据安全规则均不变；只移除重复执行与历史
   文案耦合。
 
-## D058 合并提交主动验真并精确清理短期分支
+## D058 合并提交主动验真并精确清理短期分支（历史方案）
+
+> 当前公开仓库没有执行以下自动派发与清理流程的工作流；CI 中的受信任证据复用与
+> dispatch 校验入口仍保留，但不代表自动化已启用。现行验真流程见 MAINTENANCE.md。
 
 - 问题：使用仓库 `GITHUB_TOKEN` 完成 squash merge 时，GitHub 不会再由该 token 产生的
   普通 `push` 事件启动新 workflow；仓库的自动删分支设置也未在实测中删除 owner 分支。
@@ -1601,7 +1607,7 @@
   `test_update_manager.py`、`deploy/sms-compose`、
   `docs/runbooks/app-rate-limit-cutover.md`。
 
-## D116 本地 hook 回执可跳过 CI 廉价重叠，缺证明则失败关闭
+## D116 本地 hook 回执可跳过 CI 廉价重叠，缺证明则失败关闭（由 D117 替代）
 
 - 决策：push hook 在同一棵树上强制跑过的廉价检查，通过绑定
   `commit`/`tree` 的 `refs/sms-local-gates/<sha>` 回执证明。push
@@ -1619,3 +1625,17 @@
 - 影响：`scripts/check_pre_vcs_gates.py`、`.githooks/pre-push`、
   `.github/workflows/ci.yml`、`test_pre_vcs_gates.py`、
   `test_ci_workflows.py`。
+
+## D117 候选快照、本机复用与 CI 完整执行证据
+
+- 决策：取消 D116 远端回执免检。dev/index/push 的实际候选内容分别捕获到独立
+  Git 工作树，成功缓存绑定 tree、变更基线、检查选择与工具版本，仅供本机复用。
+  push 必须按 Hook stdin 的每个提交检查，Git 分类失败不能当作空变更。
+- CI 单元与 PostgreSQL/Redis 分区并行，自动收集全部 integration 和显式真实 Redis
+  用例；隔离测试 skip 即失败。汇总独立收集完整清单，核对同 SHA、互斥穷尽、
+  实际执行与关键 marker，覆盖率必须包含 app 文件全集。保留原六项覆盖率门槛及
+  full G2 services ≥80% 基线，full G2 与 CI 共用运行入口。
+- 静态范围统一，依赖严格遵守 lock；前端和门禁合同在 changes 执行。CI 控制入口
+  变更覆盖全部 job，普通根文档使用廉价合同，未知路径仍失败关闭。
+- 原因：内容与执行证据比声明回执可靠；自动清单避免新增测试漏接，并行减少串行
+  等待。性能专项、发布镜像安全门禁与测试更新/生产发布边界保持原合同。

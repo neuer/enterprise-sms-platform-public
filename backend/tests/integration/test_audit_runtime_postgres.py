@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -19,6 +20,7 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.principal_context import audit_principal_scope
 from app.core.correlation import correlation_scope
+from app.core.runtime_resources import bind_connection_audit_subject
 from app.services.admin import ConfigUpdate
 from app.services.admin_repository import SqlAdminRepository
 from app.services.app_repository import SqlAppRepository
@@ -34,6 +36,8 @@ from app.services.sensitive_repository import SqlSensitiveWordRepository
 from app.services.sign_repository import SqlSignRepository
 from app.services.template_repository import SqlTemplateRepository
 from app.services.user_repository import SqlUserManagementRepository
+from tests.integration.audit_fixtures import live_audit_principal  # noqa: F401
+from tests.integration.test_ops_audit_postgres import accept_runtime  # noqa: F401
 
 pytestmark = pytest.mark.skipif(
     "SECURITY_SESSION_POSTGRES_DSN" not in os.environ,
@@ -59,6 +63,10 @@ class FakeStepUpStore:
 
     async def set(self, key: str, value: str, *, ex: int) -> None:
         self.sets.append((key, value, ex))
+
+    async def delete(self, key: str) -> int:
+        self.sets = [item for item in self.sets if item[0] != key]
+        return 1
 
     async def eval(self, script: str, numkeys: int, *args: object) -> int:
         del script, numkeys, args
@@ -94,8 +102,8 @@ async def test_export_step_up_persists_real_audit_row() -> None:
     engine = create_async_engine(database_url)
     public_id = uuid4()
     claims = JwtClaims(
-        8,
-        18,
+        stable_admin().account_id,
+        stable_admin().identity_id,
         "local",
         "operator01",
         "测试操作员",
@@ -108,6 +116,11 @@ async def test_export_step_up_persists_real_audit_row() -> None:
 
     async def audit_sink(event: AuditEvent) -> None:
         async with engine.begin() as connection:
+            await bind_connection_audit_subject(
+                connection, subject_kind="human", actor_name=event.principal.actor_name,
+                account_id=event.principal.actor_account_id,
+                identity_id=event.principal.actor_identity_id,
+            )
             await insert_audit(connection, event)
 
     service = ExportStepUpService(
@@ -141,7 +154,7 @@ async def test_export_step_up_persists_real_audit_row() -> None:
             ).mappings().one()
         assert row["action"] == "export_step_up"
         assert row["object_type"] == "export_task"
-        assert int(row["actor_account_id"]) == 8
+        assert int(row["actor_account_id"]) == stable_admin().account_id
         assert row["role"] == "approver"
     finally:
         async with engine.begin() as connection:
@@ -159,7 +172,9 @@ async def test_app_create_and_key_rotation_persist_real_audit_rows() -> None:
     database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
     engine = create_async_engine(database_url)
     repository = SqlAppRepository(
-        cast(Any, SimpleNamespace(database_url=database_url))
+        cast(Any, SimpleNamespace(
+            database_url=database_url, database_url_for=lambda _role: database_url,
+        ))
     )
     app_name = f"audit-runtime-{uuid4().hex[:12]}"
     app_id: int | None = None
@@ -172,10 +187,17 @@ async def test_app_create_and_key_rotation_persist_real_audit_rows() -> None:
                 dept="平台部",
                 api_key_hash="a" * 64,
                 api_key_prefix="aud",
-                allowed_categories=["notice"],
+                allowed_categories="notice",
                 default_sign="【青鸾】",
                 daily_quota=100,
                 rate_limit_per_min=10,
+            recipient_limit_per_min=6000,
+            segment_limit_per_min=6000,
+            max_in_flight_chunks=100,
+            allow_market_api_bulk=False,
+            ip_allowlist_exempt_until=None,
+            unlimited_quota_exempt_until=None,
+            admission_exempt_note=None,
                 blacklist_check=True,
                 freq_override=None,
                 allowed_ips=[],
@@ -202,7 +224,7 @@ async def test_app_create_and_key_rotation_persist_real_audit_rows() -> None:
                           actor_identity_id,correlation_id,object_type,object_id
                         FROM audit_log
                         WHERE object_type='app'
-                          AND object_id=CAST(:app_id AS text)
+                          AND object_id=CAST(CAST(:app_id AS bigint) AS text)
                         ORDER BY id
                         """
                     ),
@@ -213,8 +235,8 @@ async def test_app_create_and_key_rotation_persist_real_audit_rows() -> None:
         assert actions == ["app_create", "app_rotate_key"]
         assert all(str(row["actor"]) == "audit-admin" for row in rows)
         assert all(str(row["actor_subject_kind"]) == "human" for row in rows)
-        assert all(int(row["actor_account_id"]) == 8 for row in rows)
-        assert all(int(row["actor_identity_id"]) == 18 for row in rows)
+        assert all(int(row["actor_account_id"]) == stable_admin().account_id for row in rows)
+        assert all(int(row["actor_identity_id"]) == stable_admin().identity_id for row in rows)
         assert all(row["correlation_id"] == correlation_id for row in rows)
         assert all(str(row["object_type"]) == "app" for row in rows)
     finally:
@@ -223,7 +245,8 @@ async def test_app_create_and_key_rotation_persist_real_audit_rows() -> None:
                 await connection.execute(
                     text(
                         "DELETE FROM audit_log "
-                        "WHERE object_type='app' AND object_id=CAST(:app_id AS text)"
+                        "WHERE object_type='app' "
+                        "AND object_id=CAST(CAST(:app_id AS bigint) AS text)"
                     ),
                     {"app_id": app_id},
                 )
@@ -239,7 +262,9 @@ async def test_auth_provider_lifecycle_persists_real_audit_rows() -> None:
     database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
     engine = create_async_engine(database_url)
     repository = SqlAuthProviderRepository(
-        cast(Any, SimpleNamespace(database_url=database_url))
+        cast(Any, SimpleNamespace(
+            database_url=database_url, database_url_for=lambda _role: database_url,
+        ))
     )
     code = f"audit-{uuid4().hex[:10]}"
     config: dict[str, object] = {
@@ -323,7 +348,9 @@ async def test_local_account_create_persists_real_audit_row() -> None:
     database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
     engine = create_async_engine(database_url)
     repository = SqlUserManagementRepository(
-        cast(Any, SimpleNamespace(database_url=database_url))
+        cast(Any, SimpleNamespace(
+            database_url=database_url, database_url_for=lambda _role: database_url,
+        ))
     )
     username = f"audit-{uuid4().hex[:12]}"
     account_id: int | None = None
@@ -350,7 +377,7 @@ async def test_local_account_create_persists_real_audit_row() -> None:
                         FROM audit_log
                         WHERE action='local_account_create'
                           AND object_type='user_account'
-                          AND object_id=CAST(:account_id AS text)
+                          AND object_id=CAST(CAST(:account_id AS bigint) AS text)
                         """
                     ),
                     {"account_id": account_id},
@@ -365,7 +392,7 @@ async def test_local_account_create_persists_real_audit_row() -> None:
                 await connection.execute(
                     text(
                         "DELETE FROM audit_log WHERE object_type='user_account' "
-                        "AND object_id=CAST(:account_id AS text)"
+                        "AND object_id=CAST(CAST(:account_id AS bigint) AS text)"
                     ),
                     {"account_id": account_id},
                 )
@@ -390,7 +417,9 @@ async def test_sensitive_word_add_and_delete_persist_real_audit_rows() -> None:
     database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
     engine = create_async_engine(database_url)
     repository = SqlSensitiveWordRepository(
-        cast(Any, SimpleNamespace(database_url=database_url))
+        cast(Any, SimpleNamespace(
+            database_url=database_url, database_url_for=lambda _role: database_url,
+        ))
     )
     word = f"audit-word-{uuid4().hex[:8]}"
     word_id: int | None = None
@@ -441,11 +470,13 @@ async def test_blacklist_upsert_and_delete_persist_real_audit_rows() -> None:
     database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
     engine = create_async_engine(database_url)
     repository = SqlBlacklistRepository(
-        cast(Any, SimpleNamespace(database_url=database_url))
+        cast(Any, SimpleNamespace(
+            database_url=database_url, database_url_for=lambda _role: database_url,
+        ))
     )
     crypto = CryptoService.from_secret_values(
-        "a" * 32,
-        "b" * 32,
+        base64.b64encode(b"a" * 32).decode(),
+        base64.b64encode(b"b" * 32).decode(),
     )
     phone = f"139{str(uuid4().int)[:8]}"
     protected = crypto.protect_phone(phone, table="blacklist")
@@ -511,7 +542,9 @@ async def test_blacklist_upsert_and_delete_persist_real_audit_rows() -> None:
 async def test_template_and_sign_create_delete_persist_real_audit_rows() -> None:
     database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
     engine = create_async_engine(database_url)
-    settings = cast(Any, SimpleNamespace(database_url=database_url))
+    settings = cast(Any, SimpleNamespace(
+            database_url=database_url, database_url_for=lambda _role: database_url,
+        ))
     content_crypto = CryptoService(
         aes_keys={1: b"a" * 32},
         hmac_keys={1: b"b" * 32},
@@ -557,8 +590,8 @@ async def test_template_and_sign_create_delete_persist_real_audit_rows() -> None
             ).mappings().all()
         assert [str(row["action"]) for row in rows] == [
             "template_create",
-            "template_delete",
             "sign_create",
+            "template_delete",
             "sign_delete",
         ]
     finally:
@@ -595,8 +628,8 @@ async def test_config_update_persists_real_audit_row() -> None:
     )
     repository = SqlAdminRepository(settings)
     principal = SecurityPrincipal(
-        account_id=8,
-        identity_id=18,
+        account_id=stable_admin().account_id,
+        identity_id=stable_admin().identity_id,
         login_name="audit-admin",
         dept="平台部",
         role="admin",
@@ -632,7 +665,7 @@ async def test_config_update_persists_real_audit_row() -> None:
                 )
             ).mappings().one()
         assert row["action"] == "config_update"
-        assert int(row["actor_account_id"]) == 8
+        assert int(row["actor_account_id"]) == stable_admin().account_id
         assert row["object_type"] == "sys_config"
         assert row["object_id"] == "vendor_qps"
     finally:
@@ -656,11 +689,13 @@ async def test_export_create_persists_real_audit_row() -> None:
     database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
     engine = create_async_engine(database_url)
     repository = SqlExportRepository(
-        cast(Any, SimpleNamespace(database_url=database_url))
+        cast(Any, SimpleNamespace(
+            database_url=database_url, database_url_for=lambda _role: database_url,
+        ))
     )
     principal = SecurityPrincipal(
-        account_id=8,
-        identity_id=18,
+        account_id=stable_admin().account_id,
+        identity_id=stable_admin().identity_id,
         login_name="audit-admin",
         dept="平台部",
         role="admin",
@@ -688,7 +723,7 @@ async def test_export_create_persists_real_audit_row() -> None:
                 )
             ).mappings().one()
         assert row["action"] == "export_create"
-        assert int(row["actor_account_id"]) == 8
+        assert int(row["actor_account_id"]) == stable_admin().account_id
         assert row["object_type"] == "export_task"
     finally:
         async with engine.begin() as connection:

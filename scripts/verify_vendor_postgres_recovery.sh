@@ -98,9 +98,10 @@ esac
 
 (
   cd "$ROOT/backend"
-  pytest_args=(-q)
+  # 可传 pytest 文件/nodeid 做定向修复；CI 默认全收集并由独立清单核验。
+  pytest_args=(-q --tb=short "$@")
   if [[ "${SMS_COVERAGE:-0}" == "1" ]]; then
-    pytest_args+=(--cov=app --cov-report= --cov-append)
+    pytest_args+=(--cov=app --cov-report=)
   fi
   ENVIRONMENT=test DEBUG=1 AUTH_MOCK=1 VENDOR_MOCK=1 \
   DB_HOST=127.0.0.1 \
@@ -109,7 +110,7 @@ esac
   DB_OWNER_PASSWORD_FILE="$owner_password_file" \
   DATA_AES_KEY_FILE="$data_aes_key_file" \
   DATA_HMAC_KEY_FILE="$data_hmac_key_file" \
-    uv run alembic upgrade head
+    uv run --locked alembic upgrade head
 
   role_boundary_result="$(
     docker exec -i "$container" psql -qAt \
@@ -173,55 +174,22 @@ SQL
   fi
 
   ENVIRONMENT=test DEBUG=1 AUTH_MOCK=1 VENDOR_MOCK=1 \
+  SMS_ISOLATED_TEST_DATABASE="$database" \
   VENDOR_UAT_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
   EXPORT_AUTH_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
   SECURITY_SESSION_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
   OUTBOX_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
   AUTH_GUARD_REDIS_URL="redis://127.0.0.1:${redis_port}/0" \
-    uv run pytest "${pytest_args[@]}" \
-      tests/integration/test_vendor_uat_recovery_postgres.py \
-      tests/integration/test_export_authorization_postgres.py \
-      tests/integration/test_security_session_postgres.py \
-      tests/integration/test_atomic_password_change_postgres.py \
-      tests/integration/test_auth_r2_postgres.py \
-      tests/integration/test_daily_password_cas_postgres.py \
-      tests/integration/test_auth_guard_redis.py \
-      tests/integration/test_auth_admission_redis.py \
-    tests/integration/test_auth_spray_redis.py \
-      tests/integration/test_auth_admission_postgres.py \
-      tests/integration/test_stable_principal_postgres.py \
-      tests/integration/test_outbox_postgres.py \
-      tests/integration/test_reporting_performance_postgres.py \
-      tests/integration/test_report_active_count_postgres.py \
-      tests/integration/test_performance_queries_postgres.py \
-      tests/integration/test_perf_fault_recovery_postgres.py \
-      tests/integration/test_housekeeping_bounded_postgres.py \
-      tests/integration/test_usage_projection_runtime_postgres.py \
-      tests/integration/test_worker_fencing_postgres.py \
-      tests/integration/test_vendor_event_facts_postgres.py \
-      tests/integration/test_import_reservation_postgres.py \
-      tests/integration/test_async_import_postgres.py \
-      tests/integration/test_usage_ledger_postgres.py \
-      tests/integration/test_uncertain_web_resend_postgres.py \
-      tests/integration/test_uncertain_web_usage_subject_postgres.py \
-      tests/integration/test_raw_capture_legacy_postgres.py \
-      tests/integration/test_raw_replay_eligibility_postgres.py \
-      tests/integration/test_raw_replay_fencing_postgres.py \
-      tests/integration/test_ops_audit_postgres.py \
-      tests/integration/test_vendor_attempt_finalize_postgres.py \
-      tests/integration/test_vendor_failover_pending_postgres.py \
-      tests/integration/test_idempotency_claim_lease_postgres.py \
-      tests/integration/test_inflight_ambiguous_commit_postgres.py \
-      tests/integration/test_inflight_balance_conservation_postgres.py \
-      tests/integration/test_inflight_split_capacity_postgres.py \
-      tests/integration/test_app_ratelimit_cutover_redis.py \
-      tests/integration/test_vendor_bucket_redis.py
+    uv run --locked python -m pytest -c pyproject.toml --rootdir=. "${pytest_args[@]}" --strict-markers \
+      -p scripts_support.gate_evidence --gate-shard postgres \
+      --gate-evidence "${SMS_TEST_EVIDENCE:-$tmp_root/tests.json}" \
+      --junitxml "${SMS_TEST_JUNIT:-$tmp_root/junit.xml}" --durations=30
 
   if [[ "${SMS_PERF_FAULT_MATRIX:-0}" == "1" ]]; then
     # 同一一次性数据库内验证矩阵执行器，避免缺失依赖只跑声明。
     ENVIRONMENT=test DEBUG=1 AUTH_MOCK=1 VENDOR_MOCK=1 \
     OUTBOX_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
-      uv run python ../scripts/perf_fault_matrix.py --execute
+      uv run --locked python ../scripts/perf_fault_matrix.py --execute
   fi
 )
 

@@ -21,10 +21,11 @@ cherry-pick 或推送其中的任何 Git 对象。
 2. 首次克隆执行 `scripts/install_git_hooks.sh`（启用 git pre-commit/pre-push）；
    正常开发后运行 `scripts/dev_check.sh --changed`。
 3. 推送分支；版本化 Hook 同时扫描工作区与新增提交，安全内容无需人工解锁。
-4. owner 分支自动创建 Draft PR；精确 push CI 成功后，自动化将同一 SHA 的 PR 改为
-   Ready 并请求 squash merge，不使用管理员绕过。
-5. required `ci-gate`、会话解决和冲突保护全部满足后由 GitHub 自动 squash merge；
-   `main` 禁止直接推送、强推和删除。
+4. owner 分支自动创建 Draft PR；当前公开仓库没有自动 Ready/合并工作流。精确 push
+   CI 成功并完成独立 Code Review 后，由操作者将同一 SHA 的 PR 改为 Ready。
+5. required `ci-gate`、required reviews、会话解决和冲突保护全部满足后，人工请求
+   squash merge；禁止管理员绕过，`main` 禁止直接推送、强推和删除。合并后核验
+   实际 merge SHA 的 GitHub Actions `ci-gate=success`，不能以 PR head 结果替代。
 6. 只有需要共享环境验收时才更新测试服务器：先确认
    `gh auth status --hostname github.com` 有效，再对合并后的精确 `origin/main` 执行
    `scripts/test_update.sh apply --ref origin/main`；`plan` 与 `status` 分别只用于可选预览
@@ -36,9 +37,9 @@ cherry-pick 或推送其中的任何 Git 对象。
 
 1. 默认分支要求 Pull Request、会话解决、线性历史和唯一 required `ci-gate`；required
    check 必须绑定 GitHub Actions 应用，禁止同名外部状态伪造通过。
-2. Actions 默认权限为只读仓库内容；自动 Draft PR 工作流仅取得 PR 写权限，自动合并
-   工作流仅在精确 push CI 成功后取得 contents/PR 写权限，并同时校验 owner、同仓分支和
-   head SHA。fork PR 不取得 secrets 或写权限，自动合并禁止 `--admin` 绕过。
+2. Actions 默认权限为只读仓库内容；自动 Draft PR 工作流仅取得 PR 写权限。
+   当前公开仓库不提供 owner 自动合并工作流；fork PR 不取得 secrets 或写权限，
+   required reviews 与 ruleset 不得被旁路，禁止 `--admin` 绕过。
 3. 启用 secret scanning、push protection、Dependabot alerts 与私密漏洞报告。
 4. CI 执行规格、不变量、公开仓库、SAST、依赖、secret 和配置检查。
 5. Release、artifact、Pages、Packages 与 workflow 日志不得承载凭据、PII 或内部证据。

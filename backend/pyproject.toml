@@ -58,6 +58,10 @@ markers = [
 line-length = 100
 target-version = "py312"
 
+[tool.coverage.run]
+source = ["app"]
+relative_files = true
+
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC"]
 

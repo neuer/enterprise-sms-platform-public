@@ -185,36 +185,28 @@ metrics_gate(){
 stage_0(){
 python3 scripts/check_spec_consistency.py
 python3 scripts/check_public_readiness.py
-bash scripts/verify_vendor_live_test.sh
+SMS_SKIP_VENDOR_POSTGRES_RECOVERY=1 bash scripts/verify_vendor_live_test.sh
 }
 
 stage_1(){
-( cd backend && uv run ruff check app migrations scripts_support tests \
-    ../scripts/check_contract.py ../scripts/security_acceptance.py \
-    ../scripts/verify_public_snapshot_cutover.py \
-    ../scripts/verify_web_transport.py \
-    ../scripts/g2_timing.py \
-    ../scripts/e2e_api.py ../scripts/perf_smoke.py ../scripts/locustfile.py \
-    && uv run mypy app migrations scripts_support ../scripts/check_contract.py \
-    ../scripts/g2_timing.py \
-    ../scripts/security_acceptance.py ../scripts/e2e_api.py ../scripts/perf_smoke.py \
-    ../scripts/verify_web_transport.py \
-    ../scripts/verify_public_snapshot_cutover.py )
+python3 scripts/check_backend_static.py
 }
 
 stage_2(){
-( cd backend && ENVIRONMENT=test DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1 uv run pytest -q \
-    --cov=app/services --cov-report=term-missing --cov-fail-under=80 )
+  local evidence
+  evidence="$(mktemp -d "${TMPDIR:-/tmp}/sms-g2-tests.XXXXXX")"
+  ( trap 'rm -rf "$evidence"' EXIT
+    bash scripts/run_backend_tests.sh full "$evidence" )
 }
 
 stage_3(){
 ( cd backend && ENVIRONMENT=test DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1 \
-    uv run python scripts_support/check_migration.py )
+    uv run --locked python scripts_support/check_migration.py )
 }
 
 stage_4(){
 ( cd backend && ENVIRONMENT=test DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1 \
-    uv run python ../scripts/check_contract.py ../openapi.yaml )
+    uv run --locked python ../scripts/check_contract.py ../openapi.yaml )
 }
 
 stage_5(){
@@ -244,7 +236,7 @@ python3 scripts/security_acceptance.py --base "http://localhost:${web_port}" --c
 }
 
 stage_7(){
-uv run --project backend python scripts/e2e_api.py --base "http://localhost:${api_port}" --mock-base "http://localhost:${mock_vendor_port}" --keys deploy/secrets/dev-apikeys.txt --compose-file deploy/docker-compose.yml
+uv run --locked --project backend python scripts/e2e_api.py --base "http://localhost:${api_port}" --mock-base "http://localhost:${mock_vendor_port}" --keys deploy/secrets/dev-apikeys.txt --compose-file deploy/docker-compose.yml
 python3 scripts/verify_tls_termination_e2e.py \
   --project "$COMPOSE_PROJECT_NAME" \
   --web-port "$web_port" \

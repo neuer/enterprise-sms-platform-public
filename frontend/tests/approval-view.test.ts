@@ -227,6 +227,18 @@ describe("审批中心", () => {
     expect(wrapper.text()).toContain("通知 ≥ 100 个号码")
   })
 
+  it.each([
+    [100, "snapshot", "通知 ≥ 100 个号码 · 提交时阈值快照"],
+    [null, "snapshot", "历史阈值不可确认"],
+    [100, "legacy_unknown", "历史阈值不可确认"],
+  ] as const)("审批阈值按服务器事实展示：%s / %s", async (threshold, source, expected) => {
+    const item = makeItem({ trigger_threshold: threshold, trigger_threshold_source: source })
+    stubApprovalsFetch({ list: listBody([item], { ...DEFAULT_COUNTS, pending: 1 }) })
+    const wrapper = mountApproverView()
+    await flushPromises()
+    expect(wrapper.get(`[data-testid='approval-row-${item.id}']`).text()).toContain(expected)
+  })
+
   it("本人提交的待审批单显示回避提示且无操作按钮", async () => {
     const mine = makeItem({ applicant: "approver01" })
     const others = makeItem({ category: "market", trigger_threshold: 50 })
