@@ -13,7 +13,7 @@ COPY frontend .
 COPY VERSION /VERSION
 RUN VITE_APP_VERSION="$(tr -d '\n' < /VERSION)" npm run build
 
-FROM nginx:stable-alpine@sha256:0d3b80406a13a767339fbe2f41406d6c7da727ab89cf8fae399e81f780f814d1
+FROM nginx:stable-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
 
 RUN apk add --no-cache --upgrade \
       c-ares=1.34.8-r0 \
@@ -21,6 +21,7 @@ RUN apk add --no-cache --upgrade \
       libcrypto3=3.5.8-r0 \
       libcurl=8.22.0-r0 \
       libexpat=2.8.4-r0 \
+      libuuid=2.42.3-r1 \
       libssl3=3.5.8-r0
 
 ARG APP_VERSION

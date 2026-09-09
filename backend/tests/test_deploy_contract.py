@@ -35,9 +35,11 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
     )
     assert (
         "FROM python:3.12-alpine@sha256:"
-        "6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df" in backend
+        "b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a" in backend
     )
     assert "uv sync --frozen --no-dev" in backend
+    assert backend.count("RUN python -m pip uninstall --yes pip") == 2
+    assert backend.count("rm -rf /usr/local/lib/python3.12/ensurepip") == 2
     assert (
         "FROM node:24-alpine@sha256:"
         "a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd" in frontend
@@ -46,29 +48,32 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
     assert "USER 101:101" in frontend
     assert (
         "FROM nginx:stable-alpine@sha256:"
-        "0d3b80406a13a767339fbe2f41406d6c7da727ab89cf8fae399e81f780f814d1" in frontend
+        "dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c" in frontend
     )
-    for package in ("libcrypto3=3.5.8-r0", "libssl3=3.5.8-r0"):
+    for package in ("libcrypto3=3.5.8-r0", "libssl3=3.5.8-r0", "libuuid=2.42.3-r1"):
         assert package in backend
     for package in (
         "c-ares=1.34.8-r0",
         "curl=8.22.0-r0",
         "libcrypto3=3.5.8-r0",
         "libcurl=8.22.0-r0",
+        "libuuid=2.42.3-r1",
         "libexpat=2.8.4-r0",
         "libssl3=3.5.8-r0",
     ):
         assert package in frontend
     assert (
         "FROM postgres:16-alpine@sha256:"
-        "57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777" in postgres
+        "cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685" in postgres
     )
     assert "apk add --no-cache --upgrade" in postgres
     assert "libcrypto3=3.5.8-r0" in postgres
     assert "libssl3=3.5.8-r0" in postgres
+    assert "libuuid=2.42.3-r1" in postgres
     assert "su-exec=0.3-r0" in postgres
     assert "rm /usr/local/bin/gosu" in postgres
     assert "ln -s /sbin/su-exec /usr/local/bin/gosu" in postgres
+    assert "PG_VERSION=16.15" in postgres
     assert "AS prepared" in postgres
     assert "FROM scratch" in postgres
     assert "COPY --from=prepared / /" in postgres
@@ -84,7 +89,7 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
         assert metadata in postgres
     assert (
         "FROM redis:7-alpine@sha256:"
-        "6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99" in redis
+        "ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf" in redis
     )
     assert "USER 999:1000" in redis
 

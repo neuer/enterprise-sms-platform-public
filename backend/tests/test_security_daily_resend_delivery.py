@@ -359,7 +359,7 @@ def test_companion_container_uses_only_dedicated_ui_config_file() -> None:
     dockerfile = COMPANION_DOCKERFILE.read_text(encoding="utf-8")
     assert (
         "FROM python:3.12-alpine@sha256:"
-        "6d43704baacd1bfbe7c295d7f13079d5d8104ed33568873133f8fc69980419df"
+        "b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a"
         in dockerfile
     )
     assert "libcrypto3=3.5.8-r0" in dockerfile
@@ -367,6 +367,9 @@ def test_companion_container_uses_only_dedicated_ui_config_file() -> None:
     assert "USER security-report" in dockerfile
     assert "install -d -m 0755 /app/deploy/scripts /app/deploy/templates" in dockerfile
     assert "pip install" not in dockerfile
+    assert "RUN python -m pip uninstall --yes pip" in dockerfile
+    assert "rm -rf /usr/local/lib/python3.12/ensurepip" in dockerfile
+    assert "libuuid=2.42.3-r1" in dockerfile
 
 
 def test_docker_build_context_excludes_active_mailer_config_and_runtime_data() -> None:
