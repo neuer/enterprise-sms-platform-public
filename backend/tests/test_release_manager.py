@@ -1037,6 +1037,8 @@ class FakeRunner:
                     else ""
                 )
                 return self._result(command, value)
+            if "cold-cutover-admission" in command:
+                return self._result(command, "0\n")
             if "cold-cutover" in command and "api_key_unclassified_algorithms" in command[-1]:
                 return self._result(command, "DO\n")
             if command[-4:] == ["exec", "-T", "postgres", "postgres"]:
@@ -6877,3 +6879,34 @@ def test_cold_cutover_legacy_policy_failure_contains_application(
         manager.activate(manifest["release_id"])
     assert manager.status(manifest["release_id"])["state"] == "recovery_required"
     assert any("stop" in command and "web" in command for command in runner.calls)
+
+
+@pytest.mark.parametrize("phase", ["prepare", "activate"])
+@pytest.mark.parametrize("result", ["1\n", "", "garbled\n"])
+def test_cold_cutover_rejects_incompatible_admission_before_stopping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, result: str,
+) -> None:
+    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    if phase == "activate":
+        manager.prepare(path)
+    before = manager.environment_file.read_bytes()
+    runner.calls.clear()
+    original_run = runner.run
+
+    def admission_result(
+        command: Sequence[str], **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        if "cold-cutover-admission" in command:
+            return subprocess.CompletedProcess(list(command), 0, result, "")
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(runner, "run", admission_result)
+    with pytest.raises(ReleaseManagerError):
+        if phase == "prepare":
+            manager.prepare(path)
+        else:
+            manager.activate(manifest["release_id"])
+    assert manager.environment_file.read_bytes() == before
+    assert not any("stop" in call or "up" in call or "run" in call for call in runner.calls)

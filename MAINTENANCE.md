@@ -156,7 +156,8 @@ scripts/test_update.sh promote --ref origin/main
 激活失败或激活中断后再请求 resume，固定停止 web、API、worker、outbox 与 beat，进入
 `recovery_required`，不自动恢复旧应用或降级数据库。操作者负责整机恢复；快照不能撤销已发送
 短信、已消费报告或已投递回调，开放业务后的故障必须先核对外部副作用，不能直接恢复旧事实后重发。
-迁移到目标后，受控入口记录并设置旧 API Key 的有限候选为
+prepare 和停机前再次只读核对活动应用已有非空来源白名单及有限日配额；不满足即拒绝切换，
+不得自动创建豁免或扩大权限。迁移到目标后，受控入口记录并设置旧 API Key 的有限候选为
 `legacy_data_hmac_pepper_v1,legacy_sha256`，仅允许原值为空或同值；其它值冲突即停机。
 执行前必须准备独立 pepper，并保留旧 data_hmac_key 文件原文作为 legacy secret；不批量改写摘要。
 宿主包更新仍独立执行。本例外优先于下述旧离线迁移闭集及部署索引中的“不扩展”限制。

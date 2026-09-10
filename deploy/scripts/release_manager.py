@@ -3490,6 +3490,8 @@ class ReleaseManager:
             container_ids, image_ids, service_container_ids = self._current_runtime(current_refs)
             self._validate_data_majors(data_evidence)
             migration_head = self._migration_head(manifest)
+            if manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER:
+                self._validate_cold_cutover_admission()
             self._write_snapshot(
                 store,
                 current_commit=current_commit,
@@ -5869,6 +5871,32 @@ class ReleaseManager:
                 continue
         return completed
 
+    def _validate_cold_cutover_admission(self) -> None:
+        """停机前拒绝会被新版白名单或配额策略阻断的旧应用，仅查询聚合计数。"""
+
+        sql = (
+            "BEGIN READ ONLY; SET LOCAL statement_timeout='15s'; "
+            "SET LOCAL lock_timeout='2s'; "
+            "SELECT count(*) FROM app WHERE status=1 "
+            "AND (cardinality(allowed_ips)=0 OR daily_quota=0); COMMIT;"
+        )
+        probe = (
+            "exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --quiet --tuples-only --no-align "
+            '--username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "$1"'
+        )
+        count = self._line(
+            self._run(
+                self._compose()
+                + ["exec", "-T", "postgres", "sh", "-ec", probe, "cold-cutover-admission", sql],
+                "cold cutover application admission preflight",
+            ),
+            "cold cutover application admission preflight",
+        )
+        if count != "0":
+            raise ReleaseManagerError(
+                "cold cutover requires explicit IP allowlists and finite quotas for active apps"
+            )
+
     def _configure_cold_cutover_legacy_keys(self, store: ReleaseStore) -> None:
         """仅为固定 0084 停机升级保留旧代码已支持的两种摘要校验。"""
 
@@ -6473,6 +6501,8 @@ $upgrade$;
         refs = self._current_refs(manifest)
         container_ids, image_ids, service_container_ids = self._current_runtime(refs)
         migration_head = self._migration_head(manifest)
+        if manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER:
+            self._validate_cold_cutover_admission()
         if (
             commit != snapshot["current_commit"]
             or refs != snapshot["current_refs"]
