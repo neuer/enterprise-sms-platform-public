@@ -1037,6 +1037,8 @@ class FakeRunner:
                     else ""
                 )
                 return self._result(command, value)
+            if "cold-cutover" in command and "api_key_unclassified_algorithms" in command[-1]:
+                return self._result(command, "DO\n")
             if command[-4:] == ["exec", "-T", "postgres", "postgres"]:
                 raise AssertionError("version command must include --version")
             if command[-5:] == ["exec", "-T", "postgres", "postgres", "--version"]:
@@ -2121,6 +2123,12 @@ def test_one_time_cold_cutover_can_activate(
     manager.prepare(path)
     manager.activate(manifest["release_id"])
     assert runner.migration_head == ONE_TIME_COLD_CUTOVER[1]
+    policy_index = next(i for i, command in enumerate(runner.calls) if "cold-cutover" in command)
+    migrate_index = next(
+        i for i, command in enumerate(runner.calls)
+        if command[-3:] == ["run", "--rm", "migrate"]
+    )
+    assert policy_index > migrate_index
     assert manager.status(manifest["release_id"])["state"] == "succeeded"
 
 
@@ -6838,3 +6846,34 @@ def test_cli_rejects_invalid_release_root_before_constructing_manager(
 
     assert result == 1
     assert constructed is False
+
+
+@pytest.mark.parametrize("failure", ["command", "journal"])
+def test_cold_cutover_legacy_policy_failure_contains_application(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    manager.prepare(path)
+    original_run = runner.run
+    original_observation = ReleaseStore.record_observation
+
+    def fail_policy_command(
+        command: Sequence[str], **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        if failure == "command" and "cold-cutover" in command:
+            return subprocess.CompletedProcess(list(command), 1, "", "policy conflict")
+        return original_run(command, **kwargs)
+
+    def fail_policy_journal(self: ReleaseStore, kind: str, detail: dict[str, Any]) -> Any:
+        if failure == "journal" and kind == "cold_cutover_legacy_key_policy":
+            raise OSError("journal unavailable")
+        return original_observation(self, kind, detail)
+
+    monkeypatch.setattr(runner, "run", fail_policy_command)
+    monkeypatch.setattr(ReleaseStore, "record_observation", fail_policy_journal)
+    with pytest.raises(ReleaseManagerError, match="recovery_required"):
+        manager.activate(manifest["release_id"])
+    assert manager.status(manifest["release_id"])["state"] == "recovery_required"
+    assert any("stop" in command and "web" in command for command in runner.calls)

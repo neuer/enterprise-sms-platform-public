@@ -5869,6 +5869,42 @@ class ReleaseManager:
                 continue
         return completed
 
+    def _configure_cold_cutover_legacy_keys(self, store: ReleaseStore) -> None:
+        """仅为固定 0084 停机升级保留旧代码已支持的两种摘要校验。"""
+
+        operation = "cold_cutover_legacy_key_policy"
+        sql = """
+DO $upgrade$
+DECLARE existing_policy text;
+BEGIN
+  IF (SELECT version_num FROM alembic_version)
+      IS DISTINCT FROM '0116_usage_release_generation' THEN
+    RAISE EXCEPTION 'cold cutover schema mismatch';
+  END IF;
+  SELECT value INTO existing_policy FROM sys_config
+    WHERE key='api_key_unclassified_algorithms' FOR UPDATE;
+  IF existing_policy IS NULL OR existing_policy NOT IN
+      ('', 'legacy_data_hmac_pepper_v1,legacy_sha256') THEN
+    RAISE EXCEPTION 'cold cutover legacy policy conflict';
+  END IF;
+  UPDATE sys_config
+    SET value='legacy_data_hmac_pepper_v1,legacy_sha256'
+    WHERE key='api_key_unclassified_algorithms' AND value='';
+END
+$upgrade$;
+"""
+        probe = (
+            "exec psql --no-psqlrc --set=ON_ERROR_STOP=1 "
+            '--username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "$1"'
+        )
+        store.record_intent(operation, {"policy": "0084_legacy_verifiers"})
+        self._run(
+            self._compose()
+            + ["exec", "-T", "postgres", "sh", "-ec", probe, "cold-cutover", sql],
+            "cold cutover legacy key policy",
+        )
+        store.record_observation(operation, {"completed": True})
+
     def _run_activation_step(
         self,
         store: ReleaseStore,
@@ -5901,6 +5937,11 @@ class ReleaseManager:
                     raise _ActivationStepError(step.kind, ambiguous=True) from exc
                 if migration_state != "target":
                     raise _ActivationStepError(step.kind, ambiguous=True)
+                if manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER:
+                    try:
+                        self._configure_cold_cutover_legacy_keys(store)
+                    except Exception as exc:
+                        raise _ActivationStepError(step.kind, ambiguous=True) from exc
             try:
                 store.record_observation(
                     step.kind.value,
