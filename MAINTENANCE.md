@@ -148,6 +148,20 @@ scripts/test_update.sh promote --ref origin/main
 
 ## 生产发布
 
+2026-09-10 一次性跨版本例外：操作者明确批准以当天 09:45 的整机虚拟机快照承担人工恢复，
+仅放行离线四镜像 `0084_auth_security_and_ad_freshness` → `0116_usage_release_generation`，
+清单必须声明 `cold_cutover`，不得冒充 `expand`。生成包时必须显式接受
+`--allow-offline-no-conditional-evidence` 才能省略本候选的数据库恢复演练证据；数据镜像验证、
+精确 main、CI、四镜像扫描、来源证明与包签名仍必须通过。此例外不扩展到其它版本或日常发布。
+激活失败或激活中断后再请求 resume，固定停止 web、API、worker、outbox 与 beat，进入
+`recovery_required`，不自动恢复旧应用或降级数据库。操作者负责整机恢复；快照不能撤销已发送
+短信、已消费报告或已投递回调，开放业务后的故障必须先核对外部副作用，不能直接恢复旧事实后重发。
+prepare 和停机前再次只读核对活动应用已有非空来源白名单及有限日配额；不满足即拒绝切换，
+不得自动创建豁免或扩大权限。迁移到目标后，受控入口记录并设置旧 API Key 的有限候选为
+`legacy_data_hmac_pepper_v1,legacy_sha256`，仅允许原值为空或同值；其它值冲突即停机。
+执行前必须准备独立 pepper，并保留旧 data_hmac_key 文件原文作为 legacy secret；不批量改写摘要。
+宿主包更新仍独立执行。本例外优先于下述旧离线迁移闭集及部署索引中的“不扩展”限制。
+
 1. 最终候选必须是受保护 `main` 的精确 SHA。质量、安全与 G2 在日常合并流程完成；临时
    Release Gate 只负责制品生成，不再重复这些门禁。
 2. 内部 Registry 建成前，临时 Release Gate 只构建四镜像一次，对每个镜像执行独立 Trivy

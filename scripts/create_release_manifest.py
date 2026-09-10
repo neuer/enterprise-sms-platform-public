@@ -30,6 +30,7 @@ from offline_image_archive import (  # noqa: E402
 from release_manifest import (  # noqa: E402
     OFFLINE_EXPAND_MIGRATIONS,
     OFFLINE_IMAGE_SOURCE,
+    ONE_TIME_COLD_CUTOVER,
     load_manifest_bytes,
 )
 
@@ -625,9 +626,12 @@ def create_manifest(
         offline_full_update
         and (migration_from, migration_target) in OFFLINE_EXPAND_MIGRATIONS
     )
+    cold_cutover = offline_full_update and (
+        migration_from, migration_target
+    ) == ONE_TIME_COLD_CUTOVER
     if offline and (
         changed not in {frozenset(), frozenset(_IMAGES)}
-        or (migration_from != migration_target and not offline_expand_update)
+        or (migration_from != migration_target and not offline_expand_update and not cold_cutover)
     ):
         raise ManifestCreationError(
             "offline release must be a baseline, all-four no-migration update, "
@@ -637,7 +641,9 @@ def create_manifest(
     if backup_pair not in {(False, False), (True, True)}:
         raise ManifestCreationError("backup evidence must be provided as a pair")
     conditional_evidence_missing = data_images is None or not all(backup_pair)
-    approved_expand_backup_missing = offline_expand_update and not all(backup_pair)
+    approved_expand_backup_missing = (
+        offline_expand_update or cold_cutover
+    ) and not all(backup_pair)
     if allow_offline_no_conditional_evidence and (
         not (
             (offline_full_no_migration_update and conditional_evidence_missing)
@@ -833,7 +839,7 @@ def create_manifest(
         raise ManifestCreationError("data image evidence does not match changed images")
     backup_allowed = "postgres" in changed or migration_from != migration_target
     backup_required = backup_allowed and not (
-        offline_full_no_migration_update or offline_expand_update
+        offline_full_no_migration_update or offline_expand_update or cold_cutover
     )
     if (backup_required and not all(backup_pair)) or (
         not backup_allowed and all(backup_pair)
@@ -895,7 +901,10 @@ def create_manifest(
         "migration": {
             "from": migration_from,
             "target": migration_target,
-            "compatibility": ("none" if migration_from == migration_target else "expand"),
+            "compatibility": (
+                "cold_cutover" if cold_cutover
+                else "none" if migration_from == migration_target else "expand"
+            ),
         },
         "evidence": evidence,
     }
