@@ -37,6 +37,7 @@ from offline_image_archive import (  # noqa: E402
 from release_manifest import (  # noqa: E402
     OFFLINE_EXPAND_MIGRATIONS,
     OFFLINE_IMAGE_SOURCE,
+    ONE_TIME_COLD_CUTOVER,
     MigrationCompatibility,
     ReleaseManifest,
     ReleaseManifestError,
@@ -1389,6 +1390,9 @@ def _offline_full_update(manifest: ReleaseManifest) -> bool:
         (manifest.migration_from, manifest.migration_target)
         in OFFLINE_EXPAND_MIGRATIONS
         and manifest.migration_compatibility is MigrationCompatibility.EXPAND
+    ) or (
+        (manifest.migration_from, manifest.migration_target) == ONE_TIME_COLD_CUTOVER
+        and manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER
     )
     return (
         manifest.image_source == OFFLINE_IMAGE_SOURCE
@@ -6706,6 +6710,30 @@ class ReleaseManager:
         *,
         already_rolling_back: bool = False,
     ) -> None:
+        if manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER:
+            current = (
+                ReleaseState.ROLLING_BACK if already_rolling_back else ReleaseState.ACTIVATING
+            )
+            services = ("web", *_QUIESCE_SERVICES)
+            containment_ok = False
+            try:
+                store.record_intent("cold_cutover_stop", {"services": list(services)})
+                result = self.runner.run(self._compose() + ["stop", *services], cwd=self.root)
+                containment_ok = result.returncode == 0
+                store.record_observation("cold_cutover_stop", {"completed": containment_ok})
+            finally:
+                store.transition(
+                    current,
+                    ReleaseState.RECOVERY_REQUIRED,
+                    failure_step=failure.kind.value,
+                    failure_type=(
+                        "cold_cutover_operator_recovery"
+                        if containment_ok else "cold_cutover_containment_failed"
+                    ),
+                )
+            raise ReleaseManagerError(
+                "cold cutover stopped in recovery_required; no automatic rollback"
+            )
         if (
             manifest.image_source == OFFLINE_IMAGE_SOURCE
             and not _offline_full_update(manifest)
@@ -7099,6 +7127,17 @@ class ReleaseManager:
             raise ReleaseManagerError("failed release cannot be resumed")
         manifest = self._stored_manifest(store)
         self._validate_release_runtime_context(manifest)
+        if (
+            manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER
+            and state_value in {ReleaseState.ACTIVATING.value, ReleaseState.ROLLING_BACK.value}
+        ):
+            self._assert_production_topology(state)
+            self._compensate(
+                store,
+                manifest,
+                _ActivationStepError(ReleaseStepKind.VERIFY, ambiguous=True),
+                already_rolling_back=state_value == ReleaseState.ROLLING_BACK.value,
+            )
         if self.mode == "production":
             self._validate_git(manifest)
         if state_value == ReleaseState.STAGED.value:
@@ -7190,6 +7229,19 @@ class ReleaseManager:
             )
         manifest = self._stored_manifest(store)
         self._validate_release_runtime_context(manifest)
+        if manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER:
+            if state_value == ReleaseState.PREPARED.value:
+                store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
+            elif state_value not in {
+                ReleaseState.ACTIVATING.value, ReleaseState.ROLLING_BACK.value,
+            }:
+                raise ReleaseManagerError("release state is unknown")
+            self._compensate(
+                store,
+                manifest,
+                _ActivationStepError(ReleaseStepKind.VERIFY, ambiguous=True),
+                already_rolling_back=state_value == ReleaseState.ROLLING_BACK.value,
+            )
         if self.mode == "production":
             self._validate_git(manifest)
         if (

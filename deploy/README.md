@@ -1,5 +1,9 @@
 # 生产部署索引
 
+2026-09-10 获批的单次 0084→0116 四镜像停机升级使用 `cold_cutover`；其快照责任、证据要求
+和失败停机行为见 [维护入口的一次性例外](../MAINTENANCE.md#生产发布)。只对这一精确路径例外，
+不将其归为可自动补偿的 expand。
+
 > **V1 正式路径替代说明（优先于本文后续旧路径与示例）：**
 > V1 目标正常发布路径收口为 GitHub Release Gate 经受控桥接机同步至 Ops VM 的
 > 内部 Git 镜像、私有 Registry 和发布证据库，生产共同校验精确 commit 与
@@ -1213,7 +1217,7 @@ Docker unit 的固定 `journal` 事件只提供信号，外部采集/告警链�
 
 两个 keyring 的版本集合和 `active_version` 必须一致。先保留旧版本完成历史数据解密/查询验证，再按 DBA 变更单重加密；不得提前删除仍被记录引用的版本。替换文件后需滚动重启 API、workers 与 beat，禁止把 keyring 内容打印到日志或工单。
 
-`api_key_pepper_key` 是独立的第 26 件必选 secret，只挂 api。首次部署同样是 32 字节随机值的 base64 文本（v1）。轮换格式与数据 keyring 相同，但**禁止**复用 `data_hmac_key` 文件或派生 pepper。`app.api_key_hash_version` / `api_key_prev_hash_version` 记录摘要绑定的 pepper 版本；NULL 表示历史 SHA-256。轮换时必须保留仍被摘要引用的版本，否则 api 就绪检查失败关闭。数据 AES/HMAC 轮换不得改变 API Key 验证结果；API Key pepper 轮换使用独立变更单、审计和恢复路径。存量 `legacy_data_hmac_pepper_v1` 摘要另需条件性第 27 件 `api_key_legacy_hmac_pepper`：文件保存旧 `data_hmac_key` 原文，不是已派生 pepper；只挂 api，缺失且数据库仍有历史行时 readiness 失败关闭。
+`api_key_pepper_key` 是独立的第 26 件必选 secret，只挂 api。首次部署同样是 32 字节随机值的 base64 文本（v1）。轮换格式与数据 keyring 相同，但**禁止**复用 `data_hmac_key` 文件或派生 pepper。`app.api_key_hash_version` / `api_key_prev_hash_version` 记录摘要绑定的 pepper 版本；NULL version 不能单独判定历史算法：必须同时检查 algorithm 列，NULL+NULL 为未分类，不得默认为 SHA-256。轮换时必须保留仍被摘要引用的版本，否则 api 就绪检查失败关闭。数据 AES/HMAC 轮换不得改变 API Key 验证结果；API Key pepper 轮换使用独立变更单、审计和恢复路径。存量 `legacy_data_hmac_pepper_v1` 摘要另需条件性第 27 件 `api_key_legacy_hmac_pepper`：文件保存旧 `data_hmac_key` 原文，不是已派生 pepper；只挂 api，缺失且数据库仍有历史行时 readiness 失败关闭。
 
 ### Callback HTTPS、私有 CA 与可选 mTLS
 
