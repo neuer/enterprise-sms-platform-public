@@ -3390,7 +3390,7 @@ GRANT SELECT (batch_id, phone_count, submitted_at, vendor_code, status,
               uncertain_since, late_evidence_at)
     ON sms_chunk TO sms_metrics;
 GRANT SELECT (state, action, source_channel, confirmed_at, approved_at,
-               effect_error)
+               effect_error, effect_applied_at)
     ON sms_uncertain_resolution TO sms_metrics;
 GRANT SELECT (generation, recovered, created_at)
     ON sms_uncertain_child TO sms_metrics;
@@ -3408,7 +3408,7 @@ GRANT SELECT (kind, mismatched_dimensions, absolute_delta)
     ON usage_projection_drift TO sms_metrics;
 GRANT SELECT (lease_id, lease_expires_at)
     ON export_task TO sms_metrics;
-GRANT SELECT (queue, state, created_at)
+GRANT SELECT (queue, state, created_at, event_type, last_error, next_attempt_at)
     ON outbox_event TO sms_metrics;
 GRANT SELECT (outcome, created_at)
     ON sms_vendor_attempt TO sms_metrics;

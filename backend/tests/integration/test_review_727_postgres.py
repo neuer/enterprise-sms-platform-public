@@ -762,3 +762,25 @@ async def test_migration_0117_downgrade_preserves_acceptance_evidence(
                 await transaction.rollback()
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_metrics_scrape_uses_only_granted_runtime_columns() -> None:
+    from app.services.metrics_repository import SqlMetricsRepository
+
+    engine = create_async_engine(make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"]))
+
+    @asynccontextmanager
+    async def metrics_connection():
+        async with engine.connect() as connection:
+            await connection.execute(text("SET ROLE sms_metrics"))
+            assert await connection.scalar(text("SELECT current_user")) == "sms_metrics"
+            yield connection
+
+    repository = SqlMetricsRepository()
+    repository._engine = lambda: SimpleNamespace(connect=metrics_connection)  # type: ignore[method-assign]
+    try:
+        facts = await repository.load()
+        assert facts.uncertain >= 0
+    finally:
+        await engine.dispose()

@@ -9,6 +9,10 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("GRANT SELECT (effect_applied_at) ON sms_uncertain_resolution TO sms_metrics")
+    op.execute(
+        "GRANT SELECT (event_type,last_error,next_attempt_at) ON outbox_event TO sms_metrics"
+    )
     op.execute("""
 ALTER TABLE vendor_test_operation
   ADD COLUMN IF NOT EXISTS acceptance_reference_required BOOLEAN NOT NULL DEFAULT false,
@@ -65,3 +69,7 @@ ALTER TABLE vendor_test_operation
   DROP COLUMN IF EXISTS acceptance_app_id;
     """)
     op.execute("DELETE FROM sys_config WHERE key='security_daily_recipient_set_digest'")
+    op.execute("REVOKE SELECT (effect_applied_at) ON sms_uncertain_resolution FROM sms_metrics")
+    op.execute(
+        "REVOKE SELECT (event_type,last_error,next_attempt_at) ON outbox_event FROM sms_metrics"
+    )

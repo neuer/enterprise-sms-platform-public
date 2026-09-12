@@ -1062,6 +1062,12 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
            AND has_column_privilege('sms_metrics','sms_chunk','status','SELECT')
            AND has_column_privilege('sms_metrics','outbox_event','queue','SELECT')
            AND has_column_privilege('sms_metrics','outbox_event','state','SELECT')
+           AND has_column_privilege('sms_metrics','outbox_event','event_type','SELECT')
+           AND has_column_privilege('sms_metrics','outbox_event','last_error','SELECT')
+           AND has_column_privilege('sms_metrics','outbox_event','next_attempt_at','SELECT')
+           AND has_column_privilege(
+             'sms_metrics','sms_uncertain_resolution','effect_applied_at','SELECT'
+           )
            AND has_column_privilege(
              'sms_metrics','callback_task','lease_expires_at','SELECT'
            )
