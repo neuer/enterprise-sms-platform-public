@@ -301,22 +301,34 @@ def test_role_update_uses_account_id_from_login_response() -> None:
                     },
                 },
             ),
+            HttpResponse(200, {"token": "role-grant"}),
             HttpResponse(200, {}),
         ]
     )
-    suite = UatSuite(http, None, {})
+    suite = UatSuite(http, None, {}, mock_password="synthetic-password")
     suite._tokens["admin01"] = "admin-token"
 
     suite.login("operator01")
     suite._set_role("approver", True)
 
-    assert http.calls[1][0][:2] == (
+    assert http.calls[2][0][:2] == (
         "PUT",
         "/api/v1/web/admin/users/42/role",
     )
-    assert http.calls[1][1]["payload"] == {
+    assert http.calls[2][1]["payload"] == {
         "role": "approver",
         "role_override": True,
+    }
+
+
+    assert http.calls[1][0][:2] == ("POST", "/api/v1/web/admin/step-up")
+    assert http.calls[1][1]["payload"] == {
+        "operation": "user_role_change", "target_id": "42",
+        "parameters": {"role": "approver", "role_override": True},
+        "password": "synthetic-password",
+    }
+    assert http.calls[2][1]["headers"] == {
+        "Authorization": "Bearer admin-token", "X-Admin-Step-Up": "role-grant",
     }
 
 
@@ -613,3 +625,19 @@ def test_force_resume_cleanup_verifies_pause_codes_are_cleared() -> None:
     failed._tokens["admin01"] = "safe-token"
     with pytest.raises(UatFailure, match="queue pause cleanup failed"):
         failed._force_resume_and_verify_unpaused("16")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [HttpResponse(401, {"code": "STEP_UP_REQUIRED"}), HttpResponse(200, {})],
+)
+def test_role_uat_does_not_write_without_reauthentication_grant(response: HttpResponse) -> None:
+    http = FakeHttp([response])
+    suite = UatSuite(http, None, {}, mock_password="synthetic-password")
+    suite._tokens["admin01"] = "admin-token"
+    suite._account_ids["operator01"] = 42
+    with pytest.raises(UatFailure) as failure:
+        suite._set_role("approver", True)
+    assert "synthetic-password" not in str(failure.value)
+    assert len(http.calls) == 1
+    assert http.calls[0][0][:2] == ("POST", "/api/v1/web/admin/step-up")

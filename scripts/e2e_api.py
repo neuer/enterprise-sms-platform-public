@@ -619,12 +619,29 @@ class UatSuite:
             account_id = self._account_ids.get("operator01")
         if account_id is None:
             raise UatFailure("UAT operator account id is unavailable")
+        parameters = {"role": role, "role_override": role_override}
+        headers = self._bearer("admin01")
+        grant_response = self._request(
+            self.api,
+            "POST",
+            "/api/v1/web/admin/step-up",
+            payload={
+                "operation": "user_role_change",
+                "target_id": str(account_id),
+                "parameters": parameters,
+                "password": self.mock_password,
+            },
+            headers=headers,
+        )
+        grant = self._expect("11", grant_response, 200).get("token")
+        if not isinstance(grant, str) or not grant:
+            raise UatFailure("UAT role reauthentication omitted authorization")
         response = self._request(
             self.api,
             "PUT",
             f"/api/v1/web/admin/users/{account_id}/role",
-            payload={"role": role, "role_override": role_override},
-            headers=self._bearer("admin01"),
+            payload=parameters,
+            headers={**headers, "X-Admin-Step-Up": grant},
         )
         if response.status != 200:
             raise UatFailure(f"UAT role update failed HTTP {response.status}")
