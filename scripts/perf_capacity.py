@@ -162,16 +162,33 @@ def _sha(value: object, *, digest: bool = False) -> bool:
     )
 
 
-def _safe_payload(payload: Mapping[str, object]) -> None:
-    """递归排除敏感字段；报告只接受聚合数字与声明的来源信息。"""
+def _safe_payload(
+    payload: Mapping[str, object], *, path: tuple[str, ...] = (),
+) -> None:
+    """递归排除敏感字段；仅已声明且格式合法的摘要不按手机号扫描。"""
 
-    if PHONE_RE.search(json.dumps(payload, ensure_ascii=False)):
-        raise CapacityGateFailure("capacity report contains a phone number")
+    commit_paths = {
+        ("commit",), ("reporter_commit",),
+        ("measurement", "commit"), ("measurement", "collector_commit"),
+    }
     for key, value in payload.items():
         if key in FORBIDDEN_REPORT_KEYS:
             raise CapacityGateFailure("capacity report contains a forbidden key")
+        if PHONE_RE.search(key):
+            raise CapacityGateFailure("capacity report contains a phone number")
+        field_path = (*path, key)
         if isinstance(value, dict):
-            _safe_payload(value)
+            _safe_payload(value, path=field_path)
+            continue
+        if field_path in commit_paths and _sha(value):
+            continue
+        if (
+            field_path == ("measurement", "config_sha256")
+            or path in {("image_digests",), ("measurement", "image_digests")}
+        ) and _sha(value, digest=True):
+            continue
+        if PHONE_RE.search(json.dumps(value, ensure_ascii=False)):
+            raise CapacityGateFailure("capacity report contains a phone number")
 
 
 def validate_report_payload(payload: Mapping[str, Any]) -> None:
