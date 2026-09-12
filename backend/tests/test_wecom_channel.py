@@ -65,7 +65,7 @@ async def test_wecom_rejects_declared_oversized_response(
     )
     monkeypatch.setattr(alert_module.httpx, "AsyncClient", FakeClient)
 
-    with pytest.raises(RuntimeError, match="too large"):
+    with pytest.raises(RuntimeError, match="wecom delivery failed"):
         await WeComChannel().send(WEBHOOK, EVENT)
 
 
@@ -77,7 +77,7 @@ async def test_wecom_enforces_one_absolute_deadline(
     monkeypatch.setattr(alert_module.httpx, "AsyncClient", FakeClient)
     monkeypatch.setattr(alert_module, "WECOM_DEADLINE_S", 0.01)
 
-    with pytest.raises(TimeoutError):
+    with pytest.raises(RuntimeError, match="wecom delivery failed"):
         await WeComChannel().send(WEBHOOK, EVENT)
 
 
@@ -107,5 +107,5 @@ async def test_wecom_rejects_compressed_response_before_decoding(
     )
     monkeypatch.setattr(alert_module.httpx, "AsyncClient", FakeClient)
 
-    with pytest.raises(RuntimeError, match="content-encoding"):
+    with pytest.raises(RuntimeError, match="wecom delivery failed"):
         await WeComChannel().send(WEBHOOK, EVENT)

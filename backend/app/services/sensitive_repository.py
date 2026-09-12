@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine
+from app.core.sensitive_text import reject_phone_in_text
 from app.services.sensitive import (
     SENSITIVE_WORD_REVISION_KEY,
     SensitiveWord,
@@ -91,6 +92,8 @@ class SqlSensitiveWordRepository:
             await engine.dispose()
 
     async def add_many(self, words: list[str], *, actor: str) -> SensitiveWordAddResult:
+        for word in words:
+            reject_phone_in_text(word, field_name="敏感词")
         engine = self._engine()
         try:
             async with engine.begin() as connection:

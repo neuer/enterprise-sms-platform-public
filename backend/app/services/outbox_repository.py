@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -14,6 +15,8 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import current_correlation_id
 from app.core.runtime_resources import database_engine
 from app.services.outbox import (
+    OUTBOX_CAPACITY_ACTIVE_SQL,
+    OUTBOX_CAPACITY_AGE_SQL,
     OutboxClaim,
     OutboxContractConflict,
     OutboxEventPage,
@@ -350,6 +353,24 @@ class SqlOutboxRepository:
             lease_id=lease_id,
         )
 
+    async def defer_execution(
+        self, event_id: UUID, lease_id: UUID, next_attempt_at: datetime,
+    ) -> None:
+        """仅推迟尚未外呼的 chunk 事件，使用执行租约 CAS，日历等待不计失败。"""
+
+        await self._lease_update(
+            """
+            UPDATE outbox_event SET state='pending',
+              attempts=GREATEST(0,attempts-1),next_attempt_at=:next_attempt_at,
+              last_error='MarketWindowDeferred',
+              lease_id=NULL,lease_expires_at=NULL,updated_at=now()
+            WHERE id=:event_id AND state='processing' AND lease_id=:lease_id
+              AND lease_expires_at>now() AND event_type='chunk.ready'
+            """,
+            event_id=event_id, lease_id=lease_id,
+            params={"next_attempt_at": next_attempt_at},
+        )
+
     async def fail_execution(
         self,
         event_id: UUID,
@@ -376,7 +397,7 @@ class SqlOutboxRepository:
                 (
                     await connection.execute(
                         text(
-                            """
+                            f"""
                         SELECT
                           count(*) FILTER (
                             WHERE state IN ('pending','leased')
@@ -390,7 +411,8 @@ class SqlOutboxRepository:
                           )
                             failed_attempts,
                           COALESCE(EXTRACT(epoch FROM (
-                            now()-min(created_at) FILTER (WHERE state<>'completed')
+                            now()-min({OUTBOX_CAPACITY_AGE_SQL})
+                              FILTER (WHERE {OUTBOX_CAPACITY_ACTIVE_SQL})
                           ))::integer,0) oldest_age_seconds
                         FROM outbox_event
                         """

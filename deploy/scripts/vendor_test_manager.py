@@ -117,7 +117,9 @@ class PauseOperations(Protocol):
 
     def probe_balance(self) -> BalanceProbe: ...
 
-    def clear_pause(self, pause_kind: str) -> None: ...
+    def pause_snapshot(self) -> tuple[str, ...]: ...
+
+    def clear_pause(self, pause_kind: str, snapshot: tuple[str, ...]) -> None: ...
 
 
 class RotationOperations(ActivationOperations, Protocol):
@@ -588,15 +590,22 @@ asyncio.run(probe())
             self._delete_owned_pause(lane)
 
     def hold_fail_closed(self) -> None:
-        for lane in ("realtime", "bulk"):
-            with contextlib.suppress(Exception):
-                self._redis(
-                    "SET",
-                    f"queue:paused:vendor-test-rotation-failed:{lane}",
-                    _ROTATION_FAILURE_VALUE,
-                )
-            with contextlib.suppress(Exception):
-                self._redis("SET", f"queue:paused:{lane}", _PAUSE_VALUE, "NX")
+        # 同值 critical 再次出现也必须改变代次，且代次与暂停事实原子写入。
+        with contextlib.suppress(Exception):
+            self._redis(
+                "EVAL",
+                "redis.call('INCR',KEYS[1]); "
+                "for i=2,3 do redis.call('SET',KEYS[i],ARGV[1]) end; "
+                "for i=4,5 do redis.call('SET',KEYS[i],ARGV[2],'NX') end; return 1",
+                "5",
+                "ratelimit:queue:pause-generation",
+                "queue:paused:vendor-test-rotation-failed:realtime",
+                "queue:paused:vendor-test-rotation-failed:bulk",
+                "queue:paused:realtime",
+                "queue:paused:bulk",
+                _ROTATION_FAILURE_VALUE,
+                _PAUSE_VALUE,
+            )
         with contextlib.suppress(Exception):
             self.stop_senders()
 
@@ -635,6 +644,7 @@ asyncio.run(probe())
         script = (
             "local a=redis.call('get',KEYS[1]); local b=redis.call('get',KEYS[2]); "
             "if (a and a~=ARGV[1]) or (b and b~=ARGV[1]) then return 0 end; "
+            "redis.call('incr','ratelimit:queue:pause-generation'); "
             "redis.call('set',KEYS[1],ARGV[1]); redis.call('set',KEYS[2],ARGV[1]); "
             "return 1"
         )
@@ -649,46 +659,67 @@ asyncio.run(probe())
         if result != "1":
             raise VendorTestActivationError("critical pause must be preserved")
 
-    def clear_pause(self, pause_kind: str) -> None:
-        if pause_kind == "manual":
-            script = (
-                "if redis.call('get',KEYS[1])~=ARGV[1] or "
-                "redis.call('get',KEYS[2])~=ARGV[1] then return 0 end; "
-                "redis.call('del',KEYS[1]); redis.call('del',KEYS[2]); return 1"
-            )
-            result = self._redis(
-                "EVAL",
-                script,
-                "2",
-                "queue:paused:realtime",
-                "queue:paused:bulk",
-                _MANUAL_PAUSE_VALUE,
-            )
-        elif pause_kind == "critical":
-            script = (
-                "local a=redis.call('get',KEYS[1]); local b=redis.call('get',KEYS[2]); "
-                "local critical=false; "
-                "if (a and a~=ARGV[1]) or (b and b~=ARGV[1]) then critical=true end; "
-                "for i=3,6 do if redis.call('exists',KEYS[i])==1 then "
-                "critical=true end end; if not critical then return 0 end; "
-                "if a and a~=ARGV[1] then redis.call('del',KEYS[1]) end; "
-                "if b and b~=ARGV[1] then redis.call('del',KEYS[2]) end; "
-                "for i=3,6 do redis.call('del',KEYS[i]) end; return 1"
-            )
-            result = self._redis(
-                "EVAL",
-                script,
-                "6",
-                "queue:paused:realtime",
-                "queue:paused:bulk",
-                "queue:paused:vendor-test-agent-stale:realtime",
-                "queue:paused:vendor-test-agent-stale:bulk",
-                "queue:paused:vendor-test-rotation-failed:realtime",
-                "queue:paused:vendor-test-rotation-failed:bulk",
-                _MANUAL_PAUSE_VALUE,
-            )
-        else:
-            raise VendorTestActivationError("pause kind is invalid")
+    def pause_snapshot(self) -> tuple[str, ...]:
+        """读取完整暂停事实，供外部探针后的原子比较使用。"""
+
+        keys = self._resume_pause_keys()
+        raw = self._redis(
+            "EVAL",
+            "local a={} for i,k in ipairs(KEYS) do "
+            "a[i]=redis.call('GET',k) or '' end return cjson.encode(a)",
+            str(len(keys)),
+            *keys,
+        )
+        values = json.loads(raw)
+        if (
+            not isinstance(values, list)
+            or len(values) != len(keys)
+            or any(not isinstance(v, str) for v in values)
+        ):
+            raise VendorTestActivationError("pause snapshot unavailable")
+        return tuple(values)
+
+    @staticmethod
+    def _resume_pause_keys() -> tuple[str, ...]:
+        return (
+            "queue:paused:realtime",
+            "queue:paused:bulk",
+            "queue:paused:vendor-test-agent-stale:realtime",
+            "queue:paused:vendor-test-agent-stale:bulk",
+            "queue:paused:vendor-test-rotation-failed:realtime",
+            "queue:paused:vendor-test-rotation-failed:bulk",
+            "queue:paused:vendor-test-daily:realtime",
+            "queue:paused:vendor-test-daily:bulk",
+            "ratelimit:queue:pause-generation",
+        )
+
+    def clear_pause(self, pause_kind: str, snapshot: tuple[str, ...]) -> None:
+        if pause_kind not in {"manual", "critical"} or len(snapshot) != 9:
+            raise VendorTestActivationError("invalid pause authorization")
+        script = """
+        for i,k in ipairs(KEYS) do
+          if (redis.call('GET',k) or '')~=ARGV[i] then return 0 end
+        end
+        if ARGV[10]=='manual' then
+          if ARGV[1]~=ARGV[11] or ARGV[2]~=ARGV[11] then return 0 end
+          redis.call('DEL',KEYS[1],KEYS[2])
+        else
+          for i=1,2 do
+            if ARGV[i]~=ARGV[11] then redis.call('DEL',KEYS[i]) end
+          end
+          for i=3,6 do redis.call('DEL',KEYS[i]) end
+        end
+        return 1
+        """
+        result = self._redis(
+            "EVAL",
+            script,
+            "9",
+            *self._resume_pause_keys(),
+            *snapshot,
+            pause_kind,
+            _MANUAL_PAUSE_VALUE,
+        )
         if result != "1":
             raise VendorTestActivationError("pause state changed during resume")
 
@@ -958,16 +989,19 @@ class VendorTestPauseManager:
             raise VendorTestActivationError(f"{current} pause must be preserved")
         return PauseResult("paused", "manual")
 
-    def resume(self) -> PauseResult:
+    def resume(self, expected_pause_kind: str | None = None) -> PauseResult:
         self.operations.require_lifecycle_lock()
+        snapshot = self.operations.pause_snapshot()
         current = self.operations.current_pause_kind()
+        if expected_pause_kind is not None and current != expected_pause_kind:
+            raise VendorTestActivationError("pause authorization changed")
         if current is None:
             raise VendorTestActivationError("environment is not paused")
         if current == "daily":
             raise VendorTestActivationError("daily pause cannot be cleared manually")
         if current == "critical":
             _probe_evidence(self.operations.probe_balance())
-        self.operations.clear_pause(current)
+        self.operations.clear_pause(current, snapshot)
         return PauseResult("resumed", current)
 
 
@@ -1105,6 +1139,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "status",
         ),
     )
+    parser.add_argument("--expected-pause-kind", choices=("manual", "critical"))
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--runtime-root", required=True, type=Path)
     parser.add_argument("--state-dir", required=True, type=Path)
@@ -1304,7 +1339,9 @@ def main(argv: list[str] | None = None) -> int:
         if arguments.command == "resume":
             if marker is None:
                 raise VendorTestActivationError("marker is unavailable")
-            resume_result = VendorTestPauseManager(operations).resume()
+            resume_result = VendorTestPauseManager(operations).resume(
+                arguments.expected_pause_kind
+            )
             print(
                 json.dumps(
                     {

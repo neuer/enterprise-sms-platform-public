@@ -33,17 +33,8 @@ export interface CurrentAlertSnapshot {
   unknown_sources: string[]
   items: CurrentAlertItem[]
 }
-export type RawCaptureState = "complete" | "complete_too_large" | "truncated"
-export interface RawLogItem {
-  id: number
-  source: "report" | "reply"
-  item_count: number
-  custom_id_count: number
-  processed: boolean
-  error: string | null
-  fetched_at: string
-  capture_state: RawCaptureState
-}
+export type RawLogItem = import("./types.gen").components["schemas"]["RawLogModel"]
+export type RawCaptureState = RawLogItem["capture_state"]
 export type UncertainResolutionAction =
   "confirm_accepted" | "confirm_not_accepted" | "keep_unknown" | "resend_new_batch"
 

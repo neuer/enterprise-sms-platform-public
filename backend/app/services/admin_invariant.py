@@ -34,6 +34,15 @@ async def ensure_effective_admin(connection: Any) -> None:
               AND ai.status=1
               AND ap.enabled=TRUE
               AND (
+                ap.kind='local' OR (
+                  SELECT count(DISTINCT btrim(erm.dept))
+                  FROM external_role_mapping erm
+                  WHERE erm.provider_id=ap.id
+                    AND erm.external_group=ANY(ai.source_groups)
+                    AND NULLIF(btrim(erm.dept),'') IS NOT NULL
+                )=1
+              )
+              AND (
                 (ua.role_override=TRUE AND ua.role='admin')
                 OR (
                   ua.role_override=FALSE

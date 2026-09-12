@@ -86,7 +86,9 @@ class UnsupportedAgentOperation(ValueError):
 
 
 class WrapperRunner(Protocol):
-    def run(self, operation: str) -> WrapperResult: ...
+    def run(
+        self, operation: str, *, expected_pause_kind: str | None = None
+    ) -> WrapperResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,10 +261,18 @@ class FixedWrapperRunner:
             },
         )
 
-    def run(self, operation: str) -> WrapperResult:
+    def run(
+        self, operation: str, *, expected_pause_kind: str | None = None
+    ) -> WrapperResult:
         if operation not in _FIXED_WRAPPER_OPERATIONS:
             raise UnsupportedAgentOperation("不支持的控制操作")
         command = [WRAPPER, "vendor-test", operation]
+        if operation == "resume":
+            if expected_pause_kind not in {"manual", "critical"}:
+                raise UnsupportedAgentOperation("恢复操作缺少暂停授权范围")
+            command.extend(["--expected-pause-kind", expected_pause_kind])
+        elif expected_pause_kind is not None:
+            raise UnsupportedAgentOperation("非恢复操作不得携带暂停授权范围")
         if operation == "reset-runtime":
             command = [
                 sys.executable,
@@ -765,7 +775,13 @@ class VendorControlAgent:
                     "PAUSE_KIND_MISMATCH",
                     {},
                 )
-            result = self.runner.run(operation)
+            result = (
+                self.runner.run(
+                    operation, expected_pause_kind=request.body["pause_kind"]
+                )
+                if operation == "resume"
+                else self.runner.run(operation)
+            )
             if result.returncode != 0:
                 return ControlResponse(
                     request.operation_id,

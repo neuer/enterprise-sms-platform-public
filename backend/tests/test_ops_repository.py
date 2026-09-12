@@ -139,7 +139,7 @@ async def test_raw_replay_claim_is_atomic_and_reclaims_only_stale_leases() -> No
     )
 
     assert hasattr(repo, "claim_raw_for_replay")
-    claim = await repo.claim_raw_for_replay(9)
+    claim = await repo.claim_raw_for_replay(9, allow_manual=False)
 
     assert claim is not None and claim.claimed is True
     assert claim.record.id == 9
@@ -148,8 +148,8 @@ async def test_raw_replay_claim_is_atomic_and_reclaims_only_stale_leases() -> No
     assert "UPDATE raw_vendor_log" in normalized_sql
     assert "processing_started_at=now()" in normalized_sql
     assert "processed=false" in normalized_sql
-    assert "capture_state IN ('complete','complete_too_large')" in normalized_sql
-    assert "replay_eligibility IN ('automatic', 'manual')" in normalized_sql
+    assert "capture_state IN ('complete')" in normalized_sql
+    assert "replay_eligibility IN ('automatic')" in normalized_sql
     assert "processing_lease_id" in normalized_sql
     assert "processing_lease_epoch=processing_lease_epoch+1" in normalized_sql
     assert "processing_lease_expires_at" in normalized_sql
@@ -304,7 +304,7 @@ async def test_human_raw_replay_audit_binds_live_principal_before_insert(
         "app.services.ops_repository.bind_connection_audit_subject",
         fake_bind,
     )
-    repo, connection = repository([FakeResult()])
+    repo, connection = repository([FakeResult(scalar=42), FakeResult()])
     principal = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 
     with correlation_scope():
@@ -326,7 +326,7 @@ async def test_human_raw_replay_audit_binds_live_principal_before_insert(
             "identity_id": 10,
         }
     ]
-    sql, params = connection.calls[0]
+    sql, params = connection.calls[1]
     assert "INSERT INTO audit_log" in sql
     assert "actor_subject_kind" in sql
     assert "actor_account_id" in sql
@@ -338,7 +338,9 @@ async def test_human_raw_replay_audit_binds_live_principal_before_insert(
     assert params["account_id"] == 1
     assert params["identity_id"] == 10
     assert params["actor"] == "admin01"
-    assert json.loads(str(params["after"])) == {"source": "report", "items": 1}
+    assert json.loads(str(params["after"])) == {
+        "source": "report", "items": 1, "intent_audit_id": 42
+    }
 
 
 @pytest.mark.asyncio

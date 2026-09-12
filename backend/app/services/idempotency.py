@@ -11,6 +11,7 @@ from time import monotonic
 from typing import Any, Protocol
 from uuid import uuid4
 
+from app.core.sensitive_text import reject_phone_business_id
 from app.services.app_ratelimit import ControlPlaneUnavailable
 
 IDEMPOTENCY_TTL_S = 86400  # Redis 快速索引 TTL；DB 事实源按 scheduled_at+安全窗口延长
@@ -252,6 +253,7 @@ class IdempotencyCoordinator:
 
     @staticmethod
     def key(scope: IdempotencyScope, biz_id: str) -> str:
+        reject_phone_business_id(biz_id, field_name="biz_id")
         if not biz_id or len(biz_id) > 32:
             raise ValueError("biz_id length must be 1..32")
         return f"idem:{scope.key}:{biz_id}"

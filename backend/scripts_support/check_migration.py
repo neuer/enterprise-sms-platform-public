@@ -370,7 +370,15 @@ def verify_audit_payload_guard(container: str, database: str) -> None:
         DECLARE
           payload jsonb;
           blocked boolean;
+          violated_constraint text;
         BEGIN
+          PERFORM set_config('sms.audit_subject_kind','system',true);
+          PERFORM set_config('sms.audit_actor_name','migration-guard',true);
+          PERFORM set_config('sms.audit_producer_domain','api',true);
+          PERFORM set_config('sms.audit_action','payload_guard_probe',true);
+          PERFORM set_config('sms.correlation_id','e4b0872f-f81b-419b-8d74-0c390e8c7ca1',true);
+          INSERT INTO audit_log(actor,actor_subject_kind,action,after_val)
+          VALUES ('migration-guard','system','payload_guard_probe','{"count":1}'::jsonb);
           FOREACH payload IN ARRAY ARRAY[
             '{"phone":"13800138000"}'::jsonb,
             '{"phone_enc":["ciphertext"]}'::jsonb,
@@ -381,14 +389,17 @@ def verify_audit_payload_guard(container: str, database: str) -> None:
           ] LOOP
             blocked := false;
             BEGIN
-              INSERT INTO audit_log(actor,action,after_val)
-              VALUES ('migration-guard','payload_guard_probe',payload);
+              INSERT INTO audit_log(actor,actor_subject_kind,action,after_val)
+              VALUES ('migration-guard','system','payload_guard_probe',payload);
             EXCEPTION WHEN check_violation THEN
+              GET STACKED DIAGNOSTICS violated_constraint = CONSTRAINT_NAME;
+              IF violated_constraint IS DISTINCT FROM 'ck_audit_payload_no_pii' THEN
+                RAISE EXCEPTION 'audit probe rejected by unexpected constraint';
+              END IF;
               blocked := true;
             END;
             IF NOT blocked THEN
-              RAISE EXCEPTION 'audit payload guard accepted forbidden value: %',
-                payload;
+              RAISE EXCEPTION 'audit payload guard accepted forbidden payload';
             END IF;
           END LOOP;
         END
@@ -1615,9 +1626,10 @@ def run_check() -> None:
             password_engine = create_async_engine(database_url, hide_parameters=True)
             async with password_engine.connect() as connection:
                 password_row = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             SELECT lc.password_hash,ua.security_version,
                               al.actor_account_id,al.actor_identity_id,al.correlation_id
                             FROM local_credential lc
@@ -1628,9 +1640,10 @@ def run_check() -> None:
                             WHERE lc.identity_id=:identity_id
                             ORDER BY al.id DESC LIMIT 1
                             """
-                        ),
-                        {"identity_id": principals[0].identity_id},
-                    )
+                            ),
+                            {"identity_id": principals[0].identity_id},
+                        )
+
                 ).mappings().one()
             await password_engine.dispose()
             if (
@@ -1693,9 +1706,10 @@ def run_check() -> None:
             audit_engine = create_async_engine(database_url, hide_parameters=True)
             async with audit_engine.connect() as connection:
                 attributed = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             SELECT actor,actor_subject_kind,actor_account_id,
                               actor_identity_id,correlation_id
                             FROM audit_log
@@ -1703,8 +1717,9 @@ def run_check() -> None:
                               AND after_val->>'count'='1'
                             ORDER BY id DESC LIMIT 1
                             """
+                            )
                         )
-                    )
+
                 ).mappings().one()
             if (
                 attributed["actor"] != principals[0].login_name

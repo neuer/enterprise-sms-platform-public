@@ -16,8 +16,6 @@ class StatsRepository(Protocol):
 
     async def list_dirty_dates(self) -> tuple[date, ...]: ...
 
-    async def clear_dirty_date(self, stat_date: date) -> None: ...
-
 
 def success_rate(delivered: int, failed: int) -> float:
     """按 delivered/(delivered+failed) 计算，unknown/other 不进入分母。"""
@@ -60,7 +58,5 @@ class StatsAggregationService:
         # 晚到回执/超时过期标记的脏日：先重算成功再清除标记，聚合失败时
         # 标记保留给下一轮，统计不会永久偏离事实（#342）。
         for stat_date in await self.repository.list_dirty_dates():
-            if stat_date not in recent:
-                total += await self.repository.aggregate_day(stat_date)
-            await self.repository.clear_dirty_date(stat_date)
+            total += await self.repository.aggregate_day(stat_date)
         return total

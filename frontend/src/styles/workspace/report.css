@@ -58,6 +58,9 @@
 /* 周期/维度 seg 已并入 FilterSeg 单点（shared.css）。 */
 
 .report-pill-select {
+  --el-select-width: 118px;
+  min-width: 118px;
+  flex-shrink: 0;
   width: 118px;
 }
 

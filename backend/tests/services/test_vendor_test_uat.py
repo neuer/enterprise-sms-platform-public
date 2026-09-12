@@ -148,7 +148,7 @@ class FakeOperations:
             return True
         return await self.heartbeat_ticks.get()
 
-    async def prepare_uat_acceptance(self, operation_id: str) -> bool:
+    async def prepare_uat_acceptance(self, operation_id: str, *, biz_id: str, app_id: int) -> bool:
         self.events.append(("prepare_uat_acceptance", operation_id))
         return True
 
@@ -963,7 +963,9 @@ async def test_expired_operation_cannot_accept_after_waiting_for_guard() -> None
             finally:
                 self.events.append(("acceptance_guard_exit", operation_id))
 
-        async def prepare_uat_acceptance(self, operation_id: str) -> bool:
+        async def prepare_uat_acceptance(
+            self, operation_id: str, *, biz_id: str, app_id: int
+        ) -> bool:
             self.events.append(("prepare_uat_acceptance", operation_id))
             return False
 

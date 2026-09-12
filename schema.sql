@@ -1,6 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.102  2026-09-08
+-- v1.6.103  2026-09-12
+-- v1.6.103：UAT 受理关联与自动日报非敏感发信配置投影。
 -- v1.6.102：分片未受理确认事实绑定处置代次，旧事实保守保留待核验。
 -- v1.6.101：幂等结果到期证明与生命周期批次锁。
 -- v1.6.100：内部发送的应用 SELECT 限于业务策略列，排除 API Key 认证材料。
@@ -1358,6 +1359,14 @@ CREATE TABLE vendor_test_operation (
     safe_code      VARCHAR(64),
     vendor_code    INTEGER CHECK (vendor_code BETWEEN 1 AND 99999),
     batch_no       VARCHAR(64),
+    acceptance_reference_required BOOLEAN NOT NULL DEFAULT true,
+    acceptance_biz_id VARCHAR(32),
+    acceptance_app_id BIGINT REFERENCES app(id) ON DELETE RESTRICT,
+    CONSTRAINT ck_vendor_test_acceptance_reference CHECK (
+      (acceptance_biz_id IS NULL AND acceptance_app_id IS NULL)
+      OR (operation_type='uat_send' AND acceptance_biz_id IS NOT NULL
+          AND length(acceptance_biz_id)>0 AND acceptance_app_id IS NOT NULL)
+    ),
     checkpoint_id  VARCHAR(128),
     lease_expires_at TIMESTAMPTZ,
     requested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -2723,6 +2732,7 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 ('security_daily_enabled','false','bool','服务器安全日报生成与手动投递开关'),
 ('security_daily_recipient_count','0','int','独立 mailer 当前收件人数，仅保存数量'),
 ('security_daily_resend_configured','false','bool','独立 mailer Resend Key 与收件人配置状态'),
+('security_daily_recipient_set_digest','e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855','str','安全日报收件集合不可逆摘要'),
 ('security_daily_config_version','1','int','安全日报发信配置单调版本'),
 ('security_daily_config_publish_state','file_committed','str','安全日报配置发布状态'),
 ('security_daily_config_file_version','1','int','安全日报已发布到 mailer 文件的配置版本'),

@@ -250,7 +250,9 @@ async function revealPhone(messageId: number): Promise<string> {
 }
 
 const canScheduleOps = computed(() => canWrite.value && selected.value?.status === "scheduled")
-const canResendFailed = computed(() => canWrite.value && (selected.value?.failed ?? 0) > 0)
+const canResendFailed = computed(
+  () => canWrite.value && selected.value?.channel === "web" && (selected.value?.failed ?? 0) > 0,
+)
 
 async function cancelSelected(): Promise<void> {
   if (!selected.value || !canScheduleOps.value) return
@@ -623,8 +625,8 @@ watch(moreOpen, (open) => {
           >重发失败（{{ selected.failed.toLocaleString() }}）</el-button
         >
         <p class="batch-actions-why"
-          >取消 / 改期仅「已排期」批次可用（服务端 409
-          为最终裁决）；重发失败将生成新批次并完整重走频控、审批与时间窗。</p
+          >取消 / 改期仅「已排期」批次可用（服务端 409 为最终裁决）；API 批次须通过所属应用 API 重发。Web
+          批次重发失败将生成新批次并完整重走频控、审批与时间窗。</p
         >
       </div>
 

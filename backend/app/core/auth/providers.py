@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Protocol
 
 from app.core.auth.backends import (
@@ -101,12 +102,13 @@ class AuthProviderRegistry:
         if record.kind != "local" and record.active_config is None:
             raise ProviderDisabled("认证源未激活")
         handler = self._handler(record.kind)
-        return await handler.authenticate(
+        identity = await handler.authenticate(
             record,
             login_name,
             password,
             purpose=purpose,
         )
+        return replace(identity, provider_id=record.id, provider_version=record.active_version)
 
 
 class LocalProviderKind:

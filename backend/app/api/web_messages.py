@@ -26,6 +26,7 @@ from app.core.client_ip import trusted_client_ip
 from app.core.correlation import correlation_headers
 from app.core.errors import ApiError
 from app.core.runtime_resources import redis_client
+from app.core.sensitive_text import reject_phone_business_id
 from app.services.batch_query import BatchAccessScope, BatchQueryService
 from app.services.billing_preview import (
     BillingPreview,
@@ -144,6 +145,7 @@ class WebSendRequest(WebContentModel):
 
     @model_validator(mode="after")
     def recipient_source(self) -> WebSendRequest:
+        reject_phone_business_id(self.biz_id, field_name="biz_id")
         if (self.mobiles is None) == (self.import_id is None):
             raise ValueError("mobiles 与 import_id 必须且只能提供一个")
         return self

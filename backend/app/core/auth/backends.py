@@ -50,6 +50,8 @@ class AuthenticatedIdentity:
     development_role: DevelopmentRole | None = None
     account: PlatformAccount | None = None
     admission: AdmissionReservation | None = field(default=None, repr=False, compare=False)
+    provider_id: int | None = None
+    provider_version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

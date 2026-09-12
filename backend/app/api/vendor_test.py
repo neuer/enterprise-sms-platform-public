@@ -34,7 +34,7 @@ from app.core.errors import (
     internal_error_handler,
 )
 from app.core.runtime_resources import redis_client
-from app.core.sensitive_text import reject_phone_identifier
+from app.core.sensitive_text import reject_phone_business_id
 from app.services.billing_preview import BillingPreview
 from app.services.crypto import CryptoService
 from app.services.vendor_control_client import (
@@ -291,7 +291,7 @@ class UatMessageRequestModel(StrictModel):
     @field_validator("biz_id")
     @classmethod
     def validate_biz_id(cls, value: str) -> str:
-        reject_phone_identifier(value, field_name="biz_id")
+        reject_phone_business_id(value, field_name="biz_id")
         return value
 
     @model_validator(mode="after")

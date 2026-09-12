@@ -35,7 +35,7 @@ from app.services.idempotency_lifecycle import (
 from app.services.import_repository import consume_import_reservation
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
-from app.services.pipeline import BatchCommand, BatchResponse, StoredBatch
+from app.services.pipeline import AcceptCommitConflict, BatchCommand, BatchResponse, StoredBatch
 from app.services.runtime_policy import CONFIG_SPECS
 from app.services.sensitive import SENSITIVE_WORD_REVISION_KEY, sensitive_word_index
 from app.services.template import render_template
@@ -343,10 +343,19 @@ class SqlPipelineStore:
                 "scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id,
                 "token": token, "fingerprint": fingerprint, "ttl_s": ttl_s,
             }
-            previous = (await connection.execute(text("""
+            previous = (
+                (
+                    await connection.execute(
+                        text("""
                 SELECT state,batch_id FROM idempotency_claim
                 WHERE scope_kind=:scope_kind AND scope_id=:scope_id AND biz_id=:biz_id
-            """), params)).mappings().one_or_none()
+            """),
+                        params,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
             if previous is not None and previous["state"] == "completed":
                 return await reclaim_completed_result(connection, params, previous["batch_id"])
 
@@ -637,6 +646,58 @@ class SqlPipelineStore:
         self, connection: AsyncConnection, command: BatchCommand, batch_no: str,
     ) -> int | StoredBatch:
         uncertain = None
+        if command.resend_of and not isinstance(command.principal, UncertainEffectPrincipal):
+            source = (
+                (
+                    await connection.execute(
+                        text("""
+                SELECT id,channel,dept,category,is_test,app_id FROM sms_batch
+                WHERE batch_no=:batch_no FOR UPDATE
+            """),
+                        {"batch_no": command.resend_of},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                source is None
+                or not command.failed_sources
+                or source["channel"] != command.channel
+                or source["dept"] != command.dept
+                or source["category"] != command.category
+                or source["is_test"] != command.is_test
+                or (command.channel == "api" and source["app_id"] != command.app_id)
+            ):
+                raise AcceptCommitConflict("原批次重发来源资格已变化")
+            # 回执使用相同批次锁；锁内新快照验证全部原消息，不能只检查先前读出的 failed。
+            rows = (
+                (
+                    await connection.execute(
+                        text("""
+                SELECT id,created_at,status,trim(phone_hmac) AS phone_hmac,key_version
+                FROM sms_message WHERE batch_id=:batch_id AND id=ANY(CAST(:ids AS bigint[]))
+            """),
+                        {
+                            "batch_id": source["id"],
+                            "ids": [item.message_id for item in command.failed_sources],
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            actual = {
+                (int(row["id"]), row["created_at"], str(row["phone_hmac"]), int(row["key_version"]))
+                for row in rows
+                if row["status"] == "failed"
+            }
+            expected = {
+                (item.message_id, item.created_at, item.phone_hmac, item.key_version)
+                for item in command.failed_sources
+            }
+            if actual != expected or len(rows) != len(expected):
+                raise AcceptCommitConflict("原批次失败消息已变化，请刷新后重试")
         if isinstance(command.principal, UncertainEffectPrincipal):
             from app.services.idempotency import uncertain_resend_biz_id
             from app.services.uncertain_resolution import (

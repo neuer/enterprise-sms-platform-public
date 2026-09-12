@@ -32,7 +32,7 @@ class FakeRunner:
         self.runtime_effect = runtime_effect
         self.calls: list[str] = []
 
-    def run(self, operation: str):
+    def run(self, operation: str, *, expected_pause_kind: str | None = None):
         import vendor_control_agent as agent_module
 
         self.calls.append(operation)
@@ -323,7 +323,7 @@ def test_rotate_discards_staged_candidate_if_wrapper_cannot_start() -> None:
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def run(self, operation: str):
+        def run(self, operation: str, *, expected_pause_kind: str | None = None):
             self.calls.append(operation)
             if operation == "recover-rotation":
                 return agent_module.WrapperResult(0, None, {})
@@ -432,7 +432,7 @@ def test_reset_configuration_authorizes_wrapper_before_marking_runtime_revoked(
     events: list[str] = []
 
     class Runner(FakeRunner):
-        def run(self, operation: str):
+        def run(self, operation: str, *, expected_pause_kind: str | None = None):
             events.append(operation)
             return super().run(operation)
 
@@ -1111,7 +1111,7 @@ def test_reset_authorization_phase_is_persisted_before_runtime_wrapper(
     events: list[str] = []
 
     class TrackingRunner(FakeRunner):
-        def run(self, operation: str):
+        def run(self, operation: str, *, expected_pause_kind: str | None = None):
             events.append(operation)
             return super().run(operation)
 

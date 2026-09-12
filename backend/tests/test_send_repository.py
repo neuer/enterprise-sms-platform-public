@@ -176,6 +176,7 @@ async def test_payload_carries_persisted_retry_count() -> None:
             FakeResult(
                 {
                     "chunk_id": 7,
+                    "is_test": False,
                     "batch_id": 3,
                     "batch_no": "batch-1",
                     "custom_id": "custom-1 ",
@@ -234,6 +235,7 @@ async def test_payload_does_not_apply_live_test_recipient_guard_in_mock_mode() -
             FakeResult(
                 {
                     "chunk_id": 7,
+                    "is_test": False,
                     "batch_id": 3,
                     "batch_no": "batch-1",
                     "custom_id": "custom-1",
@@ -298,6 +300,7 @@ async def test_live_payload_accepts_active_recipient_across_hmac_key_versions() 
             FakeResult(
                 {
                     "chunk_id": 7,
+                    "is_test": False,
                     "batch_id": 3,
                     "batch_no": "batch-1",
                     "custom_id": "custom-1",
@@ -374,6 +377,7 @@ async def test_live_payload_waits_for_recipient_maintenance_lock_before_any_read
             FakeResult(
                 {
                     "chunk_id": 7,
+                    "is_test": False,
                     "batch_id": 3,
                     "batch_no": "batch-1",
                     "custom_id": "custom-1",

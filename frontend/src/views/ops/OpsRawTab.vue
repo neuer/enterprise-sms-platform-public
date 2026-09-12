@@ -35,7 +35,7 @@ const RAW_SOURCE_OPTIONS: { key: string; label: string; value: "" | RawLogItem["
 
 const RAW_PROCESSED_OPTIONS: { key: string; label: string; value: "" | "true" | "false" }[] = [
   { key: "all", label: "全部", value: "" },
-  { key: "false", label: "待重放", value: "false" },
+  { key: "false", label: "未处理", value: "false" },
   { key: "true", label: "已处理", value: "true" },
 ]
 
@@ -80,7 +80,23 @@ function setRawProcessed(value: "" | "true" | "false"): void {
   reloadFromFirstPage("raw")
 }
 
+function canReplay(item: RawLogItem): boolean {
+  return (
+    !item.processed &&
+    ["complete", "complete_too_large"].includes(item.capture_state) &&
+    ["unattempted", "transient_failure"].includes(item.parse_state) &&
+    ["automatic", "manual"].includes(item.replay_eligibility)
+  )
+}
+
+function replayStatus(item: RawLogItem): string {
+  if (item.processed) return "已处理"
+  if (canReplay(item)) return "可重放"
+  return "不可重放"
+}
+
 async function replay(item: RawLogItem): Promise<void> {
+  if (!canReplay(item)) return
   if (
     !(await confirmAuditedAction({
       title: "确认报文重放",
@@ -152,9 +168,7 @@ watch(
             ><template #default="{ row }">{{ row.item_count }} / {{ row.custom_id_count }}</template></el-table-column
           ><el-table-column label="状态" width="110"
             ><template #default="{ row }"
-              ><el-tag :type="row.processed ? 'success' : 'danger'">{{
-                row.processed ? "已处理" : "待重放"
-              }}</el-tag></template
+              ><el-tag :type="row.processed ? 'success' : 'danger'">{{ replayStatus(row) }}</el-tag></template
             ></el-table-column
           ><el-table-column label="完整性" width="120"
             ><template #default="{ row }"
@@ -179,13 +193,7 @@ watch(
             ><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column
           ><el-table-column label="操作" width="90"
             ><template #default="{ row }"
-              ><el-button
-                v-if="!row.processed && row.capture_state !== 'truncated'"
-                link
-                type="danger"
-                @click="replay(row)"
-                >重放</el-button
-              ></template
+              ><el-button v-if="canReplay(row)" link type="danger" @click="replay(row)">重放</el-button></template
             ></el-table-column
           ><template #empty><EmptyState :title="rawEmpty.title" :description="rawEmpty.description" /></template
         ></el-table>
@@ -193,9 +201,7 @@ watch(
           ><article v-for="item in rawLogs" :key="item.id"
             ><header
               ><strong>RAW-{{ item.id }} · {{ item.source }}</strong
-              ><el-tag :type="item.processed ? 'success' : 'danger'">{{
-                item.processed ? "已处理" : "待重放"
-              }}</el-tag></header
+              ><el-tag :type="item.processed ? 'success' : 'danger'">{{ replayStatus(item) }}</el-tag></header
             ><p
               >{{ item.item_count }} 项 · {{ item.custom_id_count }} customId ·
               {{
@@ -206,13 +212,7 @@ watch(
                     : "截断"
               }}</p
             ><small>{{ item.error || formatDateTime(item.fetched_at) }}</small
-            ><el-button
-              v-if="!item.processed && item.capture_state !== 'truncated'"
-              link
-              type="danger"
-              @click="replay(item)"
-              >重放</el-button
-            ></article
+            ><el-button v-if="canReplay(item)" link type="danger" @click="replay(item)">重放</el-button></article
           ><EmptyState v-if="!rawLogs.length" :title="rawEmpty.title" :description="rawEmpty.description"
         /></div>
         <ListPagination

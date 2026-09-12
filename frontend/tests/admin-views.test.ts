@@ -416,6 +416,15 @@ describe("审计与系统参数", () => {
 
     await wrapper.get("[data-testid='disable-ad']").trigger("click")
     await flushPromises()
+    expect(ElMessageBox.confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        children: expect.arrayContaining([
+          expect.objectContaining({ children: expect.stringContaining("已有 AD 会话也将在后续认证校验时失效") }),
+        ]),
+      }),
+      expect.anything(),
+      expect.anything(),
+    )
     expect(wrapper.text()).toContain("AD 当前已禁用")
     expect(wrapper.text()).toContain("配置与角色映射均已保留")
 

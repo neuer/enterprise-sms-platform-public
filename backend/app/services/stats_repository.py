@@ -73,6 +73,10 @@ class SqlStatsRepository:
                     {"lock_key": stat_date.toordinal()},
                 )
                 await connection.execute(
+                    text("DELETE FROM stat_dirty_date WHERE stat_date=:stat_date"),
+                    {"stat_date": stat_date},
+                )
+                await connection.execute(
                     text("DELETE FROM stat_daily WHERE stat_date=:stat_date"),
                     {"stat_date": stat_date},
                 )
@@ -102,16 +106,5 @@ class SqlStatsRepository:
                     {"limit": limit},
                 )
                 return tuple(result.scalars())
-        finally:
-            await engine.dispose()
-
-    async def clear_dirty_date(self, stat_date: date) -> None:
-        engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text("DELETE FROM stat_dirty_date WHERE stat_date=:stat_date"),
-                    {"stat_date": stat_date},
-                )
         finally:
             await engine.dispose()

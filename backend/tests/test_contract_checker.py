@@ -140,6 +140,7 @@ def test_controlled_api_uat_contract_is_single_notice_and_idempotent() -> None:
         "type": "string",
         "minLength": 1,
         "maxLength": 32,
+        "description": "调用方业务ID，不得包含手机号标识",
     }
     response_statuses = {
         "queued",

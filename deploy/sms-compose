@@ -1355,6 +1355,7 @@ reject_production_control_plane() {
 
 run_vendor_test_manager() {
   local command="$1"
+  shift
   SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
   SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
   SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR" \
@@ -1364,7 +1365,7 @@ run_vendor_test_manager() {
       --runtime-root "$RUNTIME_ROOT" \
       --state-dir "$VENDOR_TEST_STATE_DIR" \
       --marker-file "$VENDOR_TEST_MARKER" \
-      --dotenv-file "$PLATFORM_ENV_FILE"
+      --dotenv-file "$PLATFORM_ENV_FILE" "$@"
 }
 
 run_vendor_test_bootstrap() {
@@ -1490,7 +1491,12 @@ run_locked_vendor_test() {
       [[ $# -eq 0 ]] || return 2
       run_vendor_control_reload
       ;;
-    preflight | activate | resume)
+    resume)
+      [[ $# -eq 0 || ( $# -eq 2 && "$1" == --expected-pause-kind && ( "$2" == manual || "$2" == critical ) ) ]] || return 2
+      prepare_runtime_secrets
+      run_vendor_test_manager "$command" "$@"
+      ;;
+    preflight | activate)
       [[ $# -eq 0 ]] || return 2
       prepare_runtime_secrets
       run_vendor_test_manager "$command"
@@ -1512,7 +1518,11 @@ dispatch_vendor_test() {
       [[ $# -eq 0 ]] || return 2
       run_vendor_test_manager status
       ;;
-    bootstrap | activate | pause | resume | rotate | recover-rotation | reset-runtime | reload-agent)
+    resume)
+      [[ $# -eq 0 || ( $# -eq 2 && "$1" == --expected-pause-kind && ( "$2" == manual || "$2" == critical ) ) ]] || return 2
+      run_with_lifecycle_lock vendor-test "$command" "$@"
+      ;;
+    bootstrap | activate | pause | rotate | recover-rotation | reset-runtime | reload-agent)
       [[ $# -eq 0 ]] || return 2
       run_with_lifecycle_lock vendor-test "$command"
       ;;

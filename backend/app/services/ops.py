@@ -218,6 +218,8 @@ class QueueSnapshot:
     bulk_code: str | None
     balance: int | None
     threshold: int
+    realtime_claim: str | bytes | None = None
+    bulk_claim: str | bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -243,7 +245,7 @@ class QueueRecoveryRepository(Protocol):
         principal: SecurityPrincipal,
     ) -> tuple[PausedBatch, ...]: ...
 
-    async def clear_queue_pauses(self) -> None: ...
+    async def clear_queue_pauses(self, snapshot: QueueSnapshot) -> bool: ...
 
 
 class QueueBatchSender(Protocol):
@@ -295,7 +297,8 @@ class QueueRecoveryService:
             ip=ip,
             principal=principal,
         )
-        await self.repository.clear_queue_pauses()
+        if not await self.repository.clear_queue_pauses(snapshot):
+            raise QueueResumeConflict("暂停状态已更新，请刷新后重新核验")
         for batch in batches:
             lane = queue_for_category(batch.category)
             await self.sender.send_batch(batch.batch_no, lane)
