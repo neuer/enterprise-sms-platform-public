@@ -341,15 +341,18 @@ class AuthFacade:
                 login_name=user.login_name,
             )
             change_claims = self.tokens.read_password_change(change_token)
-            await self.users.create_password_change_token(
-                token_hash=self.tokens.password_change_digest(change_token),
-                account_id=user.account_id,
-                identity_id=user.identity_id,
-                provider_code=user.provider_code,
-                login_name=user.normalized_login_name,
-                security_version=user.security_version,
-                expires_at=datetime.fromtimestamp(change_claims.expires_at, tz=UTC),
-            )
+            try:
+                await self.users.create_password_change_token(
+                    token_hash=self.tokens.password_change_digest(change_token),
+                    account_id=user.account_id,
+                    identity_id=user.identity_id,
+                    provider_code=user.provider_code,
+                    login_name=user.normalized_login_name,
+                    security_version=user.security_version,
+                    expires_at=datetime.fromtimestamp(change_claims.expires_at, tz=UTC),
+                )
+            except InvalidCredentials:
+                raise ApiError(401, "UNAUTHORIZED", "用户名或密码错误", None) from None
             return PasswordChangeRequired(change_token)
         if session_mode == "access_only":
             try:

@@ -7345,6 +7345,7 @@ export interface components {
             /** @enum {integer} */
             identity_status: 0 | 1;
             credential_status: ("active" | "must_change") | null;
+            temporary_password_expires_at: string | null;
             /** @description 最近一次成功目录认证的来源组快照 */
             source_groups: string[];
             /** @enum {string} */

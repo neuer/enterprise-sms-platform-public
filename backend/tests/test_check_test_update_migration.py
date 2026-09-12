@@ -131,6 +131,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0116_usage_release_generation",
         "0117_review_acceptance_facts",
         "0118_role_mapping_invalidation",
+        "0119_temporary_password_expiry",
     ]
 
 

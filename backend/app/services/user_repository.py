@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.auth.accounts import AccountSourceConflict
 from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
+from app.core.auth.temporary_password import TEMPORARY_PASSWORD_EXPIRY_SQL
 from app.core.runtime_resources import database_engine
 from app.services.admin_invariant import ensure_effective_admin, lock_admin_invariant
 from app.services.user_management import (
@@ -37,6 +38,7 @@ ua.role_override,
 ua.status,
 ai.status AS identity_status,
 lc.must_change_password,
+lc.temporary_password_expires_at,
 ai.source_groups,
 ai.last_synced_at,
 ua.last_login_at,
@@ -65,6 +67,7 @@ def _record(row: Any) -> UserRecord:
         must_change_password=(
             bool(row["must_change_password"]) if row["must_change_password"] is not None else None
         ),
+        temporary_password_expires_at=row.get("temporary_password_expires_at"),
         source_groups=tuple(str(group) for group in (row["source_groups"] or ())),
         last_synced_at=row["last_synced_at"],
         last_login_at=row["last_login_at"],
@@ -210,10 +213,11 @@ class SqlUserManagementRepository:
                     identity_id = int(identity_result.scalar_one())
                     await connection.execute(
                         text(
-                            """
+                            f"""
                             INSERT INTO local_credential(
-                              identity_id,password_hash,must_change_password
-                            ) VALUES(:identity_id,:password_hash,TRUE)
+                              identity_id,password_hash,must_change_password,temporary_password_expires_at
+                            ) VALUES(:identity_id,:password_hash,TRUE,
+                              {TEMPORARY_PASSWORD_EXPIRY_SQL})
                             """
                         ),
                         {
@@ -459,14 +463,16 @@ class SqlUserManagementRepository:
                 current = _record(row)
                 if current.provider_code != "local":
                     raise ProviderActionUnsupported("仅本地账号支持密码重置")
-                await connection.execute(
+                credential = await connection.execute(
                     text(
-                        """
+                        f"""
                         UPDATE local_credential SET
                           password_hash=:password_hash,must_change_password=TRUE,
+                          temporary_password_expires_at={TEMPORARY_PASSWORD_EXPIRY_SQL},
                           credential_version=credential_version+1,
                           password_changed_at=NULL,updated_at=now()
                         WHERE identity_id=:identity_id
+                        RETURNING temporary_password_expires_at
                         """
                     ),
                     {
@@ -515,6 +521,7 @@ class SqlUserManagementRepository:
                 return replace(
                     current,
                     must_change_password=True,
+                    temporary_password_expires_at=credential.scalar_one(),
                     security_version=current.security_version + 1,
                 )
         finally:

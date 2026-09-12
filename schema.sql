@@ -1,6 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.104  2026-09-12
+-- v1.6.105  2026-09-12
+-- v1.6.105：临时密码独立期限；历史未改密凭据迁移时一次性宽限 24 小时。
 -- v1.6.104：目录映射按事务去重安全版本失效，保留直接 DML 触发保护。
 -- v1.6.103：UAT 受理关联与自动日报非敏感发信配置投影。
 -- v1.6.102：分片未受理确认事实绑定处置代次，旧事实保守保留待核验。
@@ -301,6 +302,11 @@ CREATE TABLE local_credential (
     identity_id         BIGINT      PRIMARY KEY REFERENCES auth_identity(id) ON DELETE RESTRICT,
     password_hash       TEXT        NOT NULL,
     must_change_password BOOLEAN    NOT NULL DEFAULT TRUE,
+    temporary_password_expires_at TIMESTAMPTZ,
+    CONSTRAINT ck_local_temporary_password_expiry CHECK (
+      (must_change_password AND temporary_password_expires_at IS NOT NULL)
+      OR (NOT must_change_password AND temporary_password_expires_at IS NULL)
+    ),
     credential_version  BIGINT      NOT NULL DEFAULT 1,
     CONSTRAINT ck_local_credential_version_positive CHECK (credential_version > 0),
     password_changed_at TIMESTAMPTZ,
@@ -2691,6 +2697,7 @@ CREATE TABLE sys_config (
 );
 
 INSERT INTO sys_config (key, value, value_type, description) VALUES
+('local_temporary_password_ttl_hours', '24', 'int', '临时密码有效期(小时)，1–168；仅影响新建和重置'),
 ('approval_threshold',        '100',   'int',  'Web通知类触发审批的号码数阈值'),
 ('market_approval_threshold', '50',    'int',  'Web营销类触发审批的号码数阈值(独立)'),
 ('approval_expire_hours',     '24',    'int',  '审批单过期时长(小时)'),
