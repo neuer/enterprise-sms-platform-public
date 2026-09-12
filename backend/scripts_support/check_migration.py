@@ -1199,6 +1199,14 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
             role,
             "SELECT id FROM auth_transition_dead_letter LIMIT 1",
         )
+        assert_role_sql_denied(
+            container, database, role,
+            "SELECT provider_id FROM role_mapping_invalidation LIMIT 1",
+        )
+        assert_role_sql_denied(
+            container, database, role,
+            "UPDATE role_mapping_invalidation SET transaction_id=pg_current_xact_id()",
+        )
 
 
 def run_check() -> None:

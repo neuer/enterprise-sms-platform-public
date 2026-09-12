@@ -325,7 +325,17 @@ def _batch_queries() -> BatchQueryService:
     return BatchQueryService(settings, CryptoService.from_settings(settings))
 
 
-def get_resend_service() -> ResendService:
+async def require_batch_writer(
+    app: Annotated[ApiAppContext | None, Depends(optional_api_app)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(bearer_scheme)],
+) -> BatchAccessScope:
+    """在业务工厂之前校验路由已有的应用或 Web 写入主体。"""
+    return await _batch_scope(app, credentials, write=True)
+
+
+def get_resend_service(
+    _scope: Annotated[BatchAccessScope, Depends(require_batch_writer)],
+) -> ResendService:
     settings = get_settings()
     return ResendService(
         SqlResendRepository(settings),
@@ -347,13 +357,17 @@ def _scheduling_service(
     )
 
 
-async def get_scheduling_cancel_service() -> SchedulingService:
+async def get_scheduling_cancel_service(
+    _scope: Annotated[BatchAccessScope, Depends(require_batch_writer)],
+) -> SchedulingService:
     """取消不依赖可变审批策略，避免为每次取消额外占用数据库连接。"""
 
     return _scheduling_service(get_settings())
 
 
-async def get_scheduling_service() -> SchedulingService:
+async def get_scheduling_service(
+    _scope: Annotated[BatchAccessScope, Depends(require_batch_writer)],
+) -> SchedulingService:
     settings = get_settings()
     policy = await SqlRuntimePolicyLoader(settings).load()
     return _scheduling_service(

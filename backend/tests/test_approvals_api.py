@@ -55,6 +55,7 @@ def sample_item() -> dict[str, object]:
         "batch_no": "batch-9",
         "category": "market",
         "applicant": "operator01",
+        "applicant_account_id": 11,
         "dept": "市场部",
         "total": 60,
         "segments": 2,

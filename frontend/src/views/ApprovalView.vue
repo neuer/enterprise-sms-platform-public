@@ -81,7 +81,8 @@ const canDecideSelected = computed(
     canApprove.value &&
     selected.value !== null &&
     selected.value.status === "pending" &&
-    selected.value.applicant !== session.username,
+    selected.value.applicant_account_id != null &&
+    selected.value.applicant_account_id !== session.accountId,
 )
 
 const selectedCountdown = computed(() => {
@@ -243,6 +244,15 @@ function laneOf(id: number): string {
 
 async function submitDecision(id: number, action: ApprovalAction, reason?: string): Promise<void> {
   if (decidingId.value !== null) return
+  const target = items.value.find((item) => item.id === id) ?? selected.value
+  if (
+    !canApprove.value ||
+    target?.id !== id ||
+    target.status !== "pending" ||
+    target.applicant_account_id == null ||
+    target.applicant_account_id === session.accountId
+  )
+    return
   decidingId.value = id
   try {
     const outcome = await decideApproval(id, action, reason)
@@ -408,7 +418,7 @@ onMounted(() => {
     :now="now"
     :loading="loading"
     :deciding-id="decidingId"
-    :current-username="session.username"
+    :current-account-id="session.accountId"
     @detail="showDetail"
     @quick="onQuick"
   />
@@ -526,7 +536,13 @@ onMounted(() => {
         </div>
       </div>
       <el-alert
-        v-else-if="selected.status === 'pending' && selected.applicant === session.username"
+        v-else-if="selected.status === 'pending' && selected.applicant_account_id == null"
+        title="历史申请人身份不完整，无法执行审批"
+        type="warning"
+        :closable="false"
+      />
+      <el-alert
+        v-else-if="selected.status === 'pending' && selected.applicant_account_id === session.accountId"
         title="本人提交 · 按规则回避，平台已隐藏决策操作"
         type="warning"
         :closable="false"

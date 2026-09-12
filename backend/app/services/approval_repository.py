@@ -34,7 +34,7 @@ SELECT p.id approval_id,trim(b.batch_no) batch_no,p.applicant,
 FROM approval p JOIN sms_batch b ON b.id=p.batch_id
 """
 ITEM_COLUMNS = """
-p.id,trim(b.batch_no) batch_no,b.category,p.applicant,p.dept,
+p.id,trim(b.batch_no) batch_no,b.category,p.applicant,p.applicant_account_id,p.dept,
   b.total,b.segments,b.quota_cost estimated_segments,
   b.scheduled_at,p.trigger_threshold,
   p.trigger_threshold_source,b.status batch_status,b.deferred_reason,

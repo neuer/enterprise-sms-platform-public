@@ -16,6 +16,11 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import (
+    WebActor,
+    WriterActor,
+    require_approver_actor,
+)
 from app.api.messages import UNAVAILABLE_RESPONSE, BatchModel, _error
 from app.core.apikey import ApiAppContext
 from app.core.audit import audited
@@ -256,12 +261,12 @@ def get_pipeline_store() -> SqlPipelineStore:
     return SqlPipelineStore()
 
 
-def get_batch_query_service() -> BatchQueryService:
+def get_batch_query_service(_actor: WebActor) -> BatchQueryService:
     settings = get_settings()
     return BatchQueryService(settings, CryptoService.from_settings(settings))
 
 
-def get_operations_query_service() -> OperationsQueryService:
+def get_operations_query_service(_actor: WebActor) -> OperationsQueryService:
     settings = get_settings()
     crypto = CryptoService.from_settings(settings)
     return OperationsQueryService(
@@ -274,7 +279,7 @@ def get_template_renderer() -> SqlTemplateRenderer:
     return SqlTemplateRenderer()
 
 
-def get_crypto_service() -> CryptoService:
+def get_crypto_service(_actor: WriterActor) -> CryptoService:
     return CryptoService.from_settings(get_settings())
 
 
@@ -282,7 +287,7 @@ def get_sign_resolver() -> SignResolver:
     return SignResolver(SqlSignRepository())
 
 
-async def get_import_parser() -> AsyncIterator[ImportParser]:
+async def get_import_parser(_actor: WriterActor) -> AsyncIterator[ImportParser]:
     settings = get_settings()
     policy = await SqlRuntimePolicyLoader(settings).load()
     yield ImportParser(
@@ -611,6 +616,7 @@ async def message_timeline(
 
 @router.post(
     "/messages/{id}/phone/decrypt",
+    dependencies=[Depends(require_approver_actor)],
     response_model=DecryptedPhoneModel,
     responses={403: ERROR_RESPONSE, 404: ERROR_RESPONSE},
 )

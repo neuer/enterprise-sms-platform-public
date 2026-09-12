@@ -113,3 +113,5 @@ PostgreSQL 16 中验证：
 `lock_callback_idempotency_batch(task_id)` 锁定该任务已关联的批次；保护状态触发器
 使用固定 `pg_catalog` 搜索路径与限定表名取得同一批次锁。两函数均撤销 PUBLIC 执行权，
 仅前者向 `sms_callback` 开放 EXECUTE；函数不更新业务字段、不读出批次数据。
+
+`role_mapping_invalidation` 是每个 Provider 一行的事务去重事实，七个运行角色均无直接权限。固定 search_path 的 owner 触发函数仅使用实际 OLD/NEW Provider 与数据库事务编号，在映射发生实质变更时使关联账号会话失效；不得用客户端参数或可写配置跳过该失效。

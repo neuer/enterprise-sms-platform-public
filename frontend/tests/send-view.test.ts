@@ -649,10 +649,7 @@ describe("人工发送工作台", () => {
     vm.form.mobilesText = "13800138000\n13800138001\n13800138000"
     vm.form.content = "维护通知"
     await wrapper.vm.$nextTick()
-    await vi.advanceTimersByTimeAsync(650)
-    await flushPromises()
-
-    expect(bodies.at(-1)?.accepted_count).toBe(2)
+    await vi.waitFor(() => expect(bodies.at(-1)?.accepted_count).toBe(2))
     expect(wrapper.get("[data-testid='audience-removed']").text()).toMatch(/重复\s*1/)
     wrapper.unmount()
     vi.useRealTimers()

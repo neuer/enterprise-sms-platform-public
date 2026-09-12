@@ -1,3 +1,4 @@
+import { adminStepUpHeaders } from "./adminStepUp"
 import { apiRequest } from "./client"
 import type { UserRole } from "./auth"
 export type UserProvider = "local" | "ad" | string
@@ -58,34 +59,39 @@ export function listUsers(filters: UserFilters): Promise<UserPage> {
   return apiRequest<UserPage>(`/admin/users?${query}`, { method: "GET" })
 }
 
-export function createLocalUser(payload: CreateLocalUserInput): Promise<ManagedUser> {
+export function createLocalUser(payload: CreateLocalUserInput, token?: string): Promise<ManagedUser> {
   return apiRequest<ManagedUser>("/admin/users/local", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...adminStepUpHeaders(token) },
     body: JSON.stringify(payload),
   })
 }
 
-export function updateUserRole(accountId: number, role: UserRole, roleOverride: boolean): Promise<ManagedUser> {
+export function updateUserRole(
+  accountId: number,
+  role: UserRole,
+  roleOverride: boolean,
+  token?: string,
+): Promise<ManagedUser> {
   return apiRequest<ManagedUser>(`/admin/users/${accountId}/role`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...adminStepUpHeaders(token) },
     body: JSON.stringify({ role, role_override: roleOverride }),
   })
 }
 
-export function updateUserStatus(accountId: number, status: 0 | 1): Promise<ManagedUser> {
+export function updateUserStatus(accountId: number, status: 0 | 1, token?: string): Promise<ManagedUser> {
   return apiRequest<ManagedUser>(`/admin/users/${accountId}/status`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...adminStepUpHeaders(token) },
     body: JSON.stringify({ status }),
   })
 }
 
-export function resetLocalPassword(accountId: number, temporaryPassword: string): Promise<ManagedUser> {
+export function resetLocalPassword(accountId: number, temporaryPassword: string, token?: string): Promise<ManagedUser> {
   return apiRequest<ManagedUser>(`/admin/users/${accountId}/password/reset`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...adminStepUpHeaders(token) },
     body: JSON.stringify({ temporary_password: temporaryPassword }),
   })
 }

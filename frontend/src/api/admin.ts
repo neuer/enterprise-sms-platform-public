@@ -1,3 +1,4 @@
+import { adminStepUpHeaders } from "./adminStepUp"
 import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS, type UserRole } from "./auth"
 import type { VendorCredentialEnvelope, VendorSealSession } from "../lib/vendorSeal"
 import { apiRequest, assertAuthorizedResultCurrent, authorizedJsonResult } from "./client"
@@ -106,6 +107,7 @@ export interface ExternalRoleMapping {
 }
 
 export interface RoleMappings {
+  revision: string
   mappings: ExternalRoleMapping[]
 }
 
@@ -152,10 +154,14 @@ export function getAuthProvider(providerCode: string): Promise<AuthProviderAdmin
   return apiRequest<AuthProviderAdmin>(providerPath(providerCode), { method: "GET" })
 }
 
-export function saveAuthProviderDraft(providerCode: string, config: LdapProviderConfig): Promise<AuthProviderAdmin> {
+export function saveAuthProviderDraft(
+  providerCode: string,
+  config: LdapProviderConfig,
+  token?: string,
+): Promise<AuthProviderAdmin> {
   return apiRequest<AuthProviderAdmin>(providerPath(providerCode, "/draft"), {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...adminStepUpHeaders(token) },
     body: JSON.stringify({ config }),
   })
 }
@@ -166,15 +172,17 @@ export function testAuthProvider(providerCode: string): Promise<AuthProviderTest
   })
 }
 
-export function activateAuthProvider(providerCode: string): Promise<AuthProviderAdmin> {
+export function activateAuthProvider(providerCode: string, token?: string): Promise<AuthProviderAdmin> {
   return apiRequest<AuthProviderAdmin>(providerPath(providerCode, "/activate"), {
     method: "POST",
+    headers: adminStepUpHeaders(token),
   })
 }
 
-export function disableAuthProvider(providerCode: string): Promise<AuthProviderAdmin> {
+export function disableAuthProvider(providerCode: string, token?: string): Promise<AuthProviderAdmin> {
   return apiRequest<AuthProviderAdmin>(providerPath(providerCode, "/disable"), {
     method: "POST",
+    headers: adminStepUpHeaders(token),
   })
 }
 
@@ -187,11 +195,13 @@ export function listAuthProviderRoleMappings(providerCode: string): Promise<Role
 export function replaceAuthProviderRoleMappings(
   providerCode: string,
   mappings: ExternalRoleMappingUpdate[],
+  expectedRevision: string,
+  token?: string,
 ): Promise<RoleMappings> {
   return apiRequest<RoleMappings>(providerPath(providerCode, "/role-mappings"), {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mappings }),
+    headers: { "Content-Type": "application/json", ...adminStepUpHeaders(token) },
+    body: JSON.stringify({ mappings, expected_revision: expectedRevision }),
   })
 }
 

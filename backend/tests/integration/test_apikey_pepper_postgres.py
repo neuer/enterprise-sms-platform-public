@@ -245,7 +245,7 @@ async def test_unclassified_hmac_digest_requires_deploy_inventory(
         key=key,
         digest=digest,
         version=None,
-        name=f"hmac-{nonce}",
+        name="hmac-" + nonce.translate(str.maketrans("0123456789", "ghijklmnop")),
         algorithm=None,
     )
     try:

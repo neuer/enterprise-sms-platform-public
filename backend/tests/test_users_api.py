@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 
 import app.api.users as users_api
+from app.api.admin_step_up import get_admin_step_up_service
 from app.core.auth.accounts import AccountSourceConflict
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.passwords import PasswordPolicyViolation
@@ -135,10 +136,18 @@ class FakeService:
         return record()
 
 
+class ApprovedStepUp:
+    """业务错误映射测试使用已批准授权；安全边界由真实服务 API 测试覆盖。"""
+
+    async def consume(self, token: str | None, **kwargs: object) -> None:
+        del token, kwargs
+
+
 def client(
     role: Role = "admin",
 ) -> tuple[TestClient, FakeService, FakeFacade]:
     app = create_app()
+    app.dependency_overrides[get_admin_step_up_service] = lambda: ApprovedStepUp()
     service = FakeService()
     facade = FakeFacade(role)
     app.dependency_overrides[get_auth_facade] = lambda: facade
@@ -316,6 +325,7 @@ def test_admin_dependencies_reject_before_constructing_user_service(
 
     monkeypatch.setattr(users_api, "UserManagementService", record_construction)
     app = create_app()
+    app.dependency_overrides[get_admin_step_up_service] = lambda: ApprovedStepUp()
     facade = FakeFacade("viewer")
     app.dependency_overrides[get_auth_facade] = lambda: facade
     browser = TestClient(app, raise_server_exceptions=False)

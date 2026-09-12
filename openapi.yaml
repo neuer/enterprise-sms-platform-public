@@ -1533,6 +1533,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: provider_code, in: path, required: true, schema: { type: string } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -1569,6 +1570,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: provider_code, in: path, required: true, schema: { type: string } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       responses:
         '200': { description: 已激活, content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderAdmin' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1583,6 +1585,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: provider_code, in: path, required: true, schema: { type: string } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       responses:
         '200': { description: 已禁用, content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderAdmin' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1609,6 +1612,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: provider_code, in: path, required: true, schema: { type: string } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -1621,6 +1625,25 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: 重复映射或内置认证源不可修改, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: 映射参数不合法, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/step-up:
+    post:
+      tags: [admin]
+      summary: 当前管理员重认证并签发用途绑定的单次授权
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminStepUpRequest' }
+      responses:
+        '200': { description: 已签发；仅存于浏览器易失内存, content: { application/json: { schema: { $ref: '#/components/schemas/AdminStepUpResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { description: INVALID_PARAM, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '423': { description: ACCOUNT_LOCKED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { description: RATE_LIMITED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: 认证源或授权存储暂不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /api/v1/web/admin/users:
     get:
@@ -1648,6 +1671,8 @@ paths:
       tags: [admin]
       summary: 管理员创建本地账号并设置临时密码
       security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -1669,6 +1694,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: account_id, in: path, required: true, schema: { type: integer } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -1692,6 +1718,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: account_id, in: path, required: true, schema: { type: integer } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -1711,6 +1738,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: account_id, in: path, required: true, schema: { type: integer } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -3834,8 +3862,9 @@ components:
     AuthProviderRoleMappings:
       type: object
       additionalProperties: false
-      required: [mappings]
+      required: [mappings, revision]
       properties:
+        revision: { type: string }
         mappings:
           type: array
           maxItems: 100
@@ -3853,8 +3882,9 @@ components:
     AuthProviderRoleMappingsUpdate:
       type: object
       additionalProperties: false
-      required: [mappings]
+      required: [mappings, expected_revision]
       properties:
+        expected_revision: { type: string, pattern: '^[a-f0-9]{64}$' }
         mappings:
           type: array
           maxItems: 100
@@ -4129,12 +4159,13 @@ components:
 
     ApprovalListItem:
       type: object
-      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at]
+      required: [id, batch_no, category, applicant, applicant_account_id, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at]
       properties:
         id: { type: integer }
         batch_no: { type: string }
         category: { type: string }
         applicant: { type: string }
+        applicant_account_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 申请人稳定账号 ID；无法确认历史身份时为 null }
         dept: { type: string }
         total: { type: integer }
         segments: { type: integer, minimum: 1, description: 单个号码的计费条数 }
@@ -4155,12 +4186,13 @@ components:
 
     ApprovalDetail:
       type: object
-      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at, content]
+      required: [id, batch_no, category, applicant, applicant_account_id, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at, content]
       properties:
         id: { type: integer }
         batch_no: { type: string }
         category: { type: string }
         applicant: { type: string }
+        applicant_account_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 申请人稳定账号 ID；无法确认历史身份时为 null }
         dept: { type: string }
         total: { type: integer }
         segments: { type: integer, minimum: 1, description: 单个号码的计费条数 }
@@ -4297,4 +4329,21 @@ components:
       required: [token]
       properties:
         token: { type: string, description: 仅在浏览器易失内存中保存并单次使用 }
+        expires_in: { type: integer, default: 300 }
+
+    AdminStepUpRequest:
+      type: object
+      additionalProperties: false
+      required: [operation, target_id, parameters, password]
+      properties:
+        operation: { type: string, enum: [user_create_admin, user_role_change, user_password_reset, user_status_change, provider_role_mapping_change, provider_save_draft, provider_enable_disable] }
+        target_id: { type: string, minLength: 1, maxLength: 64 }
+        parameters: { type: object, additionalProperties: true, description: 用途规定的非凭据参数；服务端规范化并绑定，拒绝未知字段及客户端摘要 }
+        password: { type: string, format: password, minLength: 1, maxLength: 128, writeOnly: true }
+
+    AdminStepUpResponse:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string, description: 仅在浏览器易失内存中单次使用 }
         expires_in: { type: integer, default: 300 }

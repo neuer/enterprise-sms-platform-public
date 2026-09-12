@@ -11,7 +11,9 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.api.admin_step_up import AdminStepUp, AdminStepUpToken
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.auth.providers import create_provider_registry
 from app.core.auth.roles import Role
@@ -19,6 +21,7 @@ from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.auth.users import SqlUserRepository
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
+from app.services.admin_step_up import admin_intent
 from app.services.auth_provider import (
     AuthProviderService,
     DuplicateRoleMapping,
@@ -30,6 +33,7 @@ from app.services.auth_provider import (
     ProviderTestResult,
     StaleProviderDraft,
     UntestedProviderConfig,
+    role_mapping_revision,
 )
 from app.services.auth_provider_repository import SqlAuthProviderRepository
 from app.services.user_management import LastAdminProtected
@@ -88,6 +92,7 @@ class RoleMappingModel(StrictModel):
 
 
 class RoleMappingsModel(StrictModel):
+    revision: str
     mappings: list[RoleMappingModel] = Field(max_length=100)
 
 
@@ -98,6 +103,7 @@ class RoleMappingUpdateModel(StrictModel):
 
 
 class RoleMappingsUpdateModel(StrictModel):
+    expected_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     mappings: list[RoleMappingUpdateModel] = Field(max_length=100)
 
 
@@ -118,7 +124,7 @@ def _readable_file(path: Path) -> bool:
     return True
 
 
-def get_provider_runtime_status() -> ProviderRuntimeStatus:
+def get_provider_runtime_status(_actor: AdminActor) -> ProviderRuntimeStatus:
     settings = get_settings()
     return ProviderRuntimeStatus(
         bind_secret_available=_readable_file(settings.ldap_bind_password_file),
@@ -126,7 +132,7 @@ def get_provider_runtime_status() -> ProviderRuntimeStatus:
     )
 
 
-def get_auth_provider_admin_service() -> AuthProviderService:
+def get_auth_provider_admin_service(_actor: AdminActor) -> AuthProviderService:
     settings = get_settings()
     repository = SqlAuthProviderRepository(settings)
     registry = create_provider_registry(
@@ -185,6 +191,7 @@ def _test_model(result: ProviderTestResult) -> ProviderTestResultModel:
 
 def _mappings_model(mappings: tuple[ExternalRoleMapping, ...]) -> RoleMappingsModel:
     return RoleMappingsModel(
+        revision=role_mapping_revision(mappings),
         mappings=[
             RoleMappingModel(
                 external_group=item.external_group,
@@ -192,7 +199,7 @@ def _mappings_model(mappings: tuple[ExternalRoleMapping, ...]) -> RoleMappingsMo
                 dept=item.dept,
             )
             for item in mappings
-        ]
+        ],
     )
 
 
@@ -280,9 +287,18 @@ async def save_provider_draft(
     runtime: Annotated[ProviderRuntimeStatus, Depends(get_provider_runtime_status)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    step_up: AdminStepUp,
+    step_up_token: AdminStepUpToken = None,
 ) -> ProviderAdminModel:
     actor, ip = await _admin(request, facade, credentials)
     try:
+        await step_up.consume(
+            step_up_token,
+            claims=await facade.verify(_token(credentials)),
+            access_token=_token(credentials),
+            ip=ip,
+            intent=admin_intent("provider_save_draft", provider_code, payload.model_dump()),
+        )
         saved = await service.save_draft(
             provider_code,
             payload.config.model_dump(),
@@ -329,13 +345,31 @@ async def _set_provider_enabled(
     runtime: ProviderRuntimeStatus,
     facade: AuthFacade,
     credentials: HTTPAuthorizationCredentials | None,
+    step_up: AdminStepUp,
+    step_up_token: str | None,
 ) -> ProviderAdminModel:
     actor, ip = await _admin(request, facade, credentials)
     try:
+        current = await service.get(provider_code)
+        await step_up.consume(
+            step_up_token,
+            claims=await facade.verify(_token(credentials)),
+            access_token=_token(credentials),
+            ip=ip,
+            intent=admin_intent(
+                "provider_enable_disable",
+                provider_code,
+                {"enabled": enabled, "draft_version": current.draft_version},
+            ),
+        )
         record = (
-            await service.activate(provider_code, actor=actor, ip=ip)
+            await service.activate(
+                provider_code, actor=actor, ip=ip, expected_draft_version=current.draft_version
+            )
             if enabled
-            else await service.disable(provider_code, actor=actor, ip=ip)
+            else await service.disable(
+                provider_code, actor=actor, ip=ip, expected_draft_version=current.draft_version
+            )
         )
         return _provider_model(record, runtime)
     except PROVIDER_ERRORS as error:
@@ -355,6 +389,8 @@ async def activate_provider(
     runtime: Annotated[ProviderRuntimeStatus, Depends(get_provider_runtime_status)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    step_up: AdminStepUp,
+    step_up_token: AdminStepUpToken = None,
 ) -> ProviderAdminModel:
     return await _set_provider_enabled(
         provider_code=provider_code,
@@ -364,6 +400,8 @@ async def activate_provider(
         runtime=runtime,
         facade=facade,
         credentials=credentials,
+        step_up=step_up,
+        step_up_token=step_up_token,
     )
 
 
@@ -380,6 +418,8 @@ async def disable_provider(
     runtime: Annotated[ProviderRuntimeStatus, Depends(get_provider_runtime_status)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    step_up: AdminStepUp,
+    step_up_token: AdminStepUpToken = None,
 ) -> ProviderAdminModel:
     return await _set_provider_enabled(
         provider_code=provider_code,
@@ -389,6 +429,8 @@ async def disable_provider(
         runtime=runtime,
         facade=facade,
         credentials=credentials,
+        step_up=step_up,
+        step_up_token=step_up_token,
     )
 
 
@@ -430,9 +472,20 @@ async def replace_provider_role_mappings(
     service: Annotated[AuthProviderService, Depends(get_auth_provider_admin_service)],
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    step_up: AdminStepUp,
+    step_up_token: AdminStepUpToken = None,
 ) -> RoleMappingsModel:
     actor, ip = await _admin(request, facade, credentials)
     try:
+        await step_up.consume(
+            step_up_token,
+            claims=await facade.verify(_token(credentials)),
+            access_token=_token(credentials),
+            ip=ip,
+            intent=admin_intent(
+                "provider_role_mapping_change", provider_code, payload.model_dump()
+            ),
+        )
         mappings = tuple(
             ExternalRoleMapping(item.external_group, item.role, item.dept)
             for item in payload.mappings
@@ -441,6 +494,7 @@ async def replace_provider_role_mappings(
             await service.replace_role_mappings(
                 provider_code,
                 mappings,
+                expected_revision=payload.expected_revision,
                 actor=actor,
                 ip=ip,
             )

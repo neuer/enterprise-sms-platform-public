@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import AdminStepUpDialog from "../components/AdminStepUpDialog.vue"
+import { useAdminStepUp } from "../composables/useAdminStepUp"
+const adminStepUp = useAdminStepUp()
 import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
 import { computed, nextTick, onMounted, reactive, ref } from "vue"
@@ -21,7 +24,7 @@ import {
 } from "../api/admin"
 import EmptyState from "../components/EmptyState.vue"
 import VendorTestConsole from "../components/VendorTestConsole.vue"
-import { confirmAuditedAction } from "../lib/confirm"
+import { confirmAction, confirmAuditedAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
 import { ROLE_LABELS } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
@@ -62,6 +65,7 @@ interface EditableRoleMapping extends ExternalRoleMapping {
 }
 let roleMappingKeySeq = 0
 const roleMappings = ref<EditableRoleMapping[]>([])
+const roleMappingsRevision = ref("")
 const adForm = reactive<LdapProviderConfig>({
   server: "",
   base_dn: "",
@@ -178,6 +182,7 @@ async function loadProvider(): Promise<void> {
   try {
     const [provider, mappings] = await Promise.all([getAuthProvider("ad"), listAuthProviderRoleMappings("ad")])
     hydrateProvider(provider)
+    roleMappingsRevision.value = mappings.revision
     roleMappings.value = mappings.mappings.map((item) => ({ ...item, rowKey: ++roleMappingKeySeq }))
   } catch (error) {
     providerError.value = errorText(error, "认证源配置加载失败")
@@ -261,7 +266,14 @@ function providerDraft(): LdapProviderConfig {
 async function saveProviderDraft(): Promise<void> {
   providerSaving.value = true
   try {
-    hydrateProvider(await saveAuthProviderDraft("ad", providerDraft()))
+    const config = providerDraft()
+    const saved = await adminStepUp.run(
+      { operation: "provider_save_draft", target_id: "ad", parameters: { config } },
+      "修改 AD 认证源配置",
+      (token) => saveAuthProviderDraft("ad", config, token),
+    )
+    if (!saved) return
+    hydrateProvider(saved)
     disabledPreserved.value = false
     ElMessage.success("AD 配置草稿已保存，请测试当前版本 · 本次操作已记入审计")
   } catch (error) {
@@ -291,7 +303,18 @@ async function runProviderTest(): Promise<void> {
 async function activateProvider(): Promise<void> {
   providerSaving.value = true
   try {
-    hydrateProvider(await activateAuthProvider("ad"))
+    if (!adProvider.value) return
+    const saved = await adminStepUp.run(
+      {
+        operation: "provider_enable_disable",
+        target_id: "ad",
+        parameters: { enabled: true, draft_version: adProvider.value.draft_version },
+      },
+      "变更 AD 认证源启用状态",
+      (token) => activateAuthProvider("ad", token),
+    )
+    if (!saved) return
+    hydrateProvider(saved)
     disabledPreserved.value = false
     ElMessage.success("AD 认证源已启用 · 本次操作已记入审计")
   } catch (error) {
@@ -313,7 +336,18 @@ async function disableProvider(): Promise<void> {
     return
   try {
     providerSaving.value = true
-    hydrateProvider(await disableAuthProvider("ad"))
+    if (!adProvider.value) return
+    const saved = await adminStepUp.run(
+      {
+        operation: "provider_enable_disable",
+        target_id: "ad",
+        parameters: { enabled: false, draft_version: adProvider.value.draft_version },
+      },
+      "变更 AD 认证源启用状态",
+      (token) => disableAuthProvider("ad", token),
+    )
+    if (!saved) return
+    hydrateProvider(saved)
     disabledPreserved.value = true
     ElMessage.success("AD 已禁用，配置与角色映射均已保留 · 本次操作已记入审计")
   } catch (error) {
@@ -324,14 +358,32 @@ async function disableProvider(): Promise<void> {
 }
 
 function addRoleMapping(): void {
+  if (mappingsSaving.value) return
   roleMappings.value.push({ external_group: "", role: "viewer", dept: "", rowKey: ++roleMappingKeySeq })
 }
 
 function removeRoleMapping(index: number): void {
+  if (mappingsSaving.value) return
   roleMappings.value.splice(index, 1)
 }
 
+async function reloadRoleMappings(): Promise<void> {
+  if (mappingsSaving.value) return
+  if (!(await confirmAction({ title: "重新加载角色映射", body: "将丢弃本页未保存的映射草稿，读取最新映射。" }))) return
+  mappingsSaving.value = true
+  try {
+    const result = await listAuthProviderRoleMappings("ad")
+    roleMappingsRevision.value = result.revision
+    roleMappings.value = result.mappings.map((item) => ({ ...item, rowKey: ++roleMappingKeySeq }))
+  } catch (error) {
+    ElMessage.error(errorText(error, "角色映射加载失败"))
+  } finally {
+    mappingsSaving.value = false
+  }
+}
+
 async function saveRoleMappings(): Promise<void> {
+  if (mappingsSaving.value || !roleMappingsRevision.value) return
   mappingsSaving.value = true
   try {
     const mappings = roleMappings.value
@@ -341,7 +393,18 @@ async function saveRoleMappings(): Promise<void> {
         dept: item.dept?.trim() || "",
       }))
       .filter((item) => item.external_group)
-    const result = await replaceAuthProviderRoleMappings("ad", mappings)
+    const expectedRevision = roleMappingsRevision.value
+    const result = await adminStepUp.run(
+      {
+        operation: "provider_role_mapping_change",
+        target_id: "ad",
+        parameters: { mappings, expected_revision: expectedRevision },
+      },
+      "替换 AD 目录组角色映射",
+      (token) => replaceAuthProviderRoleMappings("ad", mappings, expectedRevision, token),
+    )
+    if (!result) return
+    roleMappingsRevision.value = result.revision
     roleMappings.value = result.mappings.map((item) => ({ ...item, rowKey: ++roleMappingKeySeq }))
     ElMessage.success("AD 目录组角色映射已更新 · 本次操作已记入审计")
   } catch (error) {
@@ -358,6 +421,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <AdminStepUpDialog :controller="adminStepUp" />
   <section class="page-heading config-heading">
     <div>
       <p class="eyebrow">POLICY REGISTRY / 策略注册表</p>
@@ -544,30 +608,39 @@ onMounted(() => {
       <section class="role-mapping-panel">
         <header
           ><div><strong>目录组角色映射</strong><p>AD 账号未人工覆盖时，按最近同步的目录组计算平台角色。</p></div
-          ><el-button @click="addRoleMapping">添加映射</el-button></header
+          ><el-button :disabled="mappingsSaving" @click="addRoleMapping">添加映射</el-button></header
         >
         <div v-if="roleMappings.length" class="role-mapping-list">
           <div v-for="(mapping, index) in roleMappings" :key="mapping.rowKey" class="role-mapping-row">
             <el-input
+              :disabled="mappingsSaving"
               v-model="mapping.external_group"
               :data-testid="`mapping-group-${index}`"
               placeholder="CN=SMS-Operators,OU=Groups,..."
             />
-            <el-input v-model="mapping.dept" :data-testid="`mapping-dept-${index}`" placeholder="授权部门" />
-            <el-select v-model="mapping.role" :data-testid="`mapping-role-${index}`">
+            <el-input
+              :disabled="mappingsSaving"
+              v-model="mapping.dept"
+              :data-testid="`mapping-dept-${index}`"
+              placeholder="授权部门"
+            />
+            <el-select :disabled="mappingsSaving" v-model="mapping.role" :data-testid="`mapping-role-${index}`">
               <el-option v-for="(label, role) in ROLE_LABELS" :key="role" :label="label" :value="role" />
             </el-select>
-            <el-button type="danger" link @click="removeRoleMapping(index)">移除</el-button>
+            <el-button :disabled="mappingsSaving" type="danger" link @click="removeRoleMapping(index)">移除</el-button>
           </div>
         </div>
         <p v-else class="role-mapping-empty">尚未配置目录组映射；AD 用户不会自动获得平台角色。</p>
         <footer
           ><el-button
+            :disabled="!roleMappingsRevision"
             data-testid="save-role-mappings"
             type="primary"
             :loading="mappingsSaving"
             @click="saveRoleMappings"
             >保存角色映射</el-button
+          ><el-button :disabled="mappingsSaving" data-testid="reload-role-mappings" @click="reloadRoleMappings"
+            >重新加载</el-button
           ></footer
         >
       </section>

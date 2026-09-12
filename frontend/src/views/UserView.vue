@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import AdminStepUpDialog from "../components/AdminStepUpDialog.vue"
+import { useAdminStepUp } from "../composables/useAdminStepUp"
+const adminStepUp = useAdminStepUp()
 import { ElMessage } from "element-plus"
 import { computed, onMounted, reactive, ref } from "vue"
 
@@ -310,13 +313,31 @@ async function saveLocalUser(): Promise<void> {
   }
   saving.value = true
   try {
-    await createLocalUser({
+    const payload = {
       username,
       display_name: displayName,
       dept: createForm.dept.trim(),
       role: createForm.role,
       temporary_password: createForm.temporary_password,
-    })
+    }
+    try {
+      if (payload.role === "admin") {
+        const parameters = {
+          username: payload.username,
+          display_name: payload.display_name,
+          dept: payload.dept,
+          role: payload.role,
+        }
+        const saved = await adminStepUp.run(
+          { operation: "user_create_admin", target_id: "new", parameters },
+          `创建管理员 ${username}`,
+          (token) => createLocalUser(payload, token),
+        )
+        if (!saved) return
+      } else await createLocalUser(payload)
+    } finally {
+      payload.temporary_password = ""
+    }
     closeCreate()
     ElMessage.success("本地账号已创建，首次登录须修改临时密码 · 本次操作已记入审计")
     await load()
@@ -339,7 +360,18 @@ async function saveRole(): Promise<void> {
   saving.value = true
   try {
     const roleOverride = selected.value.provider_code === "local" ? true : overrideDraft.value
-    await updateUserRole(selected.value.account_id, roleDraft.value, roleOverride)
+    const accountId = selected.value.account_id
+    const role = roleDraft.value
+    const saved = await adminStepUp.run(
+      {
+        operation: "user_role_change",
+        target_id: String(accountId),
+        parameters: { role, role_override: roleOverride },
+      },
+      "修改账号角色策略",
+      (token) => updateUserRole(accountId, role, roleOverride, token),
+    )
+    if (!saved) return
     roleDrawerOpen.value = false
     ElMessage.success("角色策略已更新，既有会话已失效 · 本次操作已记入审计")
     await load()
@@ -379,7 +411,18 @@ async function confirmPasswordReset(): Promise<void> {
     return
   try {
     saving.value = true
-    await resetLocalPassword(selected.value.account_id, resetPasswordDraft.value)
+    const accountId = selected.value.account_id
+    let password = resetPasswordDraft.value
+    try {
+      const saved = await adminStepUp.run(
+        { operation: "user_password_reset", target_id: String(accountId), parameters: { action: "reset" } },
+        "重置账号临时密码",
+        (token) => resetLocalPassword(accountId, password, token),
+      )
+      if (!saved) return
+    } finally {
+      password = ""
+    }
     closePasswordReset()
     ElMessage.success("临时密码已重置，下次登录须修改 · 本次操作已记入审计")
     await load()
@@ -407,7 +450,12 @@ async function changeStatus(user: ManagedUser): Promise<void> {
   )
     return
   try {
-    await updateUserStatus(user.account_id, nextStatus)
+    const saved = await adminStepUp.run(
+      { operation: "user_status_change", target_id: String(user.account_id), parameters: { status: nextStatus } },
+      `${action}账号`,
+      (token) => updateUserStatus(user.account_id, nextStatus, token),
+    )
+    if (!saved) return
     ElMessage.success(`账号已${action} · 本次操作已记入审计`)
     await load()
   } catch (error) {
@@ -440,6 +488,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <AdminStepUpDialog :controller="adminStepUp" />
   <section class="page-heading user-heading">
     <div>
       <p class="eyebrow">IDENTITY LEDGER / 身份治理</p>

@@ -305,8 +305,14 @@ async def test_auth_provider_lifecycle_persists_real_audit_rows() -> None:
                 actor="audit-admin",
                 ip="127.0.0.1",
             )
-            await repository.activate(code, actor="audit-admin", ip="127.0.0.1")
-            await repository.disable(code, actor="audit-admin", ip="127.0.0.1")
+            await repository.activate(
+                code, actor="audit-admin", ip="127.0.0.1",
+                expected_draft_version=saved.draft_version,
+            )
+            await repository.disable(
+                code, actor="audit-admin", ip="127.0.0.1",
+                expected_draft_version=saved.draft_version,
+            )
         async with engine.connect() as connection:
             rows = (
                 await connection.execute(

@@ -12,6 +12,11 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import (
+    WebActor,
+    require_admin_actor,
+    require_approver_actor,
+)
 from app.core.audit import AuditEvent, audited, insert_audit
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
@@ -242,7 +247,7 @@ class ReportingModel(BaseModel):
     trend: ReportingTrendModel
 
 
-async def get_export_service() -> ExportService:
+async def get_export_service(_actor: WebActor) -> ExportService:
     settings = get_settings()
     repository = SqlExportRepository(settings)
     return ExportService(
@@ -253,6 +258,7 @@ async def get_export_service() -> ExportService:
 
 
 def get_export_step_up_service(
+    _actor: WebActor,
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
 ) -> ExportStepUpService:
     settings = get_settings()
@@ -268,7 +274,7 @@ def get_export_step_up_service(
     )
 
 
-def get_dashboard_service() -> DashboardService:
+def get_dashboard_service(_actor: WebActor) -> DashboardService:
     register_task_modules()
     specs = tuple(JOB_SPECS[name] for name in sorted(JOB_SPECS))
     return DashboardService(
@@ -278,15 +284,15 @@ def get_dashboard_service() -> DashboardService:
     )
 
 
-def get_balance_repository() -> SqlDashboardRepository:
+def get_balance_repository(_actor: WebActor) -> SqlDashboardRepository:
     return SqlDashboardRepository()
 
 
-def get_reporting_service() -> ReportingService:
+def get_reporting_service(_actor: WebActor) -> ReportingService:
     return ReportingService(SqlReportingRepository())
 
 
-def get_export_codec() -> ExportFileCodec:
+def get_export_codec(_actor: WebActor) -> ExportFileCodec:
     settings = get_settings()
     return ExportFileCodec(
         CryptoService.from_settings(settings),
@@ -413,6 +419,7 @@ def _reporting_response(result: ReportingResult) -> ReportingModel:
 
 @router.get(
     "/balance",
+    dependencies=[Depends(require_admin_actor)],
     response_model=BalanceSnapshotModel,
     responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE},
 )
@@ -537,6 +544,7 @@ async def get_export(
 
 @router.post(
     "/export/{public_id}/step-up",
+    dependencies=[Depends(require_approver_actor)],
     response_model=ExportStepUpResponseModel,
     responses={
         400: ERROR_RESPONSE,

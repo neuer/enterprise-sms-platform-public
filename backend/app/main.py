@@ -15,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.admin import router as admin_router
+from app.api.admin_step_up import router as admin_step_up_router
 from app.api.approvals import router as approvals_router
 from app.api.apps import router as apps_router
 from app.api.auth import router as auth_router
@@ -182,6 +183,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(Exception, internal_error_handler)
     application.include_router(auth_router)
     application.include_router(auth_providers_router)
+    application.include_router(admin_step_up_router)
     application.include_router(admin_router)
     application.include_router(blacklist_router)
     application.include_router(callbacks_router)

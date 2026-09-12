@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -224,9 +225,7 @@ def test_status_returns_download_url_only_for_ready_unexpired_task() -> None:
         headers={"Authorization": "Bearer jwt"},
     )
     assert response.status_code == 200
-    assert response.json()["download_url"] == (
-        f"/api/v1/web/reports/export/{PUBLIC_ID}/download"
-    )
+    assert response.json()["download_url"] == (f"/api/v1/web/reports/export/{PUBLIC_ID}/download")
     assert response.json()["expires_at"] is not None
 
 
@@ -271,9 +270,7 @@ def test_decrypted_download_requires_task_bound_single_use_step_up() -> None:
         headers={**headers, "X-Export-Step-Up": issued.json()["token"]},
     )
     assert downloaded.status_code == 200
-    assert step_up.consumes == [
-        ("one-use-export-token", PUBLIC_ID, 11, "127.0.0.1")
-    ]
+    assert step_up.consumes == [("one-use-export-token", PUBLIC_ID, 11, "127.0.0.1")]
     assert any(call[0] == "download" for call in service.calls)
 
 
@@ -284,3 +281,20 @@ def test_integer_export_identifier_is_not_an_external_compatibility_route() -> N
         headers={"Authorization": "Bearer jwt"},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("role", ["operator", "viewer"])
+def test_masked_download_keeps_real_step_up_dependency_for_all_readers(
+    monkeypatch: pytest.MonkeyPatch,
+    role: Role,
+) -> None:
+    client, service, _ = make_client(role)
+    del client.app.dependency_overrides[module.get_export_step_up_service]  # type: ignore[attr-defined]
+    monkeypatch.setattr(module, "ExportStepUpService", lambda *args, **kwargs: FakeStepUp())
+    monkeypatch.setattr(module, "redis_client", lambda *args: object())
+    response = client.get(
+        f"/api/v1/web/reports/export/{PUBLIC_ID}/download",
+        headers={"Authorization": "Bearer jwt"},
+    )
+    assert response.status_code == 200, response.text
+    assert any(call[0] == "download" for call in service.calls)

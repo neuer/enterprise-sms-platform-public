@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import ApproverActor
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
@@ -39,6 +40,7 @@ class ApprovalListItem(BaseModel):
     batch_no: str
     category: str
     applicant: str
+    applicant_account_id: int | None
     dept: str
     total: int
     segments: int = Field(ge=1)
@@ -85,7 +87,7 @@ class DecisionRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=256)
 
 
-async def get_approval_service() -> AsyncIterator[ApprovalService]:
+async def get_approval_service(_actor: ApproverActor) -> AsyncIterator[ApprovalService]:
     settings = get_settings()
     redis = Redis.from_url(settings.redis_control_url, decode_responses=True)
     try:
@@ -99,7 +101,7 @@ async def get_approval_service() -> AsyncIterator[ApprovalService]:
         await redis.aclose()
 
 
-def get_approval_repository() -> SqlApprovalRepository:
+def get_approval_repository(_actor: ApproverActor) -> SqlApprovalRepository:
     settings = get_settings()
     return SqlApprovalRepository(settings, CryptoService.from_settings(settings))
 

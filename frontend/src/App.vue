@@ -96,6 +96,17 @@ const visibleNavigation = computed(() =>
     .filter((section) => section.items.length > 0),
 )
 
+const resourceLoadFailed = ref(false)
+function handleResourceLoadFailed(): void {
+  resourceLoadFailed.value = true
+}
+function handleResourceLoadRecovered(): void {
+  resourceLoadFailed.value = false
+}
+function reloadResources(): void {
+  window.location.reload()
+}
+
 function handleUnauthorized(): void {
   if (!session.isAuthenticated && route.path !== "/login") void router.replace("/login")
 }
@@ -186,6 +197,8 @@ onBeforeMount(() => {
 })
 
 onMounted(() => {
+  window.addEventListener("sms:workspace-load-error", handleResourceLoadFailed)
+  window.addEventListener("sms:workspace-load-recovered", handleResourceLoadRecovered)
   window.addEventListener("sms:unauthorized", handleUnauthorized)
   window.addEventListener("sms:reauth-required", handleReauthenticationRequired)
   window.addEventListener("sms:session-refreshed", handleSessionRefreshed)
@@ -195,6 +208,8 @@ onMounted(() => {
   balancePolling.start()
 })
 onBeforeUnmount(() => {
+  window.removeEventListener("sms:workspace-load-error", handleResourceLoadFailed)
+  window.removeEventListener("sms:workspace-load-recovered", handleResourceLoadRecovered)
   window.removeEventListener("sms:unauthorized", handleUnauthorized)
   window.removeEventListener("sms:reauth-required", handleReauthenticationRequired)
   window.removeEventListener("sms:session-refreshed", handleSessionRefreshed)
@@ -224,6 +239,10 @@ async function handlePasswordChanged(): Promise<void> {
 
 <template>
   <el-config-provider :locale="zhCn">
+    <div v-if="resourceLoadFailed" role="alert" class="resource-recovery">
+      <p>页面资源加载失败。重新加载后可重试，未提交的内容将被清空。</p>
+      <el-button @click="reloadResources">重新加载页面</el-button>
+    </div>
     <div v-if="publicRoute" class="public-shell">
       <!-- 身份门背景：光带（桌面纵贯曲线 / 移动端上半弧光）+ 白鹭水印 -->
       <svg class="login-flow login-flow-desktop" viewBox="0 0 1440 900" preserveAspectRatio="none" aria-hidden="true">
@@ -397,3 +416,16 @@ async function handlePasswordChanged(): Promise<void> {
     </div>
   </el-config-provider>
 </template>
+
+<style scoped>
+.resource-recovery {
+  position: fixed;
+  inset: 12px 12px auto;
+  z-index: 10000;
+  padding: 16px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+</style>

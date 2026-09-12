@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.runtime import AuthFacade, get_auth_facade
@@ -79,7 +80,7 @@ class ConfigBatchUpdateModel(BaseModel):
     items: list[ConfigUpdateModel] = Field(min_length=1, max_length=50)
 
 
-def get_admin_service() -> AdminService:
+def get_admin_service(_actor: AdminActor) -> AdminService:
     settings = get_settings()
     facade = get_auth_facade()
 

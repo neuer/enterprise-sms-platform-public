@@ -1,6 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.103  2026-09-12
+-- v1.6.104  2026-09-12
+-- v1.6.104：目录映射按事务去重安全版本失效，保留直接 DML 触发保护。
 -- v1.6.103：UAT 受理关联与自动日报非敏感发信配置投影。
 -- v1.6.102：分片未受理确认事实绑定处置代次，旧事实保守保留待核验。
 -- v1.6.101：幂等结果到期证明与生命周期批次锁。
@@ -443,30 +444,61 @@ CREATE TRIGGER trg_auth_provider_security_version
 AFTER UPDATE ON auth_provider
 FOR EACH ROW EXECUTE FUNCTION bump_provider_security_version();
 
+-- 每个 Provider 一行，由数据库事务编号去重；运行角色无直接读写权限。
+CREATE TABLE role_mapping_invalidation (
+    provider_id BIGINT PRIMARY KEY REFERENCES auth_provider(id) ON DELETE CASCADE,
+    transaction_id xid8 NOT NULL
+);
+REVOKE ALL ON role_mapping_invalidation FROM PUBLIC;
+
 CREATE FUNCTION bump_role_mapping_security_version()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public AS $$
 DECLARE
   affected_provider BIGINT;
+  claimed_provider BIGINT;
+  affected_providers BIGINT[];
+  claimed_providers BIGINT[] := ARRAY[]::BIGINT[];
 BEGIN
   IF TG_OP='UPDATE' THEN
-    UPDATE user_account ua
-    SET security_version=ua.security_version+1,updated_at=now()
-    FROM auth_identity ai
-    WHERE ai.account_id=ua.id
-      AND ai.provider_id IN (OLD.provider_id,NEW.provider_id);
-    RETURN NEW;
+    IF (OLD.provider_id,OLD.external_group,OLD.role,OLD.dept)
+       IS NOT DISTINCT FROM (NEW.provider_id,NEW.external_group,NEW.role,NEW.dept) THEN
+      RETURN NEW;
+    END IF;
+    affected_providers := ARRAY[OLD.provider_id,NEW.provider_id];
+  ELSIF TG_OP='DELETE' THEN
+    -- Provider 删除引发的级联没有剩余身份；不得重建已级联删除的去重事实。
+    IF NOT EXISTS (SELECT 1 FROM public.auth_provider WHERE id=OLD.provider_id) THEN
+      RETURN OLD;
+    END IF;
+    affected_providers := ARRAY[OLD.provider_id];
+  ELSE
+    affected_providers := ARRAY[NEW.provider_id];
   END IF;
-  affected_provider := CASE
-    WHEN TG_OP='DELETE' THEN OLD.provider_id
-    ELSE NEW.provider_id
-  END;
-  UPDATE user_account ua
+  FOR affected_provider IN
+    SELECT DISTINCT item FROM unnest(affected_providers) AS item ORDER BY item
+  LOOP
+    claimed_provider := NULL;
+    INSERT INTO public.role_mapping_invalidation(provider_id,transaction_id)
+    VALUES(affected_provider,pg_current_xact_id())
+    ON CONFLICT(provider_id) DO UPDATE SET transaction_id=EXCLUDED.transaction_id
+      WHERE role_mapping_invalidation.transaction_id<>EXCLUDED.transaction_id
+    RETURNING provider_id INTO claimed_provider;
+    IF claimed_provider IS NOT NULL THEN
+      claimed_providers := array_append(claimed_providers,claimed_provider);
+    END IF;
+  END LOOP;
+  -- 移动映射时同一账号可同时属于新旧 Provider，合并集合后只更新一次。
+  UPDATE public.user_account ua
   SET security_version=ua.security_version+1,updated_at=now()
-  FROM auth_identity ai
-  WHERE ai.account_id=ua.id AND ai.provider_id=affected_provider;
+  WHERE EXISTS (
+    SELECT 1 FROM public.auth_identity ai
+    WHERE ai.account_id=ua.id AND ai.provider_id=ANY(claimed_providers)
+  );
   RETURN COALESCE(NEW,OLD);
 END
 $$;
+REVOKE ALL ON FUNCTION bump_role_mapping_security_version() FROM PUBLIC;
 CREATE TRIGGER trg_external_role_mapping_security_version
 AFTER INSERT OR UPDATE OR DELETE ON external_role_mapping
 FOR EACH ROW EXECUTE FUNCTION bump_role_mapping_security_version();

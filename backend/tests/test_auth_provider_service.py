@@ -19,6 +19,7 @@ from app.services.auth_provider import (
     ProviderSummary,
     ProviderTestResult,
     UntestedProviderConfig,
+    role_mapping_revision,
     validate_ldap_allowed,
 )
 
@@ -49,9 +50,7 @@ def test_ldap_provider_kind_rejects_target_outside_deployment_allowlist() -> Non
     )
     assert kind.validate_config(valid_ad_config())["server"] == "ldaps://dc01.example.com:636"
     with pytest.raises(InvalidProviderConfig, match="部署允许列表"):
-        kind.validate_config(
-            {**valid_ad_config(), "server": "ldaps://evil.example.com:636"}
-        )
+        kind.validate_config({**valid_ad_config(), "server": "ldaps://evil.example.com:636"})
 
 
 def test_ldap_allowed_list_empty_fails_closed() -> None:
@@ -191,6 +190,7 @@ class FakeProviderRepository:
         *,
         actor: str,
         ip: str,
+        expected_draft_version: int,
     ) -> ProviderRecord:
         current = self.records[code]
         if current.tested_version != current.draft_version:
@@ -211,6 +211,7 @@ class FakeProviderRepository:
         *,
         actor: str,
         ip: str,
+        expected_draft_version: int,
     ) -> ProviderRecord:
         current = self.records[code]
         saved = replace(current, enabled=False)
@@ -227,6 +228,7 @@ class FakeProviderRepository:
         code: str,
         mappings: tuple[ExternalRoleMapping, ...],
         *,
+        expected_revision: str,
         actor: str,
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]:
@@ -357,6 +359,7 @@ async def test_role_mapping_replace_is_provider_scoped_validated_and_local_is_im
     replaced = await service.replace_role_mappings(
         "ad",
         mappings,
+        expected_revision=role_mapping_revision(()),
         actor=ADMIN,
         ip=IP,
     )
@@ -373,6 +376,7 @@ async def test_role_mapping_replace_is_provider_scoped_validated_and_local_is_im
                 ExternalRoleMapping("CN=Same", "admin", "平台部"),
                 ExternalRoleMapping(" CN=Same ", "viewer", "业务一部"),
             ),
+            expected_revision=role_mapping_revision(()),
             actor=ADMIN,
             ip=IP,
         )
@@ -381,6 +385,7 @@ async def test_role_mapping_replace_is_provider_scoped_validated_and_local_is_im
         await service.replace_role_mappings(
             "ad",
             (ExternalRoleMapping("CN=Missing-Dept", "viewer"),),
+            expected_revision=role_mapping_revision(()),
             actor=ADMIN,
             ip=IP,
         )
@@ -388,6 +393,7 @@ async def test_role_mapping_replace_is_provider_scoped_validated_and_local_is_im
         await service.replace_role_mappings(
             "local",
             (),
+            expected_revision=role_mapping_revision(()),
             actor=ADMIN,
             ip=IP,
         )

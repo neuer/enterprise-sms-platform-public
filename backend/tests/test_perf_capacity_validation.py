@@ -119,3 +119,25 @@ def test_cli_rejects_capture_from_another_target(tmp_path: Path) -> None:
             ]
         )
     assert not target.exists()
+
+
+@pytest.mark.parametrize("field", ["commit", "reporter_commit"])
+def test_valid_commit_with_phone_shaped_digits_is_not_pii(field: str) -> None:
+    from perf_capacity import _safe_payload
+
+    _safe_payload({field: "a" + "13800138000" + "b" * 28})
+
+
+@pytest.mark.parametrize("payload", [
+    {"reporter_commit": "13800138000"},
+    {"note": "a" + "13800138000" + "b" * 28},
+    {"other": {"commit": "a" + "13800138000" + "b" * 28}},
+    {"phone": "a" * 40},
+])
+def test_digest_exception_keeps_phone_and_sensitive_fields_rejected(
+    payload: dict[str, Any],
+) -> None:
+    from perf_capacity import _safe_payload
+
+    with pytest.raises(CapacityGateFailure):
+        _safe_payload(payload)

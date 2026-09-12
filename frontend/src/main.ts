@@ -12,11 +12,12 @@ import { createPinia } from "pinia"
 import { createApp } from "vue"
 
 import App from "./App.vue"
+import { singleFlightLoader } from "./lib/singleFlightLoader"
 import { initTheme } from "./lib/theme"
 import router, { installAuthGuard } from "./router"
 import { useSessionStore } from "./stores/session"
 
-// index.html 内联脚本已先行写入 data-theme，这里幂等兜底（如偏好被外部改动）。
+// 同源 theme-bootstrap.js 已先行写入 data-theme，这里幂等兜底（如偏好被外部改动）。
 initTheme()
 
 const pinia = createPinia()
@@ -36,12 +37,26 @@ application.mount("#app")
 // 是确定性时序——懒路由组件只在全部守卫放行后才加载。注册在挂载后调用仍有效
 //（全局组件在渲染时解析）。该守卫须注册在 auth 守卫之后：未登录跳转 /login 的
 // 导航会被前者取消，不会白注册一次。
-let workspaceElement: Promise<void> | null = null
+const loadWorkspaceElement = singleFlightLoader(() =>
+  import("./element-workspace").then((module) => {
+    module.registerWorkspaceElement(application)
+  }),
+)
+function showResourceRecovery(): void {
+  window.dispatchEvent(new Event("sms:workspace-load-error"))
+}
+window.addEventListener("vite:preloadError", showResourceRecovery)
 router.beforeEach(async (to) => {
   if (to.meta.public) return true
-  workspaceElement ??= import("./element-workspace").then((module) => {
-    module.registerWorkspaceElement(application)
-  })
-  await workspaceElement
-  return true
+  try {
+    await loadWorkspaceElement()
+    return true
+  } catch {
+    showResourceRecovery()
+    return false
+  }
+})
+
+router.afterEach((_to, _from, failure) => {
+  if (!failure) window.dispatchEvent(new Event("sms:workspace-load-recovered"))
 })

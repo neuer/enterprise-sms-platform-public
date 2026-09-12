@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.runtime import AuthFacade, get_auth_facade
@@ -53,7 +54,7 @@ class CallbackPageModel(BaseModel):
     items: list[CallbackTaskModel]
 
 
-def get_callback_repository() -> SqlCallbackRepository:
+def get_callback_repository(_actor: AdminActor) -> SqlCallbackRepository:
     return SqlCallbackRepository()
 
 

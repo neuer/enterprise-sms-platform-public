@@ -33,7 +33,13 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("departments", [(), ("one", "two"), ("one", "one")])
-async def test_effective_ad_admin_requires_one_department(departments: tuple[str, ...]) -> None:
+@pytest.mark.parametrize("override", [False, True])
+@pytest.mark.parametrize("disabled", [None, "account", "identity", "provider"])
+async def test_effective_ad_admin_requires_one_department(
+    departments: tuple[str, ...],
+    override: bool,
+    disabled: str | None,
+) -> None:
     engine = create_async_engine(make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"]))
     try:
         async with engine.connect() as connection:
@@ -49,9 +55,10 @@ async def test_effective_ad_admin_requires_one_department(departments: tuple[str
                 )
                 account = await connection.scalar(
                     text(
-                        "INSERT INTO user_account(role,role_override) VALUES('admin',true) "
+                        "INSERT INTO user_account(role,role_override) VALUES('admin',:override) "
                         "RETURNING id"
-                    )
+                    ),
+                    {"override": override},
                 )
                 groups = [f"group-{i}" for i in range(len(departments))]
                 await connection.execute(
@@ -72,11 +79,25 @@ async def test_effective_ad_admin_requires_one_department(departments: tuple[str
                         text(
                             "INSERT INTO "
                             "external_role_mapping(provider_id,external_group,role,dept) "
-                            "VALUES(:provider,:group,'viewer',:dept)"
+                            "VALUES(:provider,:group,'admin',:dept)"
                         ),
                         {"provider": provider, "group": group, "dept": department},
                     )
-                if len(set(departments)) == 1:
+                if disabled == "account":
+                    await connection.execute(
+                        text("UPDATE user_account SET status=0 WHERE id=:id"), {"id": account}
+                    )
+                elif disabled == "identity":
+                    await connection.execute(
+                        text("UPDATE auth_identity SET status=0 WHERE account_id=:id"),
+                        {"id": account},
+                    )
+                elif disabled == "provider":
+                    await connection.execute(
+                        text("UPDATE auth_provider SET enabled=false WHERE id=:id"),
+                        {"id": provider},
+                    )
+                if disabled is None and len(set(departments)) == 1:
                     await ensure_effective_admin(connection)
                 else:
                     with pytest.raises(LastAdminProtected):
