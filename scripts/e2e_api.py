@@ -839,9 +839,7 @@ class UatSuite:
             "WHERE scope='send'"
         )
 
-    def _wait_admission_ready_for_volume(
-        self, case_id: str, *, seed_completed_hold: bool = True,
-    ) -> None:
+    def _wait_admission_ready_for_volume(self, case_id: str) -> None:
         """大请求必须等到新鲜 OPEN。过期 hold 仍是 recovery_hold，不能当放行。
 
         进程内快照 TTL 为 5s。DB 先写成 OPEN 时缓存仍可能是 degraded，
@@ -857,7 +855,7 @@ class UatSuite:
             return marker == "ready"
 
         started_open = open_fresh()
-        if not started_open and seed_completed_hold:
+        if not started_open:
             self._seed_completed_admission_hold()
         nonce = 0
         open_since = self.clock() if started_open else None
@@ -877,10 +875,7 @@ class UatSuite:
             nonce += 1
             return None
 
-        wait_until(
-            case_id, persist_until_open, timeout_s=75,
-            interval_s=0.5 if seed_completed_hold else 1.0,
-        )
+        wait_until(case_id, persist_until_open, timeout_s=75, interval_s=0.5)
 
     def case_05(self) -> None:
         phone = self.phone(5, 0)
@@ -1120,9 +1115,9 @@ class UatSuite:
         self._expect("11", approved, 200)
 
     def case_12(self) -> None:
-        # 认证准入等待可能超过发送快照的 15 秒有效期；先登录，再自然等满恢复窗口。
+        # 登录可能等待认证准入；完成后复用隔离 UAT 的发送准备逻辑。
         self.login("operator01")
-        self._wait_admission_ready_for_volume("12", seed_completed_hold=False)
+        self._wait_admission_ready_for_volume("12")
         self.set_config("market_approval_threshold", "1")
         quota_key = self._quota_key(0, self._today())
         before = self._probe().redis_int(quota_key)

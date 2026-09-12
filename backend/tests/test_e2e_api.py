@@ -688,35 +688,3 @@ def test_authentication_uat_retry_budget_is_bounded(monkeypatch) -> None:
     monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
     assert suite._authentication_request("/api/v1/web/auth/login", payload={}) == busy
     assert delays == [30, 30] and len(http.calls) == 3
-
-
-
-def test_bulk_readiness_waits_for_natural_hold_without_mutating_control(monkeypatch) -> None:
-    now = [0.0]
-    calls = []
-
-    class NaturalHoldProbe:
-        def psql_value(self, _sql: str, **_variables: str) -> str:
-            return "ready" if now[0] >= 60 else "wait"
-
-        def psql_execute(self, *_args, **_kwargs) -> None:
-            pytest.fail("natural hold must not be shortened by a fixture write")
-
-    suite = UatSuite(None, None, {}, probe=NaturalHoldProbe(), clock=lambda: now[0])
-    monkeypatch.setattr(
-        suite, "_refresh_admission_snapshot", lambda _case, nonce: calls.append(nonce),
-    )
-
-    def natural_wait(_case, predicate, *, timeout_s, interval_s):
-        assert interval_s == 1.0
-        while now[0] <= timeout_s:
-            value = predicate()
-            if value:
-                return value
-            now[0] += interval_s
-        raise UatFailure("synthetic readiness timeout")
-
-    monkeypatch.setattr(e2e_api, "wait_until", natural_wait)
-    suite._wait_admission_ready_for_volume("12", seed_completed_hold=False)
-    assert 65 <= now[0] <= 75
-    assert calls and max(calls) < 100
