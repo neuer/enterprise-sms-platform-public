@@ -444,12 +444,39 @@ class UatSuite:
             raise UatFailure("UAT client is unavailable")
         return client.request(method, path, payload=payload, headers=headers)
 
+    def _authentication_request(
+        self, path: str, *, payload: object, headers: Mapping[str, str] | None = None,
+    ) -> HttpResponse:
+        """仅遵循认证准入的显式可重试提示，最多等待 60 秒且最多重试三次。"""
+        if path not in {"/api/v1/web/auth/login", "/api/v1/web/admin/step-up"}:
+            raise UatFailure("UAT authentication retry path is invalid")
+        waited = 0
+        for attempt in range(4):
+            response = self._request(
+                self.api, "POST", path, payload=payload, headers=headers,
+            )
+            data = response.data if isinstance(response.data, dict) else {}
+            detail = data.get("detail")
+            delay = detail.get("retry_after_seconds") if isinstance(detail, dict) else None
+            if not (
+                response.status == 429
+                and data.get("code") == "RATE_LIMITED"
+                and isinstance(detail, dict)
+                and detail.get("auth_admission_retry") is True
+                and type(delay) is int
+                and 1 <= delay <= 30
+                and attempt < 3
+                and waited + delay <= 60
+            ):
+                return response
+            time.sleep(delay)
+            waited += delay
+        raise AssertionError("bounded authentication retry exhausted unexpectedly")
+
     def login(self, username: str, *, refresh: bool = False) -> str:
         if not refresh and username in self._tokens:
             return self._tokens[username]
-        response = self._request(
-            self.api,
-            "POST",
+        response = self._authentication_request(
             "/api/v1/web/auth/login",
             payload={
                 "provider_code": "ad",
@@ -621,9 +648,7 @@ class UatSuite:
             raise UatFailure("UAT operator account id is unavailable")
         parameters = {"role": role, "role_override": role_override}
         headers = self._bearer("admin01")
-        grant_response = self._request(
-            self.api,
-            "POST",
+        grant_response = self._authentication_request(
             "/api/v1/web/admin/step-up",
             payload={
                 "operation": "user_role_change",

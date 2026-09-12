@@ -641,3 +641,49 @@ def test_role_uat_does_not_write_without_reauthentication_grant(response: HttpRe
     assert "synthetic-password" not in str(failure.value)
     assert len(http.calls) == 1
     assert http.calls[0][0][:2] == ("POST", "/api/v1/web/admin/step-up")
+
+
+@pytest.mark.parametrize("path", ["/api/v1/web/auth/login", "/api/v1/web/admin/step-up"])
+def test_authentication_uat_obeys_explicit_admission_retry(path: str, monkeypatch) -> None:
+    busy = HttpResponse(429, {"code": "RATE_LIMITED", "detail": {
+        "auth_admission_retry": True, "retry_after_seconds": 15,
+    }})
+    success = HttpResponse(200, {"token": "synthetic-token"})
+    http = FakeHttp([busy, success])
+    suite = UatSuite(http, None, {})
+    delays = []
+    monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
+    assert suite._authentication_request(path, payload={}) == success
+    assert delays == [15]
+    assert len(http.calls) == 2
+
+
+@pytest.mark.parametrize("status,detail", [
+    (401, {"auth_admission_retry": True, "retry_after_seconds": 1}),
+    (429, None),
+    (429, {"auth_admission_retry": False, "retry_after_seconds": 1}),
+    (429, {"auth_admission_retry": True, "retry_after_seconds": 300}),
+    (429, {"auth_admission_retry": True, "retry_after_seconds": True}),
+])
+def test_authentication_uat_never_retries_other_rejections(
+    status: int, detail, monkeypatch,
+) -> None:
+    response = HttpResponse(status, {"code": "RATE_LIMITED", "detail": detail})
+    http = FakeHttp([response])
+    suite = UatSuite(http, None, {})
+    delays = []
+    monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
+    assert suite._authentication_request("/api/v1/web/auth/login", payload={}) == response
+    assert delays == [] and len(http.calls) == 1
+
+
+def test_authentication_uat_retry_budget_is_bounded(monkeypatch) -> None:
+    busy = HttpResponse(429, {"code": "RATE_LIMITED", "detail": {
+        "auth_admission_retry": True, "retry_after_seconds": 30,
+    }})
+    http = FakeHttp([busy, busy, busy])
+    suite = UatSuite(http, None, {})
+    delays = []
+    monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
+    assert suite._authentication_request("/api/v1/web/auth/login", payload={}) == busy
+    assert delays == [30, 30] and len(http.calls) == 3
