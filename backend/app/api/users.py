@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.api.admin_step_up import AdminStepUp, AdminStepUpToken
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.accounts import AccountSourceConflict
@@ -21,6 +22,7 @@ from app.core.auth.roles import Role
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
+from app.services.admin_step_up import admin_intent
 from app.services.user_management import (
     LastAdminProtected,
     ProviderActionUnsupported,
@@ -179,7 +181,10 @@ def _raise_user_error(error: Exception) -> NoReturn:
         ) from None
     if isinstance(error, PasswordScreeningUnavailable):
         raise ApiError(
-            503, "AUTH_PROVIDER_UNAVAILABLE", "密码安全检查暂不可用，请联系管理员", None,
+            503,
+            "AUTH_PROVIDER_UNAVAILABLE",
+            "密码安全检查暂不可用，请联系管理员",
+            None,
         ) from None
     if isinstance(error, PasswordPolicyViolation):
         raise ApiError(
@@ -272,7 +277,20 @@ async def create_local_user(
     request: Request,
     actor: Annotated[JwtClaims, Depends(require_admin)],
     service: Annotated[UserManagementService, Depends(get_user_management_service)],
+    step_up: AdminStepUp,
+    step_up_token: AdminStepUpToken = None,
 ) -> UserModel:
+    if payload.role == "admin":
+        await step_up.consume(
+            step_up_token,
+            access_token=request.headers.get("Authorization", "").split(" ", 1)[-1],
+            claims=actor,
+            ip=_ip(request),
+            intent=admin_intent(
+                "user_create_admin", "new", payload.model_dump(exclude={"temporary_password"})
+            ),
+        )
+
     try:
         return _model(
             await service.create_local(
@@ -306,7 +324,17 @@ async def update_user_role(
     request: Request,
     actor: Annotated[JwtClaims, Depends(require_admin)],
     service: Annotated[UserManagementService, Depends(get_user_management_service)],
+    step_up: AdminStepUp,
+    step_up_token: AdminStepUpToken = None,
 ) -> UserModel:
+    await step_up.consume(
+        step_up_token,
+        access_token=request.headers.get("Authorization", "").split(" ", 1)[-1],
+        claims=actor,
+        ip=_ip(request),
+        intent=admin_intent("user_role_change", str(account_id), payload.model_dump()),
+    )
+
     try:
         return _model(
             await service.change_role(
@@ -333,7 +361,17 @@ async def update_user_status(
     request: Request,
     actor: Annotated[JwtClaims, Depends(require_admin)],
     service: Annotated[UserManagementService, Depends(get_user_management_service)],
+    step_up: AdminStepUp,
+    step_up_token: AdminStepUpToken = None,
 ) -> UserModel:
+    await step_up.consume(
+        step_up_token,
+        access_token=request.headers.get("Authorization", "").split(" ", 1)[-1],
+        claims=actor,
+        ip=_ip(request),
+        intent=admin_intent("user_status_change", str(account_id), payload.model_dump()),
+    )
+
     try:
         return _model(
             await service.change_status(
@@ -367,7 +405,17 @@ async def reset_user_password(
     request: Request,
     actor: Annotated[JwtClaims, Depends(require_admin)],
     service: Annotated[UserManagementService, Depends(get_user_management_service)],
+    step_up: AdminStepUp,
+    step_up_token: AdminStepUpToken = None,
 ) -> UserModel:
+    await step_up.consume(
+        step_up_token,
+        access_token=request.headers.get("Authorization", "").split(" ", 1)[-1],
+        claims=actor,
+        ip=_ip(request),
+        intent=admin_intent("user_password_reset", str(account_id), {"action": "reset"}),
+    )
+
     try:
         return _model(
             await service.reset_password(

@@ -3162,7 +3162,10 @@ export interface paths {
         put: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     provider_code: string;
                 };
@@ -3288,7 +3291,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     provider_code: string;
                 };
@@ -3338,7 +3344,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     provider_code: string;
                 };
@@ -3421,7 +3430,10 @@ export interface paths {
         put: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     provider_code: string;
                 };
@@ -3466,6 +3478,84 @@ export interface paths {
             };
         };
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/web/admin/step-up": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 当前管理员重认证并签发用途绑定的单次授权 */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AdminStepUpRequest"];
+                };
+            };
+            responses: {
+                /** @description 已签发；仅存于浏览器易失内存 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AdminStepUpResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                /** @description INVALID_PARAM */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description ACCOUNT_LOCKED */
+                423: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description RATE_LIMITED */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description 认证源或授权存储暂不可用 */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -3530,7 +3620,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -3599,7 +3692,10 @@ export interface paths {
         put: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     account_id: number;
                 };
@@ -3653,7 +3749,10 @@ export interface paths {
         put: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     account_id: number;
                 };
@@ -3716,7 +3815,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     account_id: number;
                 };
@@ -7742,6 +7844,23 @@ export interface components {
         };
         ExportStepUpResponse: {
             /** @description 仅在浏览器易失内存中保存并单次使用 */
+            token: string;
+            /** @default 300 */
+            expires_in: number;
+        };
+        AdminStepUpRequest: {
+            /** @enum {string} */
+            operation: "user_create_admin" | "user_role_change" | "user_password_reset" | "user_status_change" | "provider_role_mapping_change" | "provider_save_draft" | "provider_enable_disable";
+            target_id: string;
+            /** @description 用途规定的非凭据参数；服务端规范化并绑定，拒绝未知字段及客户端摘要 */
+            parameters: {
+                [key: string]: unknown;
+            };
+            /** Format: password */
+            password: string;
+        };
+        AdminStepUpResponse: {
+            /** @description 仅在浏览器易失内存中单次使用 */
             token: string;
             /** @default 300 */
             expires_in: number;

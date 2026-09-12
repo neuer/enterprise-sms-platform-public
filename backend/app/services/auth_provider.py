@@ -292,6 +292,7 @@ class AuthProviderRepository(Protocol):
         self,
         code: str,
         *,
+        expected_draft_version: int,
         actor: str,
         ip: str,
     ) -> ProviderRecord: ...
@@ -300,6 +301,7 @@ class AuthProviderRepository(Protocol):
         self,
         code: str,
         *,
+        expected_draft_version: int,
         actor: str,
         ip: str,
     ) -> ProviderRecord: ...
@@ -397,15 +399,33 @@ class AuthProviderService:
         )
         return result
 
-    async def activate(self, code: str, *, actor: str, ip: str) -> ProviderRecord:
+    async def activate(
+        self, code: str, *, actor: str, ip: str, expected_draft_version: int | None = None
+    ) -> ProviderRecord:
         record = await self.repository.get(code)
         self._ensure_mutable(record)
-        return await self.repository.activate(code, actor=actor, ip=ip)
+        return await self.repository.activate(
+            code,
+            actor=actor,
+            ip=ip,
+            expected_draft_version=record.draft_version
+            if expected_draft_version is None
+            else expected_draft_version,
+        )
 
-    async def disable(self, code: str, *, actor: str, ip: str) -> ProviderRecord:
+    async def disable(
+        self, code: str, *, actor: str, ip: str, expected_draft_version: int | None = None
+    ) -> ProviderRecord:
         record = await self.repository.get(code)
         self._ensure_mutable(record)
-        return await self.repository.disable(code, actor=actor, ip=ip)
+        return await self.repository.disable(
+            code,
+            actor=actor,
+            ip=ip,
+            expected_draft_version=record.draft_version
+            if expected_draft_version is None
+            else expected_draft_version,
+        )
 
     async def list_role_mappings(
         self,

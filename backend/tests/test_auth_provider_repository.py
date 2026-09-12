@@ -208,7 +208,7 @@ async def test_activate_is_atomic_and_requires_current_tested_version() -> None:
         ]
     )
 
-    active = await repo.activate("ad", actor="admin", ip="10.0.0.8")
+    active = await repo.activate("ad", expected_draft_version=4, actor="admin", ip="10.0.0.8")
 
     sql, params = connection.calls[0]
     assert "active_config=draft_config" in sql
@@ -223,7 +223,7 @@ async def test_activate_is_atomic_and_requires_current_tested_version() -> None:
         "action": "activate",
         "result_code": "ACTIVATED",
     }
-    assert params == {"code": "ad"}
+    assert params == {"code": "ad", "expected_draft_version": 4}
 
 
 @pytest.mark.asyncio
@@ -231,7 +231,7 @@ async def test_activate_rejects_untested_draft_without_audit() -> None:
     repo, connection = repository([FakeResult()])
 
     with pytest.raises(UntestedProviderConfig):
-        await repo.activate("ad", actor="admin", ip="10.0.0.8")
+        await repo.activate("ad", expected_draft_version=4, actor="admin", ip="10.0.0.8")
 
     assert len(connection.calls) == 1
 
@@ -250,7 +250,7 @@ async def test_disable_preserves_both_draft_and_active_configuration() -> None:
         ]
     )
 
-    disabled = await repo.disable("ad", actor="admin", ip="10.0.0.8")
+    disabled = await repo.disable("ad", expected_draft_version=1, actor="admin", ip="10.0.0.8")
 
     assert "pg_advisory_xact_lock" in connection.calls[0][0]
     assert "FOR UPDATE" in connection.calls[1][0]
@@ -273,7 +273,7 @@ async def test_disable_rejects_removing_last_effective_admin() -> None:
     )
 
     with pytest.raises(LastAdminProtected):
-        await repo.disable("ad", actor="admin", ip="10.0.0.8")
+        await repo.disable("ad", expected_draft_version=1, actor="admin", ip="10.0.0.8")
 
     assert "pg_advisory_xact_lock" in connection.calls[0][0]
     assert "external_role_mapping" in connection.calls[-1][0]
@@ -392,3 +392,22 @@ async def test_role_mapping_list_orders_groups_and_returns_no_provider_secret() 
     sql = connection.calls[1][0]
     assert "ORDER BY external_group" in sql
     assert "draft_config" not in sql and "active_config" not in sql
+
+
+@pytest.mark.asyncio
+async def test_disable_rejects_a_draft_changed_since_step_up_before_any_mutation() -> None:
+    from app.services.auth_provider import StaleProviderDraft
+
+    repo, connection = repository(
+        [
+            FakeResult(),
+            FakeResult([provider_row(enabled=True, draft_version=5)]),
+        ]
+    )
+    with pytest.raises(StaleProviderDraft):
+        await repo.disable("ad", actor="synthetic", ip="127.0.0.1", expected_draft_version=4)
+    assert len(connection.calls) == 2
+    assert not any(
+        "UPDATE auth_provider" in sql or "INSERT INTO audit_log" in sql
+        for sql, _ in connection.calls
+    )

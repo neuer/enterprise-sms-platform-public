@@ -1,4 +1,4 @@
-import { flushPromises, mount } from "@vue/test-utils"
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils"
 import ElementPlus, { ElMessage, ElMessageBox } from "element-plus"
 import { createPinia, setActivePinia } from "pinia"
 import { vi } from "vitest"
@@ -6,6 +6,17 @@ import { vi } from "vitest"
 import AuditView from "../src/views/AuditView.vue"
 import ConfigView from "../src/views/ConfigView.vue"
 import { useSessionStore } from "../src/stores/session"
+
+import AdminStepUpDialog from "../src/components/AdminStepUpDialog.vue"
+
+async function approveStepUp(wrapper: VueWrapper) {
+  await flushPromises()
+  const controller = wrapper.findComponent(AdminStepUpDialog).props("controller")
+  expect(controller.state.open).toBe(true)
+  controller.state.password = "Synthetic@Password123"
+  await controller.submit()
+  await flushPromises()
+}
 
 function response(body: unknown, status = 200) {
   return {
@@ -106,6 +117,8 @@ const roleMappings = {
 
 function configFetch(overrides?: (url: string, init: RequestInit) => ReturnType<typeof response> | undefined) {
   return vi.fn().mockImplementation((url: string, init: RequestInit = {}) => {
+    if (url === "/api/v1/web/admin/step-up")
+      return Promise.resolve(response({ token: "synthetic-grant", expires_in: 300 }))
     const overridden = overrides?.(url, init)
     if (overridden) return Promise.resolve(overridden)
     if (url === "/api/v1/web/admin/auth-providers/ad") return Promise.resolve(response(adProvider))
@@ -309,6 +322,7 @@ describe("审计与系统参数", () => {
     expect(wrapper.get("[data-testid='activate-ad']").attributes("disabled")).toBeDefined()
     await wrapper.get("[data-testid='save-ad-draft']").trigger("click")
     await flushPromises()
+    await approveStepUp(wrapper)
 
     const request = fetch.mock.calls.find(([url]) => url.endsWith("/auth-providers/ad/draft"))
     const body = JSON.parse(String(request?.[1].body))
@@ -355,6 +369,7 @@ describe("审计与系统参数", () => {
     expect(wrapper.get("[data-testid='activate-ad']").attributes("disabled")).toBeUndefined()
     await wrapper.get("[data-testid='activate-ad']").trigger("click")
     await flushPromises()
+    await approveStepUp(wrapper)
     expect(wrapper.text()).toContain("AD 当前已启用")
     expect(wrapper.text()).toContain("生效版本 v3")
     wrapper.unmount()
@@ -418,6 +433,7 @@ describe("审计与系统参数", () => {
 
     await wrapper.get("[data-testid='disable-ad']").trigger("click")
     await flushPromises()
+    await approveStepUp(wrapper)
     expect(ElMessageBox.confirm).toHaveBeenCalledWith(
       expect.objectContaining({
         children: expect.arrayContaining([
@@ -435,6 +451,7 @@ describe("审计与系统参数", () => {
     await wrapper.getComponent("[data-testid='mapping-role-0']").setValue("admin")
     await wrapper.get("[data-testid='save-role-mappings']").trigger("click")
     await flushPromises()
+    await approveStepUp(wrapper)
     const request = fetch.mock.calls.find(([url, init]) => url.endsWith("/role-mappings") && init.method === "PUT")
     expect(JSON.parse(String(request?.[1].body))).toEqual({
       expected_revision: "a".repeat(64),
@@ -463,6 +480,7 @@ describe("审计与系统参数", () => {
       await wrapper.get("[data-testid='mapping-dept-0']").setValue("尚未保存的部门")
       await wrapper.get("[data-testid='save-role-mappings']").trigger("click")
       await flushPromises()
+      await approveStepUp(wrapper)
       expect((wrapper.get("[data-testid='mapping-dept-0']").element as HTMLInputElement).value).toBe("尚未保存的部门")
       expect(ElMessage.error).toHaveBeenCalledWith("角色映射已被其他操作修改")
       revision = "b".repeat(64)
@@ -470,6 +488,7 @@ describe("审计与系统参数", () => {
       await flushPromises()
       await wrapper.get("[data-testid='save-role-mappings']").trigger("click")
       await flushPromises()
+      await approveStepUp(wrapper)
       const saves = fetch.mock.calls.filter(([url, init]) => url.endsWith("/role-mappings") && init.method === "PUT")
       expect(saves.map(([, init]) => JSON.parse(String(init.body)).expected_revision)).toEqual([
         "a".repeat(64),

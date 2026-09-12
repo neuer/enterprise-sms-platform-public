@@ -50,9 +50,7 @@ def test_ldap_provider_kind_rejects_target_outside_deployment_allowlist() -> Non
     )
     assert kind.validate_config(valid_ad_config())["server"] == "ldaps://dc01.example.com:636"
     with pytest.raises(InvalidProviderConfig, match="部署允许列表"):
-        kind.validate_config(
-            {**valid_ad_config(), "server": "ldaps://evil.example.com:636"}
-        )
+        kind.validate_config({**valid_ad_config(), "server": "ldaps://evil.example.com:636"})
 
 
 def test_ldap_allowed_list_empty_fails_closed() -> None:
@@ -192,6 +190,7 @@ class FakeProviderRepository:
         *,
         actor: str,
         ip: str,
+        expected_draft_version: int,
     ) -> ProviderRecord:
         current = self.records[code]
         if current.tested_version != current.draft_version:
@@ -212,6 +211,7 @@ class FakeProviderRepository:
         *,
         actor: str,
         ip: str,
+        expected_draft_version: int,
     ) -> ProviderRecord:
         current = self.records[code]
         saved = replace(current, enabled=False)

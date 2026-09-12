@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 
 import app.api.auth_providers as providers_api
+from app.api.admin_step_up import get_admin_step_up_service
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.roles import Role
 from app.core.auth.runtime import get_auth_facade
@@ -107,20 +108,22 @@ class FakeProviderService:
         self.calls.append(("test", (code, actor, ip)))
         return ProviderTestResult(False, "LDAP_CONNECTION_FAILED")
 
-    async def activate(self, code: str, *, actor: str, ip: str) -> ProviderRecord:
+    async def activate(
+        self, code: str, *, actor: str, ip: str, expected_draft_version: int
+    ) -> ProviderRecord:
         self.calls.append(("activate", (code, actor, ip)))
         raise UntestedProviderConfig("untested")
 
-    async def disable(self, code: str, *, actor: str, ip: str) -> ProviderRecord:
+    async def disable(
+        self, code: str, *, actor: str, ip: str, expected_draft_version: int
+    ) -> ProviderRecord:
         self.calls.append(("disable", (code, actor, ip)))
         return self.value
 
     async def list_role_mappings(self, code: str) -> tuple[ExternalRoleMapping, ...]:
         self.calls.append(("list_mappings", code))
         return (
-            ExternalRoleMapping(
-                "CN=SMS-Admins,OU=Groups,DC=example,DC=com", "admin", "平台部"
-            ),
+            ExternalRoleMapping("CN=SMS-Admins,OU=Groups,DC=example,DC=com", "admin", "平台部"),
         )
 
     async def replace_role_mappings(
@@ -136,8 +139,16 @@ class FakeProviderService:
         return mappings
 
 
+class ApprovedStepUp:
+    """业务错误映射测试使用已批准授权；安全边界由真实服务 API 测试覆盖。"""
+
+    async def consume(self, token: str | None, **kwargs: object) -> None:
+        del token, kwargs
+
+
 def client(role: Role = "admin") -> tuple[TestClient, FakeProviderService]:
     app = create_app()
+    app.dependency_overrides[get_admin_step_up_service] = lambda: ApprovedStepUp()
     service = FakeProviderService()
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade(role)
     app.dependency_overrides[providers_api.get_auth_provider_admin_service] = lambda: service
@@ -196,7 +207,7 @@ def test_admin_can_save_test_disable_and_replace_role_mappings() -> None:
                     "role": "operator",
                     "dept": "业务一部",
                 }
-            ]
+            ],
         },
     )
 
@@ -210,6 +221,7 @@ def test_admin_can_save_test_disable_and_replace_role_mappings() -> None:
     assert [name for name, _ in service.calls] == [
         "draft",
         "test",
+        "get",
         "disable",
         "list_mappings",
         "replace_mappings",

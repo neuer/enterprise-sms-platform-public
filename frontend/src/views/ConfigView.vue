@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import AdminStepUpDialog from "../components/AdminStepUpDialog.vue"
+import { useAdminStepUp } from "../composables/useAdminStepUp"
+const adminStepUp = useAdminStepUp()
 import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
 import { computed, nextTick, onMounted, reactive, ref } from "vue"
@@ -263,7 +266,14 @@ function providerDraft(): LdapProviderConfig {
 async function saveProviderDraft(): Promise<void> {
   providerSaving.value = true
   try {
-    hydrateProvider(await saveAuthProviderDraft("ad", providerDraft()))
+    const config = providerDraft()
+    const saved = await adminStepUp.run(
+      { operation: "provider_save_draft", target_id: "ad", parameters: { config } },
+      "修改 AD 认证源配置",
+      (token) => saveAuthProviderDraft("ad", config, token),
+    )
+    if (!saved) return
+    hydrateProvider(saved)
     disabledPreserved.value = false
     ElMessage.success("AD 配置草稿已保存，请测试当前版本 · 本次操作已记入审计")
   } catch (error) {
@@ -293,7 +303,18 @@ async function runProviderTest(): Promise<void> {
 async function activateProvider(): Promise<void> {
   providerSaving.value = true
   try {
-    hydrateProvider(await activateAuthProvider("ad"))
+    if (!adProvider.value) return
+    const saved = await adminStepUp.run(
+      {
+        operation: "provider_enable_disable",
+        target_id: "ad",
+        parameters: { enabled: true, draft_version: adProvider.value.draft_version },
+      },
+      "变更 AD 认证源启用状态",
+      (token) => activateAuthProvider("ad", token),
+    )
+    if (!saved) return
+    hydrateProvider(saved)
     disabledPreserved.value = false
     ElMessage.success("AD 认证源已启用 · 本次操作已记入审计")
   } catch (error) {
@@ -315,7 +336,18 @@ async function disableProvider(): Promise<void> {
     return
   try {
     providerSaving.value = true
-    hydrateProvider(await disableAuthProvider("ad"))
+    if (!adProvider.value) return
+    const saved = await adminStepUp.run(
+      {
+        operation: "provider_enable_disable",
+        target_id: "ad",
+        parameters: { enabled: false, draft_version: adProvider.value.draft_version },
+      },
+      "变更 AD 认证源启用状态",
+      (token) => disableAuthProvider("ad", token),
+    )
+    if (!saved) return
+    hydrateProvider(saved)
     disabledPreserved.value = true
     ElMessage.success("AD 已禁用，配置与角色映射均已保留 · 本次操作已记入审计")
   } catch (error) {
@@ -361,7 +393,17 @@ async function saveRoleMappings(): Promise<void> {
         dept: item.dept?.trim() || "",
       }))
       .filter((item) => item.external_group)
-    const result = await replaceAuthProviderRoleMappings("ad", mappings, roleMappingsRevision.value)
+    const expectedRevision = roleMappingsRevision.value
+    const result = await adminStepUp.run(
+      {
+        operation: "provider_role_mapping_change",
+        target_id: "ad",
+        parameters: { mappings, expected_revision: expectedRevision },
+      },
+      "替换 AD 目录组角色映射",
+      (token) => replaceAuthProviderRoleMappings("ad", mappings, expectedRevision, token),
+    )
+    if (!result) return
     roleMappingsRevision.value = result.revision
     roleMappings.value = result.mappings.map((item) => ({ ...item, rowKey: ++roleMappingKeySeq }))
     ElMessage.success("AD 目录组角色映射已更新 · 本次操作已记入审计")
@@ -379,6 +421,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <AdminStepUpDialog :controller="adminStepUp" />
   <section class="page-heading config-heading">
     <div>
       <p class="eyebrow">POLICY REGISTRY / 策略注册表</p>

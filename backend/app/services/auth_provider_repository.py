@@ -199,7 +199,9 @@ class SqlAuthProviderRepository:
         finally:
             await engine.dispose()
 
-    async def activate(self, code: str, *, actor: str, ip: str) -> ProviderRecord:
+    async def activate(
+        self, code: str, *, actor: str, ip: str, expected_draft_version: int
+    ) -> ProviderRecord:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -212,10 +214,11 @@ class SqlAuthProviderRepository:
                             enabled=TRUE,
                             updated_at=now()
                         WHERE code=:code AND tested_version=draft_version
+                          AND draft_version=:expected_draft_version
                         RETURNING {PROVIDER_COLUMNS}
                         """
                     ),
-                    {"code": code},
+                    {"code": code, "expected_draft_version": expected_draft_version},
                 )
                 row = _one_or_none(result)
                 if row is None:
@@ -234,7 +237,9 @@ class SqlAuthProviderRepository:
         finally:
             await engine.dispose()
 
-    async def disable(self, code: str, *, actor: str, ip: str) -> ProviderRecord:
+    async def disable(
+        self, code: str, *, actor: str, ip: str, expected_draft_version: int
+    ) -> ProviderRecord:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -251,6 +256,8 @@ class SqlAuthProviderRepository:
                 previous = _one_or_none(locked)
                 if previous is None:
                     raise ProviderNotFound("认证源不存在")
+                if int(previous["draft_version"]) != expected_draft_version:
+                    raise StaleProviderDraft("认证源草稿已变化，请重新验证后操作")
                 result = await connection.execute(
                     text(
                         f"""
