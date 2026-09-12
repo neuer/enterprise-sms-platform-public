@@ -44,6 +44,7 @@ export class SessionDocument {
   legacyMigrationAttempted = false
   legacyMigrationClosed = false
   private readonly controllers = new Set<AbortController>()
+  private readonly accessClearedListeners = new Set<() => void>()
   private readonly seenEventIds: string[] = []
   private readonly seenEventIndex = new Set<string>()
   private signalPublisher: SessionSignalPublisher | null = null
@@ -167,7 +168,13 @@ export class SessionDocument {
     publishSessionInstance(this.logicalSessionInstanceId)
   }
 
+  onAccessSessionCleared(listener: () => void): () => void {
+    this.accessClearedListeners.add(listener)
+    return () => this.accessClearedListeners.delete(listener)
+  }
+
   clearAccessSession(): void {
+    const hadSession = Boolean(this.accessToken || this.sessionUser || this.logicalSessionInstanceId)
     const retiredInstance = this.logicalSessionInstanceId
     this.accessToken = null
     this.sessionUser = null
@@ -178,6 +185,9 @@ export class SessionDocument {
     this.storageRemove(LEGACY_TOKEN_KEY)
     this.storageRemove(LEGACY_USER_KEY)
     if (retiredInstance) unpublishSessionInstance(retiredInstance)
+    if (hadSession) {
+      for (const listener of this.accessClearedListeners) listener()
+    }
   }
 
   clearRefreshTabBinding(): void {

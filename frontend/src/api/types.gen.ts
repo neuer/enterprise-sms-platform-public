@@ -7332,6 +7332,7 @@ export interface components {
             dept?: string | null;
         };
         AuthProviderRoleMappings: {
+            revision: string;
             mappings: components["schemas"]["AuthProviderRoleMapping"][];
         };
         AuthProviderRoleMappingUpdate: {
@@ -7341,6 +7342,7 @@ export interface components {
             dept: string;
         };
         AuthProviderRoleMappingsUpdate: {
+            expected_revision: string;
             mappings: components["schemas"]["AuthProviderRoleMappingUpdate"][];
         };
         DashboardCategoryModel: {
@@ -7556,6 +7558,8 @@ export interface components {
             batch_no: string;
             category: string;
             applicant: string;
+            /** @description 申请人稳定账号 ID；无法确认历史身份时为 null */
+            applicant_account_id: number | null;
             dept: string;
             total: number;
             /** @description 单个号码的计费条数 */
@@ -7590,6 +7594,8 @@ export interface components {
             batch_no: string;
             category: string;
             applicant: string;
+            /** @description 申请人稳定账号 ID；无法确认历史身份时为 null */
+            applicant_account_id: number | null;
             dept: string;
             total: number;
             /** @description 单个号码的计费条数 */

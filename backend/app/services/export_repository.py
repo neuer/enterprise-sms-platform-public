@@ -20,6 +20,33 @@ from app.services.export import (
 )
 from app.settings import Settings, get_settings
 
+# 状态与下载复用同一当前主体授权条件，历史文件不继承旧角色/部门权限。
+EXPORT_ACCESS_PREDICATE = """
+                          AND (
+                            :actor_role='admin'
+                            OR (
+                              :actor_role='approver'
+                              AND (
+                                creator_account_id=:actor_account_id
+                                OR (
+                                  scope_dept IS NOT NULL
+                                  AND scope_dept=CAST(:actor_dept AS varchar(128))
+                                )
+                              )
+                            )
+                            OR (
+                              :actor_role IN ('operator','viewer')
+                              AND creator_account_id=:actor_account_id
+                              AND scope_dept IS NOT NULL
+                              AND scope_dept=CAST(:actor_dept AS varchar(128))
+                            )
+                          )
+                          AND (
+                            NOT decrypted
+                            OR :actor_role IN ('admin','approver')
+                          )
+"""
+
 
 @dataclass(frozen=True, slots=True)
 class ExportClaim:
@@ -222,28 +249,7 @@ class SqlExportRepository:
                           AND creator_account_id IS NOT NULL
                           AND creator_identity_id IS NOT NULL
                           AND scope_resolved
-                          AND (
-                            :actor_role='admin'
-                            OR (
-                              :actor_role='approver'
-                              AND (
-                                creator_account_id=:actor_account_id
-                                OR (
-                                  scope_dept IS NOT NULL
-                                  AND scope_dept=CAST(:actor_dept AS varchar(128))
-                                )
-                              )
-                            )
-                            OR (
-                              :actor_role IN ('operator','viewer')
-                              AND creator_account_id=:actor_account_id
-                            )
-                          )
-                          AND (
-                            NOT decrypted
-                            OR :actor_role IN ('admin','approver')
-                          )
-                        """
+                        """ + EXPORT_ACCESS_PREDICATE
                     ),
                     {
                         "public_id": str(public_id),
@@ -286,27 +292,7 @@ class SqlExportRepository:
                           AND file_path IS NOT NULL
                           AND finished_at IS NOT NULL
                           AND finished_at+make_interval(days=>:retention_days)>now()
-                          AND (
-                            :actor_role='admin'
-                            OR (
-                              :actor_role='approver'
-                              AND (
-                                creator_account_id=:actor_account_id
-                                OR (
-                                  scope_dept IS NOT NULL
-                                  AND scope_dept=CAST(:actor_dept AS varchar(128))
-                                )
-                              )
-                            )
-                            OR (
-                              :actor_role IN ('operator','viewer')
-                              AND creator_account_id=:actor_account_id
-                            )
-                          )
-                          AND (
-                            NOT decrypted
-                            OR :actor_role IN ('admin','approver')
-                          )
+                        """ + EXPORT_ACCESS_PREDICATE + """
                         FOR SHARE
                         """
                     ),

@@ -95,6 +95,7 @@ const adProvider = {
 }
 
 const roleMappings = {
+  revision: "a".repeat(64),
   mappings: [
     {
       external_group: "CN=SMS-Operators,OU=Groups,DC=example,DC=com",
@@ -404,6 +405,7 @@ describe("审计与系统参数", () => {
       if (url === "/api/v1/web/admin/auth-providers/ad/disable") return response(disabled)
       if (url === "/api/v1/web/admin/auth-providers/ad/role-mappings" && init.method === "PUT") {
         return response({
+          revision: "b".repeat(64),
           mappings: [{ external_group: "CN=SMS-Admins,OU=Groups,DC=example,DC=com", role: "admin", dept: "平台部" }],
         })
       }
@@ -435,11 +437,49 @@ describe("审计与系统参数", () => {
     await flushPromises()
     const request = fetch.mock.calls.find(([url, init]) => url.endsWith("/role-mappings") && init.method === "PUT")
     expect(JSON.parse(String(request?.[1].body))).toEqual({
+      expected_revision: "a".repeat(64),
       mappings: [{ external_group: "CN=SMS-Admins,OU=Groups,DC=example,DC=com", role: "admin", dept: "平台部" }],
     })
     wrapper.unmount()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
+  })
+
+  it("角色映射冲突保留草稿，确认重载后使用新版本保存", async () => {
+    let revision = "a".repeat(64)
+    const fetch = configFetch((url, init) => {
+      if (!url.endsWith("/role-mappings")) return undefined
+      if (init.method === "PUT") {
+        return response({ code: "STATE_CONFLICT", message: "角色映射已被其他操作修改", detail: null }, 409)
+      }
+      return response({ ...roleMappings, revision })
+    })
+    vi.stubGlobal("fetch", fetch)
+    vi.spyOn(ElMessage, "error").mockImplementation(() => ({ close: vi.fn() }))
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const wrapper = mount(ConfigView, { global: { plugins: [createPinia(), ElementPlus] } })
+    try {
+      await flushPromises()
+      await wrapper.get("[data-testid='mapping-dept-0']").setValue("尚未保存的部门")
+      await wrapper.get("[data-testid='save-role-mappings']").trigger("click")
+      await flushPromises()
+      expect((wrapper.get("[data-testid='mapping-dept-0']").element as HTMLInputElement).value).toBe("尚未保存的部门")
+      expect(ElMessage.error).toHaveBeenCalledWith("角色映射已被其他操作修改")
+      revision = "b".repeat(64)
+      await wrapper.get("[data-testid='reload-role-mappings']").trigger("click")
+      await flushPromises()
+      await wrapper.get("[data-testid='save-role-mappings']").trigger("click")
+      await flushPromises()
+      const saves = fetch.mock.calls.filter(([url, init]) => url.endsWith("/role-mappings") && init.method === "PUT")
+      expect(saves.map(([, init]) => JSON.parse(String(init.body)).expected_revision)).toEqual([
+        "a".repeat(64),
+        revision,
+      ])
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
   })
 
   it("检索审计并在 drawer 展示载荷差异与同链路追踪", async () => {

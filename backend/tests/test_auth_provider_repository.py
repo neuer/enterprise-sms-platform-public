@@ -11,6 +11,7 @@ from app.services.auth_provider import (
     ExternalRoleMapping,
     ProviderTestResult,
     UntestedProviderConfig,
+    role_mapping_revision,
 )
 from app.services.auth_provider_repository import SqlAuthProviderRepository
 from app.services.user_management import LastAdminProtected
@@ -283,12 +284,8 @@ async def test_disable_rejects_removing_last_effective_admin() -> None:
 @pytest.mark.asyncio
 async def test_role_mapping_replace_is_provider_scoped_atomic_and_safely_audited() -> None:
     mappings = (
-        ExternalRoleMapping(
-            "CN=SMS-Admins,OU=Groups,DC=example,DC=com", "admin", "平台部"
-        ),
-        ExternalRoleMapping(
-            "CN=SMS-Operators,OU=Groups,DC=example,DC=com", "operator", "业务一部"
-        ),
+        ExternalRoleMapping("CN=SMS-Admins,OU=Groups,DC=example,DC=com", "admin", "平台部"),
+        ExternalRoleMapping("CN=SMS-Operators,OU=Groups,DC=example,DC=com", "operator", "业务一部"),
     )
     repo, connection = repository(
         [
@@ -305,6 +302,7 @@ async def test_role_mapping_replace_is_provider_scoped_atomic_and_safely_audited
     saved = await repo.replace_role_mappings(
         "ad",
         mappings,
+        expected_revision=role_mapping_revision(()),
         actor="admin",
         ip="10.0.0.8",
     )
@@ -312,7 +310,7 @@ async def test_role_mapping_replace_is_provider_scoped_atomic_and_safely_audited
     assert saved == mappings
     assert "pg_advisory_xact_lock" in connection.calls[0][0]
     assert "FOR UPDATE" in connection.calls[1][0]
-    assert "DELETE FROM external_role_mapping" in connection.calls[2][0]
+    assert "SELECT external_group,role,dept" in connection.calls[2][0]
     assert "INSERT INTO external_role_mapping" in connection.calls[3][0]
     assert connection.calls[3][1]["provider_id"] == 2
     audit_sql, audit_params = connection.calls[-1]
@@ -340,6 +338,7 @@ async def test_role_mapping_replace_rejects_removing_last_effective_admin() -> N
         [
             FakeResult(),
             FakeResult(scalar=2),
+            FakeResult(rows=[{"external_group": "group", "role": "admin", "dept": "synthetic"}]),
             FakeResult(),
             FakeResult(),
         ]
@@ -349,12 +348,15 @@ async def test_role_mapping_replace_rejects_removing_last_effective_admin() -> N
         await repo.replace_role_mappings(
             "ad",
             (),
+            expected_revision=role_mapping_revision(
+                (ExternalRoleMapping("group", "admin", "synthetic"),)
+            ),
             actor="admin",
             ip="10.0.0.8",
         )
 
     assert "pg_advisory_xact_lock" in connection.calls[0][0]
-    assert "DELETE FROM external_role_mapping" in connection.calls[2][0]
+    assert "DELETE FROM external_role_mapping" in connection.calls[3][0]
     assert "external_role_mapping" in connection.calls[-1][0]
     assert all("INSERT INTO audit_log" not in sql for sql, _ in connection.calls)
 

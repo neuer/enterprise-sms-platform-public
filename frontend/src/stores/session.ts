@@ -81,7 +81,7 @@ function isPlatformUser(value: unknown): value is PlatformUser {
 }
 
 export function createSessionStore(doc: SessionDocument = defaultSessionDocument, storeId = "session") {
-  return defineStore(storeId, {
+  const useStore = defineStore(storeId, {
     state: () => ({
       token: doc.getAccessToken() ?? "",
       accountId: doc.getSessionUser()?.account_id ?? 0,
@@ -323,6 +323,21 @@ export function createSessionStore(doc: SessionDocument = defaultSessionDocument
       },
     },
   })
+  const boundStores = new WeakSet<ReturnType<typeof useStore>>()
+  return Object.assign((...args: Parameters<typeof useStore>) => {
+    const store = useStore(...args)
+    if (!boundStores.has(store)) {
+      boundStores.add(store)
+      const unsubscribe = doc.onAccessSessionCleared(() => store.resetIdentity())
+      const dispose = store.$dispose.bind(store)
+      store.$dispose = () => {
+        unsubscribe()
+        boundStores.delete(store)
+        dispose()
+      }
+    }
+    return store
+  }, useStore)
 }
 
 export const useSessionStore = createSessionStore()

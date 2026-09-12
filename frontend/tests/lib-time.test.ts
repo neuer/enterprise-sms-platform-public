@@ -1,4 +1,5 @@
 import {
+  dateKeyWeekday,
   daysAgoDateKey,
   formatDateTime,
   formatDateTimeMinute,
@@ -58,4 +59,20 @@ describe("时间格式化单点（Asia/Shanghai）", () => {
     expect(daysAgoDateKey(0, instant)).toBe("2026-09-05")
     expect(daysAgoDateKey(1, new Date("2026-03-01T01:00:00Z"))).toBe("2026-02-28")
   })
+})
+
+describe("严格日历星期", () => {
+  it.each([
+    ["2026-01-01", "周四"],
+    ["2026-03-08", "周日"],
+    ["2026-11-01", "周日"],
+    ["2024-02-29", "周四"],
+    ["2026-12-31", "周四"],
+    ["2026-09-12", "周六"],
+  ])("%s 为 %s", (day, weekday) => {
+    expect(dateKeyWeekday(day)).toBe(weekday)
+  })
+  it.each(["", "2026-02-29", "2026-02-30", "2026-13-01", "2026-1-01", "invalid"])("拒绝非法日期 %s", (day) =>
+    expect(dateKeyWeekday(day)).toBe("—"),
+  )
 })

@@ -5,6 +5,7 @@
  * （auth.ts 为 pre-auth 例外，见该文件注释）。
  */
 import { AuthApiError, refreshRequest } from "./auth"
+import { defaultSessionDocument } from "./sessionDocument"
 import {
   API_JSON_MAX_BYTES,
   DOWNLOAD_MAX_BYTES,
@@ -237,15 +238,24 @@ function applyAuthDecision(decision: AuthDecision, scope: RequestScope): void {
   }
 }
 
+function applyFinalAuthDecision(status: number, body: unknown, scope: RequestScope): void {
+  const decision = classifyAuthDecision(status, body)
+  applyAuthDecision(decision, scope)
+  if (decision === "unauthorized") scope.retire("unauthorized")
+}
+
 function clearSession(
   broadcast: "unauthorized" | "reauth-required" | "none" = "unauthorized",
   origin?: SessionOperationOrigin,
 ): boolean {
   if (origin && !isSessionOperationOriginCurrent(origin)) return false
+  const retiredInstance = getSessionInstanceId()
   invalidateSessionGeneration()
   cancelSessionRequests()
   clearAccessSession()
   clearRefreshTabBinding()
+  window.dispatchEvent(new Event("sms:session-clearing"))
+  if (retiredInstance) defaultSessionDocument.broadcastRetired(retiredInstance)
   if (broadcast === "unauthorized") {
     window.dispatchEvent(new Event("sms:unauthorized"))
   } else if (broadcast === "reauth-required") {
@@ -399,6 +409,7 @@ export async function authorizedJsonResult<T>(
       () => first,
     )
     scope.assertCurrent()
+    applyFinalAuthDecision(replayed.status, replayed.body, scope)
     return replayed
   } catch (error) {
     scope.assertCurrent()
@@ -482,6 +493,7 @@ export async function authorizedFetch(
       () => first,
     )
     scope.assertCurrent()
+    applyFinalAuthDecision(replayed.response.status, replayed.body, scope)
     return replayed.response
   } catch (error) {
     scope.assertCurrent()
@@ -574,6 +586,7 @@ export async function authorizedBlob(
     )
     scope.assertCurrent()
     if (replayed.kind === "blob") return replayed.blob
+    applyFinalAuthDecision(replayed.status, replayed.body, scope)
     throwDownloadError(replayed.status, replayed.body)
   } catch (error) {
     scope.assertCurrent()

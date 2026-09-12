@@ -343,6 +343,7 @@ class SqlUserManagementRepository:
                     },
                 )
                 await ensure_effective_admin(connection)
+                updated = _record(await self._locked(connection, account_id))
                 await connection.execute(
                     text(
                         """
@@ -354,11 +355,15 @@ class SqlUserManagementRepository:
                           'user_account',:object_id,
                           jsonb_build_object(
                             'role',CAST(:before_role AS text),
-                            'role_override',CAST(:before_override AS boolean)
+                            'role_override',CAST(:before_override AS boolean),
+                            'dept',CAST(:before_dept AS text),
+                            'security_version',CAST(:before_version AS bigint)
                           ),
                           jsonb_build_object(
                             'role',CAST(:after_role AS text),
-                            'role_override',CAST(:after_override AS boolean)
+                            'role_override',CAST(:after_override AS boolean),
+                            'dept',CAST(:after_dept AS text),
+                            'security_version',CAST(:after_version AS bigint)
                           )
                         )
                         """
@@ -369,16 +374,15 @@ class SqlUserManagementRepository:
                         "object_id": str(account_id),
                         "before_role": current.role,
                         "before_override": current.role_override,
-                        "after_role": target_role,
-                        "after_override": role_override,
+                        "before_dept": current.dept,
+                        "before_version": current.security_version,
+                        "after_dept": updated.dept,
+                        "after_version": updated.security_version,
+                        "after_role": updated.role,
+                        "after_override": updated.role_override,
                     },
                 )
-                return replace(
-                    current,
-                    role=target_role,
-                    role_override=role_override,
-                    security_version=current.security_version + 1,
-                )
+                return updated
         finally:
             await engine.dispose()
 

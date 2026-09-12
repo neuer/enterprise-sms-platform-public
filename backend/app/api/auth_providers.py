@@ -12,6 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.auth.providers import create_provider_registry
 from app.core.auth.roles import Role
@@ -30,6 +31,7 @@ from app.services.auth_provider import (
     ProviderTestResult,
     StaleProviderDraft,
     UntestedProviderConfig,
+    role_mapping_revision,
 )
 from app.services.auth_provider_repository import SqlAuthProviderRepository
 from app.services.user_management import LastAdminProtected
@@ -88,6 +90,7 @@ class RoleMappingModel(StrictModel):
 
 
 class RoleMappingsModel(StrictModel):
+    revision: str
     mappings: list[RoleMappingModel] = Field(max_length=100)
 
 
@@ -98,6 +101,7 @@ class RoleMappingUpdateModel(StrictModel):
 
 
 class RoleMappingsUpdateModel(StrictModel):
+    expected_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
     mappings: list[RoleMappingUpdateModel] = Field(max_length=100)
 
 
@@ -118,7 +122,7 @@ def _readable_file(path: Path) -> bool:
     return True
 
 
-def get_provider_runtime_status() -> ProviderRuntimeStatus:
+def get_provider_runtime_status(_actor: AdminActor) -> ProviderRuntimeStatus:
     settings = get_settings()
     return ProviderRuntimeStatus(
         bind_secret_available=_readable_file(settings.ldap_bind_password_file),
@@ -126,7 +130,7 @@ def get_provider_runtime_status() -> ProviderRuntimeStatus:
     )
 
 
-def get_auth_provider_admin_service() -> AuthProviderService:
+def get_auth_provider_admin_service(_actor: AdminActor) -> AuthProviderService:
     settings = get_settings()
     repository = SqlAuthProviderRepository(settings)
     registry = create_provider_registry(
@@ -185,6 +189,7 @@ def _test_model(result: ProviderTestResult) -> ProviderTestResultModel:
 
 def _mappings_model(mappings: tuple[ExternalRoleMapping, ...]) -> RoleMappingsModel:
     return RoleMappingsModel(
+        revision=role_mapping_revision(mappings),
         mappings=[
             RoleMappingModel(
                 external_group=item.external_group,
@@ -441,6 +446,7 @@ async def replace_provider_role_mappings(
             await service.replace_role_mappings(
                 provider_code,
                 mappings,
+                expected_revision=payload.expected_revision,
                 actor=actor,
                 ip=ip,
             )

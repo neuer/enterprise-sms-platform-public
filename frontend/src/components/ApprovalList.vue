@@ -23,7 +23,7 @@ const props = defineProps<{
   now: number
   loading: boolean
   decidingId: number | null
-  currentUsername: string
+  currentAccountId: number
 }>()
 
 const emit = defineEmits<{
@@ -34,7 +34,7 @@ const emit = defineEmits<{
 const emptyTitle = computed(() => (props.status === "pending" ? "当前没有待审批记录" : "当前分类没有审批记录"))
 
 function isMine(item: ApprovalListItem): boolean {
-  return item.applicant === props.currentUsername
+  return item.applicant_account_id === props.currentAccountId
 }
 
 function scheduleChip(item: ApprovalListItem): string {
@@ -180,6 +180,9 @@ function confirmQuick(item: ApprovalListItem): void {
           <span v-if="isMine(item)" class="approval-avoid-note" :data-testid="`approval-avoid-${item.id}`"
             >本人提交 · 按规则回避</span
           >
+          <span v-else-if="item.applicant_account_id == null" class="approval-avoid-note">
+            历史申请人身份不完整，无法执行审批
+          </span>
           <div v-else class="approval-row-actions" :data-testid="`approval-actions-${item.id}`">
             <button
               type="button"

@@ -175,6 +175,7 @@ async def test_ad_role_follow_uses_external_mapping_and_increments_security_vers
             ),
             FakeResult(),
             FakeResult(scalar=8),
+            FakeResult([row(role="approver", security_version=5)]),
             FakeResult(),
         ]
     )
@@ -193,7 +194,7 @@ async def test_ad_role_follow_uses_external_mapping_and_increments_security_vers
     assert update_params["account_id"] == 8
     assert update_params["role"] == "approver"
     assert update_params["dept"] == "业务一部"
-    audit_params = connection.calls[5][1]
+    audit_params = connection.calls[6][1]
     assert audit_params["object_id"] == "8"
     assert set(audit_params) == {
         "actor",
@@ -203,6 +204,10 @@ async def test_ad_role_follow_uses_external_mapping_and_increments_security_vers
         "before_override",
         "after_role",
         "after_override",
+        "before_dept",
+        "after_dept",
+        "before_version",
+        "after_version",
     }
 
 

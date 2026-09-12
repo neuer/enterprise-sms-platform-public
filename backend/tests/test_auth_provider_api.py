@@ -128,6 +128,7 @@ class FakeProviderService:
         code: str,
         mappings: tuple[ExternalRoleMapping, ...],
         *,
+        expected_revision: str,
         actor: str,
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]:
@@ -188,6 +189,7 @@ def test_admin_can_save_test_disable_and_replace_role_mappings() -> None:
         "/api/v1/web/admin/auth-providers/ad/role-mappings",
         headers=headers,
         json={
+            "expected_revision": "a" * 64,
             "mappings": [
                 {
                     "external_group": "CN=SMS-Operators,OU=Groups,DC=example,DC=com",

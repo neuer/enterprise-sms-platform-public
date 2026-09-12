@@ -24,7 +24,7 @@ import {
 import { usePagedList } from "../composables/usePagedList"
 import { CATEGORY_LABELS } from "../lib/labels"
 import { phoneProblem, maskPhone, PHONE_RE } from "../lib/phone"
-import { formatDateTime } from "../lib/time"
+import { dateKeyWeekday, formatDateTime } from "../lib/time"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -50,8 +50,6 @@ const phoneError = computed(() => phoneProblem(phone.value.trim()))
 const categoryOptions = CATEGORY_OPTIONS
 const statusOptions = MESSAGE_STATUS_OPTIONS
 
-const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
-
 const groupedEvents = computed(() => {
   const groups = new Map<string, TimelineEvent[]>()
   for (const event of timeline.value?.events || []) {
@@ -62,7 +60,7 @@ const groupedEvents = computed(() => {
   }
   return [...groups.entries()].map(([day, events]) => ({
     day,
-    weekday: WEEKDAYS[new Date(`${day}T12:00:00+08:00`).getDay()],
+    weekday: dateKeyWeekday(day),
     events,
   }))
 })

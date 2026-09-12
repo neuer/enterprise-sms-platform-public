@@ -263,6 +263,50 @@ async def test_real_postgres_export_scope_matrix_and_download_audit_are_fail_clo
             "decrypted": True,
             "row_count": 2,
         }
+        # 降权/调岗后重新签发并验证 JWT，历史文件仍按新主体部门授权。
+        from app.core.auth.jwt import JwtService
+        from app.core.auth.users import SqlUserRepository
+        from tests.integration.test_security_session_postgres import MemoryStore, claims
+
+        users = SqlUserRepository(settings)
+        tokens = JwtService("synthetic-export-session-secret-long-enough", MemoryStore(),
+                            security_session_loader=users.load_security_session)
+        masked = []
+        for scope in (None, "平台部", "财务部"):
+            with audit_principal_scope(principals[0]), correlation_scope(uuid4()):
+                historical = await repository.create(
+                    principal=principals[0], filters=filters(scope), decrypted=False,
+                )
+            masked.append(historical)
+            public_ids.append(str(historical.public_id))
+        async with engine.begin() as connection:
+            await connection.execute(text(
+                "UPDATE export_task SET status='done',file_path='/synthetic/export.smsx',"
+                "row_count=2,finished_at=now() WHERE public_id=ANY(CAST(:ids AS uuid[]))"
+            ), {"ids": [str(item.public_id) for item in masked]})
+        for role in ("operator", "viewer"):
+            for department in ("平台部", "财务部"):
+                async with engine.begin() as connection:
+                    await connection.execute(text(
+                        "UPDATE user_account SET role=:role,dept=:dept WHERE id=:id"
+                    ), {"role": role, "dept": department, "id": account_ids[0]})
+                projection = await users.load_security_session(account_ids[0], identity_ids[0])
+                current = (await tokens.verify(tokens.issue(claims(projection)))).principal
+                assert current.role == role and current.dept == department
+                for historical, scope in zip(masked, (None, "平台部", "财务部"), strict=True):
+                    accessible = await repository.get_accessible(
+                        historical.public_id, principal=current, retention_days=7,
+                    )
+                    with audit_principal_scope(current), correlation_scope(uuid4()):
+                        downloaded = await repository.get_downloadable_and_audit(
+                            historical.public_id, principal=current, ip="127.0.0.1",
+                            retention_days=7,
+                        )
+                    assert (accessible is not None) == (scope == department)
+                    assert (downloaded is not None) == (scope == department)
+                assert await repository.get_accessible(
+                    task.public_id, principal=current, retention_days=7,
+                ) is None
     finally:
         await cleanup()
         await engine.dispose()

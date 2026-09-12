@@ -360,7 +360,7 @@ def test_account_provider_model_replaces_username_centric_schema() -> None:
     ):
         assert f"CREATE TABLE {table}" in schema
     assert "CREATE TABLE sys_user" not in schema
-    assert "CREATE TABLE role_mapping" not in schema
+    assert "CREATE TABLE role_mapping (" not in schema
     assert "UNIQUE (normalized_login_name)" in schema
     assert "UNIQUE (provider_id, external_subject)" in schema
     assert "('local', '本地账号', 'local', TRUE)" in schema

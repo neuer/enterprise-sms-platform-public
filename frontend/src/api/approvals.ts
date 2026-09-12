@@ -20,6 +20,7 @@ export interface ApprovalListItem {
   batch_no: string
   category: Category
   applicant: string
+  applicant_account_id: number | null
   dept: string
   total: number
   segments: number | null

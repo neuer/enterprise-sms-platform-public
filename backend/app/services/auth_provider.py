@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -256,6 +258,12 @@ def _timeout(value: object) -> float:
     return parsed
 
 
+def role_mapping_revision(mappings: tuple[ExternalRoleMapping, ...]) -> str:
+    """以完整映射集合生成编辑前置条件，防止旧快照覆盖并发保存。"""
+    values = sorted((item.external_group, item.role, item.dept) for item in mappings)
+    return hashlib.sha256(json.dumps(values, ensure_ascii=True).encode()).hexdigest()
+
+
 class AuthProviderRepository(Protocol):
     async def list_enabled(self) -> tuple[ProviderRecord, ...]: ...
 
@@ -306,6 +314,7 @@ class AuthProviderRepository(Protocol):
         code: str,
         mappings: tuple[ExternalRoleMapping, ...],
         *,
+        expected_revision: str,
         actor: str,
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]: ...
@@ -411,6 +420,7 @@ class AuthProviderService:
         code: str,
         mappings: tuple[ExternalRoleMapping, ...],
         *,
+        expected_revision: str,
         actor: str,
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]:
@@ -433,6 +443,7 @@ class AuthProviderService:
         return await self.repository.replace_role_mappings(
             code,
             tuple(normalized),
+            expected_revision=expected_revision,
             actor=actor,
             ip=ip,
         )

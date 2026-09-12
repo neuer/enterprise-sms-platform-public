@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from redis.asyncio import Redis
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import WebActor, require_writer_actor
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
@@ -57,7 +58,7 @@ class ReplyListRequest(BaseModel):
     page: int = Field(default=1, ge=1)
 
 
-async def get_reply_service() -> AsyncIterator[ReplyQueryService]:
+async def get_reply_service(_actor: WebActor) -> AsyncIterator[ReplyQueryService]:
     settings = get_settings()
     crypto = CryptoService.from_settings(settings)
     redis = Redis.from_url(settings.redis_control_url, decode_responses=True)
@@ -138,6 +139,7 @@ async def list_replies(
 
 @router.post(
     "/{id}/blacklist",
+    dependencies=[Depends(require_writer_actor)],
     response_class=Response,
     responses={403: ERROR_RESPONSE, 404: ERROR_RESPONSE},
 )

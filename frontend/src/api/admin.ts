@@ -106,6 +106,7 @@ export interface ExternalRoleMapping {
 }
 
 export interface RoleMappings {
+  revision: string
   mappings: ExternalRoleMapping[]
 }
 
@@ -187,11 +188,12 @@ export function listAuthProviderRoleMappings(providerCode: string): Promise<Role
 export function replaceAuthProviderRoleMappings(
   providerCode: string,
   mappings: ExternalRoleMappingUpdate[],
+  expectedRevision: string,
 ): Promise<RoleMappings> {
   return apiRequest<RoleMappings>(providerPath(providerCode, "/role-mappings"), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mappings }),
+    body: JSON.stringify({ mappings, expected_revision: expectedRevision }),
   })
 }
 

@@ -115,3 +115,11 @@ export function daysAgoDateKey(days: number, now: Date = new Date()): string {
 export function rangeToIsoParams(range: readonly [Date, Date] | null): { start?: string; end?: string } {
   return { start: range?.[0].toISOString(), end: range?.[1].toISOString() }
 }
+
+/** 严格日历日的星期；以纯 UTC 日历运算避免浏览器时区偏移。 */
+export function dateKeyWeekday(value: string, empty = "—"): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return empty
+  const date = new Date(`${value}T00:00:00Z`)
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return empty
+  return ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][date.getUTCDay()] ?? empty
+}

@@ -3834,8 +3834,9 @@ components:
     AuthProviderRoleMappings:
       type: object
       additionalProperties: false
-      required: [mappings]
+      required: [mappings, revision]
       properties:
+        revision: { type: string }
         mappings:
           type: array
           maxItems: 100
@@ -3853,8 +3854,9 @@ components:
     AuthProviderRoleMappingsUpdate:
       type: object
       additionalProperties: false
-      required: [mappings]
+      required: [mappings, expected_revision]
       properties:
+        expected_revision: { type: string, pattern: '^[a-f0-9]{64}$' }
         mappings:
           type: array
           maxItems: 100
@@ -4129,12 +4131,13 @@ components:
 
     ApprovalListItem:
       type: object
-      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at]
+      required: [id, batch_no, category, applicant, applicant_account_id, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at]
       properties:
         id: { type: integer }
         batch_no: { type: string }
         category: { type: string }
         applicant: { type: string }
+        applicant_account_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 申请人稳定账号 ID；无法确认历史身份时为 null }
         dept: { type: string }
         total: { type: integer }
         segments: { type: integer, minimum: 1, description: 单个号码的计费条数 }
@@ -4155,12 +4158,13 @@ components:
 
     ApprovalDetail:
       type: object
-      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at, content]
+      required: [id, batch_no, category, applicant, applicant_account_id, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at, content]
       properties:
         id: { type: integer }
         batch_no: { type: string }
         category: { type: string }
         applicant: { type: string }
+        applicant_account_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 申请人稳定账号 ID；无法确认历史身份时为 null }
         dept: { type: string }
         total: { type: integer }
         segments: { type: integer, minimum: 1, description: 单个号码的计费条数 }
