@@ -7,9 +7,10 @@ from typing import Any, cast
 
 from sqlalchemy import text
 
+from app.core.auth.admin_authorization import AdminAuthorization, lock_admin_authorization
 from app.core.auth.roles import Role
 from app.core.runtime_resources import database_engine
-from app.services.admin_invariant import ensure_effective_admin, lock_admin_invariant
+from app.services.admin_invariant import ensure_effective_admin
 from app.services.auth_provider import (
     ExternalRoleMapping,
     ProviderNotFound,
@@ -99,12 +100,16 @@ class SqlAuthProviderRepository:
         code: str,
         config: dict[str, object],
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> ProviderRecord:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_authorization(
+                    connection, authorization, operation="provider_save_draft", target=code
+                )
                 locked = await connection.execute(
                     text(
                         f"""
@@ -200,11 +205,20 @@ class SqlAuthProviderRepository:
             await engine.dispose()
 
     async def activate(
-        self, code: str, *, actor: str, ip: str, expected_draft_version: int
+        self,
+        code: str,
+        *,
+        authorization: AdminAuthorization,
+        actor: str,
+        ip: str,
+        expected_draft_version: int,
     ) -> ProviderRecord:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_authorization(
+                    connection, authorization, operation="provider_enable_disable", target=code
+                )
                 result = await connection.execute(
                     text(
                         f"""
@@ -238,12 +252,20 @@ class SqlAuthProviderRepository:
             await engine.dispose()
 
     async def disable(
-        self, code: str, *, actor: str, ip: str, expected_draft_version: int
+        self,
+        code: str,
+        *,
+        authorization: AdminAuthorization,
+        actor: str,
+        ip: str,
+        expected_draft_version: int,
     ) -> ProviderRecord:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                await lock_admin_invariant(connection)
+                await lock_admin_authorization(
+                    connection, authorization, operation="provider_enable_disable", target=code
+                )
                 locked = await connection.execute(
                     text(
                         f"""
@@ -328,13 +350,16 @@ class SqlAuthProviderRepository:
         mappings: tuple[ExternalRoleMapping, ...],
         *,
         expected_revision: str,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                await lock_admin_invariant(connection)
+                await lock_admin_authorization(
+                    connection, authorization, operation="provider_role_mapping_change", target=code
+                )
                 provider = await connection.execute(
                     text(
                         """
@@ -348,25 +373,31 @@ class SqlAuthProviderRepository:
                 if provider_id is None:
                     raise ProviderNotFound("认证源不存在")
                 existing_result = await connection.execute(
-                    text("SELECT external_group,role,dept FROM external_role_mapping "
-                         "WHERE provider_id=:provider_id FOR UPDATE"),
+                    text(
+                        "SELECT external_group,role,dept FROM external_role_mapping "
+                        "WHERE provider_id=:provider_id FOR UPDATE"
+                    ),
                     {"provider_id": int(provider_id)},
                 )
                 existing = {
                     str(row["external_group"]): (cast(Role, row["role"]), row["dept"])
                     for row in existing_result.mappings()
                 }
-                actual_revision = role_mapping_revision(tuple(
-                    ExternalRoleMapping(group, role, dept)
-                    for group, (role, dept) in existing.items()
-                ))
+                actual_revision = role_mapping_revision(
+                    tuple(
+                        ExternalRoleMapping(group, role, dept)
+                        for group, (role, dept) in existing.items()
+                    )
+                )
                 if actual_revision != expected_revision:
                     raise StaleProviderDraft("角色映射已被其他操作修改，请重新加载后合并变更")
                 desired = {item.external_group: (item.role, item.dept) for item in mappings}
                 for group in sorted(existing.keys() - desired.keys()):
                     await connection.execute(
-                        text("DELETE FROM external_role_mapping WHERE provider_id=:provider_id "
-                             "AND external_group=:external_group"),
+                        text(
+                            "DELETE FROM external_role_mapping WHERE provider_id=:provider_id "
+                            "AND external_group=:external_group"
+                        ),
                         {"provider_id": int(provider_id), "external_group": group},
                     )
                 for group, (role, dept) in desired.items():
@@ -376,11 +407,16 @@ class SqlAuthProviderRepository:
                         text(
                             "INSERT INTO external_role_mapping"
                             "(provider_id,external_group,role,dept) "
-                             "VALUES(:provider_id,:external_group,:role,:dept) "
-                             "ON CONFLICT(provider_id,external_group) DO UPDATE "
-                             "SET role=EXCLUDED.role,dept=EXCLUDED.dept"),
-                        {"provider_id": int(provider_id), "external_group": group,
-                         "role": role, "dept": dept},
+                            "VALUES(:provider_id,:external_group,:role,:dept) "
+                            "ON CONFLICT(provider_id,external_group) DO UPDATE "
+                            "SET role=EXCLUDED.role,dept=EXCLUDED.dept"
+                        ),
+                        {
+                            "provider_id": int(provider_id),
+                            "external_group": group,
+                            "role": role,
+                            "dept": dept,
+                        },
                     )
                 await ensure_effective_admin(connection)
                 await self._audit_role_mappings(

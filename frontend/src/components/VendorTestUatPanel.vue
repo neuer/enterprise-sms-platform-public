@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { defaultSessionDocument } from "../api/sessionDocument"
 import { useApprovedResources } from "../composables/useApprovedResources"
 
 import { renderPreview } from "../lib/templatePreview"
@@ -25,7 +26,8 @@ import type { BillingPreview } from "../api/webMessages"
 
 import PhoneMask from "./PhoneMask.vue"
 
-import { confirmAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAction } = useConfirmActions()
 
 import { errorText } from "../lib/error"
 
@@ -175,12 +177,26 @@ async function send(): Promise<void> {
     ElMessage.warning("真实 UAT 信息尚未填写完整")
     return
   }
+  const snapshot = () => ({
+    recipient_id: recipientId.value!,
+    app_id: appId.value!,
+    category: category.value,
+    ...messagePayload(),
+    sign_name: signName.value || undefined,
+    consent_confirmed: consentConfirmed.value,
+  })
+  const parameters = snapshot()
+  const origin = defaultSessionDocument.captureOrigin()
+  const current = () =>
+    defaultSessionDocument.isOriginCurrent(origin) && JSON.stringify(snapshot()) === JSON.stringify(parameters)
   if (!preview.value && !(await runPreview())) return
+  if (!current()) return
   const billing = preview.value
   if (!billing) return
   if (
     !(await confirmAction({
       title: "确认发送真实 UAT",
+      isCurrent: current,
       body: `将向 ${selectedRecipient.value.label}（${selectedRecipient.value.phone_mask}）发送 1 个真实号码。本次预计消耗 ${billing.quota_cost} 条计费额度（${billing.est_segments} 个计费段）；受控联调每日总上限为 ${props.dailyLimit} 条。`,
       confirmText: `确认发送（预计 ${billing.quota_cost} 条）`,
       cancelText: "继续检查",
@@ -192,13 +208,8 @@ async function send(): Promise<void> {
     const bizId = pendingBizId || crypto.randomUUID().replaceAll("-", "")
     if (!pendingBizId) rememberPendingBizId(bizId)
     const operation = await sendVendorTestUat({
-      recipient_id: recipientId.value!,
-      app_id: appId.value!,
+      ...parameters,
       biz_id: bizId,
-      category: category.value,
-      ...messagePayload(),
-      sign_name: signName.value || undefined,
-      consent_confirmed: consentConfirmed.value,
       remark: "系统配置页真实 UAT",
     })
     clearPendingBizId()

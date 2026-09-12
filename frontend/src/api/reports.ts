@@ -1,3 +1,4 @@
+import { nextShanghaiMidnight } from "../lib/time"
 import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS } from "./auth"
 import { apiRequest, authorizedBlob, ApiRequestError, DOWNLOAD_TIMEOUT_MS } from "./client"
 
@@ -124,7 +125,7 @@ export function createDetailExport(filters: ReportFilters, decrypted: boolean): 
     body: JSON.stringify({
       filters: {
         start: `${filters.start}T00:00:00+08:00`,
-        end: `${filters.end}T23:59:59+08:00`,
+        end_exclusive: nextShanghaiMidnight(filters.end),
         category: filters.category === "all" ? null : filters.category,
       },
       decrypted,
@@ -132,26 +133,31 @@ export function createDetailExport(filters: ReportFilters, decrypted: boolean): 
   })
 }
 
-export function getExportTask(id: string): Promise<ExportTask> {
-  return apiRequest<ExportTask>(`/reports/export/${id}`, { method: "GET" })
+export function getExportTask(id: string, signal?: AbortSignal): Promise<ExportTask> {
+  return apiRequest<ExportTask>(`/reports/export/${id}`, { method: "GET", signal })
 }
 
-export function issueExportStepUp(id: string, password: string): Promise<{ token: string; expires_in: 300 }> {
+export function issueExportStepUp(
+  id: string,
+  password: string,
+  signal?: AbortSignal,
+): Promise<{ token: string; expires_in: 300 }> {
   return apiRequest<{ token: string; expires_in: 300 }>(
     `/reports/export/${id}/step-up`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password }),
+      signal,
     },
     PASSWORD_AUTH_REQUEST_TIMEOUT_MS,
   )
 }
 
-export async function downloadExport(task: ExportTask, stepUpToken?: string): Promise<Blob> {
+export async function downloadExport(task: ExportTask, stepUpToken?: string, signal?: AbortSignal): Promise<Blob> {
   if (!task.download_url) throw new ApiRequestError(0, "EXPORT_NOT_READY", "导出文件尚未就绪")
   // authorizedBlob 内部统一注入 Bearer，并让 Deadline 覆盖正文读取。
   const headers: Record<string, string> = {}
   if (stepUpToken) headers["X-Export-Step-Up"] = stepUpToken
-  return authorizedBlob(task.download_url, { headers }, DOWNLOAD_TIMEOUT_MS)
+  return authorizedBlob(task.download_url, { headers, signal }, DOWNLOAD_TIMEOUT_MS)
 }

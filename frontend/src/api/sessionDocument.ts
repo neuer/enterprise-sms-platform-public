@@ -15,6 +15,8 @@ import {
   unpublishSessionInstance,
 } from "./sessionSignals"
 
+export const SESSION_LOCK_WAIT_MS = 10_000
+
 const REFRESH_LOCK_NAME = "sms-refresh-rotation"
 const REFRESH_TAB_ID_KEY = "sms_refresh_tab_id"
 const LEGACY_TOKEN_KEY = "sms_token"
@@ -98,14 +100,28 @@ export class SessionDocument {
     return release
   }
 
-  async withLocalMutex<T>(run: () => Promise<T>): Promise<T> {
+  async withLocalMutex<T>(run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    signal?.throwIfAborted()
     if (this.inPageBusy) {
-      await new Promise<void>((resolve) => {
-        this.inPageWaiters.push(resolve)
+      await new Promise<void>((resolve, reject) => {
+        const ready = () => {
+          cleanup()
+          resolve()
+        }
+        const cancel = () => {
+          const index = this.inPageWaiters.indexOf(ready)
+          if (index >= 0) this.inPageWaiters.splice(index, 1)
+          cleanup()
+          reject(signal?.reason ?? new DOMException("操作已取消", "AbortError"))
+        }
+        const cleanup = () => signal?.removeEventListener("abort", cancel)
+        this.inPageWaiters.push(ready)
+        signal?.addEventListener("abort", cancel, { once: true })
       })
     }
     this.inPageBusy = true
     try {
+      signal?.throwIfAborted()
       return await run()
     } finally {
       const next = this.inPageWaiters.shift()
@@ -114,45 +130,79 @@ export class SessionDocument {
     }
   }
 
-  async withSessionLock<T>(run: () => Promise<T>): Promise<T> {
-    const locks = globalThis.navigator?.locks
-    if (locks && typeof locks.request === "function") {
-      return locks.request(REFRESH_LOCK_NAME, run)
+  async withSessionLock<T>(run: () => Promise<T>, options: { signal?: AbortSignal } = {}): Promise<T> {
+    const origin = this.captureOrigin()
+    const controller = new AbortController()
+    const release = this.trackController(controller)
+    const cancel = () => controller.abort(options.signal?.reason)
+    if (options.signal?.aborted) cancel()
+    else options.signal?.addEventListener("abort", cancel, { once: true })
+    const timer = setTimeout(
+      () => controller.abort(new DOMException("会话锁等待超时，服务端操作尚未确认", "TimeoutError")),
+      SESSION_LOCK_WAIT_MS,
+    )
+    const cleanup = () => {
+      clearTimeout(timer)
+      release()
+      options.signal?.removeEventListener("abort", cancel)
     }
-    return this.withLocalMutex(run)
+    const acquired = async () => {
+      controller.signal.throwIfAborted()
+      if (!this.isOriginCurrent(origin)) throw new SessionGenerationStaleError()
+      cleanup() // 预算只覆盖排队；取得锁后保留正常 Cookie 轮换串行语义。
+      return run()
+    }
+    try {
+      const locks = globalThis.navigator?.locks
+      if (locks && typeof locks.request === "function") {
+        return await locks.request(REFRESH_LOCK_NAME, { signal: controller.signal }, acquired)
+      }
+      return await this.withLocalMutex(acquired, controller.signal)
+    } finally {
+      cleanup()
+    }
   }
 
   async withSessionGeneration<T>(
-    options: { invalidateFirst?: boolean; origin?: SessionOperationOrigin },
+    options: { invalidateFirst?: boolean; origin?: SessionOperationOrigin; signal?: AbortSignal },
     work: (ctx: { generation: number; signal: AbortSignal; isLive: () => boolean }) => Promise<T>,
   ): Promise<T> {
-    return this.withSessionLock(async () => {
-      if (options.origin && !this.isOriginCurrent(options.origin)) {
-        throw new SessionGenerationStaleError()
-      }
-      if (options.invalidateFirst) {
-        this.invalidateGeneration()
-        if (options.origin) options.origin.localGeneration = this.generation
-      }
-      const current = this.generation
-      const controller = new AbortController()
-      const release = this.trackController(controller)
-      try {
-        if (current !== this.generation) throw new SessionGenerationStaleError()
-        if (options.origin && options.origin.sessionInstanceId !== this.logicalSessionInstanceId) {
+    return this.withSessionLock(
+      async () => {
+        if (options.origin && !this.isOriginCurrent(options.origin)) {
           throw new SessionGenerationStaleError()
         }
-        return await work({
-          generation: current,
-          signal: controller.signal,
-          isLive: () =>
-            current === this.generation &&
-            (!options.origin || options.origin.sessionInstanceId === this.logicalSessionInstanceId),
-        })
-      } finally {
-        release()
-      }
-    })
+        if (options.invalidateFirst) {
+          this.invalidateGeneration()
+          if (options.origin) options.origin.localGeneration = this.generation
+        }
+        const current = this.generation
+        const controller = new AbortController()
+        const release = this.trackController(controller)
+        const abort = () => controller.abort(options.signal?.reason)
+        options.signal?.addEventListener("abort", abort, { once: true })
+        if (options.signal?.aborted) abort()
+        try {
+          controller.signal.throwIfAborted()
+          if (current !== this.generation) throw new SessionGenerationStaleError()
+          if (options.origin && options.origin.sessionInstanceId !== this.logicalSessionInstanceId) {
+            throw new SessionGenerationStaleError()
+          }
+          return await work({
+            generation: current,
+            signal: controller.signal,
+            isLive: () =>
+              !controller.signal.aborted &&
+              current === this.generation &&
+              (!options.origin || options.origin.sessionInstanceId === this.logicalSessionInstanceId),
+          })
+        } finally {
+          options.signal?.removeEventListener("abort", abort)
+          release()
+        }
+      },
+      { signal: options.signal },
+    )
   }
 
   setAccessSession(token: string, user: PlatformUser, mode: SessionMode = "refresh", sessionInstanceId?: string): void {

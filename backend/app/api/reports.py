@@ -66,6 +66,7 @@ class ExportFiltersModel(BaseModel):
 
     start: datetime | None = None
     end: datetime | None = None
+    end_exclusive: datetime | None = None
     category: Literal["verify", "notice", "market"] | None = None
     status: str | None = Field(default=None, max_length=16)
     app_id: int | None = Field(default=None, ge=1)
@@ -399,7 +400,10 @@ def _reporting_response(result: ReportingResult) -> ReportingModel:
         start=result.start,
         end=result.end,
         can_export_decrypted=result.can_export_decrypted,
-        total=result.total, page=result.page, size=result.size, metric=result.metric,
+        total=result.total,
+        page=result.page,
+        size=result.size,
+        metric=result.metric,
         dimension_total=result.dimension_total,
         trend=ReportingTrendModel.model_validate(result.trend, from_attributes=True),
         summary=ReportingSummaryModel.model_validate(
@@ -411,8 +415,7 @@ def _reporting_response(result: ReportingResult) -> ReportingModel:
             for item in result.dim_summary
         ],
         items=[
-            ReportingRowModel.model_validate(item, from_attributes=True)
-            for item in result.items
+            ReportingRowModel.model_validate(item, from_attributes=True) for item in result.items
         ],
     )
 
@@ -485,7 +488,11 @@ async def get_reporting_stats(
             end=end,
             role=claims.role,
             dept=claims.dept,
-            page=page, size=size, sort=sort, order=order, metric=metric,
+            page=page,
+            size=size,
+            sort=sort,
+            order=order,
+            metric=metric,
         )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None

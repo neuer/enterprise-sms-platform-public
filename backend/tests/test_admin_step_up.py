@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from app.core.audit import AuditEvent
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.jwt import JwtClaims
 from app.core.errors import ApiError
 from app.services.admin_step_up import AdminStepUpService, admin_intent
@@ -83,7 +84,7 @@ async def test_only_one_concurrent_consumer_and_no_secret_in_stored_fact_or_audi
         ],
         return_exceptions=True,
     )
-    assert sum(result is None for result in results) == 1
+    assert sum(isinstance(result, AdminAuthorization) for result in results) == 1
     assert sum(isinstance(result, ApiError) for result in results) == 7
     assert all(
         "synthetic-valid" not in str(event.after) and token not in str(event.after)

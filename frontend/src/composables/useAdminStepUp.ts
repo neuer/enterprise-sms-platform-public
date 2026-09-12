@@ -1,3 +1,4 @@
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 import { onScopeDispose, reactive } from "vue"
 import { issueAdminStepUp, type AdminIntent } from "../api/adminStepUp"
 import { errorText } from "../lib/error"
@@ -70,11 +71,11 @@ export function useAdminStepUp() {
       token = null
     }
   }
-  window.addEventListener("sms:session-clearing", cancel)
+  window.addEventListener(SESSION_CLEARING_EVENT, cancel)
   onScopeDispose(() => {
     disposed = true
     cancel()
-    window.removeEventListener("sms:session-clearing", cancel)
+    window.removeEventListener(SESSION_CLEARING_EVENT, cancel)
   })
   return { state, run, submit, cancel, updatePassword }
 }

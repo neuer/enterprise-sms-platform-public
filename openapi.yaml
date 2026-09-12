@@ -2871,6 +2871,7 @@ paths:
                   properties:
                     start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
                     end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                    end_exclusive: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 不包含的终点，与 end 互斥；日期范围使用次日上海零点 }
                     category: { anyOf: [{ type: string, enum: [verify, notice, market] }, { type: 'null' }] }
                     status: { anyOf: [{ type: string, maxLength: 16 }, { type: 'null' }] }
                     app_id: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] }

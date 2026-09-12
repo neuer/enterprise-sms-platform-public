@@ -1,3 +1,4 @@
+import { SESSION_CLEARING_EVENT } from "./sessionEvents"
 /**
  * 前端请求基建单点：同源断言、端到端 Deadline、Bearer 注入、
  * 401+UNAUTHORIZED 单飞刷新重放、会话代际联动取消。所有业务 api 模块统一使用
@@ -106,9 +107,45 @@ export function assertAuthorizedResultCurrent(result: object): void {
   resultScopes.get(result)?.assertCurrent()
 }
 
-let refreshInFlight: { scope: RequestScope; promise: Promise<RefreshResult> } | null = null
+interface RefreshFlight {
+  scope: RequestScope
+  promise: Promise<RefreshResult>
+  queue: AbortController
+  waiters: Set<symbol>
+  started: () => boolean
+}
+let refreshInFlight: RefreshFlight | null = null
+
+/** 仅最后一个等待者退出时撤销排队；已开始的 Cookie 轮换继续持锁完成。 */
+function joinRefresh(flight: RefreshFlight, signal?: AbortSignal): Promise<RefreshResult> {
+  const waiter = Symbol()
+  flight.waiters.add(waiter)
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      flight.waiters.delete(waiter)
+      signal?.removeEventListener("abort", cancel)
+    }
+    const cancel = () => {
+      cleanup()
+      if (!flight.waiters.size && !flight.started()) flight.queue.abort()
+      reject(signal?.reason ?? new DOMException("请求已取消", "AbortError"))
+    }
+    signal?.addEventListener("abort", cancel, { once: true })
+    if (signal?.aborted) cancel()
+    flight.promise.then(
+      (value) => {
+        cleanup()
+        resolve(value)
+      },
+      (error) => {
+        cleanup()
+        reject(error)
+      },
+    )
+  })
+}
 const sessionControllers = new Set<AbortController>()
-window.addEventListener("sms:session-clearing", () => {
+window.addEventListener(SESSION_CLEARING_EVENT, () => {
   invalidateSessionGeneration()
   cancelSessionRequests()
   clearAccessSession()
@@ -254,7 +291,7 @@ function clearSession(
   cancelSessionRequests()
   clearAccessSession()
   clearRefreshTabBinding()
-  window.dispatchEvent(new Event("sms:session-clearing"))
+  window.dispatchEvent(new Event(SESSION_CLEARING_EVENT))
   if (retiredInstance) defaultSessionDocument.broadcastRetired(retiredInstance)
   if (broadcast === "unauthorized") {
     window.dispatchEvent(new Event("sms:unauthorized"))
@@ -264,80 +301,94 @@ function clearSession(
   return true
 }
 
-async function refreshSession(scope: RequestScope): Promise<RefreshResult> {
+async function refreshSession(scope: RequestScope, signal?: AbortSignal): Promise<RefreshResult> {
   scope.assertCurrent()
+  signal?.throwIfAborted()
   const origin = scope.origin
   if (detectSessionMode() === "access_only" || getSessionMode() === "access_only") {
     scope.retire("unauthorized")
     return "unauthorized"
   }
-  if (refreshInFlight && isSessionOperationOriginCurrent(refreshInFlight.scope.origin)) {
+  if (
+    refreshInFlight &&
+    !refreshInFlight.queue.signal.aborted &&
+    isSessionOperationOriginCurrent(refreshInFlight.scope.origin)
+  ) {
     const joined = refreshInFlight
-    const result = await joined.promise
+    const result = await joinRefresh(joined, signal)
     scope.retiredGeneration = joined.scope.retiredGeneration
     scope.assertCurrent()
     return result
   }
   const epochAtRequest = getSessionGeneration()
-  const flight = {
+  const queue = new AbortController()
+  let started = false
+  const flight: RefreshFlight = {
     scope,
-    promise: withRefreshLock(async () => {
-      scope.assertCurrent()
-      if (!isCurrentSessionGeneration(epochAtRequest) || origin.sessionInstanceId !== getSessionInstanceId()) {
-        return "unauthorized"
-      }
-      const epoch = getSessionGeneration()
-      try {
-        const currentUser = getSessionUser()
-        const controller = new AbortController()
-        const releaseTrack = trackSessionController(controller)
-        let result: Awaited<ReturnType<typeof refreshRequest>>
+    queue,
+    waiters: new Set<symbol>(),
+    started: () => started,
+    promise: withRefreshLock(
+      async () => {
+        started = true
+        scope.assertCurrent()
+        if (!isCurrentSessionGeneration(epochAtRequest) || origin.sessionInstanceId !== getSessionInstanceId()) {
+          return "unauthorized"
+        }
+        const epoch = getSessionGeneration()
         try {
-          result = await refreshRequest(controller.signal)
-        } finally {
-          releaseTrack()
-        }
-        if (!isCurrentSessionGeneration(epoch) || origin.sessionInstanceId !== getSessionInstanceId()) {
-          return "unauthorized"
-        }
-        if (
-          currentUser &&
-          Number.isInteger(currentUser.account_id) &&
-          currentUser.account_id > 0 &&
-          Number.isInteger(currentUser.identity_id) &&
-          currentUser.identity_id > 0 &&
-          (currentUser.account_id !== result.user.account_id || currentUser.identity_id !== result.user.identity_id)
-        ) {
-          scope.retire("unauthorized")
-          return "unauthorized"
-        }
-        setAccessSession(result.token, result.user, result.session_mode, getSessionInstanceId() ?? undefined)
-        window.dispatchEvent(new Event("sms:session-refreshed"))
-        return "refreshed"
-      } catch (error) {
-        if (!isCurrentSessionGeneration(epoch) || origin.sessionInstanceId !== getSessionInstanceId()) {
-          return "unauthorized"
-        }
-        if (error instanceof AuthApiError && error.status === 401) {
-          if (error.code === "AUTH_REAUTH_REQUIRED") {
-            scope.retire("reauth-required")
-            return "reauth-required"
+          const currentUser = getSessionUser()
+          const controller = new AbortController()
+          const releaseTrack = trackSessionController(controller)
+          let result: Awaited<ReturnType<typeof refreshRequest>>
+          try {
+            result = await refreshRequest(controller.signal)
+          } finally {
+            releaseTrack()
           }
-          scope.retire("unauthorized")
-          return "unauthorized"
+          if (!isCurrentSessionGeneration(epoch) || origin.sessionInstanceId !== getSessionInstanceId()) {
+            return "unauthorized"
+          }
+          if (
+            currentUser &&
+            Number.isInteger(currentUser.account_id) &&
+            currentUser.account_id > 0 &&
+            Number.isInteger(currentUser.identity_id) &&
+            currentUser.identity_id > 0 &&
+            (currentUser.account_id !== result.user.account_id || currentUser.identity_id !== result.user.identity_id)
+          ) {
+            scope.retire("unauthorized")
+            return "unauthorized"
+          }
+          setAccessSession(result.token, result.user, result.session_mode, getSessionInstanceId() ?? undefined)
+          window.dispatchEvent(new Event("sms:session-refreshed"))
+          return "refreshed"
+        } catch (error) {
+          if (!isCurrentSessionGeneration(epoch) || origin.sessionInstanceId !== getSessionInstanceId()) {
+            return "unauthorized"
+          }
+          if (error instanceof AuthApiError && error.status === 401) {
+            if (error.code === "AUTH_REAUTH_REQUIRED") {
+              scope.retire("reauth-required")
+              return "reauth-required"
+            }
+            scope.retire("unauthorized")
+            return "unauthorized"
+          }
+          return "unavailable"
         }
-        return "unavailable"
-      }
-    }),
+      },
+      { signal: queue.signal },
+    ),
   }
   refreshInFlight = flight
-  try {
-    const result = await flight.promise
-    scope.assertCurrent()
-    return result
-  } finally {
+  const clear = () => {
     if (refreshInFlight === flight) refreshInFlight = null
   }
+  void flight.promise.then(clear, clear)
+  const result = await joinRefresh(flight, signal)
+  scope.assertCurrent()
+  return result
 }
 
 async function replayAfterUnauthorized<T>(
@@ -345,6 +396,7 @@ async function replayAfterUnauthorized<T>(
   attemptedToken: string | null,
   retry: () => Promise<T>,
   fallback: () => T,
+  signal?: AbortSignal,
 ): Promise<T> {
   scope.assertCurrent()
   if (getSessionMode() === "access_only" || detectSessionMode() === "access_only") {
@@ -355,8 +407,10 @@ async function replayAfterUnauthorized<T>(
   if (currentToken && attemptedToken && currentToken !== attemptedToken) {
     return retry()
   }
-  const refreshed = await refreshSession(scope)
+  signal?.throwIfAborted()
+  const refreshed = await refreshSession(scope, signal)
   scope.assertCurrent()
+  signal?.throwIfAborted()
   if (refreshed === "refreshed") return retry()
   if (refreshed === "unavailable") {
     throw new ApiRequestError(503, "AUTH_SESSION_UNAVAILABLE", "会话权威状态暂不可用，请稍后重试")
@@ -407,6 +461,7 @@ export async function authorizedJsonResult<T>(
       attemptedToken,
       () => jsonAttempt<T>(url, init, timeoutMs, attemptContext(scope)),
       () => first,
+      init.signal ?? undefined,
     )
     scope.assertCurrent()
     applyFinalAuthDecision(replayed.status, replayed.body, scope)
@@ -491,6 +546,7 @@ export async function authorizedFetch(
       attemptedToken,
       () => rawAttempt(url, init, timeoutMs, attemptContext(scope)),
       () => first,
+      init.signal ?? undefined,
     )
     scope.assertCurrent()
     applyFinalAuthDecision(replayed.response.status, replayed.body, scope)
@@ -583,6 +639,7 @@ export async function authorizedBlob(
       attemptedToken,
       () => blobAttempt(url, init, timeoutMs, attemptContext(scope)),
       () => first,
+      init.signal ?? undefined,
     )
     scope.assertCurrent()
     if (replayed.kind === "blob") return replayed.blob

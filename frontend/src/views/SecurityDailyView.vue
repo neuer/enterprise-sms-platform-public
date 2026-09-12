@@ -26,7 +26,8 @@ import {
   type SecurityStatus,
 } from "../api/securityDaily"
 import EmptyState from "../components/EmptyState.vue"
-import { confirmAuditedAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAuditedAction } = useConfirmActions()
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 
@@ -404,6 +405,7 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
   if (
     !(await confirmAuditedAction({
       title: `确认${operation}`,
+      isCurrent: () => selected.value === report,
       body: `确认${operation} ${report.report_date} 的安全日报？邮件正文只来自已脱敏结构化报告，投递由独立 mailer 执行并回写状态，同日重复投递有幂等保护。`,
       auditNote: `${operation}行为、操作人与日报 id 将写入审计日志。`,
       confirmText: `确认${operation}`,

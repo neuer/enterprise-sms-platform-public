@@ -18,7 +18,8 @@ import {
   type OutboxStats,
 } from "../../api/ops"
 
-import { confirmAuditedAction } from "../../lib/confirm"
+import { useConfirmActions } from "../../lib/confirm"
+const { confirmAuditedAction } = useConfirmActions()
 
 import { errorText } from "../../lib/error"
 
@@ -103,6 +104,7 @@ function outboxStateMeta(state: OutboxState): { label: string; tag: "info" | "wa
 }
 
 async function retryOutbox(item: OutboxEventItem): Promise<void> {
+  item = { ...item }
   if (
     !(await confirmAuditedAction({
       title: "确认重推 Outbox 事件",

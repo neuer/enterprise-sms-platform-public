@@ -15,7 +15,8 @@ import ListPagination from "../components/ListPagination.vue"
 import PhoneMask from "../components/PhoneMask.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { usePagedList } from "../composables/usePagedList"
-import { confirmAuditedAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { BLACKLIST_SOURCE_LABELS } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
@@ -142,6 +143,7 @@ async function add(): Promise<void> {
 }
 
 async function remove(item: BlacklistItem): Promise<void> {
+  item = { ...item }
   if (
     !(await confirmAuditedAction({
       title: "移出黑名单确认",

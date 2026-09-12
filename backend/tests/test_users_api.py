@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 import app.api.users as users_api
 from app.api.admin_step_up import get_admin_step_up_service
 from app.core.auth.accounts import AccountSourceConflict
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.passwords import PasswordPolicyViolation
 from app.core.auth.roles import Role
@@ -21,6 +22,8 @@ from app.services.user_management import (
     UserPage,
     UserRecord,
 )
+
+AUTHORIZATION = AdminAuthorization(1, 11, 1, "local", None)
 
 NOW = datetime(2026, 7, 16, 8, tzinfo=UTC)
 
@@ -96,6 +99,7 @@ class FakeService:
         role: Role,
         role_override: bool,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -114,6 +118,7 @@ class FakeService:
         status: int,
         *,
         actor_account_id: int,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -127,6 +132,7 @@ class FakeService:
         account_id: int,
         temporary_password: str,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:

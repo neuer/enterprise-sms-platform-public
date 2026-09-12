@@ -19,7 +19,8 @@ import { blacklistReply, listReplies, type ReplyDisposition, type ReplyItem } fr
 
 import { usePagedList } from "../composables/usePagedList"
 
-import { confirmAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAction } = useConfirmActions()
 
 import { errorText } from "../lib/error"
 
@@ -111,6 +112,7 @@ function openBatch(batchNo: string): void {
 }
 
 async function optout(item: ReplyItem): Promise<void> {
+  item = { ...item }
   if (
     !(await confirmAction({
       title: "退订加黑确认",

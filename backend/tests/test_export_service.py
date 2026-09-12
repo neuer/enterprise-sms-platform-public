@@ -282,4 +282,27 @@ async def test_unmatched_dataset_is_admin_only_and_roundtrips_safe_filters() -> 
     assert ExportFilterSet.from_safe_json(normalized.safe_json()) == normalized
     legacy = normalized.safe_json()
     legacy.pop("dataset")
-    assert ExportFilterSet.from_safe_json(legacy).dataset == "message"
+    with pytest.raises(ValueError, match="dataset"):
+        ExportFilterSet.from_safe_json(legacy)
+
+
+@pytest.mark.asyncio
+async def test_exclusive_end_survives_normalization_and_rejects_ambiguous_end() -> None:
+    service = ExportService(FakeRepository(), crypto(), retention_days=7)
+    start = datetime.fromisoformat("2026-01-31T00:00:00+08:00")
+    end = datetime.fromisoformat("2026-02-01T00:00:00+08:00")
+    value = service._normalize(
+        ExportRequestFilters(start=start, end_exclusive=end), role="admin", dept=""
+    )
+    assert value.end is None and value.end_exclusive == end
+    assert ExportFilterSet.from_safe_json(value.safe_json()) == value
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        service._normalize(
+            ExportRequestFilters(start=start, end=end, end_exclusive=end), role="admin", dept=""
+        )
+
+
+@pytest.mark.parametrize("dataset", [None, "", "future", {}, []])
+def test_unknown_persisted_dataset_fails_closed(dataset) -> None:
+    with pytest.raises(ValueError, match="dataset"):
+        ExportFilterSet.from_safe_json({"dataset": dataset})

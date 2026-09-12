@@ -1,3 +1,4 @@
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 import { defineStore } from "pinia"
 
 import {
@@ -141,7 +142,7 @@ export function createSessionStore(doc: SessionDocument = defaultSessionDocument
           this.resetIdentity()
           doc.clearRefreshTabBinding()
           try {
-            window.dispatchEvent(new Event("sms:session-clearing"))
+            window.dispatchEvent(new Event(SESSION_CLEARING_EVENT))
           } finally {
             clearLegacyPersistence()
           }

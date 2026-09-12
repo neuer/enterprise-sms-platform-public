@@ -47,7 +47,7 @@ describe("跨标签页 Refresh Lock", () => {
     let current: Promise<void> = Promise.resolve()
     const order: string[] = []
     const locks = {
-      request: async (_name: string, callback: () => Promise<string>) => {
+      request: async (_name: string, _options: { signal?: AbortSignal }, callback: () => Promise<string>) => {
         const previous = current
         let release!: () => void
         current = new Promise<void>((resolve) => {
@@ -94,4 +94,53 @@ describe("跨标签页 Refresh Lock", () => {
     expect(sessionStorage.getItem(REFRESH_TAB_ID_KEY)).toBe("a".repeat(32))
     expect(getRefreshTabBinding()).toBeNull()
   })
+})
+
+it.each(["timeout", "cancel"])("本地队列 %s 后不会在持锁者释放时补做请求", async (mode) => {
+  vi.stubGlobal("navigator", {})
+  vi.useFakeTimers()
+  let release!: () => void
+  const holder = withRefreshLock(
+    () =>
+      new Promise<void>((done) => {
+        release = done
+      }),
+  )
+  const controller = new AbortController()
+  const write = vi.fn()
+  const waiter = withRefreshLock(write, { signal: controller.signal })
+  const rejected = expect(waiter).rejects.toMatchObject({ name: mode === "timeout" ? "TimeoutError" : "AbortError" })
+  if (mode === "timeout") await vi.advanceTimersByTimeAsync(10_000)
+  else controller.abort()
+  await rejected
+  release()
+  await holder
+  await withRefreshLock(async () => {})
+  expect(write).not.toHaveBeenCalled()
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+})
+
+it("Web Locks 等待超时通过 signal 撤销真实排队请求", async () => {
+  vi.useFakeTimers()
+  let signal!: AbortSignal
+  const write = vi.fn()
+  vi.stubGlobal("navigator", {
+    locks: {
+      request: (_name: string, options: { signal: AbortSignal }) => {
+        signal = options.signal
+        return new Promise((_resolve, reject) =>
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+        )
+      },
+    },
+  })
+  const pending = withRefreshLock(write)
+  const rejected = expect(pending).rejects.toMatchObject({ name: "TimeoutError" })
+  await vi.advanceTimersByTimeAsync(10_000)
+  await rejected
+  expect(signal.aborted).toBe(true)
+  expect(write).not.toHaveBeenCalled()
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
 })

@@ -1,3 +1,5 @@
+import { createPinia, setActivePinia } from "pinia"
+import { useSessionStore } from "../src/stores/session"
 import { flushPromises, mount } from "@vue/test-utils"
 import ElementPlus from "element-plus"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -48,6 +50,7 @@ async function setup() {
   return { wrapper, vm }
 }
 beforeEach(() => {
+  setActivePinia(createPinia())
   api.sendWebMessage.mockReset()
 })
 
@@ -138,7 +141,7 @@ describe("提交快照与草稿生命周期", () => {
     const { wrapper, vm } = await setup()
     try {
       const first = vm.submit()
-      window.dispatchEvent(new Event("session-clearing"))
+      useSessionStore().clear()
       expect(vm.form.content).toBe("")
       expect(vm.form.mobilesText).toBe("")
       vm.form.content = "新会话合成通知"

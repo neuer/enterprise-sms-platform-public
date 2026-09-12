@@ -4,7 +4,7 @@ import { resetSessionSignals } from "../src/api/sessionSignals"
 import { resetAccessSessionModule } from "../src/api/sessionTokens"
 
 const passthroughLocks = {
-  request: async (_name: string, callback: () => Promise<unknown>) => callback(),
+  request: async (_name: string, _options: { signal?: AbortSignal }, callback: () => Promise<unknown>) => callback(),
 }
 
 /** jsdom 默认没有 Web Locks；测试默认装一把直通锁，避免误入安全单标签页。 */

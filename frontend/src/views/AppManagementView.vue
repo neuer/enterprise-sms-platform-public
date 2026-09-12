@@ -28,7 +28,8 @@ import { listSigns } from "../api/signs"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { copyText } from "../lib/clipboard"
-import { confirmAuditedAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAuditedAction, captureCurrent } = useConfirmActions()
 import { CATEGORY_LABELS } from "../lib/labels"
 import { formatDateTime, shanghaiDateKey } from "../lib/time"
 import { errorText } from "../lib/error"
@@ -468,6 +469,7 @@ async function save(): Promise<void> {
 }
 
 async function rotateKey(item: ManagedApp): Promise<void> {
+  item = { ...item }
   if (secretOperation.value !== null) return
   secretOperation.value = "rotate-api-key"
   rotatingKeyId.value = item.id
@@ -502,6 +504,7 @@ async function rotateKey(item: ManagedApp): Promise<void> {
 }
 
 async function revokeKey(item: ManagedApp): Promise<void> {
+  item = { ...item }
   if (!item.old_key_prefix || !item.old_key_expires_at) return
   if (
     !(await confirmAuditedAction({
@@ -522,6 +525,7 @@ async function revokeKey(item: ManagedApp): Promise<void> {
 }
 
 async function rotateCallback(item: ManagedApp): Promise<void> {
+  item = { ...item }
   if (secretOperation.value !== null) return
   secretOperation.value = "rotate-callback-secret"
   rotatingCallbackId.value = item.id
@@ -548,6 +552,7 @@ async function rotateCallback(item: ManagedApp): Promise<void> {
 }
 
 async function disable(item: ManagedApp): Promise<void> {
+  item = { ...item }
   if (
     !(await confirmAuditedAction({
       title: `停用应用 ${item.name}？`,
@@ -573,6 +578,8 @@ async function disable(item: ManagedApp): Promise<void> {
 
 /** 启用不再从列表行拼全字段 PUT：先取权威配置再仅改 status，消除字段漂移写坏配置的风险。 */
 async function enable(item: ManagedApp): Promise<void> {
+  item = { ...item }
+  const isCurrent = captureCurrent()
   if (
     !(await confirmAuditedAction({
       title: "确认启用",
@@ -584,6 +591,7 @@ async function enable(item: ManagedApp): Promise<void> {
     return
   try {
     const current = await getApp(item.id)
+    if (!isCurrent()) return
     await updateApp(item.id, {
       dept: current.dept,
       allowed_categories: current.allowed_categories,

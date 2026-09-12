@@ -19,7 +19,8 @@ import {
 import EmptyState from "../components/EmptyState.vue"
 import StatusTag from "../components/StatusTag.vue"
 import { useMobileLayout } from "../composables/useMobileLayout"
-import { confirmAuditedAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
 import { useSessionStore } from "../stores/session"
@@ -233,6 +234,7 @@ async function sync(item: SmsTemplate): Promise<void> {
 }
 
 async function remove(item: SmsTemplate): Promise<void> {
+  item = { ...item }
   if (
     !(await confirmAuditedAction({
       title: "删除模板",

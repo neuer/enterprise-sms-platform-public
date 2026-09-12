@@ -20,7 +20,8 @@ import EmptyState from "../components/EmptyState.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
 import { usePagedList } from "../composables/usePagedList"
-import { confirmAuditedAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { DEFAULT_PAGE_SIZE, ROLE_LABELS } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
@@ -401,6 +402,8 @@ function closePasswordReset(): void {
 
 async function confirmPasswordReset(): Promise<void> {
   if (!selected.value) return
+  const target = selected.value
+  const draft = resetPasswordDraft.value
   const passwordIssue = passwordProblem(resetPasswordDraft.value, selected.value.username)
   if (passwordIssue) {
     ElMessage.warning(passwordIssue)
@@ -408,6 +411,7 @@ async function confirmPasswordReset(): Promise<void> {
   }
   if (
     !(await confirmAuditedAction({
+      isCurrent: () => selected.value === target && resetPasswordDraft.value === draft && resetDrawerOpen.value,
       title: "确认重置密码",
       body: `将重置 ${selected.value.display_name || selected.value.username} 的本地密码，并立即吊销现有会话；用户下次登录必须修改密码。`,
       auditNote: "重置行为、操作人与对象 account_id 将写入审计日志；临时密码不回显。",
@@ -417,8 +421,8 @@ async function confirmPasswordReset(): Promise<void> {
     return
   try {
     saving.value = true
-    const accountId = selected.value.account_id
-    let password = resetPasswordDraft.value
+    const accountId = target.account_id
+    let password = draft
     let expiresAt: string | null = null
     try {
       const saved = await adminStepUp.run(
@@ -444,6 +448,7 @@ async function confirmPasswordReset(): Promise<void> {
 }
 
 async function changeStatus(user: ManagedUser): Promise<void> {
+  user = { ...user }
   const nextStatus: 0 | 1 = user.status === 1 ? 0 : 1
   const action = nextStatus === 1 ? "启用" : "停用"
   if (
@@ -474,6 +479,7 @@ async function changeStatus(user: ManagedUser): Promise<void> {
 }
 
 async function forceLogout(user: ManagedUser): Promise<void> {
+  user = { ...user }
   if (
     !(await confirmAuditedAction({
       title: "确认强制下线",

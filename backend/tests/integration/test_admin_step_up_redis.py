@@ -8,6 +8,7 @@ import os
 import pytest
 from redis.asyncio import Redis
 
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.errors import ApiError
 from app.services.admin_step_up import _key
 from tests.test_admin_step_up import CLAIMS, INTENT, setup
@@ -36,7 +37,7 @@ async def test_actual_redis_single_consumption_and_expiry() -> None:
             ],
             return_exceptions=True,
         )
-        assert sum(item is None for item in results) == 1
+        assert sum(isinstance(item, AdminAuthorization) for item in results) == 1
         assert sum(isinstance(item, ApiError) for item in results) == 19
         token = await service.issue(
             claims=CLAIMS, password="synthetic-valid", ip="synthetic", intent=INTENT

@@ -6,12 +6,15 @@ from typing import Any
 
 import pytest
 
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.services.user_management import (
     LastAdminProtected,
     SelfDisableDenied,
     UserQuery,
 )
 from app.services.user_repository import SqlUserManagementRepository
+
+AUTHORIZATION = AdminAuthorization(1, 11, 1, "local", None)
 
 NOW = datetime(2026, 7, 16, 8, tzinfo=UTC)
 
@@ -133,15 +136,14 @@ async def test_user_list_filters_joined_account_identity_and_credential_projecti
 @pytest.mark.asyncio
 async def test_last_active_admin_cannot_be_demoted_and_rows_are_locked() -> None:
     current = row(role="admin", account_id=1, identity_id=11)
-    repo, connection = repository(
-        [FakeResult(), FakeResult([current]), FakeResult(), FakeResult()]
-    )
+    repo, connection = repository([FakeResult(), FakeResult([current]), FakeResult(), FakeResult()])
 
     with pytest.raises(LastAdminProtected):
         await repo.set_role(
             1,
             "viewer",
             True,
+            authorization=AUTHORIZATION,
             actor="admin",
             ip="10.0.0.8",
         )
@@ -161,16 +163,16 @@ async def test_ad_role_follow_uses_external_mapping_and_increments_security_vers
             FakeResult([row()]),
             FakeResult(
                 [
-                        {
-                            "external_group": "sms-operators",
-                            "role": "operator",
-                            "dept": "业务一部",
-                        },
-                        {
-                            "external_group": "sms-approvers",
-                            "role": "approver",
-                            "dept": "业务一部",
-                        },
+                    {
+                        "external_group": "sms-operators",
+                        "role": "operator",
+                        "dept": "业务一部",
+                    },
+                    {
+                        "external_group": "sms-approvers",
+                        "role": "approver",
+                        "dept": "业务一部",
+                    },
                 ]
             ),
             FakeResult(),
@@ -184,6 +186,7 @@ async def test_ad_role_follow_uses_external_mapping_and_increments_security_vers
         8,
         "viewer",
         False,
+        authorization=AUTHORIZATION,
         actor="admin",
         ip="10.0.0.8",
     )
@@ -213,15 +216,14 @@ async def test_ad_role_follow_uses_external_mapping_and_increments_security_vers
 
 @pytest.mark.asyncio
 async def test_repository_rejects_self_disable_before_update() -> None:
-    repo, connection = repository(
-        [FakeResult(), FakeResult([row(account_id=1, role="admin")])]
-    )
+    repo, connection = repository([FakeResult(), FakeResult([row(account_id=1, role="admin")])])
 
     with pytest.raises(SelfDisableDenied):
         await repo.set_status(
             1,
             0,
             actor_account_id=1,
+            authorization=AUTHORIZATION,
             actor="admin",
             ip="10.0.0.8",
         )
@@ -247,6 +249,7 @@ async def test_repository_rejects_disabling_last_active_admin() -> None:
             2,
             0,
             actor_account_id=1,
+            authorization=AUTHORIZATION,
             actor="other.admin",
             ip="10.0.0.8",
         )
@@ -273,12 +276,14 @@ async def test_local_password_reset_forces_change_and_audit_excludes_hash() -> N
             FakeResult(),
             FakeResult(),
             FakeResult(),
+            FakeResult(scalar=1),
         ]
     )
 
     changed = await repo.reset_local_password(
         8,
         "$argon2id$v=19$new-hash",
+        authorization=AUTHORIZATION,
         actor="admin",
         ip="10.0.0.8",
     )
@@ -328,6 +333,7 @@ async def test_local_create_is_single_transaction_and_audit_has_no_hash() -> Non
         dept="业务一部",
         role="viewer",
         password_hash="$argon2id$v=19$new-hash",
+        authorization=AUTHORIZATION,
         actor="admin",
         ip="10.0.0.8",
     )
@@ -342,3 +348,18 @@ async def test_local_create_is_single_transaction_and_audit_has_no_hash() -> Non
     assert "'role',CAST(:target_role AS text)" in audit_sql
     assert "$argon2id" not in str(audit_params)
     assert connection.calls[2][1]["normalized_login_name"] == "new.user"
+
+
+@pytest.fixture(autouse=True)
+def authorized_transaction(monkeypatch, request):
+    async def check(connection, authorization, *, operation, target):
+        assert authorization is AUTHORIZATION
+        if "activate" not in request.node.name and operation in {
+            "user_status_change",
+            "user_role_change",
+        }:
+            from app.services.admin_invariant import lock_admin_invariant
+
+            await lock_admin_invariant(connection)
+
+    monkeypatch.setattr("app.services.user_repository.lock_admin_authorization", check)

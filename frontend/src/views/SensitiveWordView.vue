@@ -14,7 +14,8 @@ import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { usePagedList } from "../composables/usePagedList"
-import { confirmAuditedAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
 import { formatDateTime } from "../lib/time"
@@ -150,6 +151,7 @@ async function add(): Promise<void> {
 }
 
 async function remove(item: SensitiveWordItem): Promise<void> {
+  item = { ...item }
   if (
     !(await confirmAuditedAction({
       title: "删除敏感词确认",

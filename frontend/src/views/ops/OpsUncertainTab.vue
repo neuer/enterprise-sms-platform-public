@@ -15,7 +15,8 @@ import {
   type UncertainResolutionAction,
 } from "../../api/ops"
 
-import { confirmAuditedAction } from "../../lib/confirm"
+import { useConfirmActions } from "../../lib/confirm"
+const { confirmAuditedAction } = useConfirmActions()
 
 import { errorText } from "../../lib/error"
 
@@ -83,6 +84,7 @@ async function load(_tab?: string): Promise<void> {
 }
 
 async function proposeResolution(item: UncertainItem, action: UncertainResolutionAction): Promise<void> {
+  item = { ...item }
   if (
     !(await confirmAuditedAction({
       title: "确认提出处置",
@@ -102,6 +104,7 @@ async function proposeResolution(item: UncertainItem, action: UncertainResolutio
 }
 
 async function confirmResolution(item: UncertainItem): Promise<void> {
+  item = { ...item }
   if (item.resolution_id == null) return
   if (
     !(await confirmAuditedAction({
