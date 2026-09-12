@@ -55,6 +55,7 @@ class UserModel(StrictModel):
     status: Literal[0, 1]
     identity_status: Literal[0, 1]
     credential_status: Literal["active", "must_change"] | None
+    temporary_password_expires_at: datetime | None
     source_groups: list[str]
     sync_status: Literal["local", "synced", "pending", "disabled"]
     last_synced_at: datetime | None
@@ -153,6 +154,7 @@ def _model(user: UserRecord) -> UserModel:
         status=cast(Literal[0, 1], user.status),
         identity_status=cast(Literal[0, 1], user.identity_status),
         credential_status=user.credential_status,
+        temporary_password_expires_at=user.temporary_password_expires_at,
         source_groups=list(user.source_groups),
         sync_status=user.sync_status,
         last_synced_at=user.last_synced_at,

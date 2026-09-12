@@ -37,6 +37,7 @@ const localUser = {
   status: 1,
   identity_status: 1,
   credential_status: "must_change",
+  temporary_password_expires_at: "2026-09-14T08:00:00+08:00",
   source_groups: [],
   sync_status: "local",
   last_synced_at: null,
@@ -55,6 +56,7 @@ const adUser = {
   status: 1,
   identity_status: 1,
   credential_status: null,
+  temporary_password_expires_at: null,
   source_groups: ["CN=SMS-Operators,OU=Groups,DC=example,DC=com"],
   sync_status: "synced",
   last_synced_at: "2026-07-16T08:00:00+08:00",
@@ -131,6 +133,7 @@ describe("用户与角色", () => {
   })
 
   it("通过右侧抽屉创建本地账号且临时密码只进入请求", async () => {
+    const success = vi.spyOn(ElMessage, "success")
     const fetch = routeFetch((url) => {
       if (url === "/api/v1/web/admin/users/local") return response(localUser)
       return undefined
@@ -159,6 +162,7 @@ describe("用户与角色", () => {
       role: "viewer",
       temporary_password: "Temporary@123",
     })
+    expect(success).toHaveBeenCalledWith(expect.stringContaining("2026-09-14 08:00:00"))
     expect(JSON.stringify(localUser)).not.toContain("Temporary@123")
     wrapper.unmount()
   })

@@ -269,7 +269,7 @@ async def test_local_password_reset_forces_change_and_audit_excludes_hash() -> N
     repo, connection = repository(
         [
             FakeResult([local]),
-            FakeResult(),
+            FakeResult(scalar=NOW),
             FakeResult(),
             FakeResult(),
             FakeResult(),
@@ -293,6 +293,8 @@ async def test_local_password_reset_forces_change_and_audit_excludes_hash() -> N
     assert "'credential_change_required',TRUE" in audit_sql
     assert "'must_change_password',TRUE" not in audit_sql
     assert "$argon2id" not in str(audit_params)
+
+    assert changed.temporary_password_expires_at == NOW
 
 
 @pytest.mark.asyncio
@@ -334,6 +336,7 @@ async def test_local_create_is_single_transaction_and_audit_has_no_hash() -> Non
     assert "INSERT INTO user_account" in connection.calls[1][0]
     assert "INSERT INTO auth_identity" in connection.calls[2][0]
     assert "INSERT INTO local_credential" in connection.calls[3][0]
+    assert "local_temporary_password_ttl_hours" in connection.calls[3][0]
     audit_sql, audit_params = connection.calls[4]
     assert "local_account_create" in audit_sql
     assert "'role',CAST(:target_role AS text)" in audit_sql

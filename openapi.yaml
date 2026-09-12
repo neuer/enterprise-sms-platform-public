@@ -3733,7 +3733,7 @@ components:
     User:
       type: object
       additionalProperties: false
-      required: [account_id, identity_id, provider_code, username, display_name, dept, role, role_override, status, identity_status, credential_status, source_groups, sync_status, last_synced_at, last_login_at]
+      required: [account_id, identity_id, provider_code, username, display_name, dept, role, role_override, status, identity_status, credential_status, temporary_password_expires_at, source_groups, sync_status, last_synced_at, last_login_at]
       properties:
         account_id: { type: integer, minimum: 1 }
         identity_id: { type: integer, minimum: 1 }
@@ -3746,6 +3746,7 @@ components:
         status: { type: integer, enum: [0, 1] }
         identity_status: { type: integer, enum: [0, 1] }
         credential_status: { anyOf: [{ type: string, enum: [active, must_change] }, { type: 'null' }] }
+        temporary_password_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         source_groups:
           type: array
           items: { type: string }

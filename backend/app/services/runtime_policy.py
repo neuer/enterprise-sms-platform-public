@@ -112,6 +112,9 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "export_retention_days": ConfigSpec("7", "int", GROUP_LIFECYCLE, maximum=90),
     "sensitive_hit_action": ConfigSpec("block", "str", GROUP_SENDING),
     "key_grace_hours": ConfigSpec("72", "int", GROUP_SECURITY, maximum=720),
+    "local_temporary_password_ttl_hours": ConfigSpec(
+        "24", "int", GROUP_SECURITY, minimum=1, maximum=168
+    ),
     "login_fail_limit": ConfigSpec("5", "int", GROUP_SECURITY, maximum=20),
     "login_lock_minutes": ConfigSpec("15", "int", GROUP_SECURITY, maximum=1_440),
     "login_ip_fail_limit": ConfigSpec("20", "int", GROUP_SECURITY, maximum=1_000),

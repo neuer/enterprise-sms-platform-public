@@ -95,8 +95,8 @@ async def test_password_change_token_rollback_and_concurrency_are_atomic() -> No
                 text(
                     """
                     INSERT INTO local_credential(
-                      identity_id,password_hash,must_change_password
-                    ) VALUES(:identity_id,'old-hash',TRUE)
+                      identity_id,password_hash,must_change_password,temporary_password_expires_at
+                    ) VALUES(:identity_id,'old-hash',TRUE,now()+interval '24 hours')
                     """
                 ),
                 {"identity_id": identity_id},

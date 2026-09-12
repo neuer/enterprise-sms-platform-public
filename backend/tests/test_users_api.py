@@ -176,6 +176,7 @@ def test_admin_list_exposes_provider_credential_and_account_status() -> None:
         "status": 1,
         "identity_status": 1,
         "credential_status": "must_change",
+        "temporary_password_expires_at": None,
         "source_groups": [],
         "sync_status": "local",
         "last_synced_at": None,

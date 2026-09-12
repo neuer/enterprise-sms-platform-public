@@ -53,6 +53,7 @@ class UserRecord:
     last_synced_at: datetime | None
     last_login_at: datetime | None
     security_version: int = 1
+    temporary_password_expires_at: datetime | None = None
 
     @property
     def sync_status(self) -> SyncStatus:

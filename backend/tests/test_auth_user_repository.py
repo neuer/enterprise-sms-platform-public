@@ -192,6 +192,7 @@ async def test_create_local_account_identity_credential_and_audit_are_one_transa
     assert identity_params["external_subject"] == "local:new.user"
     credential_sql, credential_params = connection.calls[3]
     assert "INSERT INTO local_credential" in credential_sql
+    assert "local_temporary_password_ttl_hours" in credential_sql
     assert credential_params["password_hash"] == "$argon2id$v=19$new"
     audit_sql, audit_params = connection.calls[4]
     assert "local_account_create" in audit_sql
@@ -320,6 +321,7 @@ async def test_password_change_token_is_stored_as_bound_hash_only() -> None:
     sql, params = connection.calls[0]
     assert "INSERT INTO password_change_token" in sql
     assert "lc.must_change_password=TRUE" in sql
+    assert "lc.temporary_password_expires_at > clock_timestamp()" in sql
     assert params == {
         "token_hash": "a" * 64,
         "account_id": 8,
@@ -370,6 +372,7 @@ async def test_initial_password_change_consumes_token_and_updates_password_atomi
     assert lock_params["lease_id"] == lease_id
     credential_sql, credential_params = connection.calls[1]
     assert "must_change_password=FALSE" in credential_sql
+    assert "temporary_password_expires_at=NULL" in credential_sql
     assert credential_params["password_hash"] == "$argon2id$v=19$new-secret-hash"
     assert "security_version=security_version+1" in connection.calls[2][0]
     consume_sql, consume_params = connection.calls[3]

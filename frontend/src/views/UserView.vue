@@ -320,6 +320,7 @@ async function saveLocalUser(): Promise<void> {
       role: createForm.role,
       temporary_password: createForm.temporary_password,
     }
+    let expiresAt: string | null = null
     try {
       if (payload.role === "admin") {
         const parameters = {
@@ -334,12 +335,17 @@ async function saveLocalUser(): Promise<void> {
           (token) => createLocalUser(payload, token),
         )
         if (!saved) return
-      } else await createLocalUser(payload)
+        expiresAt = saved.temporary_password_expires_at
+      } else {
+        expiresAt = (await createLocalUser(payload)).temporary_password_expires_at
+      }
     } finally {
       payload.temporary_password = ""
     }
     closeCreate()
-    ElMessage.success("本地账号已创建，首次登录须修改临时密码 · 本次操作已记入审计")
+    ElMessage.success(
+      `本地账号已创建，临时密码有效至 ${formatDateTime(expiresAt)}；首次登录须修改，过期需管理员重置 · 本次操作已记入审计`,
+    )
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "本地账号创建失败"))
@@ -413,6 +419,7 @@ async function confirmPasswordReset(): Promise<void> {
     saving.value = true
     const accountId = selected.value.account_id
     let password = resetPasswordDraft.value
+    let expiresAt: string | null = null
     try {
       const saved = await adminStepUp.run(
         { operation: "user_password_reset", target_id: String(accountId), parameters: { action: "reset" } },
@@ -420,11 +427,14 @@ async function confirmPasswordReset(): Promise<void> {
         (token) => resetLocalPassword(accountId, password, token),
       )
       if (!saved) return
+      expiresAt = saved.temporary_password_expires_at
     } finally {
       password = ""
     }
     closePasswordReset()
-    ElMessage.success("临时密码已重置，下次登录须修改 · 本次操作已记入审计")
+    ElMessage.success(
+      `临时密码已重置，有效至 ${formatDateTime(expiresAt)}；首次登录须修改，过期需管理员重置 · 本次操作已记入审计`,
+    )
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "密码重置失败"))
@@ -563,7 +573,11 @@ onMounted(() => {
       ><p>本地用户名：3–64 位 ASCII 字母、数字、点、下划线或短横线；不区分大小写，创建后不可修改。</p></div
     >
     <div
-      ><span>密码规则</span><p>{{ passwordPolicy.description }}；创建或重置后为临时密码，首次登录必须修改。</p></div
+      ><span>密码规则</span
+      ><p
+        >{{ passwordPolicy.description }}；创建或重置后为临时密码，默认有效期 24 小时（管理员可配置 1–168
+        小时），首次登录必须修改，过期需管理员重置。</p
+      ></div
     >
   </aside>
 

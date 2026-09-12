@@ -473,6 +473,7 @@ describe("统一 API 请求", () => {
       status: 1,
       identity_status: 1,
       credential_status: "must_change",
+      temporary_password_expires_at: null,
       source_groups: [],
       sync_status: "local",
       last_synced_at: null,
@@ -516,7 +517,7 @@ describe("统一 API 请求", () => {
     expect(calls[4][0]).toBe("/api/v1/web/admin/users/8/password/reset")
     expect(calls[5][0]).toBe("/api/v1/web/admin/users/8/sessions/revoke")
     expect(JSON.parse(String(calls[1][1].body)).temporary_password).toBe("Temporary@123")
-    expect(JSON.stringify(created)).not.toContain("temporary_password")
+    expect(created).not.toHaveProperty("temporary_password")
     expect(page.items[0].account_id).toBe(8)
   })
 

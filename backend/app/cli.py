@@ -27,6 +27,7 @@ from app.core.auth.passwords import (
     PasswordPolicy,
     generate_temporary_password,
 )
+from app.core.auth.temporary_password import TEMPORARY_PASSWORD_EXPIRY_SQL
 from app.core.bounded_executor import run_bounded
 from app.core.runtime_resources import bind_connection_audit_subject
 from app.services.crypto import (
@@ -295,10 +296,11 @@ class SqlInitAdminRepository:
                 identity_id = int(identity_result.scalar_one())
                 await connection.execute(
                     text(
-                        """
+                        f"""
                         INSERT INTO local_credential(
-                          identity_id,password_hash,must_change_password
-                        ) VALUES(:identity_id,:password_hash,TRUE)
+                          identity_id,password_hash,must_change_password,temporary_password_expires_at
+                        ) VALUES(:identity_id,:password_hash,TRUE,
+                              {TEMPORARY_PASSWORD_EXPIRY_SQL})
                         """
                     ),
                     {"identity_id": identity_id, "password_hash": password_hash},

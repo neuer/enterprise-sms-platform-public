@@ -17,6 +17,7 @@ export interface ManagedUser {
   status: 0 | 1
   identity_status: 0 | 1
   credential_status: CredentialStatus
+  temporary_password_expires_at: string | null
   source_groups: string[]
   sync_status: UserSyncStatus
   last_synced_at: string | null

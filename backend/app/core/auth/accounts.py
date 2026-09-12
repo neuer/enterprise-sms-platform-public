@@ -179,3 +179,4 @@ class LocalAccountRecord:
     account: PlatformAccount
     password_hash: str
     credential_version: int = 1
+    temporary_password_valid: bool = False
