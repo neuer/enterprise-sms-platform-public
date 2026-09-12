@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.password_screening import OfflinePasswordScreen, PasswordScreeningUnavailable
 from app.core.auth.passwords import (
     PasswordPolicy,
@@ -14,6 +15,8 @@ from app.core.auth.passwords import (
     generate_temporary_password,
 )
 from app.settings import Settings
+
+AUTHORIZATION = AdminAuthorization(1, 11, 1, "local", None)
 
 BAD = "PreviouslyLeaked@123"
 
@@ -97,11 +100,14 @@ async def test_administrative_password_writes_screen_before_hash(
                 dept="Test",
                 role="operator",
                 temporary_password=BAD,
+                authorization=AUTHORIZATION,
                 actor="admin",
                 ip="192.0.2.1",
             )
         else:
-            await service.reset_password(8, BAD, actor="admin", ip="192.0.2.1")
+            await service.reset_password(
+                8, BAD, authorization=AUTHORIZATION, actor="admin", ip="192.0.2.1"
+            )
     hasher.hash.assert_not_called()
     assert repository.calls == []
 

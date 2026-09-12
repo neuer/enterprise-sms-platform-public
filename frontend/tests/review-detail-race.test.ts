@@ -12,7 +12,12 @@ const daily = vi.hoisted(() => ({
 }))
 const ops = vi.hoisted(() => ({ listRawLogs: vi.fn(), replayRaw: vi.fn() }))
 const confirm = vi.hoisted(() => vi.fn())
-vi.mock("../src/lib/confirm", () => ({ confirmAuditedAction: confirm }))
+vi.mock("../src/lib/confirm", () => ({
+  useConfirmActions: () => ({
+    confirmAuditedAction: async (options: { isCurrent?: () => boolean }) =>
+      (await confirm()) && (options.isCurrent?.() ?? true),
+  }),
+}))
 vi.mock("../src/api/securityDaily", () => daily)
 vi.mock("../src/api/ops", () => ops)
 vi.mock("../src/components/SecurityDailyConfigDialog.vue", () => ({ default: { template: "<div />" } }))
@@ -109,7 +114,7 @@ describe("review: 管理与运维边界", () => {
       expect(vm.previewText).toBe("")
       finishConfirm(true)
       await delivery
-      expect(daily.sendSecurityDailyReport).toHaveBeenCalledWith(201)
+      expect(daily.sendSecurityDailyReport).not.toHaveBeenCalled()
       expect(vm.selected.id).toBe(202)
     } finally {
       wrapper.unmount()

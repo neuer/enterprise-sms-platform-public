@@ -5,7 +5,8 @@ import { ref, watch } from "vue"
 
 import { listJobs, triggerJob, type JobItem } from "../../api/ops"
 
-import { confirmAuditedAction } from "../../lib/confirm"
+import { useConfirmActions } from "../../lib/confirm"
+const { confirmAuditedAction } = useConfirmActions()
 
 import { errorText } from "../../lib/error"
 
@@ -49,6 +50,7 @@ async function load(_tab?: string): Promise<void> {
 }
 
 async function trigger(item: JobItem): Promise<void> {
+  item = { ...item }
   if (
     !(await confirmAuditedAction({
       title: "确认任务触发",

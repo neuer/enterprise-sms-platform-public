@@ -22,6 +22,8 @@ from app.settings import Settings, get_settings
 
 # 状态与下载复用同一当前主体授权条件，历史文件不继承旧角色/部门权限。
 EXPORT_ACCESS_PREDICATE = """
+                          AND (filters->>'dataset'='message'
+                            OR (filters->>'dataset'='unmatched' AND :actor_role='admin'))
                           AND (
                             :actor_role='admin'
                             OR (
@@ -78,6 +80,7 @@ def _message_where() -> str:
       (CAST(:scope_dept AS varchar(128)) IS NULL OR b.dept=:scope_dept)
       AND (CAST(:start AS timestamptz) IS NULL OR m.created_at>=:start)
       AND (CAST(:end AS timestamptz) IS NULL OR m.created_at<=:end)
+      AND (CAST(:end_exclusive AS timestamptz) IS NULL OR m.created_at<:end_exclusive)
       AND (CAST(:category AS varchar(8)) IS NULL OR b.category=:category)
       AND (CAST(:status AS varchar(10)) IS NULL OR m.status=:status)
       AND (CAST(:app_id AS bigint) IS NULL OR b.app_id=:app_id)
@@ -90,6 +93,7 @@ def _unmatched_where() -> str:
     return """
       (CAST(:start AS timestamptz) IS NULL OR u.created_at>=:start)
       AND (CAST(:end AS timestamptz) IS NULL OR u.created_at<=:end)
+      AND (CAST(:end_exclusive AS timestamptz) IS NULL OR u.created_at<:end_exclusive)
       AND (:has_phone=false OR
         u.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[])))
     """
@@ -100,6 +104,7 @@ def _params(filters: ExportFilterSet) -> dict[str, object]:
         "scope_dept": filters.scope_dept,
         "start": filters.start,
         "end": filters.end,
+        "end_exclusive": filters.end_exclusive,
         "category": filters.category,
         "status": filters.status,
         "app_id": filters.app_id,
@@ -249,7 +254,8 @@ class SqlExportRepository:
                           AND creator_account_id IS NOT NULL
                           AND creator_identity_id IS NOT NULL
                           AND scope_resolved
-                        """ + EXPORT_ACCESS_PREDICATE
+                        """
+                        + EXPORT_ACCESS_PREDICATE
                     ),
                     {
                         "public_id": str(public_id),
@@ -292,7 +298,9 @@ class SqlExportRepository:
                           AND file_path IS NOT NULL
                           AND finished_at IS NOT NULL
                           AND finished_at+make_interval(days=>:retention_days)>now()
-                        """ + EXPORT_ACCESS_PREDICATE + """
+                        """
+                        + EXPORT_ACCESS_PREDICATE
+                        + """
                         FOR SHARE
                         """
                     ),

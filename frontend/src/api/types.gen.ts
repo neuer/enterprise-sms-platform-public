@@ -6601,6 +6601,8 @@ export interface paths {
                         filters?: {
                             start?: string | null;
                             end?: string | null;
+                            /** @description 不包含的终点，与 end 互斥；日期范围使用次日上海零点 */
+                            end_exclusive?: string | null;
                             category?: ("verify" | "notice" | "market") | null;
                             status?: string | null;
                             app_id?: number | null;

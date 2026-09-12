@@ -19,15 +19,8 @@ export {
 }
 export type { SessionMode }
 
-const REFRESH_LOCK_NAME = "sms-refresh-rotation"
-
-export async function withRefreshLock<T>(run: () => Promise<T>): Promise<T> {
-  const locks = globalThis.navigator?.locks
-  if (locks && typeof locks.request === "function") {
-    return locks.request(REFRESH_LOCK_NAME, run)
-  }
-  // 无 Web Locks 时只做本页串行；与 Store 共用同一 Document 互斥。
-  return defaultSessionDocument.withLocalMutex(run)
+export async function withRefreshLock<T>(run: () => Promise<T>, options: { signal?: AbortSignal } = {}): Promise<T> {
+  return defaultSessionDocument.withSessionLock(run, options)
 }
 
 export const withSessionLock = withRefreshLock

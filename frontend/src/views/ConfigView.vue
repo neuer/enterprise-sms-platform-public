@@ -24,7 +24,8 @@ import {
 } from "../api/admin"
 import EmptyState from "../components/EmptyState.vue"
 import VendorTestConsole from "../components/VendorTestConsole.vue"
-import { confirmAction, confirmAuditedAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAction, confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { ROLE_LABELS } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
@@ -230,6 +231,7 @@ async function save(): Promise<void> {
   if (items.some((item) => restartKeys.has(item.key))) {
     const confirmed = await confirmAuditedAction({
       title: "确认调度参数变更",
+      isCurrent: () => JSON.stringify(changes.value) === JSON.stringify(items),
       body: "待保存项包含 beat 调度参数；保存后必须重启 beat 与 API 容器才会生效，运行中不会动态热更。",
       auditNote: "每个变更键的旧值与新值将写入审计日志。",
       confirmText: "保存变更",
@@ -325,9 +327,12 @@ async function activateProvider(): Promise<void> {
 }
 
 async function disableProvider(): Promise<void> {
+  const provider = adProvider.value
+  if (!provider) return
   if (
     !(await confirmAuditedAction({
       title: "确认禁用 AD",
+      isCurrent: () => adProvider.value === provider,
       body: "禁用后登录页不再显示 AD，已有 AD 会话也将在后续认证校验时失效，无法继续访问或刷新；草稿、生效配置与角色映射继续保留，可随时重新测试并启用。",
       auditNote: "禁用行为与操作人将写入审计日志。",
       confirmText: "禁用 AD",
@@ -341,7 +346,7 @@ async function disableProvider(): Promise<void> {
       {
         operation: "provider_enable_disable",
         target_id: "ad",
-        parameters: { enabled: false, draft_version: adProvider.value.draft_version },
+        parameters: { enabled: false, draft_version: provider.draft_version },
       },
       "变更 AD 认证源启用状态",
       (token) => disableAuthProvider("ad", token),

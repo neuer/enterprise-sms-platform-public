@@ -1,9 +1,11 @@
+import { defaultSessionDocument } from "../api/sessionDocument"
 import { ElMessageBox } from "element-plus"
-import { h, type VNode } from "vue"
+import { getCurrentScope, onScopeDispose, h, type VNode } from "vue"
 
 export interface ConfirmActionOptions {
   /** 对话框标题。 */
   title: string
+  isCurrent?: () => boolean
   /** 后果说明：纯文本（自动包裹为段落）。 */
   body: string
   /** 确认按钮文案；缺省沿用 Element 语言包默认。 */
@@ -59,5 +61,30 @@ export async function confirmAuditedAction(options: ConfirmAuditedActionOptions)
     return true
   } catch {
     return false
+  }
+}
+
+/** 将确认绑定发起页面和原会话；调用方可补充目标/草稿是否仍匹配。 */
+export function useConfirmActions() {
+  let disposed = false
+  if (getCurrentScope())
+    onScopeDispose(() => {
+      disposed = true
+    })
+  async function guarded<T extends { isCurrent?: () => boolean }>(
+    show: (options: T) => Promise<boolean>,
+    options: T,
+  ): Promise<boolean> {
+    const origin = defaultSessionDocument.captureOrigin()
+    const confirmed = await show(options)
+    return confirmed && !disposed && defaultSessionDocument.isOriginCurrent(origin) && (options.isCurrent?.() ?? true)
+  }
+  return {
+    captureCurrent: () => {
+      const origin = defaultSessionDocument.captureOrigin()
+      return () => !disposed && defaultSessionDocument.isOriginCurrent(origin)
+    },
+    confirmAction: (options: ConfirmActionOptions) => guarded(confirmAction, options),
+    confirmAuditedAction: (options: ConfirmAuditedActionOptions) => guarded(confirmAuditedAction, options),
   }
 }

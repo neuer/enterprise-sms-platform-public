@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
+
 import { STATUS_LABELS } from "../lib/labels"
 import { useApprovedResources } from "../composables/useApprovedResources"
 import { renderPreview, splitPreviewParts } from "../lib/templatePreview"
@@ -565,7 +567,7 @@ function clearSessionDraft(): void {
 }
 
 onMounted(() => {
-  window.addEventListener("session-clearing", clearSessionDraft)
+  window.addEventListener(SESSION_CLEARING_EVENT, clearSessionDraft)
   void loadTemplates().then(applyTemplateQuery)
   void loadSigns()
   void loadUiPolicy()
@@ -574,7 +576,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   clearSessionDraft()
   disposed = true
-  window.removeEventListener("session-clearing", clearSessionDraft)
+  window.removeEventListener(SESSION_CLEARING_EVENT, clearSessionDraft)
   window.clearTimeout(previewTimer)
   window.clearTimeout(copiedTimer)
 })

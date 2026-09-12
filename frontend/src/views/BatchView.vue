@@ -24,7 +24,8 @@ import {
   type BatchItem,
 } from "../api/queries"
 import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE, CATEGORY_OPTIONS, MESSAGE_STATUS_OPTIONS } from "../lib/labels"
-import { confirmAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAction } = useConfirmActions()
 import { formatDateTime, formatDateTimeMinute } from "../lib/time"
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
@@ -256,10 +257,18 @@ const canResendFailed = computed(
 
 async function cancelSelected(): Promise<void> {
   if (!selected.value || !canScheduleOps.value) return
-  if (!(await confirmAction({ title: "确认取消", body: `取消批次 ${selected.value.batch_no}？配额将按规则回补。` })))
+  const target = selected.value
+  const batch = target.batch_no
+  if (
+    !(await confirmAction({
+      isCurrent: () => selected.value === target && canScheduleOps.value,
+      title: "确认取消",
+      body: `取消批次 ${batch}？配额将按规则回补。`,
+    }))
+  )
     return
   try {
-    await cancelBatch(selected.value.batch_no)
+    await cancelBatch(batch)
     drawer.value = false
     ElMessage.success("批次已取消")
     await load()
@@ -289,9 +298,18 @@ async function saveReschedule(): Promise<void> {
 
 async function resendFailed(): Promise<void> {
   if (!selected.value || !canResendFailed.value) return
-  if (!(await confirmAction({ title: "确认重发", body: "失败号码将生成新批次并完整重走频控、审批和时间窗。" }))) return
+  const target = selected.value
+  const batch = target.batch_no
+  if (
+    !(await confirmAction({
+      isCurrent: () => selected.value === target && canResendFailed.value,
+      title: "确认重发",
+      body: "失败号码将生成新批次并完整重走频控、审批和时间窗。",
+    }))
+  )
+    return
   try {
-    const result = await resendFailedBatch(selected.value.batch_no)
+    const result = await resendFailedBatch(batch)
     ElMessage.success(`重发批次 ${result.batch_no} 已创建`)
     drawer.value = false
     await load()

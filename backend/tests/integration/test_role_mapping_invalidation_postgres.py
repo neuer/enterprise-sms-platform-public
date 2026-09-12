@@ -13,8 +13,10 @@ from sqlalchemy import text
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.principal_context import audit_principal_scope
 from app.core.correlation import correlation_scope
+from app.services.admin_step_up import AdminIntent
 from app.services.auth_provider import (
     ExternalRoleMapping,
     StaleProviderDraft,
@@ -41,6 +43,14 @@ async def test_thousand_accounts_and_hundred_mappings_invalidate_once_per_transa
     accounts: list[int] = []
     try:
         async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO "
+                    "local_credential(identity_id,password_hash,must_change_password) "
+                    "VALUES(:id,'synthetic-hash',false)"
+                ),
+                {"id": principal.identity_id},
+            )
             provider = int(
                 await connection.scalar(
                     text(
@@ -94,6 +104,13 @@ async def test_thousand_accounts_and_hundred_mappings_invalidate_once_per_transa
                     code,
                     items,
                     expected_revision=role_mapping_revision(expected),
+                    authorization=AdminAuthorization(
+                        principal.account_id,
+                        principal.identity_id,
+                        1,
+                        "local",
+                        AdminIntent("provider_role_mapping_change", str(code), "synthetic"),
+                    ),
                     actor=principal.login_name,
                     ip="127.0.0.1",
                 )
@@ -150,6 +167,13 @@ async def test_thousand_accounts_and_hundred_mappings_invalidate_once_per_transa
                 code,
                 original,
                 expected_revision=role_mapping_revision(original),
+                authorization=AdminAuthorization(
+                    principal.account_id,
+                    principal.identity_id,
+                    1,
+                    "local",
+                    AdminIntent("provider_role_mapping_change", str(code), "synthetic"),
+                ),
                 actor=principal.login_name,
                 ip="127.0.0.1",
             )
@@ -166,6 +190,13 @@ async def test_thousand_accounts_and_hundred_mappings_invalidate_once_per_transa
                         code,
                         items,
                         expected_revision=role_mapping_revision(changed),
+                        authorization=AdminAuthorization(
+                            principal.account_id,
+                            principal.identity_id,
+                            1,
+                            "local",
+                            AdminIntent("provider_role_mapping_change", str(code), "synthetic"),
+                        ),
                         actor=principal.login_name,
                         ip="127.0.0.1",
                     )
@@ -234,6 +265,10 @@ async def test_thousand_accounts_and_hundred_mappings_invalidate_once_per_transa
                 )
     finally:
         async with owner.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM local_credential WHERE identity_id=:id"),
+                {"id": principal.identity_id},
+            )
             await connection.execute(
                 text("DELETE FROM audit_log WHERE actor_account_id=:id"),
                 {"id": principal.account_id},

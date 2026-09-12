@@ -123,3 +123,10 @@ export function dateKeyWeekday(value: string, empty = "—"): string {
   if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value) return empty
   return ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][date.getUTCDay()] ?? empty
 }
+
+/** 日期导出使用次日零点作为不包含的终点。 */
+export function nextShanghaiMidnight(value: string): string {
+  if (dateKeyWeekday(value) === "—") throw new Error("无效日期")
+  const next = new Date(new Date(`${value}T00:00:00+08:00`).getTime() + 86_400_000)
+  return `${shanghaiDateKey(next)}T00:00:00+08:00`
+}

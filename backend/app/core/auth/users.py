@@ -403,8 +403,7 @@ class SqlUserRepository:
                     )
                     mapping_rows = list(mapping_result.mappings())
                     mappings = {
-                        str(row["external_group"]): str(row["role"])
-                        for row in mapping_rows
+                        str(row["external_group"]): str(row["role"]) for row in mapping_rows
                     }
                     mapped_departments = {
                         str(row["dept"]).strip()
@@ -669,6 +668,7 @@ class SqlUserRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 selected = await connection.execute(
                     text(
                         """
@@ -789,6 +789,7 @@ class SqlUserRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 locked = await connection.execute(
                     text(
                         """
@@ -924,6 +925,7 @@ class SqlUserRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 cas = await connection.execute(
                     text(
                         """
@@ -1163,6 +1165,7 @@ class SqlUserRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 updated = await connection.execute(
                     text(
                         """

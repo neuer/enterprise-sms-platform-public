@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
 from app.core.audit import AuditEvent
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.identity import validate_local_login_name
 from app.core.auth.jwt import JwtClaims
 from app.core.errors import ApiError
@@ -230,7 +231,7 @@ class AdminStepUpService:
         access_token: str,
         ip: str,
         intent: AdminIntent,
-    ) -> None:
+    ) -> AdminAuthorization:
         self._require_admin(claims)
         if not token:
             await self._audit(claims, ip, intent, "required")
@@ -250,3 +251,5 @@ class AdminStepUpService:
         self._require_admin(current)
         if _binding(current, ip, intent) != _binding(claims, ip, intent):
             raise ApiError(401, "STEP_UP_REQUIRED", "二次认证主体已变化", None)
+
+        return AdminAuthorization.from_claims(current, intent)

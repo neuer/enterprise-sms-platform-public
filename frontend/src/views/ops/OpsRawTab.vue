@@ -11,7 +11,8 @@ import { computed, ref, watch } from "vue"
 
 import { listRawLogs, replayRaw, type RawLogItem } from "../../api/ops"
 
-import { confirmAuditedAction } from "../../lib/confirm"
+import { useConfirmActions } from "../../lib/confirm"
+const { confirmAuditedAction } = useConfirmActions()
 
 import { errorText } from "../../lib/error"
 
@@ -96,6 +97,7 @@ function replayStatus(item: RawLogItem): string {
 }
 
 async function replay(item: RawLogItem): Promise<void> {
+  item = { ...item }
   if (!canReplay(item)) return
   if (
     !(await confirmAuditedAction({

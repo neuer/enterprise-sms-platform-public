@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 import app.api.auth_providers as providers_api
 from app.api.admin_step_up import get_admin_step_up_service
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.roles import Role
 from app.core.auth.runtime import get_auth_facade
@@ -88,6 +89,7 @@ class FakeProviderService:
         code: str,
         config: dict[str, object],
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> ProviderRecord:
@@ -109,13 +111,25 @@ class FakeProviderService:
         return ProviderTestResult(False, "LDAP_CONNECTION_FAILED")
 
     async def activate(
-        self, code: str, *, actor: str, ip: str, expected_draft_version: int
+        self,
+        code: str,
+        *,
+        authorization: AdminAuthorization,
+        actor: str,
+        ip: str,
+        expected_draft_version: int,
     ) -> ProviderRecord:
         self.calls.append(("activate", (code, actor, ip)))
         raise UntestedProviderConfig("untested")
 
     async def disable(
-        self, code: str, *, actor: str, ip: str, expected_draft_version: int
+        self,
+        code: str,
+        *,
+        authorization: AdminAuthorization,
+        actor: str,
+        ip: str,
+        expected_draft_version: int,
     ) -> ProviderRecord:
         self.calls.append(("disable", (code, actor, ip)))
         return self.value
@@ -132,6 +146,7 @@ class FakeProviderService:
         mappings: tuple[ExternalRoleMapping, ...],
         *,
         expected_revision: str,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]:

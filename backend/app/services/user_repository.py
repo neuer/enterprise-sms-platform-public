@@ -9,11 +9,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.auth.accounts import AccountSourceConflict
+from app.core.auth.admin_authorization import AdminAuthorization, lock_admin_authorization
 from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
 from app.core.auth.temporary_password import TEMPORARY_PASSWORD_EXPIRY_SQL
 from app.core.runtime_resources import database_engine
-from app.services.admin_invariant import ensure_effective_admin, lock_admin_invariant
+from app.services.admin_invariant import ensure_effective_admin
 from app.services.user_management import (
     ProviderActionUnsupported,
     RoleMappingConflict,
@@ -160,6 +161,7 @@ class SqlUserManagementRepository:
         dept: str,
         role: Role,
         password_hash: str,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -167,6 +169,12 @@ class SqlUserManagementRepository:
         try:
             try:
                 async with engine.begin() as connection:
+                    await lock_admin_authorization(
+                        connection,
+                        authorization,
+                        operation="user_create_admin" if role == "admin" else "user_create",
+                        target="new",
+                    )
                     provider = await connection.execute(
                         text(
                             """
@@ -271,13 +279,16 @@ class SqlUserManagementRepository:
         role: Role,
         role_override: bool,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                await lock_admin_invariant(connection)
+                await lock_admin_authorization(
+                    connection, authorization, operation="user_role_change", target=str(account_id)
+                )
                 row = await self._locked(connection, account_id)
                 current = _record(row)
                 if current.provider_code == "local" and not role_override:
@@ -300,8 +311,7 @@ class SqlUserManagementRepository:
                     )
                     mapping_rows = list(mapping_result.mappings())
                     mappings = {
-                        str(item["external_group"]): str(item["role"])
-                        for item in mapping_rows
+                        str(item["external_group"]): str(item["role"]) for item in mapping_rows
                     }
                     mapped_departments = {
                         str(item["dept"]).strip()
@@ -396,13 +406,19 @@ class SqlUserManagementRepository:
         status: int,
         *,
         actor_account_id: int,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                await lock_admin_invariant(connection)
+                await lock_admin_authorization(
+                    connection,
+                    authorization,
+                    operation="user_status_change",
+                    target=str(account_id),
+                )
                 row = await self._locked(connection, account_id)
                 current = _record(row)
                 if status == 0 and account_id == actor_account_id:
@@ -453,12 +469,19 @@ class SqlUserManagementRepository:
         account_id: int,
         password_hash: str,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_authorization(
+                    connection,
+                    authorization,
+                    operation="user_password_reset",
+                    target=str(account_id),
+                )
                 row = await self._locked(connection, account_id)
                 current = _record(row)
                 if current.provider_code != "local":
@@ -518,6 +541,7 @@ class SqlUserManagementRepository:
                     ),
                     {"actor": actor, "ip": ip, "object_id": str(account_id)},
                 )
+                await ensure_effective_admin(connection)
                 return replace(
                     current,
                     must_change_password=True,

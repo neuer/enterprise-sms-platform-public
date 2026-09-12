@@ -33,6 +33,11 @@ async def ensure_effective_admin(connection: Any) -> None:
             WHERE ua.status=1
               AND ai.status=1
               AND ap.enabled=TRUE
+              AND (ap.kind <> 'local' OR EXISTS (
+                SELECT 1 FROM local_credential lc
+                WHERE lc.identity_id=ai.id AND lc.must_change_password=FALSE
+                  AND NULLIF(lc.password_hash,'') IS NOT NULL
+              ))
               AND (
                 ap.kind='local' OR (
                   SELECT count(DISTINCT btrim(erm.dept))

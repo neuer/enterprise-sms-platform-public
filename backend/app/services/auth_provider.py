@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.roles import Role
 
 LDAP_ATTRIBUTE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,63}$")
@@ -274,6 +275,7 @@ class AuthProviderRepository(Protocol):
         code: str,
         config: dict[str, object],
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> ProviderRecord: ...
@@ -293,6 +295,7 @@ class AuthProviderRepository(Protocol):
         code: str,
         *,
         expected_draft_version: int,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> ProviderRecord: ...
@@ -302,6 +305,7 @@ class AuthProviderRepository(Protocol):
         code: str,
         *,
         expected_draft_version: int,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> ProviderRecord: ...
@@ -317,6 +321,7 @@ class AuthProviderRepository(Protocol):
         mappings: tuple[ExternalRoleMapping, ...],
         *,
         expected_revision: str,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]: ...
@@ -366,6 +371,7 @@ class AuthProviderService:
         code: str,
         config: dict[str, object],
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> ProviderRecord:
@@ -375,6 +381,7 @@ class AuthProviderService:
         return await self.repository.save_draft(
             code,
             validated,
+            authorization=authorization,
             actor=actor,
             ip=ip,
         )
@@ -400,12 +407,19 @@ class AuthProviderService:
         return result
 
     async def activate(
-        self, code: str, *, actor: str, ip: str, expected_draft_version: int | None = None
+        self,
+        code: str,
+        *,
+        authorization: AdminAuthorization,
+        actor: str,
+        ip: str,
+        expected_draft_version: int | None = None,
     ) -> ProviderRecord:
         record = await self.repository.get(code)
         self._ensure_mutable(record)
         return await self.repository.activate(
             code,
+            authorization=authorization,
             actor=actor,
             ip=ip,
             expected_draft_version=record.draft_version
@@ -414,12 +428,19 @@ class AuthProviderService:
         )
 
     async def disable(
-        self, code: str, *, actor: str, ip: str, expected_draft_version: int | None = None
+        self,
+        code: str,
+        *,
+        authorization: AdminAuthorization,
+        actor: str,
+        ip: str,
+        expected_draft_version: int | None = None,
     ) -> ProviderRecord:
         record = await self.repository.get(code)
         self._ensure_mutable(record)
         return await self.repository.disable(
             code,
+            authorization=authorization,
             actor=actor,
             ip=ip,
             expected_draft_version=record.draft_version
@@ -441,6 +462,7 @@ class AuthProviderService:
         mappings: tuple[ExternalRoleMapping, ...],
         *,
         expected_revision: str,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]:
@@ -464,6 +486,7 @@ class AuthProviderService:
             code,
             tuple(normalized),
             expected_revision=expected_revision,
+            authorization=authorization,
             actor=actor,
             ip=ip,
         )

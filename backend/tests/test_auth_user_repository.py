@@ -204,7 +204,7 @@ async def test_create_local_account_identity_credential_and_audit_are_one_transa
 
 @pytest.mark.asyncio
 async def test_force_logout_targets_numeric_account_id_and_audits_same_id() -> None:
-    repo, connection, engine = repository([FakeResult(scalar=8), FakeResult()])
+    repo, connection, engine = repository([FakeResult(), FakeResult(scalar=8), FakeResult()])
     actor = PlatformAccount(
         1,
         11,
@@ -221,11 +221,11 @@ async def test_force_logout_targets_numeric_account_id_and_audits_same_id() -> N
 
     await repo.invalidate_sessions(actor=actor, account_id=8, ip="10.0.0.9")
 
-    update_sql, update_params = connection.calls[0]
+    update_sql, update_params = connection.calls[1]
     assert "user_account" in update_sql
     assert "security_version = security_version + 1" in update_sql
     assert update_params == {"account_id": 8}
-    audit_sql, audit_params = connection.calls[1]
+    audit_sql, audit_params = connection.calls[2]
     assert "force_logout" in audit_sql
     assert audit_params["object_id"] == "8"
     assert engine.disposed
@@ -233,7 +233,7 @@ async def test_force_logout_targets_numeric_account_id_and_audits_same_id() -> N
 
 @pytest.mark.asyncio
 async def test_force_logout_rejects_missing_account_without_audit() -> None:
-    repo, connection, _ = repository([FakeResult()])
+    repo, connection, _ = repository([FakeResult(), FakeResult()])
     actor = PlatformAccount(
         1,
         11,
@@ -251,7 +251,7 @@ async def test_force_logout_rejects_missing_account_without_audit() -> None:
     with pytest.raises(AccountNotFound):
         await repo.invalidate_sessions(actor=actor, account_id=999, ip="10.0.0.9")
 
-    assert len(connection.calls) == 1
+    assert len(connection.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -273,7 +273,7 @@ async def test_security_session_loader_reads_stable_account_and_identity() -> No
 @pytest.mark.asyncio
 async def test_password_change_updates_hash_and_version_without_hash_in_audit() -> None:
     repo, connection, engine = repository(
-        [FakeResult(scalar=8), FakeResult(scalar=18), FakeResult(), FakeResult()]
+        [FakeResult(), FakeResult(scalar=8), FakeResult(scalar=18), FakeResult(), FakeResult()]
     )
 
     await repo.change_local_password(
@@ -286,10 +286,10 @@ async def test_password_change_updates_hash_and_version_without_hash_in_audit() 
         expected_credential_version=1,
     )
 
-    account_sql, account_params = connection.calls[0]
+    account_sql, account_params = connection.calls[1]
     assert "UPDATE user_account" in account_sql
     assert account_params["expected_security_version"] == 3
-    credential_sql, credential_params = connection.calls[1]
+    credential_sql, credential_params = connection.calls[2]
     assert "UPDATE local_credential" in credential_sql
     assert "must_change_password = FALSE" in credential_sql
     assert credential_params["password_hash"] == "$argon2id$v=19$new-secret-hash"
@@ -340,6 +340,7 @@ async def test_initial_password_change_consumes_token_and_updates_password_atomi
     lease_id = uuid4()
     repo, connection, engine = repository(
         [
+            FakeResult(),
             FakeResult(scalar=91),
             FakeResult(scalar=18),
             FakeResult(),
@@ -361,7 +362,7 @@ async def test_initial_password_change_consumes_token_and_updates_password_atomi
         ip="10.0.0.8",
     )
 
-    lock_sql, lock_params = connection.calls[0]
+    lock_sql, lock_params = connection.calls[1]
     assert "FOR UPDATE OF pct,ua" in lock_sql
     assert "pct.status='processing'" in lock_sql
     assert "pct.processing_lease_id=:lease_id" in lock_sql
@@ -370,20 +371,18 @@ async def test_initial_password_change_consumes_token_and_updates_password_atomi
     assert "pct.issued_security_version=ua.security_version" in lock_sql
     assert lock_params["token_id"] == 91
     assert lock_params["lease_id"] == lease_id
-    credential_sql, credential_params = connection.calls[1]
+    credential_sql, credential_params = connection.calls[2]
     assert "must_change_password=FALSE" in credential_sql
     assert "temporary_password_expires_at=NULL" in credential_sql
     assert credential_params["password_hash"] == "$argon2id$v=19$new-secret-hash"
-    assert "security_version=security_version+1" in connection.calls[2][0]
-    consume_sql, consume_params = connection.calls[3]
-    assert "status=CASE WHEN id=:token_id THEN 'consumed' ELSE 'revoked' END" in (
-        consume_sql
-    )
+    assert "security_version=security_version+1" in connection.calls[3][0]
+    consume_sql, consume_params = connection.calls[4]
+    assert "status=CASE WHEN id=:token_id THEN 'consumed' ELSE 'revoked' END" in (consume_sql)
     assert consume_params == {"token_id": 91, "account_id": 8}
-    context_sql, context_params = connection.calls[4]
+    context_sql, context_params = connection.calls[5]
     assert "sms.audit_subject_kind" in context_sql
     assert context_params["account_id"] == "8"
-    audit_sql, audit_params = connection.calls[5]
+    audit_sql, audit_params = connection.calls[6]
     assert "local_password_change" in audit_sql
     assert "$argon2id" not in str(audit_params)
     assert engine.disposed
@@ -391,7 +390,7 @@ async def test_initial_password_change_consumes_token_and_updates_password_atomi
 
 @pytest.mark.asyncio
 async def test_initial_password_change_rejects_used_or_stale_token_without_updates() -> None:
-    repo, connection, engine = repository([FakeResult()])
+    repo, connection, engine = repository([FakeResult(), FakeResult()])
 
     with pytest.raises(InvalidCredentials, match="改密令牌"):
         await repo.consume_password_change_and_update(
@@ -406,7 +405,7 @@ async def test_initial_password_change_rejects_used_or_stale_token_without_updat
             ip="10.0.0.8",
         )
 
-    assert len(connection.calls) == 1
+    assert len(connection.calls) == 2
     assert engine.disposed
 
 
@@ -415,6 +414,7 @@ async def test_initial_password_change_claims_and_releases_fenced_lease() -> Non
     lease_expires_at = datetime(2026, 7, 29, 9, 10, 30, tzinfo=UTC)
     repo, connection, engine = repository(
         [
+            FakeResult(),
             FakeResult(
                 [
                     {
@@ -446,15 +446,15 @@ async def test_initial_password_change_claims_and_releases_fenced_lease() -> Non
     assert claim.token_id == 91
     assert claim.lease_expires_at == lease_expires_at
     assert claim.current_password_hash == "$argon2id$v=19$current"
-    select_sql, select_params = connection.calls[0]
+    select_sql, select_params = connection.calls[1]
     assert "FOR UPDATE OF pct,ua" in select_sql
     assert "pct.token_hash=:token_hash" in select_sql
     assert select_params["token_hash"] == "b" * 64
-    claim_sql, claim_params = connection.calls[1]
+    claim_sql, claim_params = connection.calls[2]
     assert "status='processing'" in claim_sql
     assert "INTERVAL '30 seconds'" in claim_sql
     assert claim_params["lease_id"] == claim.lease_id
-    release_sql, release_params = connection.calls[2]
+    release_sql, release_params = connection.calls[3]
     assert "status='available'" in release_sql
     assert "processing_lease_id=:lease_id" in release_sql
     assert release_params == {"token_id": 91, "lease_id": claim.lease_id}
@@ -553,15 +553,15 @@ async def test_external_login_role_sync_preserves_effective_admin_invariant() ->
                     }
                 ]
             ),
-                FakeResult(
-                    [
-                        {
-                            "external_group": "CN=SMS-Admins",
-                            "role": "admin",
-                            "dept": "平台部",
-                        }
-                    ]
-                ),
+            FakeResult(
+                [
+                    {
+                        "external_group": "CN=SMS-Admins",
+                        "role": "admin",
+                        "dept": "平台部",
+                    }
+                ]
+            ),
             FakeResult(),
             FakeResult(),
             FakeResult(scalar=8),

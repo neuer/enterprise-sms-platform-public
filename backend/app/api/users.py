@@ -13,6 +13,7 @@ from app.api.admin_step_up import AdminStepUp, AdminStepUpToken
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.core.audit import audited
 from app.core.auth.accounts import AccountSourceConflict
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.backends import ProviderCapacityUnavailable
 from app.core.auth.identity import InvalidLoginName
 from app.core.auth.jwt import JwtClaims
@@ -282,8 +283,9 @@ async def create_local_user(
     step_up: AdminStepUp,
     step_up_token: AdminStepUpToken = None,
 ) -> UserModel:
+    authorization = AdminAuthorization.from_claims(actor)
     if payload.role == "admin":
-        await step_up.consume(
+        authorization = await step_up.consume(
             step_up_token,
             access_token=request.headers.get("Authorization", "").split(" ", 1)[-1],
             claims=actor,
@@ -301,6 +303,7 @@ async def create_local_user(
                 dept=payload.dept,
                 role=payload.role,
                 temporary_password=payload.temporary_password,
+                authorization=authorization,
                 actor=actor.login_name,
                 ip=_ip(request),
             )
@@ -329,7 +332,7 @@ async def update_user_role(
     step_up: AdminStepUp,
     step_up_token: AdminStepUpToken = None,
 ) -> UserModel:
-    await step_up.consume(
+    authorization = await step_up.consume(
         step_up_token,
         access_token=request.headers.get("Authorization", "").split(" ", 1)[-1],
         claims=actor,
@@ -343,6 +346,7 @@ async def update_user_role(
                 account_id,
                 payload.role,
                 payload.role_override,
+                authorization=authorization,
                 actor=actor.login_name,
                 ip=_ip(request),
             )
@@ -366,7 +370,7 @@ async def update_user_status(
     step_up: AdminStepUp,
     step_up_token: AdminStepUpToken = None,
 ) -> UserModel:
-    await step_up.consume(
+    authorization = await step_up.consume(
         step_up_token,
         access_token=request.headers.get("Authorization", "").split(" ", 1)[-1],
         claims=actor,
@@ -380,6 +384,7 @@ async def update_user_status(
                 account_id,
                 payload.status,
                 actor_account_id=actor.account_id,
+                authorization=authorization,
                 actor=actor.login_name,
                 ip=_ip(request),
             )
@@ -410,7 +415,7 @@ async def reset_user_password(
     step_up: AdminStepUp,
     step_up_token: AdminStepUpToken = None,
 ) -> UserModel:
-    await step_up.consume(
+    authorization = await step_up.consume(
         step_up_token,
         access_token=request.headers.get("Authorization", "").split(" ", 1)[-1],
         claims=actor,
@@ -423,6 +428,7 @@ async def reset_user_password(
             await service.reset_password(
                 account_id,
                 payload.temporary_password,
+                authorization=authorization,
                 actor=actor.login_name,
                 ip=_ip(request),
             )

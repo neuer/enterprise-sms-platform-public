@@ -292,7 +292,7 @@ async def save_provider_draft(
 ) -> ProviderAdminModel:
     actor, ip = await _admin(request, facade, credentials)
     try:
-        await step_up.consume(
+        authorization = await step_up.consume(
             step_up_token,
             claims=await facade.verify(_token(credentials)),
             access_token=_token(credentials),
@@ -302,6 +302,7 @@ async def save_provider_draft(
         saved = await service.save_draft(
             provider_code,
             payload.config.model_dump(),
+            authorization=authorization,
             actor=actor,
             ip=ip,
         )
@@ -351,7 +352,7 @@ async def _set_provider_enabled(
     actor, ip = await _admin(request, facade, credentials)
     try:
         current = await service.get(provider_code)
-        await step_up.consume(
+        authorization = await step_up.consume(
             step_up_token,
             claims=await facade.verify(_token(credentials)),
             access_token=_token(credentials),
@@ -364,11 +365,19 @@ async def _set_provider_enabled(
         )
         record = (
             await service.activate(
-                provider_code, actor=actor, ip=ip, expected_draft_version=current.draft_version
+                provider_code,
+                authorization=authorization,
+                actor=actor,
+                ip=ip,
+                expected_draft_version=current.draft_version,
             )
             if enabled
             else await service.disable(
-                provider_code, actor=actor, ip=ip, expected_draft_version=current.draft_version
+                provider_code,
+                authorization=authorization,
+                actor=actor,
+                ip=ip,
+                expected_draft_version=current.draft_version,
             )
         )
         return _provider_model(record, runtime)
@@ -477,7 +486,7 @@ async def replace_provider_role_mappings(
 ) -> RoleMappingsModel:
     actor, ip = await _admin(request, facade, credentials)
     try:
-        await step_up.consume(
+        authorization = await step_up.consume(
             step_up_token,
             claims=await facade.verify(_token(credentials)),
             access_token=_token(credentials),
@@ -495,6 +504,7 @@ async def replace_provider_role_mappings(
                 provider_code,
                 mappings,
                 expected_revision=payload.expected_revision,
+                authorization=authorization,
                 actor=actor,
                 ip=ip,
             )

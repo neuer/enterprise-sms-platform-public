@@ -1,8 +1,10 @@
+import { createPinia, setActivePinia } from "pinia"
+import { useSessionStore } from "../src/stores/session"
 import { ElMessageBox } from "element-plus"
-import { h, type VNode } from "vue"
+import { effectScope, h, type VNode } from "vue"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { confirmAction, confirmAuditedAction } from "../src/lib/confirm"
+import { confirmAction, confirmAuditedAction, useConfirmActions } from "../src/lib/confirm"
 
 /** 递归提取 VNode 文本，断言对话框正文与审计细字。 */
 function vnodeText(node: unknown): string {
@@ -104,4 +106,26 @@ describe("确认对话框单点 lib/confirm", () => {
     vi.spyOn(ElMessageBox, "confirm").mockRejectedValue("cancel" as never)
     expect(await confirmAction({ title: "确认取消", body: "确认？" })).toBe(false)
   })
+})
+
+it.each(["session", "dispose", "target"])("确认期间 %s 改变会撤销旧确认", async (change) => {
+  setActivePinia(createPinia())
+  const scope = effectScope()
+  const actions = scope.run(useConfirmActions)!
+  let resolve!: (value: never) => void
+  vi.spyOn(ElMessageBox, "confirm").mockImplementation(
+    () =>
+      new Promise((done) => {
+        resolve = done
+      }) as never,
+  )
+  let current = true
+  const pending = actions.confirmAction({ title: "合成", body: "合成", isCurrent: () => current })
+  if (change === "session") useSessionStore().clear()
+  if (change === "dispose") scope.stop()
+  if (change === "target") current = false
+  resolve("confirm" as never)
+  expect(await pending).toBe(false)
+  scope.stop()
+  vi.restoreAllMocks()
 })

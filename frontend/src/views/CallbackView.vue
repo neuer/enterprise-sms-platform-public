@@ -14,7 +14,8 @@ import EmptyState from "../components/EmptyState.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
 import { usePagedList } from "../composables/usePagedList"
-import { confirmAuditedAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { formatDateTime } from "../lib/time"
 
@@ -136,6 +137,7 @@ function openDetail(item: CallbackTask): void {
 }
 
 async function retry(item: CallbackTask): Promise<void> {
+  item = { ...item }
   if (retryingId.value !== null) return
   retryingId.value = item.id
   try {

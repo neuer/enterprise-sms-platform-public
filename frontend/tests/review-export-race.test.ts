@@ -44,7 +44,7 @@ describe("导出任务代际回归", () => {
       expect(controller.exportTask.value?.id).toBe("export-B")
       expect(controller.exportError.value).toBe("")
       await vi.advanceTimersByTimeAsync(2_000)
-      expect(api.getExportTask).toHaveBeenLastCalledWith("export-B")
+      expect(api.getExportTask).toHaveBeenLastCalledWith("export-B", expect.any(AbortSignal))
       expect(api.getExportTask).toHaveBeenCalledTimes(3)
     } finally {
       scope.stop()
