@@ -46,7 +46,8 @@ export function usePolling(task: PollingTask, options: UsePollingOptions): Polli
   let timer: number | undefined
   let attempts = 0
   let startedAt = 0
-  let firing = false
+  let firingGeneration: number | null = null
+  let generation = 0
 
   function isEnabled(): boolean {
     return toValue(enabledSource)
@@ -86,20 +87,21 @@ export function usePolling(task: PollingTask, options: UsePollingOptions): Polli
   /** 执行一次任务；完成后按终态 / 上限 / 暂停状态决定下一跳。 */
   async function fire(): Promise<void> {
     clearTimer()
-    if (!canRun() || firing) return
+    if (!canRun() || firingGeneration === generation) return
     if (exceeded()) {
       timeoutStop()
       return
     }
-    firing = true
+    const current = generation
+    firingGeneration = current
     attempts += 1
     let terminal = false
     try {
       terminal = (await task()) === true
     } finally {
-      firing = false
+      if (firingGeneration === current) firingGeneration = null
     }
-    if (!started) return
+    if (!started || current !== generation) return
     if (terminal) {
       stop()
       return
@@ -145,6 +147,7 @@ export function usePolling(task: PollingTask, options: UsePollingOptions): Polli
   }
 
   function stop(): void {
+    generation += 1
     clearTimer()
     started = false
     attempts = 0

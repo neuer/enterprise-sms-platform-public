@@ -48,7 +48,7 @@ async def test_actual_send_components_reuse_http_and_reload_credentials(
         return client
 
     async def stores() -> tuple[Any, Any, Any, int, int, int]:
-        return settings, object(), object(), 500, 50, 10
+        return settings, object(), SimpleNamespace(load_market_window=lambda: None), 500, 50, 10
 
     monkeypatch.setattr(httpx, "AsyncClient", factory)
     monkeypatch.setattr(send_module, "_store_components", stores)

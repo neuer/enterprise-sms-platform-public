@@ -115,6 +115,7 @@ class SecurityDailyRepository(Protocol):
         system: bool = False,
         control_evidence: str = "missing",
         recipient_set_digest: str = "",
+        expected_config_version: int | None = None,
     ) -> SecurityDailyDeliveryRequest: ...
 
     async def pending_delivery_requests(self) -> tuple[tuple[UUID, date], ...]: ...
@@ -426,10 +427,17 @@ class SecurityDailyService:
         system: bool = False,
         payload_override: dict[str, Any] | None = None,
     ) -> SecurityDailyDeliveryRequest:
-        overview = await self.overview()
-        if not overview.enabled:
+        automatic = await self.repository.auto_delivery_configuration() if system else None
+        enabled = automatic.enabled if automatic is not None else (await self.overview()).enabled
+        if not enabled:
             raise SecurityDailyUnavailable("安全日报尚未启用")
-        record = await self.get_report(report_id)
+        record = (
+            await self.repository.get_report(report_id)
+            if system
+            else await self.get_report(report_id)
+        )
+        if record is None:
+            raise SecurityDailyNotFound(str(report_id))
         submit_payload = payload_override
         if submit_payload is None and (
             record.payload is None or record.generation_status != "ready"
@@ -449,7 +457,18 @@ class SecurityDailyService:
                 evidence = await self.control.inspect_delivery(latest.request_id)
             except SecurityDailyControlError:
                 evidence = "unknown"
-        configuration = await self.repository.configuration()
+        if automatic is not None:
+            if (
+                automatic.publish_state != "file_committed"
+                or len(automatic.recipient_set_digest) != 64
+            ):
+                raise SecurityDailyStateConflict("安全日报配置尚未发布")
+            digest = automatic.recipient_set_digest
+            version = automatic.config_version
+        else:
+            configuration = await self.repository.configuration()
+            digest = recipient_set_digest(configuration.recipients)
+            version = configuration.config_version
         request = await self.repository.request_delivery(
             record,
             action,
@@ -457,7 +476,8 @@ class SecurityDailyService:
             ip=ip,
             system=system,
             control_evidence=evidence,
-            recipient_set_digest=recipient_set_digest(configuration.recipients),
+            recipient_set_digest=digest,
+            expected_config_version=version,
         )
         if evidence in {"claimed", "result", "unknown"}:
             return request
@@ -517,13 +537,12 @@ class SecurityDailyService:
             return
 
     async def _configuration_ready_for_delivery(self) -> bool:
-        await self._reconcile_configuration(persist=False)
-        try:
-            published = await self.control.published_config_version()
-        except SecurityDailyControlError:
-            return False
-        configuration = await self.repository.configuration()
-        return published == configuration.config_version
+        configuration = await self.repository.auto_delivery_configuration()
+        return (
+            configuration.config_version > 0
+            and configuration.publish_state == "file_committed"
+            and len(configuration.recipient_set_digest) == 64
+        )
 
     async def _submit_still_accepted(self, request_id: UUID) -> bool:
         try:

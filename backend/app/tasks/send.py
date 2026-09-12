@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -16,8 +16,9 @@ from app.core.runtime_resources import redis_client
 from app.core.worker_runtime import run_worker_async
 from app.services.alert_repository import SqlAlertService
 from app.services.billing import calculate_quota_cost
+from app.services.category import DEFAULT_MARKET_WINDOW, coerce_market_dispatch
 from app.services.crypto import CryptoService
-from app.services.outbox import OutboxClaim, OutboxExecutor
+from app.services.outbox import OutboxClaim, OutboxDeferred, OutboxExecutor
 from app.services.outbox_repository import SqlOutboxRepository
 from app.services.vendor_alert import RedisVendorAlertMonitor
 from app.services.vendor_control_state import (
@@ -174,6 +175,7 @@ class ChunkTaskResult:
 
     processed: int
     outcome: SubmitOutcome | None
+    next_attempt_at: datetime | None = None
 
 
 def chunk_result_metrics(result: ChunkTaskResult) -> dict[str, int]:
@@ -218,6 +220,7 @@ class ChunkPayload:
     next_vendor: str | None = None
     route_policy_version: int = ROUTE_POLICY_VERSION
     failover_from_attempt_id: int | None = None
+    is_test: bool = False
 
 
 class Gateway(Protocol):
@@ -390,6 +393,8 @@ class SendWorker:
         router: VendorRouter | None = None,
         health: Callable[[], Awaitable[tuple[VendorHealth, ...]]] | None = None,
         registry: tuple[VendorRecord, ...] | None = None,
+        market_window: Callable[[], Awaitable[str]] | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.gateway = gateway
         self.store = store
@@ -412,6 +417,9 @@ class SendWorker:
         self.vendor_qps = vendor_qps
         self.reserved_realtime_qps = reserved_realtime_qps
         self.sleeper = sleeper
+        self.market_window = market_window
+        self.clock = clock
+        self.market_defer_until: datetime | None = None
 
     async def _record_failure(self, chunk: ChunkPayload, code: int) -> None:
         try:
@@ -502,6 +510,11 @@ class SendWorker:
             return SubmitOutcome.REJECTED
         if not await self._control_ready():
             return SubmitOutcome.PAUSED
+        if chunk.category == "market" and not chunk.is_test:
+            window = await self.market_window() if self.market_window else DEFAULT_MARKET_WINDOW
+            state, _, self.market_defer_until = coerce_market_dispatch(self.clock(), window, None)
+            if state != "queued":
+                return SubmitOutcome.PAUSED
         return None
 
     async def _guard_chunk(self, chunk: ChunkPayload, *, persist_rejection: bool = True) -> bool:
@@ -891,6 +904,7 @@ class SendWorker:
         lane: Literal["realtime", "bulk"],
         allow_split: bool = True,
     ) -> SubmitOutcome:
+        self.market_defer_until = None
         retry_index = chunk.retry_count
         attempts = list(await self._load_attempts(chunk))
         claimed = False
@@ -1287,6 +1301,7 @@ async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
         vendor_qps=vendor_qps,
         reserved_realtime_qps=reserved,
         gateways={PRIMARY_VENDOR_ID: gateway},
+        market_window=store.load_market_window,
     )
     return worker, store, gateway, batch_size
 
@@ -1336,7 +1351,10 @@ async def _run_chunk(
                 "send-bulk" if lane == "bulk" else "send-realtime",
                 success=True,
             )
-        return ChunkTaskResult(1, outcome)
+        return ChunkTaskResult(
+            1, outcome,
+            worker.market_defer_until if outcome is SubmitOutcome.PAUSED else None,
+        )
     finally:
         await gateway.aclose()
 
@@ -1346,6 +1364,8 @@ async def _process_chunk(
 ) -> ChunkTaskResult:
     result = await _run_chunk(chunk_id, fail_closed_on_pause=fail_closed_on_pause)
     if fail_closed_on_pause and result.outcome is SubmitOutcome.PAUSED:
+        if result.next_attempt_at is not None:
+            raise OutboxDeferred(result.next_attempt_at)
         raise SendQueuePaused("send queue is paused")
     return result
 

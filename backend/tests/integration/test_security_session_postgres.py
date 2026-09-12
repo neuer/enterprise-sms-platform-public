@@ -254,9 +254,23 @@ async def test_real_postgres_security_projection_invalidates_every_authorization
                 {"provider_id": provider_ids[0]},
             )
 
+            # override 仅覆盖角色；AD 管理员仍须具备唯一有效部门映射。
+            await connection.execute(
+                text("UPDATE auth_identity SET source_groups=ARRAY['synthetic-admin'] "
+                     "WHERE id=:identity"),
+                {"identity": identity_ids[2]},
+            )
+            await connection.execute(
+                text("INSERT INTO external_role_mapping(provider_id,external_group,role,dept) "
+                     "VALUES(:provider,'synthetic-admin','viewer','财务部')"),
+                {"provider": provider_ids[1]},
+            )
+
         synchronized = await repository.resolve_identity(
             AuthenticatedIdentity(
                 provider_code=PROVIDER_CODES[0],
+                provider_id=provider_ids[0],
+                provider_version=1,
                 login_name=LOGINS[0],
                 external_subject=f"subject:{LOGINS[0]}",
                 display_name="security-session-primary",

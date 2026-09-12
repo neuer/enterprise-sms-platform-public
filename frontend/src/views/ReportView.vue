@@ -31,7 +31,13 @@ const session = useSessionStore()
 function defaultDateRange(): [string, string] {
   return [daysAgoDateKey(29), shanghaiDateKey()]
 }
-const dateRange = ref<[string, string]>(defaultDateRange())
+const selectedDateRange = ref<[string, string]>(defaultDateRange())
+const dateRange = computed({
+  get: () => selectedDateRange.value,
+  set: (value: [string, string] | null) => {
+    selectedDateRange.value = value ?? defaultDateRange()
+  },
+})
 
 const granularity = ref<ReportGranularity>("day")
 const groupBy = ref<ReportGroupBy>("app")
@@ -285,6 +291,7 @@ onMounted(() => void load())
         popper-class="qingluan-date-popper"
         value-format="YYYY-MM-DD"
         range-separator="→"
+        title="清空后恢复近 30 天"
         start-placeholder="开始日期"
         end-placeholder="结束日期"
       />

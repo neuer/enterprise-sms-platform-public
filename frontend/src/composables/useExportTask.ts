@@ -4,6 +4,7 @@ import { ref, type Ref } from "vue"
 import { downloadExport, getExportTask, issueExportStepUp, type ExportTask } from "../api/reports"
 import { saveBlob } from "../lib/download"
 import { errorText } from "../lib/error"
+import { useLatestRead } from "./useLatestRead"
 import { usePolling } from "./usePolling"
 
 export interface UseExportTaskOptions {
@@ -50,17 +51,24 @@ export function useExportTask(options: UseExportTaskOptions): ExportTaskControll
   const exportTask = ref<ExportTask | null>(null)
   const exportError = ref("")
   const exportBusy = ref(false)
+  const lifecycle = useLatestRead()
+  let current: AbortSignal | undefined
 
   /** 查询一次导出任务状态；终态或查询失败返回 true 停止轮询。 */
   async function pollOnce(): Promise<boolean> {
-    if (!exportTask.value) return true
+    const signal = current
+    const task = exportTask.value
+    if (!task || !signal || signal.aborted) return true
     try {
-      exportTask.value = await getExportTask(exportTask.value.id)
+      const result = await getExportTask(task.id)
+      if (signal.aborted) return false
+      exportTask.value = result
+      return result.status === "done" || result.status === "failed"
     } catch (error) {
+      if (signal.aborted) return false
       exportError.value = errorText(error, "导出状态查询失败")
       return true
     }
-    return exportTask.value.status === "done" || exportTask.value.status === "failed"
   }
 
   const polling = usePolling(pollOnce, {
@@ -72,18 +80,25 @@ export function useExportTask(options: UseExportTaskOptions): ExportTaskControll
   })
 
   async function start(create: () => Promise<ExportTask>): Promise<boolean> {
+    const signal = lifecycle.start()
+    current = signal
+    polling.stop()
+    exportTask.value = null
     exportBusy.value = true
     exportError.value = ""
     try {
-      exportTask.value = await create()
+      const result = await create()
+      if (signal.aborted) return false
+      exportTask.value = result
       // 重复发起导出会开启新任务：restart 重置旧轮询链，保证任何时候只有一条。
       polling.restart()
       return true
     } catch (error) {
+      if (signal.aborted) return false
       exportError.value = errorText(error, "导出创建失败")
       return false
     } finally {
-      exportBusy.value = false
+      if (!signal.aborted) exportBusy.value = false
     }
   }
 

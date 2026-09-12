@@ -8,6 +8,7 @@ import logging
 import re
 import smtplib
 from collections.abc import Iterable
+from contextvars import ContextVar
 from dataclasses import dataclass
 from email.message import EmailMessage
 from time import monotonic
@@ -30,6 +31,19 @@ SMTP_DEADLINE_S = 10.0
 SMTP_MAX_REPLY_BYTES = 64 * 1024
 SMTP_MAX_REPLY_LINES = 100
 SMTP_MAX_LINE_BYTES = 8192
+
+
+_WECOM_REQUEST: ContextVar[bool] = ContextVar("wecom_request", default=False)
+
+
+class _WeComRequestLogFilter(logging.Filter):
+    """本任务的 HTTPX 请求日志含完整 URL，告警边界只保留业务低敏感日志。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _WECOM_REQUEST.get()
+
+
+logging.getLogger("httpx").addFilter(_WeComRequestLogFilter())
 
 
 class _DeadlineSmtp(smtplib.SMTP):
@@ -231,6 +245,15 @@ class WeComChannel:
     """企业微信机器人渠道；不记录 webhook 或响应正文。"""
 
     async def send(self, webhook: str, event: AlertEvent) -> None:
+        token = _WECOM_REQUEST.set(True)
+        try:
+            await self._send(webhook, event)
+        except Exception:
+            raise RuntimeError("wecom delivery failed") from None
+        finally:
+            _WECOM_REQUEST.reset(token)
+
+    async def _send(self, webhook: str, event: AlertEvent) -> None:
         if not is_allowed_wecom_webhook(webhook):
             raise ValueError("wecom webhook is not allowed")
         body = json.dumps(event.detail, ensure_ascii=False, sort_keys=True)

@@ -191,6 +191,7 @@ async def test_chunk_outbox_submit_paused_fails_closed_and_does_not_complete(
             return False
 
     class PausedWorker:
+        market_defer_until = None
         async def submit(self, chunk: object, *, lane: str) -> SubmitOutcome:
             assert lane == "realtime"
             return SubmitOutcome.PAUSED

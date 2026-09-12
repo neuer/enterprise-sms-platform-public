@@ -171,6 +171,9 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     ),
     "security_daily_config_operation_id": ConfigSpec("", "str", GROUP_SECURITY),
     "security_daily_resend_api_key": ConfigSpec("", "str", GROUP_SECURITY),
+    "security_daily_recipient_set_digest": ConfigSpec(
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "str", GROUP_SECURITY
+    ),
     "security_daily_resend_configured": ConfigSpec("false", "bool", GROUP_SECURITY),
     "api_key_unclassified_algorithms": ConfigSpec("", "str", GROUP_SECURITY),
 }

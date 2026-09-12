@@ -332,10 +332,18 @@ class SqlUserRepository:
                         text(
                             """
                             SELECT id FROM auth_provider
-                            WHERE code=:provider_code AND enabled=TRUE FOR SHARE
+                            WHERE code=:provider_code AND enabled=TRUE
+                              AND id=:authenticated_provider_id
+                              AND active_version IS NOT DISTINCT FROM
+                                  :authenticated_provider_version
+                            FOR SHARE
                             """
                         ),
-                        {"provider_code": identity.provider_code},
+                        {
+                            "provider_code": identity.provider_code,
+                            "authenticated_provider_id": identity.provider_id,
+                            "authenticated_provider_version": identity.provider_version,
+                        },
                     )
                     provider_id = provider_result.scalar_one_or_none()
                     if provider_id is None:

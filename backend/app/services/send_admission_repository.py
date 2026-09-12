@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine, redis_client
+from app.services.outbox import OUTBOX_CAPACITY_ACTIVE_SQL, OUTBOX_CAPACITY_AGE_SQL
 from app.services.send_admission import SendAdmissionFacts, SendAdmissionLimits
 from app.settings import Settings, get_settings
 
@@ -70,14 +71,14 @@ class SqlSendAdmissionRepository:
         async with asyncio.timeout(self.database_timeout_s), engine.connect() as connection:
             result = await connection.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                       (SELECT count(*) FROM outbox_event
-                       WHERE state IN ('pending','leased','published','processing'))
+                       WHERE {OUTBOX_CAPACITY_ACTIVE_SQL})
                         outbox_active,
-                      (SELECT EXTRACT(EPOCH FROM (now()-min(created_at)))
+                      (SELECT EXTRACT(EPOCH FROM (now()-min({OUTBOX_CAPACITY_AGE_SQL})))
                        FROM outbox_event
-                       WHERE state IN ('pending','leased','published','processing'))
+                       WHERE {OUTBOX_CAPACITY_ACTIVE_SQL})
                         outbox_oldest_age_s,
                       (SELECT count(*) FROM outbox_event
                        WHERE state='dead') outbox_dead,
@@ -145,15 +146,17 @@ class SqlSendAdmissionRepository:
         engine = self._engine()
         async with engine.connect() as connection:
             row = (
-                await connection.execute(
-                    text(
-                        """
+
+                    await connection.execute(
+                        text(
+                            """
                         SELECT state, reason_code, state_epoch, hold_until,
                                valid_until, now() AS db_now
                         FROM send_admission_state WHERE scope='send'
                         """
+                        )
                     )
-                )
+
             ).mappings().one_or_none()
         return dict(row) if row is not None else None
 
@@ -242,15 +245,17 @@ class SqlSendAdmissionRepository:
                 saved["outcome"] = "saved"
                 return saved
             winner_row = (
-                await connection.execute(
-                    text(
-                        """
+
+                    await connection.execute(
+                        text(
+                            """
                         SELECT state, reason_code, state_epoch, hold_until,
                                valid_until, now() AS db_now
                         FROM send_admission_state WHERE scope='send'
                         """
+                        )
                     )
-                )
+
             ).mappings().one_or_none()
         if winner_row is None:
             raise RuntimeError("admission control state missing after conflict")
@@ -285,36 +290,10 @@ class SqlSendAdmissionRepository:
         )
         try:
             async with asyncio.timeout(max(self.control_timeout_s, 2.0)):
-                try:
-                    allowed = await self.redis.eval(RECOVERY_BUDGET_LUA, 1, key, *args)
-                except Exception:
-                    allowed = await self._consume_recovery_budget_hash(key, args)
+                allowed = await self.redis.eval(RECOVERY_BUDGET_LUA, 1, key, *args)
         except Exception as exc:
             raise RuntimeError("recovery budget control plane unavailable") from exc
         return bool(int(allowed))
-
-    async def _consume_recovery_budget_hash(self, key: str, args: tuple[str, ...]) -> int:
-        """EVAL 失败时用 TIME/HGET/HSET；control ACL 允许这些命令。"""
-
-        now = await self.redis.time()
-        now_sec = int(now[0])
-        last_raw = await self.redis.hget(key, "sec")
-        last = int(last_raw) if last_raw not in {None, ""} else 0
-        if last > 0 and now_sec < last:
-            return 0
-        if last != now_sec:
-            await self.redis.hset(key, mapping={"sec": now_sec, "b": 0, "r": 0, "s": 0})
-        current = await self.redis.hmget(key, "b", "r", "s")
-        used = [int(item or 0) + int(args[index]) for index, item in enumerate(current)]
-        limits = [int(args[index]) for index in range(3, 6)]
-        if used[0] > limits[0] or used[1] > limits[1] or used[2] > limits[2]:
-            return 0
-        await self.redis.hset(
-            key,
-            mapping={"sec": now_sec, "b": used[0], "r": used[1], "s": used[2]},
-        )
-        await self.redis.expire(key, 3)
-        return 1
 
     async def record_transition(
         self,

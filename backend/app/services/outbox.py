@@ -18,6 +18,18 @@ T = TypeVar("T")
 
 LOGGER = logging.getLogger(__name__)
 
+# 日历等待不是 dispatcher 积压；恢复到期后从可执行时刻计算等待年龄。
+OUTBOX_CAPACITY_ACTIVE_SQL = """
+state IN ('pending','leased','published','processing')
+AND NOT (state='pending' AND event_type='chunk.ready'
+         AND last_error IS NOT DISTINCT FROM 'MarketWindowDeferred'
+         AND next_attempt_at>now())
+"""
+OUTBOX_CAPACITY_AGE_SQL = """
+CASE WHEN event_type='chunk.ready' AND last_error='MarketWindowDeferred'
+     THEN next_attempt_at ELSE created_at END
+"""
+
 OUTBOX_BACKLOG_ALERT_SECONDS = 300
 PHONE_IN_TEXT = re.compile(r"(?<!\d)1\d{10}(?!\d)")
 BATCH_REFERENCE = re.compile(r"^[0-9a-f]{32}$")
@@ -381,6 +393,10 @@ class OutboxRepository(Protocol):
 
     async def complete(self, event_id: UUID, lease_id: UUID) -> None: ...
 
+    async def defer_execution(
+        self, event_id: UUID, lease_id: UUID, next_attempt_at: datetime,
+    ) -> None: ...
+
     async def fail_execution(
         self,
         event_id: UUID,
@@ -472,6 +488,16 @@ class OutboxDispatcher:
         return published
 
 
+class OutboxDeferred(RuntimeError):
+    """业务日历尚未到期；保留事件和失败预算，稍后重新检查权威策略。"""
+
+    def __init__(self, next_attempt_at: datetime) -> None:
+        if next_attempt_at.tzinfo is None or next_attempt_at.utcoffset() is None:
+            raise ValueError("deferred time must include timezone")
+        super().__init__("business window deferred")
+        self.next_attempt_at = next_attempt_at
+
+
 class OutboxExecutor:
     """消费者按 event ID 领取执行租约并周期续租；重复投递只执行一次。"""
 
@@ -540,6 +566,18 @@ class OutboxExecutor:
                 result = await effect(claim)
             if lease_lost.is_set():
                 raise OutboxLeaseLost("outbox execution lease was lost")
+        except OutboxDeferred as deferred:
+            if lease_lost.is_set():
+                raise OutboxLeaseLost("outbox execution lease was lost") from None
+            if expected_type != "chunk.ready":
+                await self.repository.fail_execution(
+                    claim.event_id, claim.lease_id, "InvalidDeferral"
+                )
+                raise
+            await self.repository.defer_execution(
+                claim.event_id, claim.lease_id, deferred.next_attempt_at,
+            )
+            return cast(T, 0)
         except Exception as exc:
             if not lease_lost.is_set():
                 await self.repository.fail_execution(

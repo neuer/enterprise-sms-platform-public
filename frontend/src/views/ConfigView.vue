@@ -305,7 +305,7 @@ async function disableProvider(): Promise<void> {
   if (
     !(await confirmAuditedAction({
       title: "确认禁用 AD",
-      body: "禁用后登录页不再显示 AD，已登录会话不受影响；草稿、生效配置与角色映射继续保留，可随时重新测试并启用。",
+      body: "禁用后登录页不再显示 AD，已有 AD 会话也将在后续认证校验时失效，无法继续访问或刷新；草稿、生效配置与角色映射继续保留，可随时重新测试并启用。",
       auditNote: "禁用行为与操作人将写入审计日志。",
       confirmText: "禁用 AD",
     }))

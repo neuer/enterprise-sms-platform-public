@@ -1682,6 +1682,8 @@ async def test_resend_repository_scopes_batch_and_reads_only_failed_ciphertext(
         "is_test": False,
     }
     failed = {
+        "id": 1,
+        "created_at": datetime(2026, 9, 12, tzinfo=UTC),
         "phone_enc": b"ciphertext",
         "phone_hmac": "a" * 64,
         "key_version": 2,

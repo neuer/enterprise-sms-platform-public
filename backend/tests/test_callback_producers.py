@@ -493,6 +493,7 @@ async def test_approval_rejection_enqueues_batch_finished_in_same_transaction(
     repository = SqlApprovalRepository()
     connection = FakeConnection(
         [
+            FakeResult(3),
             FakeResult(8),
             FakeResult(),
             FakeResult(),
@@ -540,7 +541,7 @@ async def test_approval_rejection_enqueues_batch_finished_in_same_transaction(
         "approval:3:rejected",
     )
     assert outbox_events[0].dedup_key == "approval:3:rejected"
-    audit_sql = connection.calls[2][0]
+    audit_sql = connection.calls[3][0]
     assert "'decision',CAST(:decision AS text)" in audit_sql
     assert "'actor_account_id',CAST(:actor_account_id AS bigint)" in audit_sql
 

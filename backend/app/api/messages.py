@@ -18,6 +18,7 @@ from app.core.auth.runtime import get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.runtime_resources import redis_client
+from app.core.sensitive_text import reject_phone_business_id
 from app.services.app_ratelimit import (
     ApplicationRateLimiter,
     ApplicationRateLimitExceeded,
@@ -143,6 +144,7 @@ class SendRequestModel(BaseModel):
 
     @model_validator(mode="after")
     def content_or_template(self) -> SendRequestModel:
+        reject_phone_business_id(self.biz_id, field_name="biz_id")
         if (self.content is None) == (self.template_id is None):
             raise ValueError("content 与 template_id 必须且只能提供一个")
         return self
@@ -206,6 +208,7 @@ class VendorTestApiUatRequestModel(BaseModel):
 
     @model_validator(mode="after")
     def content_or_template(self) -> VendorTestApiUatRequestModel:
+        reject_phone_business_id(self.biz_id, field_name="biz_id")
         if (self.content is None) == (self.template_id is None):
             raise ValueError("content 与 template_id 必须且只能提供一个")
         return self

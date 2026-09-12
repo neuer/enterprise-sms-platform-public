@@ -11,7 +11,6 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.auth.accounts import SecurityPrincipal
-from app.services.vendor_test_operation import vendor_test_uat_biz_id
 from app.services.vendor_test_operation_repository import (
     SqlVendorTestOperationRepository,
 )
@@ -33,15 +32,17 @@ APP_ID = 981
 async def _create_principal(engine: Any, login: str) -> SecurityPrincipal:
     async with engine.begin() as connection:
         stale_accounts = (
-            await connection.execute(
-                text(
-                    """
+
+                await connection.execute(
+                    text(
+                        """
                     SELECT account_id FROM auth_identity
                     WHERE normalized_login_name=:login
                     """
-                ),
-                {"login": login},
-            )
+                    ),
+                    {"login": login},
+                )
+
         ).scalars().all()
         await connection.execute(
             text("DELETE FROM auth_identity WHERE normalized_login_name=:login"),
@@ -166,7 +167,12 @@ async def test_real_postgres_guard_expiry_and_batch_truth_recovery() -> None:
                 {"id": EXPIRED_ID},
             )
         async with repository.acceptance_guard(EXPIRED_ID):
-            assert await repository.prepare_uat_acceptance(EXPIRED_ID) is False
+            assert (
+                await repository.prepare_uat_acceptance(
+                    EXPIRED_ID, biz_id="synthetic-expired", app_id=APP_ID
+                )
+                is False
+            )
             assert (
                 await repository.expire_uat_if_stale(
                     EXPIRED_ID,
@@ -204,6 +210,9 @@ async def test_real_postgres_guard_expiry_and_batch_truth_recovery() -> None:
         )
         batch_running = await repository.claim_uat_running(BATCH_ID)
         assert batch_running is not None
+        assert await repository.prepare_uat_acceptance(
+            BATCH_ID, biz_id="synthetic-custom-uat", app_id=APP_ID
+        )
         async with engine.begin() as connection:
             await connection.execute(
                 text(
@@ -221,11 +230,11 @@ async def test_real_postgres_guard_expiry_and_batch_truth_recovery() -> None:
                     INSERT INTO sms_batch(
                       batch_no,channel,app_id,dept,content,display_content_enc,
                       send_content_enc,biz_id,
-                      is_test,status
+                      is_test,status,creator_account_id,creator_identity_id
                     ) VALUES(
                       :batch_no,'web',:app_id,'平台部','[encrypted]',
                       :ciphertext,:ciphertext,:biz_id,
-                      true,'queued'
+                      true,'queued',:account_id,:identity_id
                     )
                     """
                 ),
@@ -233,7 +242,9 @@ async def test_real_postgres_guard_expiry_and_batch_truth_recovery() -> None:
                     "batch_no": BATCH_NO,
                     "app_id": APP_ID,
                     "ciphertext": b"ciphertext-only",
-                    "biz_id": vendor_test_uat_biz_id(BATCH_ID),
+                    "biz_id": "synthetic-custom-uat",
+                    "account_id": principal.account_id,
+                    "identity_id": principal.identity_id,
                 },
             )
         assert (

@@ -24,7 +24,7 @@ from app.core.auth.accounts import (
     UncertainEffectPrincipal,
 )
 from app.core.bounded_executor import run_bounded
-from app.core.sensitive_text import reject_phone_in_text
+from app.core.sensitive_text import reject_phone_business_id, reject_phone_in_text
 from app.services.app_ratelimit import ApplicationRateLimiter
 from app.services.approval import requires_approval
 from app.services.billing import calculate_segments
@@ -173,6 +173,16 @@ def prepare_content(
 
 
 @dataclass(frozen=True, slots=True)
+class FailedSourceReference:
+    """失败重发的原消息快照，只携带稳定引用和不可逆号码索引。"""
+
+    message_id: int
+    created_at: datetime
+    phone_hmac: str
+    key_version: int
+
+
+@dataclass(frozen=True, slots=True)
 class SendRequest:
     category: str
     mobiles: Sequence[str]
@@ -189,6 +199,7 @@ class SendRequest:
     remark: str | None = None
     resend_of: str | None = None
     resend_dept: str | None = None
+    failed_sources: tuple[FailedSourceReference, ...] = ()
     protected_mobiles: Sequence[ProtectedPhone] = ()
     protected_hmac_candidates: Sequence[tuple[int, str]] = ()
     vendor_test_uat: bool = False
@@ -257,6 +268,7 @@ class BatchCommand:
     messages: tuple[ProtectedPhone, ...]
     scope_kind: str
     scope_id: str
+    failed_sources: tuple[FailedSourceReference, ...] = ()
     request_hash: str | None = None
     request_hash_key_version: int | None = None
     inflight_reservation_id: int | None = None
@@ -1107,6 +1119,7 @@ class SendPipeline:
 
         request = self._with_uat_replay_identity(request)
         biz_id = request.biz_id
+        reject_phone_business_id(biz_id, field_name="biz_id")
         if not biz_id:
             return None
         idem_scope = self._idempotency_scope(request, app)
@@ -1174,6 +1187,7 @@ class SendPipeline:
             raise VendorTestConsoleOnly
         self._validate_usage_subject(request)
         biz_id = request.biz_id
+        reject_phone_business_id(biz_id, field_name="biz_id")
         if not biz_id:
             return await self._accept_claimed(
                 app,
@@ -1814,6 +1828,7 @@ class SendPipeline:
                     consent_confirmed=request.consent_confirmed,
                     remark=request.remark,
                     resend_of=request.resend_of,
+                    failed_sources=request.failed_sources,
                     usage_reservation_id=usage_reservation_id,
                     import_reservation_id=request.import_reservation_id,
                     inflight_reservation_id=getattr(inflight, "id", None),

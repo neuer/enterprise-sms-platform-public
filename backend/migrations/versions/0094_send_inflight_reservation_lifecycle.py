@@ -92,6 +92,13 @@ def upgrade() -> None:
           DROP CONSTRAINT IF EXISTS ck_inflight_released_pair
         """
     )
+    # 前序版本 released_at 已记录释放事实，仅补充历史版本缺少的原因。
+    op.execute(
+        """
+        UPDATE send_inflight_reservation SET release_reason='legacy_released'
+        WHERE state='released' AND released_at IS NOT NULL AND release_reason IS NULL
+        """
+    )
     op.execute(
         """
         ALTER TABLE send_inflight_reservation

@@ -61,14 +61,14 @@ async def test_aggregation_service_rebuilds_three_dates_and_returns_row_count() 
 
 @pytest.mark.asyncio
 async def test_dirty_dates_outside_window_are_recomputed_then_cleared() -> None:
-    """晚到回执标记的窗口外归属日必须补算；窗口内脏日只清除不重复计算。"""
+    """晚到回执标记的窗口外归属日必须补算；窗口内新脏日也必须重算。"""
 
     late_day = date(2026, 6, 20)
     in_window_day = date(2026, 7, 10)
     repository = FakeRepository(dirty=(late_day, in_window_day))
     service = StatsAggregationService(repository)
 
-    assert await service.aggregate_recent(datetime(2026, 7, 11, 16, 5, tzinfo=UTC)) == 12
+    assert await service.aggregate_recent(datetime(2026, 7, 11, 16, 5, tzinfo=UTC)) == 14
     assert repository.dates == [
         date(2026, 7, 12),
         date(2026, 7, 11),
@@ -76,5 +76,6 @@ async def test_dirty_dates_outside_window_are_recomputed_then_cleared() -> None:
         date(2026, 7, 9),
         date(2026, 7, 8),
         late_day,
+        in_window_day,
     ]
-    assert repository.cleared == [late_day, in_window_day]
+    assert repository.cleared == []

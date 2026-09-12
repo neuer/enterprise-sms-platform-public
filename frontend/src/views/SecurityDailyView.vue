@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import SecurityDailyConfigDialog from "../components/SecurityDailyConfigDialog.vue"
 import { apiErrorMessage } from "../lib/securityDaily"
+import { useLatestRead } from "../composables/useLatestRead"
 import { usePagedList } from "../composables/usePagedList"
 import ListPagination from "../components/ListPagination.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
-import { computed, nextTick, onMounted, reactive, ref, toRef } from "vue"
+import { computed, nextTick, onMounted, reactive, ref, toRef, watch } from "vue"
 
 import {
   generateSecurityDailyReport,
@@ -104,6 +105,29 @@ const selected = ref<SecurityDailyReport | null>(null)
 const drawerOpen = ref(false)
 const previewText = ref("")
 const previewOpen = ref(false)
+const detailRead = useLatestRead()
+const previewRead = useLatestRead()
+watch(
+  drawerOpen,
+  (open) => {
+    if (open) return
+    detailRead.cancel()
+    previewRead.cancel()
+    selected.value = null
+    detailLoading.value = false
+    previewLoading.value = false
+    previewOpen.value = false
+    previewText.value = ""
+  },
+  { flush: "sync" },
+)
+watch(
+  previewOpen,
+  (open) => {
+    if (!open) previewRead.cancel()
+  },
+  { flush: "sync" },
+)
 const configOpen = ref(false)
 const configLoading = ref(false)
 const generationLoading = ref(false)
@@ -330,6 +354,11 @@ async function generateReport(): Promise<void> {
 }
 
 async function openReport(reportId: number): Promise<void> {
+  const signal = detailRead.start()
+  previewRead.cancel()
+  selected.value = null
+  previewText.value = ""
+  previewLoading.value = false
   detailLoading.value = true
   drawerOpen.value = true
   previewOpen.value = false
@@ -338,36 +367,44 @@ async function openReport(reportId: number): Promise<void> {
     document.querySelector<HTMLElement>(".el-drawer__body")?.scrollTo({ top: 0 })
   })
   try {
-    selected.value = await getSecurityDailyReport(reportId)
+    const report = await getSecurityDailyReport(reportId)
+    if (signal.aborted) return
+    selected.value = report
   } catch (error) {
+    if (signal.aborted) return
     ElMessage.error(apiErrorMessage(error, "日报详情暂不可用，请刷新重试"))
     drawerOpen.value = false
   } finally {
-    detailLoading.value = false
+    if (!signal.aborted) detailLoading.value = false
   }
 }
 
 async function openPreview(): Promise<void> {
   if (!selected.value || previewLoading.value) return
+  const reportId = selected.value.id
+  const signal = previewRead.start()
   previewLoading.value = true
   try {
-    const preview = await previewSecurityDailyReport(selected.value.id)
+    const preview = await previewSecurityDailyReport(reportId)
+    if (signal.aborted) return
     previewText.value = preview.available ? preview.text : (preview.message ?? "数据不可用")
     previewOpen.value = true
   } catch (error) {
+    if (signal.aborted) return
     ElMessage.error(apiErrorMessage(error, "预览暂不可用，请刷新重试"))
   } finally {
-    previewLoading.value = false
+    if (!signal.aborted) previewLoading.value = false
   }
 }
 
 async function requestDelivery(action: "send" | "retry"): Promise<void> {
   if (!selected.value || delivering.value) return
+  const report = selected.value
   const operation = action === "retry" ? "重试投递" : "手动投递"
   if (
     !(await confirmAuditedAction({
       title: `确认${operation}`,
-      body: `确认${operation} ${selected.value.report_date} 的安全日报？邮件正文只来自已脱敏结构化报告，投递由独立 mailer 执行并回写状态，同日重复投递有幂等保护。`,
+      body: `确认${operation} ${report.report_date} 的安全日报？邮件正文只来自已脱敏结构化报告，投递由独立 mailer 执行并回写状态，同日重复投递有幂等保护。`,
       auditNote: `${operation}行为、操作人与日报 id 将写入审计日志。`,
       confirmText: `确认${operation}`,
     }))
@@ -376,13 +413,13 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
   try {
     delivering.value = true
     if (action === "retry") {
-      await retrySecurityDailyReport(selected.value.id)
+      await retrySecurityDailyReport(report.id)
     } else {
-      await sendSecurityDailyReport(selected.value.id)
+      await sendSecurityDailyReport(report.id)
     }
     ElMessage.success("投递请求已受理，状态将在 mailer 回写后更新 · 本次操作已记入审计")
     await refresh()
-    await openReport(selected.value.id)
+    if (drawerOpen.value && selected.value?.id === report.id) await openReport(report.id)
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, "投递请求失败，请刷新重试"))
   } finally {

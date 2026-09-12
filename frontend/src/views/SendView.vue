@@ -118,14 +118,15 @@ const sendDisabled = computed(
     (form.source === "paste" && invalidMobiles.value.length > 0) ||
     !contentReady.value ||
     (form.category === "market" && !form.consentConfirmed) ||
-    testLimitExceeded.value,
+    testLimitExceeded.value ||
+    (form.scheduleEnabled && (!form.scheduledAt || !Number.isFinite(Date.parse(form.scheduledAt)))),
 )
 const scheduledAtValue = computed(() => (form.scheduleEnabled && form.scheduledAt ? form.scheduledAt : ""))
 
 const submitLabel = computed(() => {
   const cost = preview.value ? ` · ${preview.value.quota_cost.toLocaleString()} 计费条` : ""
   if (preview.value?.approval_required) return `提交审批${cost}`
-  if (scheduledAtValue.value || preview.value?.deferred_reason === "market_window") return `安排发送${cost}`
+  if (form.scheduleEnabled || preview.value?.deferred_reason === "market_window") return `安排发送${cost}`
   return `立即发送${cost}`
 })
 
@@ -775,7 +776,7 @@ onBeforeUnmount(() => {
             type="datetime"
             popper-class="qingluan-date-popper"
             value-format="YYYY-MM-DDTHH:mm:ss+08:00"
-            placeholder="选择时间（可选）"
+            placeholder="选择发送时间（必填）"
             :disabled="form.isTest || !form.scheduleEnabled"
           />
           <label class="opt">

@@ -75,7 +75,12 @@ class RawReplayClaim:
 
 class RawReplayRepository(Protocol):
     async def claim_raw_for_replay(
-        self, raw_id: int, *, allow_manual: bool = True
+        self,
+        raw_id: int,
+        *,
+        allow_manual: bool = True,
+        principal: SecurityPrincipal | None = None,
+        ip: str | None = None,
     ) -> RawReplayClaim | None: ...
 
     async def mark_replay_error(
@@ -203,7 +208,7 @@ class RawReplayService:
             principal=principal,
         )
         claim = await self.repository.claim_raw_for_replay(
-            raw_id, allow_manual=not system_producer
+            raw_id, allow_manual=not system_producer, principal=principal, ip=ip
         )
         if claim is None:
             raise RawReplayNotFound(raw_id)

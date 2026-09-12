@@ -146,6 +146,8 @@ function result(url: string, method: string): unknown {
           error: "ValueError",
           fetched_at: "2026-07-12T08:00:00+08:00",
           capture_state: "complete",
+          parse_state: "unattempted",
+          replay_eligibility: "automatic",
         },
       ],
       total: 45,
