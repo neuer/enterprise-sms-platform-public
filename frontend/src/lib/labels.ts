@@ -3,11 +3,14 @@
  * 各视图/组件禁止再维护同名映射，新增取值在此扩展。
  */
 
+/** 消息类别联合类型单点；CATEGORY_LABELS 经 satisfies 与此类型保持同步。 */
+export type MessageCategory = "verify" | "notice" | "market"
+
 export const CATEGORY_LABELS: Record<string, string> = {
   verify: "验证码",
   notice: "通知",
   market: "营销",
-}
+} satisfies Record<MessageCategory, string>
 
 export const ROLE_LABELS: Record<string, string> = {
   admin: "系统管理员",
@@ -55,8 +58,8 @@ export const VENDOR_REVIEW_LABELS: Record<string, string> = {
   rejected: "已拒绝",
 }
 
-/** 平台送审后厂商侧的三态；模板另有 draft 平台草稿态，由视图自行兜底。 */
-export type VendorReviewState = "pending" | "approved" | "rejected"
+/** 平台送审后厂商侧的三态；模板另有 draft 平台草稿态，由视图自行兜底。仅文件内使用，不对外导出。 */
+type VendorReviewState = "pending" | "approved" | "rejected"
 
 /** 厂商审核状态副行；tone=verm 时视图以警示色呈现（驳回原因）。 */
 export interface VendorReviewSub {
@@ -103,4 +106,9 @@ export const BLACKLIST_SOURCE_LABELS: Record<string, string> = {
   manual: "人工加入",
   reply_optout: "回复退订",
   import: "导入",
+}
+
+/** 把标签映射转成选择器选项列表；keys 限定取值子集与顺序，缺省按映射自身键序。 */
+export function toOptions(labels: Record<string, string>, keys?: string[]): Array<{ value: string; label: string }> {
+  return (keys ?? Object.keys(labels)).map((value) => ({ value, label: labels[value] ?? value }))
 }

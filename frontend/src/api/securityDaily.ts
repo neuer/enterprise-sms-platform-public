@@ -1,5 +1,6 @@
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { apiRequest } from "./client"
+import type { NumberedPage } from "./pagination"
 
 export type SecurityStatus = "normal" | "attention" | "high"
 export type GenerationSource = "auto" | "manual"
@@ -22,6 +23,7 @@ export interface SecurityDailyOverview {
   resend_configured: boolean
   sender_domain: string
   sender_address: string
+  beat_restart_required: boolean
 }
 
 export interface SecurityDailyConfiguration {
@@ -113,12 +115,7 @@ export interface SecurityDailyReport {
   timeline: Array<{ type: string; at: string; label: string; detail?: string | null }>
 }
 
-export interface SecurityDailyPage {
-  items: SecurityDailyReport[]
-  total: number
-  page: number
-  page_size: number
-}
+export type SecurityDailyPage = NumberedPage<SecurityDailyReport>
 
 export interface SecurityDailyPreview {
   report_date: string

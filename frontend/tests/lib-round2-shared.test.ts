@@ -42,8 +42,8 @@ describe("第二轮共享边界", () => {
   it("时间查询保留原时刻，空范围不构造假的日期边界", () => {
     expect(rangeToIsoParams(null)).toEqual({ start: undefined, end: undefined })
     expect(rangeToIsoParams([new Date("2026-09-08T00:00:00+08:00"), new Date("2026-09-09T00:00:00+08:00")])).toEqual({
-      start: "2026-09-07T16:00:00.000Z",
-      end: "2026-09-08T16:00:00.000Z",
+      start: "2026-09-08T00:00:00+08:00",
+      end: "2026-09-09T00:00:00+08:00",
     })
     expect(phoneProblem("")).toBeUndefined()
     expect(phoneProblem("138****8000")).toBe("手机号须为 11 位以 1 开头的数字")

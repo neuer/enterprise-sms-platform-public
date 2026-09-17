@@ -233,4 +233,29 @@ describe("回复查询", () => {
     await flushPromises()
     expect(JSON.parse(String(fetch.mock.calls[3][1].body))).toEqual({ page: 1, disposition: "all" })
   })
+
+  it("回复时间范围按 ISO8601 +08:00 提交", async () => {
+    const fetch = vi.fn().mockResolvedValue(response({ total: 0, items: [] }))
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "viewer"
+
+    const wrapper = mount(ReplyView, {
+      global: { plugins: [pinia, ElementPlus] },
+    })
+    await flushPromises()
+
+    const picker = wrapper.findComponent({ name: "ElDatePicker" })
+    picker.vm.$emit("update:modelValue", [new Date("2026-07-12T00:00:00+08:00"), new Date("2026-07-12T23:59:00+08:00")])
+    await wrapper.get("form.reply-filter-bar").trigger("submit")
+    await flushPromises()
+
+    expect(JSON.parse(String(fetch.mock.calls.at(-1)![1].body))).toEqual({
+      page: 1,
+      start: "2026-07-12T00:00:00+08:00",
+      end: "2026-07-12T23:59:00+08:00",
+      disposition: "all",
+    })
+  })
 })

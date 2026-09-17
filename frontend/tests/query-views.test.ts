@@ -727,6 +727,8 @@ describe("批次与号码查询", () => {
     expect(wrapper.text()).toContain("近30日接收")
     expect(wrapper.text()).toContain("3 条")
     expect(wrapper.text()).toContain("↩ 用户回复")
+    // 时间线按上海日历日分组（lib/time shanghaiDateKey）
+    expect(wrapper.text()).toContain("2026-07-12")
     expect(wrapper.text()).toContain("仅显示最近 500 条")
     expect(wrapper.text()).toContain("来源 回复退订")
     expect(wrapper.text()).not.toContain("已入回复查询")
@@ -791,6 +793,125 @@ describe("批次与号码查询", () => {
     expect(fetch.mock.calls[2][0]).toBe("/api/v1/web/messages/9/phone/decrypt")
     expect(wrapper.text()).toContain("13800138000")
     expect(wrapper.text()).toContain("已解密")
+    vi.unstubAllGlobals()
+  })
+
+  it("批次行点击与键盘 Enter 均可打开详情抽屉，筛选选项文案来自共享标签", async () => {
+    const batch = {
+      batch_no: "BATCH-ROW",
+      category: "notice",
+      channel: "api",
+      app_name: "通知应用",
+      creator: "operator-a",
+      dept: "平台部",
+      content: "系统通知",
+      status: "completed",
+      deferred_reason: null,
+      resend_of: null,
+      is_test: false,
+      segments: 1,
+      quota_cost: 2,
+      total: 2,
+      removed_freq_limit: 0,
+      pending: 0,
+      sent: 0,
+      delivered: 1,
+      failed: 1,
+      unknown: 0,
+      other: 0,
+      scheduled_at: null,
+      created_at: "2026-07-12T08:00:00+08:00",
+    }
+    const fetch = vi.fn(async (input: string) => {
+      const url = String(input)
+      if (url.includes("/web/batches?")) return response({ total: 1, status_counts: {}, items: [batch] })
+      if (url.includes("/batches/BATCH-ROW/details")) return response({ total: 0, items: [] })
+      if (url.endsWith("/batches/BATCH-ROW")) return response(batch)
+      return response({ total: 0, items: [] })
+    })
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "viewer"
+    const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    // 类别 / 渠道选项由 lib/labels 单点派生（全部 + 映射键序）
+    const segTexts = (testid: string) =>
+      wrapper
+        .get(`[data-testid='${testid}']`)
+        .findAll("button")
+        .map((button) => button.text())
+    expect(segTexts("batch-category-filter")).toEqual(["全部", "验证码", "通知", "营销"])
+    expect(segTexts("batch-channel-filter")).toEqual(["全部", "API", "Web"])
+
+    const detailButton = () => wrapper.findAll("button").find((item) => item.text().includes("查看详情"))!
+    expect(detailButton().attributes("aria-label")).toBe("查看批次 BATCH-ROW 的详情")
+
+    // 行点击打开抽屉（el-table row-click，ApprovalList 行点击模式在 el-table 上的等价实现）
+    await wrapper.find(".query-table tbody tr").trigger("click")
+    await flushPromises()
+    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(wrapper.find(".batch-hero-nums").exists()).toBe(true)
+    // 结果构成百分比仍为占受理总数的份额（formatPercent 展示层，非成功率口径）
+    expect(wrapper.get(".batch-hero-nums").text()).toContain("50.0%")
+
+    // 关闭后键盘 Enter 同样可达（焦点在操作列按钮时）
+    await wrapper.find(".batch-drawer .el-drawer__close-btn").trigger("click")
+    await flushPromises()
+    await detailButton().trigger("keydown.enter")
+    await flushPromises()
+    expect(fetch).toHaveBeenCalledTimes(5)
+    expect(wrapper.find(".batch-hero-nums").exists()).toBe(true)
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("批次查询时间范围按 ISO8601 +08:00 提交", async () => {
+    const fetch = vi.fn(async (input: string) => {
+      if (String(input).includes("/web/batches?")) return response({ total: 0, status_counts: {}, items: [] })
+      return response({ total: 0, items: [] })
+    })
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "viewer"
+    const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+
+    const picker = wrapper.findComponent({ name: "ElDatePicker" })
+    picker.vm.$emit("update:modelValue", [new Date("2026-07-12T00:00:00+08:00"), new Date("2026-07-12T23:59:00+08:00")])
+    await wrapper.find("form.batch-filter").trigger("submit")
+    await flushPromises()
+
+    const url = String(fetch.mock.calls.at(-1)![0])
+    expect(url).toContain("start=2026-07-12T00%3A00%3A00%2B08%3A00")
+    expect(url).toContain("end=2026-07-12T23%3A59%3A00%2B08%3A00")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it("号码查询时间范围按 ISO8601 +08:00 提交", async () => {
+    const fetch = vi.fn().mockResolvedValue(response({ total: 0, badge: null, items: [] }))
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "viewer"
+    const wrapper = mount(MessageView, { global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.find('input[placeholder="输入 11 位手机号"]').setValue("13800138000")
+
+    const picker = wrapper.findComponent({ name: "ElDatePicker" })
+    picker.vm.$emit("update:modelValue", [new Date("2026-07-12T00:00:00+08:00"), new Date("2026-07-12T23:59:00+08:00")])
+    await wrapper.find("form").trigger("submit")
+    await flushPromises()
+
+    expect(JSON.parse(String(fetch.mock.calls.at(-1)![1].body))).toEqual({
+      phone: "13800138000",
+      start: "2026-07-12T00:00:00+08:00",
+      end: "2026-07-12T23:59:00+08:00",
+      page: 1,
+    })
+    wrapper.unmount()
     vi.unstubAllGlobals()
   })
 })

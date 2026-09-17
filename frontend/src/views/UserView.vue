@@ -23,7 +23,7 @@ import { usePagedList } from "../composables/usePagedList"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
-import { DEFAULT_PAGE_SIZE, ROLE_LABELS } from "../lib/labels"
+import { DEFAULT_PAGE_SIZE, ROLE_LABELS, toOptions } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 
 const saving = ref(false)
@@ -81,12 +81,10 @@ const providerOptions = [
   { label: "本地", value: "local", key: "local" },
   { label: "AD", value: "ad", key: "ad" },
 ]
+// 角色筛选 chip 与表格/表单统一取 ROLE_LABELS 单点（系统管理员/只读用户），不另立短文案映射。
 const roleSegOptions = [
   { label: "全部", value: "" as UserRole | "", key: "all" },
-  { label: "管理员", value: "admin" as UserRole, key: "admin" },
-  { label: "审批人", value: "approver" as UserRole, key: "approver" },
-  { label: "操作员", value: "operator" as UserRole, key: "operator" },
-  { label: "只读", value: "viewer" as UserRole, key: "viewer" },
+  ...toOptions(ROLE_LABELS).map((option) => ({ ...option, value: option.value as UserRole, key: option.value })),
 ]
 const statusOptions = [
   { label: "全部", value: "" as 0 | 1 | "", key: "all" },

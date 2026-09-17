@@ -1,4 +1,5 @@
 import { apiRequest } from "./client"
+import type { Page } from "./pagination"
 import type { Category } from "./webMessages"
 
 export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired"
@@ -23,15 +24,15 @@ export interface ApprovalListItem {
   applicant_account_id: number | null
   dept: string
   total: number
-  segments: number | null
-  estimated_segments: number | null
+  segments: number
+  estimated_segments: number
   scheduled_at: string | null
   trigger_threshold: number | null
   trigger_threshold_source: "snapshot" | "legacy_unknown"
   status: ApprovalStatus
   approver: string | null
   reason: string | null
-  expires_at: string | null
+  expires_at: string
   decided_at: string | null
   created_at: string
   batch_status: string
@@ -52,10 +53,8 @@ export interface ApprovalQuery {
   sort?: ApprovalSort
 }
 
-export interface ApprovalPage {
-  total: number
+export interface ApprovalPage extends Page<ApprovalListItem> {
   counts: ApprovalCounts
-  items: ApprovalListItem[]
 }
 
 export interface DecisionOutcome {

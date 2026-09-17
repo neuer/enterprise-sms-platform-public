@@ -8,6 +8,7 @@ import EmptyState from "../components/EmptyState.vue"
 import TrendChart from "../components/TrendChart.vue"
 import { usePolling } from "../composables/usePolling"
 import { jobDescription } from "../lib/jobDescriptions"
+import { formatPercent } from "../lib/format"
 import { CATEGORY_LABELS } from "../lib/labels"
 import { formatDateTime, formatHm, formatHms } from "../lib/time"
 import { errorText } from "../lib/error"
@@ -166,7 +167,7 @@ onMounted(refreshPolling.start)
         <el-card shadow="never" class="metric-card">
           <span>送达成功率</span>
           <span class="kpi-go">→ 报表</span>
-          <strong>{{ (snapshot.overall_success_rate * 100).toFixed(1) }}%</strong>
+          <strong>{{ formatPercent(snapshot.overall_success_rate) }}</strong>
           <small>送达 /（送达 + 失败）</small>
           <div class="rate-rows" aria-label="分类目成功率">
             <div v-for="item in snapshot.categories" :key="item.category" class="rate-row">
@@ -174,7 +175,7 @@ onMounted(refreshPolling.start)
               <div class="rate-track"
                 ><i :class="item.category" :style="{ width: `${Math.min(100, item.success_rate * 100)}%` }"></i
               ></div>
-              <b>{{ (item.success_rate * 100).toFixed(1) }}%</b>
+              <b>{{ formatPercent(item.success_rate) }}</b>
             </div>
           </div>
         </el-card>

@@ -37,7 +37,8 @@ describe("review: 定时发送安全边界", () => {
       expect(sentWithoutSchedule, "未填时间却发送了不含 scheduled_at 的 POST").toBe(false)
       vm.form.scheduledAt = "2099-09-12T14:00:00+08:00"
       await vm.submit()
-      expect(api.sendWebMessage.mock.calls.at(-1)?.[0].scheduled_at).toBe("2099-09-12T06:00:00.000Z")
+      // 同一时刻的书面口径为规则 15 的 ISO8601 +08:00（toApiDateTime 单点），不再序列化为 UTC Z
+      expect(api.sendWebMessage.mock.calls.at(-1)?.[0].scheduled_at).toBe("2099-09-12T14:00:00+08:00")
       api.sendWebMessage.mockClear()
       vm.form.scheduledAt = ""
       await vm.submit()

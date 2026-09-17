@@ -30,10 +30,12 @@ export const createTemplate = (payload: TemplatePayload) =>
     body: JSON.stringify(payload),
   })
 export const updateTemplate = (id: number, payload: TemplatePayload) =>
-  apiRequest<SmsTemplate>("/templates/" + id, {
+  apiRequest<SmsTemplate>(`/templates/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   })
-export const deleteTemplate = (id: number) => apiRequest<void>("/templates/" + id, { method: "DELETE" })
-export const syncTemplate = (id: number) => apiRequest<void>("/templates/" + id + "/sync", { method: "POST" })
+export const deleteTemplate = (id: number) =>
+  apiRequest<void>(`/templates/${encodeURIComponent(id)}`, { method: "DELETE" })
+export const syncTemplate = (id: number) =>
+  apiRequest<void>(`/templates/${encodeURIComponent(id)}/sync`, { method: "POST" })

@@ -16,10 +16,38 @@ export interface SessionRetiredMessage {
 
 export type SessionSignalPublisher = (message: SessionRetiredMessage) => void
 
+/**
+ * 事件去重器工厂：生产代理由 SessionDocument 每实例持有一份（双上下文测试互不干扰），
+ * 模块不再保留任何全局去重表或注入总线，避免与实例实现漂移。
+ */
+export interface SessionEventIdDeduper {
+  remember(eventId: string): boolean
+  reset(): void
+}
+
 const SEEN_EVENT_LIMIT = 64
-const seenEventIds: string[] = []
-const seenEventIndex = new Set<string>()
-let signalPublisher: SessionSignalPublisher | null = null
+
+export function createSessionEventIdDeduper(): SessionEventIdDeduper {
+  const seenEventIds: string[] = []
+  const seenEventIndex = new Set<string>()
+  return {
+    remember(eventId: string): boolean {
+      if (!isSessionInstanceId(eventId)) return false
+      if (seenEventIndex.has(eventId)) return false
+      seenEventIndex.add(eventId)
+      seenEventIds.push(eventId)
+      if (seenEventIds.length > SEEN_EVENT_LIMIT) {
+        const expired = seenEventIds.shift()
+        if (expired) seenEventIndex.delete(expired)
+      }
+      return true
+    },
+    reset(): void {
+      seenEventIds.length = 0
+      seenEventIndex.clear()
+    },
+  }
+}
 
 const CREDENTIAL_FIELD_NAMES = new Set([
   "token",
@@ -90,22 +118,6 @@ export function unpublishSessionInstance(expectedInstanceId: string): void {
   }
 }
 
-export function installSessionSignalPublisher(publisher: SessionSignalPublisher | null): void {
-  signalPublisher = publisher
-}
-
-export function rememberSessionEventId(eventId: string): boolean {
-  if (!isSessionInstanceId(eventId)) return false
-  if (seenEventIndex.has(eventId)) return false
-  seenEventIndex.add(eventId)
-  seenEventIds.push(eventId)
-  if (seenEventIds.length > SEEN_EVENT_LIMIT) {
-    const expired = seenEventIds.shift()
-    if (expired) seenEventIndex.delete(expired)
-  }
-  return true
-}
-
 function hasForbiddenCredentialFields(value: Record<string, unknown>): boolean {
   return Object.keys(value).some((key) => CREDENTIAL_FIELD_NAMES.has(key.toLowerCase()))
 }
@@ -158,12 +170,16 @@ export function createSessionRetiredMessage(targetInstanceId: string): SessionRe
 
 /**
  * 向兄弟标签页宣布「退役该逻辑实例」。Storage 失败时返回消息但不降级通配广播。
+ * 测试可注入 publisher 走内存总线；生产默认经 localStorage 信号。
  */
-export function broadcastSessionRetired(targetInstanceId: string): SessionRetiredMessage | null {
+export function broadcastSessionRetired(
+  targetInstanceId: string,
+  publisher?: SessionSignalPublisher | null,
+): SessionRetiredMessage | null {
   const message = createSessionRetiredMessage(targetInstanceId)
   if (!message) return null
-  if (signalPublisher) {
-    signalPublisher(message)
+  if (publisher) {
+    publisher(message)
     return message
   }
   const storage = readLocalStorage()
@@ -179,11 +195,4 @@ export function broadcastSessionRetired(targetInstanceId: string): SessionRetire
 
 export function isStorageRemoveSignal(event: { newValue?: string | null }): boolean {
   return event.newValue == null
-}
-
-/** 测试隔离：清空去重表与注入的总线。生产路径不得调用。 */
-export function resetSessionSignals(): void {
-  seenEventIds.length = 0
-  seenEventIndex.clear()
-  signalPublisher = null
 }

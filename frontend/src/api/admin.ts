@@ -1,8 +1,16 @@
 import { adminStepUpHeaders } from "./adminStepUp"
 import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS, type UserRole } from "./auth"
 import type { VendorCredentialEnvelope, VendorSealSession } from "../lib/vendorSeal"
-import { apiRequest, assertAuthorizedResultCurrent, authorizedJsonResult } from "./client"
+import type { MessageCategory } from "../lib/labels"
+import {
+  type ApiErrorBody,
+  ApiRequestError,
+  apiRequest,
+  assertAuthorizedResultCurrent,
+  authorizedJsonResult,
+} from "./client"
 import type { BillingPreview } from "./webMessages"
+import type { NumberedPage } from "./pagination"
 
 export interface AuditItem {
   id: number
@@ -22,12 +30,8 @@ export interface AuditItem {
   created_at: string
 }
 
-export interface AuditPage {
-  items: AuditItem[]
-  total: number
-  page: number
-  page_size: number
-}
+// 与 api/pagination.ts 的 NumberedPage<AuditItem> 同形（items/total/page/page_size），别名引用单点。
+export type AuditPage = NumberedPage<AuditItem>
 
 export interface AuditFilters {
   actor: string
@@ -253,7 +257,7 @@ export interface VendorTestUatPayload {
   recipient_id: number
   app_id: number
   biz_id: string
-  category: "verify" | "notice" | "market"
+  category: MessageCategory
   content?: string
   template_id?: number
   template_params?: string[]
@@ -264,31 +268,20 @@ export interface VendorTestUatPayload {
 
 export type VendorTestUatPreviewPayload = Omit<VendorTestUatPayload, "recipient_id" | "remark" | "biz_id">
 
-interface VendorApiErrorBody {
-  code?: string
-  message?: string
-}
-
-export class VendorRequestError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-  ) {
-    super(message)
-    this.name = "VendorRequestError"
-  }
-}
-
+/**
+ * vendor-test 薄封装：错误归一化复用 client.ts 的 ApiRequestError 回退链，
+ * 额外保留真实联调特有的 Cache-Control: no-store 断言与空 body 拒绝。
+ */
 async function vendorRequest<T>(path: string, init: RequestInit, timeoutMs?: number): Promise<T> {
   const result = await authorizedJsonResult<T>(`/api/v1/web/admin/vendor-test${path}`, init, timeoutMs)
   assertAuthorizedResultCurrent(result)
   if (!result.ok) {
-    const body = (result.body ?? {}) as VendorApiErrorBody
-    throw new VendorRequestError(
+    const body = (result.body ?? {}) as ApiErrorBody
+    throw new ApiRequestError(
       result.status,
       body.code || `HTTP_${result.status}`,
       body.message || body.code || `请求失败（${result.status}）`,
+      body.detail,
     )
   }
   const cacheControl = result.headers.get("cache-control")?.toLowerCase() || ""
@@ -296,7 +289,7 @@ async function vendorRequest<T>(path: string, init: RequestInit, timeoutMs?: num
     throw new Error("真实联调响应缓存策略无效")
   }
   if (result.body == null) {
-    throw new VendorRequestError(result.status, "INVALID_JSON_RESPONSE", "响应不是有效 JSON")
+    throw new ApiRequestError(result.status, "INVALID_JSON_RESPONSE", "响应不是有效 JSON")
   }
   return result.body as T
 }

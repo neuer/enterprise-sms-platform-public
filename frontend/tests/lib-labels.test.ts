@@ -4,7 +4,9 @@ import {
   ROLE_LABELS,
   STATUS_LABELS,
   VENDOR_REVIEW_LABELS,
+  toOptions,
   vendorReviewSub,
+  type MessageCategory,
 } from "../src/lib/labels"
 
 describe("共享文案单点", () => {
@@ -58,5 +60,25 @@ describe("共享文案单点", () => {
   it("vendorReviewSub 对 rejected 返回警示色副行与驳回原因兜底", () => {
     expect(vendorReviewSub("rejected", null, "内容违规")).toEqual({ text: "内容违规", tone: "verm" })
     expect(vendorReviewSub("rejected", null, null)).toEqual({ text: "厂商未附驳回原因", tone: "verm" })
+  })
+
+  it("MessageCategory 与 CATEGORY_LABELS 键集合保持同步", () => {
+    // 类型层面由 satisfies Record<MessageCategory, string> 保证；此处锁运行时键集合
+    const categories: MessageCategory[] = ["verify", "notice", "market"]
+    expect(Object.keys(CATEGORY_LABELS).sort()).toEqual([...categories].sort())
+  })
+
+  it("toOptions 生成选择器选项并支持限定取值子集", () => {
+    expect(toOptions(CATEGORY_LABELS)).toEqual([
+      { value: "verify", label: "验证码" },
+      { value: "notice", label: "通知" },
+      { value: "market", label: "营销" },
+    ])
+    expect(toOptions(CATEGORY_LABELS, ["notice", "verify"])).toEqual([
+      { value: "notice", label: "通知" },
+      { value: "verify", label: "验证码" },
+    ])
+    // 未收录的键回退原值，不产出空文案
+    expect(toOptions(CATEGORY_LABELS, ["other"])).toEqual([{ value: "other", label: "other" }])
   })
 })

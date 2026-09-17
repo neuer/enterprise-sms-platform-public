@@ -9,6 +9,7 @@ import {
   listUnmatched,
   proposeUncertainResolution,
   confirmUncertainResolution,
+  reevaluateRaw,
 } from "../src/api/ops"
 
 function response(body: unknown) {
@@ -116,5 +117,23 @@ describe("运维查询 API", () => {
     expect(JSON.parse(String(fetch.mock.calls[0][1].body))).toEqual({ action: "resend_new_batch" })
     expect(String(fetch.mock.calls[1][0])).toBe("/api/v1/web/admin/resolutions/8/confirm")
     expect(fetch.mock.calls[1][1].method).toBe("POST")
+  })
+
+  it("raw 重评估走管理员路径并只读回解析面与重放资格", async () => {
+    const fetch = vi.fn().mockResolvedValue(
+      response({
+        parse_state: "unattempted",
+        replay_eligibility: "automatic",
+        reason: "unattempted",
+        parser_version: 1,
+      }),
+    )
+    vi.stubGlobal("fetch", fetch)
+
+    const result = await reevaluateRaw(2)
+
+    expect(String(fetch.mock.calls[0][0])).toBe("/api/v1/web/admin/raw-logs/2/reevaluate")
+    expect(fetch.mock.calls[0][1].method).toBe("POST")
+    expect(result.replay_eligibility).toBe("automatic")
   })
 })

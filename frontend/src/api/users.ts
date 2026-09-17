@@ -1,5 +1,6 @@
 import { adminStepUpHeaders } from "./adminStepUp"
 import { apiRequest } from "./client"
+import type { NumberedPage } from "./pagination"
 import type { UserRole } from "./auth"
 export type UserProvider = "local" | "ad" | string
 export type UserSyncStatus = "local" | "synced" | "pending" | "disabled"
@@ -24,12 +25,7 @@ export interface ManagedUser {
   last_login_at: string | null
 }
 
-export interface UserPage {
-  items: ManagedUser[]
-  total: number
-  page: number
-  page_size: number
-}
+export type UserPage = NumberedPage<ManagedUser>
 
 export interface UserFilters {
   keyword: string

@@ -8,7 +8,7 @@ import { ref, watch } from "vue"
 import type { ReportGranularity, ReportTrend, ReportTrendMetric } from "../api/reports"
 import { useChart } from "../composables/useChart"
 import { getChartTheme } from "../lib/chartTheme"
-import { shanghaiDateKey } from "../lib/time"
+import { enumerateDateKeys, shanghaiDateKey } from "../lib/time"
 
 echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer])
 
@@ -21,28 +21,11 @@ const props = defineProps<{
 }>()
 const root = ref<HTMLElement | null>(null)
 
-function enumerateDays(start: string, end: string): string[] | null {
-  const startMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(start)
-  const endMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(end)
-  if (!startMatch || !endMatch) return null
-  const first = Date.UTC(Number(startMatch[1]), Number(startMatch[2]) - 1, Number(startMatch[3]))
-  const last = Date.UTC(Number(endMatch[1]), Number(endMatch[2]) - 1, Number(endMatch[3]))
-  if (last < first) return null
-  const days: string[] = []
-  for (let current = first; current <= last && days.length <= 62; current += 86_400_000) {
-    const date = new Date(current)
-    days.push(
-      `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`,
-    )
-  }
-  return days.length > 62 ? null : days
-}
-
-/** 横轴周期列表：日粒度且范围 ≤62 天时把空日补零，否则按数据出现的周期排序。 */
+/** 横轴周期列表：日粒度且范围 ≤62 天时把空日补零（日期枚举下沉 lib/time 单点），否则按数据出现的周期排序。 */
 function periods(): string[] {
   const present = props.trend.periods
   if (props.granularity !== "day" || !props.start || !props.end) return present
-  const days = enumerateDays(props.start, props.end)
+  const days = enumerateDateKeys(props.start, props.end)
   return days ?? present
 }
 

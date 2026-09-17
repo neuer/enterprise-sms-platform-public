@@ -119,7 +119,8 @@ function displayNumber(value: number | null): string {
   height: 7px;
   background: var(--verdi-l);
   border-radius: 50%;
-  box-shadow: 0 0 8px rgba(47, 161, 132, 0.6);
+  /* 光晕即 --verdi-l 60%：引用令牌随主题切换，避免硬编码深色 rgba。 */
+  box-shadow: 0 0 8px color-mix(in srgb, var(--verdi-l) 60%, transparent);
   animation: monitor-pulse 2.4s infinite;
 }
 
@@ -176,7 +177,8 @@ function displayNumber(value: number | null): string {
 }
 
 .monitor-lane.bulk .monitor-track i {
-  background: linear-gradient(90deg, #8a5309, var(--amber));
+  /* 渐变起点为 --amber 压深色阶：color-mix 派生，亮/暗主题各自随 --amber 取值。 */
+  background: linear-gradient(90deg, color-mix(in srgb, var(--amber) 55%, #000000), var(--amber));
 }
 
 .monitor-qps > div:first-child {
@@ -201,8 +203,9 @@ function displayNumber(value: number | null): string {
 }
 
 .token-grid i.used {
-  background: linear-gradient(180deg, #12a17e, #0a5a49);
-  box-shadow: 0 0 10px rgba(18, 161, 126, 0.35);
+  /* 占用格与光晕引用品牌绿色阶令牌：亮底时 --verdi-l 自动向深取，对比随主题保持。 */
+  background: linear-gradient(180deg, var(--verdi-l), var(--verdi));
+  box-shadow: 0 0 10px color-mix(in srgb, var(--verdi-l) 35%, transparent);
 }
 
 .chan-time {

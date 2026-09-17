@@ -1,10 +1,12 @@
 import { nextShanghaiMidnight } from "../lib/time"
 import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS } from "./auth"
 import { apiRequest, authorizedBlob, ApiRequestError, DOWNLOAD_TIMEOUT_MS } from "./client"
+import type { MessageCategory } from "../lib/labels"
 
 export type ReportGranularity = "day" | "week" | "month"
 export type ReportGroupBy = "app" | "dept"
-export type ReportCategory = "verify" | "notice" | "market" | "all"
+// 历史别名：类别部分单点为 lib/labels 的 MessageCategory（"all" 为报表聚合选项），本别名由后续收敛移除。
+export type ReportCategory = MessageCategory | "all"
 /** 趋势堆叠可选指标：消息数或计费条。 */
 export type ReportTrendMetric = "total" | "total_segments"
 

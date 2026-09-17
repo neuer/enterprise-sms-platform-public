@@ -1,6 +1,5 @@
 import { apiRequest } from "./client"
-
-export type AppCategory = "verify" | "notice" | "market"
+import type { MessageCategory } from "../lib/labels"
 
 export interface FrequencyOverride {
   verify_per_minute?: number
@@ -34,7 +33,7 @@ export interface ManagedApp {
   id: number
   name: string
   dept: string
-  allowed_categories: AppCategory[]
+  allowed_categories: MessageCategory[]
   default_sign: string | null
   daily_quota: number
   rate_limit_per_min: number
@@ -64,7 +63,7 @@ export interface ManagedApp {
 export interface AppPayload {
   name?: string
   dept: string
-  allowed_categories: AppCategory[]
+  allowed_categories: MessageCategory[]
   default_sign: string | null
   daily_quota: number
   rate_limit_per_min: number

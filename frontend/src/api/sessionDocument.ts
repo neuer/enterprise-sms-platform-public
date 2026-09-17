@@ -6,6 +6,7 @@ import { type SessionMode } from "./sessionMode"
 import {
   broadcastSessionRetired,
   createOpaqueHexId,
+  createSessionEventIdDeduper,
   createSessionInstanceId,
   isSessionInstanceId,
   publishSessionInstance,
@@ -18,10 +19,10 @@ import {
 export const SESSION_LOCK_WAIT_MS = 10_000
 
 const REFRESH_LOCK_NAME = "sms-refresh-rotation"
-const REFRESH_TAB_ID_KEY = "sms_refresh_tab_id"
-const LEGACY_TOKEN_KEY = "sms_token"
-const LEGACY_USER_KEY = "sms_user"
-const SEEN_EVENT_LIMIT = 64
+/** 历史 Web Storage 凭据键（规则 26 一次性迁移 + 清除的唯一事实源）。 */
+export const LEGACY_TOKEN_KEY = "sms_token"
+export const LEGACY_USER_KEY = "sms_user"
+export const REFRESH_TAB_ID_KEY = "sms_refresh_tab_id"
 
 export interface SessionOperationOrigin {
   sessionInstanceId: string | null
@@ -46,9 +47,8 @@ export class SessionDocument {
   legacyMigrationAttempted = false
   legacyMigrationClosed = false
   private readonly controllers = new Set<AbortController>()
+  private readonly eventIdDeduper = createSessionEventIdDeduper()
   private readonly accessClearedListeners = new Set<() => void>()
-  private readonly seenEventIds: string[] = []
-  private readonly seenEventIndex = new Set<string>()
   private signalPublisher: SessionSignalPublisher | null = null
   private inPageBusy = false
   private readonly inPageWaiters: Array<() => void> = []
@@ -281,30 +281,11 @@ export class SessionDocument {
   }
 
   broadcastRetired(targetInstanceId: string): SessionRetiredMessage | null {
-    if (this.signalPublisher) {
-      const message = {
-        version: 1 as const,
-        type: "session-retired" as const,
-        target_instance_id: targetInstanceId,
-        event_id: createOpaqueHexId(),
-      }
-      if (!isSessionInstanceId(targetInstanceId)) return null
-      this.signalPublisher(message)
-      return message
-    }
-    return broadcastSessionRetired(targetInstanceId)
+    return broadcastSessionRetired(targetInstanceId, this.signalPublisher)
   }
 
   rememberEventId(eventId: string): boolean {
-    if (!isSessionInstanceId(eventId)) return false
-    if (this.seenEventIndex.has(eventId)) return false
-    this.seenEventIndex.add(eventId)
-    this.seenEventIds.push(eventId)
-    if (this.seenEventIds.length > SEEN_EVENT_LIMIT) {
-      const expired = this.seenEventIds.shift()
-      if (expired) this.seenEventIndex.delete(expired)
-    }
-    return true
+    return this.eventIdDeduper.remember(eventId)
   }
 
   readPublishedInstance(): string | null {
@@ -321,8 +302,7 @@ export class SessionDocument {
     this.refreshTabId = null
     this.legacyMigrationAttempted = false
     this.legacyMigrationClosed = false
-    this.seenEventIds.length = 0
-    this.seenEventIndex.clear()
+    this.eventIdDeduper.reset()
     this.signalPublisher = null
     this.inPageBusy = false
     this.inPageWaiters.length = 0

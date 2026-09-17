@@ -4,6 +4,7 @@ import { ref } from "vue"
 import { listApprovals } from "../api/approvals"
 import { usePolling } from "../composables/usePolling"
 
+// 与 views/ApprovalView.vue 的列表轮询间隔同值（30s）；调整需双向同步两处。
 const POLL_INTERVAL_MS = 30_000
 
 export const useApprovalBadgeStore = defineStore("approvalBadge", () => {

@@ -23,10 +23,17 @@ import {
   rescheduleBatch,
   type BatchItem,
 } from "../api/queries"
-import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE, CATEGORY_OPTIONS, MESSAGE_STATUS_OPTIONS } from "../lib/labels"
+import {
+  CATEGORY_LABELS,
+  DEFAULT_PAGE_SIZE,
+  STATUS_LABELS,
+  CATEGORY_OPTIONS,
+  MESSAGE_STATUS_OPTIONS,
+} from "../lib/labels"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAction } = useConfirmActions()
-import { formatDateTime, formatDateTimeMinute } from "../lib/time"
+import { formatPercent } from "../lib/format"
+import { formatDateTime, formatDateTimeMinute, toApiDateTime } from "../lib/time"
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
 import { useSessionStore } from "../stores/session"
@@ -57,18 +64,20 @@ const canWrite = computed(() => session.canWrite)
 const canDecrypt = computed(() => session.canDecrypt)
 const isAdmin = computed(() => session.isAdmin)
 
-// 状态分组为前端推导；各组计数来自服务端分面 status_counts（不含状态条件本身）
+// 状态分组为前端推导；各组计数来自服务端分面 status_counts（不含状态条件本身）。
+// 单状态组的中文名直接引用 STATUS_LABELS 单点；「全部 / 进行中 / 其他终态」为多状态聚合组，lib 无对应键，保留局部文案。
 const statusGroups = [
   { key: "all", label: "全部", statuses: [] as string[] },
   { key: "active", label: "进行中", statuses: ["queued", "sending"] },
-  { key: "pending_approval", label: "待审批", statuses: ["pending_approval"] },
-  { key: "scheduled", label: "已排期", statuses: ["scheduled"] },
-  { key: "balance_blocked", label: "余额阻断", statuses: ["balance_blocked"] },
-  { key: "completed", label: "已完成", statuses: ["completed"] },
-  { key: "completed_unknown", label: "完成(含未知)", statuses: ["completed_unknown"] },
+  { key: "pending_approval", label: STATUS_LABELS.pending_approval, statuses: ["pending_approval"] },
+  { key: "scheduled", label: STATUS_LABELS.scheduled, statuses: ["scheduled"] },
+  { key: "balance_blocked", label: STATUS_LABELS.balance_blocked, statuses: ["balance_blocked"] },
+  { key: "completed", label: STATUS_LABELS.completed, statuses: ["completed"] },
+  { key: "completed_unknown", label: STATUS_LABELS.completed_unknown, statuses: ["completed_unknown"] },
   { key: "closed", label: "其他终态", statuses: ["cancelled", "rejected", "expired"] },
 ]
 
+// 渠道映射只保留这一处事实源；下拉选项由它派生。
 const channelLabel: Record<string, string> = { api: "API", web: "Web" }
 const detailStatusOptions = MESSAGE_STATUS_OPTIONS
 const categoryOptions = [{ label: "全部", value: "" }, ...CATEGORY_OPTIONS]
@@ -156,8 +165,8 @@ const currentFiltersKey = computed(() =>
     isTest.value,
     appId.value.trim(),
     isAdmin.value ? dept.value.trim() : "",
-    range.value?.[0]?.toISOString() ?? "",
-    range.value?.[1]?.toISOString() ?? "",
+    range.value?.[0] ? toApiDateTime(range.value[0]) : "",
+    range.value?.[1] ? toApiDateTime(range.value[1]) : "",
   ]),
 )
 const filtersDirty = computed(
@@ -286,7 +295,7 @@ function openReschedule(): void {
 async function saveReschedule(): Promise<void> {
   if (!selected.value || !scheduledAt.value) return
   try {
-    await rescheduleBatch(selected.value.batch_no, new Date(scheduledAt.value).toISOString())
+    await rescheduleBatch(selected.value.batch_no, toApiDateTime(new Date(scheduledAt.value)))
     rescheduleOpen.value = false
     drawer.value = false
     ElMessage.success("批次已改期并重新执行审批判定")
@@ -488,7 +497,7 @@ watch(moreOpen, (open) => {
 
   <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="batch-error" />
   <div class="batch-ledger">
-    <el-table v-loading="loading" :data="items" row-key="batch_no" class="query-table">
+    <el-table v-loading="loading" :data="items" row-key="batch_no" class="query-table" @row-click="openBatch">
       <el-table-column label="批次 / 时间" min-width="248">
         <template #default="{ row }">
           <code class="batch-code">{{ row.batch_no }}</code>
@@ -506,7 +515,7 @@ watch(moreOpen, (open) => {
               type="button"
               class="cell-flag cell-flag--resend"
               :title="`重发自 ${row.resend_of}`"
-              @click="traceResendOf(row.resend_of)"
+              @click.stop="traceResendOf(row.resend_of)"
               >重发自 {{ shortBatchNo(row.resend_of) }} ↗</button
             >
           </div>
@@ -566,7 +575,14 @@ watch(moreOpen, (open) => {
       </el-table-column>
       <el-table-column label="操作" width="92" fixed="right">
         <template #default="{ row }"
-          ><el-button link type="primary" @click="openBatch(row)">查看详情</el-button></template
+          ><el-button
+            link
+            type="primary"
+            :aria-label="`查看批次 ${row.batch_no} 的详情`"
+            @click.stop="openBatch(row)"
+            @keydown.enter.stop.prevent="openBatch(row)"
+            >查看详情</el-button
+          ></template
         >
       </el-table-column>
       <template #empty><EmptyState title="没有符合条件的批次" description="调整筛选条件后重新查询。" /></template>
@@ -661,19 +677,19 @@ watch(moreOpen, (open) => {
           <div
             ><span>待处理</span><b>{{ composeOf(selected).pending.toLocaleString() }}</b
             ><small>{{
-              selected.total > 0 ? ((composeOf(selected).pending / selected.total) * 100).toFixed(1) + "%" : "—"
+              selected.total > 0 ? formatPercent(composeOf(selected).pending / selected.total) : "—"
             }}</small></div
           >
           <div
             ><span>待回执</span><b>{{ composeOf(selected).sent.toLocaleString() }}</b
             ><small>{{
-              selected.total > 0 ? ((composeOf(selected).sent / selected.total) * 100).toFixed(1) + "%" : "—"
+              selected.total > 0 ? formatPercent(composeOf(selected).sent / selected.total) : "—"
             }}</small></div
           >
           <div
             ><span>送达</span><b>{{ composeOf(selected).delivered.toLocaleString() }}</b
             ><small>{{
-              selected.total > 0 ? ((composeOf(selected).delivered / selected.total) * 100).toFixed(1) + "%" : "—"
+              selected.total > 0 ? formatPercent(composeOf(selected).delivered / selected.total) : "—"
             }}</small></div
           >
           <div
@@ -682,19 +698,19 @@ watch(moreOpen, (open) => {
               composeOf(selected).failed.toLocaleString()
             }}</b
             ><small>{{
-              selected.total > 0 ? ((composeOf(selected).failed / selected.total) * 100).toFixed(1) + "%" : "—"
+              selected.total > 0 ? formatPercent(composeOf(selected).failed / selected.total) : "—"
             }}</small></div
           >
           <div
             ><span>未知</span><b>{{ composeOf(selected).unknown.toLocaleString() }}</b
             ><small>{{
-              selected.total > 0 ? ((composeOf(selected).unknown / selected.total) * 100).toFixed(1) + "%" : "—"
+              selected.total > 0 ? formatPercent(composeOf(selected).unknown / selected.total) : "—"
             }}</small></div
           >
           <div
             ><span>其他</span><b>{{ composeOf(selected).other.toLocaleString() }}</b
             ><small>{{
-              selected.total > 0 ? ((composeOf(selected).other / selected.total) * 100).toFixed(1) + "%" : "—"
+              selected.total > 0 ? formatPercent(composeOf(selected).other / selected.total) : "—"
             }}</small></div
           >
         </div>

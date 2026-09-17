@@ -290,12 +290,14 @@ export function createSessionStore(doc: SessionDocument = defaultSessionDocument
         }
       },
       async changePassword(currentPassword: string, newPassword: string) {
-        if (!this.token || this.providerCode !== "local") {
+        // 直接读 sessionDocument 权威 token：静默刷新回填 Pinia 镜像前不得用旧值。
+        const token = doc.getAccessToken()
+        if (!token || this.providerCode !== "local") {
           throw new Error("仅已登录的本地账号可修改密码")
         }
         const origin = doc.captureOrigin()
         try {
-          await passwordChangeRequest(this.token, currentPassword, newPassword)
+          await passwordChangeRequest(token, currentPassword, newPassword)
         } catch (error) {
           if (error instanceof AuthApiError && error.code === "AUTH_CONTEXT_CHANGED") {
             this.clearIfCurrent(origin.sessionInstanceId, origin.localGeneration)
@@ -307,7 +309,8 @@ export function createSessionStore(doc: SessionDocument = defaultSessionDocument
       },
       async logout(): Promise<SessionLogoutResult> {
         const origin = doc.captureOrigin()
-        const token = this.token
+        // 直接读 sessionDocument 权威 token：sms:session-refreshed 回填前 Pinia 镜像可能过期。
+        const token = doc.getAccessToken()
         let networkError: unknown = null
         try {
           if (token) {

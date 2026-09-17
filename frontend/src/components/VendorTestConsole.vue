@@ -14,12 +14,12 @@ import {
   refreshVendorTestRecipientIndex,
   resetVendorTest,
   resumeVendorTest,
-  VendorRequestError,
   type VendorTestOperation,
   type VendorTestRecipient,
   type VendorTestStatus,
 } from "../api/admin"
 import { listApps, type ManagedApp } from "../api/apps"
+import { ApiRequestError } from "../api/client"
 import PhoneMask from "./PhoneMask.vue"
 import VendorCredentialDialog from "./VendorCredentialDialog.vue"
 import VendorTestRecipientDialog from "./VendorTestRecipientDialog.vue"
@@ -186,7 +186,7 @@ function forgetOperation(): void {
 }
 
 function isGoneOperation(error: unknown): boolean {
-  return error instanceof VendorRequestError && (error.status === 404 || error.status === 410)
+  return error instanceof ApiRequestError && (error.status === 404 || error.status === 410)
 }
 
 function rememberedOperation(): Pick<VendorTestOperation, "operation_id" | "operation_type"> | null {
@@ -857,6 +857,11 @@ onBeforeUnmount(() => {
   </section>
 </template>
 
+<!--
+  本样式块刻意非 scoped：下方的 el-dialog 经 teleport/append-to-body 挂载到 <body>，
+  不在本组件的 scoped DOM 子树内，scoped 选择器无法命中。所有类名均以 vendor- 前缀
+  隔离，避免污染全局命名空间；样式本身仅作用于联调对话框与操作指引。
+-->
 <style>
 .vendor-step-up-dialog {
   max-width: calc(100vw - 32px);

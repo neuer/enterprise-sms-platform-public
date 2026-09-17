@@ -26,6 +26,7 @@ const dashboardSnapshot = {
   categories: [],
   overall_success_rate: 0,
   pending_approvals: 0,
+  trend: [],
   operations: {
     current_balance: 5000,
     balances: [],

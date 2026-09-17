@@ -1,6 +1,7 @@
 import { afterEach, vi } from "vitest"
 
-import { detectSessionMode, hasWebLocks, isSafeSingleTabMode, withRefreshLock } from "../src/api/refreshLock"
+import { detectSessionMode, hasWebLocks, withRefreshLock } from "../src/api/refreshLock"
+import { isSafeSingleTabMode } from "../src/api/sessionMode"
 import {
   beginRefreshTabBinding,
   getRefreshTabBinding,

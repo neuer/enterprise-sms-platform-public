@@ -6,6 +6,7 @@ import { useApprovedResources } from "../composables/useApprovedResources"
 import { renderPreview, splitPreviewParts } from "../lib/templatePreview"
 import FilterSeg from "../components/FilterSeg.vue"
 import type { UploadRequestOptions } from "element-plus"
+import { ElMessage } from "element-plus"
 import { computed, onBeforeUnmount, onMounted, reactive, ref, toRef, watch } from "vue"
 import { useRouter } from "vue-router"
 
@@ -29,7 +30,7 @@ import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { copyText } from "../lib/clipboard"
 import { saveBlob } from "../lib/download"
 import { PHONE_RE } from "../lib/phone"
-import { formatDateTime } from "../lib/time"
+import { formatDateTime, toApiDateTime } from "../lib/time"
 import { errorText } from "../lib/error"
 
 // 测试环境未安装路由时 useRouter 返回 undefined，跳转入口做空值守卫。
@@ -73,9 +74,18 @@ function newIdempotencyKey(): string {
 
 const idempotencyKey = ref(newIdempotencyKey())
 let copiedTimer: number | undefined
-const { items: templates, approved: approvedTemplates, load: loadTemplates } = useApprovedResources(listTemplates)
+const {
+  items: templates,
+  approved: approvedTemplates,
+  load: loadTemplates,
+} = useApprovedResources(listTemplates, (error) => {
+  errorMessage.value = errorText(error, "模板列表加载失败")
+})
 const templateParams = ref<string[]>([])
-const { approved: approvedSigns, load: loadSigns } = useApprovedResources(listSigns)
+// 签名是辅助加载：失败不阻断发送，但必须可见，否则用户只看到空下拉而不知原因。
+const { approved: approvedSigns, load: loadSigns } = useApprovedResources(listSigns, () => {
+  ElMessage.warning("签名列表加载失败，可刷新页面重试；不指定签名时使用应用默认签名")
+})
 const testSendMax = ref<number | null>(null)
 const selectedTemplate = computed(() => templates.value.find((item) => item.id === Number(form.templateId)) || null)
 const renderedTemplate = computed(() => renderPreview(selectedTemplate.value?.content ?? "", templateParams.value))
@@ -150,7 +160,10 @@ const testSendHint = computed(() =>
   testSendMax.value === null ? "号码上限暂不可用" : `≤${testSendMax.value} 个号码 · 豁免营销时间窗 · 其余管控照常`,
 )
 
-const sendStatusLabel = STATUS_LABELS
+/** 批次状态标签取 lib/labels 单点（规则：视图不再维护同名映射），未知值兜底回显原始状态码。 */
+function sendStatusLabel(status: SendResult["status"]): string {
+  return STATUS_LABELS[status] ?? status
+}
 
 function deferredReasonText(reason: string): string {
   if (reason === "market_window") return "超出营销发送时间窗，已转为定时发送"
@@ -158,7 +171,7 @@ function deferredReasonText(reason: string): string {
 }
 
 function sendSuccessText(result: SendResult): string {
-  const parts = [`批次 ${result.batch_no} 已受理，状态：${sendStatusLabel[result.status]}`]
+  const parts = [`批次 ${result.batch_no} 已受理，状态：${sendStatusLabel(result.status)}`]
   if (result.idempotent) parts.push("本次为幂等命中，返回历史批次，未重复发送")
   if (result.deferred_reason) parts.push(deferredReasonText(result.deferred_reason))
   return parts.join("。")
@@ -399,6 +412,7 @@ async function loadUiPolicy(): Promise<void> {
     testSendMax.value = typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null
   } catch {
     testSendMax.value = null
+    ElMessage.warning("测试发送号码上限读取失败，测试发送的号码上限提示暂不可用；正式发送不受影响")
   }
 }
 
@@ -502,7 +516,7 @@ async function submit(): Promise<void> {
     biz_id: idempotencyKey.value,
     ...contentPayload(),
     sign_name: form.signName || undefined,
-    scheduled_at: scheduledAtValue.value ? new Date(scheduledAtValue.value).toISOString() : undefined,
+    scheduled_at: scheduledAtValue.value ? toApiDateTime(new Date(scheduledAtValue.value)) : undefined,
     is_test: form.isTest,
     consent_confirmed: form.consentConfirmed,
     remark: form.remark || undefined,
@@ -962,7 +976,7 @@ onBeforeUnmount(() => {
       </label>
 
       <div v-if="sendResult" class="send-result" data-testid="send-result">
-        <header><i></i>已受理 · {{ sendStatusLabel[sendResult.status] }}</header>
+        <header><i></i>已受理 · {{ sendStatusLabel(sendResult.status) }}</header>
         <div class="batch-row">
           <code>{{ sendResult.batch_no }}</code>
           <button type="button" @click="copyBatchNo" :disabled="busy">{{ copied ? "已复制" : "复制批次号" }}</button>

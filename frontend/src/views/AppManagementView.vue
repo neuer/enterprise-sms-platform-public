@@ -17,7 +17,6 @@ import {
   rotateAppKey,
   rotateCallbackSecret,
   updateApp,
-  type AppCategory,
   type AppPayload,
   type ManagedApp,
 } from "../api/apps"
@@ -30,13 +29,14 @@ import EmptyState from "../components/EmptyState.vue"
 import { copyText } from "../lib/clipboard"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction, captureCurrent } = useConfirmActions()
-import { CATEGORY_LABELS } from "../lib/labels"
+import { formatPercent } from "../lib/format"
+import { CATEGORY_LABELS, type MessageCategory } from "../lib/labels"
 import { formatDateTime, shanghaiDateKey } from "../lib/time"
 import { errorText } from "../lib/error"
 
 type SecretOperation = "create-app" | "rotate-api-key" | "rotate-callback-secret"
 
-const CATEGORY_FILTERS: { label: string; value: AppCategory | "all" }[] = [
+const CATEGORY_FILTERS: { label: string; value: MessageCategory | "all" }[] = [
   { label: "全部", value: "all" },
   ...CATEGORY_OPTIONS,
 ]
@@ -52,7 +52,7 @@ const loading = ref(false)
 const saving = ref(false)
 const errorMessage = ref("")
 const keyword = ref("")
-const categoryFilter = ref<AppCategory | "all">("all")
+const categoryFilter = ref<MessageCategory | "all">("all")
 const statusFilter = ref<"all" | "1" | "0">("all")
 const detailId = ref<number | null>(null)
 const detailOpen = ref(false)
@@ -75,7 +75,7 @@ const usageUnavailable = ref(true)
 const form = reactive({
   name: "",
   dept: "",
-  allowed_categories: ["notice"] as AppCategory[],
+  allowed_categories: ["notice"] as MessageCategory[],
   default_sign: "",
   daily_quota: 0,
   rate_limit_per_min: 60,
@@ -226,7 +226,7 @@ const detailRateText = computed(() => {
   const current = detail.value
   if (!current) return "—"
   const rate = rateOf(current)
-  return rate === null ? "—" : `${(rate * 100).toFixed(1)}%（delivered/(delivered+failed)）`
+  return rate === null ? "—" : `${formatPercent(rate)}（delivered/(delivered+failed)）`
 })
 
 const demoOpen = ref(false)
@@ -456,7 +456,7 @@ async function save(): Promise<void> {
       )
     } else {
       await updateApp(targetId, body)
-      ElMessage.success("应用配置已更新")
+      ElMessage.success("应用配置已更新 · 本次操作已记入审计")
     }
     drawerOpen.value = false
     await load()
@@ -517,7 +517,7 @@ async function revokeKey(item: ManagedApp): Promise<void> {
     return
   try {
     await revokeOldAppKey(item.id)
-    ElMessage.success("旧 Key 已作废")
+    ElMessage.success("旧 Key 已作废 · 本次操作已记入审计")
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "作废失败"))
@@ -569,7 +569,7 @@ async function disable(item: ManagedApp): Promise<void> {
     return
   try {
     await disableApp(item.id)
-    ElMessage.success(`应用 ${item.name} 已停用`)
+    ElMessage.success(`应用 ${item.name} 已停用 · 本次操作已记入审计`)
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "停用失败"))
@@ -612,7 +612,7 @@ async function enable(item: ManagedApp): Promise<void> {
       callback_report_enabled: current.callback_report_enabled,
       status: 1,
     })
-    ElMessage.success(`应用 ${item.name} 已启用`)
+    ElMessage.success(`应用 ${item.name} 已启用 · 本次操作已记入审计`)
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "启用失败"))

@@ -9,7 +9,15 @@ import { ElMessage } from "element-plus"
 
 import { computed, ref, watch } from "vue"
 
-import { listRawLogs, replayRaw, type RawLogItem } from "../../api/ops"
+import {
+  listRawLogs,
+  replayRaw,
+  reevaluateRaw,
+  type RawCaptureState,
+  type RawLogItem,
+  type RawParseState,
+  type RawReplayEligibility,
+} from "../../api/ops"
 
 import { useConfirmActions } from "../../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
@@ -81,6 +89,27 @@ function setRawProcessed(value: "" | "true" | "false"): void {
   reloadFromFirstPage("raw")
 }
 
+const RAW_CAPTURE_META: Record<RawCaptureState, { label: string; tag: "success" | "warning" | "danger" }> = {
+  complete: { label: "完整", tag: "success" },
+  complete_too_large: { label: "超限完整", tag: "warning" },
+  truncated: { label: "截断", tag: "danger" },
+  protocol_invalid: { label: "协议异常", tag: "danger" },
+  unknown_legacy: { label: "未分类历史", tag: "warning" },
+}
+
+const RAW_PARSE_STATE_LABELS: Record<RawParseState, string> = {
+  unattempted: "未尝试",
+  transient_failure: "暂态失败",
+  protocol_invalid: "协议无效",
+  processed: "已处理",
+}
+
+const RAW_ELIGIBILITY_LABELS: Record<RawReplayEligibility, string> = {
+  automatic: "自动",
+  manual: "人工",
+  never: "禁止",
+}
+
 function canReplay(item: RawLogItem): boolean {
   return (
     !item.processed &&
@@ -88,6 +117,16 @@ function canReplay(item: RawLogItem): boolean {
     ["unattempted", "transient_failure"].includes(item.parse_state) &&
     ["automatic", "manual"].includes(item.replay_eligibility)
   )
+}
+
+/** 未知捕获态（未来枚举）兜底：原值回显 + danger，不崩溃。 */
+function captureMeta(state: string): { label: string; tag: "success" | "warning" | "danger" } {
+  return RAW_CAPTURE_META[state as RawCaptureState] ?? { label: state, tag: "danger" }
+}
+
+/** 重评估只重算解析面与重放资格；后端拒绝截断/协议异常/未分类历史捕获态，前端不展示入口。 */
+function canReevaluate(item: RawLogItem): boolean {
+  return !item.processed && (item.capture_state === "complete" || item.capture_state === "complete_too_large")
 }
 
 function replayStatus(item: RawLogItem): string {
@@ -114,6 +153,28 @@ async function replay(item: RawLogItem): Promise<void> {
     await load("raw")
   } catch (error) {
     ElMessage.error(errorText(error, "重放失败"))
+  }
+}
+
+async function reevaluate(item: RawLogItem): Promise<void> {
+  if (!canReevaluate(item)) return
+  if (
+    !(await confirmAuditedAction({
+      title: "确认重评估报文",
+      body: `重评估 raw #${item.id}：按当前 parser 版本重新计算解析面与重放资格，只更新分类事实，不投影业务、不产生重复下发。`,
+      auditNote: "重评估行为与操作人将写入审计日志。",
+      confirmText: "确认重评估",
+    }))
+  )
+    return
+  try {
+    const result = await reevaluateRaw(item.id)
+    ElMessage.success(
+      `重评估完成：解析面 ${RAW_PARSE_STATE_LABELS[result.parse_state]}，重放资格 ${RAW_ELIGIBILITY_LABELS[result.replay_eligibility]} · 本次操作已记入审计`,
+    )
+    await load("raw")
+  } catch (error) {
+    ElMessage.error(errorText(error, "重评估失败"))
   }
 }
 watch(
@@ -174,28 +235,18 @@ watch(
             ></el-table-column
           ><el-table-column label="完整性" width="120"
             ><template #default="{ row }"
-              ><el-tag
-                :type="
-                  row.capture_state === 'complete'
-                    ? 'success'
-                    : row.capture_state === 'complete_too_large'
-                      ? 'warning'
-                      : 'danger'
-                "
-                >{{
-                  row.capture_state === "complete"
-                    ? "完整"
-                    : row.capture_state === "complete_too_large"
-                      ? "超限完整"
-                      : "截断"
-                }}</el-tag
-              ></template
+              ><el-tag :type="captureMeta(row.capture_state).tag">{{
+                captureMeta(row.capture_state).label
+              }}</el-tag></template
             ></el-table-column
           ><el-table-column prop="error" label="错误摘要" min-width="180" /><el-table-column label="时间" width="180"
             ><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column
-          ><el-table-column label="操作" width="90"
+          ><el-table-column label="操作" width="130"
             ><template #default="{ row }"
-              ><el-button v-if="canReplay(row)" link type="danger" @click="replay(row)">重放</el-button></template
+              ><el-button v-if="canReplay(row)" link type="danger" @click="replay(row)">重放</el-button
+              ><el-button v-if="canReevaluate(row)" link type="primary" @click="reevaluate(row)"
+                >重评估</el-button
+              ></template
             ></el-table-column
           ><template #empty><EmptyState :title="rawEmpty.title" :description="rawEmpty.description" /></template
         ></el-table>
@@ -206,15 +257,12 @@ watch(
               ><el-tag :type="item.processed ? 'success' : 'danger'">{{ replayStatus(item) }}</el-tag></header
             ><p
               >{{ item.item_count }} 项 · {{ item.custom_id_count }} customId ·
-              {{
-                item.capture_state === "complete"
-                  ? "完整"
-                  : item.capture_state === "complete_too_large"
-                    ? "超限完整"
-                    : "截断"
-              }}</p
+              {{ captureMeta(item.capture_state).label }}</p
             ><small>{{ item.error || formatDateTime(item.fetched_at) }}</small
-            ><el-button v-if="canReplay(item)" link type="danger" @click="replay(item)">重放</el-button></article
+            ><el-button v-if="canReplay(item)" link type="danger" @click="replay(item)">重放</el-button
+            ><el-button v-if="canReevaluate(item)" link type="primary" @click="reevaluate(item)"
+              >重评估</el-button
+            ></article
           ><EmptyState v-if="!rawLogs.length" :title="rawEmpty.title" :description="rawEmpty.description"
         /></div>
         <ListPagination

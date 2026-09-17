@@ -11,12 +11,12 @@ import { computed, onMounted, ref, watch } from "vue"
 import {
   previewVendorTestUat,
   sendVendorTestUat,
-  VendorRequestError,
   type VendorTestOperation,
   type VendorTestRecipient,
 } from "../api/admin"
 
 import type { ManagedApp } from "../api/apps"
+import { ApiRequestError } from "../api/client"
 
 import { listSigns } from "../api/signs"
 
@@ -31,7 +31,7 @@ const { confirmAction } = useConfirmActions()
 
 import { errorText } from "../lib/error"
 
-import { CATEGORY_LABELS } from "../lib/labels"
+import { CATEGORY_LABELS, type MessageCategory } from "../lib/labels"
 
 const props = defineProps<{
   disabled: boolean
@@ -42,12 +42,11 @@ const props = defineProps<{
 
 const emit = defineEmits<{ operation: [value: VendorTestOperation] }>()
 
-type UatCategory = "verify" | "notice" | "market"
 type UatContentMode = "content" | "template"
 
 const recipientId = ref<number | null>(null)
 const appId = ref<number | null>(null)
-const category = ref<UatCategory>("notice")
+const category = ref<MessageCategory>("notice")
 const contentMode = ref<UatContentMode>("content")
 const content = ref("")
 const { approved: approvedTemplates, load: loadTemplates } = useApprovedResources(listTemplates, () =>
@@ -95,10 +94,9 @@ function clearPendingBizId(): void {
 }
 
 const selectedApp = computed(() => props.apps.find((item) => item.id === appId.value) || null)
-const categories = computed<UatCategory[]>(() => {
-  const allowed = selectedApp.value?.allowed_categories || ["verify", "notice", "market"]
-  return allowed.filter((item): item is UatCategory => ["verify", "notice", "market"].includes(item))
-})
+const categories = computed<MessageCategory[]>(
+  () => selectedApp.value?.allowed_categories || ["verify", "notice", "market"],
+)
 const selectedRecipient = computed(() => props.recipients.find((item) => item.id === recipientId.value) || null)
 const selectedTemplate = computed(() => approvedTemplates.value.find((item) => item.id === templateId.value) || null)
 const renderedTemplate = computed(() => renderPreview(selectedTemplate.value?.content ?? "", templateParams.value))
@@ -215,7 +213,7 @@ async function send(): Promise<void> {
     clearPendingBizId()
     emit("operation", operation)
   } catch (error) {
-    if (error instanceof VendorRequestError && error.status >= 400 && error.status < 500) {
+    if (error instanceof ApiRequestError && error.status >= 400 && error.status < 500) {
       clearPendingBizId()
     }
     ElMessage.error(errorText(error, "真实 UAT 提交失败"))

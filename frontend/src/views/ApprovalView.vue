@@ -30,6 +30,7 @@ import { useApprovalBadgeStore } from "../stores/approvalBadge"
 import { useSessionStore } from "../stores/session"
 
 const REASON_MAX_LENGTH = 256
+// 与 stores/approvalBadge.ts:7 的角标轮询间隔同值（30s）；调整需双向同步两处。
 const POLL_INTERVAL_MS = 30_000
 const TICK_INTERVAL_MS = 1_000
 
@@ -57,6 +58,8 @@ const detail = ref<ApprovalDetail | null>(null)
 const detailLoading = ref(false)
 const decisionReason = ref("")
 
+// 审批域的 pending 对应批次 pending_approval（待审批）；STATUS_LABELS.pending 的「待处理」
+// 是分片/明细态，不可混用，故在此覆盖。
 const statusTabs = statusOptionsOf(["pending", "approved", "rejected", "expired"] as const).map((option) =>
   option.value === "pending" ? { ...option, label: "待审批" } : option,
 )

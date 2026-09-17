@@ -260,6 +260,47 @@ describe("回调任务", () => {
     wrapper.unmount()
   })
 
+  it("行点击与键盘 Enter 打开详情抽屉，手动重推不触发行点击", async () => {
+    const fetch = routeFetch({ total: 1, dead_total: 1, items: [deadTask] })
+    vi.stubGlobal("fetch", fetch)
+
+    const wrapper = mount(CallbackView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+    // 抽屉关闭时不可见
+    expect(wrapper.find(".callback-drawer").isVisible()).toBe(false)
+
+    // 键盘 Enter（焦点在操作列详情按钮时）
+    const detailButton = wrapper.get("[data-testid='callback-detail-9']")
+    expect(detailButton.attributes("aria-label")).toBe("查看回调任务 CB-9 的详情")
+    await detailButton.trigger("keydown.enter")
+    await flushPromises()
+    expect(wrapper.find(".callback-drawer").isVisible()).toBe(true)
+    expect(wrapper.text()).toContain("回调任务详情")
+    wrapper.unmount()
+
+    // 注：jsdom 下 el-drawer 关闭后无法重开（afterLeave 不发 update:modelValue），换全新挂载验证其余路径
+    const remount = mount(CallbackView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    // 手动重推按钮阻止冒泡，不触发行点击开抽屉
+    await remount.get("[data-testid='callback-retry-9']").trigger("click")
+    await flushPromises()
+    expect(remount.find(".callback-drawer").isVisible()).toBe(false)
+
+    // 行点击打开（el-table row-click，ApprovalList 行点击模式的等价实现）
+    await remount.find(".callback-table tbody tr").trigger("click")
+    await flushPromises()
+    expect(remount.find(".callback-drawer").isVisible()).toBe(true)
+    expect(remount.text()).toContain("回调任务详情")
+    remount.unmount()
+  })
+
   it("嵌入运维中心时隐藏页头，dead 总计沉底栏常驻", async () => {
     const fetch = routeFetch({ total: 1, dead_total: 1, items: [deadTask] })
     vi.stubGlobal("fetch", fetch)

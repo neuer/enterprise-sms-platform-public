@@ -3,11 +3,11 @@ import { ElConfigProvider, ElMessage } from "element-plus"
 import zhCn from "element-plus/es/locale/lang/zh-cn"
 import { computed, defineAsyncComponent, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
-import type { UserRole } from "./api/auth"
 import { getBalance } from "./api/dashboard"
 import { usePolling } from "./composables/usePolling"
 import { useLatestRead } from "./composables/useLatestRead"
 import { getTheme, toggleTheme, type ThemeMode } from "./lib/theme"
+import appRouter, { deriveNavigation } from "./router"
 import { useApprovalBadgeStore } from "./stores/approvalBadge"
 import { applyIncomingSessionSignal, redirectToLoginIfCleared, runAppLogout } from "./api/sessionNavigation"
 import { useSessionStore } from "./stores/session"
@@ -39,53 +39,9 @@ const approverRole = computed(() => session.canDecrypt)
 const balanceLabel = computed(() =>
   currentBalance.value === null ? "厂商余额暂无数据" : `厂商余额 ${currentBalance.value.toLocaleString()} 计费条`,
 )
-interface NavigationItem {
-  label: string
-  path: string
-  marker: string
-  roles?: UserRole[]
-}
-
-const navigation: Array<{ group: string; items: NavigationItem[] }> = [
-  {
-    group: "概览",
-    items: [
-      { label: "仪表盘", path: "/dashboard", marker: "总" },
-      { label: "统计报表", path: "/reports", marker: "析" },
-    ],
-  },
-  { group: "发送", items: [{ label: "人工发送", path: "/send", marker: "发", roles: ["operator", "admin"] }] },
-  {
-    group: "治理",
-    items: [
-      { label: "审批中心", path: "/approvals", marker: "审", roles: ["approver", "admin"] },
-      { label: "批次列表", path: "/batches", marker: "批" },
-      { label: "号码搜索", path: "/messages", marker: "迹" },
-      { label: "上行回复", path: "/replies", marker: "回" },
-    ],
-  },
-  {
-    group: "管理",
-    items: [
-      { label: "模板管理", path: "/templates", marker: "模", roles: ["operator", "approver", "admin"] },
-      { label: "签名管理", path: "/signs", marker: "签", roles: ["operator", "approver", "admin"] },
-      { label: "应用管理", path: "/apps", marker: "应", roles: ["admin"] },
-      { label: "黑名单", path: "/blacklist", marker: "黑", roles: ["admin"] },
-      { label: "敏感词", path: "/sensitive-words", marker: "敏", roles: ["admin"] },
-      { label: "用户与角色", path: "/users", marker: "权", roles: ["admin"] },
-      { label: "系统参数", path: "/configs", marker: "参", roles: ["admin"] },
-    ],
-  },
-  {
-    group: "运维",
-    items: [
-      { label: "回调任务", path: "/callbacks", marker: "调", roles: ["admin"] },
-      { label: "运维中心", path: "/ops", marker: "运", roles: ["admin"] },
-      { label: "安全日报", path: "/security-daily", marker: "安", roles: ["admin"] },
-      { label: "审计日志", path: "/audit", marker: "录", roles: ["admin"] },
-    ],
-  },
-]
+// 侧栏导航派生自路由元数据（router/index.ts 的 meta.nav/group/title/roles），
+// 菜单与路由守卫共用单一事实源，新增页面只改路由表。
+const navigation = deriveNavigation(appRouter.options.routes)
 
 const visibleNavigation = computed(() =>
   navigation

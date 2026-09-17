@@ -2,13 +2,11 @@
 
 import type { PlatformUser } from "./auth"
 import { isAccessOnlySessionMode, type SessionMode } from "./sessionMode"
-import { defaultSessionDocument } from "./sessionDocument"
+import { defaultSessionDocument, LEGACY_TOKEN_KEY, LEGACY_USER_KEY, REFRESH_TAB_ID_KEY } from "./sessionDocument"
 import { isSessionInstanceId } from "./sessionSignals"
 
-/** 历史 Web Storage 凭据键（规则 26 一次性迁移 + 清除的唯一事实源）。 */
-export const LEGACY_TOKEN_KEY = "sms_token"
-export const LEGACY_USER_KEY = "sms_user"
-export const REFRESH_TAB_ID_KEY = "sms_refresh_tab_id"
+/** 历史 Web Storage 凭据键定义在 sessionDocument.ts；此处 re-export 保持门面入口不变。 */
+export { LEGACY_TOKEN_KEY, LEGACY_USER_KEY, REFRESH_TAB_ID_KEY }
 const REFRESH_TAB_ID_PATTERN = /^[0-9a-f]{32}$/
 
 function newRefreshTabId(): string {

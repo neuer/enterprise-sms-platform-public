@@ -22,9 +22,9 @@ import {
   type TimelineResult,
 } from "../api/queries"
 import { usePagedList } from "../composables/usePagedList"
-import { CATEGORY_LABELS } from "../lib/labels"
+import { CATEGORY_LABELS, type MessageCategory } from "../lib/labels"
 import { phoneProblem, maskPhone, PHONE_RE } from "../lib/phone"
-import { dateKeyWeekday, formatDateTime } from "../lib/time"
+import { dateKeyWeekday, formatDateTime, shanghaiDateKey } from "../lib/time"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -53,7 +53,9 @@ const statusOptions = MESSAGE_STATUS_OPTIONS
 const groupedEvents = computed(() => {
   const groups = new Map<string, TimelineEvent[]>()
   for (const event of timeline.value?.events || []) {
-    const day = formatDateTime(event.ts).slice(0, 10)
+    // 按上海日历日分组；非法时间戳归入 "—" 组兜底
+    const ts = new Date(event.ts)
+    const day = Number.isNaN(ts.getTime()) ? "—" : shanghaiDateKey(ts)
     const bucket = groups.get(day)
     if (bucket) bucket.push(event)
     else groups.set(day, [event])
@@ -67,7 +69,7 @@ const groupedEvents = computed(() => {
 
 const blacklistSourceLabel = BLACKLIST_SOURCE_LABELS
 
-function isCategory(value: string): value is "verify" | "notice" | "market" {
+function isCategory(value: string): value is MessageCategory {
   return value === "verify" || value === "notice" || value === "market"
 }
 
