@@ -1,13 +1,10 @@
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import type { ExportTask } from "./reports"
+import type { NumberedPage } from "./pagination"
 import { apiRequest } from "./client"
 
-export interface OpsPage<T> {
-  items: T[]
-  total: number
-  page: number
-  page_size: number
-}
+// 与 api/pagination.ts 的 NumberedPage<T> 同形（items/total/page/page_size），别名引用单点。
+export type OpsPage<T> = NumberedPage<T>
 export interface AlertItem {
   id: number
   alert_type: string
@@ -33,7 +30,9 @@ export interface CurrentAlertSnapshot {
   unknown_sources: string[]
   items: CurrentAlertItem[]
 }
-export type RawCaptureState = "complete" | "complete_too_large" | "truncated"
+export type RawCaptureState = "complete" | "complete_too_large" | "truncated" | "protocol_invalid" | "unknown_legacy"
+export type RawParseState = "unattempted" | "transient_failure" | "protocol_invalid" | "processed"
+export type RawReplayEligibility = "automatic" | "manual" | "never"
 export interface RawLogItem {
   id: number
   source: "report" | "reply"
@@ -43,9 +42,28 @@ export interface RawLogItem {
   error: string | null
   fetched_at: string
   capture_state: RawCaptureState
+  parse_state: RawParseState
+  replay_eligibility: RawReplayEligibility
+}
+export interface RawReevaluateResult {
+  parse_state: RawParseState
+  replay_eligibility: RawReplayEligibility
+  reason: string
+  parser_version: number
 }
 export type UncertainResolutionAction =
   "confirm_accepted" | "confirm_not_accepted" | "keep_unknown" | "resend_new_batch"
+export type UncertainResolutionState =
+  | "proposed"
+  | "approved"
+  | "effect_pending"
+  | "applying"
+  | "effect_applied"
+  | "closed"
+  | "approval_rejected"
+  | "retryable_effect_error"
+  | "manual_intervention_required"
+  | "cancelled_before_effect"
 
 export interface UncertainItem {
   chunk_id: number
@@ -57,8 +75,8 @@ export interface UncertainItem {
   age_seconds: number
   status: "uncertain" | "unknown_terminal"
   resolution_id: number | null
-  resolution_action: UncertainResolutionAction | string | null
-  resolution_state: string | null
+  resolution_action: string | null
+  resolution_state: UncertainResolutionState | null
   proposer_account_id: number | null
 }
 export interface UnmatchedItem {
@@ -165,6 +183,9 @@ export function listRawLogs(query: RawLogQuery = {}): Promise<OpsPage<RawLogItem
 export const replayRaw = (id: number) =>
   apiRequest<{ processed_items: number }>(`/admin/raw-logs/${id}/replay`, { method: "POST" })
 
+export const reevaluateRaw = (id: number) =>
+  apiRequest<RawReevaluateResult>(`/admin/raw-logs/${id}/reevaluate`, { method: "POST" })
+
 export function listUncertain(query: PageQuery = {}): Promise<OpsPage<UncertainItem>> {
   return apiRequest<OpsPage<UncertainItem>>(`/admin/chunks/uncertain?${pageParams(query)}`, { method: "GET" })
 }
@@ -173,18 +194,8 @@ export interface UncertainResolutionItem {
   id: number
   chunk_id: number
   batch_id: number
-  action: UncertainResolutionAction | string
-  state:
-    | "proposed"
-    | "approved"
-    | "effect_pending"
-    | "applying"
-    | "effect_applied"
-    | "closed"
-    | "approval_rejected"
-    | "retryable_effect_error"
-    | "manual_intervention_required"
-    | "cancelled_before_effect"
+  action: string
+  state: UncertainResolutionState
   proposer_account_id: number
   confirmer_account_id: number | null
   child_batch_id: number | null

@@ -7,7 +7,7 @@ import { listAuditActions, listAudits, type AuditItem } from "../api/admin"
 import EmptyState from "../components/EmptyState.vue"
 import { copyText } from "../lib/clipboard"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
-import { formatDateTime } from "../lib/time"
+import { formatDateTime, toApiDateTime } from "../lib/time"
 import { errorText } from "../lib/error"
 
 type DiffState = "added" | "removed" | "changed" | "same"
@@ -139,8 +139,8 @@ async function loadActions(): Promise<void> {
 }
 
 function search(): void {
-  filters.start = timeRange.value?.[0].toISOString() || ""
-  filters.end = timeRange.value?.[1].toISOString() || ""
+  filters.start = timeRange.value?.[0] ? toApiDateTime(timeRange.value[0]) : ""
+  filters.end = timeRange.value?.[1] ? toApiDateTime(timeRange.value[1]) : ""
   filters.page = 1
   void load()
 }
@@ -329,7 +329,7 @@ onMounted(() => {
 
   <section class="audit-results">
     <template v-if="items.length || loading">
-      <el-table v-loading="loading" :data="items" row-key="id" class="audit-table"
+      <el-table v-loading="loading" :data="items" row-key="id" class="audit-table" @row-click="detail"
         ><el-table-column label="稳定主体" min-width="150"
           ><template #default="{ row }">{{
             row.actor_account_id
@@ -353,7 +353,14 @@ onMounted(() => {
           ><template #default="{ row }">{{ formatDateTime(row.created_at) }}</template></el-table-column
         ><el-table-column label="操作" width="80"
           ><template #default="{ row }"
-            ><el-button link type="primary" @click="detail(row)">详情</el-button></template
+            ><el-button
+              link
+              type="primary"
+              :aria-label="`查看审计事件 #${row.id} 的详情`"
+              @click.stop="detail(row)"
+              @keydown.enter.stop.prevent="detail(row)"
+              >详情</el-button
+            ></template
           ></el-table-column
         ></el-table
       >

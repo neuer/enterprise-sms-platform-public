@@ -414,7 +414,7 @@ async function generateReport(): Promise<void> {
     await refresh()
     await openReport(report.id)
     if (report.generation_status === "ready") {
-      ElMessage.success("安全日报已重新生成并提交邮件投递 · 本次操作已记入审计")
+      ElMessage.success("安全日报已生成 · 已新增一条记录（不覆盖历史）并提交邮件投递 · 本次操作已记入审计")
     } else {
       ElMessage.warning(`${report.last_error ?? "证据源不可用，已新增记录并发送问题通报"} · 本次操作已记入审计`)
     }

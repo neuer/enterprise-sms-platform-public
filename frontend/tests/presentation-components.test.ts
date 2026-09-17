@@ -151,6 +151,37 @@ describe("共享语义展示组件", () => {
     success.mockRestore()
   })
 
+  it("PhoneReveal 重新隐藏清空明文回到掩码态，可再次授权查看", async () => {
+    const PhoneReveal = (await import("../src/components/PhoneReveal.vue")).default
+    const success = vi.spyOn(ElMessage, "success").mockImplementation(() => ({ close: () => undefined }))
+    const reveal = vi.fn<() => Promise<string>>().mockResolvedValue("13800138000")
+    const wrapper = mount(PhoneReveal, {
+      props: { masked: "138****8000", reveal, testid: "phone-reveal-test" },
+      global: { plugins: [ElementPlus] },
+    })
+
+    await wrapper.get("[data-testid='phone-reveal-test']").trigger("click")
+    await flushPromises()
+    expect(wrapper.get(".revealed-phone").text()).toBe("13800138000")
+
+    await wrapper.get("[data-testid='phone-hide']").trigger("click")
+    await flushPromises()
+
+    // 明文从 DOM 移除，掩码与授权入口恢复；重新隐藏本身不触发解密也不重复记审计提示
+    expect(wrapper.find(".revealed-phone").exists()).toBe(false)
+    expect(wrapper.text()).toContain("138****8000")
+    expect(wrapper.text()).not.toContain("13800138000")
+    expect(reveal).toHaveBeenCalledTimes(1)
+    expect(success).toHaveBeenCalledTimes(1)
+
+    await wrapper.get("[data-testid='phone-reveal-test']").trigger("click")
+    await flushPromises()
+    expect(reveal).toHaveBeenCalledTimes(2)
+    expect(wrapper.get(".revealed-phone").text()).toBe("13800138000")
+    wrapper.unmount()
+    success.mockRestore()
+  })
+
   it("PhoneReveal 解密失败给出错误提示且不展示明文", async () => {
     const PhoneReveal = (await import("../src/components/PhoneReveal.vue")).default
     const error = vi.spyOn(ElMessage, "error").mockImplementation(() => ({ close: () => undefined }))

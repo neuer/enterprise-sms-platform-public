@@ -1,11 +1,13 @@
 import {
   daysAgoDateKey,
+  enumerateDateKeys,
   formatDateTime,
   formatDateTimeMinute,
   formatDurationHms,
   formatHm,
   formatHms,
   shanghaiDateKey,
+  toApiDateTime,
 } from "../src/lib/time"
 
 describe("时间格式化单点（Asia/Shanghai）", () => {
@@ -57,5 +59,28 @@ describe("时间格式化单点（Asia/Shanghai）", () => {
     expect(daysAgoDateKey(1, instant)).toBe("2026-09-04")
     expect(daysAgoDateKey(0, instant)).toBe("2026-09-05")
     expect(daysAgoDateKey(1, new Date("2026-03-01T01:00:00Z"))).toBe("2026-02-28")
+  })
+
+  it("toApiDateTime 输出 ISO8601 +08:00（规则 15 口径），与 UTC Z 表示同一时刻", () => {
+    expect(toApiDateTime(instant)).toBe("2026-09-05T10:03:04+08:00")
+    expect(new Date(toApiDateTime(instant)).getTime()).toBe(instant.getTime())
+    // UTC 跨日时按上海日历进位
+    expect(toApiDateTime(new Date("2026-01-01T17:30:00Z"))).toBe("2026-01-02T01:30:00+08:00")
+  })
+
+  it("enumerateDateKeys 枚举闭区间日期键并对非法输入失败关闭", () => {
+    expect(enumerateDateKeys("2026-02-26", "2026-03-02")).toEqual([
+      "2026-02-26",
+      "2026-02-27",
+      "2026-02-28",
+      "2026-03-01",
+      "2026-03-02",
+    ])
+    expect(enumerateDateKeys("2026-09-05", "2026-09-05")).toEqual(["2026-09-05"])
+    expect(enumerateDateKeys("2026/09/01", "2026-09-05")).toBeNull()
+    expect(enumerateDateKeys("2026-09-05", "2026-09-01")).toBeNull()
+    // 跨度超过上限返回 null，由调用方退化为按数据周期排序
+    expect(enumerateDateKeys("2026-01-01", "2026-12-31")).toBeNull()
+    expect(enumerateDateKeys("2026-01-01", "2026-01-10", 3)).toBeNull()
   })
 })

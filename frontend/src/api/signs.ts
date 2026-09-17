@@ -17,15 +17,15 @@ export const createSign = (name: string) =>
     body: JSON.stringify({ name }),
   })
 export const updateSign = (id: number, name: string) =>
-  apiRequest<SmsSign>("/signs/" + id, {
+  apiRequest<SmsSign>(`/signs/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name }),
   })
-export const deleteSign = (id: number) => apiRequest<void>("/signs/" + id, { method: "DELETE" })
-export const syncSign = (id: number) => apiRequest<void>("/signs/" + id + "/sync", { method: "POST" })
+export const deleteSign = (id: number) => apiRequest<void>(`/signs/${encodeURIComponent(id)}`, { method: "DELETE" })
+export const syncSign = (id: number) => apiRequest<void>(`/signs/${encodeURIComponent(id)}/sync`, { method: "POST" })
 export const adoptExistingSign = (id: number, vendorSignId: number, confirmedName: string) =>
-  apiRequest<void>("/signs/" + id + "/adopt-existing", {
+  apiRequest<void>(`/signs/${encodeURIComponent(id)}/adopt-existing`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ vendor_sign_id: vendorSignId, confirmed_name: confirmedName }),

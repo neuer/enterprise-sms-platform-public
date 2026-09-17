@@ -53,7 +53,7 @@ button:focus-visible {
   overflow-y: auto;
   color: #e9efeb;
   background: var(--ink);
-  border-right: 1px solid #314039;
+  border-right: 1px solid var(--hair);
 }
 
 .brand {
@@ -61,7 +61,7 @@ button:focus-visible {
   gap: 11px;
   align-items: center;
   padding: 2px 8px 20px;
-  border-bottom: 1px solid #34413b;
+  border-bottom: 1px solid var(--hair);
 }
 
 .brand-mark {
@@ -72,7 +72,7 @@ button:focus-visible {
   color: #f0f4ef;
   font-family: var(--serif);
   font-size: 18px;
-  border: 1px solid #68766f;
+  border: 1px solid var(--tx-3);
   border-radius: 50%;
 }
 

@@ -17,9 +17,9 @@ import {
   type TimelineEvent,
   type TimelineResult,
 } from "../api/queries"
-import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE, STATUS_LABELS, toOptions, type MessageCategory } from "../lib/labels"
 import { maskPhone, PHONE_RE } from "../lib/phone"
-import { formatDateTime } from "../lib/time"
+import { formatDateTime, shanghaiDateKey, toApiDateTime } from "../lib/time"
 import { errorText } from "../lib/error"
 import { useSessionStore } from "../stores/session"
 
@@ -51,26 +51,17 @@ const phoneError = computed<string | undefined>(() => {
   return value === "" || PHONE_RE.test(value) ? undefined : "手机号须为 11 位以 1 开头的数字"
 })
 
-const categoryOptions = [
-  { value: "verify", label: "验证码" },
-  { value: "notice", label: "通知" },
-  { value: "market", label: "营销" },
-]
-const statusOptions = [
-  { value: "pending", label: "待处理" },
-  { value: "sent", label: "已提交" },
-  { value: "delivered", label: "已送达" },
-  { value: "failed", label: "失败" },
-  { value: "unknown", label: "未知" },
-  { value: "other", label: "其他" },
-]
+const categoryOptions = toOptions(CATEGORY_LABELS)
+const statusOptions = toOptions(STATUS_LABELS, ["pending", "sent", "delivered", "failed", "unknown", "other"])
 
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"]
 
 const groupedEvents = computed(() => {
   const groups = new Map<string, TimelineEvent[]>()
   for (const event of timeline.value?.events || []) {
-    const day = formatDateTime(event.ts).slice(0, 10)
+    // 按上海日历日分组；非法时间戳归入 "—" 组兜底
+    const ts = new Date(event.ts)
+    const day = Number.isNaN(ts.getTime()) ? "—" : shanghaiDateKey(ts)
     const bucket = groups.get(day)
     if (bucket) bucket.push(event)
     else groups.set(day, [event])
@@ -88,7 +79,7 @@ const blacklistSourceLabel: Record<string, string> = {
   import: "导入",
 }
 
-function isCategory(value: string): value is "verify" | "notice" | "market" {
+function isCategory(value: string): value is MessageCategory {
   return value === "verify" || value === "notice" || value === "market"
 }
 
@@ -108,8 +99,8 @@ async function run(): Promise<void> {
   errorMessage.value = ""
   const queryPhone = searchedPhone.value || phone.value
   try {
-    const start = range.value?.[0].toISOString()
-    const end = range.value?.[1].toISOString()
+    const start = range.value?.[0] ? toApiDateTime(range.value[0]) : undefined
+    const end = range.value?.[1] ? toApiDateTime(range.value[1]) : undefined
     if (mode.value === "list") {
       const result = await searchMessages(queryPhone, {
         start,

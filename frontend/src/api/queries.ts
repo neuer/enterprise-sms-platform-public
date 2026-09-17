@@ -1,9 +1,10 @@
 import { apiRequest, apiRequestAbs } from "./client"
-import { DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { DEFAULT_PAGE_SIZE, type MessageCategory } from "../lib/labels"
+import type { Page } from "./pagination"
 
 export interface BatchItem {
   batch_no: string
-  category: "verify" | "notice" | "market"
+  category: MessageCategory
   channel: "api" | "web"
   app_name: string | null
   creator: string | null
@@ -27,10 +28,8 @@ export interface BatchItem {
   created_at: string
 }
 
-export interface BatchPage {
-  total: number
-  status_counts?: Record<string, number>
-  items: BatchItem[]
+export interface BatchPage extends Page<BatchItem> {
+  status_counts: Record<string, number>
 }
 
 export interface BatchFilters {
@@ -55,10 +54,7 @@ export interface BatchMessage {
   report_time: string | null
 }
 
-export interface BatchMessagePage {
-  total: number
-  items: BatchMessage[]
-}
+export type BatchMessagePage = Page<BatchMessage>
 
 export interface MessageItem {
   id: number
@@ -79,10 +75,8 @@ export interface PhoneBadge {
   recv_30d: number
 }
 
-export interface MessagePage {
-  total: number
+export interface MessagePage extends Page<MessageItem> {
   badge: PhoneBadge
-  items: MessageItem[]
 }
 
 export interface TimelineEvent {

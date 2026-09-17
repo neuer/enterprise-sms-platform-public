@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from "pinia"
 import { createMemoryHistory, createRouter } from "vue-router"
 
-import router, { installAuthGuard, resolveRouteAccess } from "../src/router"
+import router, { deriveNavigation, installAuthGuard, resolveRouteAccess } from "../src/router"
 import { useSessionStore } from "../src/stores/session"
 
 const anonymous = { authenticated: false, role: null } as const
@@ -107,5 +107,52 @@ describe("认证路由判定", () => {
     expect(routes["/apps"].roles).toEqual(["admin"])
     expect(routes["/blacklist"].roles).toEqual(["admin"])
     expect(routes["/sensitive-words"].roles).toEqual(["admin"])
+  })
+
+  it("侧栏导航由路由元数据派生且与原手写菜单逐条一致", () => {
+    // 菜单/守卫单一事实源回归：派生结果必须与原 App.vue 手写数组完全相同
+    expect(deriveNavigation(router.options.routes)).toEqual([
+      {
+        group: "概览",
+        items: [
+          { label: "仪表盘", path: "/dashboard", marker: "总", roles: undefined },
+          { label: "统计报表", path: "/reports", marker: "析", roles: undefined },
+        ],
+      },
+      {
+        group: "发送",
+        items: [{ label: "人工发送", path: "/send", marker: "发", roles: ["operator", "admin"] }],
+      },
+      {
+        group: "治理",
+        items: [
+          { label: "审批中心", path: "/approvals", marker: "审", roles: ["approver", "admin"] },
+          { label: "批次列表", path: "/batches", marker: "批", roles: undefined },
+          { label: "号码搜索", path: "/messages", marker: "迹", roles: undefined },
+          { label: "上行回复", path: "/replies", marker: "回", roles: undefined },
+        ],
+      },
+      {
+        group: "管理",
+        items: [
+          { label: "模板管理", path: "/templates", marker: "模", roles: ["operator", "approver", "admin"] },
+          { label: "签名管理", path: "/signs", marker: "签", roles: ["operator", "approver", "admin"] },
+          { label: "应用管理", path: "/apps", marker: "应", roles: ["admin"] },
+          { label: "黑名单", path: "/blacklist", marker: "黑", roles: ["admin"] },
+          { label: "敏感词", path: "/sensitive-words", marker: "敏", roles: ["admin"] },
+          { label: "用户与角色", path: "/users", marker: "权", roles: ["admin"] },
+          { label: "系统参数", path: "/configs", marker: "参", roles: ["admin"] },
+        ],
+      },
+      {
+        group: "运维",
+        items: [
+          { label: "回调任务", path: "/callbacks", marker: "调", roles: ["admin"] },
+          { label: "运维中心", path: "/ops", marker: "运", roles: ["admin"] },
+          { label: "安全日报", path: "/security-daily", marker: "安", roles: ["admin"] },
+          { label: "审计日志", path: "/audit", marker: "录", roles: ["admin"] },
+        ],
+      },
+    ])
   })
 })

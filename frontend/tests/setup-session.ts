@@ -1,6 +1,5 @@
 import { beforeEach, vi } from "vitest"
 
-import { resetSessionSignals } from "../src/api/sessionSignals"
 import { resetAccessSessionModule } from "../src/api/sessionTokens"
 
 const passthroughLocks = {
@@ -27,6 +26,5 @@ vi.unstubAllGlobals = ((...args: Parameters<typeof vi.unstubAllGlobals>) => {
 
 beforeEach(() => {
   resetAccessSessionModule()
-  resetSessionSignals()
   installTestWebLocks()
 })

@@ -1,4 +1,5 @@
 import { apiRequest } from "./client"
+import type { Page } from "./pagination"
 
 export interface ReplyItem {
   id: number
@@ -9,10 +10,7 @@ export interface ReplyItem {
   blacklisted: boolean
 }
 
-export interface ReplyPage {
-  total: number
-  items: ReplyItem[]
-}
+export type ReplyPage = Page<ReplyItem>
 
 /** 处置口径：all 全部 / pending_optout 退订语未加黑 / blacklisted 已加黑 */
 export type ReplyDisposition = "all" | "pending_optout" | "blacklisted"

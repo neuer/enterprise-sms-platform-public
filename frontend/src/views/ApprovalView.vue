@@ -18,13 +18,14 @@ import { ApiRequestError } from "../api/client"
 import type { Category } from "../api/webMessages"
 import ApprovalList from "../components/ApprovalList.vue"
 import { usePolling } from "../composables/usePolling"
-import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE, STATUS_LABELS } from "../lib/labels"
 import { formatDateTime, formatDurationHms, formatHms } from "../lib/time"
 import { errorText } from "../lib/error"
 import { useApprovalBadgeStore } from "../stores/approvalBadge"
 import { useSessionStore } from "../stores/session"
 
 const REASON_MAX_LENGTH = 256
+// 与 stores/approvalBadge.ts:7 的角标轮询间隔同值（30s）；调整需双向同步两处。
 const POLL_INTERVAL_MS = 30_000
 const TICK_INTERVAL_MS = 1_000
 
@@ -57,11 +58,13 @@ const detail = ref<ApprovalDetail | null>(null)
 const detailLoading = ref(false)
 const decisionReason = ref("")
 
+// 标签取 STATUS_LABELS 单点；审批域的 pending 对应批次 pending_approval（待审批），
+// STATUS_LABELS.pending 的「待处理」是分片/明细态，不可混用。
 const statusTabs: Array<{ value: ApprovalStatus; label: string }> = [
-  { value: "pending", label: "待审批" },
-  { value: "approved", label: "已通过" },
-  { value: "rejected", label: "已驳回" },
-  { value: "expired", label: "已过期" },
+  { value: "pending", label: STATUS_LABELS.pending_approval },
+  { value: "approved", label: STATUS_LABELS.approved },
+  { value: "rejected", label: STATUS_LABELS.rejected },
+  { value: "expired", label: STATUS_LABELS.expired },
 ]
 
 function statusLabel(value: ApprovalStatus): string {

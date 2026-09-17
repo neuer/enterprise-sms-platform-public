@@ -4,30 +4,15 @@ import {
   detectSessionMode,
   hasWebLocks,
   isAccessOnlySessionMode,
-  isSafeSingleTabMode,
-  SAFE_SINGLE_TAB_MESSAGE,
   type SessionMode,
 } from "./sessionMode"
 
-export {
-  ACCESS_ONLY_SESSION_MESSAGE,
-  detectSessionMode,
-  hasWebLocks,
-  isAccessOnlySessionMode,
-  isSafeSingleTabMode,
-  SAFE_SINGLE_TAB_MESSAGE,
-}
+export { ACCESS_ONLY_SESSION_MESSAGE, detectSessionMode, hasWebLocks, isAccessOnlySessionMode }
 export type { SessionMode }
 
-const REFRESH_LOCK_NAME = "sms-refresh-rotation"
-
+/** 与 SessionDocument.withSessionLock 同一把跨标签页锁；无 Web Locks 时退化为本页互斥。 */
 export async function withRefreshLock<T>(run: () => Promise<T>): Promise<T> {
-  const locks = globalThis.navigator?.locks
-  if (locks && typeof locks.request === "function") {
-    return locks.request(REFRESH_LOCK_NAME, run)
-  }
-  // 无 Web Locks 时只做本页串行；与 Store 共用同一 Document 互斥。
-  return defaultSessionDocument.withLocalMutex(run)
+  return defaultSessionDocument.withSessionLock(run)
 }
 
 export const withSessionLock = withRefreshLock

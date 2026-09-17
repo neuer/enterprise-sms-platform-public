@@ -1,4 +1,5 @@
 import { apiRequest } from "./client"
+import type { Page } from "./pagination"
 
 export interface SensitiveWordItem {
   id: number
@@ -6,10 +7,7 @@ export interface SensitiveWordItem {
   created_at: string | null
 }
 
-export interface SensitiveWordPage {
-  total: number
-  items: SensitiveWordItem[]
-}
+export type SensitiveWordPage = Page<SensitiveWordItem>
 
 export interface SensitiveWordFilters {
   keyword: string

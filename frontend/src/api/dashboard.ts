@@ -1,9 +1,8 @@
 import { apiRequest } from "./client"
-
-export type DashboardCategory = "verify" | "notice" | "market"
+import type { MessageCategory } from "../lib/labels"
 
 export interface DashboardCategoryMetric {
-  category: DashboardCategory
+  category: MessageCategory
   total: number
   total_segments: number
   delivered: number
@@ -41,14 +40,14 @@ export interface DashboardChannelMonitor {
   realtime_queue: number | null
   bulk_queue: number | null
   qps_used: number | null
-  qps_rate: number | null
-  reserved_realtime_qps: number | null
+  qps_rate: number
+  reserved_realtime_qps: number
   stale: boolean
   degraded_reason?: "redis_unavailable" | "snapshot_incomplete" | null
 }
 
 export interface DashboardUiPolicy {
-  test_send_max: number | null
+  test_send_max: number
 }
 
 export interface DashboardOperations {
@@ -66,9 +65,9 @@ export interface DashboardSnapshot {
   categories: DashboardCategoryMetric[]
   overall_success_rate: number
   pending_approvals: number
-  trend?: DashboardTrendPoint[]
+  trend: DashboardTrendPoint[]
   ui_policy: DashboardUiPolicy
-  operations?: DashboardOperations
+  operations?: DashboardOperations | null
 }
 
 export async function getDashboard(): Promise<DashboardSnapshot> {

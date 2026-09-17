@@ -103,6 +103,36 @@ export function shanghaiDateKey(date: Date = new Date()): string {
 }
 
 /**
+ * 提交 API 的时刻序列化单点：`YYYY-MM-DDTHH:mm:ss+08:00`（规则 15 的 ISO8601 +08:00 书面口径）。
+ * 与 toISOString() 的 UTC Z 表示同一时刻，仅偏移口径不同；各视图一律改用本 helper。
+ */
+export function toApiDateTime(date: Date): string {
+  const p = partsOf(DATE_TIME, date)
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}+08:00`
+}
+
+/**
+ * 枚举 `YYYY-MM-DD` 日期键闭区间（纯 UTC 日期算术，键本身不作时区解释）。
+ * 非法输入、倒序区间或跨度超过 maxDays 返回 null，由调用方决定兜底。
+ */
+export function enumerateDateKeys(start: string, end: string, maxDays = 62): string[] | null {
+  const startMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(start)
+  const endMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(end)
+  if (!startMatch || !endMatch) return null
+  const first = Date.UTC(Number(startMatch[1]), Number(startMatch[2]) - 1, Number(startMatch[3]))
+  const last = Date.UTC(Number(endMatch[1]), Number(endMatch[2]) - 1, Number(endMatch[3]))
+  if (last < first) return null
+  const days: string[] = []
+  for (let current = first; current <= last && days.length <= maxDays; current += 86_400_000) {
+    const date = new Date(current)
+    days.push(
+      `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`,
+    )
+  }
+  return days.length > maxDays ? null : days
+}
+
+/**
  * 以 Asia/Shanghai 日历为基准往前推 n 天的 `YYYY-MM-DD`。
  * 在「当日 00:00 +08:00」上做 24h 整数倍偏移，避免 setDate/toISOString 的时区错位。
  */

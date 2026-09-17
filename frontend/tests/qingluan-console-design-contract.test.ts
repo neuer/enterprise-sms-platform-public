@@ -47,6 +47,7 @@ describe("青鸾 Console 深色监视台设计契约", () => {
 
   it("外壳呈现交接定义的品牌和五组导航语义", () => {
     const app = source("src/App.vue")
+    const routes = source("src/router/index.ts")
     const login = source("src/views/LoginView.vue")
     const passwordChange = source("src/views/PasswordChangeView.vue")
 
@@ -57,10 +58,12 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     expect(passwordChange).toContain('class="login-mark"')
     expect(passwordChange).toContain("企业短信管理平台")
     expect(app).toContain("SMS PLATFORM · XTC")
-    expect(app).toContain('{ label: "上行回复", path: "/replies"')
-    expect(app).toContain('{ label: "应用管理", path: "/apps"')
+    // 侧栏导航由路由元数据派生（单一事实源），菜单语义断言落在路由表上
+    expect(app).toContain("deriveNavigation")
+    expect(routes).toContain('title: "上行回复", group: "治理", nav: { marker: "回"')
+    expect(routes).toContain('title: "应用管理", group: "管理", roles: ["admin"], nav: { marker: "应"')
     for (const group of ["概览", "发送", "治理", "管理", "运维"]) {
-      expect(app).toContain(`group: "${group}"`)
+      expect(routes).toContain(`group: "${group}"`)
     }
   })
 

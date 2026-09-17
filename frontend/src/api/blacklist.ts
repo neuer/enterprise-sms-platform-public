@@ -1,5 +1,6 @@
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { apiRequest } from "./client"
+import type { Page } from "./pagination"
 
 export type BlacklistSource = "manual" | "reply_optout" | "import"
 
@@ -11,10 +12,7 @@ export interface BlacklistItem {
   created_at: string | null
 }
 
-export interface BlacklistPage {
-  total: number
-  items: BlacklistItem[]
-}
+export type BlacklistPage = Page<BlacklistItem>
 
 export interface BlacklistFilters {
   source: BlacklistSource | ""

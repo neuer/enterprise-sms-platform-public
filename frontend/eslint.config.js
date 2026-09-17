@@ -9,8 +9,14 @@ import tseslint from "typescript-eslint"
 // 各视图禁止的自建实现（单点约定见 AGENTS.md「前端 UI 约定」）；views 块与 src 块
 // 的 no-restricted-syntax 不合并（同名规则后者覆盖前者），views 块需重复列全量。
 const FETCH_SINGLE_POINT = {
-  selector: "CallExpression[callee.name='fetch']",
-  message: "禁止直接调用 fetch：统一走 src/api/client.ts 请求基建（pre-auth 例外为 src/api/auth.ts）。",
+  selector:
+    "CallExpression[callee.name='fetch'], " +
+    "CallExpression[callee.object.name='window'][callee.property.name='fetch'], " +
+    "CallExpression[callee.object.name='globalThis'][callee.property.name='fetch'], " +
+    "CallExpression[callee.object.name='window'][callee.property.value='fetch'], " +
+    "CallExpression[callee.object.name='globalThis'][callee.property.value='fetch']",
+  message:
+    "禁止直接调用 fetch（含 window.fetch / globalThis.fetch）：统一走 src/api/client.ts 请求基建（pre-auth 例外为 src/api/auth.ts）。",
 }
 const ROUTER_SINGLE_POINT = {
   selector: "CallExpression[callee.name='getCurrentInstance']",

@@ -16,6 +16,56 @@ interface SessionAccess {
   role: UserRole | null
 }
 
+/** 侧栏导航项的路由元数据：marker 为单字导航徽标，order 为全局菜单顺序（分组按首现次序）。 */
+export interface RouteNavMeta {
+  marker: string
+  order: number
+}
+
+export interface NavigationItem {
+  label: string
+  path: string
+  marker: string
+  roles?: UserRole[]
+}
+
+export interface NavigationSection {
+  group: string
+  items: NavigationItem[]
+}
+
+/**
+ * 侧栏导航由路由元数据派生（单一事实源）：meta.nav 标记入菜单的路由，
+ * label/group/roles 复用 meta.title/group/roles，与路由守卫永不分叉。
+ */
+export function deriveNavigation(
+  routes: ReadonlyArray<{ path: string; meta?: Record<string, unknown> }>,
+): NavigationSection[] {
+  const entries = routes
+    .filter((route) => route.meta?.nav)
+    .map((route) => ({
+      group: String(route.meta?.group ?? "概览"),
+      order: (route.meta?.nav as RouteNavMeta).order,
+      item: {
+        label: String(route.meta?.title ?? route.path),
+        path: route.path,
+        marker: (route.meta?.nav as RouteNavMeta).marker,
+        roles: Array.isArray(route.meta?.roles) ? (route.meta?.roles as UserRole[]) : undefined,
+      } satisfies NavigationItem,
+    }))
+    .sort((a, b) => a.order - b.order)
+  const sections: NavigationSection[] = []
+  for (const entry of entries) {
+    let section = sections.find((candidate) => candidate.group === entry.group)
+    if (!section) {
+      section = { group: entry.group, items: [] }
+      sections.push(section)
+    }
+    section.items.push(entry.item)
+  }
+  return sections
+}
+
 export function resolveRouteAccess(route: RouteAccess, session: SessionAccess): string | undefined {
   if (route.public) return session.authenticated ? "/dashboard" : undefined
   if (!session.authenticated) return "/login"
@@ -63,109 +113,119 @@ const router = createRouter({
       path: "/dashboard",
       name: "dashboard",
       component: () => import("../views/DashboardView.vue"),
-      meta: { title: "仪表盘" },
+      meta: { title: "仪表盘", group: "概览", nav: { marker: "总", order: 10 } },
     },
     {
       path: "/reports",
       name: "reports",
       component: () => import("../views/ReportView.vue"),
-      meta: { title: "统计报表", group: "概览" },
+      meta: { title: "统计报表", group: "概览", nav: { marker: "析", order: 20 } },
     },
     {
       path: "/users",
       name: "users",
       component: () => import("../views/UserView.vue"),
-      meta: { title: "用户与角色", group: "管理", roles: ["admin"] },
+      meta: { title: "用户与角色", group: "管理", roles: ["admin"], nav: { marker: "权", order: 130 } },
     },
     {
       path: "/configs",
       name: "configs",
       component: () => import("../views/ConfigView.vue"),
-      meta: { title: "系统参数", group: "管理", roles: ["admin"] },
+      meta: { title: "系统参数", group: "管理", roles: ["admin"], nav: { marker: "参", order: 140 } },
     },
     {
       path: "/audit",
       name: "audit",
       component: () => import("../views/AuditView.vue"),
-      meta: { title: "审计日志", group: "运维", roles: ["admin"] },
+      meta: { title: "审计日志", group: "运维", roles: ["admin"], nav: { marker: "录", order: 180 } },
     },
     {
       path: "/send",
       name: "send",
       component: () => import("../views/SendView.vue"),
-      meta: { title: "人工发送", group: "发送", roles: ["operator", "admin"] },
+      meta: { title: "人工发送", group: "发送", roles: ["operator", "admin"], nav: { marker: "发", order: 30 } },
     },
     {
       path: "/approvals",
       name: "approvals",
       component: () => import("../views/ApprovalView.vue"),
-      meta: { title: "审批中心", group: "治理", roles: ["approver", "admin"] },
+      meta: { title: "审批中心", group: "治理", roles: ["approver", "admin"], nav: { marker: "审", order: 40 } },
     },
     {
       path: "/replies",
       name: "replies",
       component: () => import("../views/ReplyView.vue"),
-      meta: { title: "上行回复", group: "治理" },
+      meta: { title: "上行回复", group: "治理", nav: { marker: "回", order: 70 } },
     },
     {
       path: "/batches",
       name: "batches",
       component: () => import("../views/BatchView.vue"),
-      meta: { title: "批次列表", group: "治理" },
+      meta: { title: "批次列表", group: "治理", nav: { marker: "批", order: 50 } },
     },
     {
       path: "/messages",
       name: "messages",
       component: () => import("../views/MessageView.vue"),
-      meta: { title: "号码搜索", group: "治理" },
+      meta: { title: "号码搜索", group: "治理", nav: { marker: "迹", order: 60 } },
     },
     {
       path: "/callbacks",
       name: "callbacks",
       component: () => import("../views/CallbackView.vue"),
-      meta: { title: "回调任务", group: "运维", roles: ["admin"] },
+      meta: { title: "回调任务", group: "运维", roles: ["admin"], nav: { marker: "调", order: 150 } },
     },
     {
       path: "/ops",
       name: "ops",
       component: () => import("../views/OpsView.vue"),
-      meta: { title: "运维中心", group: "运维", roles: ["admin"] },
+      meta: { title: "运维中心", group: "运维", roles: ["admin"], nav: { marker: "运", order: 160 } },
     },
     {
       path: "/security-daily",
       name: "security-daily",
       component: () => import("../views/SecurityDailyView.vue"),
-      meta: { title: "安全日报", group: "运维", roles: ["admin"] },
+      meta: { title: "安全日报", group: "运维", roles: ["admin"], nav: { marker: "安", order: 170 } },
     },
     {
       path: "/templates",
       name: "templates",
       component: () => import("../views/TemplateView.vue"),
-      meta: { title: "模板管理", group: "管理", roles: ["operator", "approver", "admin"] },
+      meta: {
+        title: "模板管理",
+        group: "管理",
+        roles: ["operator", "approver", "admin"],
+        nav: { marker: "模", order: 80 },
+      },
     },
     {
       path: "/signs",
       name: "signs",
       component: () => import("../views/SignView.vue"),
-      meta: { title: "签名管理", group: "管理", roles: ["operator", "approver", "admin"] },
+      meta: {
+        title: "签名管理",
+        group: "管理",
+        roles: ["operator", "approver", "admin"],
+        nav: { marker: "签", order: 90 },
+      },
     },
     {
       path: "/apps",
       name: "apps",
       component: () => import("../views/AppManagementView.vue"),
-      meta: { title: "应用管理", group: "管理", roles: ["admin"] },
+      meta: { title: "应用管理", group: "管理", roles: ["admin"], nav: { marker: "应", order: 100 } },
     },
     {
       path: "/blacklist",
       name: "blacklist",
       component: () => import("../views/BlacklistView.vue"),
-      meta: { title: "黑名单", group: "管理", roles: ["admin"] },
+      meta: { title: "黑名单", group: "管理", roles: ["admin"], nav: { marker: "黑", order: 110 } },
     },
     {
       path: "/sensitive-words",
       name: "sensitive-words",
       component: () => import("../views/SensitiveWordView.vue"),
-      meta: { title: "敏感词", group: "管理", roles: ["admin"] },
+      meta: { title: "敏感词", group: "管理", roles: ["admin"], nav: { marker: "敏", order: 120 } },
     },
     // 未知路径回到仪表盘，避免空白工作区；未登录时由守卫接管重定向到登录页。
     { path: "/:pathMatch(.*)*", redirect: "/dashboard" },

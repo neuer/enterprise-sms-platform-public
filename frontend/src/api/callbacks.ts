@@ -1,5 +1,6 @@
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { apiRequest } from "./client"
+import type { Page } from "./pagination"
 
 export type CallbackStatus = "pending" | "retrying" | "done" | "dead"
 export type CallbackEvent = "batch.finished" | "message.report"
@@ -26,10 +27,8 @@ export interface CallbackTask {
   finished_at: string | null
 }
 
-export interface CallbackPage {
-  total: number
+export interface CallbackPage extends Page<CallbackTask> {
   dead_total: number
-  items: CallbackTask[]
 }
 
 export interface CallbackFilters {

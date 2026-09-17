@@ -278,7 +278,7 @@ onMounted(() => {
 
   <section class="callback-results">
     <template v-if="items.length || loading">
-      <el-table v-loading="loading" :data="items" row-key="id" class="callback-table">
+      <el-table v-loading="loading" :data="items" row-key="id" class="callback-table" @row-click="openDetail">
         <el-table-column label="任务 / 应用" min-width="168">
           <template #default="{ row }">
             <strong>{{ row.app_name }}</strong>
@@ -323,7 +323,13 @@ onMounted(() => {
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
-            <el-button :data-testid="`callback-detail-${row.id}`" link type="primary" @click="openDetail(row)"
+            <el-button
+              :data-testid="`callback-detail-${row.id}`"
+              link
+              type="primary"
+              :aria-label="`查看回调任务 CB-${row.id} 的详情`"
+              @click.stop="openDetail(row)"
+              @keydown.enter.stop.prevent="openDetail(row)"
               >详情</el-button
             >
             <el-button
@@ -332,7 +338,7 @@ onMounted(() => {
               link
               type="danger"
               :loading="retryingId === row.id"
-              @click="retry(row)"
+              @click.stop="retry(row)"
               >手动重推</el-button
             >
           </template>

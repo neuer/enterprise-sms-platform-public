@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ElMessage } from "element-plus"
-import { ref } from "vue"
+import { onBeforeUnmount, ref } from "vue"
 
 import PhoneMask from "./PhoneMask.vue"
 import { errorText } from "../lib/error"
 
-/** 授权查看手机号：默认掩码 + 「授权查看」，解密成功后内联展示明文；明文只存组件内存，不持久化。 */
+/** 授权查看手机号：默认掩码 + 「授权查看」，解密成功后内联展示明文；明文只存组件内存（可「重新隐藏」清空，卸载时自动清空），不持久化。 */
 const props = defineProps<{
   /** 掩码号码（phone_mask），解密前的展示值。 */
   masked: string
@@ -36,11 +36,24 @@ async function onReveal(): Promise<void> {
     revealing.value = false
   }
 }
+
+/** 清空内存明文回到掩码态；不解密、不再记审计（审计只发生在 reveal 侧）。 */
+function onHide(): void {
+  revealedPhone.value = ""
+}
+
+// 组件卸载前显式清空明文引用，避免明文滞留于已卸载组件的内存快照。
+onBeforeUnmount(() => {
+  revealedPhone.value = ""
+})
 </script>
 
 <template>
   <span class="phone-reveal">
-    <strong v-if="revealedPhone" class="revealed-phone">{{ revealedPhone }}</strong>
+    <template v-if="revealedPhone">
+      <strong class="revealed-phone">{{ revealedPhone }}</strong>
+      <el-button link type="primary" data-testid="phone-hide" @click="onHide">重新隐藏</el-button>
+    </template>
     <template v-else>
       <PhoneMask :value="masked" />
       <el-button link type="primary" :loading="revealing" :data-testid="testid" @click="onReveal">授权查看</el-button>

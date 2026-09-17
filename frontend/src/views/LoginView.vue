@@ -27,13 +27,11 @@ const PROVIDER_CATALOG = [
   {
     code: "local",
     name: "本地账号",
-    description: "管理员维护的平台内置账号",
     offHint: "本地账号尚未开通",
   },
   {
     code: "ad",
     name: "AD 账号",
-    description: "通过企业目录验证身份",
     offHint: "企业目录尚未开通",
   },
 ] as const
@@ -46,7 +44,6 @@ const catalog = computed(() => {
       code: item.code,
       name: live?.name ?? item.name,
       enabled: live !== undefined,
-      description: item.description,
       offHint: item.offHint,
     }
   })

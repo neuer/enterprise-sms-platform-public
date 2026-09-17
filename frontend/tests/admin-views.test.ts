@@ -500,6 +500,50 @@ describe("审计与系统参数", () => {
     vi.unstubAllGlobals()
   })
 
+  it("审计行点击与键盘 Enter 打开详情抽屉，时间范围按 ISO8601 +08:00 提交", async () => {
+    const fetch = auditFetch()
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AuditView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+    // 抽屉关闭时不可见
+    expect(wrapper.find(".audit-drawer").isVisible()).toBe(false)
+
+    // 键盘 Enter（焦点在操作列详情按钮时）
+    const detailButton = wrapper.findAll("button").find((button) => button.text() === "详情")!
+    expect(detailButton.attributes("aria-label")).toBe("查看审计事件 #9 的详情")
+    await detailButton.trigger("keydown.enter")
+    await flushPromises()
+    expect(wrapper.find(".audit-drawer").isVisible()).toBe(true)
+    expect(document.body.textContent).toContain("审计事件详情")
+
+    const picker = wrapper.findComponent({ name: "ElDatePicker" })
+    picker.vm.$emit("update:modelValue", [new Date("2026-07-12T00:00:00+08:00"), new Date("2026-07-12T23:59:00+08:00")])
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("查询"))!
+      .trigger("click")
+    await flushPromises()
+    expect(lastAuditQuery(fetch)).toContain("start=2026-07-12T00%3A00%3A00%2B08%3A00")
+    expect(lastAuditQuery(fetch)).toContain("end=2026-07-12T23%3A59%3A00%2B08%3A00")
+    wrapper.unmount()
+
+    // 注：jsdom 下 el-drawer 关闭后无法重开（afterLeave 不发 update:modelValue），换全新挂载验证行点击
+    const remount = mount(AuditView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+    // 行点击打开（el-table row-click，ApprovalList 行点击模式的等价实现）
+    await remount.find(".audit-table tbody tr").trigger("click")
+    await flushPromises()
+    expect(remount.find(".audit-drawer").isVisible()).toBe(true)
+    remount.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("审计空态区分暂无事件与筛选无结果", async () => {
     const fetch = vi.fn().mockImplementation((url: string) => {
       if (String(url).includes("/admin/audit-logs/actions")) return Promise.resolve(response([]))

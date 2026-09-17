@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { CATEGORY_LABELS } from "../lib/labels"
+import { CATEGORY_LABELS, type MessageCategory } from "../lib/labels"
 
-defineProps<{ category: "verify" | "notice" | "market" }>()
+defineProps<{ category: MessageCategory }>()
 </script>
 
 <template>

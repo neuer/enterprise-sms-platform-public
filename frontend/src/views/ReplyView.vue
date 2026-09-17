@@ -10,7 +10,7 @@ import { confirmAction } from "../lib/confirm"
 import { errorText } from "../lib/error"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
-import { formatDateTime } from "../lib/time"
+import { formatDateTime, toApiDateTime } from "../lib/time"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -67,8 +67,8 @@ async function load(): Promise<void> {
   try {
     const result = await listReplies({
       phone: phone.value.trim() || undefined,
-      start: range.value?.[0].toISOString(),
-      end: range.value?.[1].toISOString(),
+      start: range.value?.[0] ? toApiDateTime(range.value[0]) : undefined,
+      end: range.value?.[1] ? toApiDateTime(range.value[1]) : undefined,
       disposition: disposition.value,
       page: page.value,
     })

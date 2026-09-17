@@ -17,6 +17,7 @@ import ReportTrendChart from "../components/ReportTrendChart.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { useExportTask } from "../composables/useExportTask"
 import { CHART_DIM_VARS } from "../lib/chartTheme"
+import { formatPercent } from "../lib/format"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { reportTrendDims } from "../lib/reportTrend"
 import { daysAgoDateKey, shanghaiDateKey } from "../lib/time"
@@ -165,8 +166,9 @@ function reportRowKey(row: ReportRow): string {
   return `${row.period_start}-${row.dim_value}`
 }
 
+/** 成功率展示换算（ratio→百分比文本）走 lib/format 单点；口径仍只用服务端 success_rate。 */
 function formatRate(rate: number): string {
-  return `${(rate * 100).toFixed(1)}%`
+  return formatPercent(rate)
 }
 
 /** 成功率芯片着色阈值（≥98 绿 / 95–98 黄 / <95 红）：纯展示逻辑，口径仍来自服务端。 */
@@ -179,8 +181,8 @@ function rateClass(rate: number): string {
 /** 构成占比（加法 + 除法，非成功率口径）。 */
 function shareOf(value: number): string {
   const total = result.value?.summary.total ?? 0
-  if (total === 0) return "0.0%"
-  return `${((value / total) * 100).toFixed(1)}%`
+  if (total === 0) return formatPercent(0)
+  return formatPercent(value / total)
 }
 
 function composeWidth(value: number): string {
@@ -483,7 +485,8 @@ onMounted(() => void load())
           ></el-table-column
         >
       </el-table>
-      <div v-if="result.items.length > pageSize" class="report-pager">
+      <!-- 分页常驻（§7.8e/8f 同型限制已退役）：空结果时分页器以 0 总数正常展示 -->
+      <div class="report-pager">
         <el-pagination
           layout="prev, pager, next"
           :total="result.items.length"
