@@ -90,8 +90,7 @@ describe("签名管理", () => {
     // 已拒绝行内直接显示驳回原因
     expect(table.text()).toContain("签名与已有品牌近似")
     expect(wrapper.find(".status-tag--pending").exists()).toBe(true)
-    expect(wrapper.find(".sign-mobile-list").exists()).toBe(true)
-    expect(wrapper.get("[data-testid='mobile-sign-detail-2']").attributes("aria-label")).toContain("青鸾平台")
+    expect(wrapper.find(".sign-mobile-list").exists()).toBe(false)
     vi.unstubAllGlobals()
   })
 
@@ -105,7 +104,7 @@ describe("签名管理", () => {
     expect(wrapper.get(".sign-table").text()).toContain("提交厂商中…")
     expect(wrapper.find("[data-testid='sign-sync-9']").exists()).toBe(false)
     expect(wrapper.find("[data-testid='sign-adopt-9']").exists()).toBe(true)
-    expect(wrapper.find("[data-testid='mobile-sign-adopt-9']").exists()).toBe(true)
+    expect(wrapper.find("[data-testid='mobile-sign-adopt-9']").exists()).toBe(false)
     expect(wrapper.find("[data-testid='sign-delete-9']").exists()).toBe(true)
     expect(wrapper.find("[data-testid='sign-adopt-1']").exists()).toBe(false)
     expect(wrapper.find("[data-testid='sign-adopt-2']").exists()).toBe(false)
@@ -228,7 +227,7 @@ describe("签名管理", () => {
     const actionCell = wrapper.get(".sign-table .el-table__row td:last-child")
     expect(actionCell.text()).toContain("不可编辑/删除")
     expect(actionCell.get(".muted").attributes("title")).toContain("已通过审核")
-    expect(wrapper.get(".sign-mobile-list article footer").text()).toContain("不可编辑/删除")
+    expect(wrapper.find(".sign-mobile-list").exists()).toBe(false)
     vi.unstubAllGlobals()
   })
 

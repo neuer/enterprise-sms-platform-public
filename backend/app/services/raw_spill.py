@@ -129,16 +129,16 @@ HANDOFF_QUARANTINE_SUFFIX = ".quarantine"
 SHANGHAI_TIMEZONE = ZoneInfo("Asia/Shanghai")
 RESERVATION_KEYS = frozenset({"created_at", "lease_id", "reserved_bytes", "source"})
 STREAM_FILE_NAME = re.compile(
-    r"^(?P<source>report|reply)-(?P<stream_id>[0-9a-f]{32})\.stream(?:\.tmp)?$"
+    r"^(?P<source>report|reply)-(?P<stream_id>[0-9a-f]{32})\.stream(?:\.stream|\.tmp)?$"
 )
 ACTIVITY_FILE_NAME = re.compile(
-    r"^(?:report|reply)-[0-9a-f]{32}\.stream(?:\.tmp)?$"
+    r"^(?:report|reply)-[0-9a-f]{32}\.stream(?:\.stream|\.tmp)?$"
     r"|^(?:report|reply)-[0-9a-f]{32}\.spill(?:\.tmp)?$"
     r"|^(?:report|reply)-[0-9a-f]{64}\.spill(?:\.tmp)?$"
 )
 STREAM_UNIT_NAME = re.compile(
     r"^(?P<source>report|reply)-(?P<stream_id>[0-9a-f]{32})\."
-    r"(?:stream(?:\.tmp)?(?:\.hdr)?|reserve|quarantine|headerq)(?:\.tmp)?$"
+    r"(?:stream(?:\.stream|\.tmp)?(?:\.hdr)?|reserve|quarantine|headerq)(?:\.tmp)?$"
 )
 SPILL_FILE_NAME = re.compile(
     r"^(?P<source>report|reply)-(?P<token>[0-9a-f]{32}|[0-9a-f]{64})\.spill(?:\.tmp)?$"
@@ -913,7 +913,7 @@ class RawSpillStore:
         return self.directory / f"{source}-{stream_id}.stream.tmp"
 
     def _stream_path(self, source: str, stream_id: str) -> Path:
-        return self._stream_tmp(source, stream_id).with_suffix(".stream")
+        return self._stream_tmp(source, stream_id).with_suffix("")
 
     def _quarantine_path(self, source: str, stream_id: str) -> Path:
         return self.directory / f"{source}-{stream_id}.quarantine"
@@ -1410,6 +1410,8 @@ class RawSpillStore:
                 {
                     record.path.name,
                     f"{record.source}-{record.lease_id}.stream",
+                    f"{record.source}-{record.lease_id}.stream.stream",
+                    f"{record.source}-{record.lease_id}.stream.stream.hdr",
                     f"{record.source}-{record.lease_id}.stream.tmp",
                     f"{record.source}-{record.lease_id}.stream.tmp.hdr",
                     f"{record.source}-{record.lease_id}.stream.hdr",
@@ -1453,6 +1455,9 @@ class RawSpillStore:
         final = self._stream_path(source, stream_id)
         final.unlink(missing_ok=True)
         final.with_name(final.name + ".hdr").unlink(missing_ok=True)
+        legacy = final.with_name(final.name + ".stream")
+        legacy.unlink(missing_ok=True)
+        legacy.with_name(legacy.name + ".hdr").unlink(missing_ok=True)
         quarantine = self._quarantine_path(source, stream_id)
         quarantine.unlink(missing_ok=True)
         quarantine.with_name(quarantine.name + ".tmp").unlink(missing_ok=True)
@@ -2121,9 +2126,11 @@ class RawSpillStore:
                 continue
             seen.add(key)
             source, stream_id = key
-            stream_exists = self._stream_tmp(source, stream_id).exists() or self._stream_path(
-                source, stream_id
-            ).exists()
+            stream_exists = (
+                self._stream_tmp(source, stream_id).exists()
+                or self._stream_path(source, stream_id).exists()
+                or self._stream_path(source, stream_id).with_suffix(".stream.stream").exists()
+            )
             if stream_exists:
                 continue
             quarantine = self._quarantine_path(source, stream_id)
@@ -2561,7 +2568,8 @@ class RawSpillStore:
             key_version = int(header["key_version"])
             expected_tmp = self._stream_tmp(source, stream_id)
             expected_final = self._stream_path(source, stream_id)
-            if path not in {expected_tmp, expected_final}:
+            legacy_final = expected_final.with_suffix(".stream.stream")
+            if path not in {expected_tmp, expected_final, legacy_final}:
                 parsed = parse_spill_filename(path.name)
                 if (
                     parsed is None
@@ -3263,6 +3271,9 @@ class RawSpillStore:
         tmp.with_name(tmp.name + ".hdr").unlink(missing_ok=True)
         final = self._stream_path(source, stream_id)
         final.with_name(final.name + ".hdr").unlink(missing_ok=True)
+        legacy = final.with_name(final.name + ".stream")
+        legacy.unlink(missing_ok=True)
+        legacy.with_name(legacy.name + ".hdr").unlink(missing_ok=True)
         reserve = self._reservation_path(source, stream_id)
         reserve.unlink(missing_ok=True)
         reserve.with_name(reserve.name + ".tmp").unlink(missing_ok=True)

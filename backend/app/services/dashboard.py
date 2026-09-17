@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Literal, Protocol
 
 from app.core.jobtrack import JobSpec
-from app.services.current_alerts import CurrentAlertSnapshot
+from app.services.current_alerts import CurrentAlertRead, DatabaseCurrentFacts
 from app.services.stats import SHANGHAI, success_rate
 
 Category = Literal["verify", "notice", "market"]
@@ -49,6 +49,12 @@ class TrendDay:
 class BalancePoint:
     stat_date: date
     balance: int
+
+
+@dataclass(frozen=True, slots=True)
+class BalanceSnapshot:
+    current_balance: int | None
+    checked_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,11 +160,14 @@ class DashboardRepository(Protocol):
         today: date,
         *,
         include_operations: bool,
+        current_facts: DatabaseCurrentFacts | None = None,
+        include_legacy_alerts: bool = True,
+        job_specs: tuple[JobSpec, ...] = (),
     ) -> DashboardFacts: ...
 
 
 class CurrentAlertReader(Protocol):
-    async def get(self) -> CurrentAlertSnapshot: ...
+    async def read(self) -> CurrentAlertRead: ...
 
 
 class DashboardService:
@@ -182,10 +191,18 @@ class DashboardService:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("dashboard clock must be timezone-aware")
         today = now.astimezone(SHANGHAI).date()
+        current = (
+            await self.current_alerts.read()
+            if role == "admin" and self.current_alerts is not None
+            else None
+        )
         facts = await self.repository.load(
             None if role in {"approver", "admin"} else dept,
             today,
             include_operations=role == "admin",
+            current_facts=current.database if current is not None else None,
+            include_legacy_alerts=current is None,
+            job_specs=self.job_specs,
         )
         totals = {item.category: item for item in facts.categories}
         categories: list[CategoryMetric] = []
@@ -221,15 +238,14 @@ class DashboardService:
         operations: DashboardOperations | None = None
         if operation_facts is not None:
             alert_summaries = operation_facts.alerts
-            if self.current_alerts is not None:
-                current = await self.current_alerts.get()
+            if current is not None:
                 alert_summaries = tuple(
                     AlertSummary(item.level, item.title, item.checked_at)
-                    for item in current.items[:5]
+                    for item in current.snapshot.items[:5]
                 )
-                if not current.complete:
+                if not current.snapshot.complete:
                     alert_summaries = (
-                        AlertSummary("warn", "当前告警状态不完整", current.refreshed_at),
+                        AlertSummary("warn", "当前告警状态不完整", current.snapshot.refreshed_at),
                         *alert_summaries[:4],
                     )
             latest = {item.job_name: item for item in operation_facts.jobs}

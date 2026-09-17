@@ -1,7 +1,8 @@
-FROM postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777 AS prepared
+FROM postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 AS prepared
 
 RUN apk add --no-cache --upgrade \
       libcrypto3=3.5.8-r0 \
+      libuuid=2.42.3-r1 \
       libssl3=3.5.8-r0 \
       su-exec=0.3-r0 \
     && rm /usr/local/bin/gosu \
@@ -18,7 +19,7 @@ COPY --from=prepared / /
 ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
     LANG=en_US.utf8 \
     PG_MAJOR=16 \
-    PG_VERSION=16.14
+    PG_VERSION=16.15
 LABEL org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.revision="${GIT_SHA}" \
       com.sms-platform.schema-revision="${SCHEMA_REVISION}"

@@ -87,10 +87,7 @@ async def test_concurrent_scrapes_share_one_bounded_snapshot_refresh() -> None:
     snapshots = await asyncio.gather(*(service.collect() for _ in range(10)))
 
     assert repository.calls == 1
-    assert all(
-        snapshot.queue_depths == (("realtime", 3), ("bulk", 9))
-        for snapshot in snapshots
-    )
+    assert all(snapshot.queue_depths == (("realtime", 3), ("bulk", 9)) for snapshot in snapshots)
 
 
 @pytest.mark.asyncio
@@ -137,6 +134,7 @@ def test_render_exposes_fixed_low_cardinality_metrics_and_zero_categories() -> N
                     ),
                 ),
                 123_456,
+                process_instance="test",
             ),
         )
     ).decode()
@@ -158,8 +156,7 @@ def test_render_exposes_fixed_low_cardinality_metrics_and_zero_categories() -> N
     assert "sms_uncertain_chunks 4.0" in body
     assert (
         'sms_uncertain_effect{action="resend_new_batch",result="applied",'
-        'source_channel="web"} 0.0'
-        in body
+        'source_channel="web"} 0.0' in body
     )
     assert 'sms_uncertain_effect_usage_subject_error{kind="other"} 0.0' in body
     assert "sms_uncertain_effect_oldest_pending_seconds 0.0" in body
@@ -175,28 +172,70 @@ def test_render_exposes_fixed_low_cardinality_metrics_and_zero_categories() -> N
     assert 'sms_poll_lag_seconds{source="report"} 12.5' in body
     assert 'sms_poll_lag_seconds{source="reply"}' not in body
     assert 'sms_worker_stalled_leases{task_kind="callback"} 2.0' in body
-    assert (
-        'sms_worker_lease_events{event="fencing_miss",task_kind="callback"} 3.0'
-        in body
-    )
+    assert 'sms_worker_lease_events{event="fencing_miss",task_kind="callback"} 3.0' in body
     assert 'sms_worker_lease_events{event="other",task_kind="other"} 5.0' in body
     assert 'sms_raw_replay_eligibility{eligibility="automatic"} 2.0' in body
     assert 'sms_raw_replay_eligibility{eligibility="manual"} 3.0' in body
     assert 'sms_raw_replay_eligibility{eligibility="never"} 5.0' in body
-    assert "sms_runtime_process_resident_memory_bytes 123456.0" in body
-    assert "sms_runtime_event_loop_delay_seconds 0.025" in body
-    assert 'sms_runtime_database_connections{state="open"} 8.0' in body
-    assert 'sms_runtime_database_connections{state="checked_out"} 3.0' in body
+    assert 'sms_runtime_process_resident_memory_bytes{process_instance="test"} 123456.0' in body
+    assert 'sms_runtime_event_loop_delay_seconds{process_instance="test"} 0.025' in body
+    assert 'sms_runtime_database_connections{process_instance="test",state="open"} 8.0' in body
     assert (
-        'sms_database_pool_connections{component="api",state="open"} 8.0'
+        'sms_runtime_database_connections{process_instance="test",state="checked_out"} 3.0' in body
+    )
+    assert (
+        'sms_database_pool_connections{component="api",process_instance="test",state="open"} 8.0'
         in body
     )
-    assert 'sms_database_pool_budget{component="api"} 10.0' in body
-    assert 'sms_database_pool_acquisitions_total{component="api"} 42.0' in body
-    assert 'sms_database_pool_wait_seconds_total{component="api"} 1.25' in body
-    assert 'sms_database_pool_timeouts_total{component="api"} 2.0' in body
-    assert 'sms_database_pool_leaked_connections_total{component="api"} 1.0' in body
-    assert 'sms_runtime_redis_connections{state="open"} 5.0' in body
-    assert 'sms_runtime_redis_connections{state="in_use"} 2.0' in body
+    assert 'sms_database_pool_budget{component="api",process_instance="test"} 10.0' in body
+    assert (
+        'sms_database_pool_acquisitions_total{component="api",process_instance="test"} 42.0' in body
+    )
+    assert (
+        'sms_database_pool_wait_seconds_total{component="api",process_instance="test"} 1.25' in body
+    )
+    assert 'sms_database_pool_timeouts_total{component="api",process_instance="test"} 2.0' in body
+    assert (
+        'sms_database_pool_leaked_connections_total{component="api",process_instance="test"} 1.0'
+        in body
+    )
+    assert 'sms_runtime_redis_connections{process_instance="test",state="open"} 5.0' in body
+    assert 'sms_runtime_redis_connections{process_instance="test",state="in_use"} 2.0' in body
     assert "phone" not in body.casefold()
     assert "content" not in body.casefold()
+
+
+@pytest.mark.asyncio
+async def test_database_cache_does_not_cache_runtime_samples() -> None:
+    from app.core.runtime_telemetry import EventLoopDelayMonitor
+
+    monitor = EventLoopDelayMonitor()
+    repository = FakeRepository(sample_facts())
+    service = MetricsService(repository, runtime=monitor.snapshot, clock=lambda: 1.0)
+    monitor.record_delay(0.8)
+    first = await service.collect()
+    monitor.record_delay(0.002)
+    second = await service.collect()
+    assert repository.calls == 1
+    assert first.runtime is not None and second.runtime is not None
+    assert first.runtime.event_loop_delay_seconds == 0.8
+    assert second.runtime.event_loop_delay_seconds == 0.002
+    assert second.runtime.event_loop_delay_peak_seconds == 0.8
+
+
+def test_two_process_snapshots_have_distinct_runtime_series() -> None:
+    resources = RuntimeResourceSnapshot(1, 0, 1, 0)
+    bodies = [
+        render_prometheus(
+            MetricsSnapshot(
+                queue_depths=(),
+                facts=sample_facts(),
+                runtime=RuntimeTelemetrySnapshot(0.01, resources, process_instance=identity),
+            )
+        ).decode()
+        for identity in ("process-a", "process-b")
+    ]
+    assert 'process_instance="process-a"' in bodies[0]
+    assert 'process_instance="process-b"' not in bodies[0]
+    assert 'process_instance="process-b"' in bodies[1]
+    assert "sms_runtime_event_loop_delay_seconds 0.01" not in bodies[0]

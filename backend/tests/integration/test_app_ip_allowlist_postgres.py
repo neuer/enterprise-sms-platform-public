@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.apikey import ApiKeyAuthenticator, InvalidApiKey, SqlApiKeyRepository
 from app.services.app_repository import SqlAppRepository
+from tests.integration.audit_fixtures import live_audit_principal  # noqa: F401
+from tests.integration.test_ops_audit_postgres import accept_runtime  # noqa: F401
 
 pytestmark = pytest.mark.skipif(
     "OUTBOX_POSTGRES_DSN" not in os.environ,
@@ -51,11 +53,19 @@ async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced(
             name=f"ip-allow-{nonce}",
             dept="测试部",
             api_key_hash=digest(key1),
+            api_key_hash_algorithm="legacy_sha256",
             api_key_prefix=key1[:8],
             allowed_categories="notice",
             default_sign=None,
             daily_quota=0,
             rate_limit_per_min=60,
+            recipient_limit_per_min=6000,
+            segment_limit_per_min=6000,
+            max_in_flight_chunks=100,
+            allow_market_api_bulk=False,
+            ip_allowlist_exempt_until=None,
+            unlimited_quota_exempt_until=None,
+            admission_exempt_note=None,
             blacklist_check=True,
             freq_override=None,
             allowed_ips=("10.0.0.0/8", "2001:db8::/32"),
@@ -80,6 +90,7 @@ async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced(
         await repository.rotate_key(
             app_id,
             api_key_hash=digest(key2),
+            api_key_hash_algorithm="legacy_sha256",
             api_key_prefix=key2[:8],
             old_key_expires_at=now + timedelta(hours=72),
             actor="integration",
@@ -111,6 +122,13 @@ async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced(
             default_sign=None,
             daily_quota=0,
             rate_limit_per_min=60,
+            recipient_limit_per_min=6000,
+            segment_limit_per_min=6000,
+            max_in_flight_chunks=100,
+            allow_market_api_bulk=False,
+            ip_allowlist_exempt_until=None,
+            unlimited_quota_exempt_until=None,
+            admission_exempt_note=None,
             blacklist_check=True,
             freq_override=None,
             allowed_ips=("203.0.113.0/24",),
@@ -120,7 +138,18 @@ async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced(
             actor="integration",
             ip="127.0.0.1",
         )
-        assert (await authenticator.authenticate(key2)).app_id == app_id
+        # 禁用会撤销密钥；重新启用必须显式轮换，不能恢复旧钥。
+        with pytest.raises(InvalidApiKey):
+            await authenticator.authenticate(key2)
+        key3 = f"key-three-{nonce}-with-enough-entropy"
+        await repository.rotate_key(
+            app_id, api_key_hash=digest(key3), api_key_prefix=key3[:8],
+            api_key_hash_algorithm="legacy_sha256", old_key_expires_at=now,
+            actor="integration", ip="127.0.0.1",
+        )
+        context = await authenticator.authenticate(key3)
+        assert context.app_id == app_id
+        assert context.allowed_ips == ("203.0.113.0/24",)
     finally:
         if app_id is not None:
             async with engine.begin() as connection:
@@ -166,6 +195,13 @@ async def test_callback_url_change_quarantines_queued_task_in_same_transaction()
             default_sign=None,
             daily_quota=0,
             rate_limit_per_min=60,
+            recipient_limit_per_min=6000,
+            segment_limit_per_min=6000,
+            max_in_flight_chunks=100,
+            allow_market_api_bulk=False,
+            ip_allowlist_exempt_until=None,
+            unlimited_quota_exempt_until=None,
+            admission_exempt_note=None,
             blacklist_check=True,
             freq_override=None,
             allowed_ips=(),
@@ -205,6 +241,13 @@ async def test_callback_url_change_quarantines_queued_task_in_same_transaction()
             default_sign=None,
             daily_quota=0,
             rate_limit_per_min=60,
+            recipient_limit_per_min=6000,
+            segment_limit_per_min=6000,
+            max_in_flight_chunks=100,
+            allow_market_api_bulk=False,
+            ip_allowlist_exempt_until=None,
+            unlimited_quota_exempt_until=None,
+            admission_exempt_note=None,
             blacklist_check=True,
             freq_override=None,
             allowed_ips=(),

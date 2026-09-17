@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.core.sensitive_text import reject_phone_in_text
+
 
 class SignNotApproved(ValueError):
     """签名不存在或尚未审核通过。"""
@@ -12,6 +14,7 @@ class SignNotApproved(ValueError):
 def format_sign_name(name: str) -> str:
     """把平台裸签名稳定转换为厂商和计费共同使用的中文方括号格式。"""
 
+    reject_phone_in_text(name, field_name="签名名称")
     value = name.strip()
     if value.startswith("【") and value.endswith("】"):
         value = value[1:-1].strip()

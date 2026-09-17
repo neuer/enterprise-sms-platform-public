@@ -90,7 +90,8 @@ class FakeRedis:
                 return 1
             if viewed.generation > new_gen:
                 return 0
-            return -2
+            self.values[key] = payload
+            return 1
         return self.eval_result
 
 

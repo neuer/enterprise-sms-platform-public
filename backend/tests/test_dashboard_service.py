@@ -5,7 +5,12 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 
 from app.core.jobtrack import JobSpec
-from app.services.current_alerts import CurrentAlert, CurrentAlertSnapshot
+from app.services.current_alerts import (
+    CurrentAlert,
+    CurrentAlertRead,
+    CurrentAlertSnapshot,
+    DatabaseCurrentFacts,
+)
 from app.services.dashboard import (
     CategoryTotals,
     DashboardFacts,
@@ -20,6 +25,7 @@ class FakeRepository:
     def __init__(self, facts: DashboardFacts) -> None:
         self.facts = facts
         self.calls: list[tuple[str | None, date, bool]] = []
+        self.read_options: list[tuple[DatabaseCurrentFacts | None, bool]] = []
 
     async def load(
         self,
@@ -27,14 +33,18 @@ class FakeRepository:
         today: date,
         *,
         include_operations: bool,
+        current_facts: DatabaseCurrentFacts | None = None,
+        include_legacy_alerts: bool = True,
+        job_specs: tuple[JobSpec, ...] = (),
     ) -> DashboardFacts:
         self.calls.append((scope_dept, today, include_operations))
+        self.read_options.append((current_facts, include_legacy_alerts))
         return self.facts
 
 
 class FakeCurrentAlerts:
-    async def get(self) -> CurrentAlertSnapshot:
-        return CurrentAlertSnapshot(
+    async def read(self) -> CurrentAlertRead:
+        return CurrentAlertRead(CurrentAlertSnapshot(
             datetime(2026, 7, 12, 4, 0, tzinfo=UTC),
             False,
             ("control_redis",),
@@ -50,7 +60,7 @@ class FakeCurrentAlerts:
                     "queue",
                 ),
             ),
-        )
+        ), None)
 
 
 @pytest.mark.asyncio
@@ -154,8 +164,9 @@ async def test_admin_dashboard_uses_current_alert_snapshot_and_marks_unknown() -
             jobs=(),
         ),
     )
+    repository = FakeRepository(facts)
     service = DashboardService(
-        FakeRepository(facts),
+        repository,
         (),
         current_alerts=FakeCurrentAlerts(),
         clock=lambda: now,
@@ -164,6 +175,7 @@ async def test_admin_dashboard_uses_current_alert_snapshot_and_marks_unknown() -
     result = await service.get(role="admin", dept="平台部")
 
     assert result.operations is not None
+    assert repository.read_options == [(None, False)]
     assert [alert.title for alert in result.operations.alerts] == [
         "当前告警状态不完整",
         "短信发送队列当前处于暂停状态",

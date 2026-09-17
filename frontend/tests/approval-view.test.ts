@@ -25,6 +25,7 @@ function makeItem(overrides: Partial<ApprovalListItem> = {}): ApprovalListItem {
     batch_no: `WB2026081900${itemSeq}`,
     category: "notice",
     applicant: "operator01",
+    applicant_account_id: 4,
     dept: "业务一部",
     total: 120,
     segments: 1,
@@ -227,8 +228,20 @@ describe("审批中心", () => {
     expect(wrapper.text()).toContain("通知 ≥ 100 个号码")
   })
 
+  it.each([
+    [100, "snapshot", "通知 ≥ 100 个号码 · 提交时阈值快照"],
+    [null, "snapshot", "历史阈值不可确认"],
+    [100, "legacy_unknown", "历史阈值不可确认"],
+  ] as const)("审批阈值按服务器事实展示：%s / %s", async (threshold, source, expected) => {
+    const item = makeItem({ trigger_threshold: threshold, trigger_threshold_source: source })
+    stubApprovalsFetch({ list: listBody([item], { ...DEFAULT_COUNTS, pending: 1 }) })
+    const wrapper = mountApproverView()
+    await flushPromises()
+    expect(wrapper.get(`[data-testid='approval-row-${item.id}']`).text()).toContain(expected)
+  })
+
   it("本人提交的待审批单显示回避提示且无操作按钮", async () => {
-    const mine = makeItem({ applicant: "approver01" })
+    const mine = makeItem({ applicant: "renamed-approver", applicant_account_id: 3 })
     const others = makeItem({ category: "market", trigger_threshold: 50 })
     stubApprovalsFetch({ list: listBody([mine, others], { ...DEFAULT_COUNTS, pending: 2 }) })
 
@@ -239,6 +252,22 @@ describe("审批中心", () => {
     expect(wrapper.find(`[data-testid='approval-actions-${mine.id}']`).exists()).toBe(false)
     expect(wrapper.find(`[data-testid='approval-actions-${others.id}']`).exists()).toBe(true)
     expect(wrapper.text()).toContain("营销 ≥ 50 个号码")
+  })
+
+  it.each([
+    ["approver01", 4, true],
+    ["different-login", 3, false],
+    ["historical", null, false],
+  ] as const)("按稳定账号判断申请人 %s / %s", async (applicant, accountId, allowed) => {
+    const item = makeItem({ applicant, applicant_account_id: accountId })
+    stubApprovalsFetch({ list: listBody([item]), detail: { ...item, content: "合成正文" } })
+    const wrapper = mountApproverView()
+    await flushPromises()
+    expect(wrapper.find(`[data-testid='approval-actions-${item.id}']`).exists()).toBe(allowed)
+    const vm = wrapper.vm as unknown as { showDetail: (item: ApprovalListItem) => Promise<void> }
+    await vm.showDetail(item)
+    await flushPromises()
+    expect(wrapper.find("[data-testid='drawer-decide-box']").exists()).toBe(allowed)
   })
 
   it("行内快捷通过携带意见提交、回显真实去向并刷新列表", async () => {

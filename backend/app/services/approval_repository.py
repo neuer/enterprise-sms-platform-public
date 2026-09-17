@@ -34,7 +34,7 @@ SELECT p.id approval_id,trim(b.batch_no) batch_no,p.applicant,
 FROM approval p JOIN sms_batch b ON b.id=p.batch_id
 """
 ITEM_COLUMNS = """
-p.id,trim(b.batch_no) batch_no,b.category,p.applicant,p.dept,
+p.id,trim(b.batch_no) batch_no,b.category,p.applicant,p.applicant_account_id,p.dept,
   b.total,b.segments,b.quota_cost estimated_segments,
   b.scheduled_at,p.trigger_threshold,
   p.trigger_threshold_source,b.status batch_status,b.deferred_reason,
@@ -264,6 +264,11 @@ class SqlApprovalRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                # 先取得行锁，再以数据库实际时钟决定，避免等锁跨过授权截止。
+                await connection.execute(
+                    text("SELECT id FROM approval WHERE id=:id FOR UPDATE"),
+                    {"id": approval_id},
+                )
                 result = await connection.execute(
                     text(
                         """
@@ -274,6 +279,7 @@ class SqlApprovalRepository:
                           approver_identity_id=:approver_identity_id,
                           reason=:reason,decided_at=now()
                         WHERE id=:id AND status='pending'
+                          AND expires_at>clock_timestamp()
                           AND applicant_account_id IS NOT NULL
                           AND applicant_account_id<>:approver_account_id
                         RETURNING batch_id

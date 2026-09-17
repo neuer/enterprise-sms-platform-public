@@ -289,51 +289,83 @@ class SqlReportRepository:
         batch_locked: bool = False,
         source_report_event_key: str | None = None,
         unknown_delta: int | None = None,
+        status_delta: tuple[str, str] | None = None,
     ) -> None:
         if not batch_locked:
             await cls._lock_batch(connection, batch_id)
-        if unknown_delta is not None:
-            if unknown_delta < 0:
-                raise ValueError("unknown_delta must be non-negative")
-            await connection.execute(
+        used_delta = False
+        if unknown_delta is not None or status_delta is not None:
+            delivered_delta = failed_delta = active_delta = 0
+            if status_delta is not None:
+                # 旧状态在 chunk → batch → message 锁内读取；只有有效 UPDATE 才记差值。
+                previous, current = status_delta
+                if current not in {"delivered", "failed", "unknown", "other"}:
+                    raise ValueError("report delta must end in a report status")
+                delivered_delta = int(current == "delivered") - int(previous == "delivered")
+                failed_delta = int(current == "failed") - int(previous == "failed")
+                unknown_delta = int(current == "unknown") - int(previous == "unknown")
+                active_delta = int(current in {"pending", "sent"}) - int(
+                    previous in {"pending", "sent"}
+                )
+            elif unknown_delta is not None:
+                if unknown_delta < 0:
+                    raise ValueError("unknown_delta must be non-negative")
+                active_delta = -unknown_delta  # timeout 已知只更新 sent → unknown。
+            updated = await connection.execute(
                 text(
                     """
                     UPDATE sms_batch b SET
+                      delivered=b.delivered + :delivered_delta,
+                      failed=b.failed + :failed_delta,
                       unknown_cnt=b.unknown_cnt + :delta,
+                      active_message_count=b.active_message_count + :active_delta,
+                      active_message_count_token=gen_random_uuid(),
                       status=CASE
                         WHEN b.status='completed_unknown' THEN 'completed_unknown'
-                        WHEN NOT EXISTS (
-                          SELECT 1 FROM sms_message
-                          WHERE batch_id=b.id AND status IN ('pending','sent')
-                        ) THEN 'completed'
+                        WHEN b.active_message_count + :active_delta=0 THEN 'completed'
                         ELSE b.status
                       END,
                       updated_at=now()
                     WHERE b.id=:batch_id
+                      AND b.active_message_count IS NOT NULL
+                      AND b.active_message_count_token IS NOT NULL
+                    RETURNING b.id
                     """
                 ),
-                {"batch_id": batch_id, "delta": unknown_delta},
+                {
+                    "batch_id": batch_id,
+                    "delta": unknown_delta,
+                    "delivered_delta": delivered_delta,
+                    "failed_delta": failed_delta,
+                    "active_delta": active_delta,
+                },
             )
-        else:
+            used_delta = updated.scalar_one_or_none() is not None
+        if not used_delta:
+            # 新批次和历史批次均惰性初始化。此时消息 UPDATE 已发生，按当前事实
+            # 一次重算所有计数，不再叠加本次 delta；可信投影修复也沿用此路径。
             await connection.execute(
                 text(
                     """
                     UPDATE sms_batch b SET
                       delivered=s.delivered, failed=s.failed, unknown_cnt=s.unknown_cnt,
+                      active_message_count=s.active,
+                      active_message_count_token=gen_random_uuid(),
                       status=CASE
                         WHEN b.status='completed_unknown' THEN 'completed_unknown'
+                        WHEN s.message_count=0 THEN b.status
                         WHEN s.active=0 THEN 'completed'
                         ELSE b.status
                       END,
                       updated_at=now()
                     FROM (
-                      SELECT batch_id,
+                      SELECT count(*) message_count,
                         count(*) FILTER (WHERE status='delivered') delivered,
                         count(*) FILTER (WHERE status='failed') failed,
                         count(*) FILTER (WHERE status='unknown') unknown_cnt,
                         count(*) FILTER (WHERE status IN ('pending','sent')) active
-                      FROM sms_message WHERE batch_id=:batch_id GROUP BY batch_id
-                    ) s WHERE b.id=s.batch_id
+                      FROM sms_message WHERE batch_id=:batch_id
+                    ) s WHERE b.id=:batch_id
                     """
                 ),
                 {"batch_id": batch_id},
@@ -435,8 +467,15 @@ class SqlReportRepository:
                 await self._lock_batch(connection, batch_id)
                 locked_message = await connection.execute(
                     text(
-                        """
-                        SELECT id,created_at,batch_id FROM sms_message m
+                        f"""
+                        SELECT id,created_at,batch_id,status,
+                          CASE WHEN {TRUSTED_REPORT_EVIDENCE} THEN
+                            status IS DISTINCT FROM (
+                              SELECT e.message_status FROM report_event e
+                              WHERE e.event_key=m.report_event_key
+                            )
+                          ELSE false END prior_report_state_drift
+                        FROM sms_message m
                         WHERE id=:id AND created_at=:created_at AND batch_id=:batch_id
                         FOR UPDATE OF m
                         """
@@ -619,6 +658,12 @@ class SqlReportRepository:
                     batch_id,
                     batch_locked=True,
                     source_report_event_key=report.event_key,
+                    # 可信旧事实与消息状态漂移时，不能拿损坏的状态计算增量。
+                    # 仅实际生效的新事件回退到既有全量校正；未生效仍保持原语义。
+                    status_delta=(
+                        None if row["prior_report_state_drift"]
+                        else (str(row["status"]), report.message_status)
+                    ),
                 )
                 await connection.execute(
                     text(

@@ -37,6 +37,13 @@ def test_vendor_test_state_is_read_only_and_only_visible_to_vendor_callers() -> 
         assert mount not in services[service].get("volumes", [])
 
 
+def test_auth_policy_mount_is_read_only_and_only_visible_to_api() -> None:
+    mount = "${SMS_AUTH_POLICY_DIR:-./auth-policy}:/run/auth-policy:ro"
+    for name, service in _compose()["services"].items():
+        assert (mount in service.get("volumes", [])) == (name == "api")
+    assert (ROOT / "deploy/auth-policy/.gitkeep").is_file()
+
+
 def test_vendor_control_socket_directory_is_read_only_and_least_privilege() -> None:
     services = _compose()["services"]
     mount = (

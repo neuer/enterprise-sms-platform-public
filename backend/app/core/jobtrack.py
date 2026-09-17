@@ -590,6 +590,9 @@ class SqlJobMonitorLease:
             acquired = bool(result.scalar_one())
             await connection.commit()
         except BaseException as error:
+            # 响应/commit 中断时服务端可能已取得 session 锁；rollback 不会释放它。
+            # 先废弃物理连接，避免共享 pool 的兼容 dispose(no-op) 留下隐式持锁者。
+            await connection.invalidate()
             await connection_context.__aexit__(
                 type(error),
                 error,
@@ -623,6 +626,9 @@ class SqlJobMonitorLease:
                 {"name": self.LOCK_NAME},
             )
             await connection.commit()
+        except BaseException:
+            await connection.invalidate()
+            raise
         finally:
             if connection_context is not None:
                 await connection_context.__aexit__(None, None, None)

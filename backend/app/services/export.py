@@ -37,6 +37,7 @@ class ExportRequestFilters:
     batch_no: str | None = None
     phone: str | None = None
     dataset: Literal["message", "unmatched"] = "message"
+    end_exclusive: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,12 +51,16 @@ class ExportFilterSet:
     phone_hmacs: tuple[str, ...]
     scope_dept: str | None
     dataset: Literal["message", "unmatched"] = "message"
+    end_exclusive: datetime | None = None
 
     def safe_json(self) -> dict[str, object]:
         """可持久化过滤器；只含索引和部门 scope，不含手机号。"""
 
         return {
             "dataset": self.dataset,
+            "end_exclusive": self.end_exclusive.isoformat()
+            if self.end_exclusive is not None
+            else None,
             "start": self.start.isoformat() if self.start is not None else None,
             "end": self.end.isoformat() if self.end is not None else None,
             "category": self.category,
@@ -72,6 +77,8 @@ class ExportFilterSet:
             raw = value.get(key)
             return datetime.fromisoformat(str(raw)) if raw is not None else None
 
+        if value.get("dataset") not in ("message", "unmatched"):
+            raise ValueError("invalid persisted export dataset")
         raw_hmacs = value.get("phone_hmacs") or []
         if not isinstance(raw_hmacs, list):
             raise ValueError("invalid persisted export phone_hmacs")
@@ -84,7 +91,8 @@ class ExportFilterSet:
             batch_no=str(value["batch_no"]) if value.get("batch_no") is not None else None,
             phone_hmacs=tuple(str(item) for item in raw_hmacs),
             scope_dept=(str(value["scope_dept"]) if value.get("scope_dept") is not None else None),
-            dataset=("unmatched" if value.get("dataset") == "unmatched" else "message"),
+            dataset=value["dataset"],
+            end_exclusive=moment("end_exclusive"),
         )
 
 
@@ -160,7 +168,10 @@ class ExportService:
         role: str,
         dept: str,
     ) -> ExportFilterSet:
+        if filters.end is not None and filters.end_exclusive is not None:
+            raise ValueError("end and end_exclusive are mutually exclusive")
         _validate_range(filters.start, filters.end)
+        _validate_range(filters.start, filters.end_exclusive)
         if role != "admin" and filters.dept is not None and filters.dept != dept:
             raise ExportForbidden("不能导出其他部门数据")
         scope_dept = filters.dept if role == "admin" else dept
@@ -179,6 +190,7 @@ class ExportService:
             phone_hmacs,
             scope_dept,
             filters.dataset,
+            filters.end_exclusive,
         )
 
     async def create(

@@ -67,6 +67,7 @@ export type LoginResponse = LoginSuccess | PasswordChangeRequired
 interface ApiErrorBody {
   code?: string
   message?: string
+  detail?: { auth_admission_retry?: boolean; retry_after_seconds?: number }
 }
 
 export class AuthApiError extends Error {
@@ -74,6 +75,7 @@ export class AuthApiError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
+    readonly detail?: ApiErrorBody["detail"],
   ) {
     super(message)
     this.name = "AuthApiError"
@@ -100,6 +102,7 @@ async function authJson<T>(
         response.status,
         errorBody.code || `HTTP_${response.status}`,
         errorBody.message || errorBody.code || `请求失败（${response.status}）`,
+        errorBody.detail,
       )
     }
     return body as T | null
@@ -143,7 +146,7 @@ export async function loginRequest(
   const sessionMode = detectSessionMode()
   if (sessionMode === "access_only") {
     return requireJson(
-      await authJson<LoginResponse>(
+      await loginJsonWithAdmissionRetry(
         "/api/v1/web/auth/login",
         {
           method: "POST",
@@ -155,7 +158,6 @@ export async function loginRequest(
             session_mode: "access_only",
           }),
         },
-        PASSWORD_AUTH_REQUEST_TIMEOUT_MS,
         signal,
       ),
     )
@@ -163,7 +165,7 @@ export async function loginRequest(
   const tabId = beginRefreshTabBinding()
   try {
     return requireJson(
-      await authJson<LoginResponse>(
+      await loginJsonWithAdmissionRetry(
         "/api/v1/web/auth/login",
         {
           method: "POST",
@@ -176,13 +178,56 @@ export async function loginRequest(
             tab_id: tabId,
           }),
         },
-        PASSWORD_AUTH_REQUEST_TIMEOUT_MS,
         signal,
       ),
     )
   } catch (error) {
     clearRefreshTabBinding()
     throw error
+  }
+}
+
+async function loginJsonWithAdmissionRetry(input: string, init: RequestInit, signal?: AbortSignal) {
+  const started = performance.now()
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await authJson<LoginResponse>(input, init, PASSWORD_AUTH_REQUEST_TIMEOUT_MS, signal)
+    } catch (error) {
+      const seconds = error instanceof AuthApiError ? error.detail?.retry_after_seconds : undefined
+      // 只有服务器确认尚未进入 Provider 的准入拒绝可重试；密码错误、ban、503
+      // 与结果未知的网络故障不重试。同一会话 generation/易失请求体贯穿整个等待。
+      if (
+        !(error instanceof AuthApiError) ||
+        error.status !== 429 ||
+        error.code !== "RATE_LIMITED" ||
+        error.detail?.auth_admission_retry !== true ||
+        !Number.isInteger(seconds) ||
+        seconds === undefined ||
+        seconds < 1 ||
+        seconds > 15 ||
+        attempt >= 29 ||
+        performance.now() - started + seconds * 1000 + 250 > 30000
+      )
+        throw error
+      await new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+          reject(signal.reason)
+          return
+        }
+        const aborted = () => {
+          clearTimeout(timer)
+          reject(signal?.reason)
+        }
+        const timer = setTimeout(
+          () => {
+            signal?.removeEventListener("abort", aborted)
+            resolve()
+          },
+          seconds * 1000 + Math.random() * 250,
+        )
+        signal?.addEventListener("abort", aborted, { once: true })
+      })
+    }
   }
 }
 

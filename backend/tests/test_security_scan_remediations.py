@@ -14,6 +14,7 @@ import pytest
 
 import app.core.runtime_resources as runtime_resources
 from app.core.apikey import ApiAppContext
+from app.core.auth.accounts import ApplicationPrincipal
 from app.services.batch_query import BatchAccessScope
 from app.services.category import policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
@@ -157,7 +158,7 @@ async def test_resend_uses_stable_cross_actor_action_scope() -> None:
             )
 
     request = await ResendService(Repository(), crypto).build_request(
-        "original-1", BatchAccessScope(app_id=7)
+        "original-1", BatchAccessScope(app_id=7), actor=ApplicationPrincipal(7, "app", "平台部")
     )
 
     assert request.biz_id == "failed-recipients-v1"
@@ -174,12 +175,13 @@ async def test_resend_uses_stable_cross_actor_action_scope() -> None:
 
 def test_live_sms_keeps_idempotency_fact_past_nominal_expiry() -> None:
     pipeline_source = IDEMPOTENCY_LIVE_SQL
-    housekeeping_source = inspect.getsource(SqlHousekeepingRepository.cleanup)
+    housekeeping_source = inspect.getsource(SqlHousekeepingRepository._cleanup_idempotency_page)
+    assert "IDEMPOTENCY_LIVE_SQL" in housekeeping_source
+    assert "FOR UPDATE OF b SKIP LOCKED" in housekeeping_source
+    assert "i.expires_at<=CAST(:cutoff AS timestamptz)" in housekeeping_source
+    # 真状态矩阵由临时 PostgreSQL 回归验证；仅显式安全终态可以退役。
+    assert "b.status NOT IN ('completed','rejected','expired','cancelled')" in pipeline_source
     scheduling_source = inspect.getsource(SqlSchedulingRepository.reschedule)
-
-    for status in ("pending_approval", "scheduled", "queued", "sending", "balance_blocked"):
-        assert status in pipeline_source
-        assert status in housekeeping_source
     assert "GREATEST" in scheduling_source
     assert "interval '7 days'" in scheduling_source
 

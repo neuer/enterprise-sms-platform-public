@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 
 from release_manifest import (  # noqa: E402
     OFFLINE_IMAGE_SOURCE,
+    ONE_TIME_COLD_CUTOVER,
     MigrationCompatibility,
     ReleaseManifestError,
     load_manifest,
@@ -21,6 +22,35 @@ from release_manifest import (  # noqa: E402
 )
 
 OFFLINE_EXPAND_FROM = "0080_security_daily_delivery_generation"
+
+
+@pytest.mark.parametrize("wrong", [None, "from", "target", "compatibility", "data"])
+def test_one_time_cold_cutover_is_exact_and_keeps_data_evidence(
+    tmp_path: Path, wrong: str | None,
+) -> None:
+    payload = _offline_manifest()
+    for image in payload["images"].values():
+        image["changed"] = True
+    payload["migration"] = {
+        "from": ONE_TIME_COLD_CUTOVER[0],
+        "target": ONE_TIME_COLD_CUTOVER[1],
+        "compatibility": "cold_cutover",
+    }
+    payload["evidence"]["data_images"] = {
+        "file": "data-images.json", "sha256": "2" * 64, "size": 4096,
+    }
+    if wrong == "data":
+        payload["evidence"]["data_images"] = None
+    elif wrong is not None:
+        payload["migration"][wrong] = "expand" if wrong == "compatibility" else "0115_other"
+    if wrong is not None:
+        with pytest.raises(ReleaseManifestError):
+            load_manifest(_write_manifest(tmp_path, payload))
+    else:
+        manifest = load_manifest(_write_manifest(tmp_path, payload))
+        assert manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER
+        assert manifest.evidence["backup_restore_change"] is None
+
 OFFLINE_EXPAND_TARGET = "0081_sign_adoption_contract"
 OFFLINE_REPORT_EXPAND_FROM = "0081_sign_adoption_contract"
 OFFLINE_REPORT_EXPAND_TARGET = "0082_outbox_realtime_report_queue"

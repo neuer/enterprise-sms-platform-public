@@ -141,7 +141,8 @@ def check_vendor_live_invariants() -> None:
 
     worker = require_fragments(
         APP / "tasks/send.py",
-        "_guard_chunk(chunk)",
+        "_guard_chunk(chunk, persist_rejection=not authorized)",
+        "chunk, lane, vendor_id, authorized=True",
         "_token(lane, vendor_id)",
         "claim_submission(",
         "_gateway_for(vendor_id)",
@@ -150,7 +151,7 @@ def check_vendor_live_invariants() -> None:
         "enforce_live_test_recipients=settings.vendor_live_test",
     )
     if worker and not (
-        worker.index("_guard_chunk(chunk)")
+        worker.index("_guard_chunk(chunk, persist_rejection=not authorized)")
         < worker.index("_token(lane, vendor_id)")
         < worker.index("gateway.send(")
     ):

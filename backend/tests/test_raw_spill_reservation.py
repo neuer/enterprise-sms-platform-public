@@ -574,3 +574,25 @@ def test_kill_recovery_releases_reservation_after_persist(tmp_path: Path) -> Non
     )
     assert recovered == 1
     assert leftover_names(tmp_path, ".reserve", ".stream", ".stream.tmp", ".quarantine") == []
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_stream_reservation_counts_once_and_recovers_legacy_name(
+    tmp_path: Path, legacy: bool
+) -> None:
+    store = RawSpillStore(tmp_path)
+    stream = store.open_stream("report", crypto(), capture_bytes=4096)
+    stream.announce(http_status=200, content_encoding="identity")
+    assert stream.feed(b'{"code":0,"data":[]}')
+    stream.finish(complete=True, http_status=200)
+    paths = list(tmp_path.glob("*.stream"))
+    assert len(paths) == 1
+    assert not paths[0].name.endswith(".stream.stream")
+    if legacy:
+        paths[0].rename(paths[0].with_suffix(".stream.stream"))
+    reserved = store.list_reservations()[0].reserved_bytes
+    assert store.accounted_usage() == reserved
+    records = store.list_pending_streams(crypto())
+    assert len(records) == 1 and records[0].capture_state == "complete"
+    store.remove_stream(records[0].source, records[0].stream_id)
+    assert not list(tmp_path.glob("*.stream"))

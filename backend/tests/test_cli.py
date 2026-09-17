@@ -324,6 +324,7 @@ def test_init_admin_sql_contract_uses_advisory_lock_empty_check_and_no_plaintext
     assert "pg_advisory_xact_lock" in source
     assert "SELECT count(*) FROM user_account" in source
     assert "initial_local_admin_create" in source
+    assert "TEMPORARY_PASSWORD_EXPIRY_SQL" in source
     assert "password_hash" in source
     assert "password_plaintext" not in source
     assert "BOOTSTRAP_ADMIN_USERS" not in source

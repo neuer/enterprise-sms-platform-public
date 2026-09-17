@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from uuid import uuid4
@@ -14,7 +15,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.principal_context import audit_principal_scope
 from app.core.correlation import correlation_scope
-from app.services.housekeeping import LifecyclePolicy
+from app.services.housekeeping import HousekeepingService, ImportFileStore
 from app.services.housekeeping_repository import SqlHousekeepingRepository
 from app.services.import_repository import (
     ImportReservation,
@@ -66,10 +67,7 @@ async def test_import_reservation_is_concurrent_recoverable_and_batch_bound(
                     {"import_id": import_id},
                 )
                 await connection.execute(
-                    text(
-                        "DELETE FROM import_task "
-                        "WHERE import_id=CAST(:import_id AS uuid)"
-                    ),
+                    text("DELETE FROM import_task WHERE import_id=CAST(:import_id AS uuid)"),
                     {"import_id": import_id},
                 )
             await connection.execute(
@@ -169,7 +167,12 @@ async def test_import_reservation_is_concurrent_recoverable_and_batch_bound(
                     )
                 ).scalar_one()
             )
-        assert task_id not in {item.id for item in await housekeeping.expired_imports()}
+        assert task_id not in {
+            item.id
+            for item in await housekeeping.expired_imports(
+                cutoff=datetime.now(UTC), after_id=0, limit=100
+            )
+        }
         async with engine.begin() as connection:
             await connection.execute(
                 text(
@@ -270,11 +273,7 @@ async def test_import_reservation_is_concurrent_recoverable_and_batch_bound(
                 ),
                 {"import_id": import_id},
             )
-        expired = await housekeeping.expired_imports()
-        await housekeeping.cleanup(
-            LifecyclePolicy(90, 90, 30),
-            tuple(item.id for item in expired),
-        )
+        await HousekeepingService(housekeeping, ImportFileStore(tmp_path)).run()
         retained_replay = await SqlImportRepository(settings).reserve(
             import_id,
             principal=principal,
@@ -282,9 +281,10 @@ async def test_import_reservation_is_concurrent_recoverable_and_batch_bound(
         assert retained_replay.consumed_batch_no == batch_no
         async with engine.connect() as connection:
             state = (
-                await connection.execute(
-                    text(
-                        """
+                (
+                    await connection.execute(
+                        text(
+                            """
                         SELECT state,reservation_id,reserved_by_account_id,
                           consumed_batch_id,consumed_at IS NOT NULL consumed,
                           payload_purged_at IS NOT NULL payload_purged,
@@ -293,10 +293,13 @@ async def test_import_reservation_is_concurrent_recoverable_and_batch_bound(
                         FROM import_task
                         WHERE import_id=CAST(:import_id AS uuid)
                         """
-                    ),
-                    {"import_id": import_id},
+                        ),
+                        {"import_id": import_id},
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
         assert state["state"] == "consumed"
         assert int(state["reserved_by_account_id"]) == account_id
         assert int(state["consumed_batch_id"]) == batch_id

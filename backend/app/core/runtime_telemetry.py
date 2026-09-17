@@ -8,6 +8,7 @@ import sys
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from uuid import uuid4
 
 from app.core.runtime_resources import RuntimeResourceSnapshot, resource_snapshot
 
@@ -17,6 +18,8 @@ class RuntimeTelemetrySnapshot:
     event_loop_delay_seconds: float
     resources: RuntimeResourceSnapshot
     resident_memory_bytes: int = 0
+    event_loop_delay_peak_seconds: float = 0.0
+    process_instance: str = "unavailable"
 
 
 def _resident_memory_bytes() -> int:
@@ -32,6 +35,8 @@ class EventLoopDelayMonitor:
             raise ValueError("event loop monitor interval must be positive")
         self.interval_s = interval_s
         self.last_delay_seconds = 0.0
+        self.peak_delay_seconds = 0.0
+        self.process_instance = uuid4().hex
         self._task: asyncio.Task[None] | None = None
 
     async def _run(self) -> None:
@@ -39,10 +44,13 @@ class EventLoopDelayMonitor:
         while True:
             expected = loop.time() + self.interval_s
             await asyncio.sleep(self.interval_s)
-            self.last_delay_seconds = max(
-                self.last_delay_seconds,
-                max(0.0, loop.time() - expected),
-            )
+            self.record_delay(max(0.0, loop.time() - expected))
+
+    def record_delay(self, delay_seconds: float) -> None:
+        """分别保留最近完成采样与本 monitor 生命周期峰值。"""
+
+        self.last_delay_seconds = max(0.0, delay_seconds)
+        self.peak_delay_seconds = max(self.peak_delay_seconds, self.last_delay_seconds)
 
     def start(self) -> None:
         if self._task is not None:
@@ -66,6 +74,8 @@ class EventLoopDelayMonitor:
             self.last_delay_seconds,
             resource_snapshot(),
             _resident_memory_bytes(),
+            self.peak_delay_seconds,
+            self.process_instance,
         )
 
 

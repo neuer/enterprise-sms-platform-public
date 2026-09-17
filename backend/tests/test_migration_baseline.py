@@ -360,7 +360,7 @@ def test_account_provider_model_replaces_username_centric_schema() -> None:
     ):
         assert f"CREATE TABLE {table}" in schema
     assert "CREATE TABLE sys_user" not in schema
-    assert "CREATE TABLE role_mapping" not in schema
+    assert "CREATE TABLE role_mapping (" not in schema
     assert "UNIQUE (normalized_login_name)" in schema
     assert "UNIQUE (provider_id, external_subject)" in schema
     assert "('local', '本地账号', 'local', TRUE)" in schema
@@ -818,7 +818,10 @@ def test_send_admission_metrics_grant_is_expand_only() -> None:
     source = revision.read_text(encoding="utf-8")
 
     assert "-- v1.6.75：" in schema
-    assert "GRANT SELECT (queue, state, created_at)" in schema
+    assert (
+        "GRANT SELECT (queue, state, created_at, event_type, last_error, next_attempt_at)"
+        in schema
+    )
     assert "GRANT SELECT (created_at)" in source
     assert "outbox_event TO sms_metrics" in source
     assert 'revision = "0089_send_admission_metrics_grant"' in source
@@ -1088,6 +1091,29 @@ def test_report_timeout_sweep_is_expand_only() -> None:
     assert "return" in source.split("def downgrade", 1)[1]
 
 
+def test_report_batch_active_count_is_expand_only() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    source = (BACKEND / "migrations/versions/0111_report_batch_active_count.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "-- v1.6.97：" in schema
+    for contract in (schema, source):
+        assert "active_message_count INTEGER" in contract
+        assert "active_message_count_token UUID" in contract
+        assert "invalidate_legacy_batch_active_count" in contract
+        assert "BEFORE UPDATE OF delivered,failed,unknown_cnt ON sms_batch" in contract
+        assert (
+            "NEW.active_message_count_token IS NOT DISTINCT FROM OLD.active_message_count_token"
+        ) in contract
+    assert 'revision = "0111_report_batch_active_count"' in source
+    assert 'down_revision = "0110_uncertain_child_provenance"' in source
+    upgrade = source.split("def downgrade", 1)[0]
+    assert "ADD COLUMN IF NOT EXISTS active_message_count INTEGER" in upgrade
+    assert "DEFAULT" not in upgrade and "UPDATE sms_batch" not in upgrade
+    assert "DELETE FROM" not in upgrade and "DROP TABLE" not in upgrade
+
+
 def test_chunk_failover_pending_is_expand_only() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0108_chunk_failover_pending.py"
@@ -1189,7 +1215,8 @@ def test_background_task_role_matrix_covers_import_and_cleanup_paths() -> None:
         "GRANT USAGE, SELECT ON SEQUENCE import_phone_id_seq TO sms_send",
     ):
         assert fragment in source
-    assert "user_account, app, dept_quota" in schema
+    assert "user_account, dept_quota" in schema
+    assert "GRANT SELECT (id,name,dept,allowed_categories" in schema
     assert "import_task, import_phone, approval" in schema
     assert "GRANT UPDATE, DELETE ON import_task TO sms_send" in schema
     assert "GRANT INSERT, DELETE ON import_phone TO sms_send" in schema

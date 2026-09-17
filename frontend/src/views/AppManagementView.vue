@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import { CATEGORY_OPTIONS } from "../lib/labels"
+import { useApprovedResources } from "../composables/useApprovedResources"
+import ApiDemoDialog from "../components/ApiDemoDialog.vue"
+import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
 import { computed, h, onMounted, reactive, ref } from "vue"
 
@@ -17,13 +21,14 @@ import {
   type ManagedApp,
 } from "../api/apps"
 import { listConfigs } from "../api/admin"
-import { getReport, type ReportDimSummary } from "../api/reports"
-import { listSigns, type SmsSign } from "../api/signs"
-import { listTemplates, type SmsTemplate, type VarSpec } from "../api/templates"
+import { getReport, type ReportRow } from "../api/reports"
+import { useLatestRead } from "../composables/useLatestRead"
+import { listSigns } from "../api/signs"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { copyText } from "../lib/clipboard"
-import { confirmAuditedAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAuditedAction, captureCurrent } = useConfirmActions()
 import { formatPercent } from "../lib/format"
 import { CATEGORY_LABELS, type MessageCategory } from "../lib/labels"
 import { formatDateTime, shanghaiDateKey } from "../lib/time"
@@ -33,9 +38,7 @@ type SecretOperation = "create-app" | "rotate-api-key" | "rotate-callback-secret
 
 const CATEGORY_FILTERS: { label: string; value: MessageCategory | "all" }[] = [
   { label: "全部", value: "all" },
-  { label: "验证码", value: "verify" },
-  { label: "通知", value: "notice" },
-  { label: "营销", value: "market" },
+  ...CATEGORY_OPTIONS,
 ]
 
 const STATUS_FILTERS: { label: string; value: "all" | "1" | "0" }[] = [
@@ -63,13 +66,11 @@ const keyGraceHours = ref<number | null>(null)
 const secretOperation = ref<SecretOperation | null>(null)
 const rotatingKeyId = ref<number | null>(null)
 const rotatingCallbackId = ref<number | null>(null)
-/** 今日用量联查结果（dim_value = app.id 字符串）；调用失败时置 unavailable，单元格显示「—」。 */
-const dailyUsage = ref<Map<string, ReportDimSummary>>(new Map())
-const usageUnavailable = ref(false)
+/** 今日用量联查结果（dim_value = app.id 字符串）；完整联查成功前单元格显示「—」。 */
+const dailyUsage = ref<Map<string, ReportRow>>(new Map())
+const usageRead = useLatestRead()
+const usageUnavailable = ref(true)
 /** 已通过厂商审核的签名清单；加载失败不阻塞表单，下拉显示不可用并可重试。 */
-const approvedSigns = ref<SmsSign[]>([])
-const signsLoading = ref(false)
-const signsUnavailable = ref(false)
 
 const form = reactive({
   name: "",
@@ -228,295 +229,11 @@ const detailRateText = computed(() => {
   return rate === null ? "—" : `${formatPercent(rate)}（delivered/(delivered+failed)）`
 })
 
-const DEMO_LANGUAGES = ["curl", "python", "node", "java", "go", "php"] as const
-type DemoLanguage = (typeof DEMO_LANGUAGES)[number]
-
-const DEMO_LABELS: Record<DemoLanguage, string> = {
-  curl: "cURL",
-  python: "Python",
-  node: "Node.js",
-  java: "Java",
-  go: "Go",
-  php: "PHP",
-}
-
-interface DemoContext {
-  app: ManagedApp
-  templateId: number
-  templateName: string
-  templateContent: string
-  params: string[]
-}
-
-const DEMO_BIZ_ID = "ORDER-20260804-001"
-const DEMO_MOBILES = ["138****8000"]
-
-/** 按 var_specs 生成不超过 max_len 的示例参数值。 */
-function exampleParamsFor(specs: VarSpec[]): string[] {
-  const sorted = [...specs].sort((a, b) => a.pos - b.pos)
-  return sorted.map((spec) => {
-    for (const candidate of [`示例参数${spec.pos}`, `参数${spec.pos}`, "示例", "值"]) {
-      if (candidate.length <= spec.max_len) return candidate
-    }
-    return "a".repeat(spec.max_len)
-  })
-}
-
-/** 生成目标语言可用的模板参数数组字面量。 */
-function paramsLiteral(language: DemoLanguage, params: string[]): string {
-  const quoted = params.map((value) => `"${value}"`)
-  if (language === "java") return `new String[]{${quoted.join(", ")}}`
-  if (language === "go") return `[]string{${quoted.join(", ")}}`
-  if (language === "php") return `[${params.map((value) => `'${value}'`).join(", ")}]`
-  return `[${quoted.join(", ")}]`
-}
-
-/** 生成与语言无关的请求 JSON（cURL 与 Java 文本块直接内嵌）。 */
-function payloadJson(context: DemoContext): string {
-  return JSON.stringify({
-    category: "notice",
-    mobiles: DEMO_MOBILES,
-    template_id: context.templateId,
-    template_params: context.params,
-    biz_id: DEMO_BIZ_ID,
-  })
-}
-
-/** 生成指定语言的模板发送 demo；API Key 一律使用环境变量占位，不嵌入明文。 */
-function buildDemoScript(language: DemoLanguage, context: DemoContext): string {
-  const base = "https://sms.example.com/api/v1"
-  const head = `// 应用：${context.app.name}（id=${context.app.id}）· 模板：${context.templateName}（id=${context.templateId}）`
-  const warning = "// 正式接入必须使用已审核模板，直接内容会进入服务商人工审核"
-  const baseHint = "// 请把 base 替换为平台地址（测试环境 http://<服务器IP>:18080/api/v1）"
-  const contentLine = context.templateContent ? `// 模板内容：${context.templateContent}` : ""
-  const params = paramsLiteral(language, context.params)
-  if (language === "curl") {
-    return [
-      `# 应用：${context.app.name}（id=${context.app.id}）· 模板：${context.templateName}（id=${context.templateId}）`,
-      contentLine,
-      `# 正式接入必须使用已审核模板，直接内容会进入服务商人工审核`,
-      `# 请把 base 替换为平台地址（测试环境 http://<服务器IP>:18080/api/v1）`,
-      `curl -X POST '${base}/messages/send' \\`,
-      `  -H "X-Api-Key: $SMS_API_KEY" \\`,
-      `  -H 'Content-Type: application/json' \\`,
-      `  -d '${payloadJson(context)}'`,
-    ]
-      .filter(Boolean)
-      .join("\n")
-  }
-  const common: string[] = [head, warning, baseHint]
-  if (contentLine) common.splice(1, 0, contentLine)
-  if (language === "python") {
-    return [
-      ...common,
-      `import os`,
-      `import requests`,
-      ``,
-      `URL = "${base}/messages/send"`,
-      ``,
-      `def send_template(mobiles, template_id, template_params, biz_id):`,
-      `    resp = requests.post(`,
-      `        URL,`,
-      `        json={`,
-      `            "category": "notice",`,
-      `            "mobiles": mobiles,`,
-      `            "template_id": template_id,`,
-      `            "template_params": template_params,`,
-      `            "biz_id": biz_id,`,
-      `        },`,
-      `        headers={"X-Api-Key": os.environ["SMS_API_KEY"]},`,
-      `        timeout=15,`,
-      `    )`,
-      `    resp.raise_for_status()`,
-      `    return resp.json()`,
-      ``,
-      `print(send_template(${JSON.stringify(DEMO_MOBILES)}, ${context.templateId}, ${params}, "${DEMO_BIZ_ID}"))`,
-    ].join("\n")
-  }
-  if (language === "node") {
-    return [
-      ...common,
-      `const SMS_API_KEY = process.env.SMS_API_KEY;`,
-      `const TEMPLATE_ID = ${context.templateId};`,
-      `const URL = "${base}/messages/send";`,
-      ``,
-      `const response = await fetch(URL, {`,
-      `  method: "POST",`,
-      `  headers: {`,
-      `    "X-Api-Key": SMS_API_KEY,`,
-      `    "Content-Type": "application/json",`,
-      `  },`,
-      `  body: JSON.stringify({`,
-      `    category: "notice",`,
-      `    mobiles: ${JSON.stringify(DEMO_MOBILES)},`,
-      `    template_id: TEMPLATE_ID,`,
-      `    template_params: ${params},`,
-      `    biz_id: "${DEMO_BIZ_ID}",`,
-      `  }),`,
-      `});`,
-      `const data = await response.json();`,
-      `console.log(data.batch_no, data.status, data.quota_cost);`,
-    ].join("\n")
-  }
-  if (language === "java") {
-    return [
-      ...common,
-      `import java.net.URI;`,
-      `import java.net.http.HttpClient;`,
-      `import java.net.http.HttpRequest;`,
-      `import java.net.http.HttpResponse;`,
-      ``,
-      `public class SmsDemo {`,
-      `    public static void main(String[] args) throws Exception {`,
-      `        String body = """`,
-      `            ${payloadJson(context)}`,
-      `            """;`,
-      `        HttpRequest request = HttpRequest.newBuilder()`,
-      `            .uri(URI.create("${base}/messages/send"))`,
-      `            .header("X-Api-Key", System.getenv("SMS_API_KEY"))`,
-      `            .header("Content-Type", "application/json")`,
-      `            .POST(HttpRequest.BodyPublishers.ofString(body))`,
-      `            .build();`,
-      `        HttpResponse<String> response = HttpClient.newHttpClient()`,
-      `            .send(request, HttpResponse.BodyHandlers.ofString());`,
-      `        System.out.println(response.statusCode());`,
-      `        System.out.println(response.body());`,
-      `    }`,
-      `}`,
-    ].join("\n")
-  }
-  if (language === "go") {
-    return [
-      ...common,
-      `package main`,
-      ``,
-      `import (`,
-      `    "bytes"`,
-      `    "encoding/json"`,
-      `    "fmt"`,
-      `    "io"`,
-      `    "net/http"`,
-      `    "os"`,
-      `)`,
-      ``,
-      `func main() {`,
-      `    payload, _ := json.Marshal(map[string]interface{}{`,
-      `        "category":        "notice",`,
-      `        "mobiles":         []string{"138****8000"},`,
-      `        "template_id":     ${context.templateId},`,
-      `        "template_params": ${params},`,
-      `        "biz_id":          "${DEMO_BIZ_ID}",`,
-      `    })`,
-      `    req, _ := http.NewRequest("POST", "${base}/messages/send", bytes.NewReader(payload))`,
-      `    req.Header.Set("X-Api-Key", os.Getenv("SMS_API_KEY"))`,
-      `    req.Header.Set("Content-Type", "application/json")`,
-      `    resp, _ := http.DefaultClient.Do(req)`,
-      `    defer resp.Body.Close()`,
-      `    body, _ := io.ReadAll(resp.Body)`,
-      `    fmt.Println(resp.StatusCode, string(body))`,
-      `}`,
-    ].join("\n")
-  }
-  return [
-    ...common,
-    `<?php`,
-    `$url = '${base}/messages/send';`,
-    `$payload = json_encode([`,
-    `    'category' => 'notice',`,
-    `    'mobiles' => ['138****8000'],`,
-    `    'template_id' => ${context.templateId},`,
-    `    'template_params' => ${params},`,
-    `    'biz_id' => '${DEMO_BIZ_ID}',`,
-    `]);`,
-    `$ch = curl_init($url);`,
-    `curl_setopt_array($ch, [`,
-    `    CURLOPT_POST => true,`,
-    `    CURLOPT_POSTFIELDS => $payload,`,
-    `    CURLOPT_HTTPHEADER => [`,
-    `        'X-Api-Key: ' . getenv('SMS_API_KEY'),`,
-    `        'Content-Type: application/json',`,
-    `    ],`,
-    `    CURLOPT_RETURNTRANSFER => true,`,
-    `    CURLOPT_TIMEOUT => 15,`,
-    `]);`,
-    `$response = curl_exec($ch);`,
-    `$status = curl_getinfo($ch, CURLINFO_HTTP_CODE);`,
-    `curl_close($ch);`,
-    `echo $status, "\\n", $response, "\\n";`,
-  ].join("\n")
-}
-
 const demoOpen = ref(false)
 const demoApp = ref<ManagedApp | null>(null)
-const demoLang = ref<DemoLanguage>("curl")
-const approvedTemplates = ref<SmsTemplate[]>([])
-const demoTemplatesLoading = ref(false)
-const demoTemplateId = ref<number | null>(null)
-const demoTemplate = computed(() => approvedTemplates.value.find((item) => item.id === demoTemplateId.value) ?? null)
-const demoParamsSummary = computed(() => {
-  const template = demoTemplate.value
-  if (!template || !template.var_specs.length) return "无变量"
-  return [...template.var_specs]
-    .sort((a, b) => a.pos - b.pos)
-    .map((spec) => `{${spec.pos}}≤${spec.max_len}`)
-    .join("，")
-})
-const demoContext = computed<DemoContext | null>(() => {
-  const app = demoApp.value
-  const template = demoTemplate.value
-  if (!app || !template) return null
-  return {
-    app,
-    templateId: template.id,
-    templateName: template.name,
-    templateContent: template.content,
-    params: exampleParamsFor(template.var_specs),
-  }
-})
-const demoScript = computed(() => {
-  const app = demoApp.value
-  if (!app) return ""
-  const context = demoContext.value ?? {
-    app,
-    templateId: 12,
-    templateName: "（请选择已审核模板）",
-    templateContent: "",
-    params: ["张三", "123456"],
-  }
-  return buildDemoScript(demoLang.value, context)
-})
-
-async function loadApprovedTemplates(): Promise<void> {
-  demoTemplatesLoading.value = true
-  try {
-    const templates = await listTemplates()
-    approvedTemplates.value = templates.filter((item) => item.vendor_state === "approved")
-    if (demoTemplateId.value === null && approvedTemplates.value.length) {
-      demoTemplateId.value = approvedTemplates.value[0].id
-    }
-  } catch (error) {
-    ElMessage.error(errorText(error, "模板加载失败"))
-    approvedTemplates.value = []
-  } finally {
-    demoTemplatesLoading.value = false
-  }
-}
-
 function openDemo(item: ManagedApp): void {
   demoApp.value = item
-  demoLang.value = "curl"
-  demoTemplateId.value = null
   demoOpen.value = true
-  void loadApprovedTemplates()
-}
-
-async function copyDemo(): Promise<void> {
-  if (!demoScript.value) return
-  if (await copyText(demoScript.value)) {
-    ElMessage.success("脚本已复制到剪贴板")
-  } else {
-    ElMessage.error("复制失败，请手动选择文本复制")
-  }
 }
 
 async function load(): Promise<void> {
@@ -531,21 +248,54 @@ async function load(): Promise<void> {
   }
 }
 
-/** 今日用量一次联查（stat_daily 按应用维度），失败只影响用量单元格，不拖垮列表。 */
+/** 今日用量按应用维度读取有界分页；完整读完后发布，失败不把部分结果显示为完整用量。 */
 async function loadDailyUsage(): Promise<void> {
+  const signal = usageRead.start()
   const today = shanghaiDateKey()
   try {
-    const result = await getReport({
-      granularity: "day",
-      groupBy: "app",
-      category: "all",
-      start: today,
-      end: today,
-    })
-    if (!result || !Array.isArray(result.dim_summary)) throw new Error("用量统计响应无效")
-    dailyUsage.value = new Map(result.dim_summary.map((row) => [row.dim_value, row]))
+    const usage = new Map<string, ReportRow>()
+    const pageSize = 100
+    let expectedTotal: number | undefined
+    let currentPage = 1
+    while (true) {
+      const result = await getReport(
+        {
+          granularity: "day",
+          groupBy: "app",
+          category: "all",
+          start: today,
+          end: today,
+        },
+        { page: currentPage, size: pageSize },
+        signal,
+      )
+      if (signal.aborted) return
+      if (
+        !Array.isArray(result.items) ||
+        !Number.isSafeInteger(result.total) ||
+        result.total < 0 ||
+        result.size !== pageSize ||
+        result.page !== currentPage
+      ) {
+        throw new Error("用量统计响应无效")
+      }
+      expectedTotal ??= result.total
+      const expectedRows = Math.min(pageSize, expectedTotal - (currentPage - 1) * pageSize)
+      if (result.total !== expectedTotal || result.items.length !== expectedRows) {
+        throw new Error("用量统计分页不完整")
+      }
+      for (const row of result.items) {
+        if (usage.has(row.dim_value)) throw new Error("用量统计分页存在重复应用")
+        usage.set(row.dim_value, row)
+      }
+      if (currentPage * pageSize >= expectedTotal) break
+      currentPage += 1
+    }
+    if (usage.size !== expectedTotal) throw new Error("用量统计分页不完整")
+    dailyUsage.value = usage
     usageUnavailable.value = false
   } catch {
+    if (signal.aborted) return
     dailyUsage.value = new Map()
     usageUnavailable.value = true
   }
@@ -563,20 +313,12 @@ async function loadKeyGraceHours(): Promise<void> {
   }
 }
 
-async function loadApprovedSigns(): Promise<void> {
-  signsLoading.value = true
-  try {
-    const signs = await listSigns()
-    approvedSigns.value = signs.filter((item) => item.vendor_state === "approved")
-    signsUnavailable.value = false
-  } catch (error) {
-    approvedSigns.value = []
-    signsUnavailable.value = true
-    ElMessage.error(errorText(error, "已通过签名清单加载失败"))
-  } finally {
-    signsLoading.value = false
-  }
-}
+const {
+  approved: approvedSigns,
+  loading: signsLoading,
+  unavailable: signsUnavailable,
+  load: loadApprovedSigns,
+} = useApprovedResources(listSigns, (error) => ElMessage.error(errorText(error, "已通过签名清单加载失败")))
 
 /** 当前默认签名不在已通过清单时补一个遗留项，避免下拉显示原始值或被静默清空。 */
 const legacySign = computed(() => {
@@ -727,6 +469,7 @@ async function save(): Promise<void> {
 }
 
 async function rotateKey(item: ManagedApp): Promise<void> {
+  item = { ...item }
   if (secretOperation.value !== null) return
   secretOperation.value = "rotate-api-key"
   rotatingKeyId.value = item.id
@@ -761,6 +504,7 @@ async function rotateKey(item: ManagedApp): Promise<void> {
 }
 
 async function revokeKey(item: ManagedApp): Promise<void> {
+  item = { ...item }
   if (!item.old_key_prefix || !item.old_key_expires_at) return
   if (
     !(await confirmAuditedAction({
@@ -781,6 +525,7 @@ async function revokeKey(item: ManagedApp): Promise<void> {
 }
 
 async function rotateCallback(item: ManagedApp): Promise<void> {
+  item = { ...item }
   if (secretOperation.value !== null) return
   secretOperation.value = "rotate-callback-secret"
   rotatingCallbackId.value = item.id
@@ -807,6 +552,7 @@ async function rotateCallback(item: ManagedApp): Promise<void> {
 }
 
 async function disable(item: ManagedApp): Promise<void> {
+  item = { ...item }
   if (
     !(await confirmAuditedAction({
       title: `停用应用 ${item.name}？`,
@@ -832,6 +578,8 @@ async function disable(item: ManagedApp): Promise<void> {
 
 /** 启用不再从列表行拼全字段 PUT：先取权威配置再仅改 status，消除字段漂移写坏配置的风险。 */
 async function enable(item: ManagedApp): Promise<void> {
+  item = { ...item }
+  const isCurrent = captureCurrent()
   if (
     !(await confirmAuditedAction({
       title: "确认启用",
@@ -843,6 +591,7 @@ async function enable(item: ManagedApp): Promise<void> {
     return
   try {
     const current = await getApp(item.id)
+    if (!isCurrent()) return
     await updateApp(item.id, {
       dept: current.dept,
       allowed_categories: current.allowed_categories,
@@ -897,33 +646,23 @@ onMounted(() => {
     </label>
     <div class="apps-fld">
       <span>类别</span>
-      <div class="apps-seg" role="group" aria-label="类别筛选" data-testid="apps-category-seg">
-        <button
-          v-for="option in CATEGORY_FILTERS"
-          :key="option.value"
-          type="button"
-          :class="{ on: categoryFilter === option.value }"
-          :data-testid="`apps-category-${option.value}`"
-          @click="categoryFilter = option.value"
-        >
-          {{ option.label }}
-        </button>
-      </div>
+      <FilterSeg
+        v-model="categoryFilter"
+        :options="CATEGORY_FILTERS"
+        button-testid-prefix="apps-category"
+        aria-label="类别筛选"
+        data-testid="apps-category-seg"
+      />
     </div>
     <div class="apps-fld">
       <span>状态</span>
-      <div class="apps-seg" role="group" aria-label="状态筛选" data-testid="apps-status-seg">
-        <button
-          v-for="option in STATUS_FILTERS"
-          :key="option.value"
-          type="button"
-          :class="{ on: statusFilter === option.value }"
-          :data-testid="`apps-status-${option.value}`"
-          @click="statusFilter = option.value"
-        >
-          {{ option.label }}
-        </button>
-      </div>
+      <FilterSeg
+        v-model="statusFilter"
+        :options="STATUS_FILTERS"
+        button-testid-prefix="apps-status"
+        aria-label="状态筛选"
+        data-testid="apps-status-seg"
+      />
     </div>
     <span class="apps-filter-note">接口全量返回 · 前端过滤</span>
   </div>
@@ -1355,47 +1094,5 @@ onMounted(() => {
     </template>
   </el-dialog>
 
-  <el-dialog
-    v-model="demoOpen"
-    :title="demoApp ? `接入示例 · ${demoApp.name}` : '接入示例'"
-    width="min(720px, 96vw)"
-    :close-on-click-modal="false"
-    class="demo-dialog"
-  >
-    <p class="muted"
-      >应用 #{{ demoApp?.id }} · {{ demoApp?.dept }} · 类别 {{ (demoApp?.allowed_categories || []).join(" / ") }}</p
-    >
-    <p
-      >正式接入必须使用已审核模板（template_id）发送；直接内容会进入服务商人工审核、发送延迟大。API Key
-      请通过环境变量注入，不要硬编码或写入日志。</p
-    >
-    <label class="muted" for="demo-template-select">已审核模板</label>
-    <el-select
-      v-model="demoTemplateId"
-      data-testid="demo-template-select"
-      placeholder="选择已审核模板"
-      :loading="demoTemplatesLoading"
-      style="width: 100%"
-    >
-      <el-option
-        v-for="template in approvedTemplates"
-        :key="template.id"
-        :value="template.id"
-        :label="'#' + template.id + ' · ' + template.name"
-      />
-    </el-select>
-    <p v-if="demoTemplate" data-testid="demo-template-info">
-      模板内容：{{ demoTemplate.content }} · 参数：{{ demoParamsSummary }}
-    </p>
-    <p v-else>暂无已审核模板，示例将使用占位模板 ID；请先在「模板管理」创建模板并提交审核。</p>
-    <el-tabs v-model="demoLang">
-      <el-tab-pane v-for="language in DEMO_LANGUAGES" :key="language" :label="DEMO_LABELS[language]" :name="language">
-        <pre class="demo-script" :data-testid="`demo-script-body-${language}`">{{ demoScript }}</pre>
-      </el-tab-pane>
-    </el-tabs>
-    <template #footer>
-      <el-button data-testid="demo-copy" :disabled="!demoScript" @click="copyDemo">复制脚本</el-button>
-      <el-button data-testid="demo-close" type="primary" @click="demoOpen = false">关闭</el-button>
-    </template>
-  </el-dialog>
+  <ApiDemoDialog v-model="demoOpen" :app="demoApp" />
 </template>

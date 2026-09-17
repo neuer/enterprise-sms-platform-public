@@ -8,8 +8,12 @@ import pytest
 from app.services.usage_ledger import (
     APPLY_PROJECTION_LUA,
     APPLY_PROJECTIONS_LUA,
+    BEGIN_PROJECTION_REBUILD_LUA,
     FREQUENCY_MERGE_FUTURE_DAY_SKEW,
     FREQUENCY_MERGE_FUTURE_MINUTE_SKEW,
+    PROJECTION_REBUILD_KEY,
+    PUBLISH_PROJECTION_READY_LUA,
+    RENEW_PROJECTION_REBUILD_LUA,
     ProjectionRow,
     UsageLedgerService,
     UsageProjectionUnavailable,
@@ -55,6 +59,25 @@ class ProjectionRedis:
     async def eval(self, script: str, numkeys: int, *args: Any) -> int:
         if self.fail:
             raise ConnectionError
+        if script == BEGIN_PROJECTION_REBUILD_LUA:
+            barrier, ready, token, _ttl = args
+            self.values[str(barrier)] = str(token)
+            self.values.pop(str(ready), None)
+            return 1
+        if script == RENEW_PROJECTION_REBUILD_LUA:
+            barrier, token, _ttl = args
+            return int(self.values.get(str(barrier)) == str(token))
+        if script == PUBLISH_PROJECTION_READY_LUA:
+            keys, arguments = args[:numkeys], args[numkeys:]
+            owner = self.values.get(str(keys[0]))
+            token = str(arguments[0])
+            if (not token and owner is not None) or (token and owner != token):
+                return 0
+            for key in keys[1:]:
+                self.values[str(key)] = "1"
+            if token:
+                self.values.pop(str(keys[0]), None)
+            return 1
         if script == APPLY_PROJECTION_LUA:
             assert numkeys == 2
             key, version_key, value, version, _expires_at = args
@@ -87,7 +110,16 @@ class ProjectionRedis:
 async def test_measure_drift_does_not_turn_redis_failure_into_zero_projection() -> None:
     class Result:
         def mappings(self) -> list[dict[str, object]]:
-            return [{"dimension_key": "quota:app:7:20260901", "kind": "quota", "value": 9}]
+            return [
+                {
+                    "dimension_key": "quota:app:7:20260901",
+                    "kind": "quota",
+                    "value": 9,
+                    "usage_date": date(2026, 9, 1),
+                    "version": 1,
+                    "expires_at": datetime(2026, 9, 2, tzinfo=UTC),
+                }
+            ]
 
     class Connection:
         async def execute(self, *_args: object, **_kwargs: object) -> Result:
@@ -245,6 +277,9 @@ class _RebuildConnection:
         assert params == {"name": "usage:projection:rebuild"}
         return self.locked
 
+    async def rollback(self) -> None:
+        return None
+
     async def execute(self, statement: object, params: object = None) -> None:
         if "pg_advisory_unlock" in str(statement):
             self.unlocked = True
@@ -286,17 +321,17 @@ async def test_projection_rebuild_uses_postgres_owner_and_visible_redis_progress
     await service.ensure_ready(datetime(2026, 7, 26, 8, tzinfo=UTC))
 
     assert rebuilt == ["system:usage-projection-auto"]
-    assert any(
-        key.startswith("usage:projection:rebuild:") for key in redis.values
-    )
+    # rebuild 本身持有数据库 Owner；入口只路由，不能嵌套取得第二个锁。
+    token = await service._claim_rebuild_lock(connection, "20260726")
+    assert redis.values[PROJECTION_REBUILD_KEY] == token
+    await service._release_rebuild_lock(connection)
     assert connection.unlocked is True
-    assert connection.closed is True
 
 
 @pytest.mark.asyncio
 async def test_projection_rebuild_second_owner_is_rejected() -> None:
     redis = ProjectionRedis()
-    redis.values["usage:projection:rebuild:20260726"] = "other-owner"
+    redis.values[PROJECTION_REBUILD_KEY] = "other-owner"
     service = UsageLedgerService(redis, object())  # type: ignore[arg-type]
     connection = _RebuildConnection(locked=True)
     service._engine = lambda: _RebuildEngine(connection)  # type: ignore[method-assign]
@@ -312,7 +347,7 @@ async def test_projection_rebuild_second_owner_is_rejected() -> None:
 
     with pytest.raises(UsageProjectionUnavailable, match="rebuild in progress"):
         await service.ensure_ready(datetime(2026, 7, 26, 8, tzinfo=UTC))
-    assert connection.unlocked is True
+    assert connection.unlocked is False
 
 
 def test_frequency_projection_keys_are_deterministic() -> None:

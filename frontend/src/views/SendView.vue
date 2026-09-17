@@ -1,4 +1,10 @@
 <script setup lang="ts">
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
+
+import { STATUS_LABELS } from "../lib/labels"
+import { useApprovedResources } from "../composables/useApprovedResources"
+import { renderPreview, splitPreviewParts } from "../lib/templatePreview"
+import FilterSeg from "../components/FilterSeg.vue"
 import type { UploadRequestOptions } from "element-plus"
 import { ElMessage } from "element-plus"
 import { computed, onBeforeUnmount, onMounted, reactive, ref, toRef, watch } from "vue"
@@ -15,15 +21,14 @@ import {
   type SendResult,
   type WebMessagePayload,
 } from "../api/webMessages"
-import { listTemplates, type SmsTemplate } from "../api/templates"
-import { listSigns, type SmsSign } from "../api/signs"
+import { listTemplates } from "../api/templates"
+import { listSigns } from "../api/signs"
 import { getDashboard } from "../api/dashboard"
-import SegmentBar from "../components/SegmentBar.vue"
+import BillingSegments from "../components/BillingSegments.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { copyText } from "../lib/clipboard"
 import { saveBlob } from "../lib/download"
-import { STATUS_LABELS } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime, toApiDateTime } from "../lib/time"
 import { errorText } from "../lib/error"
@@ -55,6 +60,10 @@ const preview = ref<BillingPreview | null>(null)
 const previewLoading = ref(false)
 const previewError = ref("")
 const busy = ref(false)
+let requestGeneration = 0
+let draftRevision = 0
+let disposed = false
+const submittedSummary = ref("")
 const errorMessage = ref("")
 const sendResult = ref<SendResult | null>(null)
 const copied = ref(false)
@@ -65,38 +74,24 @@ function newIdempotencyKey(): string {
 
 const idempotencyKey = ref(newIdempotencyKey())
 let copiedTimer: number | undefined
-const templates = ref<SmsTemplate[]>([])
+const {
+  items: templates,
+  approved: approvedTemplates,
+  load: loadTemplates,
+} = useApprovedResources(listTemplates, (error) => {
+  errorMessage.value = errorText(error, "模板列表加载失败")
+})
 const templateParams = ref<string[]>([])
-const signs = ref<SmsSign[]>([])
+// 签名是辅助加载：失败不阻断发送，但必须可见，否则用户只看到空下拉而不知原因。
+const { approved: approvedSigns, load: loadSigns } = useApprovedResources(listSigns, () => {
+  ElMessage.warning("签名列表加载失败，可刷新页面重试；不指定签名时使用应用默认签名")
+})
 const testSendMax = ref<number | null>(null)
-const approvedTemplates = computed(() => templates.value.filter((item) => item.vendor_state === "approved"))
-const approvedSigns = computed(() => signs.value.filter((item) => item.vendor_state === "approved"))
 const selectedTemplate = computed(() => templates.value.find((item) => item.id === Number(form.templateId)) || null)
-const renderedTemplate = computed(() => {
-  const template = selectedTemplate.value
-  if (!template) return ""
-  return template.content.replace(/\{(\d+)\}/g, (placeholder, position: string) => {
-    const value = templateParams.value[Number(position) - 1]?.trim()
-    return value || placeholder
-  })
-})
-
-const renderedTemplateParts = computed(() => {
-  const template = selectedTemplate.value
-  if (!template) return []
-  const parts: { text: string; highlight: boolean }[] = []
-  const pattern = /\{(\d+)\}/g
-  let cursor = 0
-  for (const match of template.content.matchAll(pattern)) {
-    const index = match.index ?? 0
-    if (index > cursor) parts.push({ text: template.content.slice(cursor, index), highlight: false })
-    const value = templateParams.value[Number(match[1]) - 1]?.trim()
-    parts.push({ text: value || match[0], highlight: Boolean(value) })
-    cursor = index + match[0].length
-  }
-  if (cursor < template.content.length) parts.push({ text: template.content.slice(cursor), highlight: false })
-  return parts
-})
+const renderedTemplate = computed(() => renderPreview(selectedTemplate.value?.content ?? "", templateParams.value))
+const renderedTemplateParts = computed(() =>
+  splitPreviewParts(selectedTemplate.value?.content ?? "", templateParams.value),
+)
 
 // ── 号码解析：共享 useDebouncedEntries 单点（#596 模式）——≤2000 字的小文本同步解析，
 // 校验提示与计数即时反馈不变；更大粘贴（可能数万行）300ms 防抖，避免逐键全量 split/Set 阻塞输入。 ──
@@ -139,14 +134,15 @@ const sendDisabled = computed(
     (form.source === "paste" && invalidMobiles.value.length > 0) ||
     !contentReady.value ||
     (form.category === "market" && !form.consentConfirmed) ||
-    testLimitExceeded.value,
+    testLimitExceeded.value ||
+    (form.scheduleEnabled && (!form.scheduledAt || !Number.isFinite(Date.parse(form.scheduledAt)))),
 )
 const scheduledAtValue = computed(() => (form.scheduleEnabled && form.scheduledAt ? form.scheduledAt : ""))
 
 const submitLabel = computed(() => {
   const cost = preview.value ? ` · ${preview.value.quota_cost.toLocaleString()} 计费条` : ""
   if (preview.value?.approval_required) return `提交审批${cost}`
-  if (scheduledAtValue.value || preview.value?.deferred_reason === "market_window") return `安排发送${cost}`
+  if (form.scheduleEnabled || preview.value?.deferred_reason === "market_window") return `安排发送${cost}`
   return `立即发送${cost}`
 })
 
@@ -237,7 +233,7 @@ async function runPreview(key: string): Promise<void> {
       accepted_count: previewCount.value,
       consent_confirmed: form.consentConfirmed,
     })
-    if (key !== previewKey.value) return
+    if (disposed || key !== previewKey.value) return
     if (isValidPreview(result)) {
       preview.value = result
       lastPreviewKey.value = key
@@ -246,10 +242,10 @@ async function runPreview(key: string): Promise<void> {
       lastPreviewKey.value = ""
     }
   } catch (error) {
-    if (key !== previewKey.value) return
+    if (disposed || key !== previewKey.value) return
     previewError.value = errorText(error, "预检失败")
   } finally {
-    if (key === previewKey.value) previewLoading.value = false
+    if (!disposed && key === previewKey.value) previewLoading.value = false
   }
 }
 
@@ -383,9 +379,12 @@ watch(
     () => JSON.stringify(templateParams.value),
   ],
   () => {
+    draftRevision += 1
     idempotencyKey.value = newIdempotencyKey()
     sendResult.value = null
+    submittedSummary.value = ""
   },
+  { flush: "sync" },
 )
 
 watch(
@@ -406,25 +405,6 @@ watch(
   },
 )
 
-async function loadTemplates(): Promise<void> {
-  try {
-    templates.value = await listTemplates()
-  } catch (error) {
-    errorMessage.value = errorText(error, "模板列表加载失败")
-  }
-}
-
-async function loadSigns(): Promise<void> {
-  try {
-    const result = await listSigns()
-    signs.value = Array.isArray(result) ? result : []
-  } catch {
-    signs.value = []
-    // 辅助加载失败不阻断发送，但必须可见：否则用户只看到空下拉而不知原因。
-    ElMessage.warning("签名列表加载失败，可刷新页面重试；不指定签名时使用应用默认签名")
-  }
-}
-
 async function loadUiPolicy(): Promise<void> {
   try {
     const result = await getDashboard()
@@ -437,6 +417,7 @@ async function loadUiPolicy(): Promise<void> {
 }
 
 function selectTemplate(value: string | number): void {
+  if (busy.value || disposed) return
   form.templateId = String(value)
   const template = templates.value.find((item) => item.id === Number(value))
   templateParams.value = template?.var_specs.map(() => "") || []
@@ -444,6 +425,7 @@ function selectTemplate(value: string | number): void {
 
 /** 模板管理「用于发送」入口：/send?template_id=N 预选已审核模板；未通过审核或不存在则不预选。 */
 function applyTemplateQuery(): void {
+  if (busy.value || disposed) return
   const raw = router?.currentRoute?.value?.query?.template_id
   const id = Array.isArray(raw) ? raw[0] : raw
   if (!id) return
@@ -468,12 +450,14 @@ function resetFeedback(): void {
 }
 
 function chooseCategory(category: Category): void {
+  if (busy.value || disposed) return
   form.category = category
   if (category === "notice") form.consentConfirmed = false
   resetFeedback()
 }
 
 function removeDuplicates(): void {
+  if (busy.value || disposed) return
   flushMobilesParse()
   const deduped = [...new Set(pastedMobiles.value)]
   form.mobilesText = deduped.join("\n")
@@ -482,6 +466,7 @@ function removeDuplicates(): void {
 }
 
 function resetImport(): void {
+  if (busy.value || disposed) return
   imported.value = null
   importState.value = "idle"
   importFilename.value = ""
@@ -489,22 +474,27 @@ function resetImport(): void {
 }
 
 async function handleUpload(options: UploadRequestOptions): Promise<void> {
+  if (busy.value || disposed) return
+  const generation = ++requestGeneration
   resetFeedback()
   importState.value = "parsing"
   importFilename.value = options.file.name
   importError.value = ""
   busy.value = true
   try {
-    imported.value = await uploadPhones(options.file)
+    const result = await uploadPhones(options.file)
+    if (disposed || generation !== requestGeneration) return
+    imported.value = result
     importState.value = "ready"
     form.source = "import"
     options.onSuccess(imported.value)
   } catch (error) {
+    if (disposed || generation !== requestGeneration) return
     imported.value = null
     importState.value = "failed"
     importError.value = errorText(error, "号码文件解析失败")
   } finally {
-    busy.value = false
+    if (!disposed && generation === requestGeneration) busy.value = false
   }
 }
 
@@ -516,7 +506,9 @@ function formatExpiry(value: string): string {
 async function submit(): Promise<void> {
   // 大文本粘贴后 300ms 防抖窗口内也可能点击提交：先落盘最新解析，再做禁用校验与组包。
   flushMobilesParse()
-  if (sendDisabled.value) return
+  if (sendDisabled.value || disposed) return
+  const generation = ++requestGeneration
+  const revision = draftRevision
   resetFeedback()
   busy.value = true
   const payload: WebMessagePayload = {
@@ -530,13 +522,17 @@ async function submit(): Promise<void> {
     remark: form.remark || undefined,
   }
   if (form.source === "import" && imported.value) payload.import_id = imported.value.import_id
-  else payload.mobiles = pastedMobiles.value
+  else payload.mobiles = [...pastedMobiles.value]
   try {
-    sendResult.value = await sendWebMessage(payload)
+    const result = await sendWebMessage(payload)
+    if (disposed || generation !== requestGeneration || revision !== draftRevision) return
+    sendResult.value = result
+    submittedSummary.value = `${payload.category === "market" ? "营销短信" : "通知短信"} · ${payload.import_id ? "文件导入" : "手工粘贴"} · ${payload.scheduled_at ? formatDateTime(payload.scheduled_at) : "立即受理"}`
   } catch (error) {
+    if (disposed || generation !== requestGeneration || revision !== draftRevision) return
     errorMessage.value = errorText(error, "发送受理失败")
   } finally {
-    busy.value = false
+    if (!disposed && generation === requestGeneration) busy.value = false
   }
 }
 
@@ -559,6 +555,7 @@ function goBatches(): void {
 }
 
 function resetForAnother(): void {
+  if (busy.value || disposed) return
   form.mobilesText = ""
   form.content = ""
   form.templateId = ""
@@ -575,13 +572,25 @@ function resetForAnother(): void {
   idempotencyKey.value = newIdempotencyKey()
 }
 
+function clearSessionDraft(): void {
+  requestGeneration += 1
+  busy.value = false
+  resetForAnother()
+  errorMessage.value = ""
+  submittedSummary.value = ""
+}
+
 onMounted(() => {
+  window.addEventListener(SESSION_CLEARING_EVENT, clearSessionDraft)
   void loadTemplates().then(applyTemplateQuery)
   void loadSigns()
   void loadUiPolicy()
 })
 
 onBeforeUnmount(() => {
+  clearSessionDraft()
+  disposed = true
+  window.removeEventListener(SESSION_CLEARING_EVENT, clearSessionDraft)
   window.clearTimeout(previewTimer)
   window.clearTimeout(copiedTimer)
 })
@@ -597,7 +606,8 @@ onBeforeUnmount(() => {
     <span class="security-note"><i></i> 敏感数据保护已启用 · 预检自动更新</span>
   </section>
 
-  <div class="send-workbench">
+  <p v-if="busy" role="status">正在处理本次请求，草稿暂时锁定。</p>
+  <div class="send-workbench" :aria-busy="busy">
     <div class="send-editor" aria-label="短信编辑区">
       <section class="form-panel">
         <header>
@@ -612,6 +622,7 @@ onBeforeUnmount(() => {
             data-testid="category-notice"
             :class="{ on: form.category === 'notice', selected: form.category === 'notice' }"
             @click="chooseCategory('notice')"
+            :disabled="busy"
           >
             <b>通知短信<span class="cat-tag notice">NOTICE</span></b>
             <small>实时通道 · 黑名单默认拦截<br />≥100 号码需审批</small>
@@ -622,6 +633,7 @@ onBeforeUnmount(() => {
             data-testid="category-market"
             :class="{ on: form.category === 'market', selected: form.category === 'market' }"
             @click="chooseCategory('market')"
+            :disabled="busy"
           >
             <b>营销短信<span class="cat-tag market">MARKET</span></b>
             <small>批量通道 · 08:00–21:00 · 强制退订语<br />≥50 号码需审批 · 同号同应用 1 条/天</small>
@@ -635,14 +647,16 @@ onBeforeUnmount(() => {
           <span class="form-index">02</span>
           <h2>收信号码</h2>
           <small>单次最多 50,000 个</small>
-          <span class="seg" role="group" aria-label="号码来源">
-            <button type="button" :class="{ on: form.source === 'paste' }" @click="form.source = 'paste'"
-              >手工粘贴</button
-            >
-            <button type="button" :class="{ on: form.source === 'import' }" @click="form.source = 'import'"
-              >文件导入</button
-            >
-          </span>
+          <FilterSeg
+            v-model="form.source"
+            :options="[
+              ...[{ label: '手工粘贴', value: 'paste' as const }],
+              ...[{ label: '文件导入', value: 'import' as const }],
+            ]"
+            class="filter-seg--pill"
+            aria-label="号码来源"
+            :disabled="busy"
+          />
         </header>
         <template v-if="form.source === 'paste'">
           <el-input
@@ -651,6 +665,7 @@ onBeforeUnmount(() => {
             :rows="5"
             resize="vertical"
             placeholder="每行一个手机号，也支持逗号或空格分隔"
+            :disabled="busy"
           />
           <div v-if="pastedMobiles.length" class="phone-stats" data-testid="phone-stats">
             <span
@@ -666,7 +681,9 @@ onBeforeUnmount(() => {
               >重复 <b>{{ duplicateCount.toLocaleString() }}</b></span
             >
             <span class="act">
-              <button v-if="duplicateCount > 0" type="button" @click="removeDuplicates">移除重复</button>
+              <button v-if="duplicateCount > 0" :disabled="busy" type="button" @click="removeDuplicates"
+                >移除重复</button
+              >
             </span>
           </div>
           <p v-if="invalidMobiles.length" class="mobiles-invalid-hint" data-testid="invalid-mobiles-hint">
@@ -699,7 +716,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="importState === 'failed'" class="import-box failed" data-testid="import-failed">
             <p>{{ importError || "号码文件解析失败" }}</p>
-            <button type="button" class="text-action" @click="resetImport">重新上传</button>
+            <button type="button" class="text-action" @click="resetImport" :disabled="busy">重新上传</button>
           </div>
           <div v-if="importState === 'ready' && imported" class="import-box" data-testid="import-ready">
             <div class="import-ready">
@@ -721,9 +738,10 @@ onBeforeUnmount(() => {
                   data-testid="download-invalid"
                   type="button"
                   @click="downloadInvalidFile"
+                  :disabled="busy"
                   >下载剔除清单</button
                 >
-                <button type="button" @click="resetImport">重新上传</button>
+                <button type="button" @click="resetImport" :disabled="busy">重新上传</button>
               </div>
             </div>
             <p class="import-meta">
@@ -739,17 +757,16 @@ onBeforeUnmount(() => {
           <span class="form-index">03</span>
           <h2>发送内容</h2>
           <small>最终内容（含签名与退订语）不超过 500 字</small>
-          <span class="seg" role="group" aria-label="内容来源">
-            <button type="button" :class="{ on: form.contentMode === 'content' }" @click="form.contentMode = 'content'"
-              >直接编辑</button
-            >
-            <button
-              type="button"
-              :class="{ on: form.contentMode === 'template' }"
-              @click="form.contentMode = 'template'"
-              >审核模板</button
-            >
-          </span>
+          <FilterSeg
+            v-model="form.contentMode"
+            :options="[
+              ...[{ label: '直接编辑', value: 'content' as const }],
+              ...[{ label: '审核模板', value: 'template' as const }],
+            ]"
+            class="filter-seg--pill"
+            aria-label="内容来源"
+            :disabled="busy"
+          />
         </header>
         <el-input
           v-if="form.contentMode === 'content'"
@@ -757,6 +774,7 @@ onBeforeUnmount(() => {
           type="textarea"
           :rows="4"
           maxlength="500"
+          :disabled="busy"
         />
         <div v-else class="template-fields">
           <el-select
@@ -765,6 +783,7 @@ onBeforeUnmount(() => {
             filterable
             placeholder="选择已审核模板"
             @change="selectTemplate"
+            :disabled="busy"
           >
             <el-option v-for="item in approvedTemplates" :key="item.id" :label="item.name" :value="String(item.id)" />
           </el-select>
@@ -777,6 +796,7 @@ onBeforeUnmount(() => {
                 data-testid="template-param"
                 :maxlength="spec.max_len"
                 :placeholder="`参数 {${spec.pos}}，最多 ${spec.max_len} 字`"
+                :disabled="busy"
               />
             </div>
             <div class="template-render-preview">
@@ -796,7 +816,13 @@ onBeforeUnmount(() => {
           />
         </div>
         <div class="inline-fields">
-          <el-select v-model="form.signName" data-testid="sign-select" clearable placeholder="不指定 · 用应用默认签名">
+          <el-select
+            v-model="form.signName"
+            data-testid="sign-select"
+            clearable
+            placeholder="不指定 · 用应用默认签名"
+            :disabled="busy"
+          >
             <el-option
               v-for="item in approvedSigns"
               :key="item.id"
@@ -804,7 +830,12 @@ onBeforeUnmount(() => {
               :value="item.name"
             />
           </el-select>
-          <el-input v-model="form.remark" maxlength="200" placeholder="发送备注（可选，写入批次与审计）" />
+          <el-input
+            v-model="form.remark"
+            maxlength="200"
+            placeholder="发送备注（可选，写入批次与审计）"
+            :disabled="busy"
+          />
         </div>
       </section>
 
@@ -812,7 +843,7 @@ onBeforeUnmount(() => {
         <header><span class="form-index">04</span><h2>发送选项</h2></header>
         <div class="opt-row">
           <label class="opt">
-            <input v-model="form.scheduleEnabled" type="checkbox" :disabled="form.isTest" />
+            <input v-model="form.scheduleEnabled" type="checkbox" :disabled="busy || form.isTest" />
             <span>定时发送<small>不勾选为立即发送；营销窗外自动转定时</small></span>
           </label>
           <el-date-picker
@@ -820,11 +851,11 @@ onBeforeUnmount(() => {
             type="datetime"
             popper-class="qingluan-date-popper"
             value-format="YYYY-MM-DDTHH:mm:ss+08:00"
-            placeholder="选择时间（可选）"
-            :disabled="form.isTest || !form.scheduleEnabled"
+            placeholder="选择发送时间（必填）"
+            :disabled="busy || form.isTest || !form.scheduleEnabled"
           />
           <label class="opt">
-            <input v-model="form.isTest" type="checkbox" />
+            <input v-model="form.isTest" type="checkbox" :disabled="busy" />
             <span
               >测试发送<small>{{ testSendHint }}</small></span
             >
@@ -876,7 +907,7 @@ onBeforeUnmount(() => {
 
       <section v-if="preview" class="rail-card">
         <header>计费 <small>services/billing.py 单点口径</small></header>
-        <SegmentBar :parts="preview.segment_parts" :next-hint="nextSegmentHint" />
+        <BillingSegments :parts="preview.segment_parts" :next-hint="nextSegmentHint" />
         <div class="cost-line">
           <span class="fx">{{ previewCount.toLocaleString() }} × {{ preview.est_segments }} 段 =</span>
           <strong>{{ preview.quota_cost.toLocaleString() }}<small>计费条</small></strong>
@@ -937,7 +968,7 @@ onBeforeUnmount(() => {
       <p v-if="previewError" class="preview-error">{{ previewError }}</p>
 
       <label v-if="form.category === 'market'" class="consent-panel" data-testid="market-consent">
-        <input v-model="form.consentConfirmed" type="checkbox" />
+        <input v-model="form.consentConfirmed" type="checkbox" :disabled="busy" />
         <span>
           <b>我确认以上收信人已同意接收营销信息。</b>
           <p>勾选行为与操作人将写入审计日志；未确认时平台拒绝受理（422 CONSENT_REQUIRED）。</p>
@@ -948,8 +979,9 @@ onBeforeUnmount(() => {
         <header><i></i>已受理 · {{ sendStatusLabel(sendResult.status) }}</header>
         <div class="batch-row">
           <code>{{ sendResult.batch_no }}</code>
-          <button type="button" @click="copyBatchNo">{{ copied ? "已复制" : "复制批次号" }}</button>
+          <button type="button" @click="copyBatchNo" :disabled="busy">{{ copied ? "已复制" : "复制批次号" }}</button>
         </div>
+        <p class="result-line" data-testid="submitted-summary">{{ submittedSummary }}</p>
         <p class="result-line">{{ sendSuccessText(sendResult) }}。</p>
         <div class="result-stats">
           <span

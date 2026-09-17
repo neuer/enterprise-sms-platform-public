@@ -24,49 +24,49 @@ from app.services.category import queue_for_category
 from app.services.content_protection import decrypt_template_content
 from app.services.crypto import CryptoService
 from app.services.idempotency import IdempotencyFingerprint, IdempotencyScope
+from app.services.idempotency_lifecycle import (
+    CLAIM_RESULT_SQL,
+    reclaim_completed_result,
+    require_completed_result,
+)
+from app.services.idempotency_lifecycle import (
+    IDEMPOTENCY_LIVE_SQL as IDEMPOTENCY_LIVE_SQL,
+)
 from app.services.import_repository import consume_import_reservation
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
-from app.services.pipeline import BatchCommand, BatchResponse, StoredBatch
+from app.services.pipeline import AcceptCommitConflict, BatchCommand, BatchResponse, StoredBatch
+from app.services.runtime_policy import CONFIG_SPECS
 from app.services.sensitive import SENSITIVE_WORD_REVISION_KEY, sensitive_word_index
 from app.services.template import render_template
 from app.services.usage_ledger import commit_usage_reservation, shanghai_day
 from app.settings import Settings, get_settings
 
-IDEMPOTENCY_LIVE_SQL = """
-(
-  i.expires_at > now()
-  OR b.status IN (
-    'pending_approval','scheduled','queued','sending','balance_blocked'
-  )
-  OR EXISTS (
-    SELECT 1 FROM sms_chunk c
-    WHERE c.batch_id=b.id
-      AND c.status IN (
-        'uncertain','unknown_terminal','submitting','retrying','pending',
-        'split_capacity_blocked','failover_pending'
-      )
-  )
-  OR EXISTS (
-    SELECT 1 FROM callback_task t
-    WHERE t.batch_id=b.id AND t.status IN ('pending','retrying')
-  )
-)
-"""
+PIPELINE_CONFIG_KEYS = tuple(sorted(set(CONFIG_SPECS) | {"vendor_batch_size"}))
+
+
 
 
 class SqlPipelineStore:
     """在同一事务创建批次、消息三列、幂等记录与无 PII 审计。"""
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self, settings: Settings | None = None, crypto: CryptoService | None = None,
+    ) -> None:
         self.settings = settings or get_settings()
+        self.crypto = crypto
 
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
 
     async def load_config(self, dept: str) -> dict[str, Any]:
+        """每次读取策略所需键与当前部门配额，不跨请求缓存配置或凭据。"""
+
         async with self._engine().connect() as connection:
-            config_result = await connection.execute(text("SELECT key, value FROM sys_config"))
+            config_result = await connection.execute(
+                text("SELECT key, value FROM sys_config WHERE key=ANY(CAST(:keys AS text[]))"),
+                {"keys": PIPELINE_CONFIG_KEYS},
+            )
             config = {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
             quota_result = await connection.execute(
                 text("SELECT daily_quota FROM dept_quota WHERE dept=:dept"),
@@ -334,9 +334,31 @@ class SqlPipelineStore:
         fingerprint: str,
         ttl_s: int,
     ) -> int | None:
-        """占用或接管可抢占 Claim；completed 不可抢占。"""
+        """占用 Claim；完成态仅在同事务证明结果已退役后推进代次。"""
 
         async with self._engine().begin() as connection:
+            await connection.execute(text("SET LOCAL lock_timeout='1s'"))
+            await connection.execute(text("SET LOCAL statement_timeout='5s'"))
+            params = {
+                "scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id,
+                "token": token, "fingerprint": fingerprint, "ttl_s": ttl_s,
+            }
+            previous = (
+                (
+                    await connection.execute(
+                        text("""
+                SELECT state,batch_id FROM idempotency_claim
+                WHERE scope_kind=:scope_kind AND scope_id=:scope_id AND biz_id=:biz_id
+            """),
+                        params,
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if previous is not None and previous["state"] == "completed":
+                return await reclaim_completed_result(connection, params, previous["batch_id"])
+
             row = (
                 await connection.execute(
                     text(
@@ -357,6 +379,7 @@ class SqlPipelineStore:
                           state = 'active',
                           batch_id = NULL,
                           completed_at = NULL,
+                          result_expires_at = NULL,
                           released_at = NULL,
                           release_reason = NULL,
                           updated_at = now()
@@ -473,33 +496,15 @@ class SqlPipelineStore:
         return row is not None
 
     async def load_idempotency_claim(
-        self, scope: IdempotencyScope, biz_id: str
+        self, scope: IdempotencyScope, biz_id: str,
     ) -> dict[str, Any] | None:
-        """读取权威 Claim，供 Redis 缺失时重建或判断可抢占。"""
-
+        """区分有效工作、真正过期结果与来源不足的完成操作。"""
         async with self._engine().connect() as connection:
-            row = (
-                (
-                    await connection.execute(
-                        text(
-                            """
-                        SELECT token, fingerprint, generation, state, batch_id,
-                               expires_at > now() AS lease_valid
-                        FROM idempotency_claim
-                        WHERE scope_kind=:scope_kind AND scope_id=:scope_id
-                          AND biz_id=:biz_id
-                        """
-                        ),
-                        {
-                            "scope_kind": scope.kind,
-                            "scope_id": scope.id,
-                            "biz_id": biz_id,
-                        },
-                    )
-                )
-                .mappings()
-                .one_or_none()
-            )
+            row = (await connection.execute(text(CLAIM_RESULT_SQL), {
+                "scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id,
+            })).mappings().one_or_none()
+        if row is not None:
+            require_completed_result(dict(row))
         return dict(row) if row is not None else None
 
     async def live_idempotency_claim(self, scope: IdempotencyScope, biz_id: str) -> bool:
@@ -637,9 +642,113 @@ class SqlPipelineStore:
                 int(row["request_hash_key_version"]),
             )
 
-    @staticmethod
-    async def _insert(connection: AsyncConnection, command: BatchCommand, batch_no: str) -> int:
+    async def _insert(
+        self, connection: AsyncConnection, command: BatchCommand, batch_no: str,
+    ) -> int | StoredBatch:
+        uncertain = None
+        if command.resend_of and not isinstance(command.principal, UncertainEffectPrincipal):
+            source = (
+                (
+                    await connection.execute(
+                        text("""
+                SELECT id,channel,dept,category,is_test,app_id FROM sms_batch
+                WHERE batch_no=:batch_no FOR UPDATE
+            """),
+                        {"batch_no": command.resend_of},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                source is None
+                or not command.failed_sources
+                or source["channel"] != command.channel
+                or source["dept"] != command.dept
+                or source["category"] != command.category
+                or source["is_test"] != command.is_test
+                or (command.channel == "api" and source["app_id"] != command.app_id)
+            ):
+                raise AcceptCommitConflict("原批次重发来源资格已变化")
+            # 回执使用相同批次锁；锁内新快照验证全部原消息，不能只检查先前读出的 failed。
+            rows = (
+                (
+                    await connection.execute(
+                        text("""
+                SELECT id,created_at,status,trim(phone_hmac) AS phone_hmac,key_version
+                FROM sms_message WHERE batch_id=:batch_id AND id=ANY(CAST(:ids AS bigint[]))
+            """),
+                        {
+                            "batch_id": source["id"],
+                            "ids": [item.message_id for item in command.failed_sources],
+                        },
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            actual = {
+                (int(row["id"]), row["created_at"], str(row["phone_hmac"]), int(row["key_version"]))
+                for row in rows
+                if row["status"] == "failed"
+            }
+            expected = {
+                (item.message_id, item.created_at, item.phone_hmac, item.key_version)
+                for item in command.failed_sources
+            }
+            if actual != expected or len(rows) != len(expected):
+                raise AcceptCommitConflict("原批次失败消息已变化，请刷新后重试")
+        if isinstance(command.principal, UncertainEffectPrincipal):
+            from app.services.idempotency import uncertain_resend_biz_id
+            from app.services.uncertain_resolution import (
+                UncertainResolutionConflict,
+                _check_child_context,
+                _child_relation,
+                lock_uncertain_resend,
+            )
+
+            uncertain, context, _app = await lock_uncertain_resend(connection, command.principal)
+            if (
+                command.app_id != context.usage_subject.app_id
+                or command.channel != context.source_channel
+                or command.dept != context.source_dept
+                or command.category != context.source_category
+                or command.scope_kind != "uncertain-resend"
+                or command.scope_id != str(uncertain.id)
+                or command.biz_id
+                != uncertain_resend_biz_id(uncertain.id, uncertain.effect_generation)
+                or command.resend_of is not None
+            ):
+                raise UncertainResolutionConflict("重发命令来源无法证明")
+            relation = await _child_relation(connection, uncertain.id)
+            if relation is not None:
+                if not relation["provenance_verified"]:
+                    raise UncertainResolutionConflict("重发子批次来源冲突")
+                _check_child_context(relation, uncertain, context)
+                existing_no = await connection.scalar(text(
+                    "SELECT batch_no FROM sms_batch WHERE id=:id"
+                ), {"id": relation["child_batch_id"]})
+                return StoredBatch(str(existing_no).strip(), True)
+            if uncertain.child_batch_id is not None:
+                raise UncertainResolutionConflict("重发子批次来源无法证明")
+            from app.services.uncertain_source import verify_source_proof
+
+            if self.crypto is None:
+                self.crypto = CryptoService.from_settings(self.settings)
+            await verify_source_proof(
+                connection, self.crypto, command.uncertain_source_proof,
+                resolution_id=uncertain.id, generation=uncertain.effect_generation,
+                batch_id=uncertain.batch_id, chunk_id=uncertain.chunk_id, accepted=command.messages,
+            )
         if command.biz_id:
+            # 旧结果清理与状态写入共用批次锁；DELETE 使用获得锁后的新语句快照。
+            await connection.execute(text("""
+                SELECT b.id FROM sms_batch b JOIN idempotency_record i ON i.batch_id=b.id
+                WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id AND i.biz_id=:biz_id
+                FOR UPDATE OF b
+            """), {"scope_kind": command.scope_kind, "scope_id": command.scope_id,
+                    "biz_id": command.biz_id})
+
             await connection.execute(
                 text(
                     """
@@ -846,6 +955,8 @@ class SqlPipelineStore:
                               state='completed',
                               batch_id=:batch_id,
                               completed_at=now(),
+                              result_expires_at=(SELECT expires_at FROM idempotency_record
+                                                WHERE batch_id=:batch_id),
                               updated_at=now()
                             WHERE scope_kind=:scope_kind
                               AND scope_id=:scope_id
@@ -918,12 +1029,15 @@ class SqlPipelineStore:
                     dedup_key=f"batch.ready:{batch_no}",
                 ),
             )
+        if uncertain is not None:
+            from app.services.uncertain_resolution import bind_uncertain_child
+
+            await bind_uncertain_child(connection, uncertain, batch_id, recovered=False)
         if isinstance(command.principal, UncertainEffectPrincipal):
             await bind_connection_system_audit(
                 connection,
                 actor_name=command.principal.actor_name,
                 action="message_send",
-                producer_domain="api",
             )
         after_val: dict[str, object] = {
             "batch_no": batch_no,
@@ -932,6 +1046,7 @@ class SqlPipelineStore:
         }
         if isinstance(command.principal, UncertainEffectPrincipal):
             after_val["uncertain_resend"] = True
+            after_val["effect_generation"] = command.principal.effect_generation
         await connection.execute(
             text(
                 """
@@ -987,7 +1102,9 @@ class SqlPipelineStore:
         batch_no = command.batch_no
         try:
             async with self._engine().begin() as connection:
-                await self._insert(connection, command, batch_no)
+                inserted = await self._insert(connection, command, batch_no)
+                if isinstance(inserted, StoredBatch):
+                    return inserted
             return StoredBatch(
                 batch_no,
                 False,

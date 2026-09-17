@@ -18,6 +18,7 @@ from app.core.auth.runtime import get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.runtime_resources import redis_client
+from app.core.sensitive_text import reject_phone_business_id
 from app.services.app_ratelimit import (
     ApplicationRateLimiter,
     ApplicationRateLimitExceeded,
@@ -143,6 +144,7 @@ class SendRequestModel(BaseModel):
 
     @model_validator(mode="after")
     def content_or_template(self) -> SendRequestModel:
+        reject_phone_business_id(self.biz_id, field_name="biz_id")
         if (self.content is None) == (self.template_id is None):
             raise ValueError("content 与 template_id 必须且只能提供一个")
         return self
@@ -206,6 +208,7 @@ class VendorTestApiUatRequestModel(BaseModel):
 
     @model_validator(mode="after")
     def content_or_template(self) -> VendorTestApiUatRequestModel:
+        reject_phone_business_id(self.biz_id, field_name="biz_id")
         if (self.content is None) == (self.template_id is None):
             raise ValueError("content 与 template_id 必须且只能提供一个")
         return self
@@ -322,7 +325,17 @@ def _batch_queries() -> BatchQueryService:
     return BatchQueryService(settings, CryptoService.from_settings(settings))
 
 
-def get_resend_service() -> ResendService:
+async def require_batch_writer(
+    app: Annotated[ApiAppContext | None, Depends(optional_api_app)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(bearer_scheme)],
+) -> BatchAccessScope:
+    """在业务工厂之前校验路由已有的应用或 Web 写入主体。"""
+    return await _batch_scope(app, credentials, write=True)
+
+
+def get_resend_service(
+    _scope: Annotated[BatchAccessScope, Depends(require_batch_writer)],
+) -> ResendService:
     settings = get_settings()
     return ResendService(
         SqlResendRepository(settings),
@@ -344,13 +357,17 @@ def _scheduling_service(
     )
 
 
-async def get_scheduling_cancel_service() -> SchedulingService:
+async def get_scheduling_cancel_service(
+    _scope: Annotated[BatchAccessScope, Depends(require_batch_writer)],
+) -> SchedulingService:
     """取消不依赖可变审批策略，避免为每次取消额外占用数据库连接。"""
 
     return _scheduling_service(get_settings())
 
 
-async def get_scheduling_service() -> SchedulingService:
+async def get_scheduling_service(
+    _scope: Annotated[BatchAccessScope, Depends(require_batch_writer)],
+) -> SchedulingService:
     settings = get_settings()
     policy = await SqlRuntimePolicyLoader(settings).load()
     return _scheduling_service(
@@ -607,6 +624,8 @@ async def send_vendor_test_api_uat(
     try:
         replayed = await pipeline.replay_if_present(app, replay_request)
     except (
+        ControlPlaneUnavailable,
+        IdempotencyCoordinationTimeout,
         CategoryNotAllowed,
         ApplicationRateLimitExceeded,
         IdempotencyConflict,

@@ -296,7 +296,12 @@ async def password_policy(
         403: ERROR_RESPONSE,
         409: ERROR_RESPONSE,
         423: ERROR_RESPONSE,
-        429: ERROR_RESPONSE,
+        429: {
+            **ERROR_RESPONSE,
+            "headers": {
+                "Retry-After": {"schema": {"type": "integer", "minimum": 1, "maximum": 300}},
+            },
+        },
         503: ERROR_RESPONSE,
     },
 )

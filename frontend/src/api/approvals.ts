@@ -21,6 +21,7 @@ export interface ApprovalListItem {
   batch_no: string
   category: Category
   applicant: string
+  applicant_account_id: number | null
   dept: string
   total: number
   segments: number
@@ -62,7 +63,7 @@ export interface DecisionOutcome {
   deferred_reason: string | null
 }
 
-export async function listApprovals(query: ApprovalQuery): Promise<ApprovalPage> {
+export async function listApprovals(query: ApprovalQuery, signal?: AbortSignal): Promise<ApprovalPage> {
   const params = new URLSearchParams({ status: query.status })
   if (query.page !== undefined) params.set("page", String(query.page))
   if (query.size !== undefined) params.set("size", String(query.size))
@@ -70,11 +71,11 @@ export async function listApprovals(query: ApprovalQuery): Promise<ApprovalPage>
   if (query.dept?.trim()) params.set("dept", query.dept.trim())
   if (query.q?.trim()) params.set("q", query.q.trim())
   if (query.sort) params.set("sort", query.sort)
-  return apiRequest<ApprovalPage>(`/approvals?${params}`, { method: "GET" })
+  return apiRequest<ApprovalPage>(`/approvals?${params}`, { method: "GET", signal })
 }
 
-export async function getApproval(id: number): Promise<ApprovalDetail> {
-  return apiRequest<ApprovalDetail>(`/approvals/${id}`, { method: "GET" })
+export async function getApproval(id: number, signal?: AbortSignal): Promise<ApprovalDetail> {
+  return apiRequest<ApprovalDetail>(`/approvals/${id}`, { method: "GET", signal })
 }
 
 export async function decideApproval(id: number, action: ApprovalAction, reason?: string): Promise<DecisionOutcome> {

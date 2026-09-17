@@ -307,7 +307,7 @@ describe("会话代际与跨标签页 Refresh 写回", () => {
   it("login/refresh/logout/restore/BFCache 共用 sms-refresh-rotation 锁", async () => {
     const names: string[] = []
     const locks = {
-      request: async (name: string, callback: () => Promise<unknown>) => {
+      request: async (name: string, _options: { signal?: AbortSignal }, callback: () => Promise<unknown>) => {
         names.push(name)
         return callback()
       },

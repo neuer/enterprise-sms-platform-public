@@ -838,3 +838,232 @@ async def test_failure_completion_keeps_usage_callback_inflight_idempotent() -> 
         await _cleanup_extra(engine, batch_ids, chunk_ids)
         await _cleanup(engine, app_id=app_id, batch_ids=batch_ids, chunk_ids=chunk_ids)
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "boundary", ["allowed", "daily_limit", "recipient_disabled", "control_after_claim"]
+)
+async def test_next_attempt_has_atomic_budget_and_fresh_recipient_check(
+    boundary: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    from app.services.crypto import EncryptionContext
+    from app.services.vendor_test_budget import SubmissionClaimStatus
+
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url, hide_parameters=True)
+    nonce = uuid4().hex
+    app_id = batch_id = chunk_id = recipient_id = None
+    now = datetime(
+        2040,
+        1,
+        {"allowed": 1, "daily_limit": 2, "recipient_disabled": 3, "control_after_claim": 4}[
+            boundary
+        ],
+        tzinfo=UTC,
+    )
+    monkeypatch.setattr("app.tasks.send_repository.current_live_test_time", lambda: now)
+    try:
+        await _prepare_db(engine)
+        app_id = await _insert_app(engine, nonce)
+        batch_id, chunk_id = await _seed_chunk(
+            engine, app_id=app_id, nonce=nonce, index=1, status="pending"
+        )
+        crypto = _crypto()
+        phone = crypto.protect_phone(f"138{int(nonce[:8], 16) % 10**8:08d}")
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE sms_batch SET send_content_enc=:content WHERE id=:id"),
+                {
+                    "id": batch_id,
+                    "content": crypto.encrypt_bound_packed_text(
+                        "通知",
+                        EncryptionContext(
+                            domain="sms-content",
+                            table="sms_batch",
+                            column="send_content_enc",
+                            object_id=f"{nonce[:24]}{1:08d}",
+                        ),
+                    ),
+                },
+            )
+            await connection.execute(
+                text(
+                    "UPDATE sms_message SET "
+                    "phone_enc=:enc,phone_hmac=:hmac,phone_mask=:mask,key_version=:version WHERE "
+                    "chunk_id=:id"
+                ),
+                {
+                    "id": chunk_id,
+                    "enc": phone.phone_enc,
+                    "hmac": phone.phone_hmac,
+                    "mask": phone.phone_mask,
+                    "version": phone.key_version,
+                },
+            )
+            recipient_id = await connection.scalar(
+                text(
+                    "INSERT INTO vendor_test_recipient"
+                    "(label,phone_enc,phone_hmac,phone_mask,key_version,created_by) "
+                    "VALUES('synthetic',:enc,:hmac,:mask,:version,'test') RETURNING id"
+                ),
+                {
+                    "enc": phone.phone_enc,
+                    "hmac": phone.phone_hmac,
+                    "mask": phone.phone_mask,
+                    "version": phone.key_version,
+                },
+            )
+        store = _worker_store(database_url, two_vendor_registry())
+        store.settings.vendor_live_test = True
+        first = await store.claim_submission(chunk_id, 0, 1, enforce_live_test_budget=True)
+        assert first.status is SubmissionClaimStatus.CLAIMED
+        attempt = await store.begin_vendor_invoke(
+            chunk_id, vendor_id="zhihui", adapter_id="zhihui", reason="primary"
+        )
+        report = await store.finalize_vendor_attempt(
+            attempt.id,
+            chunk_id,
+            expected_generation=attempt.generation,
+            result="rejected",
+            vendor_code=1002,
+            safe_to_failover=True,
+        )
+        async with engine.begin() as connection:
+            assert (
+                await connection.scalar(
+                    text("SELECT status FROM vendor_test_send_attempt WHERE chunk_id=:id"),
+                    {"id": chunk_id},
+                )
+                == "released"
+            )
+            if boundary == "daily_limit":
+                await connection.execute(
+                    text(
+                        "UPDATE vendor_test_daily_usage SET confirmed_segments=100 WHERE "
+                        "usage_date=:day"
+                    ),
+                    {"day": now.date()},
+                )
+            if boundary == "recipient_disabled":
+                await connection.execute(
+                    text(
+                        "UPDATE vendor_test_recipient SET "
+                        "status='disabled',disabled_at=now(),disabled_by='test' WHERE id=:id"
+                    ),
+                    {"id": recipient_id},
+                )
+        kwargs = dict(
+            expected_route_generation=report.route_generation,
+            previous_attempt_id=attempt.id,
+            expected_next_vendor="secondary",
+            expected_route_policy_version=report.route_policy_version,
+            segments=1,
+            enforce_live_test_budget=True,
+        )
+        claimed = await store.claim_next_vendor_invoke(chunk_id, **kwargs)
+        if boundary in {"allowed", "control_after_claim"}:
+            assert claimed.kind is InvokeClaimKind.AUTHORIZED
+            assert (
+                await store.claim_next_vendor_invoke(chunk_id, **kwargs)
+            ).kind is InvokeClaimKind.ALREADY_HANDLED
+            auth = claimed.authorization
+            assert auth is not None
+            if boundary == "allowed":
+                await store.finalize_vendor_attempt(
+                    auth.attempt_id,
+                    chunk_id,
+                    expected_generation=auth.generation,
+                    result="submitted",
+                    vendor_task_id="synthetic-b",
+                )
+            else:
+                from app.services.vendor_control_state import VendorControlStateUnavailable
+
+                class StaleControl:
+                    def require_fresh(self) -> None:
+                        raise VendorControlStateUnavailable(
+                            "synthetic stale", requires_critical_pause=True
+                        )
+
+                gateway = CountingGateway(["must-not-send"])
+                bucket = CountingBucket()
+                worker = SendWorker(
+                    gateway,
+                    store,
+                    bucket,
+                    gateways={"zhihui": gateway, "secondary": gateway},
+                    registry=two_vendor_registry(),
+                    router=VendorRouter(("zhihui", "secondary")),
+                    control_guard=StaleControl(),
+                    enforce_live_test_recipients=True,
+                    enforce_live_test_budget=True,
+                )
+                payload = await store.refresh_invoke_payload(chunk_id)
+                outcome = await worker._invoke_authorized(
+                    payload,
+                    lane="realtime",
+                    vendor_id="secondary",
+                    generation=auth.generation,
+                    attempt_id=auth.attempt_id,
+                    allow_split=True,
+                    retry_index=0,
+                    lease_epoch=1,
+                )
+                assert outcome is SubmitOutcome.PAUSED and gateway.calls == 0
+                assert bucket.refunds == 1
+                snapshot = await _snapshot(engine, chunk_id)
+                assert snapshot["chunk_status"] == "retrying"
+                assert snapshot["outcome"] == "paused"
+        else:
+            assert claimed.kind is InvokeClaimKind.DENIED
+            assert claimed.reason == (
+                "daily_limit" if boundary == "daily_limit" else "recipient_denied"
+            )
+            assert (await _snapshot(engine, chunk_id))["chunk_status"] == "failover_pending"
+        async with engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        "SELECT attempt_no,status FROM vendor_test_send_attempt WHERE "
+                        "chunk_id=:id ORDER BY attempt_no"
+                    ),
+                    {"id": chunk_id},
+                )
+            ).all()
+            expected = [(1, "released")]
+            if boundary in {"allowed", "control_after_claim"}:
+                expected.append((2, "confirmed" if boundary == "allowed" else "released"))
+            assert rows == expected
+            assert (
+                await connection.scalar(
+                    text(
+                        "SELECT in_flight_segments FROM vendor_test_daily_usage WHERE "
+                        "usage_date=:day"
+                    ),
+                    {"day": now.date()},
+                )
+                == 0
+            )
+    finally:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM vendor_test_send_attempt WHERE chunk_id=:id"), {"id": chunk_id}
+            )
+            await connection.execute(
+                text("DELETE FROM vendor_test_daily_usage WHERE usage_date=:day"),
+                {"day": now.date()},
+            )
+            await connection.execute(
+                text("DELETE FROM vendor_test_recipient WHERE id=:id"), {"id": recipient_id}
+            )
+        await _cleanup_extra(engine, [batch_id] if batch_id else [], [chunk_id] if chunk_id else [])
+        await _cleanup(
+            engine,
+            app_id=app_id,
+            batch_ids=[batch_id] if batch_id else [],
+            chunk_ids=[chunk_id] if chunk_id else [],
+        )
+        await engine.dispose()

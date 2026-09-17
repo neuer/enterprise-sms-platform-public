@@ -141,10 +141,6 @@ class BatchQueryService:
         engine = self._engine()
         try:
             async with engine.connect() as connection:
-                count_result = await connection.execute(
-                    text("SELECT count(*) FROM sms_batch b WHERE " + where),
-                    params,
-                )
                 counts_result = await connection.execute(
                     text(
                         "SELECT b.status AS status,count(*) AS n"
@@ -152,9 +148,24 @@ class BatchQueryService:
                     ),
                     base_params,
                 )
+                status_counts = {
+                    str(row["status"]): int(row["n"])
+                    for row in counts_result.mappings()
+                }
+                # 分面已覆盖同一权限和非状态筛选；复用它计算选中状态的总数。
+                selected_statuses = set(statuses) if statuses else set(status_counts)
+                total = sum(status_counts.get(status, 0) for status in selected_statuses)
                 rows_result = await connection.execute(
                     text(
                         f"""
+                        WITH batch_page AS MATERIALIZED (
+                          SELECT b.id,b.batch_no,b.category,b.channel,b.app_id,b.creator,
+                            b.dept,b.display_content_enc,b.status,b.deferred_reason,b.resend_of,
+                            b.is_test,b.segments,b.quota_cost,b.total,b.removed_freq,
+                            b.delivered,b.failed,b.unknown_cnt,b.scheduled_at,b.created_at
+                          FROM sms_batch b WHERE {where}
+                          ORDER BY b.created_at DESC,b.id DESC LIMIT :limit OFFSET :offset
+                        )
                         SELECT trim(b.batch_no) AS batch_no,b.category,b.channel,
                           a.name AS app_name,b.creator,b.dept,b.display_content_enc,b.status,
                           b.deferred_reason,trim(original.batch_no) AS resend_of,
@@ -163,21 +174,17 @@ class BatchQueryService:
                           b.unknown_cnt AS unknown,message_counts.pending,
                           message_counts.sent,message_counts.other,
                           b.scheduled_at,b.created_at
-                        FROM sms_batch b LEFT JOIN app a ON a.id=b.app_id
+                        FROM batch_page b LEFT JOIN app a ON a.id=b.app_id
                         LEFT JOIN sms_batch original ON original.id=b.resend_of
                         {self._message_status_counts_join()}
-                        WHERE """
-                        + where
-                        + " ORDER BY b.created_at DESC,b.id DESC LIMIT :limit OFFSET :offset"
+                        ORDER BY b.created_at DESC,b.id DESC
+                        """
                     ),
                     params,
                 )
                 return {
-                    "total": int(count_result.scalar_one()),
-                    "status_counts": {
-                        str(row["status"]): int(row["n"])
-                        for row in counts_result.mappings()
-                    },
+                    "total": total,
+                    "status_counts": status_counts,
                     "items": [self._batch(row) for row in rows_result.mappings()],
                 }
         finally:

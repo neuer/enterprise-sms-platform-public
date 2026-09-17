@@ -4,15 +4,23 @@ import {
   detectSessionMode,
   hasWebLocks,
   isAccessOnlySessionMode,
+  isSafeSingleTabMode,
+  SAFE_SINGLE_TAB_MESSAGE,
   type SessionMode,
 } from "./sessionMode"
 
-export { ACCESS_ONLY_SESSION_MESSAGE, detectSessionMode, hasWebLocks, isAccessOnlySessionMode }
+export {
+  ACCESS_ONLY_SESSION_MESSAGE,
+  detectSessionMode,
+  hasWebLocks,
+  isAccessOnlySessionMode,
+  isSafeSingleTabMode,
+  SAFE_SINGLE_TAB_MESSAGE,
+}
 export type { SessionMode }
 
-/** 与 SessionDocument.withSessionLock 同一把跨标签页锁；无 Web Locks 时退化为本页互斥。 */
-export async function withRefreshLock<T>(run: () => Promise<T>): Promise<T> {
-  return defaultSessionDocument.withSessionLock(run)
+export async function withRefreshLock<T>(run: () => Promise<T>, options: { signal?: AbortSignal } = {}): Promise<T> {
+  return defaultSessionDocument.withSessionLock(run, options)
 }
 
 export const withSessionLock = withRefreshLock

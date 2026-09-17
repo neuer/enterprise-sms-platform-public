@@ -1,9 +1,20 @@
-import { flushPromises, mount } from "@vue/test-utils"
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils"
 import ElementPlus, { ElMessage, ElMessageBox } from "element-plus"
 import { createPinia } from "pinia"
 import { vi } from "vitest"
 
 import UserView from "../src/views/UserView.vue"
+
+import AdminStepUpDialog from "../src/components/AdminStepUpDialog.vue"
+
+async function approveStepUp(wrapper: VueWrapper) {
+  await flushPromises()
+  const controller = wrapper.findComponent(AdminStepUpDialog).props("controller")
+  expect(controller.state.open).toBe(true)
+  controller.state.password = "Synthetic@Password123"
+  await controller.submit()
+  await flushPromises()
+}
 
 function response(body: unknown, status = 200) {
   return {
@@ -26,6 +37,7 @@ const localUser = {
   status: 1,
   identity_status: 1,
   credential_status: "must_change",
+  temporary_password_expires_at: "2026-09-14T08:00:00+08:00",
   source_groups: [],
   sync_status: "local",
   last_synced_at: null,
@@ -44,6 +56,7 @@ const adUser = {
   status: 1,
   identity_status: 1,
   credential_status: null,
+  temporary_password_expires_at: null,
   source_groups: ["CN=SMS-Operators,OU=Groups,DC=example,DC=com"],
   sync_status: "synced",
   last_synced_at: "2026-07-16T08:00:00+08:00",
@@ -64,6 +77,8 @@ function listBody(items = [localUser, adUser]) {
 
 function routeFetch(overrides?: (url: string, init: RequestInit) => unknown) {
   return vi.fn().mockImplementation((input: string, init: RequestInit = {}) => {
+    if (input === "/api/v1/web/admin/step-up")
+      return Promise.resolve(response({ token: "synthetic-grant", expires_in: 300 }))
     if (overrides) {
       const overridden = overrides(input, init)
       if (overridden) return Promise.resolve(overridden)
@@ -118,6 +133,7 @@ describe("用户与角色", () => {
   })
 
   it("通过右侧抽屉创建本地账号且临时密码只进入请求", async () => {
+    const success = vi.spyOn(ElMessage, "success")
     const fetch = routeFetch((url) => {
       if (url === "/api/v1/web/admin/users/local") return response(localUser)
       return undefined
@@ -146,6 +162,7 @@ describe("用户与角色", () => {
       role: "viewer",
       temporary_password: "Temporary@123",
     })
+    expect(success).toHaveBeenCalledWith(expect.stringContaining("2026-09-14 08:00:00"))
     expect(JSON.stringify(localUser)).not.toContain("Temporary@123")
     wrapper.unmount()
   })
@@ -163,8 +180,10 @@ describe("用户与角色", () => {
     await wrapper.get("[data-testid='reset-password-input']").setValue("Reset@Password123")
     await wrapper.get("[data-testid='confirm-password-reset']").trigger("click")
     await flushPromises()
+    await approveStepUp(wrapper)
     await wrapper.get("[data-testid='status-21']").trigger("click")
     await flushPromises()
+    await approveStepUp(wrapper)
     await wrapper.get("[data-testid='revoke-21']").trigger("click")
     await flushPromises()
 
@@ -190,6 +209,7 @@ describe("用户与角色", () => {
 
     await wrapper.get("[data-testid='status-21']").trigger("click")
     await flushPromises()
+    await approveStepUp(wrapper)
 
     expect(error).toHaveBeenCalledWith("不能禁用最后一个有效管理员")
     expect(wrapper.text()).toContain("目录操作员")

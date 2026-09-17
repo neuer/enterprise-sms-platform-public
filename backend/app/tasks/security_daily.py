@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from app.core.bulk_admission import bulk_task_admission
 from app.core.jobtrack import tracked_job
 from app.core.worker_runtime import run_worker_async
 from app.services.security_daily import (
@@ -111,6 +112,7 @@ async def _generate() -> int:
     name="app.tasks.security_daily_generate",
     **background_task_options(soft_time_limit=120, time_limit=150),
 )  # type: ignore[untyped-decorator]
+@bulk_task_admission
 @tracked_job("security_daily_generate", expect_interval_s=60)
 def security_daily_generate() -> int:
     """任务参数只含时间和控制目录路径，不携带报告正文或原始日志。"""

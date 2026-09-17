@@ -82,6 +82,17 @@ class DatabaseCurrentFacts:
     raw_manual: int
     raw_manual_since: datetime | None
     raw_spill_alerts: tuple[RawSpillAlertFact, ...]
+    uncertain: int = 0
+    realtime_queue: int = 0
+    bulk_queue: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentAlertRead:
+    """同次读取的告警和可信数据库事实；数据库失败时不提供可复用事实。"""
+
+    snapshot: CurrentAlertSnapshot
+    database: DatabaseCurrentFacts | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +138,11 @@ class CurrentAlertService:
         )
 
     async def get(self) -> CurrentAlertSnapshot:
+        return (await self.read()).snapshot
+
+    async def read(self) -> CurrentAlertRead:
+        """读取并派生一次快照，允许仪表盘复用同次权威事实。"""
+
         now = _aware(self.clock())
         database_result, control_result = await asyncio.gather(
             self.repository.load_database(self.specs),
@@ -159,7 +175,10 @@ class CurrentAlertService:
             )
         )
         sources = tuple(dict.fromkeys(unknown))
-        return CurrentAlertSnapshot(now, not sources, sources, tuple(items))
+        return CurrentAlertRead(
+            CurrentAlertSnapshot(now, not sources, sources, tuple(items)),
+            database_result if isinstance(database_result, DatabaseCurrentFacts) else None,
+        )
 
     def _append_database_items(
         self,

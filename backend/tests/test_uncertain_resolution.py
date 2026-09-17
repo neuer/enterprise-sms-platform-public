@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -50,6 +51,9 @@ class FakeResult:
     def scalar_one_or_none(self) -> object:
         return self.scalar
 
+    def all(self) -> list[dict[str, object]]:
+        return list(self)
+
     def __iter__(self) -> Any:
         if self.rows is not None:
             return iter(self.rows)
@@ -63,6 +67,15 @@ class FakeConnection:
 
     async def execute(self, statement: object, params: object = None) -> FakeResult:
         self.calls.append((str(statement), params))
+        sql = " ".join(str(statement).split())
+        if sql == "SELECT chunk_id,batch_id FROM sms_uncertain_resolution WHERE id=:id":
+            return FakeResult({"chunk_id": 9, "batch_id": 3})
+        if sql in {
+            "SELECT id FROM sms_chunk WHERE id=:id FOR UPDATE",
+            "SELECT id FROM sms_batch WHERE id=:id FOR UPDATE",
+            "SELECT id FROM sms_uncertain_resolution WHERE id=:id FOR UPDATE",
+        }:
+            return FakeResult({"id": 1})
         return self.results.pop(0)
 
 
@@ -172,7 +185,7 @@ async def test_second_admin_confirm_only_enqueues_effect(
     sql = "\n".join(call[0] for call in connection.calls)
     assert "effect_pending" in sql
     assert "source_dept" in sql
-    assert connection.calls[1][1]["dept"] == "平台部"
+    assert connection.calls[-1][1]["dept"] == "平台部"
     assert "SET status='pending'" not in sql
 
 
@@ -225,68 +238,39 @@ async def test_concurrent_confirm_is_rejected_after_first_wins(
 async def test_not_accepted_release_is_chunk_fact_and_batch_only_when_all_proven(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    unused = FakeConnection(
-        [
-            FakeResult(
-                {
-                    "reservation_id": "11111111-1111-1111-1111-111111111111",
-                    "recipient_count": 10,
-                    "segment_count": 10,
-                    "request_count": 1,
-                }
-            ),
-            FakeResult(),
-            FakeResult(scalar=False),
-            FakeResult(scalar="11111111-1111-1111-1111-111111111111"),
-        ]
-    )
+    import app.services.uncertain_resolution as module
+
+    reservation = "11111111-1111-1111-1111-111111111111"
     released: list[tuple[int, str]] = []
 
-    async def fake_release(
-        _connection: object,
-        *,
-        batch_id: int,
-        event_id: str,
-    ) -> bool:
+    async def locked(*_args: object) -> dict[str, object]:
+        return {"usage_reservation_id": reservation, "actual_app_id": 7,
+                "usage_state": "committed", **_resolution(action="confirm_not_accepted")}
+
+    async def active(*_args: object) -> None:
+        return None
+
+    async def release(_connection: object, *, batch_id: int, event_id: str) -> bool:
         released.append((batch_id, event_id))
         return True
 
-    import app.services.uncertain_resolution as module
+    monkeypatch.setattr(module, "_lock_not_accepted", locked)
+    monkeypatch.setattr(module, "_require_active_dual_control", active)
+    monkeypatch.setattr(module, "request_usage_release_for_batch", release)
+    for eligible in (True, False):
+        async def eligibility(*_args: object, result: bool = eligible) -> bool:
+            return result
 
-    monkeypatch.setattr(module, "request_usage_release_for_batch", fake_release)
-    await _apply_not_accepted(
-        unused,  # type: ignore[arg-type]
-        resolution_id=4,
-        chunk_id=9,
-        batch_id=3,
-    )
-    assert released == [
-        (3, "usage:11111111-1111-1111-1111-111111111111:uncertain-unused")
-    ]
-    assert unused.calls[1][1]["event_id"] == "resolution:4:not-accepted"
-
-    released.clear()
-    leftover = FakeConnection(
-        [
-            FakeResult(
-                {
-                    "reservation_id": "11111111-1111-1111-1111-111111111111",
-                    "recipient_count": 10,
-                    "segment_count": 10,
-                    "request_count": 0,
-                }
-            ),
-            FakeResult(),
-            FakeResult(scalar=True),
-        ]
-    )
-    await _apply_not_accepted(
-        leftover,  # type: ignore[arg-type]
-        resolution_id=5,
-        chunk_id=10,
-        batch_id=3,
-    )
-    assert released == []
+        monkeypatch.setattr(module, "_all_chunks_not_accepted", eligibility)
+        connection = FakeConnection([
+            FakeResult({"reservation_id": reservation, "batch_id": 3, "app_id": 7,
+                        "recipient_count": 10, "segment_count": 10, "request_count": 1}),
+            FakeResult(), FakeResult(),
+        ])
+        await _apply_not_accepted(connection, resolution_id=4, chunk_id=9, batch_id=3)
+        assert connection.calls[-1][1]["release_event_id"] == "resolution:4:not-accepted"
+        assert connection.calls[-1][1]["effect_generation"] == 1
+    assert released == [(3, f"usage:{reservation}:uncertain-unused")]
 
 
 @pytest.mark.asyncio
@@ -294,6 +278,14 @@ async def test_resend_builds_resolution_scoped_biz_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeCrypto:
+        active_version = 1
+
+        def hmac_candidates(self, _phone: str) -> dict[int, str]:
+            return {1: "a" * 64}
+
+        def idempotency_fingerprint(self, *_args: object, **_kwargs: object) -> str:
+            return "b" * 64
+
         def decrypt_phone(self, *_: object) -> str:
             return "13800138000"
 
@@ -316,6 +308,9 @@ async def test_resend_builds_resolution_scoped_biz_id(
             ),
             FakeResult(
                 {
+                    "id": 1, "created_at": datetime.now(UTC),
+                    "batch_id": 3, "chunk_id": 9, "status": "unknown",
+                    "report_status": None, "report_time": None, "report_event_key": None,
                     "phone_enc": b"enc",
                     "phone_hmac": "a" * 64,
                     "key_version": 1,

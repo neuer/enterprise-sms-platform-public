@@ -6,12 +6,17 @@ from datetime import UTC, date, datetime
 from typing import Annotated, Literal, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import (
+    WebActor,
+    require_admin_actor,
+    require_approver_actor,
+)
 from app.core.audit import AuditEvent, audited, insert_audit
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
@@ -45,6 +50,9 @@ from app.services.reporting import (
     ReportCategory,
     ReportingResult,
     ReportingService,
+    ReportMetric,
+    ReportOrder,
+    ReportSort,
 )
 from app.services.reporting_repository import SqlReportingRepository
 from app.settings import get_settings
@@ -58,6 +66,7 @@ class ExportFiltersModel(BaseModel):
 
     start: datetime | None = None
     end: datetime | None = None
+    end_exclusive: datetime | None = None
     category: Literal["verify", "notice", "market"] | None = None
     status: str | None = Field(default=None, max_length=16)
     app_id: int | None = Field(default=None, ge=1)
@@ -112,6 +121,11 @@ class DashboardTrendPointModel(BaseModel):
 class DashboardBalancePointModel(BaseModel):
     stat_date: date
     balance: int
+
+
+class BalanceSnapshotModel(BaseModel):
+    current_balance: int | None
+    checked_at: datetime | None
 
 
 class DashboardAlertModel(BaseModel):
@@ -200,6 +214,21 @@ class ReportingDimSummaryModel(BaseModel):
     unknown: int
     success_rate: float
 
+    is_other: bool
+
+
+class ReportingTrendSeriesModel(BaseModel):
+    dim_value: str
+    dim_label: str
+    total: list[int]
+    total_segments: list[int]
+    is_other: bool
+
+
+class ReportingTrendModel(BaseModel):
+    periods: list[date]
+    series: list[ReportingTrendSeriesModel]
+
 
 class ReportingModel(BaseModel):
     granularity: Granularity
@@ -211,9 +240,15 @@ class ReportingModel(BaseModel):
     summary: ReportingSummaryModel
     dim_summary: list[ReportingDimSummaryModel]
     items: list[ReportingRowModel]
+    total: int
+    page: int
+    size: int
+    metric: ReportMetric
+    dimension_total: int
+    trend: ReportingTrendModel
 
 
-async def get_export_service() -> ExportService:
+async def get_export_service(_actor: WebActor) -> ExportService:
     settings = get_settings()
     repository = SqlExportRepository(settings)
     return ExportService(
@@ -224,6 +259,7 @@ async def get_export_service() -> ExportService:
 
 
 def get_export_step_up_service(
+    _actor: WebActor,
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
 ) -> ExportStepUpService:
     settings = get_settings()
@@ -239,7 +275,7 @@ def get_export_step_up_service(
     )
 
 
-def get_dashboard_service() -> DashboardService:
+def get_dashboard_service(_actor: WebActor) -> DashboardService:
     register_task_modules()
     specs = tuple(JOB_SPECS[name] for name in sorted(JOB_SPECS))
     return DashboardService(
@@ -249,11 +285,15 @@ def get_dashboard_service() -> DashboardService:
     )
 
 
-def get_reporting_service() -> ReportingService:
+def get_balance_repository(_actor: WebActor) -> SqlDashboardRepository:
+    return SqlDashboardRepository()
+
+
+def get_reporting_service(_actor: WebActor) -> ReportingService:
     return ReportingService(SqlReportingRepository())
 
 
-def get_export_codec() -> ExportFileCodec:
+def get_export_codec(_actor: WebActor) -> ExportFileCodec:
     settings = get_settings()
     return ExportFileCodec(
         CryptoService.from_settings(settings),
@@ -360,6 +400,12 @@ def _reporting_response(result: ReportingResult) -> ReportingModel:
         start=result.start,
         end=result.end,
         can_export_decrypted=result.can_export_decrypted,
+        total=result.total,
+        page=result.page,
+        size=result.size,
+        metric=result.metric,
+        dimension_total=result.dimension_total,
+        trend=ReportingTrendModel.model_validate(result.trend, from_attributes=True),
         summary=ReportingSummaryModel.model_validate(
             result.summary,
             from_attributes=True,
@@ -369,9 +415,31 @@ def _reporting_response(result: ReportingResult) -> ReportingModel:
             for item in result.dim_summary
         ],
         items=[
-            ReportingRowModel.model_validate(item, from_attributes=True)
-            for item in result.items
+            ReportingRowModel.model_validate(item, from_attributes=True) for item in result.items
         ],
+    )
+
+
+@router.get(
+    "/balance",
+    dependencies=[Depends(require_admin_actor)],
+    response_model=BalanceSnapshotModel,
+    responses={401: ERROR_RESPONSE, 403: ERROR_RESPONSE},
+)
+async def get_balance(
+    repository: Annotated[SqlDashboardRepository, Depends(get_balance_repository)],
+    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> BalanceSnapshotModel:
+    """管理员顶栏仅取余额事实；未知余额保持 null。"""
+
+    claims = await _claims(facade, credentials)
+    if claims.role != "admin":
+        raise ApiError(403, "FORBIDDEN", "仅管理员可查询平台余额", None)
+    snapshot = await repository.load_balance()
+    return BalanceSnapshotModel(
+        current_balance=snapshot.current_balance,
+        checked_at=snapshot.checked_at,
     )
 
 
@@ -404,6 +472,11 @@ async def get_reporting_stats(
     category: ReportCategory = "all",
     start: date | None = None,
     end: date | None = None,
+    page: Annotated[int, Query(ge=1, le=1_000_000)] = 1,
+    size: Annotated[int, Query(ge=1, le=100)] = 20,
+    sort: ReportSort = "period_start",
+    order: ReportOrder = "desc",
+    metric: ReportMetric = "total",
 ) -> ReportingModel:
     claims = await _claims(facade, credentials)
     try:
@@ -415,6 +488,11 @@ async def get_reporting_stats(
             end=end,
             role=claims.role,
             dept=claims.dept,
+            page=page,
+            size=size,
+            sort=sort,
+            order=order,
+            metric=metric,
         )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
@@ -473,6 +551,7 @@ async def get_export(
 
 @router.post(
     "/export/{public_id}/step-up",
+    dependencies=[Depends(require_approver_actor)],
     response_model=ExportStepUpResponseModel,
     responses={
         400: ERROR_RESPONSE,

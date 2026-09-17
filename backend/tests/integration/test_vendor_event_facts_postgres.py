@@ -415,6 +415,111 @@ async def test_report_projection_is_monotonic_and_reply_dedup_survives_rotation(
             "replies": 1,
             "reply_projections": 1,
         }
+
+        # 真实运行角色不获函数直调权限，行触发器仍须覆盖回退旧 writer。
+        async with engine.begin() as connection:
+            await connection.execute(text("SET LOCAL ROLE sms_send"))
+            assert (await connection.execute(text("SELECT current_user='sms_send'"))).scalar_one()
+            before_token = (
+                await connection.execute(
+                    text("SELECT active_message_count_token FROM sms_batch WHERE id=:id"),
+                    {"id": first_batch},
+                )
+            ).scalar_one()
+            assert before_token is not None
+            await connection.execute(
+                text("UPDATE sms_batch SET updated_at=updated_at,status=status WHERE id=:id"),
+                {"id": first_batch},
+            )
+            same_token = (
+                await connection.execute(
+                    text("SELECT active_message_count_token FROM sms_batch WHERE id=:id"),
+                    {"id": first_batch},
+                )
+            ).scalar_one()
+            assert same_token == before_token
+            await connection.execute(
+                text(
+                    "UPDATE sms_batch SET delivered=delivered,failed=failed,"
+                    "unknown_cnt=unknown_cnt,updated_at=updated_at WHERE id=:id"
+                ),
+                {"id": first_batch},
+            )
+            invalidated = (
+                await connection.execute(
+                    text(
+                        "SELECT active_message_count,active_message_count_token "
+                        "FROM sms_batch WHERE id=:id"
+                    ),
+                    {"id": first_batch},
+                )
+            ).one()
+            assert invalidated == (None, None)
+
+        # 可信投影漂移后首先应用更晚的新 key；随后 500 次有效修订必须
+        # 各自保留 batch.finished 身份，message.report 仍以 500 引用分组。
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE sms_message SET status='sent' WHERE batch_id=:id"),
+                {"id": first_batch},
+            )
+        revision_keys = {delivered_key}
+        revision_raw = await raw("report", "revisions", first_custom)
+        for index in range(500):
+            revision = replace(
+                delivered,
+                event_key=uuid4().hex + uuid4().hex,
+                report_time=delivered.report_time + timedelta(seconds=index + 1),
+            )
+            revision_keys.add(revision.event_key)
+            event_keys.add(revision.event_key)
+            assert await reports.apply_report(revision_raw, revision) == ReportApplyResult(
+                first_batch, True
+            )
+
+        async with engine.connect() as connection:
+            summary = (
+                await connection.execute(
+                    text("SELECT delivered,failed,unknown_cnt FROM sms_batch WHERE id=:id"),
+                    {"id": first_batch},
+                )
+            ).mappings().one()
+            facts = (
+                await connection.execute(
+                    text(
+                        "SELECT count(*) FILTER (WHERE status='delivered') delivered,"
+                        "count(*) FILTER (WHERE status='failed') failed,"
+                        "count(*) FILTER (WHERE status='unknown') unknown_cnt "
+                        "FROM sms_message WHERE batch_id=:id"
+                    ),
+                    {"id": first_batch},
+                )
+            ).mappings().one()
+            tasks = list(
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT event,source_report_event_key,event_keys,message_ids,"
+                            "message_times FROM callback_task WHERE batch_id=:id"
+                        ),
+                        {"id": first_batch},
+                    )
+                ).mappings()
+            )
+        assert dict(summary) == dict(facts) == {"delivered": 1, "failed": 0, "unknown_cnt": 0}
+        finished = [row for row in tasks if row["event"] == "batch.finished"]
+        assert len(finished) == len(revision_keys)
+        assert {row["source_report_event_key"] for row in finished} == revision_keys
+        grouped = [row for row in tasks if row["event"] == "message.report"]
+        assert len(grouped) >= 2  # 分钟边界可合法分成更多任务。
+        assert all(
+            1 <= len(row["event_keys"]) <= 500
+            and len(row["event_keys"]) == len(row["message_ids"]) == len(row["message_times"])
+            for row in grouped
+        )
+        emitted = [key for row in grouped for key in row["event_keys"]]
+        assert len(emitted) == len(revision_keys)
+        assert set(emitted) == revision_keys
     finally:
         async with engine.begin() as connection:
             await connection.execute(

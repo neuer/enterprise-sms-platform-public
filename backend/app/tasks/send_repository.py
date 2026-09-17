@@ -137,6 +137,22 @@ class SqlChunkStore:
                 },
             )
 
+    async def load_market_window(self) -> str:
+        """外呼前读取权威营销窗口；不可确认时停止发送。"""
+
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text("SELECT value FROM sys_config WHERE key='market_send_window'")
+                )
+                value = result.scalar_one_or_none()
+                if value is None:
+                    raise RuntimeError("market send window unavailable")
+                return str(value)
+        finally:
+            await engine.dispose()
+
     async def load_worker_config(self) -> tuple[int, int, int]:
         engine = self._engine()
         try:
@@ -260,7 +276,7 @@ class SqlChunkStore:
                        c.next_vendor, COALESCE(c.route_policy_version,1) route_policy_version,
                        c.failover_from_attempt_id,
                        trim(b.batch_no) batch_no,b.send_content_enc,b.sign_name,
-                       b.category, t.vendor_template_id
+                       b.category,b.is_test, t.vendor_template_id
                 FROM sms_chunk c
                 JOIN sms_batch b ON b.id=c.batch_id
                 LEFT JOIN sms_template t ON t.id=b.template_id
@@ -334,6 +350,7 @@ class SqlChunkStore:
             selected_vendor=str(row.get("selected_vendor") or "zhihui"),
             route_generation=max(1, int(row.get("route_generation") or 1)),
             category=str(row.get("category") or "notice"),
+            is_test=bool(row["is_test"]),
             status=str(row.get("chunk_status") or "pending"),
             next_vendor=(
                 str(row["next_vendor"]) if row.get("next_vendor") is not None else None
@@ -345,6 +362,16 @@ class SqlChunkStore:
                 else None
             ),
         )
+
+    async def refresh_invoke_payload(self, chunk_id: int) -> ChunkPayload:
+        """令牌等待后重读真实联调收件人资格，不能复用旧 denied_count。"""
+
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                return await self._payload(connection, chunk_id)
+        finally:
+            await engine.dispose()
 
     async def load_chunk(self, chunk_id: int) -> tuple[ChunkPayload, str] | None:
         engine = self._engine()
@@ -638,14 +665,17 @@ class SqlChunkStore:
                 SubmissionClaimStatus.CLAIMED if claimed else SubmissionClaimStatus.STALE
             )
 
-        usage_date, reset_at = live_test_usage_window(current_live_test_time())
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                if bool(getattr(self.settings, "vendor_live_test", False)):
+                    payload = await self._payload(connection, chunk_id)
+                    if payload.denied_recipient_count:
+                        return SubmissionClaim(SubmissionClaimStatus.STALE)
                 chunk_result = await connection.execute(
                     text(
                         """
-                        SELECT c.id,c.batch_id
+                        SELECT c.id,c.batch_id,c.vendor_attempt_count
                         FROM sms_chunk c JOIN sms_batch b ON b.id=c.batch_id
                         WHERE c.id=:id
                           AND c.status IN ('pending','retrying')
@@ -661,83 +691,23 @@ class SqlChunkStore:
                 if chunk is None:
                     return SubmissionClaim(SubmissionClaimStatus.STALE)
 
-                await connection.execute(
-                    text(
-                        """
-                        INSERT INTO vendor_test_daily_usage(usage_date)
-                        VALUES (:usage_date) ON CONFLICT (usage_date) DO NOTHING
-                        """
-                    ),
-                    {"usage_date": usage_date},
+                attempt_no = int(chunk["vendor_attempt_count"]) + 1
+                budget = await self._reserve_submission_budget(
+                    connection, chunk_id, segments, attempt_no
                 )
-                usage_result = await connection.execute(
-                    text(
-                        """
-                        SELECT in_flight_segments,confirmed_segments,uncertain_segments
-                        FROM vendor_test_daily_usage
-                        WHERE usage_date=:usage_date FOR UPDATE
-                        """
-                    ),
-                    {"usage_date": usage_date},
-                )
-                usage = usage_result.mappings().one()
-                total = sum(
-                    int(usage[key])
-                    for key in (
-                        "in_flight_segments",
-                        "confirmed_segments",
-                        "uncertain_segments",
-                    )
-                )
-                if total + segments > LIVE_TEST_DAILY_SEGMENT_LIMIT:
-                    return SubmissionClaim(SubmissionClaimStatus.DAILY_LIMIT, reset_at)
-
+                if budget.status is not SubmissionClaimStatus.CLAIMED:
+                    return budget
                 transition = await connection.execute(
-                    text(
-                        """
-                        UPDATE sms_chunk SET
-                          status='submitting',submitting_since=now(),
-                          retry_not_before=NULL,
-                          vendor_attempt_count=vendor_attempt_count+1
-                        WHERE id=:id
-                          AND status IN ('pending','retrying')
-                          AND retry_count=:expected_retry_count
-                        RETURNING vendor_attempt_count
-                        """
-                    ),
+                    text("""
+                    UPDATE sms_chunk SET status='submitting',submitting_since=now(),
+                      retry_not_before=NULL,vendor_attempt_count=vendor_attempt_count+1
+                    WHERE id=:id AND status IN ('pending','retrying')
+                      AND retry_count=:expected_retry_count RETURNING id
+                """),
                     {"id": chunk_id, "expected_retry_count": expected_retry_count},
                 )
-                attempt_no = transition.scalar_one_or_none()
-                if attempt_no is None:
-                    return SubmissionClaim(SubmissionClaimStatus.STALE)
-                await connection.execute(
-                    text(
-                        """
-                        INSERT INTO vendor_test_send_attempt(
-                          usage_date,chunk_id,attempt_no,segments,status
-                        ) VALUES (
-                          :usage_date,:chunk_id,:attempt_no,:segments,'reserved'
-                        )
-                        """
-                    ),
-                    {
-                        "usage_date": usage_date,
-                        "chunk_id": chunk_id,
-                        "attempt_no": int(attempt_no),
-                        "segments": segments,
-                    },
-                )
-                await connection.execute(
-                    text(
-                        """
-                        UPDATE vendor_test_daily_usage SET
-                          in_flight_segments=in_flight_segments+:segments,
-                          updated_at=now()
-                        WHERE usage_date=:usage_date
-                        """
-                    ),
-                    {"usage_date": usage_date, "segments": segments},
-                )
+                if transition.scalar_one_or_none() is None:
+                    raise RuntimeError("submission claim lost cas")
                 await connection.execute(
                     text("UPDATE sms_batch SET updated_at=now() WHERE id=:batch_id"),
                     {"batch_id": int(chunk["batch_id"])},
@@ -745,6 +715,79 @@ class SqlChunkStore:
                 return SubmissionClaim(SubmissionClaimStatus.CLAIMED)
         finally:
             await engine.dispose()
+
+    async def _reserve_submission_budget(
+        self,
+        connection: AsyncConnection,
+        chunk_id: int,
+        segments: int,
+        attempt_no: int,
+    ) -> SubmissionClaim:
+        """在已锁定分片的同一事务，为每个真实联调 attempt 独立预留预算。"""
+
+        if segments < 1 or attempt_no < 1:
+            raise ValueError("submission budget identity invalid")
+        usage_date, reset_at = live_test_usage_window(current_live_test_time())
+        await connection.execute(
+            text(
+                """
+                INSERT INTO vendor_test_daily_usage(usage_date)
+                VALUES (:usage_date) ON CONFLICT (usage_date) DO NOTHING
+                """
+            ),
+            {"usage_date": usage_date},
+        )
+        usage_result = await connection.execute(
+            text(
+                """
+                SELECT in_flight_segments,confirmed_segments,uncertain_segments
+                FROM vendor_test_daily_usage
+                WHERE usage_date=:usage_date FOR UPDATE
+                """
+            ),
+            {"usage_date": usage_date},
+        )
+        usage = usage_result.mappings().one()
+        total = sum(
+            int(usage[key])
+            for key in (
+                "in_flight_segments",
+                "confirmed_segments",
+                "uncertain_segments",
+            )
+        )
+        if total + segments > LIVE_TEST_DAILY_SEGMENT_LIMIT:
+            return SubmissionClaim(SubmissionClaimStatus.DAILY_LIMIT, reset_at)
+
+        await connection.execute(
+            text(
+                """
+                INSERT INTO vendor_test_send_attempt(
+                  usage_date,chunk_id,attempt_no,segments,status
+                ) VALUES (
+                  :usage_date,:chunk_id,:attempt_no,:segments,'reserved'
+                )
+                """
+            ),
+            {
+                "usage_date": usage_date,
+                "chunk_id": chunk_id,
+                "attempt_no": int(attempt_no),
+                "segments": segments,
+            },
+        )
+        await connection.execute(
+            text(
+                """
+                UPDATE vendor_test_daily_usage SET
+                  in_flight_segments=in_flight_segments+:segments,
+                  updated_at=now()
+                WHERE usage_date=:usage_date
+                """
+            ),
+            {"usage_date": usage_date, "segments": segments},
+        )
+        return SubmissionClaim(SubmissionClaimStatus.CLAIMED)
 
     async def mark_submitted(self, chunk_id: int, task_id: str) -> None:
         task_pseudonym = vendor_identifier_pseudonym(
@@ -787,6 +830,8 @@ class SqlChunkStore:
     ) -> None:
         """在已锁定批次的事务内完成消息失败聚合与终态回调。"""
 
+        from app.services.uncertain_resolution import reevaluate_confirmed_unused_batch
+
         messages = await connection.execute(
             text(
                 "UPDATE sms_message SET status='failed' WHERE chunk_id=:id "
@@ -795,12 +840,15 @@ class SqlChunkStore:
             {"id": chunk_id},
         )
         if messages.rowcount == 0:
+            await reevaluate_confirmed_unused_batch(connection, batch_id)
             return
         aggregate = await connection.execute(
             text(
                 """
                 UPDATE sms_batch b SET
                   delivered=s.delivered,failed=s.failed,unknown_cnt=s.unknown_cnt,
+                  active_message_count=s.active,
+                  active_message_count_token=gen_random_uuid(),
                   status=CASE
                     WHEN b.status='completed_unknown' THEN 'completed_unknown'
                     WHEN s.active=0 THEN 'completed'
@@ -831,6 +879,8 @@ class SqlChunkStore:
                 batch_id=int(batch["id"]),
                 reason="batch-completed",
             )
+
+        await reevaluate_confirmed_unused_batch(connection, batch_id)
 
     async def mark_failed(self, chunk_id: int, code: int, message: str) -> None:
         engine = self._engine()
@@ -889,7 +939,7 @@ class SqlChunkStore:
                         SELECT c.batch_id FROM sms_chunk c
                         JOIN sms_batch b ON b.id=c.batch_id
                         WHERE c.id=:id
-                          AND c.status IN ('pending','retrying')
+                          AND c.status IN ('pending','retrying','failover_pending')
                           AND b.status IN ('queued','sending')
                         """
                     ),
@@ -907,7 +957,7 @@ class SqlChunkStore:
                         """
                         UPDATE sms_chunk SET status='failed',vendor_code=NULL,
                           vendor_msg=:message,submitting_since=NULL,retry_not_before=NULL
-                        WHERE id=:id AND status IN ('pending','retrying')
+                        WHERE id=:id AND status IN ('pending','retrying','failover_pending')
                         RETURNING batch_id
                         """
                     ),
@@ -941,10 +991,11 @@ class SqlChunkStore:
                 result = await connection.execute(
                     text(
                         """
-                        UPDATE sms_chunk c SET status='retrying',vendor_code=NULL,
+                        UPDATE sms_chunk c SET status=CASE WHEN c.status='failover_pending'
+                          THEN 'failover_pending' ELSE 'retrying' END,vendor_code=NULL,
                           retry_not_before=:reset_at
                         FROM sms_batch b
-                        WHERE c.id=:id AND c.status IN ('pending','retrying')
+                        WHERE c.id=:id AND c.status IN ('pending','retrying','failover_pending')
                           AND b.id=c.batch_id AND b.status IN ('queued','sending')
                         RETURNING b.category
                         """
@@ -1200,17 +1251,19 @@ class SqlChunkStore:
         try:
             async with engine.begin() as connection:
                 chunk = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             SELECT c.id, c.status, c.batch_id
                             FROM sms_chunk c
                             WHERE c.id=:id
                             FOR UPDATE
                             """
-                        ),
-                        {"id": chunk_id},
-                    )
+                            ),
+                            {"id": chunk_id},
+                        )
+
                 ).mappings().one_or_none()
                 if chunk is None:
                     raise RuntimeError("vendor attempt chunk missing")
@@ -1223,18 +1276,20 @@ class SqlChunkStore:
                 if str(chunk["status"]) not in FIRST_INVOKE_CHUNK_STATES:
                     raise RuntimeError("vendor attempt not first-invoke")
                 history = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             SELECT id, generation, outcome
                             FROM sms_vendor_attempt
                             WHERE chunk_id=:chunk_id
                             ORDER BY generation
                             FOR UPDATE
                             """
-                        ),
-                        {"chunk_id": chunk_id},
-                    )
+                            ),
+                            {"chunk_id": chunk_id},
+                        )
+
                 ).mappings().all()
                 if any(
                     str(row["outcome"])
@@ -1246,9 +1301,10 @@ class SqlChunkStore:
                     max((int(row["generation"]) for row in history), default=0) + 1
                 )
                 inserted = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             INSERT INTO sms_vendor_attempt (
                               chunk_id, vendor_id, generation, outcome,
                               adapter_id, routing_reason, invoke_started_at
@@ -1258,15 +1314,16 @@ class SqlChunkStore:
                             )
                             RETURNING id, generation, vendor_id, outcome
                             """
-                        ),
-                        {
-                            "chunk_id": chunk_id,
-                            "vendor_id": vendor_id,
-                            "generation": next_generation,
-                            "adapter_id": adapter_id,
-                            "reason": reason[:64],
-                        },
-                    )
+                            ),
+                            {
+                                "chunk_id": chunk_id,
+                                "vendor_id": vendor_id,
+                                "generation": next_generation,
+                                "adapter_id": adapter_id,
+                                "reason": reason[:64],
+                            },
+                        )
+
                 ).mappings().one()
                 await connection.execute(
                     text(
@@ -1335,17 +1392,19 @@ class SqlChunkStore:
         try:
             async with engine.begin() as connection:
                 attempt = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             SELECT id, chunk_id, generation, outcome
                             FROM sms_vendor_attempt
                             WHERE id=:id
                             FOR UPDATE
                             """
-                        ),
-                        {"id": attempt_id},
-                    )
+                            ),
+                            {"id": attempt_id},
+                        )
+
                 ).mappings().one_or_none()
                 if attempt is None:
                     return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
@@ -1354,9 +1413,10 @@ class SqlChunkStore:
                 if int(attempt["generation"]) != expected_generation:
                     return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
                 chunk = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             SELECT c.id, c.status, c.batch_id, c.route_generation,
                                    c.retry_count, c.vendor_msg,
                                    c.next_vendor, c.route_policy_version,
@@ -1368,9 +1428,10 @@ class SqlChunkStore:
                             WHERE c.id=:id
                             FOR UPDATE OF c
                             """
-                        ),
-                        {"id": chunk_id},
-                    )
+                            ),
+                            {"id": chunk_id},
+                        )
+
                 ).mappings().one_or_none()
                 if chunk is None:
                     return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
@@ -1414,9 +1475,10 @@ class SqlChunkStore:
                 ).scalar_one_or_none()
                 if updated is None:
                     current = (
-                        await connection.execute(
-                            text(
-                                """
+
+                            await connection.execute(
+                                text(
+                                    """
                                 SELECT a.outcome, a.generation, a.id,
                                        c.status, c.next_vendor, c.route_generation,
                                        c.route_policy_version, c.failover_from_attempt_id
@@ -1424,9 +1486,10 @@ class SqlChunkStore:
                                 JOIN sms_chunk c ON c.id=a.chunk_id
                                 WHERE a.id=:id
                                 """
-                            ),
-                            {"id": attempt_id},
-                        )
+                                ),
+                                {"id": attempt_id},
+                            )
+
                     ).mappings().one()
                     return self._report_from_locked_state(
                         attempt=current,
@@ -1643,9 +1706,10 @@ class SqlChunkStore:
         chunk_id: int,
     ) -> tuple[VendorAttempt, ...]:
         rows = (
-            await connection.execute(
-                text(
-                    """
+
+                await connection.execute(
+                    text(
+                        """
                     SELECT id, vendor_id, generation, outcome,
                            safe_to_failover, vendor_code
                     FROM sms_vendor_attempt
@@ -1653,9 +1717,10 @@ class SqlChunkStore:
                     ORDER BY generation
                     FOR UPDATE
                     """
-                ),
-                {"chunk_id": chunk_id},
-            )
+                    ),
+                    {"chunk_id": chunk_id},
+                )
+
         ).mappings().all()
         return tuple(
             VendorAttempt(
@@ -1781,6 +1846,8 @@ class SqlChunkStore:
         previous_attempt_id: int,
         expected_next_vendor: str,
         expected_route_policy_version: int,
+        segments: int = 1,
+        enforce_live_test_budget: bool = False,
     ) -> InvokeClaim:
         """领取下一跳 HTTP 授权；只有 COMMIT 为 invoking 后才允许外呼。"""
 
@@ -1788,36 +1855,47 @@ class SqlChunkStore:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                if bool(getattr(self.settings, "vendor_live_test", False)):
+                    payload = await self._payload(connection, chunk_id)
+                    if payload.denied_recipient_count:
+                        return InvokeClaim(InvokeClaimKind.DENIED, reason="recipient_denied")
                 previous = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             SELECT id, chunk_id, vendor_id, generation, outcome,
                                    safe_to_failover, vendor_code
                             FROM sms_vendor_attempt
                             WHERE id=:id
                             FOR UPDATE
                             """
-                        ),
-                        {"id": previous_attempt_id},
-                    )
+                            ),
+                            {"id": previous_attempt_id},
+                        )
+
                 ).mappings().one_or_none()
                 chunk = (
-                    await connection.execute(
-                        text(
-                            """
+                    (
+                        await connection.execute(
+                            text(
+                                """
                             SELECT c.id, c.status, c.batch_id, c.route_generation,
                                    c.next_vendor, c.route_policy_version,
-                                   c.retry_not_before, b.category, b.status AS batch_status
+                                   c.retry_not_before, c.vendor_attempt_count,
+                                   b.category, b.status AS batch_status
                             FROM sms_chunk c
                             JOIN sms_batch b ON b.id=c.batch_id
                             WHERE c.id=:id
                             FOR UPDATE OF c
                             """
-                        ),
-                        {"id": chunk_id},
+                            ),
+                            {"id": chunk_id},
+                        )
                     )
-                ).mappings().one_or_none()
+                    .mappings()
+                    .one_or_none()
+                )
                 if chunk is None:
                     return InvokeClaim(InvokeClaimKind.DENIED, reason="chunk_missing")
                 await connection.execute(
@@ -1825,9 +1903,10 @@ class SqlChunkStore:
                     {"id": int(chunk["batch_id"])},
                 )
                 history = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             SELECT id, vendor_id, generation, outcome,
                                    safe_to_failover, vendor_code
                             FROM sms_vendor_attempt
@@ -1835,9 +1914,10 @@ class SqlChunkStore:
                             ORDER BY generation
                             FOR UPDATE
                             """
-                        ),
-                        {"chunk_id": chunk_id},
-                    )
+                            ),
+                            {"chunk_id": chunk_id},
+                        )
+
                 ).mappings().all()
                 previous_attempt = None
                 if previous is not None:
@@ -1922,11 +2002,23 @@ class SqlChunkStore:
                 ).scalar_one()
                 if not bool(retry_due):
                     return InvokeClaim(InvokeClaimKind.DENIED, reason="retry_not_due")
+                if enforce_live_test_budget:
+                    budget = await self._reserve_submission_budget(
+                        connection,
+                        chunk_id,
+                        segments,
+                        int(chunk["vendor_attempt_count"]) + 1,
+                    )
+                    if budget.status is not SubmissionClaimStatus.CLAIMED:
+                        return InvokeClaim(
+                            InvokeClaimKind.DENIED, reason="daily_limit", reset_at=budget.reset_at
+                        )
                 next_generation = expected_route_generation + 1
                 inserted = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             INSERT INTO sms_vendor_attempt (
                               chunk_id, vendor_id, generation, outcome,
                               adapter_id, routing_reason, invoke_started_at
@@ -1936,20 +2028,22 @@ class SqlChunkStore:
                             )
                             RETURNING id, generation, vendor_id, outcome
                             """
-                        ),
-                        {
-                            "chunk_id": chunk_id,
-                            "vendor_id": expected_next,
-                            "generation": next_generation,
-                            "adapter_id": expected_next,
-                        },
-                    )
+                            ),
+                            {
+                                "chunk_id": chunk_id,
+                                "vendor_id": expected_next,
+                                "generation": next_generation,
+                                "adapter_id": expected_next,
+                            },
+                        )
+
                 ).mappings().one()
                 claimed = await connection.execute(
                     text(
                         """
                         UPDATE sms_chunk SET
                           status='submitting',
+                          vendor_attempt_count=vendor_attempt_count+:budget_attempt,
                           selected_vendor=:vendor_id,
                           route_generation=:generation,
                           submitting_since=now(),
@@ -1965,6 +2059,7 @@ class SqlChunkStore:
                         "vendor_id": expected_next,
                         "generation": next_generation,
                         "expected_generation": expected_route_generation,
+                        "budget_attempt": int(enforce_live_test_budget),
                     },
                 )
                 if claimed.scalar_one_or_none() is None:
@@ -1998,9 +2093,10 @@ class SqlChunkStore:
         try:
             async with engine.connect() as connection:
                 row = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             SELECT a.id, a.generation, a.outcome, c.status,
                                    c.next_vendor, c.route_generation,
                                    c.route_policy_version, c.failover_from_attempt_id
@@ -2009,13 +2105,14 @@ class SqlChunkStore:
                             WHERE a.id=:attempt_id AND a.chunk_id=:chunk_id
                               AND a.generation=:generation
                             """
-                        ),
-                        {
-                            "attempt_id": attempt_id,
-                            "chunk_id": chunk_id,
-                            "generation": expected_generation,
-                        },
-                    )
+                            ),
+                            {
+                                "attempt_id": attempt_id,
+                                "chunk_id": chunk_id,
+                                "generation": expected_generation,
+                            },
+                        )
+
                 ).mappings().one_or_none()
                 if row is None:
                     return None
@@ -2036,9 +2133,10 @@ class SqlChunkStore:
         """有界修复历史 submitting+safe rejected；无法证明则隔离不猜测。"""
 
         rows = (
-            await connection.execute(
-                text(
-                    """
+
+                await connection.execute(
+                    text(
+                        """
                     SELECT a.id AS attempt_id, c.id, c.status, c.batch_id, b.category,
                            COALESCE(b.route_policy_version,1) route_policy_version
                     FROM sms_chunk c
@@ -2054,9 +2152,10 @@ class SqlChunkStore:
                     ORDER BY c.id
                     LIMIT :limit
                     """
-                ),
-                {"limit": limit},
-            )
+                    ),
+                    {"limit": limit},
+                )
+
         ).mappings().all()
         repaired = 0
         for row in rows:
@@ -2271,6 +2370,10 @@ async def complete_vendor_split(
     ).scalar_one_or_none()
     if parent_status not in {"submitting", "split_capacity_blocked"}:
         return []
+    # 与整批用量补偿、回执应用共享短事务串行点：advisory→chunk→batch。
+    await connection.execute(
+        text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"), {"id": chunk.batch_id},
+    )
     app_limit = await _split_app_limit(connection, chunk.batch_id)
     expanded = False
     if app_limit is not None:

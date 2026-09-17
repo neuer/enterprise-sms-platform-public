@@ -399,6 +399,11 @@ class SqlCallbackRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                # 恢复保护状态前先锁批次，与幂等退役保持 batch → callback 的顺序。
+                await connection.execute(text("""
+                    SELECT public.lock_callback_idempotency_batch(:task_id)
+                """), {"task_id": task_id})
+
                 result = await connection.execute(
                     text(
                         """

@@ -4,7 +4,7 @@ import ElementPlus from "element-plus"
 import { createMemoryHistory, createRouter } from "vue-router"
 import { vi } from "vitest"
 
-import SegmentBar from "../src/components/SegmentBar.vue"
+import BillingSegments from "../src/components/BillingSegments.vue"
 import SendView from "../src/views/SendView.vue"
 
 describe("人工发送工作台", () => {
@@ -27,8 +27,8 @@ describe("人工发送工作台", () => {
     vi.unstubAllGlobals()
   })
 
-  it("SegmentBar 只按服务端分段数据渲染", () => {
-    const wrapper = mount(SegmentBar, {
+  it("BillingSegments 只按服务端分段数据渲染", () => {
+    const wrapper = mount(BillingSegments, {
       props: {
         parts: [
           { used: 67, capacity: 67, partial: false },
@@ -649,10 +649,7 @@ describe("人工发送工作台", () => {
     vm.form.mobilesText = "13800138000\n13800138001\n13800138000"
     vm.form.content = "维护通知"
     await wrapper.vm.$nextTick()
-    await vi.advanceTimersByTimeAsync(650)
-    await flushPromises()
-
-    expect(bodies.at(-1)?.accepted_count).toBe(2)
+    await vi.waitFor(() => expect(bodies.at(-1)?.accepted_count).toBe(2))
     expect(wrapper.get("[data-testid='audience-removed']").text()).toMatch(/重复\s*1/)
     wrapper.unmount()
     vi.useRealTimers()

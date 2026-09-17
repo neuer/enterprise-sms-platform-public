@@ -189,11 +189,15 @@ def test_ops_repository_uses_existing_backend_critical_postgres_gate() -> None:
     postgres_gate = (ROOT / "scripts" / "verify_vendor_postgres_recovery.sh").read_text(
         encoding="utf-8"
     )
-    assert "SMS_COVERAGE=1 bash ../scripts/verify_vendor_postgres_recovery.sh" in ci_yml
-    assert ci_yml.count("verify_vendor_postgres_recovery.sh") == 1
-    assert "test_raw_capture_legacy_postgres.py" in postgres_gate
-    assert "test_raw_replay_eligibility_postgres.py" in postgres_gate
-    assert "test_raw_replay_fencing_postgres.py" in postgres_gate
+    assert "scripts/run_backend_tests.sh postgres" in ci_yml
+    assert ci_yml.count("scripts/run_backend_tests.sh postgres") == 1
+    from gate_policy import isolated_paths
+
+    selected = isolated_paths(ROOT)
+    for name in ("test_raw_capture_legacy_postgres.py", "test_raw_replay_eligibility_postgres.py",
+                 "test_raw_replay_fencing_postgres.py"):
+        assert f"backend/tests/integration/{name}" in selected
+    assert "--gate-shard postgres" in postgres_gate
     assert "SECURITY_SESSION_POSTGRES_DSN" in postgres_gate
 
 

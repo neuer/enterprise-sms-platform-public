@@ -419,6 +419,7 @@ def test_access_only_mode_is_reflected_in_openapi_and_frontend_types() -> None:
     assert "detectSessionMode" in lock
     assert "hasWebLocks" in session_mode
     assert "navigator?.locks?.request" in session_mode
-    assert "locks.request" in lock
+    assert "withSessionLock" in lock
+    assert "locks.request" in (FRONTEND_LOCK.parent / "sessionDocument.ts").read_text()
     assert "userAgent" not in session_mode
     assert "userAgent" not in lock

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -12,6 +13,7 @@ from app.core.errors import ApiError, api_error_handler
 from app.services.dashboard import (
     AlertSummary,
     BalancePoint,
+    BalanceSnapshot,
     CategoryMetric,
     DashboardOperations,
     DashboardSnapshot,
@@ -137,3 +139,59 @@ def test_dashboard_requires_bearer_token() -> None:
     response = client.get("/api/v1/web/reports/dashboard")
     assert response.status_code == 401
     assert response.json()["code"] == "UNAUTHORIZED"
+
+
+class FakeBalanceRepository:
+    def __init__(self, balance: int | None, *, fail: bool = False) -> None:
+        self.balance = balance
+        self.fail = fail
+        self.calls = 0
+
+    async def load_balance(self) -> BalanceSnapshot:
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("database unavailable")
+        return BalanceSnapshot(
+            self.balance,
+            datetime(2026, 7, 12, tzinfo=UTC) if self.balance is not None else None,
+        )
+
+
+@pytest.mark.parametrize("balance", [None, 0, 9000])
+def test_admin_balance_uses_lightweight_repository_and_keeps_unknown(balance: int | None) -> None:
+    client, dashboard = make_client(AdminFacade)
+    repository = FakeBalanceRepository(balance)
+    client.app.dependency_overrides[module.get_balance_repository] = lambda: repository  # type: ignore[attr-defined]
+    response = client.get("/api/v1/web/reports/balance", headers={"Authorization": "Bearer jwt"})
+    assert response.status_code == 200
+    assert response.json() == {
+        "current_balance": balance,
+        "checked_at": "2026-07-12T00:00:00Z" if balance is not None else None,
+    }
+    assert repository.calls == 1
+    assert dashboard.calls == []
+
+
+@pytest.mark.parametrize("role", ["viewer", "operator", "approver"])
+def test_balance_rejects_non_admin_without_querying_global_facts(role: str) -> None:
+    class RoleFacade:
+        async def verify(self, _token: str) -> JwtClaims:
+            return JwtClaims("reader", "用户", "业务部", role)
+
+    client, _ = make_client()
+    repository = FakeBalanceRepository(9000)
+    client.app.dependency_overrides[get_auth_facade] = RoleFacade  # type: ignore[attr-defined]
+    client.app.dependency_overrides[module.get_balance_repository] = lambda: repository  # type: ignore[attr-defined]
+    response = client.get("/api/v1/web/reports/balance", headers={"Authorization": "Bearer jwt"})
+    assert response.status_code == 403
+    assert response.json()["code"] == "FORBIDDEN"
+    assert repository.calls == 0
+    assert client.get("/api/v1/web/reports/balance").status_code == 401
+
+
+def test_balance_failure_does_not_return_zero_or_cached_balance() -> None:
+    client, _ = make_client(AdminFacade)
+    repository = FakeBalanceRepository(9000, fail=True)
+    client.app.dependency_overrides[module.get_balance_repository] = lambda: repository  # type: ignore[attr-defined]
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        client.get("/api/v1/web/reports/balance", headers={"Authorization": "Bearer jwt"})

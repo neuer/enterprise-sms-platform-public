@@ -18,6 +18,18 @@ T = TypeVar("T")
 
 LOGGER = logging.getLogger(__name__)
 
+# 日历等待不是 dispatcher 积压；恢复到期后从可执行时刻计算等待年龄。
+OUTBOX_CAPACITY_ACTIVE_SQL = """
+state IN ('pending','leased','published','processing')
+AND NOT (state='pending' AND event_type='chunk.ready'
+         AND last_error IS NOT DISTINCT FROM 'MarketWindowDeferred'
+         AND next_attempt_at>now())
+"""
+OUTBOX_CAPACITY_AGE_SQL = """
+CASE WHEN event_type='chunk.ready' AND last_error='MarketWindowDeferred'
+     THEN next_attempt_at ELSE created_at END
+"""
+
 OUTBOX_BACKLOG_ALERT_SECONDS = 300
 PHONE_IN_TEXT = re.compile(r"(?<!\d)1\d{10}(?!\d)")
 BATCH_REFERENCE = re.compile(r"^[0-9a-f]{32}$")
@@ -268,12 +280,8 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         and not spec.aggregate_id.startswith("0")
         and int(spec.aggregate_id) <= 2_147_483_647
         and spec.args == ("app.tasks.sync_signs", int(spec.aggregate_id))
-        and spec.dedup_key.startswith(
-            f"job.trigger:sync_signs:{spec.aggregate_id}:"
-        )
-        and spec.dedup_key.removeprefix(
-            f"job.trigger:sync_signs:{spec.aggregate_id}:"
-        ).isdecimal()
+        and spec.dedup_key.startswith(f"job.trigger:sync_signs:{spec.aggregate_id}:")
+        and spec.dedup_key.removeprefix(f"job.trigger:sync_signs:{spec.aggregate_id}:").isdecimal()
         and not spec.dedup_key.removeprefix(
             f"job.trigger:sync_signs:{spec.aggregate_id}:"
         ).startswith("0")
@@ -357,8 +365,7 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         _assert_safe(spec.args)
         _assert_safe(spec.dedup_key)
     if not isinstance(spec.args, tuple) or any(
-        isinstance(item, bool) or not isinstance(item, (str, int))
-        for item in spec.args
+        isinstance(item, bool) or not isinstance(item, (str, int)) for item in spec.args
     ):
         raise ValueError("outbox args must be string or integer references")
 
@@ -386,6 +393,10 @@ class OutboxRepository(Protocol):
 
     async def complete(self, event_id: UUID, lease_id: UUID) -> None: ...
 
+    async def defer_execution(
+        self, event_id: UUID, lease_id: UUID, next_attempt_at: datetime,
+    ) -> None: ...
+
     async def fail_execution(
         self,
         event_id: UUID,
@@ -408,24 +419,25 @@ class OutboxDispatcher:
         *,
         lease_seconds: int = 60,
         batch_size: int = 100,
+        publish_concurrency: int = 4,
     ) -> None:
-        if lease_seconds < 5 or not 1 <= batch_size <= 1000:
+        if lease_seconds < 5 or not 1 <= batch_size <= 1000 or not 1 <= publish_concurrency <= 16:
             raise ValueError("invalid outbox dispatcher settings")
         self.repository = repository
         self.publisher = publisher
         self.lease_seconds = lease_seconds
         self.batch_size = batch_size
+        self.publish_concurrency = publish_concurrency
 
     async def dispatch_once(self) -> int:
         from app.services.runtime_heartbeat import touch_runtime_heartbeat
 
         await touch_runtime_heartbeat("outbox-dispatcher")
-        leases = await self.repository.lease_due(
-            limit=self.batch_size,
-            lease_seconds=self.lease_seconds,
-        )
-        published = 0
-        for event in leases:
+        # 只有取得发布槽的 worker 才领取下一条；慢 broker 不再消耗整批尾部租约。
+        # 总领取预算仍由 batch_size 约束，future 数量只与发布并发有关。
+        budget = iter(range(self.batch_size))
+
+        async def publish_one(event: OutboxLease) -> int:
             try:
                 await self.publisher.publish(event)
             except Exception as exc:
@@ -444,12 +456,46 @@ class OutboxDispatcher:
                     event.lease_id,
                     type(exc).__name__,
                 )
-                continue
+                return 0
             await self.repository.mark_published(event.event_id, event.lease_id)
-            published += 1
+            return 1
+
+        async def publish_worker() -> int:
+            count = 0
+            for _ in budget:
+                leases = await self.repository.lease_due(
+                    limit=1,
+                    lease_seconds=self.lease_seconds,
+                )
+                if not leases:
+                    break
+                count += await publish_one(leases[0])
+            return count
+
+        workers = [
+            asyncio.create_task(publish_worker())
+            for _ in range(min(self.batch_size, self.publish_concurrency))
+        ]
+        try:
+            published = sum(await asyncio.gather(*workers))
+        finally:
+            # 取消或单个回写失败时收拢同轮任务；已发布未回写的事实由租约回收兜底。
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
         if published:
             await touch_runtime_heartbeat("outbox-dispatcher", success=True)
         return published
+
+
+class OutboxDeferred(RuntimeError):
+    """业务日历尚未到期；保留事件和失败预算，稍后重新检查权威策略。"""
+
+    def __init__(self, next_attempt_at: datetime) -> None:
+        if next_attempt_at.tzinfo is None or next_attempt_at.utcoffset() is None:
+            raise ValueError("deferred time must include timezone")
+        super().__init__("business window deferred")
+        self.next_attempt_at = next_attempt_at
 
 
 class OutboxExecutor:
@@ -520,6 +566,18 @@ class OutboxExecutor:
                 result = await effect(claim)
             if lease_lost.is_set():
                 raise OutboxLeaseLost("outbox execution lease was lost")
+        except OutboxDeferred as deferred:
+            if lease_lost.is_set():
+                raise OutboxLeaseLost("outbox execution lease was lost") from None
+            if expected_type != "chunk.ready":
+                await self.repository.fail_execution(
+                    claim.event_id, claim.lease_id, "InvalidDeferral"
+                )
+                raise
+            await self.repository.defer_execution(
+                claim.event_id, claim.lease_id, deferred.next_attempt_at,
+            )
+            return cast(T, 0)
         except Exception as exc:
             if not lease_lost.is_set():
                 await self.repository.fail_execution(

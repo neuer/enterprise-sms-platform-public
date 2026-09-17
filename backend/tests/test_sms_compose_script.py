@@ -994,6 +994,7 @@ def test_snapshot_wrapper_reuses_launcher_inherited_lifecycle_lock(
         "SMS_SECURITY_REPORT_CONTROL_DIR",
         "SMS_SECURITY_REPORT_CONFIG_DIR",
         "SMS_SECURITY_REPORT_NGINX_DIR",
+        "SMS_AUTH_POLICY_DIR",
     ),
 )
 def test_production_rejects_security_report_path_overrides(
@@ -1008,7 +1009,8 @@ def test_production_rejects_security_report_path_overrides(
         extra_environment={"SMS_SECRETS_MODE": "production", name: "/tmp/escape"},
     )
     assert shell.returncode == 1
-    assert "security-report path overrides" in shell.stderr
+    expected = "auth-policy" if name == "SMS_AUTH_POLICY_DIR" else "security-report"
+    assert f"{expected} path overrides" in shell.stderr
     assert command_lines(log) == []
 
     with (platform_root / ".env").open("a", encoding="utf-8") as stream:

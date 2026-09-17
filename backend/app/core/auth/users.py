@@ -23,6 +23,7 @@ from app.core.auth.backends import (
 )
 from app.core.auth.identity import normalize_login_name, validate_local_login_name
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
+from app.core.auth.temporary_password import TEMPORARY_PASSWORD_EXPIRY_SQL
 from app.core.runtime_resources import (
     bind_connection_audit_subject,
     bind_connection_system_audit,
@@ -47,7 +48,8 @@ SELECT
   ap.enabled AS provider_enabled,
   lc.must_change_password,
   lc.password_hash,
-  lc.credential_version
+  lc.credential_version,
+  (lc.temporary_password_expires_at > clock_timestamp()) AS temporary_password_valid
 FROM user_account ua
 JOIN auth_identity ai ON ai.account_id=ua.id
 JOIN auth_provider ap ON ap.id=ai.provider_id
@@ -141,6 +143,7 @@ def _local_record(row: Any) -> LocalAccountRecord:
         ),
         password_hash=str(row["password_hash"]),
         credential_version=int(row["credential_version"]),
+        temporary_password_valid=bool(row.get("temporary_password_valid", False)),
     )
 
 
@@ -332,10 +335,18 @@ class SqlUserRepository:
                         text(
                             """
                             SELECT id FROM auth_provider
-                            WHERE code=:provider_code AND enabled=TRUE FOR SHARE
+                            WHERE code=:provider_code AND enabled=TRUE
+                              AND id=:authenticated_provider_id
+                              AND active_version IS NOT DISTINCT FROM
+                                  :authenticated_provider_version
+                            FOR SHARE
                             """
                         ),
-                        {"provider_code": identity.provider_code},
+                        {
+                            "provider_code": identity.provider_code,
+                            "authenticated_provider_id": identity.provider_id,
+                            "authenticated_provider_version": identity.provider_version,
+                        },
                     )
                     provider_id = provider_result.scalar_one_or_none()
                     if provider_id is None:
@@ -392,8 +403,7 @@ class SqlUserRepository:
                     )
                     mapping_rows = list(mapping_result.mappings())
                     mappings = {
-                        str(row["external_group"]): str(row["role"])
-                        for row in mapping_rows
+                        str(row["external_group"]): str(row["role"]) for row in mapping_rows
                     }
                     mapped_departments = {
                         str(row["dept"]).strip()
@@ -624,6 +634,7 @@ class SqlUserRepository:
                           AND ua.security_version=:security_version
                           AND ua.status=1 AND ai.status=1 AND ap.enabled=TRUE
                           AND lc.must_change_password=TRUE
+                          AND lc.temporary_password_expires_at > clock_timestamp()
                         RETURNING id
                         """
                     ),
@@ -657,6 +668,7 @@ class SqlUserRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 selected = await connection.execute(
                     text(
                         """
@@ -777,6 +789,7 @@ class SqlUserRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 locked = await connection.execute(
                     text(
                         """
@@ -824,6 +837,7 @@ class SqlUserRepository:
                         UPDATE local_credential SET
                           password_hash=:password_hash,
                           must_change_password=FALSE,
+                          temporary_password_expires_at=NULL,
                           credential_version=credential_version+1,
                           password_changed_at=now(),updated_at=now()
                         WHERE identity_id=:identity_id
@@ -911,6 +925,7 @@ class SqlUserRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 cas = await connection.execute(
                     text(
                         """
@@ -947,6 +962,7 @@ class SqlUserRepository:
                         UPDATE local_credential
                         SET password_hash = :password_hash,
                             must_change_password = FALSE,
+                            temporary_password_expires_at = NULL,
                             credential_version = credential_version + 1,
                             password_changed_at = now(),
                             updated_at = now()
@@ -1064,10 +1080,11 @@ class SqlUserRepository:
                     identity_id = int(identity_result.scalar_one())
                     await connection.execute(
                         text(
-                            """
+                            f"""
                             INSERT INTO local_credential(
-                              identity_id,password_hash,must_change_password
-                            ) VALUES(:identity_id,:password_hash,TRUE)
+                              identity_id,password_hash,must_change_password,temporary_password_expires_at
+                            ) VALUES(:identity_id,:password_hash,TRUE,
+                              {TEMPORARY_PASSWORD_EXPIRY_SQL})
                             """
                         ),
                         {
@@ -1148,6 +1165,7 @@ class SqlUserRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
                 updated = await connection.execute(
                     text(
                         """

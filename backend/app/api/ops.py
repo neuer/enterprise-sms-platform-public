@@ -11,6 +11,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import AdminActor, require_admin_actor
 from app.api.reports import ExportTaskModel, _response, get_export_service
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
@@ -65,7 +66,10 @@ from app.settings import get_settings
 from app.tasks import register_task_modules
 from app.tasks.scheduler import build_beat_schedule
 
-router = APIRouter(prefix="/api/v1/web/admin", tags=["admin"])
+router = APIRouter(
+    prefix="/api/v1/web/admin", tags=["admin"],
+    dependencies=[Depends(require_admin_actor)],
+)
 
 
 class PageModel(BaseModel):
@@ -294,17 +298,17 @@ class UnmatchedExportModel(BaseModel):
     decrypted: bool = False
 
 
-def get_ops_repository() -> SqlOpsRepository:
+def get_ops_repository(_actor: AdminActor) -> SqlOpsRepository:
     return SqlOpsRepository()
 
 
-def get_current_alert_service() -> CurrentAlertService:
+def get_current_alert_service(_actor: AdminActor) -> CurrentAlertService:
     register_task_modules()
     specs = tuple(JOB_SPECS[name] for name in sorted(JOB_SPECS))
     return CurrentAlertService(SqlCurrentAlertRepository(), specs)
 
 
-def get_outbox_repository() -> SqlOutboxRepository:
+def get_outbox_repository(_actor: AdminActor) -> SqlOutboxRepository:
     return SqlOutboxRepository(pooled=True)
 
 

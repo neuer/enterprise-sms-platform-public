@@ -7,9 +7,11 @@ import hashlib
 import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any, Protocol
 from uuid import uuid4
 
+from app.core.sensitive_text import reject_phone_business_id
 from app.services.app_ratelimit import ControlPlaneUnavailable
 
 IDEMPOTENCY_TTL_S = 86400  # Redis 快速索引 TTL；DB 事实源按 scheduled_at+安全窗口延长
@@ -17,6 +19,15 @@ IDEMPOTENCY_CLAIM_TTL_S = 30
 IDEMPOTENCY_WAIT_ATTEMPTS = 100
 IDEMPOTENCY_WAIT_INTERVAL_S = 0.05
 IDEMPOTENCY_WAIT_MARGIN_S = 5
+
+
+def uncertain_resend_biz_id(resolution_id: int, generation: int) -> str:
+    """由数据库主键生成完整操作键；长 ID 使用无截断的十六进制编码。"""
+
+    if not 0 < resolution_id < 2**63 or not 0 < generation < 2**31:
+        raise ValueError("uncertain effect identity invalid")
+    legacy = f"manual-resend:{resolution_id}:{generation}"
+    return legacy if len(legacy) <= 32 else f"ur:{resolution_id:x}:{generation:x}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,8 +78,22 @@ class IdempotencyFingerprint:
     key_version: int
 
 
+class IdempotencyConflict(RuntimeError):
+    """业务键已用于不同请求或原结果不可验证，禁止静默新建发送。"""
+
+
 class IdempotencyCoordinationTimeout(RuntimeError):
     """等待中的幂等 owner 持续存活，协调窗口已耗尽。"""
+
+
+async def _state_call[T](operation: Awaitable[T]) -> T:
+    """依赖失败统一返回安全的不可用语义，原结果冲突保持可识别。"""
+    try:
+        return await operation
+    except (IdempotencyConflict, IdempotencyCoordinationTimeout, ControlPlaneUnavailable):
+        raise
+    except Exception as exc:
+        raise ControlPlaneUnavailable("幂等事实源或控制面不可用") from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +150,9 @@ end
 if current_gen > new_gen then
   return 0
 end
-return -2
+-- 同代异常投影按数据库权威修复，比较和写入必须在同一 Lua 内完成。
+redis.call('SET', KEYS[1], payload, 'EX', ttl)
+return 1
 """
 
 
@@ -189,6 +216,7 @@ class IdempotencyCoordinator:
         wait_attempts: int | None = None,
         wait_interval_s: float = IDEMPOTENCY_WAIT_INTERVAL_S,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        clock: Callable[[], float] = monotonic,
     ) -> None:
         selected_heartbeat = (
             claim_ttl_s / 3 if heartbeat_interval_s is None else heartbeat_interval_s
@@ -217,11 +245,15 @@ class IdempotencyCoordinator:
         self.wait_attempts = wait_attempts
         self.wait_interval_s = wait_interval_s
         self.sleeper = sleeper
+        self.clock = clock
+        self._renew_lock = asyncio.Lock()
+        self._renewed_until: dict[tuple[str, str], float] = {}
         self._payloads: dict[str, str] = {}
         self._local_generations: dict[str, int] = {}
 
     @staticmethod
     def key(scope: IdempotencyScope, biz_id: str) -> str:
+        reject_phone_business_id(biz_id, field_name="biz_id")
         if not biz_id or len(biz_id) > 32:
             raise ValueError("biz_id length must be 1..32")
         return f"idem:{scope.key}:{biz_id}"
@@ -255,39 +287,40 @@ class IdempotencyCoordinator:
         """返回 PostgreSQL 事实源中的版本化请求 HMAC；旧记录可能为空。"""
 
         self.key(scope, biz_id)
-        return await self.repository.find_request_fingerprint(scope, biz_id)
+        return await _state_call(self.repository.find_request_fingerprint(scope, biz_id))
 
     async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         key = self.key(scope, biz_id)
         try:
-            batch_no = await self.redis.get(key)
+            batch_no = await _state_call(self.redis.get(key))
         except Exception as exc:
             raise ControlPlaneUnavailable("幂等控制面不可用") from exc
         if batch_no is None:
-            batch_no = await self.repository.find_existing(scope, biz_id)
+            batch_no = await _state_call(self.repository.find_existing(scope, biz_id))
             if batch_no is not None:
                 await self.remember(scope, biz_id, batch_no)
             return batch_no
-        if await self.repository.exists(scope, biz_id, batch_no):
+        if await _state_call(self.repository.exists(scope, biz_id, batch_no)):
             return batch_no
-        await self.redis.delete(key)
-        return None
+        # 只删除刚核验的旧缓存值，保留已经由新请求发布的结果。
+        await _state_call(self.redis.eval(CLAIM_RELEASE_LUA, 1, key, batch_no))
+        return await _state_call(self.repository.find_existing(scope, biz_id))
 
     async def remember(
         self, scope: IdempotencyScope, biz_id: str, batch_no: str
     ) -> None:
-        await self.redis.set(
+        await _state_call(self.redis.set(
             self.key(scope, biz_id),
             batch_no,
             nx=True,
             ex=IDEMPOTENCY_TTL_S,
-        )
+        ))
 
     async def inspect(
         self, scope: IdempotencyScope, biz_id: str
     ) -> IdempotencyClaimView | None:
         try:
-            raw = await self.redis.get(self.claim_key(scope, biz_id))
+            raw = await _state_call(self.redis.get(self.claim_key(scope, biz_id)))
         except Exception as exc:
             raise ControlPlaneUnavailable("幂等控制面不可用") from exc
         viewed = parse_claim_payload(str(raw)) if raw else None
@@ -318,7 +351,7 @@ class IdempotencyCoordinator:
         loader = getattr(self.repository, "load_idempotency_claim", None)
         if loader is None:
             return None
-        loaded = await loader(scope, biz_id)
+        loaded = await _state_call(loader(scope, biz_id))
         return dict(loaded) if loaded is not None else None
 
     async def _project_view(
@@ -330,27 +363,17 @@ class IdempotencyCoordinator:
         payload = claim_payload(viewed)
         try:
             projected = int(
-                await self.redis.eval(
+                await _state_call(self.redis.eval(
                     CLAIM_PROJECT_LUA,
                     1,
                     self.claim_key(scope, biz_id),
                     payload,
                     self.claim_ttl_s,
                     viewed.generation,
-                )
+                ))
             )
         except Exception as exc:
             raise ControlPlaneUnavailable("幂等控制面不可用") from exc
-        if projected == -2:
-            try:
-                await self.redis.set(
-                    self.claim_key(scope, biz_id),
-                    payload,
-                    ex=self.claim_ttl_s,
-                )
-            except Exception as exc:
-                raise ControlPlaneUnavailable("幂等控制面不可用") from exc
-            return 1
         return projected
 
     async def claim(
@@ -364,13 +387,13 @@ class IdempotencyCoordinator:
         claim_key = self.claim_key(scope, biz_id)
         reserver = getattr(self.repository, "reserve_idempotency_claim", None)
         if reserver is not None:
-            generation = await reserver(
+            generation = await _state_call(reserver(
                 scope,
                 biz_id,
                 token=token,
                 fingerprint=fingerprint,
                 ttl_s=self.claim_ttl_s,
-            )
+            ))
             if generation is None:
                 return None
             viewed = IdempotencyClaimView(token, fingerprint, int(generation))
@@ -382,12 +405,12 @@ class IdempotencyCoordinator:
         self._local_generations[claim_key] = generation
         payload = f"{token}:{fingerprint}:{generation}"
         try:
-            acquired = await self.redis.set(
+            acquired = await _state_call(self.redis.set(
                 claim_key,
                 payload,
                 nx=True,
                 ex=self.claim_ttl_s,
-            )
+            ))
         except Exception as exc:
             raise ControlPlaneUnavailable("幂等控制面不可用") from exc
         if not acquired:
@@ -400,20 +423,20 @@ class IdempotencyCoordinator:
         live_checker = getattr(self.repository, "live_idempotency_claim", None)
         authority = await self._authority(scope, biz_id)
         if authority is not None and str(authority["state"]) == "completed":
-            batch_no = await self.repository.find_existing(scope, biz_id)
+            batch_no = await _state_call(self.repository.find_existing(scope, biz_id))
             if batch_no is not None:
                 await self.remember(scope, biz_id, batch_no)
                 return batch_no
         if authority is not None and claim_row_is_live(authority):
             await self._project_view(scope, biz_id, claim_view_from_row(authority))
         for attempt in range(self.wait_attempts):
-            owned = await self.redis.get(claim_key)
+            owned = await _state_call(self.redis.get(claim_key))
             if owned is None:
-                batch_no = await self.repository.find_existing(scope, biz_id)
+                batch_no = await _state_call(self.repository.find_existing(scope, biz_id))
                 if batch_no is not None:
                     await self.remember(scope, biz_id, batch_no)
                     return batch_no
-                if live_checker is not None and await live_checker(scope, biz_id):
+                if live_checker is not None and await _state_call(live_checker(scope, biz_id)):
                     if attempt + 1 < self.wait_attempts:
                         await self.sleeper(self.wait_interval_s)
                     continue
@@ -424,13 +447,13 @@ class IdempotencyCoordinator:
                 return None
             if attempt + 1 < self.wait_attempts:
                 await self.sleeper(self.wait_interval_s)
-        batch_no = await self.repository.find_existing(scope, biz_id)
+        batch_no = await _state_call(self.repository.find_existing(scope, biz_id))
         if batch_no is not None:
             await self.remember(scope, biz_id, batch_no)
             return batch_no
-        if await self.redis.get(claim_key) is not None:
+        if await _state_call(self.redis.get(claim_key)) is not None:
             raise IdempotencyCoordinationTimeout("idempotency wait timed out")
-        if live_checker is not None and await live_checker(scope, biz_id):
+        if live_checker is not None and await _state_call(live_checker(scope, biz_id)):
             raise IdempotencyCoordinationTimeout("idempotency wait timed out")
         if authority is not None and claim_row_is_live(authority):
             raise IdempotencyCoordinationTimeout("idempotency wait timed out")
@@ -448,37 +471,54 @@ class IdempotencyCoordinator:
         viewed = parse_claim_payload(payload)
         renewer = getattr(self.repository, "renew_idempotency_claim", None)
         if renewer is not None:
-            renewed = await renewer(
+            renewed = await _state_call(renewer(
                 scope,
                 biz_id,
                 token=token,
                 fingerprint=viewed.fingerprint,
                 generation=viewed.generation,
                 ttl_s=self.claim_ttl_s,
-            )
+            ))
             if not renewed:
                 return False
             try:
-                redis_ok = await self.redis.eval(
+                redis_ok = await _state_call(self.redis.eval(
                     CLAIM_RENEW_LUA,
                     1,
                     self.claim_key(scope, biz_id),
                     payload,
                     self.claim_ttl_s,
-                )
+                ))
             except Exception as exc:
                 raise ControlPlaneUnavailable("幂等控制面不可用") from exc
             if not redis_ok and await self._project_view(scope, biz_id, viewed) != 1:
                 raise ControlPlaneUnavailable("幂等投影续租失败")
             return True
-        renewed = await self.redis.eval(
+        renewed = await _state_call(self.redis.eval(
             CLAIM_RENEW_LUA,
             1,
             self.claim_key(scope, biz_id),
             payload,
             self.claim_ttl_s,
-        )
+        ))
         return bool(renewed)
+
+    async def renew_if_due(self, scope: IdempotencyScope, biz_id: str, token: str) -> bool:
+        """合并同租约的主动检查和心跳；首检、到期及失败仍走权威续租。"""
+
+        key = (self.claim_key(scope, biz_id), token)
+        async with self._renew_lock:
+            started = self.clock()
+            if started < self._renewed_until.get(key, float("-inf")):
+                return True
+            self._renewed_until.pop(key, None)
+            renewed = await self.renew(scope, biz_id, token)
+            if renewed:
+                # 从请求开始计时，数据库/Redis 的等待不延长本地可复用期限。
+                self._renewed_until[key] = started + min(
+                    self.heartbeat_interval_s, self.claim_ttl_s / 3
+                )
+            return renewed
 
     async def heartbeat(
         self,
@@ -490,7 +530,7 @@ class IdempotencyCoordinator:
         while not lost.is_set():
             try:
                 await self.sleeper(self.heartbeat_interval_s)
-                if not await self.renew(scope, biz_id, token):
+                if not await self.renew_if_due(scope, biz_id, token):
                     lost.set()
                     return
             except asyncio.CancelledError:
@@ -502,6 +542,7 @@ class IdempotencyCoordinator:
     async def release(
         self, scope: IdempotencyScope, biz_id: str, token: str
     ) -> None:
+        self._renewed_until.pop((self.claim_key(scope, biz_id), token), None)
         payload = self._payload_for(scope, biz_id, token)
         if payload is None:
             viewed = await self.inspect(scope, biz_id)
@@ -511,17 +552,17 @@ class IdempotencyCoordinator:
         releaser = getattr(self.repository, "release_idempotency_claim", None)
         if releaser is not None:
             viewed = parse_claim_payload(payload)
-            await releaser(
+            await _state_call(releaser(
                 scope,
                 biz_id,
                 token=token,
                 generation=viewed.generation,
                 reason="abandoned",
-            )
-        await self.redis.eval(
+            ))
+        await _state_call(self.redis.eval(
             CLAIM_RELEASE_LUA,
             1,
             self.claim_key(scope, biz_id),
             payload,
-        )
+        ))
         self._payloads.pop(self.claim_key(scope, biz_id), None)

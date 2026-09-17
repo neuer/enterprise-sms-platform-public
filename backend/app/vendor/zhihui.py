@@ -5,15 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from io import BytesIO
+from threading import Lock
 from time import perf_counter
 from typing import Any, cast
 
 import httpx
 
+from app.core.runtime_resources import register_resource_lifecycle
 from app.settings import Settings, get_settings
 from app.vendor.codes import VendorErrorPolicy, policy_for
 from app.vendor.identifiers import validate_vendor_task_id
@@ -26,6 +29,71 @@ VENDOR_MAX_RESPONSE_HEADER_BYTES = 64 * 1024
 VENDOR_MAX_RESPONSE_BODY_BYTES = 4 * 1024 * 1024
 VENDOR_MAX_RESPONSE_CAPTURE_BYTES = 64 * 1024 * 1024
 CONSUME_ON_READ_PATHS = frozenset({"/Sms/Api/GetReport", "/Sms/Api/GetReply"})
+
+
+MAX_SHARED_VENDOR_CONTEXTS = 4
+_CLIENTS: dict[tuple[int, asyncio.AbstractEventLoop, tuple[object, ...]], httpx.AsyncClient] = {}
+_LOCK = Lock()
+
+
+def acquire_vendor_http_client(
+    *, base_url: str, timeout_seconds: float, response_limits: tuple[int, int, int]
+) -> tuple[httpx.AsyncClient, bool]:
+    """返回 client 和调用方是否拥有关闭责任；缓存满后退化为任务自有连接。"""
+
+    register_resource_lifecycle(
+        "vendor-http", close=close_vendor_http_clients, discard=discard_vendor_http_clients
+    )
+    # TLS/代理/重定向/HTTP2 固定，未来如变成可配置值必须同时纳入复用键。
+    config = (base_url.rstrip("/"), timeout_seconds, response_limits, True, False, False, False)
+    key = (os.getpid(), asyncio.get_running_loop(), config)
+    with _LOCK:
+        client = _CLIENTS.get(key)
+        if client is not None and not client.is_closed:
+            return client, False
+        _CLIENTS.pop(key, None)
+        client = httpx.AsyncClient(
+            base_url=base_url.rstrip("/"),
+            timeout=httpx.Timeout(timeout_seconds),
+            headers={
+                "Content-Type": "application/json; charset=UTF-8",
+                "Accept-Encoding": "identity",
+            },
+            limits=httpx.Limits(max_connections=4, max_keepalive_connections=4),
+            verify=True,
+            trust_env=False,
+            follow_redirects=False,
+            http2=False,
+        )
+        if len(_CLIENTS) >= MAX_SHARED_VENDOR_CONTEXTS:
+            # 不驱逐/关闭可能仍在使用的连接；新配置生命周期回到当前 task finally。
+            return client, True
+        _CLIENTS[key] = client
+        return client, False
+
+
+def discard_vendor_http_clients() -> None:
+    """fork 子进程丢弃父进程连接引用，不触碰父进程 transport。"""
+
+    with _LOCK:
+        _CLIENTS.clear()
+
+
+async def close_vendor_http_clients() -> None:
+    """只关闭当前 PID/loop 所有的缓存，其他 loop 由其生命周期关闭。"""
+
+    owner = (os.getpid(), asyncio.get_running_loop())
+    with _LOCK:
+        keys = [key for key in _CLIENTS if key[:2] == owner]
+        clients = [_CLIENTS.pop(key) for key in keys]
+    errors: list[BaseException] = []
+    for client in clients:
+        try:
+            await client.aclose()
+        except BaseException as error:
+            errors.append(error)
+    if errors:
+        raise RuntimeError("vendor HTTP resources failed to close") from errors[0]
 
 
 class VendorError(RuntimeError):
@@ -252,6 +320,7 @@ class ZhihuiClient:
         secret_name: str,
         secret_key: str,
         http_client: httpx.AsyncClient | None = None,
+        owns_http_client: bool = True,
         max_response_header_bytes: int = VENDOR_MAX_RESPONSE_HEADER_BYTES,
         max_response_body_bytes: int = VENDOR_MAX_RESPONSE_BODY_BYTES,
         max_response_capture_bytes: int = VENDOR_MAX_RESPONSE_CAPTURE_BYTES,
@@ -275,6 +344,7 @@ class ZhihuiClient:
         self.max_response_body_bytes = max_response_body_bytes
         self.max_response_capture_bytes = max_response_capture_bytes
         self.total_timeout_s = total_timeout_s
+        self._owns_http_client = http_client is None or owns_http_client
         self._client = http_client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=httpx.Timeout(VENDOR_TIMEOUT_S),
@@ -286,14 +356,35 @@ class ZhihuiClient:
         )
 
     @classmethod
-    def from_settings(cls, settings: Settings | None = None) -> ZhihuiClient:
+    def from_settings(
+        cls, settings: Settings | None = None, *, shared_http: bool = False
+    ) -> ZhihuiClient:
         """仅经 Docker secrets 白名单读取厂商凭据。"""
 
         selected = settings or get_settings()
+        # 每次装配仍读取当前 secret；共享 HTTP client 从不保存厂商认证信息。
+        secret_name = selected.credential("vendor_secret_name")
+        secret_key = selected.credential("vendor_secret_key")
+        if not secret_name or not secret_key:
+            raise ValueError("vendor credentials must not be empty")
+        client = None
+        owns_client = True
+        if shared_http:
+            client, owns_client = acquire_vendor_http_client(
+                base_url=selected.vendor_base_url,
+                timeout_seconds=VENDOR_TIMEOUT_S,
+                response_limits=(
+                    VENDOR_MAX_RESPONSE_HEADER_BYTES,
+                    VENDOR_MAX_RESPONSE_BODY_BYTES,
+                    VENDOR_MAX_RESPONSE_CAPTURE_BYTES,
+                ),
+            )
         return cls(
             base_url=selected.vendor_base_url,
-            secret_name=selected.credential("vendor_secret_name"),
-            secret_key=selected.credential("vendor_secret_key"),
+            secret_name=secret_name,
+            secret_key=secret_key,
+            http_client=client,
+            owns_http_client=owns_client,
         )
 
     async def __aenter__(self) -> ZhihuiClient:
@@ -303,7 +394,8 @@ class ZhihuiClient:
         await self.aclose()
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        if self._owns_http_client:
+            await self._client.aclose()
 
     async def _request_raw(
         self,

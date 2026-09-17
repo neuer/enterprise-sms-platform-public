@@ -19,6 +19,101 @@ afterEach(() => {
 })
 
 describe("认证请求边界", () => {
+  it("仅对明确准入拒绝有界重试，保留同一请求和 tab binding", async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal("navigator", { locks: { request: vi.fn() } })
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            code: "RATE_LIMITED",
+            message: "busy",
+            detail: { auth_admission_retry: true, retry_after_seconds: 1 },
+          }),
+          { status: 429 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            session_mode: "refresh",
+            token: "access.jwt",
+            expires_in: 900,
+            user: USER,
+          }),
+          { status: 200 },
+        ),
+      )
+    vi.stubGlobal("fetch", fetchMock)
+    const result = loginRequest("local", "operator01", "password")
+    await vi.advanceTimersByTimeAsync(1300)
+    await expect(result).resolves.toMatchObject({ token: "access.jwt" })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[0][1].body).toEqual(fetchMock.mock.calls[1][1].body)
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).tab_id).toEqual(getRefreshTabBinding())
+  })
+
+  it.each([401, 423, 429, 503])("不会自动重试普通 %i 认证错误", async (status) => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: status === 429 ? "RATE_LIMITED" : "UNAUTHORIZED",
+          message: "denied",
+        }),
+        { status },
+      ),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    await expect(loginRequest("local", "operator01", "wrong")).rejects.toMatchObject({ status })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("页面取消终止准入等待，不发送迟到登录", async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          code: "RATE_LIMITED",
+          message: "busy",
+          detail: { auth_admission_retry: true, retry_after_seconds: 1 },
+        }),
+        { status: 429 },
+      ),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const controller = new AbortController()
+    const result = loginRequest("local", "operator01", "password", controller.signal)
+    const rejected = expect(result).rejects.toMatchObject({ name: "AbortError" })
+    await vi.advanceTimersByTimeAsync(100)
+    controller.abort(new DOMException("cancelled", "AbortError"))
+    await vi.advanceTimersByTimeAsync(2000)
+    await rejected
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it("持续准入拒绝在三十秒等待预算内停止", async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            code: "RATE_LIMITED",
+            message: "busy",
+            detail: { auth_admission_retry: true, retry_after_seconds: 1 },
+          }),
+          { status: 429 },
+        ),
+      ),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+    const result = loginRequest("local", "operator01", "password")
+    const rejected = expect(result).rejects.toMatchObject({ status: 429 })
+    await vi.advanceTimersByTimeAsync(30000)
+    await rejected
+    expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(30)
+  })
+
   it("无 Web Locks 登录请求 access_only 且不建立 tab binding", async () => {
     vi.stubGlobal("navigator", {})
     const fetchMock = vi.fn().mockResolvedValue(

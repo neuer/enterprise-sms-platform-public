@@ -1325,3 +1325,20 @@ async def test_reauthenticate_current_rejects_provider_or_identity_switch(
 
     assert raised.value.code == "STEP_UP_REQUIRED"
     assert "Current@Password123" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_temporary_password_expiry_at_token_issue_is_generic_unauthorized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, users, _, _ = facade(must_change_password=True)
+
+    async def expired(**_kwargs):
+        raise InvalidCredentials("expired")
+
+    monkeypatch.setattr(users, "create_password_change_token", expired)
+    with pytest.raises(ApiError) as failure:
+        await service.login("local", "admin", "Temporary@123", IP, TAB_ID)
+    assert failure.value.status_code == 401
+    assert failure.value.code == "UNAUTHORIZED"
+    assert not users.password_change_tokens

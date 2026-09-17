@@ -157,6 +157,8 @@ class FakeRepository:
             enabled=True,
             resend_configured=True,
             recipient_count=1,
+            publish_state="file_committed",
+            recipient_set_digest="a" * 64,
         )
 
     async def ingest_payload(
@@ -297,6 +299,7 @@ class FakeRepository:
         system: bool = False,
         control_evidence: str = "missing",
         recipient_set_digest: str = "",
+        expected_config_version: int | None = None,
     ) -> SecurityDailyDeliveryRequest:
         del control_evidence, recipient_set_digest
         if self.existing_request is not None:
@@ -1144,6 +1147,9 @@ async def test_auto_delivery_waits_on_configuration_version_split() -> None:
         recipients=("security-owner@example.com",),
         config_version=3,
     )
+    repository.auto_delivery_config = replace(
+        repository.auto_delivery_config, config_version=3, publish_state="file_pending"
+    )
     control = StaleMailerFileControl()
     service = SecurityDailyService(repository, control)
 
@@ -1208,12 +1214,19 @@ async def test_auto_delivery_resumes_after_configuration_version_split_is_repair
         recipients=("security-owner@example.com",),
         config_version=3,
     )
+    repository.auto_delivery_config = replace(
+        repository.auto_delivery_config, config_version=3, publish_state="file_pending"
+    )
     control = RepairableVersionSplitControl()
     service = SecurityDailyService(repository, control)
 
     assert await service.submit_auto_delivery(date(2026, 7, 15)) is None
     assert control.submitted == []
     control.fail_sync = False
+    await service.overview()
+    repository.auto_delivery_config = replace(
+        repository.auto_delivery_config, publish_state="file_committed"
+    )
     request = await service.submit_auto_delivery(date(2026, 7, 15))
     assert request is not None
     assert len(control.submitted) == 1

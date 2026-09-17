@@ -375,29 +375,8 @@ main {
 .approval-poll-status {
   color: var(--tx-3);
 }
-.approval-seg {
-  border-color: var(--hair);
-}
-.approval-seg button {
-  color: var(--tx-2);
-  background: var(--sink);
-}
-.approval-seg button.on {
-  color: #eaf1ed;
-  background: var(--verdi);
-}
-.approval-seg-count {
-  color: var(--tx-3);
-  background: var(--panel-2);
-}
-.approval-seg button.on .approval-seg-count {
-  color: #eaf1ed;
-  background: rgba(255, 255, 255, 0.12);
-}
-.approval-seg-count.is-hot {
-  color: #f0a08c;
-  background: color-mix(in srgb, var(--verm) 25%, transparent);
-}
+/* approval-seg 已并入 FilterSeg 单点（shared.css 令牌驱动，无需暗色重复声明）；
+   计数徽章皮肤见 approval.css。 */
 .approval-row {
   background: var(--panel);
   border-color: var(--hair);

@@ -467,14 +467,16 @@ async def test_prepare_uat_acceptance_rechecks_lease_after_guard_wait() -> None:
     running["operation_type"] = "uat_send"
     repo, connection = repository([FakeResult([running])])
 
-    assert await repo.prepare_uat_acceptance(OPERATION_ID) is True
+    assert await repo.prepare_uat_acceptance(OPERATION_ID, biz_id="synthetic-uat", app_id=1) is True
 
     sql, params = connection.calls[0]
     assert "status='running'" in sql
     assert "lease_expires_at > now()" in sql
     assert "batch_no IS NULL" in sql
     assert "make_interval(secs=>:lease_seconds)" in sql
-    assert params == {"id": OPERATION_ID, "lease_seconds": 60}
+    assert params == {
+        "id": OPERATION_ID, "lease_seconds": 60, "biz_id": "synthetic-uat", "app_id": 1
+    }
 
 
 @pytest.mark.asyncio
@@ -534,8 +536,8 @@ async def test_expire_uat_is_atomic_with_guard_and_postgres_batch_truth() -> Non
     assert "batch.channel='web'" in update_sql
     assert "batch.is_test=true" in update_sql
     assert "batch.app_id IS NOT NULL" in update_sql
-    assert update_params["biz_id"].startswith("vuat:")
-    assert len(update_params["biz_id"]) == 27
+    assert "batch.biz_id=operation.acceptance_biz_id" in update_sql
+    assert "batch.app_id=operation.acceptance_app_id" in update_sql
     assert update_params["safe_code"] == "UAT_ACCEPTANCE_EXPIRED"
     assert "INSERT INTO audit_log" in connection.calls[2][0]
 
@@ -554,7 +556,6 @@ async def test_pending_query_selects_only_safe_columns_and_nonterminal_rows() ->
 
 @pytest.mark.asyncio
 async def test_uat_result_maps_vendor_failure_without_loading_message_payload() -> None:
-    from app.services.vendor_test_operation import vendor_test_uat_biz_id
     from app.services.vendor_test_uat import UatBatchResult
 
     repo, connection = repository(
@@ -582,7 +583,7 @@ async def test_uat_result_maps_vendor_failure_without_loading_message_payload() 
     assert "b.app_id IS NOT NULL" in sql
     assert params == {
         "batch_no": "batch-uat",
-        "biz_id": vendor_test_uat_biz_id(OPERATION_ID),
+        "operation_id": OPERATION_ID,
     }
     assert "phone" not in sql.casefold()
     assert SENTINEL not in repr(connection.calls)

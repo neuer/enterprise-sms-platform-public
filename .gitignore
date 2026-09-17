@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 deploy/secrets/
+deploy/auth-policy/*
+!deploy/auth-policy/.gitkeep
 .test-update/
 
 # Python

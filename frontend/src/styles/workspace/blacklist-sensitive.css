@@ -406,7 +406,7 @@
     border-top: 1px solid var(--line);
   }
 
-  /* 模板/签名查询栏移动端规则（共享桌面定义见 template 区）。 */
+  /* 模板/签名查询栏移动端规则（filter-bar 桌面定义见 template-sign.css，seg 单点见 shared.css）。 */
   .template-filter-bar,
   .sign-filter-bar {
     align-items: flex-start;
@@ -423,13 +423,14 @@
     margin-left: 0;
   }
 
-  .template-seg,
-  .sign-seg {
+  /* 模板/签名厂商状态 seg（FilterSeg）移动端规则：横向滚动 + 按钮均分。 */
+  .template-filter-bar .filter-seg,
+  .sign-filter-bar .filter-seg {
     overflow-x: auto;
   }
 
-  .template-seg button,
-  .sign-seg button {
+  .template-filter-bar .filter-seg button,
+  .sign-filter-bar .filter-seg button {
     flex: 1;
     justify-content: center;
     padding: 0 8px;

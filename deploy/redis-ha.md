@@ -181,8 +181,11 @@ control Redis 不可用时，发送准入（SendAdmissionGuard）失败关闭，
 `DEPENDENCY_UNAVAILABLE`；查询与已完成幂等重放不探测 broker，也不得 fail-open。
 broker 故障只由 Outbox 是否排空推断，API 不得持有 broker secret。
 
-投影重建所有权由 PostgreSQL `pg_try_advisory_lock` 持有；Redis
-`usage:projection:rebuild:{date}` 只作 300 秒可见进度。并发实例只有一个 Owner，
+投影重建所有权由 PostgreSQL `pg_try_advisory_lock` 持有全局 `usage:projection:rebuild` 锁；所有活跃投影写入先取同名
+共享事务锁，锁冲突失败关闭，避免在分页游标后提交遗漏维度。Redis
+`usage:projection:rebuilding` 作为跨日的 300 秒可见屏障，每页推进时按 Owner token 续期。
+重建按稳定维度游标分页并限制 Redis 命令行数和字节；全部页和审计成功后才原子发布
+ready 并释放屏障。普通投影写入不发布 ready，中间失败保持失败关闭。并发实例只有一个 Owner，
 其余返回 `USAGE_PROJECTION_UNAVAILABLE`。ready marker 只在投影完整后发布。
 
 ### 分域 RPO/RTO（Phase 0 isolated-standalone）

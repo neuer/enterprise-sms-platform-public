@@ -24,8 +24,11 @@ describe("黑名单 / 敏感词 qingluan 结构契约（规范 §8/§8a）", () 
     expect(blacklist).toContain("ILIKE")
   })
 
-  it("黑名单：底栏「共 N 条 · 每页 20」与审计 toast 句式", () => {
-    expect(blacklist).toContain("每页 20")
+  it("黑名单：底栏「共 N 条 · 每页 20」（ListPagination 单点承载）与审计 toast 句式", () => {
+    expect(blacklist).toContain('testid="blacklist-pagination"')
+    // 计数文案与默认每页 20 由 ListPagination 单点渲染
+    expect(source("src/components/ListPagination.vue")).toContain("每页 {{ pageSize }}")
+    expect(source("src/components/ListPagination.vue")).toContain("pageSize: DEFAULT_PAGE_SIZE")
     expect(blacklist).toContain("已移出黑名单 · 本次操作已记入审计")
     // 添加 toast 分账：新增 N 个（· 已存在并更新 M 个）· 本次操作已记入审计
     expect(blacklist).toMatch(/新增 \$\{result\.added\} 个.*本次操作已记入审计/s)
@@ -34,7 +37,8 @@ describe("黑名单 / 敏感词 qingluan 结构契约（规范 §8/§8a）", () 
   it("敏感词：命中策略 seg + 单行检索条 + 查询/重置", () => {
     expect(sensitive).toContain('class="sensitive-filter-bar"')
     expect(sensitive).toContain('aria-label="命中策略"')
-    expect(sensitive).toContain("sensitive-policy-${option.value}")
+    // 策略 seg 按钮 testid 由 FilterSeg 按前缀派生：sensitive-policy-${value}
+    expect(sensitive).toContain('button-testid-prefix="sensitive-policy"')
     expect(sensitive).toContain('data-testid="sensitive-filter-keyword"')
     expect(sensitive).toContain('data-testid="sensitive-search"')
     expect(sensitive).toContain('data-testid="sensitive-reset"')

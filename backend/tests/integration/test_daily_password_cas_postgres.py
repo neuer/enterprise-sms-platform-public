@@ -76,8 +76,9 @@ async def _create_local(
             text(
                 """
                 INSERT INTO local_credential(
-                  identity_id,password_hash,must_change_password
-                ) VALUES(:identity_id,'old-hash',:must_change)
+                  identity_id,password_hash,must_change_password,temporary_password_expires_at
+                ) VALUES(:identity_id,'old-hash',:must_change,
+                  CASE WHEN :must_change THEN now()+interval '24 hours' ELSE NULL END)
                 """
             ),
             {"identity_id": identity_id, "must_change": must_change},
@@ -120,6 +121,8 @@ async def _admin_reset_password(
                 """
                 UPDATE local_credential SET
                   password_hash=:password_hash,must_change_password=TRUE,
+                  temporary_password_expires_at=now()+interval '24 hours',
+
                   credential_version=credential_version+1,
                   password_changed_at=NULL,updated_at=now()
                 WHERE identity_id=:identity_id
@@ -421,7 +424,9 @@ async def test_stale_password_change_does_not_clear_must_change_password() -> No
             text(
                 """
                 UPDATE local_credential
-                SET must_change_password=TRUE,credential_version=credential_version+1
+                SET must_change_password=TRUE,
+                  temporary_password_expires_at=now()+interval '24 hours',
+                  credential_version=credential_version+1
                 WHERE identity_id=:id
                 """
             ),

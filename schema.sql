@@ -1,5 +1,18 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.105  2026-09-12
+-- v1.6.105：临时密码独立期限；历史未改密凭据迁移时一次性宽限 24 小时。
+-- v1.6.104：目录映射按事务去重安全版本失效，保留直接 DML 触发保护。
+-- v1.6.103：UAT 受理关联与自动日报非敏感发信配置投影。
+-- v1.6.102：分片未受理确认事实绑定处置代次，旧事实保守保留待核验。
+-- v1.6.101：幂等结果到期证明与生命周期批次锁。
+-- v1.6.100：内部发送的应用 SELECT 限于业务策略列，排除 API Key 认证材料。
+-- v1.6.99：密码喷洒失败信号阈值；升级时推进准入策略 revision。
+-- v1.6.98：来源准入策略阈值及单调 revision，复用 sys_config 权限和审计。
+-- v1.6.97  2026-09-07
+-- v1.6.97：批次活跃消息计数惰性初始化，回执按锁内差值更新，终态无需逐条扫消息。
+-- v1.6.96  2026-09-07
+-- v1.6.96：uncertain child 保存事务来源证明；存量默认待核验，不自动认领。
 -- v1.6.95  2026-09-07
 -- v1.6.95：回执超时领取代际、退避及公平调度随批次持久化，跨任务共享。
 -- v1.6.94  2026-09-06
@@ -289,6 +302,11 @@ CREATE TABLE local_credential (
     identity_id         BIGINT      PRIMARY KEY REFERENCES auth_identity(id) ON DELETE RESTRICT,
     password_hash       TEXT        NOT NULL,
     must_change_password BOOLEAN    NOT NULL DEFAULT TRUE,
+    temporary_password_expires_at TIMESTAMPTZ,
+    CONSTRAINT ck_local_temporary_password_expiry CHECK (
+      (must_change_password AND temporary_password_expires_at IS NOT NULL)
+      OR (NOT must_change_password AND temporary_password_expires_at IS NULL)
+    ),
     credential_version  BIGINT      NOT NULL DEFAULT 1,
     CONSTRAINT ck_local_credential_version_positive CHECK (credential_version > 0),
     password_changed_at TIMESTAMPTZ,
@@ -432,30 +450,61 @@ CREATE TRIGGER trg_auth_provider_security_version
 AFTER UPDATE ON auth_provider
 FOR EACH ROW EXECUTE FUNCTION bump_provider_security_version();
 
+-- 每个 Provider 一行，由数据库事务编号去重；运行角色无直接读写权限。
+CREATE TABLE role_mapping_invalidation (
+    provider_id BIGINT PRIMARY KEY REFERENCES auth_provider(id) ON DELETE CASCADE,
+    transaction_id xid8 NOT NULL
+);
+REVOKE ALL ON role_mapping_invalidation FROM PUBLIC;
+
 CREATE FUNCTION bump_role_mapping_security_version()
-RETURNS trigger LANGUAGE plpgsql AS $$
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog, public AS $$
 DECLARE
   affected_provider BIGINT;
+  claimed_provider BIGINT;
+  affected_providers BIGINT[];
+  claimed_providers BIGINT[] := ARRAY[]::BIGINT[];
 BEGIN
   IF TG_OP='UPDATE' THEN
-    UPDATE user_account ua
-    SET security_version=ua.security_version+1,updated_at=now()
-    FROM auth_identity ai
-    WHERE ai.account_id=ua.id
-      AND ai.provider_id IN (OLD.provider_id,NEW.provider_id);
-    RETURN NEW;
+    IF (OLD.provider_id,OLD.external_group,OLD.role,OLD.dept)
+       IS NOT DISTINCT FROM (NEW.provider_id,NEW.external_group,NEW.role,NEW.dept) THEN
+      RETURN NEW;
+    END IF;
+    affected_providers := ARRAY[OLD.provider_id,NEW.provider_id];
+  ELSIF TG_OP='DELETE' THEN
+    -- Provider 删除引发的级联没有剩余身份；不得重建已级联删除的去重事实。
+    IF NOT EXISTS (SELECT 1 FROM public.auth_provider WHERE id=OLD.provider_id) THEN
+      RETURN OLD;
+    END IF;
+    affected_providers := ARRAY[OLD.provider_id];
+  ELSE
+    affected_providers := ARRAY[NEW.provider_id];
   END IF;
-  affected_provider := CASE
-    WHEN TG_OP='DELETE' THEN OLD.provider_id
-    ELSE NEW.provider_id
-  END;
-  UPDATE user_account ua
+  FOR affected_provider IN
+    SELECT DISTINCT item FROM unnest(affected_providers) AS item ORDER BY item
+  LOOP
+    claimed_provider := NULL;
+    INSERT INTO public.role_mapping_invalidation(provider_id,transaction_id)
+    VALUES(affected_provider,pg_current_xact_id())
+    ON CONFLICT(provider_id) DO UPDATE SET transaction_id=EXCLUDED.transaction_id
+      WHERE role_mapping_invalidation.transaction_id<>EXCLUDED.transaction_id
+    RETURNING provider_id INTO claimed_provider;
+    IF claimed_provider IS NOT NULL THEN
+      claimed_providers := array_append(claimed_providers,claimed_provider);
+    END IF;
+  END LOOP;
+  -- 移动映射时同一账号可同时属于新旧 Provider，合并集合后只更新一次。
+  UPDATE public.user_account ua
   SET security_version=ua.security_version+1,updated_at=now()
-  FROM auth_identity ai
-  WHERE ai.account_id=ua.id AND ai.provider_id=affected_provider;
+  WHERE EXISTS (
+    SELECT 1 FROM public.auth_identity ai
+    WHERE ai.account_id=ua.id AND ai.provider_id=ANY(claimed_providers)
+  );
   RETURN COALESCE(NEW,OLD);
 END
 $$;
+REVOKE ALL ON FUNCTION bump_role_mapping_security_version() FROM PUBLIC;
 CREATE TRIGGER trg_external_role_mapping_security_version
 AFTER INSERT OR UPDATE OR DELETE ON external_role_mapping
 FOR EACH ROW EXECUTE FUNCTION bump_role_mapping_security_version();
@@ -612,6 +661,8 @@ CREATE TABLE sms_batch (
     delivered         INTEGER      NOT NULL DEFAULT 0,
     failed            INTEGER      NOT NULL DEFAULT 0,
     unknown_cnt       INTEGER      NOT NULL DEFAULT 0,
+    active_message_count INTEGER,                         -- NULL 表示待在批次锁内按事实初始化
+    active_message_count_token UUID,          -- 每次计数维护换代；兼容旧 writer 自动失效
     report_timeout_last_attempt_at TIMESTAMPTZ,
     report_timeout_next_attempt_at TIMESTAMPTZ,
     report_timeout_generation BIGINT NOT NULL DEFAULT 0
@@ -654,6 +705,22 @@ CREATE INDEX idx_sms_batch_creator_account
     ON sms_batch(creator_account_id, created_at DESC);
 CREATE INDEX idx_batch_active   ON sms_batch(status)
     WHERE status IN ('scheduled','queued','sending','balance_blocked');
+
+-- 旧应用版本仍会更新 D/F/U：未同步换代即令活跃计数失效，下一次在批次锁内重算。
+CREATE OR REPLACE FUNCTION invalidate_legacy_batch_active_count()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog AS $$
+BEGIN
+  IF NEW.active_message_count_token IS NOT DISTINCT FROM OLD.active_message_count_token THEN
+    NEW.active_message_count := NULL;
+    NEW.active_message_count_token := NULL;
+  END IF;
+  RETURN NEW;
+END
+$$;
+REVOKE ALL ON FUNCTION invalidate_legacy_batch_active_count() FROM PUBLIC;
+CREATE TRIGGER trg_batch_invalidate_legacy_active_count
+BEFORE UPDATE OF delivered,failed,unknown_cnt ON sms_batch
+FOR EACH ROW EXECUTE FUNCTION invalidate_legacy_batch_active_count();
 
 -- 失败重发一代一事实：历史重复子批次保留，但新请求只能原子认领一次。
 CREATE TABLE sms_resend_action (
@@ -708,6 +775,7 @@ CREATE TABLE idempotency_claim (
     state        VARCHAR(16)  NOT NULL DEFAULT 'active',
     batch_id     BIGINT       REFERENCES sms_batch(id),
     completed_at TIMESTAMPTZ,
+    result_expires_at TIMESTAMPTZ, -- 完成结果的可信到期时间，历史孤儿不猜测回填
     released_at  TIMESTAMPTZ,
     release_reason VARCHAR(32),
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
@@ -875,6 +943,7 @@ CREATE TABLE sms_uncertain_child (
       REFERENCES sms_batch(id) ON DELETE RESTRICT,
     generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
     recovered BOOLEAN NOT NULL DEFAULT false,
+    provenance_verified BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE send_inflight_balance (
@@ -1328,6 +1397,14 @@ CREATE TABLE vendor_test_operation (
     safe_code      VARCHAR(64),
     vendor_code    INTEGER CHECK (vendor_code BETWEEN 1 AND 99999),
     batch_no       VARCHAR(64),
+    acceptance_reference_required BOOLEAN NOT NULL DEFAULT true,
+    acceptance_biz_id VARCHAR(32),
+    acceptance_app_id BIGINT REFERENCES app(id) ON DELETE RESTRICT,
+    CONSTRAINT ck_vendor_test_acceptance_reference CHECK (
+      (acceptance_biz_id IS NULL AND acceptance_app_id IS NULL)
+      OR (operation_type='uat_send' AND acceptance_biz_id IS NOT NULL
+          AND length(acceptance_biz_id)>0 AND acceptance_app_id IS NOT NULL)
+    ),
     checkpoint_id  VARCHAR(128),
     lease_expires_at TIMESTAMPTZ,
     requested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -2385,6 +2462,7 @@ CREATE TABLE usage_chunk_allocation (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE usage_chunk_release (
+    effect_generation INTEGER CHECK (effect_generation > 0),
     resolution_id BIGINT PRIMARY KEY
       REFERENCES sms_uncertain_resolution(id) ON DELETE RESTRICT,
     chunk_id BIGINT NOT NULL REFERENCES sms_chunk(id) ON DELETE RESTRICT,
@@ -2619,6 +2697,7 @@ CREATE TABLE sys_config (
 );
 
 INSERT INTO sys_config (key, value, value_type, description) VALUES
+('local_temporary_password_ttl_hours', '24', 'int', '临时密码有效期(小时)，1–168；仅影响新建和重置'),
 ('approval_threshold',        '100',   'int',  'Web通知类触发审批的号码数阈值'),
 ('market_approval_threshold', '50',    'int',  'Web营销类触发审批的号码数阈值(独立)'),
 ('approval_expire_hours',     '24',    'int',  '审批单过期时长(小时)'),
@@ -2650,6 +2729,7 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 ('export_retention_days',     '7',     'int',  '导出文件保留天数'),
 ('sensitive_hit_action',      'block', 'str',  '敏感词命中策略: block/audit'),
 ('key_grace_hours',           '72',    'int',  'APIKey轮换旧Key宽限期(小时)'),
+('auth_admission_policy', '{"version":1,"shared_burst":100,"shared_window":200,"shared_refill_ms":1000,"global_burst":8,"global_refill_ms":250,"global_concurrent":4,"source_concurrent":2,"spray_failures":12,"spray_sources":4,"spray_delay_ms":250}', 'json', '登录来源准入阈值；可信出口由部署文件批准'),
 ('login_fail_limit',          '5',     'int',  '同账号15分钟内失败次数上限'),
 ('login_lock_minutes',        '15',    'int',  '账号锁定时长(分钟)'),
 ('login_ip_fail_limit',       '20',    'int',  '同IP5分钟内失败次数上限'),
@@ -2691,6 +2771,7 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 ('security_daily_enabled','false','bool','服务器安全日报生成与手动投递开关'),
 ('security_daily_recipient_count','0','int','独立 mailer 当前收件人数，仅保存数量'),
 ('security_daily_resend_configured','false','bool','独立 mailer Resend Key 与收件人配置状态'),
+('security_daily_recipient_set_digest','e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855','str','安全日报收件集合不可逆摘要'),
 ('security_daily_config_version','1','int','安全日报发信配置单调版本'),
 ('security_daily_config_publish_state','file_committed','str','安全日报配置发布状态'),
 ('security_daily_config_file_version','1','int','安全日报已发布到 mailer 文件的配置版本'),
@@ -3017,6 +3098,23 @@ BEGIN
                   'operator:usage-projection-cli')
                 AND NEW.action='usage_projection_rebuild')))))
       OR (context_domain='realtime' AND session_user='sms_send' AND (
+          (NEW.action='message_send' AND NEW.object_type='batch'
+           AND NEW.actor ~ '^system_resend:[1-9][0-9]*$'
+           AND NEW.after_val @> '{"uncertain_resend": true}'::jsonb
+           AND EXISTS (
+             SELECT 1 FROM sms_uncertain_resolution r
+             JOIN sms_uncertain_child uc ON uc.resolution_id=r.id
+             JOIN sms_batch child ON child.id=uc.child_batch_id
+             WHERE NEW.actor='system_resend:' || r.id::text
+               AND NEW.object_id=trim(child.batch_no)
+               AND uc.provenance_verified AND r.child_batch_id=child.id
+               AND uc.generation=r.effect_generation
+               AND NEW.after_val->>'effect_generation'=r.effect_generation::text
+               AND r.action='resend_new_batch'
+               AND r.state IN ('approved','effect_pending','applying','retryable_effect_error')
+               AND r.proposer_account_id<>r.confirmer_account_id
+           ))
+          OR
           (NEW.actor='vendor-state-sync'
            AND NEW.action IN ('template_sync','sign_sync','sign_adopt'))
           OR (NEW.actor='vendor-test-reconciler' AND NEW.action IN (
@@ -3059,6 +3157,14 @@ SELECT created_at, actor, actor_subject_kind, role, ip, action, object_type, obj
 FROM audit_log;
 GRANT SELECT ON security_daily_audit_evidence TO sms_send;
 GRANT SELECT ON security_daily_audit_evidence TO sms_accept;
+
+-- v1.6.96：历史 uncertain child 核验只读内部创建证据，不开放审计正文。
+CREATE VIEW uncertain_resend_creation_evidence AS
+SELECT actor, object_id
+FROM audit_log
+WHERE action='message_send' AND object_type='batch'
+  AND actor_subject_kind='system' AND after_val @> '{"uncertain_resend": true}'::jsonb;
+GRANT SELECT ON uncertain_resend_creation_evidence TO sms_send;
 
 -- ─────────────── 导出任务 ───────────────
 CREATE TABLE export_task (
@@ -3205,7 +3311,7 @@ TO sms_accept;
 
 -- 发送、拉取、对账、统计与业务 worker。
 GRANT SELECT ON
-    user_account, app, dept_quota, sms_batch, idempotency_record, sms_chunk, sms_message,
+    user_account, dept_quota, sms_batch, idempotency_record, sms_chunk, sms_message,
     sms_reply, raw_vendor_log, report_event, report_event_projection, reply_event,
     unmatched_report, job_run, import_task, import_phone, approval, sms_template, sms_sign, blacklist,
     blacklist_hmac_alias,
@@ -3223,6 +3329,7 @@ GRANT SELECT ON
     send_inflight_reconcile_fact,
     send_admission_state, send_runtime_heartbeat
 TO sms_send;
+GRANT SELECT (id,name,dept,allowed_categories,default_sign,daily_quota,rate_limit_per_min,recipient_limit_per_min,segment_limit_per_min,max_in_flight_chunks,allow_market_api_bulk,blacklist_check,freq_override,allowed_ips,ip_allowlist_exempt_until,unlimited_quota_exempt_until,admission_exempt_note,usage_subject_kind,callback_url,callback_secret_enc,callback_report_enabled,status,created_by,created_at,updated_at) ON app TO sms_send;
 GRANT UPDATE (vendor_template_id,vendor_state,vendor_reject_reason,updated_at)
 ON sms_template TO sms_send;
 GRANT UPDATE (vendor_sign_id,vendor_state,vendor_reject_reason)
@@ -3244,6 +3351,10 @@ GRANT SELECT, INSERT, UPDATE ON security_daily_delivery_request TO sms_send;
 GRANT UPDATE, DELETE ON import_task TO sms_send;
 GRANT INSERT, DELETE ON import_phone TO sms_send;
 GRANT DELETE ON idempotency_record TO sms_send;
+-- 内部 uncertain effect 的受理、续租与完成 CAS；不授予 Claim 删除权限。
+GRANT SELECT, INSERT, UPDATE ON idempotency_claim TO sms_send;
+GRANT INSERT ON idempotency_record TO sms_send;
+GRANT USAGE, SELECT ON SEQUENCE idempotency_claim_id_seq, idempotency_record_id_seq TO sms_send;
 GRANT SELECT, INSERT, DELETE ON stat_dirty_date TO sms_send;
 GRANT INSERT ON
     report_event, reply_event, worker_lease_event, audit_log
@@ -3318,7 +3429,7 @@ GRANT SELECT (batch_id, phone_count, submitted_at, vendor_code, status,
               uncertain_since, late_evidence_at)
     ON sms_chunk TO sms_metrics;
 GRANT SELECT (state, action, source_channel, confirmed_at, approved_at,
-               effect_error)
+               effect_error, effect_applied_at)
     ON sms_uncertain_resolution TO sms_metrics;
 GRANT SELECT (generation, recovered, created_at)
     ON sms_uncertain_child TO sms_metrics;
@@ -3336,7 +3447,7 @@ GRANT SELECT (kind, mismatched_dimensions, absolute_delta)
     ON usage_projection_drift TO sms_metrics;
 GRANT SELECT (lease_id, lease_expires_at)
     ON export_task TO sms_metrics;
-GRANT SELECT (queue, state, created_at)
+GRANT SELECT (queue, state, created_at, event_type, last_error, next_attempt_at)
     ON outbox_event TO sms_metrics;
 GRANT SELECT (outcome, created_at)
     ON sms_vendor_attempt TO sms_metrics;
@@ -3383,3 +3494,62 @@ BEGIN
   END IF;
 END
 $legacy_role$;
+
+-- 单个准入策略的 updated_at 是微秒 revision；包括相同值更新也必须前移。
+CREATE OR REPLACE FUNCTION advance_auth_admission_revision()
+RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog AS $$
+BEGIN
+  IF NEW.key = 'auth_admission_policy' THEN
+    NEW.updated_at := GREATEST(clock_timestamp(), OLD.updated_at + interval '1 microsecond');
+  END IF;
+  RETURN NEW;
+END
+$$;
+REVOKE ALL ON FUNCTION advance_auth_admission_revision() FROM PUBLIC;
+CREATE TRIGGER trg_auth_admission_revision
+BEFORE UPDATE ON sys_config FOR EACH ROW
+EXECUTE FUNCTION advance_auth_admission_revision();
+
+CREATE OR REPLACE FUNCTION lock_idempotency_result_batch()
+RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF TG_TABLE_NAME='sms_chunk' THEN
+    IF OLD.status NOT IN ('submitted','failed') OR NEW.status IN ('submitted','failed') THEN
+      RETURN NEW;
+    END IF;
+  ELSIF TG_TABLE_NAME='callback_task' THEN
+    IF NEW.status IN ('done','dead') THEN RETURN NEW; END IF;
+    IF TG_OP='UPDATE' THEN
+      IF OLD.status NOT IN ('done','dead') AND OLD.batch_id IS NOT DISTINCT FROM NEW.batch_id THEN
+        RETURN NEW;
+      END IF;
+    END IF;
+  END IF;
+  PERFORM id FROM public.sms_batch WHERE id=NEW.batch_id FOR UPDATE;
+  RETURN NEW;
+END
+$$;
+DROP TRIGGER IF EXISTS trg_chunk_idempotency_protection ON sms_chunk;
+CREATE TRIGGER trg_chunk_idempotency_protection
+BEFORE UPDATE ON sms_chunk FOR EACH ROW
+EXECUTE FUNCTION lock_idempotency_result_batch();
+DROP TRIGGER IF EXISTS trg_callback_idempotency_protection ON callback_task;
+CREATE TRIGGER trg_callback_idempotency_protection
+BEFORE INSERT OR UPDATE ON callback_task FOR EACH ROW
+EXECUTE FUNCTION lock_idempotency_result_batch();
+
+CREATE OR REPLACE FUNCTION lock_callback_idempotency_batch(p_task_id BIGINT)
+RETURNS void LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  PERFORM b.id FROM public.sms_batch b
+    JOIN public.callback_task t ON t.batch_id=b.id
+    WHERE t.id=p_task_id FOR UPDATE OF b;
+END
+$$;
+REVOKE ALL ON FUNCTION lock_callback_idempotency_batch(BIGINT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION lock_callback_idempotency_batch(BIGINT) TO sms_callback;
+REVOKE ALL ON FUNCTION lock_idempotency_result_batch() FROM PUBLIC;

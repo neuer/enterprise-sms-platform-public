@@ -1,5 +1,11 @@
 <script setup lang="ts">
+import { defaultSessionDocument } from "../api/sessionDocument"
+import { useApprovedResources } from "../composables/useApprovedResources"
+
+import { renderPreview } from "../lib/templatePreview"
+
 import { ElMessage } from "element-plus"
+
 import { computed, onMounted, ref, watch } from "vue"
 
 import {
@@ -8,14 +14,23 @@ import {
   type VendorTestOperation,
   type VendorTestRecipient,
 } from "../api/admin"
+
 import type { ManagedApp } from "../api/apps"
 import { ApiRequestError } from "../api/client"
-import { listSigns, type SmsSign } from "../api/signs"
-import { listTemplates, type SmsTemplate } from "../api/templates"
+
+import { listSigns } from "../api/signs"
+
+import { listTemplates } from "../api/templates"
+
 import type { BillingPreview } from "../api/webMessages"
+
 import PhoneMask from "./PhoneMask.vue"
-import { confirmAction } from "../lib/confirm"
+
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAction } = useConfirmActions()
+
 import { errorText } from "../lib/error"
+
 import { CATEGORY_LABELS, type MessageCategory } from "../lib/labels"
 
 const props = defineProps<{
@@ -34,10 +49,14 @@ const appId = ref<number | null>(null)
 const category = ref<MessageCategory>("notice")
 const contentMode = ref<UatContentMode>("content")
 const content = ref("")
-const templates = ref<SmsTemplate[]>([])
+const { approved: approvedTemplates, load: loadTemplates } = useApprovedResources(listTemplates, () =>
+  ElMessage.error("已审核模板加载失败"),
+)
 const templateId = ref<number | null>(null)
 const templateParams = ref<string[]>([])
-const signs = ref<SmsSign[]>([])
+const { approved: approvedSigns, load: loadSigns } = useApprovedResources(listSigns, () =>
+  ElMessage.error("已审核签名加载失败"),
+)
 const signName = ref("")
 const consentConfirmed = ref(false)
 const preview = ref<BillingPreview | null>(null)
@@ -79,17 +98,8 @@ const categories = computed<MessageCategory[]>(
   () => selectedApp.value?.allowed_categories || ["verify", "notice", "market"],
 )
 const selectedRecipient = computed(() => props.recipients.find((item) => item.id === recipientId.value) || null)
-const approvedTemplates = computed(() => templates.value.filter((item) => item.vendor_state === "approved"))
-const approvedSigns = computed(() => signs.value.filter((item) => item.vendor_state === "approved"))
 const selectedTemplate = computed(() => approvedTemplates.value.find((item) => item.id === templateId.value) || null)
-const renderedTemplate = computed(() => {
-  const template = selectedTemplate.value
-  if (!template) return ""
-  return template.content.replace(/\{(\d+)\}/g, (placeholder, position: string) => {
-    const value = templateParams.value[Number(position) - 1]?.trim()
-    return value || placeholder
-  })
-})
+const renderedTemplate = computed(() => renderPreview(selectedTemplate.value?.content ?? "", templateParams.value))
 const messageReady = computed(() => {
   if (contentMode.value === "content") return content.value.trim().length > 0
   const specs = selectedTemplate.value?.var_specs
@@ -134,11 +144,7 @@ function messagePayload(): { content: string } | { template_id: number; template
 }
 
 async function loadApprovedOptions(): Promise<void> {
-  const [templateResult, signResult] = await Promise.allSettled([listTemplates(), listSigns()])
-  if (templateResult.status === "fulfilled") templates.value = templateResult.value
-  else ElMessage.error("已审核模板加载失败")
-  if (signResult.status === "fulfilled") signs.value = signResult.value
-  else ElMessage.error("已审核签名加载失败")
+  await Promise.all([loadTemplates(), loadSigns()])
 }
 
 async function runPreview(): Promise<boolean> {
@@ -169,12 +175,26 @@ async function send(): Promise<void> {
     ElMessage.warning("真实 UAT 信息尚未填写完整")
     return
   }
+  const snapshot = () => ({
+    recipient_id: recipientId.value!,
+    app_id: appId.value!,
+    category: category.value,
+    ...messagePayload(),
+    sign_name: signName.value || undefined,
+    consent_confirmed: consentConfirmed.value,
+  })
+  const parameters = snapshot()
+  const origin = defaultSessionDocument.captureOrigin()
+  const current = () =>
+    defaultSessionDocument.isOriginCurrent(origin) && JSON.stringify(snapshot()) === JSON.stringify(parameters)
   if (!preview.value && !(await runPreview())) return
+  if (!current()) return
   const billing = preview.value
   if (!billing) return
   if (
     !(await confirmAction({
       title: "确认发送真实 UAT",
+      isCurrent: current,
       body: `将向 ${selectedRecipient.value.label}（${selectedRecipient.value.phone_mask}）发送 1 个真实号码。本次预计消耗 ${billing.quota_cost} 条计费额度（${billing.est_segments} 个计费段）；受控联调每日总上限为 ${props.dailyLimit} 条。`,
       confirmText: `确认发送（预计 ${billing.quota_cost} 条）`,
       cancelText: "继续检查",
@@ -186,13 +206,8 @@ async function send(): Promise<void> {
     const bizId = pendingBizId || crypto.randomUUID().replaceAll("-", "")
     if (!pendingBizId) rememberPendingBizId(bizId)
     const operation = await sendVendorTestUat({
-      recipient_id: recipientId.value!,
-      app_id: appId.value!,
+      ...parameters,
       biz_id: bizId,
-      category: category.value,
-      ...messagePayload(),
-      sign_name: signName.value || undefined,
-      consent_confirmed: consentConfirmed.value,
       remark: "系统配置页真实 UAT",
     })
     clearPendingBizId()

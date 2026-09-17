@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import ElementPlus, { ElMessageBox } from "element-plus"
+import ElementPlus, { ElMessageBox, ElPagination } from "element-plus"
 import { createPinia } from "pinia"
 import { vi } from "vitest"
 
@@ -59,6 +59,9 @@ const app = {
 
 /** 今日用量联查的空响应（stat_daily 无记录）。 */
 const EMPTY_USAGE = {
+  total: 0,
+  page: 1,
+  size: 100,
   granularity: "day",
   group_by: "app",
   category: "all",
@@ -71,6 +74,135 @@ const EMPTY_USAGE = {
 }
 
 describe("管理员治理页面", () => {
+  it("应用用量遍历有界明细页，不把Top5排行误当全部应用", async () => {
+    const apps = Array.from({ length: 101 }, (_, index) => ({ ...app, id: index + 1, name: `app-${index + 1}` }))
+    const rows = apps.map((item) => ({
+      period_start: "2026-08-21",
+      dim_value: String(item.id),
+      dim_label: item.name,
+      total: 1,
+      total_segments: item.id === 101 ? 7654 : 1,
+      delivered: 1,
+      failed: 0,
+      unknown: 0,
+      success_rate: 1,
+    }))
+    const fetch = vi.fn(async (url: string) => {
+      if (url.includes("/reports/stats?")) {
+        const query = new URL(url, "http://localhost").searchParams
+        const page = Number(query.get("page"))
+        expect(query.get("size")).toBe("100")
+        return response({ ...EMPTY_USAGE, total: 101, page, items: rows.slice((page - 1) * 100, page * 100) })
+      }
+      if (url.endsWith("/admin/apps")) return response(apps)
+      if (url.endsWith("/admin/configs")) return response([{ key: "key_grace_hours", value: "72" }])
+      return response([])
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AppManagementView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    expect(fetch.mock.calls.filter(([url]) => url.includes("/reports/stats?"))).toHaveLength(2)
+    expect(wrapper.text()).toContain("7,654")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+  it.each(["总数增加", "总数减少", "重复应用", "缺少行", "页大小变化"])(
+    "应用用量分页出现%s时整体显示不可用，不把遗漏应用显示为零",
+    async (scenario) => {
+      const apps = Array.from({ length: 102 }, (_, index) => ({ ...app, id: index + 1, name: `app-${index + 1}` }))
+      const rows = apps.map((item) => ({
+        period_start: "2026-08-21",
+        dim_value: String(item.id),
+        dim_label: item.name,
+        total: 1,
+        total_segments: 7654,
+        delivered: 1,
+        failed: 0,
+        unknown: 0,
+        success_rate: 1,
+      }))
+      let completeSecondPage!: (value: Response) => void
+      const secondPage = new Promise<Response>((resolve) => {
+        completeSecondPage = resolve
+      })
+      const fetch = vi.fn(async (url: string) => {
+        if (url.includes("/reports/stats?")) {
+          const page = Number(new URL(url, "http://localhost").searchParams.get("page"))
+          if (page === 2) return secondPage
+          return new Response(
+            JSON.stringify({ ...EMPTY_USAGE, total: scenario === "总数增加" ? 101 : 102, items: rows.slice(0, 100) }),
+          )
+        }
+        if (url.endsWith("/admin/apps")) return new Response(JSON.stringify(apps))
+        if (url.endsWith("/admin/configs"))
+          return new Response(JSON.stringify([{ key: "key_grace_hours", value: "72" }]))
+        return new Response("[]")
+      })
+      vi.stubGlobal("fetch", fetch)
+      const wrapper = mount(AppManagementView, { global: { plugins: [createPinia(), ElementPlus] } })
+      try {
+        await flushPromises()
+        expect(fetch.mock.calls.filter(([url]) => url.includes("/reports/stats?"))).toHaveLength(2)
+        // 第二页在途时不发布第一页，也不把尚未读到的应用显示为零。
+        expect(wrapper.find(".apps-quota-cell").exists()).toBe(false)
+        completeSecondPage(
+          new Response(
+            JSON.stringify({
+              ...EMPTY_USAGE,
+              page: 2,
+              total: scenario === "总数减少" ? 101 : 102,
+              size: scenario === "页大小变化" ? 20 : 100,
+              items: scenario === "缺少行" ? rows.slice(100, 101) : rows.slice(99, 101),
+            }),
+          ),
+        )
+        await flushPromises()
+        expect(wrapper.find(".apps-quota-cell").exists()).toBe(false)
+        expect(wrapper.text()).not.toContain("7,654")
+        await wrapper.get("[data-testid='app-detail-102']").trigger("click")
+        await flushPromises()
+        expect(wrapper.text()).toContain("今日用量统计暂不可用")
+      } finally {
+        wrapper.unmount()
+        vi.unstubAllGlobals()
+      }
+    },
+  )
+  it("敏感词分页只查词库，外部策略变更通过主动刷新读取且错误不阻塞列表", async () => {
+    let policy = "block"
+    let failPolicy = false
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/admin/configs")) {
+        return failPolicy
+          ? response({ code: "UNAVAILABLE", message: "策略暂不可用" }, 503)
+          : response([{ key: "sensitive_hit_action", value: policy }])
+      }
+      return response({ total: 125, items: [] })
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(SensitiveWordView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.get("[data-testid='sensitive-policy-block']").classes()).toContain("on")
+    const configReads = () => fetch.mock.calls.filter(([url]) => url.endsWith("/admin/configs")).length
+    expect(configReads()).toBe(1)
+    policy = "audit"
+    wrapper.findComponent(ElPagination).vm.$emit("current-change", 2)
+    await flushPromises()
+    expect(configReads()).toBe(1)
+    expect(wrapper.get("[data-testid='sensitive-policy-block']").classes()).toContain("on")
+    await wrapper.get("[data-testid='sensitive-policy-refresh']").trigger("click")
+    await flushPromises()
+    expect(configReads()).toBe(2)
+    expect(wrapper.get("[data-testid='sensitive-policy-audit']").classes()).toContain("on")
+    failPolicy = true
+    await wrapper.get("[data-testid='sensitive-policy-refresh']").trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("策略暂不可用")
+    expect(wrapper.get("[data-testid='sensitive-policy-block']").attributes("disabled")).toBeDefined()
+    expect(wrapper.text()).toContain("125")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
   it("应用管理以筛选条加账本表格呈现，密钥操作收进详情抽屉", async () => {
     const fetch = vi.fn(async (url: string) => {
       if (url.endsWith("/rotate-key")) {
@@ -197,8 +329,10 @@ describe("管理员治理页面", () => {
   it("详情抽屉呈现运行概览、密钥回调与策略三段事实", async () => {
     const usage = {
       ...EMPTY_USAGE,
-      dim_summary: [
+      total: 1,
+      items: [
         {
+          period_start: "2026-08-21",
           dim_value: "1",
           dim_label: "app-iam",
           total: 41203,

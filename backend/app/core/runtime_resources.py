@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from threading import Lock
 from time import monotonic
@@ -151,6 +152,7 @@ class ManagedAsyncEngine:
 _DATABASE_ENGINES: dict[tuple[str, DatabaseUrl], ManagedAsyncEngine] = {}
 _DATABASE_METRICS: dict[str, _DatabaseMetrics] = {}
 _REDIS_CLIENTS: dict[str, Any] = {}
+_RESOURCE_LIFECYCLES: dict[str, tuple[Callable[[], Awaitable[None]], Callable[[], None]]] = {}
 _RESOURCE_LOCK = Lock()
 _BUDGETS = dict(DEFAULT_BUDGETS)
 _RUNTIME_COMPONENT = (
@@ -471,6 +473,18 @@ def redis_client(redis_url: str) -> Any:
         return client
 
 
+def register_resource_lifecycle(
+    name: str, *, close: Callable[[], Awaitable[None]], discard: Callable[[], None]
+) -> None:
+    """登记组件自己的资源生命周期；核心模块不负责组件传输实现。"""
+
+    with _RESOURCE_LOCK:
+        lifecycle = (close, discard)
+        if name in _RESOURCE_LIFECYCLES and _RESOURCE_LIFECYCLES[name] != lifecycle:
+            raise RuntimeError("resource lifecycle name is already registered")
+        _RESOURCE_LIFECYCLES[name] = lifecycle
+
+
 def _record_acquisition(component: str, waited: float, *, timed_out: bool) -> None:
     with _RESOURCE_LOCK:
         metrics = _DATABASE_METRICS.setdefault(component, _DatabaseMetrics())
@@ -558,15 +572,19 @@ def discard_inherited_runtime_resources() -> None:
         _DATABASE_ENGINES.clear()
         _DATABASE_METRICS.clear()
         _REDIS_CLIENTS.clear()
+        discard_hooks = tuple(item[1] for item in _RESOURCE_LIFECYCLES.values())
+    for discard in discard_hooks:
+        discard()
     for engine in engines:
         engine.discard_after_fork()
 
 
 async def close_runtime_resources() -> None:
-    """统一关闭 DB 与 Redis；关闭前记录未归还连接作为泄漏证据。"""
+    """统一关闭 DB、Redis 及组件登记的资源，记录未归还连接。"""
 
     with _RESOURCE_LOCK:
         clients = tuple(_REDIS_CLIENTS.values())
+        close_hooks = tuple(item[0] for item in _RESOURCE_LIFECYCLES.values())
         engines = tuple(_DATABASE_ENGINES.values())
         _REDIS_CLIENTS.clear()
         _DATABASE_ENGINES.clear()
@@ -586,6 +604,11 @@ async def close_runtime_resources() -> None:
                     },
                 )
     close_errors: list[BaseException] = []
+    for close in close_hooks:
+        try:
+            await close()
+        except BaseException as error:
+            close_errors.append(error)
     for client in clients:
         try:
             await client.aclose()

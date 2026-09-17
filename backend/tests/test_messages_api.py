@@ -96,13 +96,17 @@ async def test_scheduling_dependencies_reuse_api_pools_and_cancel_skips_policy(
         lambda redis_url: redis if redis_url == "redis://test" else None,
     )
 
-    cancel_service = await messages_module.get_scheduling_cancel_service()
+    cancel_service = await messages_module.get_scheduling_cancel_service(
+        messages_module.BatchAccessScope(app_id=1)
+    )
 
     assert policy_loads == 0
     assert cancel_service.repository is repositories[0]
     assert cancel_service.quota.redis is redis
 
-    reschedule_service = await messages_module.get_scheduling_service()
+    reschedule_service = await messages_module.get_scheduling_service(
+        messages_module.BatchAccessScope(app_id=1)
+    )
 
     assert policy_loads == 1
     assert reschedule_service.repository is repositories[1]
@@ -192,10 +196,10 @@ def test_send_api_uses_app_context_and_returns_complete_acceptance(
         "est_segments": 1,
         "quota_cost": 1,
         "status": "queued",
-            "deferred_reason": None,
-            "scheduled_at": None,
-            "idempotency_expires_at": None,
-        }
+        "deferred_reason": None,
+        "scheduled_at": None,
+        "idempotency_expires_at": None,
+    }
     assert pipeline.calls[0][0].app_id == 7
 
 
@@ -334,12 +338,12 @@ def test_send_api_returns_rate_limited_429(
     response = TestClient(make_app()).post(
         "/api/v1/messages/send",
         headers={"X-Api-Key": "valid"},
-            json={
-                "category": "verify",
-                "mobiles": ["13800138000"],
-                "content": "测试",
-                "biz_id": "biz-1",
-            },
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "测试",
+            "biz_id": "biz-1",
+        },
     )
     assert response.status_code == 429
     assert response.json()["code"] == "RATE_LIMITED"
@@ -432,12 +436,12 @@ def test_send_api_maps_live_test_recipient_denial_without_sensitive_detail(
     response = TestClient(make_app()).post(
         "/api/v1/messages/send",
         headers={"X-Api-Key": "valid"},
-            json={
-                "category": "verify",
-                "mobiles": ["13800138000"],
-                "content": "验证码123456",
-                "biz_id": "biz-1",
-            },
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "验证码123456",
+            "biz_id": "biz-1",
+        },
     )
 
     assert response.status_code == 403
@@ -463,12 +467,12 @@ def test_live_test_ordinary_api_send_is_console_only(
     response = TestClient(make_app()).post(
         "/api/v1/messages/send",
         headers={"X-Api-Key": "valid"},
-            json={
-                "category": "verify",
-                "mobiles": ["13800138000"],
-                "content": "测试",
-                "biz_id": "biz-1",
-            },
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "测试",
+            "biz_id": "biz-1",
+        },
     )
 
     assert response.status_code == 403
@@ -531,12 +535,12 @@ def test_send_api_blocks_source_ip_outside_app_allowlist_without_consuming_limit
     blocked = TestClient(app, client=("198.51.100.7", 12345)).post(
         "/api/v1/messages/send",
         headers={"X-Api-Key": "valid"},
-            json={
-                "category": "verify",
-                "mobiles": ["13800138000"],
-                "content": "验证码123456",
-                "biz_id": "biz-1",
-            },
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "验证码123456",
+            "biz_id": "biz-1",
+        },
     )
     assert blocked.status_code == 403
     assert blocked.json()["code"] == "IP_NOT_ALLOWED"
@@ -545,12 +549,12 @@ def test_send_api_blocks_source_ip_outside_app_allowlist_without_consuming_limit
     allowed = TestClient(app, client=("203.0.113.7", 12345)).post(
         "/api/v1/messages/send",
         headers={"X-Api-Key": "valid"},
-            json={
-                "category": "verify",
-                "mobiles": ["13800138000"],
-                "content": "验证码123456",
-                "biz_id": "biz-1",
-            },
+        json={
+            "category": "verify",
+            "mobiles": ["13800138000"],
+            "content": "验证码123456",
+            "biz_id": "biz-1",
+        },
     )
     assert allowed.status_code == 200
     assert pipeline.calls == 1
@@ -1138,9 +1142,7 @@ def test_scheduled_batch_cancel_and_reschedule_endpoints() -> None:
 
     service = FakeScheduling()
     app = make_app()
-    app.dependency_overrides[messages_module.get_scheduling_cancel_service] = (
-        lambda: service
-    )
+    app.dependency_overrides[messages_module.get_scheduling_cancel_service] = lambda: service
     app.dependency_overrides[messages_module.get_scheduling_service] = lambda: service
     client = TestClient(app)
     headers = {"X-Api-Key": "valid"}
@@ -1189,9 +1191,7 @@ def test_bearer_batch_writes_enforce_role_matrix(
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     app.dependency_overrides[get_api_key_authenticator] = FakeKeyAuth
     app.include_router(messages_module.router)
-    app.dependency_overrides[messages_module.get_scheduling_cancel_service] = (
-        lambda: service
-    )
+    app.dependency_overrides[messages_module.get_scheduling_cancel_service] = lambda: service
 
     response = TestClient(app).post(
         "/api/v1/messages/batches/batch-1/cancel",

@@ -256,15 +256,17 @@ async def _batch_status(owner: AsyncEngine, batch_no: str) -> str:
 async def _raw_effects(owner: AsyncEngine, raw_id: int) -> dict[str, object]:
     async with owner.connect() as connection:
         raw = (
-            await connection.execute(
-                text(
-                    """
+
+                await connection.execute(
+                    text(
+                        """
                     SELECT processed,item_count,replay_attempts,system_replay_audit_state
                     FROM raw_vendor_log WHERE id=:raw_id
                     """
-                ),
-                {"raw_id": raw_id},
-            )
+                    ),
+                    {"raw_id": raw_id},
+                )
+
         ).mappings().one()
         events = (
             await connection.execute(
@@ -273,9 +275,10 @@ async def _raw_effects(owner: AsyncEngine, raw_id: int) -> dict[str, object]:
             )
         ).scalar_one()
         audits = (
-            await connection.execute(
-                text(
-                    """
+
+                await connection.execute(
+                    text(
+                        """
                     SELECT actor,actor_subject_kind,actor_account_id,
                       actor_identity_id,correlation_id,object_id,after_val
                     FROM audit_log
@@ -284,9 +287,10 @@ async def _raw_effects(owner: AsyncEngine, raw_id: int) -> dict[str, object]:
                       AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
                     ORDER BY id
                     """
-                ),
-                {"raw_id": raw_id},
-            )
+                    ),
+                    {"raw_id": raw_id},
+                )
+
         ).mappings().all()
     return {
         "processed": bool(raw["processed"]),
@@ -525,17 +529,19 @@ async def test_sms_accept_queue_resume_audit_failure_leaves_queue_unchanged(
         assert await _batch_status(owner, batch_no) == "queued"
         async with owner.connect() as connection:
             retry_row = (
-                await connection.execute(
-                    text(
-                        """
+
+                    await connection.execute(
+                        text(
+                            """
                         SELECT actor,actor_subject_kind,actor_account_id,
                           actor_identity_id,after_val
                         FROM audit_log
                         WHERE action='queue_resume' AND actor_account_id=:account_id
                         """
-                    ),
-                    {"account_id": principal.account_id},
-                )
+                        ),
+                        {"account_id": principal.account_id},
+                    )
+
             ).mappings().one()
         assert str(retry_row["actor"]) == login
         assert str(retry_row["actor_subject_kind"]) == "human"
@@ -577,18 +583,20 @@ async def test_sms_accept_queue_resume_retry_and_concurrency_write_jwt_audit(
         assert await _batch_status(owner, batch_no) == "queued"
         async with owner.connect() as connection:
             audits = (
-                await connection.execute(
-                    text(
-                        """
+
+                    await connection.execute(
+                        text(
+                            """
                         SELECT actor,actor_subject_kind,actor_account_id,
                           actor_identity_id,correlation_id,after_val
                         FROM audit_log
                         WHERE action='queue_resume' AND actor_account_id=:account_id
                         ORDER BY id
                         """
-                    ),
-                    {"account_id": principal.account_id},
-                )
+                        ),
+                        {"account_id": principal.account_id},
+                    )
+
             ).mappings().all()
         assert audits
         assert all(str(item["actor"]) == login for item in audits)
@@ -647,6 +655,36 @@ async def test_sms_accept_human_raw_replay_audit_retry_keeps_processed_fact(
             )
         assert await repository.has_human_raw_replay_audit(raw_id) is False
 
+        with pytest.raises(RuntimeError, match="original intent"):
+            await repository.audit_raw_replay(
+                raw_id,
+                source="report",
+                items=2,
+                actor=login,
+                ip="192.0.2.1",
+                principal=principal,
+            )
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE raw_vendor_log SET processed=false,parse_state='unattempted',"
+                    "replay_eligibility='automatic' WHERE id=:id"
+                ),
+                {"id": raw_id},
+            )
+        with correlation_scope(correlation_id):
+            claim = await repository.claim_raw_for_replay(
+                raw_id, principal=principal, ip="192.0.2.1"
+            )
+        assert claim is not None and claim.claimed
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE raw_vendor_log SET processed=true,parse_state='processed',"
+                    "replay_eligibility='never' WHERE id=:id"
+                ),
+                {"id": raw_id},
+            )
         with correlation_scope(correlation_id):
             await repository.audit_raw_replay(
                 raw_id,
@@ -685,9 +723,10 @@ async def test_sms_accept_human_raw_replay_audit_retry_keeps_processed_fact(
                 )
             ).mappings().one()
             rows = (
-                await connection.execute(
-                    text(
-                        """
+
+                    await connection.execute(
+                        text(
+                            """
                         SELECT actor,actor_subject_kind,actor_account_id,
                           actor_identity_id,correlation_id,object_id,after_val
                         FROM audit_log
@@ -696,9 +735,10 @@ async def test_sms_accept_human_raw_replay_audit_retry_keeps_processed_fact(
                           AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
                         ORDER BY id
                         """
-                    ),
-                    {"raw_id": raw_id},
-                )
+                        ),
+                        {"raw_id": raw_id},
+                    )
+
             ).mappings().all()
         assert processed["processed"] is True
         assert int(processed["item_count"]) == 2
@@ -725,6 +765,7 @@ async def test_sms_accept_human_replay_audit_failure_retry_only_writes_audit(
     owner, accept_url = accept_runtime
     login = f"ops-replay-audit-{uuid4().hex[:12]}"
     principal = await _create_admin(owner, login=login)
+    retrier = await _create_admin(owner, login=f"ops-retry-{uuid4().hex[:12]}")
     correlation_id = uuid4()
     items = [{"customId": "safe-custom-1"}, {"customId": "safe-custom-2"}]
     raw = json.dumps({"code": 0, "msg": "ok", "data": items}).encode()
@@ -736,8 +777,9 @@ async def test_sms_accept_human_replay_audit_failure_retry_only_writes_audit(
     attempts = {"n": 0}
 
     async def flaky(connection: object, event: object) -> None:
-        attempts["n"] += 1
-        if attempts["n"] == 1:
+        if event.action == "raw_replay":
+            attempts["n"] += 1
+        if event.action == "raw_replay" and attempts["n"] == 1:
             raise RuntimeError("synthetic audit failure")
         await real_insert_audit(connection, event)
 
@@ -780,9 +822,9 @@ async def test_sms_accept_human_replay_audit_failure_retry_only_writes_audit(
         with correlation_scope(correlation_id):
             retried = await service.replay(
                 raw_id,
-                actor=principal.login_name,
+                actor=retrier.login_name,
                 ip="10.0.0.8",
-                principal=principal,
+                principal=retrier,
             )
         after_retry = await _raw_effects(owner, raw_id)
         assert retried == 2
@@ -794,13 +836,23 @@ async def test_sms_accept_human_replay_audit_failure_retry_only_writes_audit(
         assert len(crypto.calls) == 1
         assert len(after_retry["audits"]) == 1
         audit = after_retry["audits"][0]
-        assert str(audit["actor"]) == login
+        assert str(audit["actor"]) == retrier.login_name
         assert str(audit["actor_subject_kind"]) == "human"
-        assert int(audit["actor_account_id"]) == principal.account_id
-        assert int(audit["actor_identity_id"]) == principal.identity_id
+        assert int(audit["actor_account_id"]) == retrier.account_id
+        assert int(audit["actor_identity_id"]) == retrier.identity_id
         assert audit["correlation_id"] == correlation_id
         assert str(audit["object_id"]) == str(raw_id)
-        assert audit["after_val"] == {"source": "report", "items": 2}
+        assert audit["after_val"]["source"] == "report"
+        assert audit["after_val"]["items"] == 2
+        assert audit["after_val"]["intent_audit_id"] > 0
+        async with owner.connect() as connection:
+            intent = (await connection.execute(text(
+                "SELECT actor_account_id,actor_identity_id,correlation_id FROM audit_log "
+                "WHERE id=:id AND action='raw_replay_requested'"
+            ), {"id": audit["after_val"]["intent_audit_id"]})).one()
+        assert intent.actor_account_id == principal.account_id
+        assert intent.actor_identity_id == principal.identity_id
+        assert intent.correlation_id == correlation_id
 
         with (
             correlation_scope(correlation_id),
@@ -820,6 +872,7 @@ async def test_sms_accept_human_replay_audit_failure_retry_only_writes_audit(
         assert len(crypto.calls) == 1
     finally:
         await _cleanup(owner, raw_id=raw_id, principal=principal)
+        await _cleanup(owner, principal=retrier)
 
 
 @pytest.mark.asyncio
@@ -886,15 +939,17 @@ async def test_sms_accept_reevaluate_audit_failure_leaves_parse_state_unchanged(
             )
         async with owner.connect() as connection:
             row = (
-                await connection.execute(
-                    text(
-                        """
+
+                    await connection.execute(
+                        text(
+                            """
                         SELECT parse_state,replay_eligibility,error,processed
                         FROM raw_vendor_log WHERE id=:raw_id
                         """
-                    ),
-                    {"raw_id": raw_id},
-                )
+                        ),
+                        {"raw_id": raw_id},
+                    )
+
             ).mappings().one()
             audits = (
                 await connection.execute(
@@ -975,29 +1030,33 @@ async def test_sms_accept_reevaluate_same_txn_audit_and_live_lease_conflict(
             )
         async with owner.connect() as connection:
             row = (
-                await connection.execute(
-                    text(
-                        """
+
+                    await connection.execute(
+                        text(
+                            """
                         SELECT parse_state,replay_eligibility
                         FROM raw_vendor_log WHERE id=:raw_id
                         """
-                    ),
-                    {"raw_id": raw_id},
-                )
+                        ),
+                        {"raw_id": raw_id},
+                    )
+
             ).mappings().one()
             audit = (
-                await connection.execute(
-                    text(
-                        """
+
+                    await connection.execute(
+                        text(
+                            """
                         SELECT actor,actor_subject_kind,actor_account_id,
                           actor_identity_id,after_val,before_val
                         FROM audit_log
                         WHERE action='raw_reevaluate'
                           AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
                         """
-                    ),
-                    {"raw_id": raw_id},
-                )
+                        ),
+                        {"raw_id": raw_id},
+                    )
+
             ).mappings().one()
         assert str(row["parse_state"]) == PARSE_UNATTEMPTED
         assert str(row["replay_eligibility"]) == ELIGIBILITY_AUTOMATIC
@@ -1136,15 +1195,17 @@ async def test_sms_accept_reevaluate_processed_raw_cannot_return_to_replayable(
             )
         async with owner.connect() as connection:
             row = (
-                await connection.execute(
-                    text(
-                        """
+
+                    await connection.execute(
+                        text(
+                            """
                         SELECT processed,parse_state,replay_eligibility
                         FROM raw_vendor_log WHERE id=:raw_id
                         """
-                    ),
-                    {"raw_id": raw_id},
-                )
+                        ),
+                        {"raw_id": raw_id},
+                    )
+
             ).mappings().one()
             audits = (
                 await connection.execute(
@@ -1223,15 +1284,17 @@ async def test_sms_accept_reevaluate_expected_state_miss_does_not_audit(
             )
         async with owner.connect() as connection:
             row = (
-                await connection.execute(
-                    text(
-                        """
+
+                    await connection.execute(
+                        text(
+                            """
                         SELECT parse_state,replay_eligibility
                         FROM raw_vendor_log WHERE id=:raw_id
                         """
-                    ),
-                    {"raw_id": raw_id},
-                )
+                        ),
+                        {"raw_id": raw_id},
+                    )
+
             ).mappings().one()
             audits = (
                 await connection.execute(

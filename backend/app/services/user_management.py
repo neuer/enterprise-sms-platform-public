@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
 
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.backends import ProviderCapacityUnavailable
 from app.core.auth.identity import validate_local_login_name
 from app.core.auth.passwords import LocalPasswordHasher, PasswordPolicy
@@ -53,6 +54,7 @@ class UserRecord:
     last_synced_at: datetime | None
     last_login_at: datetime | None
     security_version: int = 1
+    temporary_password_expires_at: datetime | None = None
 
     @property
     def sync_status(self) -> SyncStatus:
@@ -100,6 +102,7 @@ class UserManagementRepository(Protocol):
         dept: str,
         role: Role,
         password_hash: str,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord: ...
@@ -110,6 +113,7 @@ class UserManagementRepository(Protocol):
         role: Role,
         role_override: bool,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord: ...
@@ -120,6 +124,7 @@ class UserManagementRepository(Protocol):
         status: int,
         *,
         actor_account_id: int,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord: ...
@@ -129,6 +134,7 @@ class UserManagementRepository(Protocol):
         account_id: int,
         password_hash: str,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord: ...
@@ -183,6 +189,7 @@ class UserManagementService:
         dept: str,
         role: Role,
         temporary_password: str,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -203,6 +210,7 @@ class UserManagementService:
             dept=dept.strip(),
             role=role,
             password_hash=password_hash,
+            authorization=authorization,
             actor=actor,
             ip=ip,
         )
@@ -213,6 +221,7 @@ class UserManagementService:
         role: Role,
         role_override: bool,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -220,6 +229,7 @@ class UserManagementService:
             account_id,
             role,
             role_override,
+            authorization=authorization,
             actor=actor,
             ip=ip,
         )
@@ -230,6 +240,7 @@ class UserManagementService:
         status: int,
         *,
         actor_account_id: int,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -239,6 +250,7 @@ class UserManagementService:
             account_id,
             status,
             actor_account_id=actor_account_id,
+            authorization=authorization,
             actor=actor,
             ip=ip,
         )
@@ -248,6 +260,7 @@ class UserManagementService:
         account_id: int,
         temporary_password: str,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -267,6 +280,7 @@ class UserManagementService:
         return await self.repository.reset_local_password(
             account_id,
             password_hash,
+            authorization=authorization,
             actor=actor,
             ip=ip,
         )

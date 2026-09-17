@@ -26,6 +26,13 @@ class FakeConnection:
         self.rows = rows
         self.calls: list[tuple[str, Any]] = []
 
+    async def execution_options(self, **kwargs: object) -> FakeConnection:
+        assert kwargs == {"isolation_level": "REPEATABLE READ"}
+        return self
+
+    def begin(self) -> FakeContext:
+        return FakeContext(self)
+
     async def execute(self, statement: object, params: Any = None) -> FakeResult:
         self.calls.append((str(statement), params))
         return FakeResult(self.rows)
@@ -60,7 +67,7 @@ async def test_app_week_query_uses_fixed_bucket_join_and_department_scope() -> N
         {
             "period_start": date(2026, 7, 6), "dim_value": "7", "dim_label": "OA应用",
             "total": 10, "total_segments": 12, "delivered": 8, "failed": 2,
-            "unknown_cnt": 1,
+            "unknown_cnt": 1, "detail_count": 1, "dimension_count": 1, "is_other": False,
         }
     ])
     engine = FakeEngine(connection)
@@ -73,13 +80,14 @@ async def test_app_week_query_uses_fixed_bucket_join_and_department_scope() -> N
         )
     )
 
-    assert rows[0].dim_label == "OA应用" and rows[0].total_segments == 12
+    assert rows.items[0].dim_label == "OA应用" and rows.items[0].total_segments == 12
     sql, params = connection.calls[0]
     assert "date_trunc('week', s.stat_date)::date" in sql
     assert "JOIN app a ON CAST(a.id AS text)=s.dim_value" in sql
     assert "a.dept=:scope_dept" in sql
     assert "sum(s.total_segments)" in sql
     assert params == {
+        "dim_type": "app",
         "start": date(2026, 7, 1), "end": date(2026, 7, 12),
         "category": "notice", "scope_dept": "业务一部",
     }
@@ -95,9 +103,9 @@ async def test_dept_month_query_never_interpolates_user_values() -> None:
         "month", "dept", "all", date(2026, 1, 1), date(2026, 7, 12), "研发部' OR 1=1"
     )
 
-    assert await repository.query(query) == ()
+    assert (await repository.query(query)).items == ()
     sql, params = connection.calls[0]
     assert "date_trunc('month', s.stat_date)::date" in sql
-    assert "s.dim_type='dept'" in sql and "s.dim_value=:scope_dept" in sql
+    assert "s.dim_type=:dim_type" in sql and "s.dim_value=:scope_dept" in sql
     assert query.scope_dept is not None and query.scope_dept not in sql
     assert params["scope_dept"] == query.scope_dept

@@ -301,7 +301,8 @@ describe("登录页", () => {
   it("具备 Web Locks 时不显示短会话提示", async () => {
     vi.stubGlobal("navigator", {
       locks: {
-        request: async (_name: string, callback: () => Promise<unknown>) => callback(),
+        request: async (_name: string, _options: { signal?: AbortSignal }, callback: () => Promise<unknown>) =>
+          callback(),
       },
     })
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider])))

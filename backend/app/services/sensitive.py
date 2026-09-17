@@ -10,6 +10,8 @@ from typing import Any, Protocol
 
 import ahocorasick
 
+from app.core.sensitive_text import reject_phone_in_text
+
 SENSITIVE_WORD_REVISION_KEY = "__sensitive_word_revision"
 MAX_PAGE_SIZE = 100
 MAX_WORD_LENGTH = 64
@@ -144,6 +146,8 @@ class SensitiveWordManager:
             shown = "、".join(oversized[:5])
             suffix = f" 等共 {len(oversized)}" if len(oversized) > 5 else ""
             raise ValueError(f"第 {shown}{suffix} 行敏感词超过 {MAX_WORD_LENGTH} 字")
+        for word in normalized:
+            reject_phone_in_text(word, field_name="敏感词")
         result = await self.repository.add_many(normalized, actor=actor)
         revision = await self.repository.current_revision()
         await self.index.replace(

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
     from app.core.auth.accounts import PlatformAccount
+    from app.core.auth.admission import AdmissionReservation
 
 
 class InvalidCredentials(RuntimeError):
@@ -48,6 +49,9 @@ class AuthenticatedIdentity:
     groups: tuple[str, ...]
     development_role: DevelopmentRole | None = None
     account: PlatformAccount | None = None
+    admission: AdmissionReservation | None = field(default=None, repr=False, compare=False)
+    provider_id: int | None = None
+    provider_version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

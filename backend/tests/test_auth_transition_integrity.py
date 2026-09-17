@@ -592,11 +592,15 @@ def test_dead_letter_hmac_is_stable_and_not_raw_uuid() -> None:
 async def test_real_redis_wrong_type_does_not_block_pending_hash_tail() -> None:
     import os
 
+    # 使用该临时 Redis 的独立逻辑库，避免扫描到其他集成用例的认证 transition。
+    from urllib.parse import urlsplit
+
     from redis.asyncio import Redis
 
     from app.core.auth.service import AUDIT_OPEN_KEY, RedisKeyValue
 
-    client = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
+    url = urlsplit(os.environ["AUTH_GUARD_REDIS_URL"])._replace(path="/1").geturl()
+    client = Redis.from_url(url, decode_responses=True)
     fixture = FakeKeyValue()
     healthy = _put_hash_only(fixture, ip="10.0.6.8")
     poison = str(uuid4())
@@ -628,11 +632,15 @@ async def test_real_redis_wrong_type_does_not_block_pending_hash_tail() -> None:
 async def test_real_redis_due_only_orphan_never_writes_lock_audit() -> None:
     import os
 
+    # 使用该临时 Redis 的独立逻辑库，避免扫描到其他集成用例的认证 transition。
+    from urllib.parse import urlsplit
+
     from redis.asyncio import Redis
 
     from app.core.auth.service import AUDIT_DUE_KEY, AUDIT_OPEN_KEY, RedisKeyValue
 
-    client = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
+    url = urlsplit(os.environ["AUTH_GUARD_REDIS_URL"])._replace(path="/1").geturl()
+    client = Redis.from_url(url, decode_responses=True)
     store = RedisKeyValue(client)
     orphan_id = str(uuid4())
     writer = RecordingSecurityEvents()
@@ -660,11 +668,15 @@ async def test_real_redis_due_only_orphan_never_writes_lock_audit() -> None:
 async def test_real_redis_pending_hash_persists_until_ack() -> None:
     import os
 
+    # 使用该临时 Redis 的独立逻辑库，避免扫描到其他集成用例的认证 transition。
+    from urllib.parse import urlsplit
+
     from redis.asyncio import Redis
 
     from app.core.auth.service import AUDIT_DUE_KEY, AUDIT_OPEN_KEY, RedisKeyValue
 
-    client = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
+    url = urlsplit(os.environ["AUTH_GUARD_REDIS_URL"])._replace(path="/1").geturl()
+    client = Redis.from_url(url, decode_responses=True)
     store = RedisKeyValue(client)
     writer = FailOnce()
     username = f"ttl-{uuid4().hex[:12]}"

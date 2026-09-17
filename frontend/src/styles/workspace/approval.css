@@ -75,32 +75,7 @@
   white-space: nowrap;
 }
 
-.approval-seg {
-  display: flex;
-  overflow: hidden;
-  border: 1px solid var(--hair);
-  border-radius: 7px;
-}
-
-.approval-seg button {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  padding: 4px 10px;
-  color: var(--tx-2);
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 400;
-  background: var(--sink);
-  border: 0;
-  cursor: pointer;
-}
-
-.approval-seg button.on {
-  color: #eaf1ed;
-  background: var(--verdi);
-}
-
+/* 状态 seg 已并入 FilterSeg 单点；此处只保留计数徽章的页级皮肤。 */
 .approval-seg-count {
   display: inline-block;
   padding: 0 5px;
@@ -112,7 +87,7 @@
   border-radius: 4px;
 }
 
-.approval-seg button.on .approval-seg-count {
+.filter-seg button.on .approval-seg-count {
   color: #eaf1ed;
   background: rgba(255, 255, 255, 0.12);
 }
@@ -449,15 +424,18 @@
   flex-wrap: wrap;
   gap: 14px;
   align-items: center;
+  min-height: 0;
   padding: 12px 4px 0;
   color: var(--tx-3);
   font:
     11px/1.5 "IBM Plex Mono",
     monospace;
+  border-top: 0;
 }
 
+/* 基座 .list-pagination 默认把分页器推到最右；审批页脚最右是轮询状态，分页器须复位。 */
 .approval-list-foot .el-pagination {
-  margin: 0;
+  margin-left: 0;
 }
 
 .approval-poll-status {

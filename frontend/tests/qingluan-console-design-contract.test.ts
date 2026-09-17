@@ -36,9 +36,10 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     expect(theme).toContain("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-500-normal.woff2")
     expect(theme).toContain("@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2")
     expect(html).toContain('<meta name="color-scheme" content="dark light" />')
-    // 防闪烁内联脚本：样式加载前恢复主题偏好
-    expect(html).toContain("documentElement.dataset.theme")
-    expect(html).toContain("sms-theme")
+    // 防闪烁同源脚本兼容 script-src self。
+    expect(html).toContain('<script src="/theme-bootstrap.js"></script>')
+    expect(source("public/theme-bootstrap.js")).toContain("documentElement.dataset.theme")
+    expect(source("public/theme-bootstrap.js")).toContain("sms-theme")
     expect(html).not.toMatch(/https?:\/\//)
     expect(theme).toContain("--el-disabled-bg-color: #2a3d37")
     expect(workspace).toMatch(/\.el-date-editor\.el-input\s+\.el-input__wrapper[^}]*background:\s*var\(--sink\)/s)

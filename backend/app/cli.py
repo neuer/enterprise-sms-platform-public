@@ -21,11 +21,13 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 
 from app.core.apikey import issue_api_key_record
 from app.core.auth.identity import validate_local_login_name
+from app.core.auth.password_screening import OfflinePasswordScreen, PasswordScreeningUnavailable
 from app.core.auth.passwords import (
     LocalPasswordHasher,
     PasswordPolicy,
     generate_temporary_password,
 )
+from app.core.auth.temporary_password import TEMPORARY_PASSWORD_EXPIRY_SQL
 from app.core.bounded_executor import run_bounded
 from app.core.runtime_resources import bind_connection_audit_subject
 from app.services.crypto import (
@@ -294,10 +296,11 @@ class SqlInitAdminRepository:
                 identity_id = int(identity_result.scalar_one())
                 await connection.execute(
                     text(
-                        """
+                        f"""
                         INSERT INTO local_credential(
-                          identity_id,password_hash,must_change_password
-                        ) VALUES(:identity_id,:password_hash,TRUE)
+                          identity_id,password_hash,must_change_password,temporary_password_expires_at
+                        ) VALUES(:identity_id,:password_hash,TRUE,
+                              {TEMPORARY_PASSWORD_EXPIRY_SQL})
                         """
                     ),
                     {"identity_id": identity_id, "password_hash": password_hash},
@@ -817,7 +820,12 @@ def main() -> int:
             with Path("/dev/tty").open("w", encoding="utf-8") as stream:
                 asyncio.run(
                     run_init_admin(
-                        InitAdminService(SqlInitAdminRepository(get_settings())),
+                        InitAdminService(
+                            SqlInitAdminRepository(get_settings()),
+                            policy=PasswordPolicy(
+                                screening=OfflinePasswordScreen.from_settings(get_settings()),
+                            ),
+                        ),
                         username=args.username,
                         display_name=args.display_name,
                         show_temporary_password=args.show_temporary_password,
@@ -827,7 +835,7 @@ def main() -> int:
         except OSError:
             print("init-admin 失败：临时密码只能显示在当前控制 TTY", file=sys.stderr)
             return 1
-        except (InitAdminError, ValueError) as error:
+        except (InitAdminError, PasswordScreeningUnavailable, ValueError) as error:
             print(f"init-admin 失败：{error}", file=sys.stderr)
             return 1
         return 0

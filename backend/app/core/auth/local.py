@@ -60,6 +60,15 @@ class LocalPasswordProvider:
             raise ProviderCapacityUnavailable("本地认证容量暂不可用") from None
         if record is None or not password_matches or not record.account.active:
             raise InvalidCredentials("用户名或密码错误")
+        if record.account.must_change_password:
+            current = await self.repository.find_local_account(normalized)
+            if (
+                current is None or not current.temporary_password_valid
+                or not current.account.active or current.account != record.account
+                or current.password_hash != record.password_hash
+                or current.credential_version != record.credential_version
+            ):
+                raise InvalidCredentials("用户名或密码错误")
         return AuthenticatedIdentity(
             provider_code="local",
             login_name=record.account.login_name,

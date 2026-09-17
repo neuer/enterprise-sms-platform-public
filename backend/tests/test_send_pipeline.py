@@ -80,12 +80,10 @@ def _claim_owned(current: str | None, token: str) -> bool:
 def test_idempotency_live_sql_keeps_unknown_and_unfinished_callback() -> None:
     sql = IDEMPOTENCY_LIVE_SQL.casefold()
     assert "expires_at > now()" in sql
-    assert "uncertain" in sql
-    assert "unknown_terminal" in sql
-    assert "split_capacity_blocked" in sql
-    assert "failover_pending" in sql
+    # 只有可解释的结束状态不受保护，覆盖已知 unknown 与未来新增状态。
+    assert "c.status not in ('submitted','failed')" in sql
     assert "callback_task" in sql
-    assert "pending" in sql and "retrying" in sql
+    assert "t.status not in ('done','dead')" in sql
     assert "phone" not in sql
 
 
@@ -1722,6 +1720,7 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
         wait_attempts=30,
         wait_interval_s=1,
         sleeper=advance,
+        clock=lambda: redis.now,
     )
     pipeline = SendPipeline(
         store=store,
@@ -2093,7 +2092,6 @@ async def test_verify_pipeline_deduplicates_encrypts_masks_and_enqueues_referenc
             ["13800138000", "13800138000", "13900139000"],
             content="验证码123456",
             biz_id="biz-2",
-            resend_of="original-batch",
         ),
     )
 
@@ -2127,7 +2125,6 @@ async def test_verify_pipeline_deduplicates_encrypts_masks_and_enqueues_referenc
         == "验证码123456"
     )
     assert command.sign_name == "【青鸾】"
-    assert command.resend_of == "original-batch"
     assert all(message.phone_mask in {"138****8000", "139****9000"} for message in command.messages)
     assert all(not hasattr(message, "phone") for message in command.messages)
     assert quota.reservations[0]["cost"] == 2

@@ -1,3 +1,4 @@
+import { adminStepUpHeaders } from "./adminStepUp"
 import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS, type UserRole } from "./auth"
 import type { VendorCredentialEnvelope, VendorSealSession } from "../lib/vendorSeal"
 import type { MessageCategory } from "../lib/labels"
@@ -110,6 +111,7 @@ export interface ExternalRoleMapping {
 }
 
 export interface RoleMappings {
+  revision: string
   mappings: ExternalRoleMapping[]
 }
 
@@ -119,7 +121,7 @@ export interface ExternalRoleMappingUpdate {
   dept: string
 }
 
-export function listAudits(filters: AuditFilters): Promise<AuditPage> {
+export function listAudits(filters: AuditFilters, signal?: AbortSignal): Promise<AuditPage> {
   const query = new URLSearchParams({
     page: String(filters.page),
     page_size: String(filters.pageSize),
@@ -132,12 +134,13 @@ export function listAudits(filters: AuditFilters): Promise<AuditPage> {
   if (filters.correlationId.trim()) query.set("correlation_id", filters.correlationId.trim())
   if (filters.start) query.set("start", filters.start)
   if (filters.end) query.set("end", filters.end)
-  return apiRequest<AuditPage>(`/admin/audit-logs?${query}`, { method: "GET" })
+  return apiRequest<AuditPage>(`/admin/audit-logs?${query}`, { method: "GET", signal })
 }
 
 export const listAuditActions = () => apiRequest<string[]>("/admin/audit-logs/actions", { method: "GET" })
 
-export const listConfigs = () => apiRequest<ConfigItem[]>("/admin/configs", { method: "GET" })
+export const listConfigs = (signal?: AbortSignal) =>
+  apiRequest<ConfigItem[]>("/admin/configs", { method: "GET", signal })
 
 export function updateConfigs(items: ConfigUpdate[]): Promise<ConfigItem[]> {
   return apiRequest<ConfigItem[]>("/admin/configs", {
@@ -155,10 +158,14 @@ export function getAuthProvider(providerCode: string): Promise<AuthProviderAdmin
   return apiRequest<AuthProviderAdmin>(providerPath(providerCode), { method: "GET" })
 }
 
-export function saveAuthProviderDraft(providerCode: string, config: LdapProviderConfig): Promise<AuthProviderAdmin> {
+export function saveAuthProviderDraft(
+  providerCode: string,
+  config: LdapProviderConfig,
+  token?: string,
+): Promise<AuthProviderAdmin> {
   return apiRequest<AuthProviderAdmin>(providerPath(providerCode, "/draft"), {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...adminStepUpHeaders(token) },
     body: JSON.stringify({ config }),
   })
 }
@@ -169,15 +176,17 @@ export function testAuthProvider(providerCode: string): Promise<AuthProviderTest
   })
 }
 
-export function activateAuthProvider(providerCode: string): Promise<AuthProviderAdmin> {
+export function activateAuthProvider(providerCode: string, token?: string): Promise<AuthProviderAdmin> {
   return apiRequest<AuthProviderAdmin>(providerPath(providerCode, "/activate"), {
     method: "POST",
+    headers: adminStepUpHeaders(token),
   })
 }
 
-export function disableAuthProvider(providerCode: string): Promise<AuthProviderAdmin> {
+export function disableAuthProvider(providerCode: string, token?: string): Promise<AuthProviderAdmin> {
   return apiRequest<AuthProviderAdmin>(providerPath(providerCode, "/disable"), {
     method: "POST",
+    headers: adminStepUpHeaders(token),
   })
 }
 
@@ -190,11 +199,13 @@ export function listAuthProviderRoleMappings(providerCode: string): Promise<Role
 export function replaceAuthProviderRoleMappings(
   providerCode: string,
   mappings: ExternalRoleMappingUpdate[],
+  expectedRevision: string,
+  token?: string,
 ): Promise<RoleMappings> {
   return apiRequest<RoleMappings>(providerPath(providerCode, "/role-mappings"), {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mappings }),
+    headers: { "Content-Type": "application/json", ...adminStepUpHeaders(token) },
+    body: JSON.stringify({ mappings, expected_revision: expectedRevision }),
   })
 }
 

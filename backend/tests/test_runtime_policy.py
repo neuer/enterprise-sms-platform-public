@@ -51,7 +51,7 @@ def test_config_specs_groups_and_types_are_consistent() -> None:
     assert set(CONFIG_SPECS) == set(DEFAULTS)
     for key, spec in CONFIG_SPECS.items():
         assert spec.group in CONFIG_GROUP_ORDER, key
-        assert spec.value_type in {"str", "int", "bool"}, key
+        assert spec.value_type in {"str", "int", "bool", "json"}, key
         if spec.value_type != "int":
             assert spec.minimum is None and spec.maximum is None, key
         if spec.minimum is not None and spec.maximum is not None:
@@ -294,3 +294,14 @@ async def test_loader_disposes_engine_handle_after_each_load(
 
     # dispose 在进程共享引擎上是 no-op，但每次 load 都必须归还句柄
     assert engine.dispose_calls == 2
+
+
+@pytest.mark.parametrize("value", ["1", "24", "168"])
+def test_temporary_password_ttl_accepts_bounded_hours(value: str) -> None:
+    RuntimePolicy.from_mapping({"local_temporary_password_ttl_hours": value})
+
+
+@pytest.mark.parametrize("value", ["0", "169", "-1", "1.5", "invalid"])
+def test_temporary_password_ttl_rejects_invalid_hours(value: str) -> None:
+    with pytest.raises(InvalidRuntimePolicy):
+        RuntimePolicy.from_mapping({"local_temporary_password_ttl_hours": value})

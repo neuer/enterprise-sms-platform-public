@@ -38,6 +38,7 @@ from app.services.security_daily import (
     SecurityStatus,
     _audit_category,
     _next_schedule,
+    recipient_set_digest,
     resolve_configuration_state,
     validate_resend_api_key,
     validate_resend_recipients,
@@ -75,8 +76,8 @@ def _record(row: Any, *, include_payload: bool) -> SecurityDailyReportRecord:
     return SecurityDailyReportRecord(
         id=int(row["id"]),
         report_date=row["report_date"],
-        period_start=row["period_start"],
-        period_end=row["period_end"],
+        period_start=row["period_start"].astimezone(SHANGHAI_TZ),
+        period_end=row["period_end"].astimezone(SHANGHAI_TZ),
         status=cast(SecurityStatus, str(row["status"])),
         generation_source=cast(GenerationSource, str(row["generation_source"])),
         generation_status=generation_status,
@@ -163,7 +164,8 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     text(
                         "SELECT key,value FROM sys_config WHERE key IN "
                         "('security_daily_enabled','security_daily_resend_configured',"
-                        "'security_daily_recipient_count')"
+                        "'security_daily_recipient_count','security_daily_config_version',"
+                        "'security_daily_config_publish_state','security_daily_recipient_set_digest')"
                     )
                 )
                 config = {
@@ -182,6 +184,9 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 config.get("security_daily_resend_configured")
             ),
             recipient_count=recipient_count,
+            config_version=int(config.get("security_daily_config_version", "0")),
+            publish_state=config.get("security_daily_config_publish_state", "file_pending"),
+            recipient_set_digest=config.get("security_daily_recipient_set_digest", ""),
         )
 
     async def audit_evidence(
@@ -308,6 +313,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     "security_daily_recipient_count": str(len(recipients)),
                     "security_daily_resend_configured": "true" if api_key else "false",
                     "security_daily_config_version": str(next_version),
+                    "security_daily_recipient_set_digest": recipient_set_digest(recipients),
                 }
                 for key, value in values.items():
                     await connection.execute(
@@ -895,6 +901,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         system: bool = False,
         control_evidence: str = "missing",
         recipient_set_digest: str = "",
+        expected_config_version: int | None = None,
     ) -> SecurityDailyDeliveryRequest:
         request_id = uuid4()
         if system:
@@ -931,6 +938,11 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 config_version = int(version_raw) if version_raw is not None else 1
                 if config_version < 1:
                     raise SecurityDailyConfigurationError("安全日报配置版本无效")
+                if (
+                    expected_config_version is not None
+                    and config_version != expected_config_version
+                ):
+                    raise SecurityDailyStateConflict("安全日报发信配置版本已变化")
                 locked_result = await connection.execute(
                     text(
                         "SELECT delivery_status,retry_count,"

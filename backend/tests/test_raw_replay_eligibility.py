@@ -76,7 +76,8 @@ class FakeReevaluateRepository:
         self.claim_calls: list[tuple[int, bool]] = []
 
     async def claim_raw_for_replay(
-        self, raw_id: int, *, allow_manual: bool = True
+        self, raw_id: int, *, allow_manual: bool = True,
+        principal: object = None, ip: str | None = None
     ) -> object:
         self.claim_calls.append((raw_id, allow_manual))
         if self.record is None:

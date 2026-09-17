@@ -10,6 +10,8 @@ from functools import lru_cache
 from typing import Literal, Protocol
 
 from app.core.auth.accounts import AccountNotFound, AccountSourceConflict, PlatformAccount
+from app.core.auth.admission import AdmissionBusy, LoginAdmission
+from app.core.auth.admission_policy import get_admission_policy_runtime
 from app.core.auth.backends import (
     AuthenticatedIdentity,
     AuthenticationPurpose,
@@ -34,6 +36,7 @@ from app.core.auth.observability import (
     observe_old_refresh_revoked_on_access_only_login,
     observe_web_session_mode,
 )
+from app.core.auth.password_screening import OfflinePasswordScreen, PasswordScreeningUnavailable
 from app.core.auth.passwords import (
     LocalPasswordHasher,
     PasswordPolicy,
@@ -50,6 +53,7 @@ from app.core.auth.service import (
     RedisKeyValue,
 )
 from app.core.auth.session_policy_sync import get_auth_session_policy_runtime
+from app.core.auth.spray import PasswordSprayGuard
 from app.core.auth.users import (
     AuthContextChanged,
     PasswordChangeAuthorization,
@@ -99,6 +103,8 @@ class AuthenticationService(Protocol):
 
     async def record_bound_success(self, username: str) -> None: ...
 
+    async def record_completed_success(self, identity: AuthenticatedIdentity, ip: str) -> None: ...
+
 
 class PasswordHasher(Protocol):
     def hash(self, password: str) -> str: ...
@@ -145,6 +151,16 @@ class AuthFacade:
 
         await self.auth.record_bound_success(account.normalized_login_name)
 
+    async def _record_completed_success(self, identity: AuthenticatedIdentity, ip: str) -> None:
+        """完整结果形成后才结算来源配额；Redis 不可确认时仍拒绝发出令牌。"""
+
+        if identity.admission is None:
+            return
+        try:
+            await self.auth.record_completed_success(identity, ip)
+        except SessionStateUnavailable:
+            raise ApiError(503, "AUTH_SESSION_UNAVAILABLE", "认证准入状态暂不可用", None) from None
+
     async def reauthenticate_current(
         self,
         claims: JwtClaims,
@@ -161,6 +177,8 @@ class AuthFacade:
                 ip,
                 purpose="reauthentication",
             )
+        except AdmissionBusy as error:
+            raise self._admission_busy(error) from None
         except AccountLocked:
             raise ApiError(
                 423,
@@ -220,11 +238,12 @@ class AuthFacade:
             raise ApiError(401, "STEP_UP_REQUIRED", "二次认证失败", None)
         await self._record_bound_success(account)
         if claims.provider_code != "local":
+            await self._record_completed_success(identity, ip)
             return None
         record = await self.users.find_local_account(account.normalized_login_name)
         if record is None or record.account.account_id != account.account_id:
             raise ApiError(401, "STEP_UP_REQUIRED", "二次认证失败", None)
-        return PasswordChangeAuthorization(
+        authorization = PasswordChangeAuthorization(
             account_id=account.account_id,
             identity_id=account.identity_id,
             provider_code="local",
@@ -232,6 +251,8 @@ class AuthFacade:
             expected_security_version=account.security_version,
             expected_credential_version=record.credential_version,
         )
+        await self._record_completed_success(identity, ip)
+        return authorization
 
     async def login(
         self,
@@ -254,6 +275,8 @@ class AuthFacade:
             )
             user = await self.users.resolve_identity(identity, ip)
             await self._record_bound_success(user)
+        except AdmissionBusy as error:
+            raise self._admission_busy(error) from None
         except AccountLocked:
             raise ApiError(
                 423,
@@ -318,15 +341,18 @@ class AuthFacade:
                 login_name=user.login_name,
             )
             change_claims = self.tokens.read_password_change(change_token)
-            await self.users.create_password_change_token(
-                token_hash=self.tokens.password_change_digest(change_token),
-                account_id=user.account_id,
-                identity_id=user.identity_id,
-                provider_code=user.provider_code,
-                login_name=user.normalized_login_name,
-                security_version=user.security_version,
-                expires_at=datetime.fromtimestamp(change_claims.expires_at, tz=UTC),
-            )
+            try:
+                await self.users.create_password_change_token(
+                    token_hash=self.tokens.password_change_digest(change_token),
+                    account_id=user.account_id,
+                    identity_id=user.identity_id,
+                    provider_code=user.provider_code,
+                    login_name=user.normalized_login_name,
+                    security_version=user.security_version,
+                    expires_at=datetime.fromtimestamp(change_claims.expires_at, tz=UTC),
+                )
+            except InvalidCredentials:
+                raise ApiError(401, "UNAUTHORIZED", "用户名或密码错误", None) from None
             return PasswordChangeRequired(change_token)
         if session_mode == "access_only":
             try:
@@ -343,6 +369,7 @@ class AuthFacade:
                 ) from None
             observe_access_only_login(user.provider_code)
             observe_web_session_mode("access_only", "success")
+            await self._record_completed_success(identity, ip)
             return self._login_success(pair, user, session_mode="access_only")
         if tab_id is None:
             observe_web_session_mode("refresh", "rejected")
@@ -359,7 +386,16 @@ class AuthFacade:
                 None,
             ) from None
         observe_web_session_mode("refresh", "success")
+        await self._record_completed_success(identity, ip)
         return self._login_success(pair, user, session_mode="refresh")
+
+    @staticmethod
+    def _admission_busy(error: AdmissionBusy) -> ApiError:
+        return ApiError(
+            429, "RATE_LIMITED", str(error),
+            {"retry_after_seconds": error.retry_after_s, "auth_admission_retry": True},
+            {"Retry-After": str(error.retry_after_s)},
+        )
 
     async def _revoke_presented_refresh_family(
         self,
@@ -505,6 +541,10 @@ class AuthFacade:
                 actor=claims.login_name,
                 ip=ip,
             )
+        except PasswordScreeningUnavailable:
+            raise ApiError(
+                503, "AUTH_PROVIDER_UNAVAILABLE", "密码安全检查暂不可用，请联系管理员", None,
+            ) from None
         except PasswordPolicyViolation as error:
             raise ApiError(
                 422,
@@ -580,6 +620,10 @@ class AuthFacade:
             )
         try:
             self.policy.validate(new_password, username=claims.login_name)
+        except PasswordScreeningUnavailable:
+            raise ApiError(
+                503, "AUTH_PROVIDER_UNAVAILABLE", "密码安全检查暂不可用，请联系管理员", None,
+            ) from None
         except PasswordPolicyViolation as error:
             raise ApiError(
                 422,
@@ -776,6 +820,14 @@ def create_auth_facade(settings: Settings) -> AuthFacade:
             store,
             policy_loader=guard_policy.load,
             security_events=SqlAuthSecurityEventRepository(settings),
+            spray=PasswordSprayGuard(
+                store, get_admission_policy_runtime(settings).load,
+                key=settings.credential("jwt_secret").encode("utf-8"),
+            ),
+            admission=LoginAdmission(
+                store, get_admission_policy_runtime(settings).load,
+                key=settings.credential("jwt_secret").encode("utf-8"),
+            ),
         ),
     )
     session_policy = get_auth_session_policy_runtime(settings).snapshot
@@ -791,6 +843,7 @@ def create_auth_facade(settings: Settings) -> AuthFacade:
         users,
         tokens,
         passwords=passwords,
+        policy=PasswordPolicy(screening=OfflinePasswordScreen.from_settings(settings)),
         providers=AuthProviderService(provider_repository, providers),
     )
 

@@ -76,7 +76,9 @@ class UatOperationRepository(Protocol):
         operation_id: str,
     ) -> AbstractAsyncContextManager[None]: ...
 
-    async def prepare_uat_acceptance(self, operation_id: str) -> bool: ...
+    async def prepare_uat_acceptance(
+        self, operation_id: str, *, biz_id: str, app_id: int
+    ) -> bool: ...
 
     async def heartbeat(self, operation_id: str) -> bool: ...
 
@@ -327,7 +329,11 @@ class VendorTestUatService:
             recipient = await self.recipients.resolve_for_send(recipient_id)
             app = self._app(await self.apps.get(app_id), app_id)
             async with self.operations.acceptance_guard(operation_id):
-                if not await self.operations.prepare_uat_acceptance(operation_id):
+                if not await self.operations.prepare_uat_acceptance(
+                    operation_id,
+                    biz_id=biz_id or vendor_test_uat_biz_id(operation_id),
+                    app_id=app_id,
+                ):
                     # 等待 guard 期间 lease 可能已经被对账关闭，或其他恢复器
                     # 已附着 batch；此后只能读 PostgreSQL 事实源，绝不能 accept。
                     accept_started = True

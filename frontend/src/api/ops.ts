@@ -30,27 +30,11 @@ export interface CurrentAlertSnapshot {
   unknown_sources: string[]
   items: CurrentAlertItem[]
 }
-export type RawCaptureState = "complete" | "complete_too_large" | "truncated" | "protocol_invalid" | "unknown_legacy"
-export type RawParseState = "unattempted" | "transient_failure" | "protocol_invalid" | "processed"
-export type RawReplayEligibility = "automatic" | "manual" | "never"
-export interface RawLogItem {
-  id: number
-  source: "report" | "reply"
-  item_count: number
-  custom_id_count: number
-  processed: boolean
-  error: string | null
-  fetched_at: string
-  capture_state: RawCaptureState
-  parse_state: RawParseState
-  replay_eligibility: RawReplayEligibility
-}
-export interface RawReevaluateResult {
-  parse_state: RawParseState
-  replay_eligibility: RawReplayEligibility
-  reason: string
-  parser_version: number
-}
+export type RawLogItem = import("./types.gen").components["schemas"]["RawLogModel"]
+export type RawCaptureState = RawLogItem["capture_state"]
+export type RawParseState = RawLogItem["parse_state"]
+export type RawReplayEligibility = RawLogItem["replay_eligibility"]
+export type RawReevaluateResult = import("./types.gen").components["schemas"]["ReevaluateResultModel"]
 export type UncertainResolutionAction =
   "confirm_accepted" | "confirm_not_accepted" | "keep_unknown" | "resend_new_batch"
 export type UncertainResolutionState =
@@ -162,22 +146,23 @@ function pageParams(query: PageQuery): URLSearchParams {
   })
 }
 
-export function listAlerts(query: AlertQuery = {}): Promise<OpsPage<AlertItem>> {
+export function listAlerts(query: AlertQuery = {}, signal?: AbortSignal): Promise<OpsPage<AlertItem>> {
   const params = pageParams(query)
   if (query.alertType?.trim()) params.set("alert_type", query.alertType.trim())
   if (query.level) params.set("level", query.level)
   if (query.start) params.set("start", query.start)
   if (query.end) params.set("end", query.end)
-  return apiRequest<OpsPage<AlertItem>>(`/admin/alerts?${params}`, { method: "GET" })
+  return apiRequest<OpsPage<AlertItem>>(`/admin/alerts?${params}`, { method: "GET", signal })
 }
 
-export const getCurrentAlerts = () => apiRequest<CurrentAlertSnapshot>("/admin/alerts/current", { method: "GET" })
+export const getCurrentAlerts = (signal?: AbortSignal) =>
+  apiRequest<CurrentAlertSnapshot>("/admin/alerts/current", { method: "GET", signal })
 
-export function listRawLogs(query: RawLogQuery = {}): Promise<OpsPage<RawLogItem>> {
+export function listRawLogs(query: RawLogQuery = {}, signal?: AbortSignal): Promise<OpsPage<RawLogItem>> {
   const params = pageParams(query)
   if (query.source) params.set("source", query.source)
   if (query.processed !== undefined) params.set("processed", String(query.processed))
-  return apiRequest<OpsPage<RawLogItem>>(`/admin/raw-logs?${params}`, { method: "GET" })
+  return apiRequest<OpsPage<RawLogItem>>(`/admin/raw-logs?${params}`, { method: "GET", signal })
 }
 
 export const replayRaw = (id: number) =>
@@ -186,8 +171,8 @@ export const replayRaw = (id: number) =>
 export const reevaluateRaw = (id: number) =>
   apiRequest<RawReevaluateResult>(`/admin/raw-logs/${id}/reevaluate`, { method: "POST" })
 
-export function listUncertain(query: PageQuery = {}): Promise<OpsPage<UncertainItem>> {
-  return apiRequest<OpsPage<UncertainItem>>(`/admin/chunks/uncertain?${pageParams(query)}`, { method: "GET" })
+export function listUncertain(query: PageQuery = {}, signal?: AbortSignal): Promise<OpsPage<UncertainItem>> {
+  return apiRequest<OpsPage<UncertainItem>>(`/admin/chunks/uncertain?${pageParams(query)}`, { method: "GET", signal })
 }
 
 export interface UncertainResolutionItem {
@@ -218,10 +203,11 @@ export const confirmUncertainResolution = (resolutionId: number) =>
     method: "POST",
   })
 
-export function listUnmatched(query: UnmatchedQuery = {}): Promise<OpsPage<UnmatchedItem>> {
+export function listUnmatched(query: UnmatchedQuery = {}, signal?: AbortSignal): Promise<OpsPage<UnmatchedItem>> {
   // 手机号精确查询条件只在请求体携带：GET query 会把明文写进访问日志（硬性规则 2）。
   return apiRequest<OpsPage<UnmatchedItem>>("/admin/unmatched-reports", {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       phone: query.phone?.trim() || null,
@@ -232,17 +218,22 @@ export function listUnmatched(query: UnmatchedQuery = {}): Promise<OpsPage<Unmat
     }),
   })
 }
-export const listJobs = () => apiRequest<JobItem[]>("/admin/jobs", { method: "GET" })
+export const listJobs = (signal?: AbortSignal) => apiRequest<JobItem[]>("/admin/jobs", { method: "GET", signal })
 export const triggerJob = (name: string) =>
   apiRequest<void>(`/admin/jobs/${encodeURIComponent(name)}/trigger`, { method: "POST" })
-export const getQueueStatus = () => apiRequest<QueueStatus>("/admin/queue/status", { method: "GET" })
+export const getQueueStatus = (signal?: AbortSignal) =>
+  apiRequest<QueueStatus>("/admin/queue/status", { method: "GET", signal })
 export const resumeQueue = (force: boolean) =>
   apiRequest<QueueResumeResult>(`/admin/queue/resume?force=${force}`, { method: "POST" })
-export const getOutboxStatus = () => apiRequest<OutboxStats>("/admin/outbox", { method: "GET" })
-export function listOutboxEvents(query: PageQuery & { state?: OutboxState }): Promise<OpsPage<OutboxEventItem>> {
+export const getOutboxStatus = (signal?: AbortSignal) =>
+  apiRequest<OutboxStats>("/admin/outbox", { method: "GET", signal })
+export function listOutboxEvents(
+  query: PageQuery & { state?: OutboxState },
+  signal?: AbortSignal,
+): Promise<OpsPage<OutboxEventItem>> {
   const params = pageParams(query)
   if (query.state) params.set("state", query.state)
-  return apiRequest<OpsPage<OutboxEventItem>>(`/admin/outbox/events?${params}`, { method: "GET" })
+  return apiRequest<OpsPage<OutboxEventItem>>(`/admin/outbox/events?${params}`, { method: "GET", signal })
 }
 export const retryOutboxEvent = (id: string) => apiRequest<void>(`/admin/outbox/${id}/retry`, { method: "POST" })
 export function createUnmatchedExport(filters: UnmatchedExportFilters, decrypted: boolean): Promise<ExportTask> {

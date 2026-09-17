@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, with_config
 from typing_extensions import TypedDict
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
@@ -164,7 +165,7 @@ class RotateCallbackSecretResponse(BaseModel):
     callback_secret: str
 
 
-async def get_app_management_service() -> AppManagementService:
+async def get_app_management_service(_actor: AdminActor) -> AppManagementService:
     settings = get_settings()
     repository = SqlAppRepository(settings)
     grace_hours, allow_cidrs = await repository.load_security_config()

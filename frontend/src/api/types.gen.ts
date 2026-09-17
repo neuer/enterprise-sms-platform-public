@@ -265,7 +265,7 @@ export interface paths {
                         /** @description 缺省用应用默认签名 */
                         sign_name?: string | null;
                         scheduled_at?: string | null;
-                        /** @description 调用方业务ID，幂等键与对账用 */
+                        /** @description 调用方业务ID，不得包含手机号标识；24h 后仍有在途、unknown 或待回调时保留原结果，仅可信到期且保护工作结束后允许复用 */
                         biz_id: string;
                     } & (unknown | unknown);
                 };
@@ -310,7 +310,7 @@ export interface paths {
                         "application/json": components["schemas"]["Error"];
                     };
                 };
-                /** @description 同一幂等键已用于不同请求（IDEMPOTENCY_CONFLICT） */
+                /** @description 同一幂等键已用于不同请求，或原结果缺少可信证明（IDEMPOTENCY_CONFLICT） */
                 409: {
                     headers: {
                         [name: string]: unknown;
@@ -396,6 +396,7 @@ export interface paths {
                         /** @description 模板 {1}..{n} 占位参数 */
                         template_params?: string[] | null;
                         sign_name?: string | null;
+                        /** @description 调用方业务ID，不得包含手机号标识 */
                         biz_id: string;
                     } & (unknown | unknown);
                 };
@@ -970,9 +971,11 @@ export interface paths {
                         "application/json": components["schemas"]["Error"];
                     };
                 };
-                /** @description IP 已被临时封禁（RATE_LIMITED） */
+                /** @description RATE_LIMITED：IP 封禁或认证准入繁忙。仅在 Provider 尚未执行的准入拒绝中返回 detail.auth_admission_retry=true、detail.retry_after_seconds（1–300 秒）和 Retry-After。 浏览器仅对此标记进行最多 30 次且累计等待不超过 30 秒的有界重试；IP ban、密码错误和 503 不自动重试。 */
                 429: {
                     headers: {
+                        /** @description 准入重试建议秒数 */
+                        "Retry-After"?: number;
                         [name: string]: unknown;
                     };
                     content: {
@@ -1235,7 +1238,7 @@ export interface paths {
                         template_params?: string[] | null;
                         sign_name?: string | null;
                         scheduled_at?: string | null;
-                        /** @description 调用方业务ID，幂等键与对账用 */
+                        /** @description 调用方业务ID，不得包含手机号标识；24h 后仍有在途、unknown 或待回调时保留原结果，仅可信到期且保护工作结束后允许复用 */
                         biz_id: string;
                         /**
                          * @description 测试发送（≤test_send_max 个号码，豁免营销时间窗；与 scheduled_at 同时出现返回 400，v1.2）
@@ -3159,7 +3162,10 @@ export interface paths {
         put: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     provider_code: string;
                 };
@@ -3285,7 +3291,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     provider_code: string;
                 };
@@ -3335,7 +3344,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     provider_code: string;
                 };
@@ -3418,7 +3430,10 @@ export interface paths {
         put: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     provider_code: string;
                 };
@@ -3463,6 +3478,84 @@ export interface paths {
             };
         };
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/web/admin/step-up": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 当前管理员重认证并签发用途绑定的单次授权 */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["AdminStepUpRequest"];
+                };
+            };
+            responses: {
+                /** @description 已签发；仅存于浏览器易失内存 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["AdminStepUpResponse"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+                /** @description INVALID_PARAM */
+                422: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description ACCOUNT_LOCKED */
+                423: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description RATE_LIMITED */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+                /** @description 认证源或授权存储暂不可用 */
+                503: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["Error"];
+                    };
+                };
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -3527,7 +3620,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path?: never;
                 cookie?: never;
             };
@@ -3596,7 +3692,10 @@ export interface paths {
         put: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     account_id: number;
                 };
@@ -3650,7 +3749,10 @@ export interface paths {
         put: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     account_id: number;
                 };
@@ -3713,7 +3815,10 @@ export interface paths {
         post: {
             parameters: {
                 query?: never;
-                header?: never;
+                header?: {
+                    /** @description 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 */
+                    "X-Admin-Step-Up"?: string | null;
+                };
                 path: {
                     account_id: number;
                 };
@@ -3981,6 +4086,7 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
+                        /** @description 词条不得包含手机号 */
                         words: string[];
                     };
                 };
@@ -6241,6 +6347,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/web/reports/balance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 管理员页头最新余额（单次快照查询） */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description 无快照时余额和采集时间均为 null，不能解释为零余额 */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["BalanceSnapshotModel"];
+                    };
+                };
+                401: components["responses"]["Unauthorized"];
+                403: components["responses"]["Forbidden"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/web/reports/stats": {
         parameters: {
             query?: never;
@@ -6257,6 +6401,11 @@ export interface paths {
                     category?: "verify" | "notice" | "market" | "all";
                     start?: string | null;
                     end?: string | null;
+                    page?: number;
+                    size?: number;
+                    sort?: "period_start" | "total" | "total_segments" | "success_rate";
+                    order?: "asc" | "desc";
+                    metric?: "total" | "total_segments";
                 };
                 header?: never;
                 path?: never;
@@ -6452,6 +6601,8 @@ export interface paths {
                         filters?: {
                             start?: string | null;
                             end?: string | null;
+                            /** @description 不包含的终点，与 end 互斥；日期范围使用次日上海零点 */
+                            end_exclusive?: string | null;
                             category?: ("verify" | "notice" | "market") | null;
                             status?: string | null;
                             app_id?: number | null;
@@ -6717,6 +6868,7 @@ export interface components {
             /** @enum {string} */
             auth_flow: "password" | "redirect";
         };
+        /** @description 本地密码同时由服务端离线常见或泄露密码库检查；生产库缺失、损坏或过期时，创建、重置和改密返回 AUTH_PROVIDER_UNAVAILABLE/503。 */
         PasswordPolicy: {
             /** @constant */
             min_length: 12;
@@ -7195,6 +7347,7 @@ export interface components {
             /** @enum {integer} */
             identity_status: 0 | 1;
             credential_status: ("active" | "must_change") | null;
+            temporary_password_expires_at: string | null;
             /** @description 最近一次成功目录认证的来源组快照 */
             source_groups: string[];
             /** @enum {string} */
@@ -7284,6 +7437,7 @@ export interface components {
             dept?: string | null;
         };
         AuthProviderRoleMappings: {
+            revision: string;
             mappings: components["schemas"]["AuthProviderRoleMapping"][];
         };
         AuthProviderRoleMappingUpdate: {
@@ -7293,6 +7447,7 @@ export interface components {
             dept: string;
         };
         AuthProviderRoleMappingsUpdate: {
+            expected_revision: string;
             mappings: components["schemas"]["AuthProviderRoleMappingUpdate"][];
         };
         DashboardCategoryModel: {
@@ -7378,7 +7533,7 @@ export interface components {
             unknown: number;
             success_rate: number;
         };
-        /** @description 维度级区间汇总；success_rate 为服务端 stats.py 口径，前端不得自行重算 */
+        /** @description 全区间按 metric 排名前五维度及其他维度合计，is_other 明确标识合并；完整维度明细仍可分页或导出；success_rate 为服务端 stats.py 口径 */
         ReportingDimSummaryModel: {
             dim_value: string;
             dim_label: string;
@@ -7388,6 +7543,7 @@ export interface components {
             failed: number;
             unknown: number;
             success_rate: number;
+            is_other: boolean;
         };
         ReportingModel: {
             /** @enum {string} */
@@ -7401,9 +7557,33 @@ export interface components {
             /** Format: date */
             end: string;
             can_export_decrypted: boolean;
+            /** @description 全筛选区间的周期与维度明细总行数 */
+            total: number;
+            page: number;
+            size: number;
+            /** @enum {string} */
+            metric: "total" | "total_segments";
+            dimension_total: number;
+            trend: components["schemas"]["ReportingTrendModel"];
             summary: components["schemas"]["ReportingSummaryModel"];
             dim_summary: components["schemas"]["ReportingDimSummaryModel"][];
             items: components["schemas"]["ReportingRowModel"][];
+        };
+        ReportingTrendSeriesModel: {
+            dim_value: string;
+            dim_label: string;
+            total: number[];
+            total_segments: number[];
+            is_other: boolean;
+        };
+        /** @description 全区间紧凑趋势，最多366个周期与Top5加其他的6个系列；数值数组与periods位置一一对应，缺失周期为零 */
+        ReportingTrendModel: {
+            periods: string[];
+            series: components["schemas"]["ReportingTrendSeriesModel"][];
+        };
+        BalanceSnapshotModel: {
+            current_balance: number | null;
+            checked_at: string | null;
         };
         ReportingSummaryModel: {
             total: number;
@@ -7483,6 +7663,8 @@ export interface components {
             batch_no: string;
             category: string;
             applicant: string;
+            /** @description 申请人稳定账号 ID；无法确认历史身份时为 null */
+            applicant_account_id: number | null;
             dept: string;
             total: number;
             /** @description 单个号码的计费条数 */
@@ -7517,6 +7699,8 @@ export interface components {
             batch_no: string;
             category: string;
             applicant: string;
+            /** @description 申请人稳定账号 ID；无法确认历史身份时为 null */
+            applicant_account_id: number | null;
             dept: string;
             total: number;
             /** @description 单个号码的计费条数 */
@@ -7663,6 +7847,23 @@ export interface components {
         };
         ExportStepUpResponse: {
             /** @description 仅在浏览器易失内存中保存并单次使用 */
+            token: string;
+            /** @default 300 */
+            expires_in: number;
+        };
+        AdminStepUpRequest: {
+            /** @enum {string} */
+            operation: "user_create_admin" | "user_role_change" | "user_password_reset" | "user_status_change" | "provider_role_mapping_change" | "provider_save_draft" | "provider_enable_disable";
+            target_id: string;
+            /** @description 用途规定的非凭据参数；服务端规范化并绑定，拒绝未知字段及客户端摘要 */
+            parameters: {
+                [key: string]: unknown;
+            };
+            /** Format: password */
+            password: string;
+        };
+        AdminStepUpResponse: {
+            /** @description 仅在浏览器易失内存中单次使用 */
             token: string;
             /** @default 300 */
             expires_in: number;

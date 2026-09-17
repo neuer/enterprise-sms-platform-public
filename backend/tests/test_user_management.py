@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.backends import ProviderCapacityUnavailable
 from app.core.auth.roles import Role
 from app.core.bounded_executor import ExecutorBackpressure
@@ -14,6 +15,8 @@ from app.services.user_management import (
     UserQuery,
     UserRecord,
 )
+
+AUTHORIZATION = AdminAuthorization(1, 11, 1, "local", None)
 
 
 def record(
@@ -62,6 +65,7 @@ class FakeRepository:
         dept: str,
         role: Role,
         password_hash: str,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -79,6 +83,7 @@ class FakeRepository:
         role: Role,
         role_override: bool,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -91,6 +96,7 @@ class FakeRepository:
         status: int,
         *,
         actor_account_id: int,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -102,6 +108,7 @@ class FakeRepository:
         account_id: int,
         password_hash: str,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -136,6 +143,7 @@ async def test_create_local_validates_username_and_password_before_hashing() -> 
         dept="业务一部",
         role="viewer",
         temporary_password="Temporary@123",
+        authorization=AUTHORIZATION,
         actor="admin",
         ip="10.0.0.8",
     )
@@ -166,6 +174,7 @@ async def test_self_disable_is_rejected_before_repository_mutation() -> None:
             8,
             0,
             actor_account_id=8,
+            authorization=AUTHORIZATION,
             actor="admin",
             ip="10.0.0.8",
         )
@@ -182,6 +191,7 @@ async def test_role_status_and_local_reset_delegate_numeric_account_id() -> None
         8,
         "approver",
         True,
+        authorization=AUTHORIZATION,
         actor="admin",
         ip="10.0.0.8",
     )
@@ -189,12 +199,14 @@ async def test_role_status_and_local_reset_delegate_numeric_account_id() -> None
         8,
         1,
         actor_account_id=1,
+        authorization=AUTHORIZATION,
         actor="admin",
         ip="10.0.0.8",
     )
     await service.reset_password(
         8,
         "Reset@Password123",
+        authorization=AUTHORIZATION,
         actor="admin",
         ip="10.0.0.8",
     )
@@ -234,6 +246,7 @@ async def test_password_mutations_map_hash_pool_exhaustion(
                 dept="业务一部",
                 role="viewer",
                 temporary_password="Temporary@123",
+                authorization=AUTHORIZATION,
                 actor="admin",
                 ip="10.0.0.8",
             )
@@ -241,6 +254,7 @@ async def test_password_mutations_map_hash_pool_exhaustion(
             await service.reset_password(
                 8,
                 "Reset@Password123",
+                authorization=AUTHORIZATION,
                 actor="admin",
                 ip="10.0.0.8",
             )

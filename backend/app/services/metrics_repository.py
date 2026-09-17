@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine
 from app.services.metrics import MetricsFacts
+from app.services.outbox import OUTBOX_CAPACITY_ACTIVE_SQL, OUTBOX_CAPACITY_AGE_SQL
 from app.services.send_admission import SendAdmissionFacts, evaluate_capacity
 from app.settings import Settings, get_settings
 
@@ -29,9 +30,9 @@ class SqlMetricsRepository:
 
         engine = self._engine()
         async with engine.connect() as connection:
-                rates_result = await connection.execute(
-                    text(
-                        """
+            rates_result = await connection.execute(
+                text(
+                    """
                         SELECT b.category,
                           COALESCE(sum(c.phone_count),0)::double precision / 300.0 rate
                         FROM sms_chunk c
@@ -40,16 +41,16 @@ class SqlMetricsRepository:
                         GROUP BY b.category
                         ORDER BY b.category
                         """
-                    )
                 )
-                send_rates = tuple(
-                    (str(row["category"]), max(0.0, float(row["rate"])))
-                    for row in rates_result.mappings()
-                )
+            )
+            send_rates = tuple(
+                (str(row["category"]), max(0.0, float(row["rate"])))
+                for row in rates_result.mappings()
+            )
 
-                errors_result = await connection.execute(
-                    text(
-                        """
+            errors_result = await connection.execute(
+                text(
+                    """
                         SELECT vendor_code::text code,count(vendor_code) count
                         FROM sms_chunk
                         WHERE vendor_code IS NOT NULL
@@ -57,16 +58,15 @@ class SqlMetricsRepository:
                         GROUP BY vendor_code
                         ORDER BY vendor_code
                         """
-                    )
                 )
-                vendor_errors = tuple(
-                    (str(row["code"]), max(0, int(row["count"])))
-                    for row in errors_result.mappings()
-                )
+            )
+            vendor_errors = tuple(
+                (str(row["code"]), max(0, int(row["count"]))) for row in errors_result.mappings()
+            )
 
-                counts_result = await connection.execute(
-                    text(
-                        """
+            counts_result = await connection.execute(
+                text(
+                    f"""
                         SELECT
                           (SELECT count(status) FROM sms_chunk
                            WHERE status='uncertain') uncertain,
@@ -83,7 +83,7 @@ class SqlMetricsRepository:
                           (SELECT count(status) FROM sms_chunk
                            WHERE status='unknown_terminal') unknown_terminal,
                           (SELECT count(state) FROM sms_uncertain_resolution
-                           WHERE state='confirmed') manual_resolved,
+                           WHERE state='closed' AND effect_applied_at IS NOT NULL) manual_resolved,
                           (SELECT count(late_evidence_at) FROM sms_chunk
                            WHERE late_evidence_at IS NOT NULL) late_evidence,
                           (SELECT count(status) FROM callback_task
@@ -97,24 +97,22 @@ class SqlMetricsRepository:
                            WHERE lease_id IS NOT NULL
                              AND lease_expires_at<=now()) export_stalled,
                           (SELECT count(*) FROM outbox_event
-                           WHERE state IN
-                             ('pending','leased','published','processing'))
+                           WHERE {OUTBOX_CAPACITY_ACTIVE_SQL})
                              outbox_active,
-                          (SELECT EXTRACT(EPOCH FROM (now()-min(created_at)))
+                          (SELECT EXTRACT(EPOCH FROM (now()-min({OUTBOX_CAPACITY_AGE_SQL})))
                            FROM outbox_event
-                           WHERE state IN
-                             ('pending','leased','published','processing'))
+                           WHERE {OUTBOX_CAPACITY_ACTIVE_SQL})
                              outbox_oldest_age,
                           (SELECT count(*) FROM outbox_event
                            WHERE state='dead') outbox_dead
                         """
-                    )
                 )
-                counts = counts_result.mappings().one()
+            )
+            counts = counts_result.mappings().one()
 
-                queue_result = await connection.execute(
-                    text(
-                        """
+            queue_result = await connection.execute(
+                text(
+                    """
                         SELECT queue,count(*) count
                         FROM outbox_event
                         WHERE queue IN ('realtime','bulk')
@@ -122,35 +120,34 @@ class SqlMetricsRepository:
                         GROUP BY queue
                         ORDER BY queue
                         """
-                    )
                 )
-                queue_depths = tuple(
-                    (str(row["queue"]), max(0, int(row["count"])))
-                    for row in queue_result.mappings()
-                )
+            )
+            queue_depths = tuple(
+                (str(row["queue"]), max(0, int(row["count"]))) for row in queue_result.mappings()
+            )
 
-                lease_events_result = await connection.execute(
-                    text(
-                        """
+            lease_events_result = await connection.execute(
+                text(
+                    """
                         SELECT task_kind,event_type,count(event_type) count
                         FROM worker_lease_event
                         GROUP BY task_kind,event_type
                         ORDER BY task_kind,event_type
                         """
-                    )
                 )
-                lease_events = tuple(
-                    (
-                        str(row["task_kind"]),
-                        str(row["event_type"]),
-                        max(0, int(row["count"])),
-                    )
-                    for row in lease_events_result.mappings()
+            )
+            lease_events = tuple(
+                (
+                    str(row["task_kind"]),
+                    str(row["event_type"]),
+                    max(0, int(row["count"])),
                 )
+                for row in lease_events_result.mappings()
+            )
 
-                frequency_result = await connection.execute(
-                    text(
-                        """
+            frequency_result = await connection.execute(
+                text(
+                    """
                         SELECT category,COALESCE(sum(removed_freq),0) count
                         FROM sms_batch
                         WHERE created_at >= (
@@ -160,16 +157,16 @@ class SqlMetricsRepository:
                         GROUP BY category
                         ORDER BY category
                         """
-                    )
                 )
-                frequency_filtered = tuple(
-                    (str(row["category"]), max(0, int(row["count"])))
-                    for row in frequency_result.mappings()
-                )
+            )
+            frequency_filtered = tuple(
+                (str(row["category"]), max(0, int(row["count"])))
+                for row in frequency_result.mappings()
+            )
 
-                poll_result = await connection.execute(
-                    text(
-                        """
+            poll_result = await connection.execute(
+                text(
+                    """
                         SELECT CASE job_name
                                  WHEN 'poll_report' THEN 'report'
                                  WHEN 'poll_reply' THEN 'reply'
@@ -181,80 +178,80 @@ class SqlMetricsRepository:
                         GROUP BY job_name
                         ORDER BY source
                         """
-                    )
                 )
-                poll_lags = tuple(
-                    (str(row["source"]), max(0.0, float(row["lag_seconds"])))
-                    for row in poll_result.mappings()
-                )
+            )
+            poll_lags = tuple(
+                (str(row["source"]), max(0.0, float(row["lag_seconds"])))
+                for row in poll_result.mappings()
+            )
 
-                drift_result = await connection.execute(
-                    text(
-                        """
+            drift_result = await connection.execute(
+                text(
+                    """
                         SELECT kind,mismatched_dimensions,absolute_delta
                         FROM usage_projection_drift ORDER BY kind
                         """
-                    )
                 )
-                drift_rows = list(drift_result.mappings())
+            )
+            drift_rows = list(drift_result.mappings())
 
-                outcome_result = await connection.execute(
-                    text(
-                        """
+            outcome_result = await connection.execute(
+                text(
+                    """
                         SELECT outcome,count(outcome) count
                         FROM sms_vendor_attempt
                         WHERE created_at>=now()-interval '5 minutes'
                         GROUP BY outcome
                         ORDER BY outcome
                         """
-                    )
                 )
-                send_submit_outcomes = tuple(
-                    (str(row["outcome"]), max(0, int(row["count"])))
-                    for row in outcome_result.mappings()
-                )
+            )
+            send_submit_outcomes = tuple(
+                (str(row["outcome"]), max(0, int(row["count"])))
+                for row in outcome_result.mappings()
+            )
 
-                eligibility_result = await connection.execute(
-                    text(
-                        """
+            eligibility_result = await connection.execute(
+                text(
+                    """
                         SELECT replay_eligibility,count(replay_eligibility) count
                         FROM raw_vendor_log
                         GROUP BY replay_eligibility
                         ORDER BY replay_eligibility
                         """
-                    )
                 )
-                raw_replay_eligibility = tuple(
-                    (str(row["replay_eligibility"]), max(0, int(row["count"])))
-                    for row in eligibility_result.mappings()
+            )
+            raw_replay_eligibility = tuple(
+                (str(row["replay_eligibility"]), max(0, int(row["count"])))
+                for row in eligibility_result.mappings()
+            )
+            oldest_age = max(0.0, float(counts.get("outbox_oldest_age") or 0))
+            admission_state, _reason = evaluate_capacity(
+                SendAdmissionFacts(
+                    outbox_active=max(0, int(counts.get("outbox_active") or 0)),
+                    outbox_oldest_age_s=int(oldest_age),
+                    outbox_dead=max(0, int(counts.get("outbox_dead") or 0)),
+                    uncertain_overdue=max(0, int(counts["uncertain_overdue"])),
+                    callback_dead=max(0, int(counts["callback_dead"])),
+                    realtime_paused=False,
+                    bulk_paused=False,
+                    vendor_failures=0,
                 )
-                oldest_age = max(0.0, float(counts.get("outbox_oldest_age") or 0))
-                admission_state, _reason = evaluate_capacity(
-                    SendAdmissionFacts(
-                        outbox_active=max(0, int(counts.get("outbox_active") or 0)),
-                        outbox_oldest_age_s=int(oldest_age),
-                        outbox_dead=max(0, int(counts.get("outbox_dead") or 0)),
-                        uncertain_overdue=max(0, int(counts["uncertain_overdue"])),
-                        callback_dead=max(0, int(counts["callback_dead"])),
-                        realtime_paused=False,
-                        bulk_paused=False,
-                        vendor_failures=0,
-                    )
-                )
+            )
 
-                pending_audit = await connection.scalar(
-                    text(
-                        """
+            pending_audit = await connection.scalar(
+                text(
+                    """
                         SELECT count(*)
                         FROM raw_vendor_log
                         WHERE system_replay_audit_state='pending'
                         """
-                    )
                 )
+            )
 
-                effect_result = await connection.execute(
-                    text(
-                        """
+            effect_result = await connection.execute(
+                text(
+                    """
                         SELECT
                           CASE
                             WHEN source_channel IN ('api','web')
@@ -278,21 +275,21 @@ class SqlMetricsRepository:
                         GROUP BY 1,2,3
                         ORDER BY 1,2,3
                         """
-                    )
                 )
-                uncertain_effects = tuple(
-                    (
-                        str(row["source_channel"]),
-                        str(row["action"]),
-                        str(row["result"]),
-                        max(0, int(row["count"])),
-                    )
-                    for row in effect_result.mappings()
+            )
+            uncertain_effects = tuple(
+                (
+                    str(row["source_channel"]),
+                    str(row["action"]),
+                    str(row["result"]),
+                    max(0, int(row["count"])),
                 )
+                for row in effect_result.mappings()
+            )
 
-                error_result = await connection.execute(
-                    text(
-                        """
+            error_result = await connection.execute(
+                text(
+                    """
                         SELECT
                           CASE
                             WHEN effect_error IN (
@@ -312,16 +309,15 @@ class SqlMetricsRepository:
                         GROUP BY 1
                         ORDER BY 1
                         """
-                    )
                 )
-                uncertain_effect_usage_subject_errors = tuple(
-                    (str(row["kind"]), max(0, int(row["count"])))
-                    for row in error_result.mappings()
-                )
+            )
+            uncertain_effect_usage_subject_errors = tuple(
+                (str(row["kind"]), max(0, int(row["count"]))) for row in error_result.mappings()
+            )
 
-                oldest_pending = await connection.scalar(
-                    text(
-                        """
+            oldest_pending = await connection.scalar(
+                text(
+                    """
                         SELECT COALESCE(
                           EXTRACT(EPOCH FROM (
                             now()-min(COALESCE(confirmed_at, approved_at))
@@ -334,74 +330,68 @@ class SqlMetricsRepository:
                         )
                           AND COALESCE(confirmed_at, approved_at) IS NOT NULL
                         """
-                    )
                 )
-                child_recovered = await connection.scalar(
-                    text(
-                        """
+            )
+            child_recovered = await connection.scalar(
+                text(
+                    """
                         SELECT count(recovered)
                         FROM sms_uncertain_child
                         WHERE recovered
                         """
-                    )
                 )
+            )
 
-                return MetricsFacts(
-                    send_rates=send_rates,
-                    vendor_errors=vendor_errors,
-                    uncertain=max(0, int(counts["uncertain"])),
-                    uncertain_lifecycle=(
-                        ("active", max(0, int(counts["uncertain_active"]))),
-                        ("overdue", max(0, int(counts["uncertain_overdue"]))),
-                        (
-                            "unknown_terminal",
-                            max(0, int(counts["unknown_terminal"])),
-                        ),
-                        (
-                            "manual_resolved",
-                            max(0, int(counts["manual_resolved"])),
-                        ),
-                        ("late_evidence", max(0, int(counts["late_evidence"]))),
+            return MetricsFacts(
+                send_rates=send_rates,
+                vendor_errors=vendor_errors,
+                uncertain=max(0, int(counts["uncertain"])),
+                uncertain_lifecycle=(
+                    ("active", max(0, int(counts["uncertain_active"]))),
+                    ("overdue", max(0, int(counts["uncertain_overdue"]))),
+                    (
+                        "unknown_terminal",
+                        max(0, int(counts["unknown_terminal"])),
                     ),
-                    callback_failures=(
-                        ("retrying", max(0, int(counts["callback_retrying"]))),
-                        ("dead", max(0, int(counts["callback_dead"]))),
+                    (
+                        "manual_resolved",
+                        max(0, int(counts["manual_resolved"])),
                     ),
-                    frequency_filtered=frequency_filtered,
-                    poll_lags=poll_lags,
-                    usage_projection_mismatches=tuple(
-                        (
-                            str(row["kind"]),
-                            max(0, int(row["mismatched_dimensions"])),
-                        )
-                        for row in drift_rows
-                    ),
-                    usage_projection_absolute_delta=tuple(
-                        (
-                            str(row["kind"]),
-                            max(0, int(row["absolute_delta"])),
-                        )
-                        for row in drift_rows
-                    ),
-                    worker_stalled_leases=(
-                        ("callback", max(0, int(counts.get("callback_stalled", 0)))),
-                        ("export", max(0, int(counts.get("export_stalled", 0)))),
-                    ),
-                    worker_lease_events=lease_events,
-                    queue_depths=queue_depths,
-                    raw_replay_eligibility=raw_replay_eligibility,
-                    system_replay_audit_pending=max(0, int(pending_audit or 0)),
-                    send_admission_state=admission_state,
-                    outbox_oldest_age_seconds=oldest_age,
-                    send_submit_outcomes=send_submit_outcomes,
-                    uncertain_effects=uncertain_effects,
-                    uncertain_effect_usage_subject_errors=(
-                        uncertain_effect_usage_subject_errors
-                    ),
-                    uncertain_effect_oldest_pending_seconds=max(
-                        0.0, float(oldest_pending or 0)
-                    ),
-                    uncertain_effect_child_recovered=max(
-                        0, int(child_recovered or 0)
-                    ),
-                )
+                    ("late_evidence", max(0, int(counts["late_evidence"]))),
+                ),
+                callback_failures=(
+                    ("retrying", max(0, int(counts["callback_retrying"]))),
+                    ("dead", max(0, int(counts["callback_dead"]))),
+                ),
+                frequency_filtered=frequency_filtered,
+                poll_lags=poll_lags,
+                usage_projection_mismatches=tuple(
+                    (
+                        str(row["kind"]),
+                        max(0, int(row["mismatched_dimensions"])),
+                    )
+                    for row in drift_rows
+                ),
+                usage_projection_absolute_delta=tuple(
+                    (
+                        str(row["kind"]),
+                        max(0, int(row["absolute_delta"])),
+                    )
+                    for row in drift_rows
+                ),
+                worker_stalled_leases=(
+                    ("callback", max(0, int(counts.get("callback_stalled", 0)))),
+                    ("export", max(0, int(counts.get("export_stalled", 0)))),
+                ),
+                worker_lease_events=lease_events,
+                queue_depths=queue_depths,
+                raw_replay_eligibility=raw_replay_eligibility,
+                system_replay_audit_pending=max(0, int(pending_audit or 0)),
+                send_admission_state=admission_state,
+                outbox_oldest_age_seconds=oldest_age,
+                send_submit_outcomes=send_submit_outcomes,
+                uncertain_effects=uncertain_effects,
+                uncertain_effect_usage_subject_errors=(uncertain_effect_usage_subject_errors),
+                uncertain_effect_oldest_pending_seconds=max(0.0, float(oldest_pending or 0)),
+                uncertain_effect_child_recovered=max(0, int(child_recovered or 0)),
+            )

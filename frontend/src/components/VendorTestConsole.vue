@@ -25,7 +25,8 @@ import VendorCredentialDialog from "./VendorCredentialDialog.vue"
 import VendorTestRecipientDialog from "./VendorTestRecipientDialog.vue"
 import VendorTestUatPanel from "./VendorTestUatPanel.vue"
 import { usePolling } from "../composables/usePolling"
-import { confirmAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
@@ -481,6 +482,7 @@ function recipientAdded(recipient: VendorTestRecipient): void {
 }
 
 async function disableRecipient(recipient: VendorTestRecipient): Promise<void> {
+  recipient = { ...recipient }
   if (
     !(await confirmAction({
       title: "停用测试号码",

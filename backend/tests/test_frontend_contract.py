@@ -202,8 +202,6 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
     callback_api = read("frontend/src/api/callbacks.ts")
     ops_api = read("frontend/src/api/ops.ts")
     reports_api = read("frontend/src/api/reports.ts")
-    ops_view = read("frontend/src/views/OpsView.vue")
-    report_view = read("frontend/src/views/ReportView.vue")
     export_task = read("frontend/src/composables/useExportTask.ts")
     credential_dialog = read("frontend/src/components/VendorCredentialDialog.vue")
     vendor_seal = read("frontend/src/lib/vendorSeal.ts")
@@ -211,15 +209,13 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
     assert '"/api/v1/web/auth/password/change"' in auth_api
     for field in ("page_size", "alert_type", "processed", "phone"):
         assert field in ops_api
-    assert "useExportTask" in ops_view
-    assert "useExportTask" in report_view
+    # 导出入口挂载及实际下载由 ops-view/report-view 的组件行为测试覆盖。
     assert "getExportTask" in export_task
     assert "downloadExport" in export_task
     assert "issueExportStepUp" in reports_api
     assert '"X-Export-Step-Up"' in reports_api
     assert "issueExportStepUp" in export_task
     assert 'inputType: "password"' in export_task
-    assert 'data-testid="download-unmatched-export"' in ops_view
     assert "reset_configuration" in admin_api
     assert "correlation_id" in admin_api
     assert "correlation_id" in callback_api
@@ -229,7 +225,6 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
 
 def test_single_spa_consumes_required_runtime_and_approval_facts() -> None:
     approval_api = read("frontend/src/api/approvals.ts")
-    approval_view = read("frontend/src/views/ApprovalView.vue")
     dashboard = read("frontend/src/views/DashboardView.vue")
     send = read("frontend/src/views/SendView.vue")
     apps = read("frontend/src/views/AppManagementView.vue")
@@ -242,7 +237,7 @@ def test_single_spa_consumes_required_runtime_and_approval_facts() -> None:
         "trigger_threshold_source",
     ):
         assert field in approval_api
-        assert field in approval_view
+    # 审批规则展示由 approval-view 组件用例验证，不绑定函数或文件位置。
 
     assert "channel_monitor" in dashboard
     assert "operations" in dashboard

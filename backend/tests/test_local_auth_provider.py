@@ -66,7 +66,7 @@ async def test_local_provider_uses_dummy_hash_for_missing_identity() -> None:
 @pytest.mark.asyncio
 async def test_local_provider_returns_account_and_must_change_password_state() -> None:
     value = account(must_change_password=True)
-    record = LocalAccountRecord(value, "$argon2id$v=19$valid")
+    record = LocalAccountRecord(value, "$argon2id$v=19$valid", temporary_password_valid=True)
     hasher = RecordingHasher(matches=True)
     provider = LocalPasswordProvider(FakeLocalRepository(record), hasher)
 
@@ -154,3 +154,38 @@ async def test_local_provider_routes_login_and_reauthentication_to_separate_pool
     await provider.authenticate("admin", "Valid@Password123", pool="auth_hash")
 
     assert observed == ["auth_login_hash", "auth_hash"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("valid", [False, True])
+async def test_temporary_password_rechecks_database_validity_after_hash(valid: bool) -> None:
+    value = account(must_change_password=True)
+    record = LocalAccountRecord(value, "encoded", temporary_password_valid=valid)
+    hasher = RecordingHasher(matches=True)
+    repo = FakeLocalRepository(record)
+    provider = LocalPasswordProvider(repo, hasher)
+    if valid:
+        assert (await provider.authenticate("admin", "candidate")).account == value
+    else:
+        with pytest.raises(InvalidCredentials):
+            await provider.authenticate("admin", "candidate")
+    assert len(hasher.candidates) == 1
+    assert len(repo.login_names) == 2
+
+
+@pytest.mark.asyncio
+async def test_temporary_password_reset_during_hash_rejects_old_credential() -> None:
+    from dataclasses import replace
+
+    record = LocalAccountRecord(
+        account(must_change_password=True), "old", temporary_password_valid=True
+    )
+    repo = FakeLocalRepository(record)
+
+    class ResetHasher(RecordingHasher):
+        def verify_or_dummy(self, encoded, candidate):
+            repo.record = replace(record, password_hash="new", credential_version=2)
+            return True
+
+    with pytest.raises(InvalidCredentials):
+        await LocalPasswordProvider(repo, ResetHasher()).authenticate("admin", "candidate")

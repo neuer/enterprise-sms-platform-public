@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { usePagedList } from "../composables/usePagedList"
+import ListPagination from "../components/ListPagination.vue"
+import FilterSeg from "../components/FilterSeg.vue"
 import { computed, onMounted, ref } from "vue"
 
 import {
@@ -18,10 +21,8 @@ import EmptyState from "../components/EmptyState.vue"
 import { useExportTask } from "../composables/useExportTask"
 import { CHART_DIM_VARS } from "../lib/chartTheme"
 import { formatPercent } from "../lib/format"
-import { DEFAULT_PAGE_SIZE } from "../lib/labels"
-import { reportTrendDims } from "../lib/reportTrend"
+import { CATEGORY_OPTIONS, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { daysAgoDateKey, shanghaiDateKey } from "../lib/time"
-import { errorText } from "../lib/error"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
@@ -31,14 +32,18 @@ const session = useSessionStore()
 function defaultDateRange(): [string, string] {
   return [daysAgoDateKey(29), shanghaiDateKey()]
 }
-const dateRange = ref<[string, string]>(defaultDateRange())
+const selectedDateRange = ref<[string, string]>(defaultDateRange())
+const dateRange = computed({
+  get: () => selectedDateRange.value,
+  set: (value: [string, string] | null) => {
+    selectedDateRange.value = value ?? defaultDateRange()
+  },
+})
 
 const granularity = ref<ReportGranularity>("day")
 const groupBy = ref<ReportGroupBy>("app")
 const category = ref<ReportCategory>("all")
 const result = ref<ReportResult | null>(null)
-const loading = ref(false)
-const errorMessage = ref("")
 const {
   exportTask,
   exportBusy: exportLoading,
@@ -48,7 +53,6 @@ const {
 } = useExportTask({ timeoutMessage: "导出结果等待超时（已超过 5 分钟），请稍后重新发起导出" })
 const decrypted = ref(false)
 const metric = ref<ReportTrendMetric>("total")
-const page = ref(1)
 const pageSize = DEFAULT_PAGE_SIZE
 /** 最后一次成功查询的条件快照；与当前表单不一致时提示「条件已变更」，不自动重查。 */
 const applied = ref<ReportFilters | null>(null)
@@ -67,7 +71,7 @@ const filtersDirty = computed(
 
 /** 数据权限口径提示：admin/approver 全平台，operator/viewer 固定本部门。 */
 const scopeLabel = computed(() => {
-  if (session.role === "admin" || session.role === "approver") return `全平台 · ${session.roleLabel}`
+  if (session.canDecrypt) return `全平台 · ${session.roleLabel}`
   if (session.role) return `本部门 · ${session.dept || "—"} · ${session.roleLabel}`
   return "数据权限口径加载中"
 })
@@ -97,11 +101,12 @@ const dimLabel = computed(() => (result.value?.group_by === "dept" ? "部门" : 
 
 /** 周期级消息数汇总（纯加法），用于 KPI 的均值与峰值。 */
 const periodTotals = computed(() => {
-  const totals = new Map<string, number>()
-  for (const item of result.value?.items ?? []) {
-    totals.set(item.period_start, (totals.get(item.period_start) ?? 0) + item.total)
-  }
-  return [...totals.entries()].sort((left, right) => left[0].localeCompare(right[0]))
+  const trend = result.value?.trend
+  if (!trend) return []
+  return trend.periods.map((period, index): [string, number] => [
+    period,
+    trend.series.reduce((sum, series) => sum + (series.total[index] ?? 0), 0),
+  ])
 })
 const periodAverage = computed(() => {
   if (!result.value || periodTotals.value.length === 0) return null
@@ -122,7 +127,7 @@ const rangeDays = computed(() => {
   if (!Number.isFinite(ms) || ms < 0) return null
   return Math.round(ms / 86_400_000) + 1
 })
-const trendLegend = computed(() => (result.value ? reportTrendDims(result.value.items, metric.value) : []))
+const trendLegend = computed(() => result.value?.trend.series ?? [])
 
 function dimColor(index: number): string {
   // 图例色块是 DOM 元素，用 var() 引用令牌即可随主题自动切换
@@ -143,23 +148,25 @@ const sortState = ref<{ prop: SortProp; order: "ascending" | "descending" }>({
 })
 
 function onSortChange(event: { prop: SortProp; order: "ascending" | "descending" | null }): void {
-  sortState.value = event.order
+  const next = event.order
     ? { prop: event.prop, order: event.order }
-    : { prop: "period_start", order: "descending" }
+    : { prop: "period_start" as const, order: "descending" as const }
+  if (next.prop === sortState.value.prop && next.order === sortState.value.order) return
+  sortState.value = next
+  void load(applied.value ?? filters.value)
 }
 
-const sortedItems = computed(() => {
-  const rows = [...(result.value?.items ?? [])]
-  const { prop, order } = sortState.value
-  const direction = order === "ascending" ? 1 : -1
-  rows.sort((left, right) => {
-    const primary =
-      prop === "period_start" ? left.period_start.localeCompare(right.period_start) : left[prop] - right[prop]
-    return (primary || left.dim_label.localeCompare(right.dim_label)) * direction
-  })
-  return rows
-})
-const pagedItems = computed(() => sortedItems.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+const pagedItems = computed(() => result.value?.items ?? [])
+
+function changePage(next: number): void {
+  void load(applied.value ?? filters.value, next)
+}
+
+function changeMetric(next: ReportTrendMetric): void {
+  if (metric.value === next) return
+  metric.value = next
+  void load(applied.value ?? filters.value, page.value)
+}
 
 /** 明细行稳定键：周期 × 维度值，与移动端列表同一口径。 */
 function reportRowKey(row: ReportRow): string {
@@ -179,8 +186,7 @@ function rateClass(rate: number): string {
 }
 
 /** 构成占比（加法 + 除法，非成功率口径）。 */
-function shareOf(value: number): string {
-  const total = result.value?.summary.total ?? 0
+function shareOf(value: number, total = result.value?.summary.total ?? 0): string {
   if (total === 0) return formatPercent(0)
   return formatPercent(value / total)
 }
@@ -192,29 +198,45 @@ function composeWidth(value: number): string {
 }
 
 function rankWidth(total: number): string {
-  const max = result.value?.dim_summary[0]?.total ?? 0
+  const metric = result.value?.metric ?? "total"
+  const max = Math.max(0, ...(result.value?.dim_summary.map((item) => item[metric]) ?? []))
   if (max === 0) return "0%"
   return `${Math.max((total / max) * 100, 2)}%`
 }
 
-let loadToken = 0
-
-async function load(): Promise<void> {
-  const token = ++loadToken
-  loading.value = true
-  errorMessage.value = ""
-  try {
-    const next = await getReport(filters.value)
-    if (token !== loadToken) return
+let requestedFilters: ReportFilters
+const {
+  page,
+  loading,
+  errorMessage,
+  load: loadPage,
+} = usePagedList({
+  fetcher: async (page, signal) => {
+    const query = { ...requestedFilters }
+    const next = await getReport(
+      query,
+      {
+        page,
+        size: pageSize,
+        sort: sortState.value.prop,
+        order: sortState.value.order === "ascending" ? "asc" : "desc",
+        metric: metric.value,
+      },
+      signal,
+    )
+    return { ...next, query }
+  },
+  errorMessage: "报表加载失败",
+  onLoaded: (next) => {
     result.value = next
-    applied.value = { ...filters.value }
-    page.value = 1
-  } catch (error) {
-    if (token !== loadToken) return
-    errorMessage.value = errorText(error, "报表加载失败")
-  } finally {
-    if (token === loadToken) loading.value = false
-  }
+    applied.value = next.query
+  },
+})
+
+async function load(query: ReportFilters = filters.value, requestedPage = 1): Promise<void> {
+  requestedFilters = { ...query }
+  page.value = requestedPage
+  await loadPage()
 }
 
 /** 恢复默认筛选（近 30 天 · 日粒度 · 按应用 · 全类别）并立即重查；日期范围按当下重新求值。 */
@@ -247,41 +269,20 @@ onMounted(() => void load())
     <span class="report-scope" data-testid="report-scope"><i></i>当前口径：{{ scopeLabel }}</span>
   </section>
 
-  <form class="report-filter-bar" @submit.prevent="load">
+  <form class="report-filter-bar" @submit.prevent="load()">
     <div class="report-fld">
       <span>周期</span>
-      <div class="report-seg" role="group" aria-label="周期">
-        <button
-          v-for="opt in granularityOptions"
-          :key="opt.value"
-          type="button"
-          :class="{ on: granularity === opt.value }"
-          @click="granularity = opt.value"
-          >{{ opt.label }}</button
-        >
-      </div>
+      <FilterSeg v-model="granularity" :options="granularityOptions" aria-label="周期" />
     </div>
     <div class="report-fld">
       <span>维度</span>
-      <div class="report-seg" role="group" aria-label="维度">
-        <button
-          v-for="opt in groupByOptions"
-          :key="opt.value"
-          type="button"
-          :class="{ on: groupBy === opt.value }"
-          :data-testid="`report-group-${opt.value}`"
-          @click="groupBy = opt.value"
-          >{{ opt.label }}</button
-        >
-      </div>
+      <FilterSeg v-model="groupBy" :options="groupByOptions" button-testid-prefix="report-group" aria-label="维度" />
     </div>
     <div class="report-fld">
       <span>类别</span>
       <el-select v-model="category" class="report-pill-select">
         <el-option label="全部类别" value="all" />
-        <el-option label="验证码" value="verify" />
-        <el-option label="通知" value="notice" />
-        <el-option label="营销" value="market" />
+        <el-option v-for="option in CATEGORY_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
       </el-select>
     </div>
     <div class="report-fld">
@@ -292,6 +293,7 @@ onMounted(() => void load())
         popper-class="qingluan-date-popper"
         value-format="YYYY-MM-DD"
         range-separator="→"
+        title="清空后恢复近 30 天"
         start-placeholder="开始日期"
         end-placeholder="结束日期"
       />
@@ -320,7 +322,7 @@ onMounted(() => void load())
   </div>
 
   <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" class="report-error"
-    ><template #default><el-button link type="primary" @click="load">重新查询</el-button></template></el-alert
+    ><template #default><el-button link type="primary" @click="load()">重新查询</el-button></template></el-alert
   >
 
   <template v-if="result">
@@ -387,29 +389,26 @@ onMounted(() => void load())
               ><strong>发送趋势 · 按{{ dimLabel }}堆叠</strong
               ><small>{{ granularityLabel[result.granularity] }}粒度 · Top 5 + 其他归并</small></div
             >
-            <div class="metric-switch" role="group" aria-label="趋势指标">
-              <button
-                v-for="opt in metricOptions"
-                :key="opt.value"
-                type="button"
-                :class="{ on: metric === opt.value }"
-                @click="metric = opt.value"
-                >{{ opt.label }}</button
-              >
-            </div>
+            <FilterSeg
+              :model-value="metric"
+              :options="metricOptions"
+              class="filter-seg--pill"
+              aria-label="趋势指标"
+              @update:model-value="changeMetric"
+            />
           </div>
         </template>
         <ReportTrendChart
-          v-if="result.items.length"
-          :items="result.items"
-          :metric="metric"
+          v-if="result.trend.periods.length"
+          :trend="result.trend"
+          :metric="result.metric"
           :start="result.start"
           :end="result.end"
           :granularity="result.granularity"
         />
-        <div v-if="result.items.length" class="trend-legend">
-          <span v-for="(dim, index) in trendLegend" :key="dim.key">
-            <i :style="{ background: dimColor(index) }"></i>{{ dim.label }}
+        <div v-if="result.trend.periods.length" class="trend-legend">
+          <span v-for="(dim, index) in trendLegend" :key="`${dim.is_other}-${dim.dim_value}`">
+            <i :style="{ background: dimColor(index) }"></i>{{ dim.dim_label }}
           </span>
           <em>Top 5 + 其他归并 · 加法聚合</em>
         </div>
@@ -421,18 +420,24 @@ onMounted(() => void load())
           <div class="panel-title">
             <div
               ><strong>维度排行 · {{ dimLabel }}</strong
-              ><small>按消息数 · 区间为整个筛选范围</small></div
+              ><small>按{{ result.metric === "total" ? "消息数" : "计费条" }} · Top 5 + 其他 · 完整筛选范围</small></div
             >
-            <span>{{ result.dim_summary.length }} 个{{ dimLabel }}</span>
+            <span>共 {{ result.dimension_total }} 个{{ dimLabel }}</span>
           </div>
         </template>
         <ul v-if="result.dim_summary.length" class="rank-list">
-          <li v-for="(dim, index) in result.dim_summary" :key="dim.dim_value">
+          <li v-for="(dim, index) in result.dim_summary" :key="`${dim.is_other}-${dim.dim_value}`">
             <span class="rank-name" :title="dim.dim_label">{{ dim.dim_label }}</span>
-            <div class="rank-track"><i :style="{ width: rankWidth(dim.total), background: dimColor(index) }"></i></div>
+            <div class="rank-track"
+              ><i :style="{ width: rankWidth(dim[result.metric]), background: dimColor(index) }"></i
+            ></div>
             <span class="rank-num">
-              <b>{{ dim.total.toLocaleString() }}</b>
-              <small>{{ shareOf(dim.total) }} · 计费条 {{ dim.total_segments.toLocaleString() }}</small>
+              <b>{{ dim[result.metric].toLocaleString() }}</b>
+              <small>
+                {{ shareOf(dim[result.metric], result.summary[result.metric]) }} ·
+                {{ result.metric === "total" ? "计费条" : "消息数" }}
+                {{ (result.metric === "total" ? dim.total_segments : dim.total).toLocaleString() }}
+              </small>
             </span>
             <span class="rate-chip" :class="rateClass(dim.success_rate)">{{ formatRate(dim.success_rate) }}</span>
           </li>
@@ -449,7 +454,7 @@ onMounted(() => void load())
             ><strong>明细 · 周期 × {{ dimLabel }}</strong
             ><small>点击列头排序</small></div
           >
-          <span>共 {{ result.items.length }} 行</span>
+          <span>共 {{ result.total }} 行</span>
         </div>
       </template>
       <el-table
@@ -486,15 +491,14 @@ onMounted(() => void load())
         >
       </el-table>
       <!-- 分页常驻（§7.8e/8f 同型限制已退役）：空结果时分页器以 0 总数正常展示 -->
-      <div class="report-pager">
-        <el-pagination
-          layout="prev, pager, next"
-          :total="result.items.length"
-          :page-size="pageSize"
-          :current-page="page"
-          @current-change="(next: number) => (page = next)"
-        />
-      </div>
+      <ListPagination
+        v-model:page="page"
+        :total="result.total"
+        :page-size="pageSize"
+        :show-count="false"
+        class="report-pager"
+        @change="changePage(page)"
+      ></ListPagination>
       <div class="report-mobile-list"
         ><article v-for="item in pagedItems" :key="`${item.period_start}-${item.dim_value}`"
           ><header

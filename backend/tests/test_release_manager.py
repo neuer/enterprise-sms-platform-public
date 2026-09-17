@@ -30,7 +30,11 @@ from release_manager import (  # noqa: E402
     RuntimeObservation,
     reconcile_release,
 )
-from release_manifest import OFFLINE_EXPAND_MIGRATION, load_manifest  # noqa: E402
+from release_manifest import (  # noqa: E402
+    OFFLINE_EXPAND_MIGRATION,
+    ONE_TIME_COLD_CUTOVER,
+    load_manifest,
+)
 
 COMMIT = "c" * 40
 OFFLINE_REPORT_EXPAND_MIGRATION = (
@@ -563,7 +567,10 @@ def _offline_bundle(
         "migration": {
             "from": migration_from,
             "target": schema_revision,
-            "compatibility": "expand" if migration_changed else "none",
+            "compatibility": (
+                "cold_cutover" if migration_pair == ONE_TIME_COLD_CUTOVER
+                else "expand" if migration_changed else "none"
+            ),
         },
         "evidence": {
             "release_gate_kind": "release",
@@ -1030,6 +1037,10 @@ class FakeRunner:
                     else ""
                 )
                 return self._result(command, value)
+            if "cold-cutover-admission" in command:
+                return self._result(command, "0\n")
+            if "cold-cutover" in command and "api_key_unclassified_algorithms" in command[-1]:
+                return self._result(command, "DO\n")
             if command[-4:] == ["exec", "-T", "postgres", "postgres"]:
                 raise AssertionError("version command must include --version")
             if command[-5:] == ["exec", "-T", "postgres", "postgres", "--version"]:
@@ -2103,6 +2114,98 @@ def test_production_offline_partial_load_failure_never_mutates_runtime_or_prunes
         for token in command
     )
     assert manager.status(manifest["release_id"])["state"] == "failed"
+
+
+def test_one_time_cold_cutover_can_activate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    manager.prepare(path)
+    manager.activate(manifest["release_id"])
+    assert runner.migration_head == ONE_TIME_COLD_CUTOVER[1]
+    policy_index = next(i for i, command in enumerate(runner.calls) if "cold-cutover" in command)
+    migrate_index = next(
+        i for i, command in enumerate(runner.calls)
+        if command[-3:] == ["run", "--rm", "migrate"]
+    )
+    assert policy_index > migrate_index
+    assert manager.status(manifest["release_id"])["state"] == "succeeded"
+
+
+@pytest.mark.parametrize("phase", ["run_migrate", "recreate_backend", "verify"])
+@pytest.mark.parametrize("stop_fails", [False, True])
+def test_cold_cutover_failure_never_restores_old_application(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, stop_fails: bool,
+) -> None:
+    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    manager.prepare(path)
+    store = ReleaseStore(manager.release_root, manifest["release_id"])
+    store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
+    before = manager.environment_file.read_bytes()
+    runner.calls.clear()
+    if stop_fails:
+        runner.fail_action = "stop"
+    with pytest.raises(ReleaseManagerError, match="recovery_required"):
+        manager._compensate(
+            store, load_manifest(path),
+            release_manager_module._ActivationStepError(
+                release_manager_module.ReleaseStepKind(phase), ambiguous=True,
+            ),
+        )
+    assert manager.environment_file.read_bytes() == before
+    assert not any("up" in call or "run" in call for call in runner.calls)
+    assert any("stop" in call and "web" in call and "beat" in call for call in runner.calls)
+    assert store.read_state()["state"] == "recovery_required"
+    with pytest.raises(ReleaseManagerError, match="recovery_required"):
+        manager.resume(manifest["release_id"])
+
+
+def test_cold_cutover_interrupted_activation_refuses_automatic_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    manager.prepare(path)
+    store = ReleaseStore(manager.release_root, manifest["release_id"])
+    store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
+    runner.calls.clear()
+    with pytest.raises(ReleaseManagerError, match="recovery_required"):
+        manager.resume(manifest["release_id"])
+    assert not any("up" in call or "run" in call for call in runner.calls)
+    assert store.read_state()["state"] == "recovery_required"
+
+
+@pytest.mark.parametrize("operation", ["resume", "rollback"])
+@pytest.mark.parametrize("rolling_back", [False, True])
+def test_cold_cutover_containment_precedes_forward_git_and_rollback_probes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, rolling_back: bool,
+) -> None:
+    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    manager.prepare(path)
+    store = ReleaseStore(manager.release_root, manifest["release_id"])
+    store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
+    if rolling_back:
+        store.transition(ReleaseState.ACTIVATING, ReleaseState.ROLLING_BACK)
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("forward/rollback probe must not precede cold containment")
+
+    monkeypatch.setattr(manager, "_validate_git", forbidden)
+    monkeypatch.setattr(manager, "_record_rollback_runtime_effects", forbidden)
+    monkeypatch.setattr(manager, "_observe_release_runtime", forbidden)
+    runner.calls.clear()
+    with pytest.raises(ReleaseManagerError, match="recovery_required"):
+        getattr(manager, operation)(manifest["release_id"])
+    assert any("stop" in call and "web" in call and "beat" in call for call in runner.calls)
+    assert not any("up" in call or "run" in call for call in runner.calls)
+    assert store.read_state()["state"] == "recovery_required"
 
 
 def test_production_offline_full_no_migration_update_can_compensate(
@@ -6745,3 +6848,65 @@ def test_cli_rejects_invalid_release_root_before_constructing_manager(
 
     assert result == 1
     assert constructed is False
+
+
+@pytest.mark.parametrize("failure", ["command", "journal"])
+def test_cold_cutover_legacy_policy_failure_contains_application(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    manager.prepare(path)
+    original_run = runner.run
+    original_observation = ReleaseStore.record_observation
+
+    def fail_policy_command(
+        command: Sequence[str], **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        if failure == "command" and "cold-cutover" in command:
+            return subprocess.CompletedProcess(list(command), 1, "", "policy conflict")
+        return original_run(command, **kwargs)
+
+    def fail_policy_journal(self: ReleaseStore, kind: str, detail: dict[str, Any]) -> Any:
+        if failure == "journal" and kind == "cold_cutover_legacy_key_policy":
+            raise OSError("journal unavailable")
+        return original_observation(self, kind, detail)
+
+    monkeypatch.setattr(runner, "run", fail_policy_command)
+    monkeypatch.setattr(ReleaseStore, "record_observation", fail_policy_journal)
+    with pytest.raises(ReleaseManagerError, match="recovery_required"):
+        manager.activate(manifest["release_id"])
+    assert manager.status(manifest["release_id"])["state"] == "recovery_required"
+    assert any("stop" in command and "web" in command for command in runner.calls)
+
+
+@pytest.mark.parametrize("phase", ["prepare", "activate"])
+@pytest.mark.parametrize("result", ["1\n", "", "garbled\n"])
+def test_cold_cutover_rejects_incompatible_admission_before_stopping(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, result: str,
+) -> None:
+    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    if phase == "activate":
+        manager.prepare(path)
+    before = manager.environment_file.read_bytes()
+    runner.calls.clear()
+    original_run = runner.run
+
+    def admission_result(
+        command: Sequence[str], **kwargs: Any,
+    ) -> subprocess.CompletedProcess[str]:
+        if "cold-cutover-admission" in command:
+            return subprocess.CompletedProcess(list(command), 0, result, "")
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(runner, "run", admission_result)
+    with pytest.raises(ReleaseManagerError):
+        if phase == "prepare":
+            manager.prepare(path)
+        else:
+            manager.activate(manifest["release_id"])
+    assert manager.environment_file.read_bytes() == before
+    assert not any("stop" in call or "up" in call or "run" in call for call in runner.calls)

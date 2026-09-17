@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from app.core.bulk_admission import bulk_task_admission
 from app.core.jobtrack import tracked_job
 from app.core.worker_runtime import run_worker_async
 from app.services.stats import StatsAggregationService, StatsRepository
@@ -26,6 +27,7 @@ async def _aggregate() -> int:
 
 
 @celery_app.task(name="app.tasks.aggregate_stats")  # type: ignore[untyped-decorator]
+@bulk_task_admission
 @tracked_job("aggregate_stats", expect_interval_s=300)
 def aggregate_stats() -> int:
     """Celery 同步入口，固定投递到 bulk 队列。"""

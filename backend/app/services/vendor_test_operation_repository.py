@@ -26,7 +26,6 @@ from app.services.vendor_test_operation import (
     UatBatchResult,
     VendorTestOperation,
     VendorTestOperationConflict,
-    vendor_test_uat_biz_id,
 )
 from app.settings import Settings, get_settings
 
@@ -496,10 +495,15 @@ class SqlVendorTestOperationRepository:
         finally:
             await engine.dispose()
 
-    async def prepare_uat_acceptance(self, operation_id: str) -> bool:
+    async def prepare_uat_acceptance(self, operation_id: str, *, biz_id: str, app_id: int) -> bool:
         """在 guard 内确认 running lease 仍有效，并刷新至完整窗口。"""
 
         operation_id = _operation_id(operation_id)
+        from app.core.sensitive_text import reject_phone_business_id
+
+        reject_phone_business_id(biz_id, field_name="biz_id")
+        if not biz_id or len(biz_id) > 32 or app_id < 1:
+            raise ValueError("invalid UAT acceptance reference")
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -507,17 +511,22 @@ class SqlVendorTestOperationRepository:
                     text(
                         """
                         UPDATE vendor_test_operation SET
-                          lease_expires_at=now()+make_interval(secs=>:lease_seconds)
+                          lease_expires_at=now()+make_interval(secs=>:lease_seconds),
+                          acceptance_biz_id=:biz_id,acceptance_app_id=:app_id
                         WHERE id=CAST(:id AS uuid)
                           AND operation_type='uat_send'
                           AND status='running'
                           AND batch_no IS NULL
+                          AND (acceptance_biz_id IS NULL OR
+                               (acceptance_biz_id=:biz_id AND acceptance_app_id=:app_id))
                           AND lease_expires_at > now()
                         RETURNING id
                         """
                     ),
                     {
                         "id": operation_id,
+                        "biz_id": biz_id,
+                        "app_id": app_id,
                         "lease_seconds": UAT_ACCEPTANCE_LEASE_SECONDS,
                     },
                 )
@@ -588,9 +597,14 @@ class SqlVendorTestOperationRepository:
                           AND operation.status IN ('requested','running')
                           AND operation.batch_no IS NULL
                           AND operation.lease_expires_at <= now()
+                          AND (operation.acceptance_reference_required
+                               OR operation.acceptance_biz_id IS NOT NULL)
                           AND NOT EXISTS (
                             SELECT 1 FROM sms_batch batch
-                            WHERE batch.biz_id=:biz_id
+                            WHERE batch.biz_id=operation.acceptance_biz_id
+                              AND batch.app_id=operation.acceptance_app_id
+                              AND batch.creator_account_id=operation.actor_account_id
+                              AND batch.creator_identity_id=operation.actor_identity_id
                               AND batch.channel='web'
                               AND batch.is_test=true
                               AND batch.app_id IS NOT NULL
@@ -601,7 +615,6 @@ class SqlVendorTestOperationRepository:
                     {
                         "id": operation_id,
                         "safe_code": safe_code,
-                        "biz_id": vendor_test_uat_biz_id(operation_id),
                     },
                 )
                 row = _one_or_none(updated)
@@ -755,23 +768,24 @@ class SqlVendorTestOperationRepository:
                         SELECT trim(b.batch_no) batch_no,b.status batch_status,
                           c.status chunk_status,c.vendor_code
                         FROM sms_batch b
+                        JOIN vendor_test_operation operation
+                          ON operation.id=CAST(:operation_id AS uuid)
                         LEFT JOIN sms_chunk c ON c.batch_id=b.id
                         WHERE b.channel='web'
                           AND b.is_test=true
                           AND b.app_id IS NOT NULL
-                          AND (
-                            (
-                              CAST(:batch_no AS varchar(64)) IS NOT NULL
-                              AND trim(b.batch_no)=CAST(:batch_no AS varchar(64))
-                            )
-                            OR b.biz_id=:biz_id
-                          )
+                          AND b.app_id=operation.acceptance_app_id
+                          AND b.creator_account_id=operation.actor_account_id
+                          AND b.creator_identity_id=operation.actor_identity_id
+                          AND b.biz_id=operation.acceptance_biz_id
+                          AND (CAST(:batch_no AS varchar(64)) IS NULL
+                               OR trim(b.batch_no)=CAST(:batch_no AS varchar(64)))
                         ORDER BY b.id,c.id
                         """
                     ),
                     {
                         "batch_no": batch_no,
-                        "biz_id": vendor_test_uat_biz_id(operation_id),
+                        "operation_id": operation_id,
                     },
                 )
                 rows = list(result.mappings())

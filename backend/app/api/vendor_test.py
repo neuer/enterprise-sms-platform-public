@@ -21,6 +21,7 @@ from pydantic import (
 )
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import require_admin_actor
 from app.api.messages import _error as _send_error
 from app.api.vendor_control_ready import raise_vendor_control_unavailable
 from app.core.audit import audited
@@ -34,7 +35,7 @@ from app.core.errors import (
     internal_error_handler,
 )
 from app.core.runtime_resources import redis_client
-from app.core.sensitive_text import reject_phone_identifier
+from app.core.sensitive_text import reject_phone_business_id
 from app.services.billing_preview import BillingPreview
 from app.services.crypto import CryptoService
 from app.services.vendor_control_client import (
@@ -138,6 +139,7 @@ router = APIRouter(
     prefix="/api/v1/web/admin/vendor-test",
     tags=["admin"],
     route_class=VendorTestRoute,
+    dependencies=[Depends(require_admin_actor)],
 )
 
 
@@ -291,7 +293,7 @@ class UatMessageRequestModel(StrictModel):
     @field_validator("biz_id")
     @classmethod
     def validate_biz_id(cls, value: str) -> str:
-        reject_phone_identifier(value, field_name="biz_id")
+        reject_phone_business_id(value, field_name="biz_id")
         return value
 
     @model_validator(mode="after")

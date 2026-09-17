@@ -129,15 +129,17 @@ pre-live 的 `prepare` 还会协调旧测试环境的根 `.env`：仅允许整�
 
 1. 完成开发并运行 `scripts/dev_check.sh --changed`。
 2. 提交修改，确认本地工作树干净。
-3. 推送目标分支到 `origin`，确认自动 Draft PR 已创建；若 PR 落后于 main，自动化会明确
-   失败并提示合并 main 后重新推送（`GITHUB_TOKEN` 更新分支不会触发 push CI），新 push CI
-   成功后自动 Ready 并请求 squash merge。
+3. 推送目标分支到 `origin`，确认自动 Draft PR 已创建。核验精确 push CI 成功并完成
+   独立 Code Review 后，人工改为 Ready；满足 required reviews、`ci-gate`、会话解决
+   与冲突保护后请求 squash merge。当前公开仓库没有自动 Ready/合并工作流；若分支
+   落后或冲突，先处理并重新推送，再核验新 head SHA 的 CI 与评审状态。
 4. 确认 `gh auth status --hostname github.com` 有效；失效时只走官方设备/浏览器登录。
-5. 获取自动合并后的最新 `origin/main`，确认其 SHA 正是本次 PR 的 squash 结果。
+5. 获取合并后的最新 `origin/main`，确认其 SHA 正是本次 PR 的 squash 结果，并核验
+   该 SHA 的 GitHub Actions `ci-gate=success`；缺少时按 MAINTENANCE.md 的人工 CI 流程补齐。
 6. 如需预览，执行 `scripts/test_update.sh plan --ref origin/main` 查看分类和门禁。
 7. 执行 `scripts/test_update.sh apply --ref origin/main`。
 8. 命令成功退出已经证明最终 `test-update status` 返回 `state=verified`；随后完成针对性验收：
-   前端功能使用浏览器检查，API 功能使用对应接口检查。自动合并仅完成
+   前端功能使用浏览器检查，API 功能使用对应接口检查。合并仅完成
    仓库集成，不替代测试环境的 `verified` 判据。
 
 普通 `web-only` 更新从命令启动到 `verified` 的五连发实测平均约 1 分 20 秒。这个时间只用于操作预期，不是超时或成功判据。脚本会自动进入一次性 public Docker 会话；`scripts/docker_public.sh doctor` 用于首次使用或故障诊断，不要求每次更新前重复运行。`--dry-run` 可用于评审分类，但不是日常更新的强制前置步骤。

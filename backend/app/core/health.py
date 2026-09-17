@@ -18,6 +18,8 @@ from sqlalchemy import text
 
 from app.core.apikey import require_api_key_pepper_keyring
 from app.core.audit_context import decode_audit_context_key
+from app.core.auth.admission_policy import get_admission_policy_runtime
+from app.core.auth.ldap_timing import load_ldap_timing_profile
 from app.core.auth.session_policy_sync import (
     AuthSessionPolicyReconciler,
     get_auth_session_policy_runtime,
@@ -254,6 +256,32 @@ class RedisReadinessCheck:
                 raise RuntimeError("required Redis failure domain is unavailable")
 
 
+class LdapTimingReadinessCheck:
+    """只核对已启用目录的部署合同，不在就绪探测中执行真实拒绝 Bind。"""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    async def __call__(self) -> None:
+        if self.settings.auth_mock:
+            return
+        engine = database_engine(self.settings.database_url_for("auth"), component="background")
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT active_config FROM auth_provider "
+                    "WHERE kind='ldap' AND enabled AND active_config IS NOT NULL"
+                )
+            )
+            configs = list(result.scalars())
+        if configs:
+            profile = load_ldap_timing_profile(self.settings.ldap_timing_profile_file)
+            for config in configs:
+                profile.require_current(
+                    str(config.get("server", "")), str(config.get("bind_dn", ""))
+                )
+
+
 def _validate_runtime_secrets(settings: Settings) -> None:
     """读取并解析必要运行密钥；值和派生信息不得离开本函数。"""
 
@@ -359,6 +387,8 @@ def create_readiness_probe(
             ApiKeyPepperReferenceCheck(settings),
             RedisReadinessCheck(settings),
             AuthSessionPolicyReadinessCheck(settings),
+            get_admission_policy_runtime(settings).ensure_ready,
+            LdapTimingReadinessCheck(settings),
             startup_check,
         ),
         timeout_seconds=settings.readiness_timeout_seconds,

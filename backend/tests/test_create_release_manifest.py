@@ -625,6 +625,29 @@ def test_offline_realtime_report_expand_is_an_approved_full_update(
     }
 
 
+@pytest.mark.parametrize("approved", [False, True])
+def test_cold_cutover_requires_explicit_snapshot_risk_acceptance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, approved: bool,
+) -> None:
+    start, target = manifest_module.ONE_TIME_COLD_CUTOVER
+    arguments = _offline_inputs(tmp_path, schema_revision=target)
+    data = _private_json(arguments["offline_index"].parent / "data-images.json", {"passed": True})
+    arguments.update(
+        migration_from=start, changed=frozenset({"api", "web", "postgres", "redis"}),
+        baseline=False, data_images=data, allow_offline_no_conditional_evidence=approved,
+    )
+    _mock_attestation(monkeypatch)
+    if not approved:
+        with pytest.raises(ManifestCreationError, match="explicit risk acceptance"):
+            create_manifest(**arguments)
+        return
+    create_manifest(**arguments)
+    payload = json.loads(arguments["output"].read_text())
+    assert payload["migration"]["compatibility"] == "cold_cutover"
+    assert payload["evidence"]["backup_restore_change"] is None
+    assert payload["evidence"]["data_images"] is not None
+
+
 def test_offline_auth_security_expand_is_an_approved_full_update(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

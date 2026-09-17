@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 from uuid import UUID
@@ -16,8 +16,9 @@ from app.core.runtime_resources import redis_client
 from app.core.worker_runtime import run_worker_async
 from app.services.alert_repository import SqlAlertService
 from app.services.billing import calculate_quota_cost
+from app.services.category import DEFAULT_MARKET_WINDOW, coerce_market_dispatch
 from app.services.crypto import CryptoService
-from app.services.outbox import OutboxClaim, OutboxExecutor
+from app.services.outbox import OutboxClaim, OutboxDeferred, OutboxExecutor
 from app.services.outbox_repository import SqlOutboxRepository
 from app.services.vendor_alert import RedisVendorAlertMonitor
 from app.services.vendor_control_state import (
@@ -33,6 +34,7 @@ from app.vendor.failover import (
     InvokeClaimKind,
     NextAction,
     followup_for_policy,
+    vendor_matches_route,
 )
 from app.vendor.routing import (
     PRIMARY_VENDOR_ID,
@@ -173,6 +175,7 @@ class ChunkTaskResult:
 
     processed: int
     outcome: SubmitOutcome | None
+    next_attempt_at: datetime | None = None
 
 
 def chunk_result_metrics(result: ChunkTaskResult) -> dict[str, int]:
@@ -217,6 +220,7 @@ class ChunkPayload:
     next_vendor: str | None = None
     route_policy_version: int = ROUTE_POLICY_VERSION
     failover_from_attempt_id: int | None = None
+    is_test: bool = False
 
 
 class Gateway(Protocol):
@@ -238,7 +242,6 @@ class Bucket(Protocol):
         lane: Literal["realtime", "bulk"] | str,
         vendor_qps: int,
         reserved_realtime_qps: int,
-        now_ms: int | None = None,
         vendor_id: str | None = None,
     ) -> int | None: ...
 
@@ -252,6 +255,8 @@ class Bucket(Protocol):
 
 
 class ChunkStore(Protocol):
+    async def refresh_invoke_payload(self, chunk_id: int) -> ChunkPayload: ...
+
     async def claim_submission(
         self,
         chunk_id: int,
@@ -287,6 +292,8 @@ class ChunkStore(Protocol):
         previous_attempt_id: int,
         expected_next_vendor: str,
         expected_route_policy_version: int,
+        segments: int = 1,
+        enforce_live_test_budget: bool = False,
     ) -> InvokeClaim: ...
 
     async def load_authoritative_next_action(
@@ -386,6 +393,8 @@ class SendWorker:
         router: VendorRouter | None = None,
         health: Callable[[], Awaitable[tuple[VendorHealth, ...]]] | None = None,
         registry: tuple[VendorRecord, ...] | None = None,
+        market_window: Callable[[], Awaitable[str]] | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.gateway = gateway
         self.store = store
@@ -408,6 +417,9 @@ class SendWorker:
         self.vendor_qps = vendor_qps
         self.reserved_realtime_qps = reserved_realtime_qps
         self.sleeper = sleeper
+        self.market_window = market_window
+        self.clock = clock
+        self.market_defer_until: datetime | None = None
 
     async def _record_failure(self, chunk: ChunkPayload, code: int) -> None:
         try:
@@ -437,19 +449,12 @@ class SendWorker:
         vendor_id: str = PRIMARY_VENDOR_ID,
     ) -> int | None:
         while True:
-            try:
-                lease_epoch = await self.bucket.acquire(
-                    lane=lane,
-                    vendor_qps=self.vendor_qps,
-                    reserved_realtime_qps=self.reserved_realtime_qps,
-                    vendor_id=vendor_id,
-                )
-            except TypeError:
-                lease_epoch = await self.bucket.acquire(
-                    lane=lane,
-                    vendor_qps=self.vendor_qps,
-                    reserved_realtime_qps=self.reserved_realtime_qps,
-                )
+            lease_epoch = await self.bucket.acquire(
+                lane=lane,
+                vendor_qps=self.vendor_qps,
+                reserved_realtime_qps=self.reserved_realtime_qps,
+                vendor_id=vendor_id,
+            )
             if lease_epoch is not None:
                 return lease_epoch
             # 等令牌期间可能发生熔断暂停；每轮复查，暂停即停发（#349）。
@@ -463,69 +468,84 @@ class SendWorker:
         vendor_id: str = PRIMARY_VENDOR_ID,
     ) -> None:
         try:
-            try:
-                await self.bucket.refund(
-                    vendor_qps=self.vendor_qps,
-                    lease_epoch=lease_epoch,
-                    vendor_id=vendor_id,
-                )
-            except TypeError:
-                await self.bucket.refund(
-                    vendor_qps=self.vendor_qps,
-                    lease_epoch=lease_epoch,
-                )
+            await self.bucket.refund(
+                vendor_qps=self.vendor_qps,
+                lease_epoch=lease_epoch,
+                vendor_id=vendor_id,
+            )
         except Exception as exc:
             LOGGER.error(
                 "vendor token refund unavailable",
                 extra={"error_type": type(exc).__name__},
             )
 
-    async def _guard_chunk(self, chunk: ChunkPayload) -> bool:
+    async def _preflight_before_invoke(
+        self,
+        chunk: ChunkPayload,
+        lane: Literal["realtime", "bulk"],
+        vendor_id: str,
+        *,
+        authorized: bool = False,
+    ) -> SubmitOutcome | None:
+        """初次、重试和备用外呼共用检查；令牌等待后必须重新执行。"""
+
+        if await self.store.is_paused(lane):
+            return SubmitOutcome.PAUSED
+        try:
+            self._gateway_for(vendor_id)
+        except LookupError:
+            return SubmitOutcome.PAUSED
+        record = next((item for item in self.registry if item.vendor_id == vendor_id), None)
+        adapters = frozenset((*self.gateways, PRIMARY_VENDOR_ID))
+        if record is None or not vendor_matches_route(
+            record, category=chunk.category, adapter_ids=adapters
+        ):
+            return SubmitOutcome.PAUSED
+        health = await self._health_snapshot(platform_paused=False)
+        if not any(item.vendor_id == vendor_id and item.available for item in health):
+            return SubmitOutcome.PAUSED
+        if self.enforce_live_test_recipients:
+            chunk = await self.store.refresh_invoke_payload(chunk.chunk_id)
+        if not await self._guard_chunk(chunk, persist_rejection=not authorized):
+            return SubmitOutcome.REJECTED
+        if not await self._control_ready():
+            return SubmitOutcome.PAUSED
+        if chunk.category == "market" and not chunk.is_test:
+            window = await self.market_window() if self.market_window else DEFAULT_MARKET_WINDOW
+            state, _, self.market_defer_until = coerce_market_dispatch(self.clock(), window, None)
+            if state != "queued":
+                return SubmitOutcome.PAUSED
+        return None
+
+    async def _guard_chunk(self, chunk: ChunkPayload, *, persist_rejection: bool = True) -> bool:
         if self.enforce_live_test_recipients and chunk.denied_recipient_count:
-            await self.store.reject_disallowed_recipient(
-                chunk.chunk_id,
-                chunk.denied_recipient_count,
-            )
+            if persist_rejection:
+                await self.store.reject_disallowed_recipient(
+                    chunk.chunk_id,
+                    chunk.denied_recipient_count,
+                )
             return False
         if self.recipient_guard is None:
             return True
         try:
             self.recipient_guard.require_allowed(chunk.phones)
         except VendorTestRecipientDenied as error:
-            await self.store.reject_disallowed_recipient(
-                chunk.chunk_id,
-                error.denied_count,
-            )
+            if persist_rejection:
+                await self.store.reject_disallowed_recipient(
+                    chunk.chunk_id,
+                    error.denied_count,
+                )
             return False
         return True
 
-    async def _control_ready(
-        self,
-        chunk: ChunkPayload,
-        *,
-        claimed: bool,
-        lease_epoch: int | None = None,
-        vendor_id: str = PRIMARY_VENDOR_ID,
-    ) -> bool:
+    async def _control_ready(self) -> bool:
         if self.control_guard is None:
             return True
         try:
             self.control_guard.require_fresh()
         except VendorControlStateUnavailable as error:
-            pause_error: Exception | None = None
             if error.requires_critical_pause:
-                try:
-                    await self.store.pause_control_agent_stale()
-                except Exception as caught:
-                    pause_error = caught
-            try:
-                if claimed:
-                    await self.store.release_control_claim(chunk.chunk_id)
-            finally:
-                if lease_epoch is not None:
-                    await self._refund_token(lease_epoch, vendor_id)
-            if pause_error is not None:
-                raise pause_error from None
+                await self.store.pause_control_agent_stale()
             return False
         return True
 
@@ -549,7 +569,6 @@ class SendWorker:
         )
         if claim.status is SubmissionClaimStatus.CLAIMED:
             return claim.status
-        await self._refund_token(lease_epoch, vendor_id)
         if claim.status is SubmissionClaimStatus.DAILY_LIMIT:
             if claim.reset_at is None:
                 raise RuntimeError("daily-limit claim missing reset_at")
@@ -845,13 +864,20 @@ class SendWorker:
             await self._record_failure(chunk, error.code)
             return SubmitOutcome.PAUSED
         if report.next_action == NextAction.FAILOVER_PENDING.value:
-            claim, _next_vendor, _lease = await self._claim_persisted_failover(
+            claim, _next_vendor, lease_epoch = await self._claim_persisted_failover(
                 chunk,
                 lane=lane,
                 report=report,
             )
-            if claim.kind is InvokeClaimKind.DENIED and claim.reason == "token_unavailable":
+            if claim.kind is InvokeClaimKind.DENIED and claim.reason in {
+                "token_unavailable",
+                "preflight_paused",
+                "recipient_denied",
+                "daily_limit",
+            }:
                 return SubmitOutcome.PAUSED
+            if claim.kind is InvokeClaimKind.DENIED and claim.reason == "preflight_rejected":
+                return SubmitOutcome.REJECTED
             if claim.kind is InvokeClaimKind.ALREADY_HANDLED:
                 return SubmitOutcome.STALE
             if claim.kind is not InvokeClaimKind.AUTHORIZED or claim.authorization is None:
@@ -864,6 +890,7 @@ class SendWorker:
                 attempt_id=claim.authorization.attempt_id,
                 allow_split=allow_split,
                 retry_index=retry_index,
+                lease_epoch=lease_epoch,
             )
         if report.next_action == NextAction.FAILED.value:
             await self._record_failure(chunk, error.code)
@@ -877,6 +904,7 @@ class SendWorker:
         lane: Literal["realtime", "bulk"],
         allow_split: bool = True,
     ) -> SubmitOutcome:
+        self.market_defer_until = None
         retry_index = chunk.retry_count
         attempts = list(await self._load_attempts(chunk))
         claimed = False
@@ -892,13 +920,20 @@ class SendWorker:
                 route_policy_version=chunk.route_policy_version,
                 chunk_status="failover_pending",
             )
-            claim, next_vendor, _lease = await self._claim_persisted_failover(
+            claim, next_vendor, lease_epoch = await self._claim_persisted_failover(
                 chunk,
                 lane=lane,
                 report=report,
             )
-            if claim.kind is InvokeClaimKind.DENIED and claim.reason == "token_unavailable":
+            if claim.kind is InvokeClaimKind.DENIED and claim.reason in {
+                "token_unavailable",
+                "preflight_paused",
+                "recipient_denied",
+                "daily_limit",
+            }:
                 return SubmitOutcome.PAUSED
+            if claim.kind is InvokeClaimKind.DENIED and claim.reason == "preflight_rejected":
+                return SubmitOutcome.REJECTED
             if claim.kind is InvokeClaimKind.ALREADY_HANDLED:
                 return SubmitOutcome.STALE
             if claim.kind is not InvokeClaimKind.AUTHORIZED or claim.authorization is None:
@@ -911,9 +946,12 @@ class SendWorker:
                 attempt_id=claim.authorization.attempt_id,
                 allow_split=allow_split,
                 retry_index=retry_index,
+                lease_epoch=lease_epoch,
             )
         while True:
             platform_paused = await self.store.is_paused(lane)
+            if platform_paused:
+                return SubmitOutcome.PAUSED
             health = await self._health_snapshot(platform_paused=platform_paused)
             decision = self.router.decide(
                 self._route_request(chunk, tuple(attempts), health)
@@ -939,32 +977,33 @@ class SendWorker:
                 )
                 return SubmitOutcome.FAILED
             if not claimed:
-                if not await self._guard_chunk(chunk):
-                    return SubmitOutcome.REJECTED
-                if not await self._control_ready(chunk, claimed=False):
-                    return SubmitOutcome.PAUSED
+                preflight = await self._preflight_before_invoke(chunk, lane, vendor_id)
+                if preflight is not None:
+                    return preflight
                 lease_epoch = await self._token(lane, vendor_id)
                 if lease_epoch is None:
                     return SubmitOutcome.PAUSED
-                claim_status = await self._claim_after_token(
-                    chunk,
-                    lane,
-                    retry_index,
-                    lease_epoch,
-                    vendor_id,
-                )
+                submission_claimed = False
+                try:
+                    preflight = await self._preflight_before_invoke(chunk, lane, vendor_id)
+                    if preflight is not None:
+                        return preflight
+                    claim_status = await self._claim_after_token(
+                        chunk,
+                        lane,
+                        retry_index,
+                        lease_epoch,
+                        vendor_id,
+                    )
+                    submission_claimed = claim_status is SubmissionClaimStatus.CLAIMED
+                finally:
+                    if not submission_claimed:
+                        await self._refund_token(lease_epoch, vendor_id)
                 if claim_status is not SubmissionClaimStatus.CLAIMED:
                     if claim_status is SubmissionClaimStatus.DAILY_LIMIT:
                         return SubmitOutcome.DELAYED
                     return SubmitOutcome.STALE
                 claimed = True
-                if not await self._control_ready(
-                    chunk,
-                    claimed=True,
-                    lease_epoch=lease_epoch,
-                    vendor_id=vendor_id,
-                ):
-                    return SubmitOutcome.PAUSED
             begin = getattr(self.store, "begin_vendor_invoke", None)
             attempt_id: int | None = None
             if begin is not None:
@@ -991,6 +1030,7 @@ class SendWorker:
                 attempt_id=attempt_id,
                 allow_split=allow_split,
                 retry_index=retry_index,
+                lease_epoch=lease_epoch,
             )
 
 
@@ -1010,32 +1050,48 @@ class SendWorker:
                 PRIMARY_VENDOR_ID,
                 None,
             )
-        lease_epoch = await self._token(lane, vendor_id)
-        if lease_epoch is None:
+        preflight = await self._preflight_before_invoke(chunk, lane, vendor_id)
+        if preflight is not None:
             return (
-                InvokeClaim(InvokeClaimKind.DENIED, reason="token_unavailable"),
+                InvokeClaim(InvokeClaimKind.DENIED, reason=f"preflight_{preflight.value}"),
                 vendor_id,
                 None,
             )
-        claimer = getattr(self.store, "claim_next_vendor_invoke", None)
-        if claimer is None:
-            await self._refund_token(lease_epoch, vendor_id)
-            return (
-                InvokeClaim(InvokeClaimKind.DENIED, reason="claim_unavailable"),
-                vendor_id,
-                lease_epoch,
-            )
-        claim = await claimer(
-            chunk.chunk_id,
-            expected_route_generation=int(report.route_generation or chunk.route_generation),
-            previous_attempt_id=int(report.previous_attempt_id),
-            expected_next_vendor=vendor_id,
-            expected_route_policy_version=int(
-                report.route_policy_version or chunk.route_policy_version
-            ),
-        )
-        if claim.kind is not InvokeClaimKind.AUTHORIZED:
-            await self._refund_token(lease_epoch, vendor_id)
+        lease_epoch = await self._token(lane, vendor_id)
+        if lease_epoch is None:
+            return InvokeClaim(InvokeClaimKind.DENIED, reason="token_unavailable"), vendor_id, None
+        authorized = False
+        try:
+            preflight = await self._preflight_before_invoke(chunk, lane, vendor_id)
+            if preflight is not None:
+                claim = InvokeClaim(InvokeClaimKind.DENIED, reason=f"preflight_{preflight.value}")
+            else:
+                claim = await self.store.claim_next_vendor_invoke(
+                    chunk.chunk_id,
+                    expected_route_generation=int(
+                        report.route_generation or chunk.route_generation
+                    ),
+                    previous_attempt_id=int(report.previous_attempt_id),
+                    expected_next_vendor=vendor_id,
+                    expected_route_policy_version=int(
+                        report.route_policy_version or chunk.route_policy_version
+                    ),
+                    segments=calculate_quota_cost(
+                        f"{chunk.sign_name}{chunk.content}", recipient_count=len(chunk.phones)
+                    ),
+                    enforce_live_test_budget=self.enforce_live_test_budget,
+                )
+            authorized = claim.kind is InvokeClaimKind.AUTHORIZED
+        finally:
+            if not authorized:
+                await self._refund_token(lease_epoch, vendor_id)
+        if (
+            claim.kind is not InvokeClaimKind.AUTHORIZED
+            and claim.reason == "daily_limit"
+            and claim.reset_at is not None
+        ):
+            await self.store.defer_daily_limit(chunk.chunk_id, lane, claim.reset_at)
+            await self.store.pause_daily_limit(lane, claim.reset_at)
         return claim, vendor_id, lease_epoch
 
     async def _invoke_authorized(
@@ -1048,11 +1104,42 @@ class SendWorker:
         attempt_id: int | None,
         allow_split: bool,
         retry_index: int,
+        lease_epoch: int | None = None,
     ) -> SubmitOutcome:
+        try:
+            preflight = await self._preflight_before_invoke(chunk, lane, vendor_id, authorized=True)
+        except (Exception, asyncio.CancelledError):
+            try:
+                await self._abort_before_http(
+                    chunk, vendor_id, generation, attempt_id, lease_epoch, SubmitOutcome.PAUSED
+                )
+            except (Exception, asyncio.CancelledError) as cleanup_error:
+                LOGGER.error(
+                    "pre-invoke cleanup unavailable",
+                    extra={"error_type": type(cleanup_error).__name__},
+                )
+            raise
+        if preflight is not None:
+            return await self._abort_before_http(
+                chunk, vendor_id, generation, attempt_id, lease_epoch, preflight
+            )
         try:
             gateway = self._gateway_for(vendor_id)
         except LookupError:
-            return SubmitOutcome.FAILED
+            report = await self._finalize_invoke(
+                chunk,
+                vendor_id=vendor_id,
+                generation=generation,
+                attempt_id=attempt_id,
+                result="failed",
+            )
+            if lease_epoch is not None:
+                await self._refund_token(lease_epoch, vendor_id)
+            return (
+                submit_outcome_from_finalize(report, SubmitOutcome.FAILED)
+                if report is not None
+                else SubmitOutcome.FAILED
+            )
         vendor_invoked = False
         try:
             vendor_invoked = True
@@ -1093,7 +1180,7 @@ class SendWorker:
                 allow_split=allow_split,
                 retry_index=retry_index,
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             if vendor_invoked:
                 report = await self._finalize_invoke(
                     chunk,
@@ -1148,10 +1235,38 @@ class SendWorker:
             await self._record_success()
             return SubmitOutcome.SUBMITTED
 
+    async def _abort_before_http(
+        self,
+        chunk: ChunkPayload,
+        vendor_id: str,
+        generation: int,
+        attempt_id: int | None,
+        lease_epoch: int | None,
+        outcome: SubmitOutcome,
+    ) -> SubmitOutcome:
+        """已获授权但尚未外呼：按 attempt/generation 原子结算，再返还未用令牌。"""
 
-async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
-    """按 worker 启动时配置构造运行组件，凭据只从 secret 文件读取。"""
+        try:
+            report = await self._finalize_invoke(
+                chunk,
+                vendor_id=vendor_id,
+                generation=generation,
+                attempt_id=attempt_id,
+                result="rejected" if outcome is SubmitOutcome.REJECTED else "paused",
+            )
+            if report is not None:
+                return submit_outcome_from_finalize(report, outcome)
+            if attempt_id is not None:
+                return SubmitOutcome.UNCERTAIN
+            await self.store.release_control_claim(chunk.chunk_id)
+            return outcome
+        finally:
+            if lease_epoch is not None:
+                await self._refund_token(lease_epoch, vendor_id)
 
+
+async def _store_components() -> tuple[Any, Any, Any, int, int, int]:
+    """准备和发送共用当前存储配置；准备分片不构造厂商连接。"""
     from app.tasks.send_repository import SqlChunkStore
 
     settings = get_settings()
@@ -1159,6 +1274,13 @@ async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
     redis: Any = redis_client(settings.redis_control_url)
     store = SqlChunkStore(crypto, settings, redis)
     batch_size, vendor_qps, reserved = await store.load_worker_config()
+    return settings, redis, store, batch_size, vendor_qps, reserved
+
+
+async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
+    """按任务重读凭据及控制配置，仅复用本进程常驻 loop 的 HTTP 连接池。"""
+
+    settings, redis, store, batch_size, vendor_qps, reserved = await _store_components()
     control_guard = VendorControlStateGuard() if settings.vendor_live_test else None
     if control_guard is not None:
         try:
@@ -1167,7 +1289,7 @@ async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
             if error.requires_critical_pause:
                 await store.pause_control_agent_stale()
             raise RuntimeError("真实联调控制状态不可用") from None
-    gateway = ZhihuiClient.from_settings(settings)
+    gateway = ZhihuiClient.from_settings(settings, shared_http=True)
     worker = SendWorker(
         gateway,
         store,
@@ -1179,17 +1301,15 @@ async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
         vendor_qps=vendor_qps,
         reserved_realtime_qps=reserved,
         gateways={PRIMARY_VENDOR_ID: gateway},
+        market_window=store.load_market_window,
     )
     return worker, store, gateway, batch_size
 
 
 async def _process_batch(batch_no: str) -> int:
-    _worker, store, gateway, batch_size = await _components()
-    try:
-        chunk_ids, _lane = await store.prepare_chunks(batch_no, batch_size)
-        return len(chunk_ids)
-    finally:
-        await gateway.aclose()
+    _settings, _redis, store, batch_size, _qps, _reserved = await _store_components()
+    chunk_ids, _lane = await store.prepare_chunks(batch_no, batch_size)
+    return len(chunk_ids)
 
 
 async def _process_batch_event(batch_no: str, event_id: str) -> int:
@@ -1231,7 +1351,10 @@ async def _run_chunk(
                 "send-bulk" if lane == "bulk" else "send-realtime",
                 success=True,
             )
-        return ChunkTaskResult(1, outcome)
+        return ChunkTaskResult(
+            1, outcome,
+            worker.market_defer_until if outcome is SubmitOutcome.PAUSED else None,
+        )
     finally:
         await gateway.aclose()
 
@@ -1241,6 +1364,8 @@ async def _process_chunk(
 ) -> ChunkTaskResult:
     result = await _run_chunk(chunk_id, fail_closed_on_pause=fail_closed_on_pause)
     if fail_closed_on_pause and result.outcome is SubmitOutcome.PAUSED:
+        if result.next_attempt_at is not None:
+            raise OutboxDeferred(result.next_attempt_at)
         raise SendQueuePaused("send queue is paused")
     return result
 

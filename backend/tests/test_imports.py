@@ -182,6 +182,7 @@ async def test_import_matches_historical_hmac_but_keeps_only_active_tuple() -> N
         xlsx_archive([("/absolute.xml", b"x")]),
         mark_first_zip_entry_encrypted(xlsx_archive([("xl/workbook.xml", b"x")])),
     ],
+    ids=("parent-path", "absolute-path", "encrypted-entry"),
 )
 async def test_xlsx_preflight_rejects_unsafe_paths_and_encrypted_entries(
     monkeypatch: pytest.MonkeyPatch,
@@ -225,6 +226,7 @@ async def test_xlsx_preflight_rejects_unsafe_paths_and_encrypted_entries(
             ImportLimits(max_compression_ratio=2),
         ),
     ],
+    ids=("entry-count", "entry-size", "total-size", "compression-ratio"),
 )
 async def test_xlsx_preflight_rejects_archive_resource_amplification(
     monkeypatch: pytest.MonkeyPatch,

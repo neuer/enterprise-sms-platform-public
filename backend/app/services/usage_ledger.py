@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Protocol
@@ -78,6 +78,36 @@ return applied
 """
 
 
+PROJECTION_BATCH_ROWS = 500
+PROJECTION_COMMAND_BYTES = 256 * 1024
+PROJECTION_REBUILD_KEY = "usage:projection:rebuilding"
+PROJECTION_REBUILD_TTL_S = 300
+
+BEGIN_PROJECTION_REBUILD_LUA = """
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+redis.call('DEL', KEYS[2])
+return 1
+"""
+RENEW_PROJECTION_REBUILD_LUA = """
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('EXPIRE', KEYS[1], ARGV[2])
+return 1
+"""
+PUBLISH_PROJECTION_READY_LUA = """
+local owner = redis.call('GET', KEYS[1])
+if ARGV[1] == '' then
+  if owner then return 0 end
+elseif owner ~= ARGV[1] then
+  return 0
+end
+for i = 2, #KEYS do
+  redis.call('SET', KEYS[i], '1', 'PXAT', ARGV[i])
+end
+if ARGV[1] ~= '' then redis.call('DEL', KEYS[1]) end
+return 1
+"""
+
+
 class UsageRedis(Protocol):
     async def eval(self, *args: Any) -> Any: ...
 
@@ -131,6 +161,49 @@ class ProjectionRow:
     value: int
     version: int
     expires_at: datetime
+
+
+def _redis_command_bytes(*arguments: object) -> int:
+    """计算 RESP 数组编码大小，命令和 Lua 正文同样计入预算。"""
+
+    total = len(str(len(arguments))) + 3
+    for argument in arguments:
+        size = len(str(argument).encode("utf-8"))
+        total += size + len(str(size)) + 5
+    return total
+
+
+def _projection_arguments(row: ProjectionRow) -> tuple[str, ...]:
+    return (
+        row.dimension_key,
+        _version_key(row.dimension_key),
+        str(row.value),
+        str(row.version),
+        str(int(row.expires_at.timestamp() * 1000)),
+    )
+
+
+def _projection_batches(rows: Sequence[ProjectionRow]) -> Iterator[list[ProjectionRow]]:
+    """以行数和最坏 EVAL 编码字节双界分块，不扩大完整输入副本。"""
+
+    batch: list[ProjectionRow] = []
+    overhead = _redis_command_bytes("EVAL", APPLY_PROJECTIONS_LUA, PROJECTION_BATCH_ROWS * 2)
+    size = overhead
+    for row in rows:
+        # 每行五个 bulk 参数；预留数组长度位数增长的余量。
+        row_bytes = _redis_command_bytes(*_projection_arguments(row)) + 16
+        if overhead + row_bytes > PROJECTION_COMMAND_BYTES:
+            raise UsageProjectionUnavailable("usage projection dimension exceeds command budget")
+        if batch and (
+            len(batch) >= PROJECTION_BATCH_ROWS or size + row_bytes > PROJECTION_COMMAND_BYTES
+        ):
+            yield batch
+            batch = []
+            size = overhead
+        batch.append(row)
+        size += row_bytes
+    if batch:
+        yield batch
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +329,17 @@ async def _projection_rows(
         )
         for row in result.mappings()
     )
+
+
+async def _lock_projection_writer(connection: AsyncConnection) -> None:
+    """共享事务锁封住分页重建的提交边界；写者之间并行，重建时失败关闭。"""
+
+    locked = await connection.scalar(
+        text("SELECT pg_try_advisory_xact_lock_shared(hashtextextended(:name, 0))"),
+        {"name": "usage:projection:rebuild"},
+    )
+    if not locked:
+        raise UsageProjectionUnavailable("usage projection rebuild in progress")
 
 
 async def _lock_projection_keys(
@@ -718,6 +802,7 @@ async def _write_absolute_frequency_projection(
     value: int,
     expires_at: datetime,
 ) -> ProjectionRow:
+    await _lock_projection_writer(connection)
     result = await connection.execute(
         text(
             """
@@ -767,6 +852,7 @@ async def _merge_frequency_projections(
     """在已持有投影键锁后，把 source 主体窗口计数并入 canonical 键。"""
 
     hmacs = [str(row["projection_hmac"]) for row in subject_rows]
+    await _lock_projection_writer(connection)
     subject_ids = [UUID(str(row["id"])) for row in subject_rows]
     observed = await _database_now(connection)
     groups: dict[str, list[Any]] = {}
@@ -1194,6 +1280,7 @@ async def _change_projections(
         return ()
     if len({change.dimension_key for change in changes}) != len(changes):
         raise ValueError("projection changes must have unique dimensions")
+    await _lock_projection_writer(connection)
     payload = json.dumps(
         [
             {
@@ -1553,30 +1640,59 @@ class UsageLedgerService:
     def _engine(self) -> Any:
         return database_engine(self.settings.database_url)
 
-    async def _claim_rebuild_lock(self, connection: Any, date_key: str) -> None:
-        """PostgreSQL advisory lock 是重建 Owner；Redis 键只作 300 秒可见进度。"""
+    async def _claim_rebuild_lock(self, connection: Any, date_key: str) -> str:
+        """数据库会话锁决定 Owner；Redis 屏障覆盖跨日及普通投影写入。"""
 
-        locked = await connection.scalar(
-            text("SELECT pg_try_advisory_lock(hashtextextended(:name, 0))"),
-            {"name": "usage:projection:rebuild"},
-        )
-        if not locked:
-            raise UsageProjectionUnavailable("usage projection rebuild in progress")
+        token = str(uuid4())
         try:
-            owns = await self.redis.set(
-                f"usage:projection:rebuild:{date_key}",
-                str(uuid4()),
-                nx=True,
-                ex=300,
+            locked = await connection.scalar(
+                text("SELECT pg_try_advisory_lock(hashtextextended(:name, 0))"),
+                {"name": "usage:projection:rebuild"},
             )
-        except Exception as exc:
+            if not locked:
+                raise UsageProjectionUnavailable("usage projection rebuild in progress")
+            await self.redis.eval(
+                BEGIN_PROJECTION_REBUILD_LUA,
+                2,
+                PROJECTION_REBUILD_KEY,
+                _ready_key(date_key),
+                token,
+                PROJECTION_REBUILD_TTL_S,
+            )
+        except BaseException as exc:
             await self._release_rebuild_lock(connection)
-            raise UsageProjectionUnavailable("usage projection redis unavailable") from exc
-        if not owns:
-            await self._release_rebuild_lock(connection)
+            if isinstance(exc, Exception) and not isinstance(exc, UsageProjectionUnavailable):
+                raise UsageProjectionUnavailable("usage projection rebuild unavailable") from exc
+            raise
+        return token
+
+    async def _renew_rebuild(self, token: str) -> None:
+        renewed = await self.redis.eval(
+            RENEW_PROJECTION_REBUILD_LUA,
+            1,
+            PROJECTION_REBUILD_KEY,
+            token,
+            PROJECTION_REBUILD_TTL_S,
+        )
+        if int(renewed) != 1:
+            raise UsageProjectionUnavailable("usage projection rebuild owner lost")
+
+    async def _publish_ready(self, dates: Mapping[date, datetime], *, token: str = "") -> None:
+        ordered = sorted(dates.items())
+        published = await self.redis.eval(
+            PUBLISH_PROJECTION_READY_LUA,
+            len(ordered) + 1,
+            PROJECTION_REBUILD_KEY,
+            *(_ready_key(day.strftime("%Y%m%d")) for day, _ in ordered),
+            token,
+            *(int(expires.timestamp() * 1000) for _, expires in ordered),
+        )
+        if int(published) != 1:
             raise UsageProjectionUnavailable("usage projection rebuild in progress")
 
     async def _release_rebuild_lock(self, connection: Any) -> None:
+        # 分页 SQL 失败会中止事务；先 rollback 才能在池化会话上真正释放 session lock。
+        await connection.rollback()
         await connection.execute(
             text("SELECT pg_advisory_unlock(hashtextextended(:name, 0))"),
             {"name": "usage:projection:rebuild"},
@@ -1604,61 +1720,78 @@ class UsageLedgerService:
         date_key, usage_date, next_day = shanghai_day(current)
         marker_key = _ready_key(date_key)
         try:
-            marker = await self.redis.get(marker_key)
+            rebuilding, marker = await self.redis.mget([PROJECTION_REBUILD_KEY, marker_key])
+            if rebuilding is not None:
+                raise UsageProjectionUnavailable("usage projection rebuild in progress")
+        except UsageProjectionUnavailable:
+            raise
         except Exception as exc:
             raise UsageProjectionUnavailable("usage projection redis unavailable") from exc
         if marker is not None:
             return
         if await self._has_projection_facts(usage_date):
-            async with self._engine().connect() as connection:
-                await self._claim_rebuild_lock(connection, date_key)
-                try:
-                    await self.rebuild(actor=RECONCILE_REBUILD_ACTOR)
-                finally:
-                    await self._release_rebuild_lock(connection)
+            await self.rebuild(actor=RECONCILE_REBUILD_ACTOR)
             return
         try:
-            await self.redis.set(
-                marker_key,
-                "1",
-                nx=True,
-                pxat=int(next_day.timestamp() * 1000),
-            )
+            await self._publish_ready({usage_date: next_day})
         except Exception as exc:
             raise UsageProjectionUnavailable("usage projection redis unavailable") from exc
 
     async def _apply_rows(self, rows: Sequence[ProjectionRow]) -> int:
+        """分块应用版本化绝对值；普通写入不得把未完成的重建标为 ready。"""
+
         applied = 0
-        dates: dict[date, datetime] = {}
         try:
-            ordered = sorted(rows, key=lambda row: row.dimension_key)
-            if ordered:
+            for batch in _projection_batches(rows):
                 keys: list[str] = []
                 arguments: list[str] = []
-                for row in ordered:
-                    expire_ms = int(row.expires_at.timestamp() * 1000)
-                    keys.extend((row.dimension_key, _version_key(row.dimension_key)))
-                    arguments.extend((str(row.value), str(row.version), str(expire_ms)))
-                    dates[row.usage_date] = max(
-                        dates.get(row.usage_date, row.expires_at),
-                        row.expires_at,
+                for row in sorted(batch, key=lambda item: item.dimension_key):
+                    key, version_key, value, version, expires = _projection_arguments(row)
+                    keys.extend((key, version_key))
+                    arguments.extend((value, version, expires))
+                applied += int(
+                    await self.redis.eval(
+                        APPLY_PROJECTIONS_LUA,
+                        len(keys),
+                        *keys,
+                        *arguments,
                     )
-                value = await self.redis.eval(
-                    APPLY_PROJECTIONS_LUA,
-                    len(keys),
-                    *keys,
-                    *arguments,
-                )
-                applied += int(value)
-            for usage_date, expires_at in dates.items():
-                await self.redis.set(
-                    _ready_key(usage_date.strftime("%Y%m%d")),
-                    "1",
-                    pxat=int(expires_at.timestamp() * 1000),
                 )
         except Exception as exc:
             raise UsageProjectionUnavailable("usage projection write unavailable") from exc
         return applied
+
+    async def _projection_pages(self, connection: Any) -> AsyncIterator[list[ProjectionRow]]:
+        """稳定维度游标分页，数据库与 Python 每次最多保留一页。"""
+
+        cursor = ""
+        while True:
+            result = await connection.execute(
+                text("""
+                    SELECT dimension_key,kind,usage_date,value,version,expires_at
+                    FROM usage_projection
+                    WHERE expires_at>now() AND dimension_key>:cursor
+                    ORDER BY dimension_key LIMIT :limit
+                """),
+                {"cursor": cursor, "limit": PROJECTION_BATCH_ROWS},
+            )
+            rows = [
+                ProjectionRow(
+                    str(row["dimension_key"]),
+                    str(row["kind"]),
+                    row["usage_date"],
+                    int(row["value"]),
+                    int(row["version"]),
+                    row["expires_at"],
+                )
+                for row in result.mappings()
+            ]
+            if not rows:
+                break
+            yield rows
+            cursor = rows[-1].dimension_key
+            if len(rows) < PROJECTION_BATCH_ROWS:
+                break
 
     async def start_reservation(
         self,
@@ -2527,95 +2660,82 @@ class UsageLedgerService:
         return 1
 
     async def rebuild(self, *, actor: str = "system:usage-projection") -> int:
-        """从事实投影表安全重建 Redis；审计只记录维度数量。"""
+        """分页重建，全部投影与审计成功后才原子开放 ready。"""
 
         engine = self._engine()
-        async with engine.connect() as connection:
-            result = await connection.execute(
-                text(
-                    """
-                    SELECT dimension_key,kind,usage_date,value,version,expires_at
-                    FROM usage_projection WHERE expires_at>now()
-                    ORDER BY dimension_key
-                    """
-                )
-            )
-            rows = tuple(
-                ProjectionRow(
-                    str(row["dimension_key"]),
-                    str(row["kind"]),
-                    row["usage_date"],
-                    int(row["value"]),
-                    int(row["version"]),
-                    row["expires_at"],
-                )
-                for row in result.mappings()
-            )
-        await self._apply_rows(rows)
-        async with engine.begin() as connection:
-            await bind_connection_system_audit(
-                connection,
-                actor_name=actor,
-                action="usage_projection_rebuild",
-            )
-            await connection.execute(
-                text(
-                    """
-                    INSERT INTO audit_log(
-                      actor,actor_subject_kind,role,action,object_type,object_id,
-                      after_val
-                    ) VALUES(
-                      :actor,'system','system','usage_projection_rebuild',
-                      'usage_projection','all',
-                      jsonb_build_object(
-                        'dimension_count',CAST(:dimension_count AS integer),
-                        'quota_dimensions',CAST(:quota_dimensions AS integer),
-                        'frequency_dimensions',CAST(:frequency_dimensions AS integer)
-                      )
+        date_key, usage_date, next_day = shanghai_day(self.clock())
+        counts = {"quota": 0, "frequency": 0}
+        dimension_count = 0
+        dates: dict[date, datetime] = {usage_date: next_day}
+        async with engine.connect() as owner:
+            token = await self._claim_rebuild_lock(owner, date_key)
+            try:
+                async for rows in self._projection_pages(owner):
+                    await self._renew_rebuild(token)
+                    await self._apply_rows(rows)
+                    dimension_count += len(rows)
+                    for row in rows:
+                        counts[row.kind] += 1
+                        dates[row.usage_date] = max(
+                            dates.get(row.usage_date, row.expires_at), row.expires_at
+                        )
+                async with engine.begin() as connection:
+                    await bind_connection_system_audit(
+                        connection,
+                        actor_name=actor,
+                        action="usage_projection_rebuild",
                     )
-                    """
-                ),
-                {
-                    "actor": actor,
-                    "dimension_count": len(rows),
-                    "quota_dimensions": sum(row.kind == "quota" for row in rows),
-                    "frequency_dimensions": sum(row.kind == "frequency" for row in rows),
-                },
-            )
-        return len(rows)
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO audit_log(
+                              actor,actor_subject_kind,role,action,object_type,object_id,
+                              after_val
+                            ) VALUES(
+                              :actor,'system','system','usage_projection_rebuild',
+                              'usage_projection','all',
+                              jsonb_build_object(
+                                'dimension_count',CAST(:dimension_count AS integer),
+                                'quota_dimensions',CAST(:quota_dimensions AS integer),
+                                'frequency_dimensions',CAST(:frequency_dimensions AS integer)
+                              )
+                            )
+                            """
+                        ),
+                        {
+                            "actor": actor,
+                            "dimension_count": dimension_count,
+                            "quota_dimensions": counts["quota"],
+                            "frequency_dimensions": counts["frequency"],
+                        },
+                    )
+                await self._publish_ready(dates, token=token)
+            except UsageProjectionUnavailable:
+                raise
+            except Exception as exc:
+                raise UsageProjectionUnavailable("usage projection rebuild unavailable") from exc
+            finally:
+                await self._release_rebuild_lock(owner)
+        return dimension_count
 
     async def measure_drift(self) -> UsageDrift:
         """聚合 Redis/事实投影差异；不持久化或返回任何号码索引。"""
 
         engine = self._engine()
+        aggregates = {"quota": [0, 0], "frequency": [0, 0]}
         async with engine.connect() as connection:
-            result = await connection.execute(
-                text(
-                    """
-                    SELECT dimension_key,kind,value FROM usage_projection
-                    WHERE expires_at>now() ORDER BY dimension_key
-                    """
-                )
-            )
-            rows = [
-                (str(row["dimension_key"]), str(row["kind"]), int(row["value"]))
-                for row in result.mappings()
-            ]
-        # Redis 不可读时没有“当前投影”这一事实；必须让任务失败并由当前告警
-        # 标记 UNKNOWN，不能把依赖故障折算成一组看似有效的零值。
-        raw_values = await self.redis.mget([row[0] for row in rows]) if rows else []
-        aggregates = {
-            "quota": [0, 0],
-            "frequency": [0, 0],
-        }
-        for (_, kind, expected), raw in zip(rows, raw_values, strict=True):
-            try:
-                actual = int(raw) if raw is not None else 0
-            except (TypeError, ValueError):
-                actual = 0
-            if actual != expected:
-                aggregates[kind][0] += 1
-                aggregates[kind][1] += abs(expected - actual)
+            async for rows in self._projection_pages(connection):
+                for batch in _projection_batches(rows):
+                    # 不可读仍是 UNKNOWN；不得写入伪造的零漂移快照。
+                    raw_values = await self.redis.mget([row.dimension_key for row in batch])
+                    for row, raw in zip(batch, raw_values, strict=True):
+                        try:
+                            actual = int(raw) if raw is not None else 0
+                        except (TypeError, ValueError):
+                            actual = 0
+                        if actual != row.value:
+                            aggregates[row.kind][0] += 1
+                            aggregates[row.kind][1] += abs(row.value - actual)
         drift = UsageDrift(
             aggregates["quota"][0],
             aggregates["quota"][1],

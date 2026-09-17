@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.roles import Role
 
 LDAP_ATTRIBUTE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9-]{0,63}$")
@@ -256,6 +259,12 @@ def _timeout(value: object) -> float:
     return parsed
 
 
+def role_mapping_revision(mappings: tuple[ExternalRoleMapping, ...]) -> str:
+    """以完整映射集合生成编辑前置条件，防止旧快照覆盖并发保存。"""
+    values = sorted((item.external_group, item.role, item.dept) for item in mappings)
+    return hashlib.sha256(json.dumps(values, ensure_ascii=True).encode()).hexdigest()
+
+
 class AuthProviderRepository(Protocol):
     async def list_enabled(self) -> tuple[ProviderRecord, ...]: ...
 
@@ -266,6 +275,7 @@ class AuthProviderRepository(Protocol):
         code: str,
         config: dict[str, object],
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> ProviderRecord: ...
@@ -284,6 +294,8 @@ class AuthProviderRepository(Protocol):
         self,
         code: str,
         *,
+        expected_draft_version: int,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> ProviderRecord: ...
@@ -292,6 +304,8 @@ class AuthProviderRepository(Protocol):
         self,
         code: str,
         *,
+        expected_draft_version: int,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> ProviderRecord: ...
@@ -306,6 +320,8 @@ class AuthProviderRepository(Protocol):
         code: str,
         mappings: tuple[ExternalRoleMapping, ...],
         *,
+        expected_revision: str,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]: ...
@@ -355,6 +371,7 @@ class AuthProviderService:
         code: str,
         config: dict[str, object],
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> ProviderRecord:
@@ -364,6 +381,7 @@ class AuthProviderService:
         return await self.repository.save_draft(
             code,
             validated,
+            authorization=authorization,
             actor=actor,
             ip=ip,
         )
@@ -388,15 +406,47 @@ class AuthProviderService:
         )
         return result
 
-    async def activate(self, code: str, *, actor: str, ip: str) -> ProviderRecord:
+    async def activate(
+        self,
+        code: str,
+        *,
+        authorization: AdminAuthorization,
+        actor: str,
+        ip: str,
+        expected_draft_version: int | None = None,
+    ) -> ProviderRecord:
         record = await self.repository.get(code)
         self._ensure_mutable(record)
-        return await self.repository.activate(code, actor=actor, ip=ip)
+        return await self.repository.activate(
+            code,
+            authorization=authorization,
+            actor=actor,
+            ip=ip,
+            expected_draft_version=record.draft_version
+            if expected_draft_version is None
+            else expected_draft_version,
+        )
 
-    async def disable(self, code: str, *, actor: str, ip: str) -> ProviderRecord:
+    async def disable(
+        self,
+        code: str,
+        *,
+        authorization: AdminAuthorization,
+        actor: str,
+        ip: str,
+        expected_draft_version: int | None = None,
+    ) -> ProviderRecord:
         record = await self.repository.get(code)
         self._ensure_mutable(record)
-        return await self.repository.disable(code, actor=actor, ip=ip)
+        return await self.repository.disable(
+            code,
+            authorization=authorization,
+            actor=actor,
+            ip=ip,
+            expected_draft_version=record.draft_version
+            if expected_draft_version is None
+            else expected_draft_version,
+        )
 
     async def list_role_mappings(
         self,
@@ -411,6 +461,8 @@ class AuthProviderService:
         code: str,
         mappings: tuple[ExternalRoleMapping, ...],
         *,
+        expected_revision: str,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]:
@@ -433,6 +485,8 @@ class AuthProviderService:
         return await self.repository.replace_role_mappings(
             code,
             tuple(normalized),
+            expected_revision=expected_revision,
+            authorization=authorization,
             actor=actor,
             ip=ip,
         )

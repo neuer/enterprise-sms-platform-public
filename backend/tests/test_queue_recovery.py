@@ -41,8 +41,9 @@ class FakeRepository:
             PausedBatch("MARKET-1", "market"),
         )
 
-    async def clear_queue_pauses(self) -> None:
+    async def clear_queue_pauses(self, snapshot: QueueSnapshot) -> bool:
         self.events.append("clear")
+        return True
 
 
 class FakeSender:

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Protocol
 
 from app.core.bounded_executor import run_bounded
+from app.core.bulk_admission import bulk_task_admission
 from app.core.jobtrack import tracked_job
 from app.core.worker_runtime import run_worker_async
 from app.services.crypto import CryptoService
@@ -76,6 +77,7 @@ async def _cleanup() -> int:
     name="app.tasks.dispatch_exports",
     **background_task_options(soft_time_limit=120, time_limit=150),
 )  # type: ignore[untyped-decorator]
+@bulk_task_admission
 @tracked_job("dispatch_exports", expect_interval_s=60)
 def dispatch_exports() -> int:
     return run_worker_async(_dispatch())
@@ -85,6 +87,7 @@ def dispatch_exports() -> int:
     name="app.tasks.cleanup_exports",
     **background_task_options(soft_time_limit=300, time_limit=360),
 )  # type: ignore[untyped-decorator]
+@bulk_task_admission
 @tracked_job("cleanup_exports", expect_interval_s=3600)
 def cleanup_exports() -> int:
     return run_worker_async(_cleanup())

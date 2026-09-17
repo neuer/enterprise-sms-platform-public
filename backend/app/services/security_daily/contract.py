@@ -304,6 +304,9 @@ class SecurityDailyAutoDeliveryConfiguration:
     enabled: bool
     resend_configured: bool
     recipient_count: int
+    config_version: int = 1
+    publish_state: str = "file_pending"
+    recipient_set_digest: str = ""
 
     def __post_init__(self) -> None:
         if not 0 <= self.recipient_count <= MAX_RESEND_RECIPIENTS:

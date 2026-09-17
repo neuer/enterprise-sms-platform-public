@@ -190,7 +190,7 @@ paths:
                   description: 模板 {1}..{n} 占位参数（v1.2，本期全批次同参，平台渲染后下发，个数不符返回 422 TEMPLATE_PARAM_MISMATCH）
                 sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }], description: 缺省用应用默认签名 }
                 scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-                biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，幂等键与对账用 }
+                biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，不得包含手机号标识；24h 后仍有在途、unknown 或待回调时保留原结果，仅可信到期且保护工作结束后允许复用 }
       responses:
         '200':
           description: 受理成功（含幂等命中）
@@ -221,7 +221,7 @@ paths:
           description: CATEGORY_NOT_ALLOWED / IP_NOT_ALLOWED / VENDOR_TEST_CONSOLE_ONLY / FORBIDDEN
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '409':
-          description: 同一幂等键已用于不同请求（IDEMPOTENCY_CONFLICT）
+          description: 同一幂等键已用于不同请求，或原结果缺少可信证明（IDEMPOTENCY_CONFLICT）
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '422':
           description: 敏感词命中 / 全部号码被剔除
@@ -281,7 +281,7 @@ paths:
                     - { type: 'null' }
                   description: 模板 {1}..{n} 占位参数
                 sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
-                biz_id: { type: string, minLength: 1, maxLength: 32 }
+                biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，不得包含手机号标识 }
       responses:
         '200':
           description: 受理成功（含幂等命中）
@@ -534,7 +534,14 @@ paths:
         '403': { description: AUTH_PROVIDER_DISABLED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '409': { description: ACCOUNT_SOURCE_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '423': { description: 错误凭据达到账号失败阈值（ACCOUNT_LOCKED）；正确凭据完成权威绑定后可恢复, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
-        '429': { description: IP 已被临时封禁（RATE_LIMITED）, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429':
+          description: >-
+            RATE_LIMITED：IP 封禁或认证准入繁忙。仅在 Provider 尚未执行的准入拒绝中返回
+            detail.auth_admission_retry=true、detail.retry_after_seconds（1–300 秒）和 Retry-After。
+            浏览器仅对此标记进行最多 30 次且累计等待不超过 30 秒的有界重试；IP ban、密码错误和 503 不自动重试。
+          headers:
+            Retry-After: { schema: { type: integer, minimum: 1, maximum: 300 }, description: 准入重试建议秒数 }
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
         '503': { description: AUTH_PROVIDER_UNAVAILABLE 或 AUTH_SESSION_UNAVAILABLE, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /api/v1/web/auth/password/initial:
@@ -619,7 +626,7 @@ paths:
                 template_params: { anyOf: [{ type: array, maxItems: 20, items: { type: string, maxLength: 200 } }, { type: 'null' }], description: 模板参数（v1.2，预览即渲染结果） }
                 sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
                 scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-                biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，幂等键与对账用 }
+                biz_id: { type: string, minLength: 1, maxLength: 32, description: 调用方业务ID，不得包含手机号标识；24h 后仍有在途、unknown 或待回调时保留原结果，仅可信到期且保护工作结束后允许复用 }
                 is_test: { type: boolean, default: false, description: 测试发送（≤test_send_max 个号码，豁免营销时间窗；与 scheduled_at 同时出现返回 400，v1.2） }
                 consent_confirmed: { type: boolean, default: false, description: market 必须为 true（"已获用户同意"留痕，v1.2），否则 422 CONSENT_REQUIRED }
                 remark: { anyOf: [{ type: string, maxLength: 200 }, { type: 'null' }] }
@@ -1526,6 +1533,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: provider_code, in: path, required: true, schema: { type: string } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -1562,6 +1570,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: provider_code, in: path, required: true, schema: { type: string } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       responses:
         '200': { description: 已激活, content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderAdmin' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1576,6 +1585,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: provider_code, in: path, required: true, schema: { type: string } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       responses:
         '200': { description: 已禁用, content: { application/json: { schema: { $ref: '#/components/schemas/AuthProviderAdmin' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -1602,6 +1612,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: provider_code, in: path, required: true, schema: { type: string } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -1614,6 +1625,25 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { description: 重复映射或内置认证源不可修改, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { description: 映射参数不合法, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /api/v1/web/admin/step-up:
+    post:
+      tags: [admin]
+      summary: 当前管理员重认证并签发用途绑定的单次授权
+      security: [{ BearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminStepUpRequest' }
+      responses:
+        '200': { description: 已签发；仅存于浏览器易失内存, content: { application/json: { schema: { $ref: '#/components/schemas/AdminStepUpResponse' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { description: INVALID_PARAM, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '423': { description: ACCOUNT_LOCKED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '429': { description: RATE_LIMITED, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '503': { description: 认证源或授权存储暂不可用, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /api/v1/web/admin/users:
     get:
@@ -1641,6 +1671,8 @@ paths:
       tags: [admin]
       summary: 管理员创建本地账号并设置临时密码
       security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -1662,6 +1694,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: account_id, in: path, required: true, schema: { type: integer } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -1685,6 +1718,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: account_id, in: path, required: true, schema: { type: integer } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -1704,6 +1738,7 @@ paths:
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: account_id, in: path, required: true, schema: { type: integer } }
+        - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 高风险操作必需；绑定当前账号和会话、IP、用途、目标及参数，五分钟内单次消费 }
       requestBody:
         required: true
         content:
@@ -1825,7 +1860,7 @@ paths:
               type: object
               required: [words]
               properties:
-                words: { type: array, minItems: 1, maxItems: 10000, items: { type: string } }
+                words: { type: array, minItems: 1, maxItems: 10000, description: 词条不得包含手机号, items: { type: string } }
       responses:
         '200':
           description: OK
@@ -2730,6 +2765,20 @@ paths:
               schema: { $ref: '#/components/schemas/DashboardModel' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /api/v1/web/reports/balance:
+    get:
+      tags: [reports]
+      summary: 管理员页头最新余额（单次快照查询）
+      security: [{ BearerAuth: [] }]
+      responses:
+        '200':
+          description: 无快照时余额和采集时间均为 null，不能解释为零余额
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BalanceSnapshotModel' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /api/v1/web/reports/stats:
     get:
       tags: [reports]
@@ -2741,6 +2790,11 @@ paths:
         - { name: category, in: query, required: false, schema: { type: string, enum: [verify, notice, market, all], default: all } }
         - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date }, { type: 'null' }] } }
         - { name: end, in: query, required: false, schema: { anyOf: [{ type: string, format: date }, { type: 'null' }] } }
+        - { name: page, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 1000000, default: 1 } }
+        - { name: size, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+        - { name: sort, in: query, required: false, schema: { type: string, enum: [period_start, total, total_segments, success_rate], default: period_start } }
+        - { name: order, in: query, required: false, schema: { type: string, enum: [asc, desc], default: desc } }
+        - { name: metric, in: query, required: false, schema: { type: string, enum: [total, total_segments], default: total } }
       responses:
         '200':
           description: OK
@@ -2817,6 +2871,7 @@ paths:
                   properties:
                     start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
                     end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                    end_exclusive: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 不包含的终点，与 end 互斥；日期范围使用次日上海零点 }
                     category: { anyOf: [{ type: string, enum: [verify, notice, market] }, { type: 'null' }] }
                     status: { anyOf: [{ type: string, maxLength: 16 }, { type: 'null' }] }
                     app_id: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] }
@@ -3047,6 +3102,7 @@ components:
         auth_flow: { type: string, enum: [password, redirect] }
 
     PasswordPolicy:
+      description: 本地密码同时由服务端离线常见或泄露密码库检查；生产库缺失、损坏或过期时，创建、重置和改密返回 AUTH_PROVIDER_UNAVAILABLE/503。
       type: object
       additionalProperties: false
       required: [min_length, max_length, required_character_classes, forbid_username, description]
@@ -3678,7 +3734,7 @@ components:
     User:
       type: object
       additionalProperties: false
-      required: [account_id, identity_id, provider_code, username, display_name, dept, role, role_override, status, identity_status, credential_status, source_groups, sync_status, last_synced_at, last_login_at]
+      required: [account_id, identity_id, provider_code, username, display_name, dept, role, role_override, status, identity_status, credential_status, temporary_password_expires_at, source_groups, sync_status, last_synced_at, last_login_at]
       properties:
         account_id: { type: integer, minimum: 1 }
         identity_id: { type: integer, minimum: 1 }
@@ -3691,6 +3747,7 @@ components:
         status: { type: integer, enum: [0, 1] }
         identity_status: { type: integer, enum: [0, 1] }
         credential_status: { anyOf: [{ type: string, enum: [active, must_change] }, { type: 'null' }] }
+        temporary_password_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         source_groups:
           type: array
           items: { type: string }
@@ -3807,8 +3864,9 @@ components:
     AuthProviderRoleMappings:
       type: object
       additionalProperties: false
-      required: [mappings]
+      required: [mappings, revision]
       properties:
+        revision: { type: string }
         mappings:
           type: array
           maxItems: 100
@@ -3826,8 +3884,9 @@ components:
     AuthProviderRoleMappingsUpdate:
       type: object
       additionalProperties: false
-      required: [mappings]
+      required: [mappings, expected_revision]
       properties:
+        expected_revision: { type: string, pattern: '^[a-f0-9]{64}$' }
         mappings:
           type: array
           maxItems: 100
@@ -3960,8 +4019,8 @@ components:
 
     ReportingDimSummaryModel:
       type: object
-      description: 维度级区间汇总；success_rate 为服务端 stats.py 口径，前端不得自行重算
-      required: [dim_value, dim_label, total, total_segments, delivered, failed, unknown, success_rate]
+      description: 全区间按 metric 排名前五维度及其他维度合计，is_other 明确标识合并；完整维度明细仍可分页或导出；success_rate 为服务端 stats.py 口径
+      required: [dim_value, dim_label, total, total_segments, delivered, failed, unknown, success_rate, is_other]
       properties:
         dim_value: { type: string }
         dim_label: { type: string }
@@ -3971,10 +4030,11 @@ components:
         failed: { type: integer }
         unknown: { type: integer }
         success_rate: { type: number }
+        is_other: { type: boolean }
 
     ReportingModel:
       type: object
-      required: [granularity, group_by, category, start, end, can_export_decrypted, summary, dim_summary, items]
+      required: [granularity, group_by, category, start, end, can_export_decrypted, summary, dim_summary, items, total, page, size, metric, dimension_total, trend]
       properties:
         granularity: { type: string, enum: [day, week, month] }
         group_by: { type: string, enum: [app, dept] }
@@ -3982,6 +4042,12 @@ components:
         start: { type: string, format: date }
         end: { type: string, format: date }
         can_export_decrypted: { type: boolean }
+        total: { type: integer, description: 全筛选区间的周期与维度明细总行数 }
+        page: { type: integer }
+        size: { type: integer }
+        metric: { type: string, enum: [total, total_segments] }
+        dimension_total: { type: integer }
+        trend: { $ref: '#/components/schemas/ReportingTrendModel' }
         summary: { $ref: '#/components/schemas/ReportingSummaryModel' }
         dim_summary:
           type: array
@@ -3989,6 +4055,31 @@ components:
         items:
           type: array
           items: { $ref: '#/components/schemas/ReportingRowModel' }
+
+    ReportingTrendSeriesModel:
+      type: object
+      required: [dim_value, dim_label, total, total_segments, is_other]
+      properties:
+        dim_value: { type: string }
+        dim_label: { type: string }
+        total: { type: array, items: { type: integer } }
+        total_segments: { type: array, items: { type: integer } }
+        is_other: { type: boolean }
+
+    ReportingTrendModel:
+      type: object
+      required: [periods, series]
+      description: 全区间紧凑趋势，最多366个周期与Top5加其他的6个系列；数值数组与periods位置一一对应，缺失周期为零
+      properties:
+        periods: { type: array, items: { type: string, format: date } }
+        series: { type: array, items: { $ref: '#/components/schemas/ReportingTrendSeriesModel' } }
+
+    BalanceSnapshotModel:
+      type: object
+      required: [current_balance, checked_at]
+      properties:
+        current_balance: { anyOf: [{ type: integer }, { type: 'null' }] }
+        checked_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
 
     ReportingSummaryModel:
       type: object
@@ -4070,12 +4161,13 @@ components:
 
     ApprovalListItem:
       type: object
-      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at]
+      required: [id, batch_no, category, applicant, applicant_account_id, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at]
       properties:
         id: { type: integer }
         batch_no: { type: string }
         category: { type: string }
         applicant: { type: string }
+        applicant_account_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 申请人稳定账号 ID；无法确认历史身份时为 null }
         dept: { type: string }
         total: { type: integer }
         segments: { type: integer, minimum: 1, description: 单个号码的计费条数 }
@@ -4096,12 +4188,13 @@ components:
 
     ApprovalDetail:
       type: object
-      required: [id, batch_no, category, applicant, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at, content]
+      required: [id, batch_no, category, applicant, applicant_account_id, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at, content]
       properties:
         id: { type: integer }
         batch_no: { type: string }
         category: { type: string }
         applicant: { type: string }
+        applicant_account_id: { anyOf: [{ type: integer }, { type: 'null' }], description: 申请人稳定账号 ID；无法确认历史身份时为 null }
         dept: { type: string }
         total: { type: integer }
         segments: { type: integer, minimum: 1, description: 单个号码的计费条数 }
@@ -4238,4 +4331,21 @@ components:
       required: [token]
       properties:
         token: { type: string, description: 仅在浏览器易失内存中保存并单次使用 }
+        expires_in: { type: integer, default: 300 }
+
+    AdminStepUpRequest:
+      type: object
+      additionalProperties: false
+      required: [operation, target_id, parameters, password]
+      properties:
+        operation: { type: string, enum: [user_create_admin, user_role_change, user_password_reset, user_status_change, provider_role_mapping_change, provider_save_draft, provider_enable_disable] }
+        target_id: { type: string, minLength: 1, maxLength: 64 }
+        parameters: { type: object, additionalProperties: true, description: 用途规定的非凭据参数；服务端规范化并绑定，拒绝未知字段及客户端摘要 }
+        password: { type: string, format: password, minLength: 1, maxLength: 128, writeOnly: true }
+
+    AdminStepUpResponse:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string, description: 仅在浏览器易失内存中单次使用 }
         expires_in: { type: integer, default: 300 }

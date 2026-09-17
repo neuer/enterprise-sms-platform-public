@@ -1,5 +1,8 @@
 import { ElMessage, ElMessageBox } from "element-plus"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { effectScope } from "vue"
+import { createPinia, setActivePinia } from "pinia"
+import { useSessionStore } from "../src/stores/session"
 
 import type { ExportTask } from "../src/api/reports"
 
@@ -126,7 +129,11 @@ describe("导出任务流 useExportTask", () => {
 
     expect(prompt).not.toHaveBeenCalled()
     expect(reportsApi.issueExportStepUp).not.toHaveBeenCalled()
-    expect(reportsApi.downloadExport).toHaveBeenCalledWith(controller.exportTask.value, undefined)
+    expect(reportsApi.downloadExport).toHaveBeenCalledWith(
+      controller.exportTask.value,
+      undefined,
+      expect.any(AbortSignal),
+    )
     expect(downloadLib.saveBlob).toHaveBeenCalledTimes(1)
     expect(downloadLib.saveBlob.mock.calls[0][1]).toBe("sms-report-c0a80101-0000-4000-8000-000000000134.csv")
   })
@@ -141,8 +148,12 @@ describe("导出任务流 useExportTask", () => {
     await controller.start(() => Promise.resolve(task()))
     await controller.download("sms-report")
 
-    expect(reportsApi.issueExportStepUp).toHaveBeenCalledWith(done.id, "current-password")
-    expect(reportsApi.downloadExport).toHaveBeenCalledWith(controller.exportTask.value, "single-use-token")
+    expect(reportsApi.issueExportStepUp).toHaveBeenCalledWith(done.id, "current-password", expect.any(AbortSignal))
+    expect(reportsApi.downloadExport).toHaveBeenCalledWith(
+      controller.exportTask.value,
+      "single-use-token",
+      expect.any(AbortSignal),
+    )
     expect(downloadLib.saveBlob).toHaveBeenCalledTimes(1)
   })
 
@@ -176,5 +187,55 @@ describe("导出任务流 useExportTask", () => {
     const controller = mountController()
     await controller.download("sms-report")
     expect(reportsApi.downloadExport).not.toHaveBeenCalled()
+  })
+})
+
+describe("下载绑定原会话、任务和页面", () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.clearAllMocks()
+  })
+  it.each(["session", "task", "dispose"])("%s 变化后迟到 blob 不保存", async (change) => {
+    setActivePinia(createPinia())
+    const scope = effectScope()
+    const controller = scope.run(mountController)!
+    controller.exportTask.value = task({ status: "done", download_url: "/download" })
+    let resolve!: (blob: Blob) => void
+    reportsApi.downloadExport.mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done
+        }),
+    )
+    const pending = controller.download("synthetic")
+    const signal = reportsApi.downloadExport.mock.calls.at(-1)![2] as AbortSignal
+    if (change === "session") useSessionStore().clear()
+    if (change === "task") controller.exportTask.value = task({ id: "new-task" })
+    if (change === "dispose") scope.stop()
+    expect(signal.aborted).toBe(true)
+    resolve(new Blob(["synthetic"]))
+    await pending
+    expect(downloadLib.saveBlob).not.toHaveBeenCalled()
+    scope.stop()
+  })
+  it("密码框未完成时清除会话，确认旧密码不会申请授权", async () => {
+    setActivePinia(createPinia())
+    const scope = effectScope()
+    const controller = scope.run(mountController)!
+    controller.exportTask.value = task({ status: "done", decrypted: true, download_url: "/download" })
+    let resolve!: (value: never) => void
+    vi.spyOn(ElMessageBox, "prompt").mockImplementation(
+      () =>
+        new Promise((done) => {
+          resolve = done
+        }) as never,
+    )
+    const pending = controller.download("synthetic")
+    useSessionStore().clear()
+    resolve({ value: "synthetic-password", action: "confirm" } as never)
+    await pending
+    expect(reportsApi.issueExportStepUp).not.toHaveBeenCalled()
+    expect(reportsApi.downloadExport).not.toHaveBeenCalled()
+    scope.stop()
   })
 })

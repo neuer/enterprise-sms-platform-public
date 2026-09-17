@@ -431,6 +431,8 @@ class FaithfulFailoverStore:
         previous_attempt_id: int,
         expected_next_vendor: str,
         expected_route_policy_version: int,
+        segments: int = 1,
+        enforce_live_test_budget: bool = False,
     ) -> InvokeClaim:
         if self.claim_gate is not None:
             await self.claim_gate.wait()

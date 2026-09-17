@@ -86,6 +86,28 @@ export function vendorReviewSub(
   }
 }
 
+/** 固定键集合派生下拉选项，调用方决定是否附加「全部」。 */
+export function statusOptionsOf<K extends string>(keys: readonly K[]): { value: K; label: string }[] {
+  return keys.map((value) => ({ value, label: STATUS_LABELS[value] ?? value }))
+}
+export const CATEGORY_OPTIONS = (["verify", "notice", "market"] as const).map((value) => ({
+  value,
+  label: CATEGORY_LABELS[value],
+}))
+export const MESSAGE_STATUS_OPTIONS = statusOptionsOf([
+  "pending",
+  "sent",
+  "delivered",
+  "failed",
+  "unknown",
+  "other",
+] as const)
+export const BLACKLIST_SOURCE_LABELS: Record<string, string> = {
+  manual: "人工加入",
+  reply_optout: "回复退订",
+  import: "导入",
+}
+
 /** 把标签映射转成选择器选项列表；keys 限定取值子集与顺序，缺省按映射自身键序。 */
 export function toOptions(labels: Record<string, string>, keys?: string[]): Array<{ value: string; label: string }> {
   return (keys ?? Object.keys(labels)).map((value) => ({ value, label: labels[value] ?? value }))

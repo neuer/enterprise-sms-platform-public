@@ -10,6 +10,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.errors import ApiError
@@ -44,7 +45,7 @@ def _item(entry: SensitiveWord) -> SensitiveWordItem:
     return SensitiveWordItem(id=entry.id, word=entry.word, created_at=entry.created_at)
 
 
-def get_sensitive_word_manager() -> SensitiveWordManager:
+def get_sensitive_word_manager(_actor: AdminActor) -> SensitiveWordManager:
     return SensitiveWordManager(SqlSensitiveWordRepository(), sensitive_word_index)
 
 

@@ -185,9 +185,14 @@ def read_mailer_configuration(path: str | Path) -> MailerConfiguration:
     api_key = value.get("api_key")
     recipients = value.get("recipients")
     config_version = value.get("config_version")
-    if not isinstance(api_key, str) or not isinstance(recipients, list) or not all(
-        isinstance(item, str) for item in recipients
-    ) or not isinstance(config_version, int) or isinstance(config_version, bool) or config_version < 1:
+    if (
+        not isinstance(api_key, str)
+        or not isinstance(recipients, list)
+        or not all(isinstance(item, str) for item in recipients)
+        or not isinstance(config_version, int)
+        or isinstance(config_version, bool)
+        or config_version < 1
+    ):
         raise ResendConfigurationError("mailer configuration has invalid values")
     return MailerConfiguration(
         api_key=_validate_api_key(api_key),

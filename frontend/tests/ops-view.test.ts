@@ -149,8 +149,8 @@ function result(url: string, method: string): unknown {
           error: "ValueError",
           fetched_at: "2026-07-12T08:00:00+08:00",
           capture_state: "complete",
-          parse_state: "transient_failure",
-          replay_eligibility: "manual",
+          parse_state: "unattempted",
+          replay_eligibility: "automatic",
         },
       ],
       total: 45,
@@ -549,77 +549,6 @@ describe("统一运维中心", () => {
     vi.unstubAllGlobals()
   })
 
-  it("重放入口以 replay_eligibility 为准，协议异常捕获态不展示重放与重评估", async () => {
-    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
-      const url = String(input)
-      if (url.includes("/raw-logs") && (init?.method || "GET") === "GET") {
-        return response({
-          items: [
-            {
-              id: 5,
-              source: "report",
-              item_count: 1,
-              custom_id_count: 1,
-              processed: false,
-              error: "VendorApiError",
-              fetched_at: "2026-07-12T08:00:00+08:00",
-              capture_state: "protocol_invalid",
-              parse_state: "protocol_invalid",
-              replay_eligibility: "never",
-            },
-            {
-              id: 6,
-              source: "reply",
-              item_count: 2,
-              custom_id_count: 0,
-              processed: false,
-              error: null,
-              fetched_at: "2026-07-12T08:00:00+08:00",
-              capture_state: "complete_too_large",
-              parse_state: "unattempted",
-              replay_eligibility: "manual",
-            },
-          ],
-          total: 2,
-          page: 1,
-          page_size: 20,
-        })
-      }
-      return response(result(url, init?.method || "GET"))
-    })
-    vi.stubGlobal("fetch", fetch)
-    const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
-    const wrapper = await mountOps({ tab: "raw" })
-    await flushPromises()
-
-    // 协议异常报文：不得出现重放入口，也不得出现重评估（后端拒绝该捕获态）
-    expect(wrapper.text()).toContain("协议异常")
-    expect(wrapper.text()).toContain("超限完整")
-    const rows = wrapper.findAll("#ops-panel-raw .ops-table .el-table__row")
-    expect(rows).toHaveLength(2)
-    expect(rows[0].text()).toContain("协议异常")
-    expect(rows[0].findAll("button").filter((item) => item.text() === "重放")).toHaveLength(0)
-    expect(rows[0].findAll("button").filter((item) => item.text() === "重评估")).toHaveLength(0)
-    // manual 资格且捕获完整：重放与重评估均可用
-    expect(rows[1].findAll("button").filter((item) => item.text() === "重放")).toHaveLength(1)
-
-    const success = vi.spyOn(ElMessage, "success")
-    await rows[1]
-      .findAll("button")
-      .find((item) => item.text() === "重评估")!
-      .trigger("click")
-    await flushPromises()
-    expect(vnodeText(confirm.mock.calls[0][0])).toContain("不投影业务")
-    expect(
-      fetch.mock.calls.some(([url, init]) => String(url).endsWith("/raw-logs/6/reevaluate") && init?.method === "POST"),
-    ).toBe(true)
-    expect(success.mock.calls.some(([message]) => String(message).includes("本次操作已记入审计"))).toBe(true)
-
-    wrapper.unmount()
-    vi.unstubAllGlobals()
-    vi.restoreAllMocks()
-  })
-
   it("保守终态分片可提出并确认双人处置，且不把旧分片改回待发送", async () => {
     const fetch = vi.fn(async (input: string, init?: RequestInit) => {
       const url = String(input)
@@ -666,4 +595,109 @@ describe("统一运维中心", () => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
   })
+
+  it("重放入口以 replay_eligibility 为准，协议异常捕获态不展示重放与重评估", async () => {
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes("/raw-logs") && (init?.method || "GET") === "GET") {
+        return response({
+          items: [
+            {
+              id: 5,
+              source: "report",
+              item_count: 1,
+              custom_id_count: 1,
+              processed: false,
+              error: "VendorApiError",
+              fetched_at: "2026-07-12T08:00:00+08:00",
+              capture_state: "protocol_invalid",
+              parse_state: "protocol_invalid",
+              replay_eligibility: "never",
+            },
+            {
+              id: 6,
+              source: "reply",
+              item_count: 2,
+              custom_id_count: 0,
+              processed: false,
+              error: null,
+              fetched_at: "2026-07-12T08:00:00+08:00",
+              capture_state: "complete_too_large",
+              parse_state: "unattempted",
+              replay_eligibility: "manual",
+            },
+          ],
+          total: 2,
+          page: 1,
+          page_size: 20,
+        })
+      }
+      return response(result(url, init?.method || "GET"))
+    })
+    vi.stubGlobal("fetch", fetch)
+    const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const wrapper = await mountOps({ tab: "raw" })
+    await flushPromises()
+    // 协议异常报文：不得出现重放入口，也不得出现重评估（后端拒绝该捕获态）
+    expect(wrapper.text()).toContain("协议异常")
+    expect(wrapper.text()).toContain("超限完整")
+    const rows = wrapper.findAll("#ops-panel-raw .ops-table .el-table__row")
+    expect(rows).toHaveLength(2)
+    expect(rows[0].text()).toContain("协议异常")
+    expect(rows[0].findAll("button").filter((item) => item.text() === "重放")).toHaveLength(0)
+    expect(rows[0].findAll("button").filter((item) => item.text() === "重评估")).toHaveLength(0)
+    // manual 资格且捕获完整：重放与重评估均可用
+    expect(rows[1].findAll("button").filter((item) => item.text() === "重放")).toHaveLength(1)
+
+    const success = vi.spyOn(ElMessage, "success")
+    await rows[1]
+      .findAll("button")
+      .find((item) => item.text() === "重评估")!
+      .trigger("click")
+    await flushPromises()
+    expect(vnodeText(confirm.mock.calls[0][0])).toContain("不投影业务")
+    expect(
+      fetch.mock.calls.some(([url, init]) => String(url).endsWith("/raw-logs/6/reevaluate") && init?.method === "POST"),
+    ).toBe(true)
+    expect(success.mock.calls.some(([message]) => String(message).includes("本次操作已记入审计"))).toBe(true)
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+})
+
+it("拆分后的页签切换取消旧读取，迟到失败不污染当前页签，切回保留筛选", async () => {
+  const reads: { signal: AbortSignal; resolve: (value: ReturnType<typeof response>) => void }[] = []
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string, init: RequestInit = {}) => {
+      if (url.includes("/raw-logs"))
+        return new Promise<ReturnType<typeof response>>((resolve) =>
+          reads.push({ signal: init.signal as AbortSignal, resolve }),
+        )
+      return Promise.resolve(response(result(url, init.method ?? "GET")))
+    }),
+  )
+  const wrapper = await mountOps({ tab: "raw" })
+  await flushPromises()
+  expect(reads).toHaveLength(1)
+  await wrapper.get("#ops-tab-jobs").trigger("click")
+  await flushPromises()
+  expect(reads[0].signal.aborted).toBe(true)
+  reads[0].resolve(response({ code: "STALE_FAILURE", message: "旧页签错误" }, 500))
+  await flushPromises()
+  expect(wrapper.text()).not.toContain("旧页签错误")
+  expect((wrapper.get("#ops-panel-jobs").element.parentElement as HTMLElement).style.display).not.toBe("none")
+  expect((wrapper.get("#ops-panel-raw").element.parentElement as HTMLElement).style.display).toBe("none")
+  await wrapper.get("#ops-tab-raw").trigger("click")
+  await flushPromises()
+  expect(reads).toHaveLength(2)
+  expect((wrapper.get("#ops-panel-raw").element.parentElement as HTMLElement).style.display).not.toBe("none")
+  expect((wrapper.get("#ops-panel-jobs").element.parentElement as HTMLElement).style.display).toBe("none")
+  wrapper.unmount()
+  expect(reads[1].signal.aborted).toBe(true)
+  reads[1].resolve(response({ items: [], total: 0, page: 1, page_size: 20 }))
+  await flushPromises()
+  vi.unstubAllGlobals()
 })

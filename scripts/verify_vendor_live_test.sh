@@ -14,7 +14,7 @@ python3 scripts/check_invariants.py
   cd backend
   ENVIRONMENT=test DEBUG=1 AUTH_MOCK=1 VENDOR_MOCK=1 \
   VENDOR_BASE_URL=http://mock-vendor:9028 \
-    uv run pytest -q \
+    uv run --locked python -m pytest -q \
       tests/test_settings.py \
       tests/test_auth_runtime.py \
       tests/test_audit_coverage.py \

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,27 +19,13 @@ from check_pre_vcs_gates import (  # noqa: E402
     CHECK_RUFF,
     CHECK_SPEC,
     CHECK_VENDOR_PG,
-    FRONTEND_CI_OVERLAP,
-    FRONTEND_HOOK_SCRIPTS,
-    RECEIPT_KIND,
-    RECEIPT_REF_PREFIX,
-    RECEIPT_SCHEMA,
     GateError,
-    ReceiptSkip,
     decide_cursor_command,
-    evaluate_receipt,
-    format_ruff_exclude_args,
     hooks_path_enabled,
     isolated_check_env,
-    load_receipt_from_ref,
-    main,
     parse_git_invocation,
     plan_for_paths,
-    publish_push_receipt,
-    receipt_push_only,
-    receipt_skips,
     require_git_hooks,
-    write_receipt_outputs,
 )
 
 
@@ -300,8 +285,8 @@ def test_git_hooks_call_the_same_classifier() -> None:
     assert "--git-hook commit" in pre_commit.read_text(encoding="utf-8")
     assert "check_pre_vcs_gates.py" in pre_push.read_text(encoding="utf-8")
     assert "--git-hook push" in pre_push.read_text(encoding="utf-8")
-    assert "--publish-remote" in pre_push.read_text(encoding="utf-8")
-    assert "--receipt-push-only" in pre_push.read_text(encoding="utf-8")
+    assert "--publish-remote" not in pre_push.read_text(encoding="utf-8")
+    assert "--push-commit" in pre_push.read_text(encoding="utf-8")
     assert "check_public_readiness.py" in pre_push.read_text(encoding="utf-8")
     assert "install_git_hooks.sh" in pre_commit.read_text(encoding="utf-8")
 
@@ -401,219 +386,3 @@ def test_execute_plan_fails_closed_when_vendor_recovery_lacks_docker(
     result = plan(["backend/app/services/send_inflight.py"])
     with pytest.raises(GateError, match="docker is required"):
         execute_plan(ROOT, result)
-
-
-COMMIT = "a" * 40
-TREE = "b" * 40
-OTHER = "c" * 40
-
-
-def _receipt(**overrides: object) -> dict[str, object]:
-    payload: dict[str, object] = {
-        "kind": RECEIPT_KIND,
-        "schema": RECEIPT_SCHEMA,
-        "commit": COMMIT,
-        "tree": TREE,
-        "mode": "push",
-        "checks": [CHECK_RUFF, CHECK_FRONTEND, CHECK_PYTEST_CHANGED],
-        "ruff_files": ["backend/app/core/auth/jwt.py"],
-        "pytest_files": ["tests/test_auth.py"],
-        "frontend_scripts": list(FRONTEND_HOOK_SCRIPTS),
-    }
-    payload.update(overrides)
-    return payload
-
-
-def test_missing_receipt_does_not_skip_cheap_ci() -> None:
-    skip = receipt_skips(None, commit=COMMIT, tree=TREE)
-
-    assert skip == ReceiptSkip()
-    assert skip.skip_frontend_static is False
-    assert skip.skip_ruff_files == ()
-    assert skip.skip_pytest_changed is False
-
-
-def test_valid_receipt_skips_only_overlapping_cheap_checks() -> None:
-    skip = receipt_skips(_receipt(), commit=COMMIT, tree=TREE)
-
-    assert skip.skip_frontend_static is True
-    assert skip.skip_ruff_files == ("backend/app/core/auth/jwt.py",)
-    assert skip.skip_pytest_changed is True
-    assert set(FRONTEND_CI_OVERLAP) <= set(FRONTEND_HOOK_SCRIPTS)
-
-
-def test_wrong_tree_or_commit_receipt_is_ignored() -> None:
-    skip = receipt_skips(_receipt(), commit=COMMIT, tree=OTHER)
-    assert skip == ReceiptSkip()
-    skip = receipt_skips(_receipt(), commit=OTHER, tree=TREE)
-    assert skip == ReceiptSkip()
-
-
-def test_frontend_receipt_without_vitest_does_not_skip_static() -> None:
-    skip = receipt_skips(
-        _receipt(frontend_scripts=["lint", "format:check", "typecheck"]),
-        commit=COMMIT,
-        tree=TREE,
-    )
-
-    assert skip.skip_frontend_static is False
-    assert skip.skip_ruff_files == ("backend/app/core/auth/jwt.py",)
-
-
-def test_malformed_or_unsafe_receipt_is_ignored() -> None:
-    assert receipt_skips(_receipt(schema=2), commit=COMMIT, tree=TREE) == ReceiptSkip()
-    assert receipt_skips(_receipt(mode="commit"), commit=COMMIT, tree=TREE) == ReceiptSkip()
-    assert (
-        receipt_skips(_receipt(ruff_files=["../secret.py"]), commit=COMMIT, tree=TREE)
-        == ReceiptSkip()
-    )
-    assert (
-        receipt_skips(_receipt(ruff_files=["/tmp/x.py"]), commit=COMMIT, tree=TREE)
-        == ReceiptSkip()
-    )
-    assert receipt_skips(_receipt(checks="ruff"), commit=COMMIT, tree=TREE) == ReceiptSkip()
-
-
-def test_receipt_push_only_accepts_bound_refs() -> None:
-    ref = f"{RECEIPT_REF_PREFIX}{COMMIT}"
-    assert receipt_push_only([ref]) is True
-    assert receipt_push_only([ref, f"{RECEIPT_REF_PREFIX}{OTHER}"]) is True
-    assert receipt_push_only([]) is False
-    assert receipt_push_only(["refs/heads/main"]) is False
-    assert receipt_push_only([ref, "refs/heads/main"]) is False
-    assert receipt_push_only([f"{RECEIPT_REF_PREFIX}not-a-sha"]) is False
-    assert main(["--receipt-push-only", ref]) == 0
-    assert main(["--receipt-push-only", "refs/heads/main"]) == 1
-
-
-def test_ruff_exclude_args_are_backend_relative(capsys: pytest.CaptureFixture[str]) -> None:
-    assert format_ruff_exclude_args(
-        ["backend/app/core/auth/jwt.py", "scripts/check_pre_vcs_gates.py"]
-    ) == [
-        "--exclude",
-        "app/core/auth/jwt.py",
-        "--exclude",
-        "../scripts/check_pre_vcs_gates.py",
-    ]
-    assert format_ruff_exclude_args(["../escape.py", "/abs.py"]) == []
-    assert main(
-        [
-            "--ruff-exclude-args",
-            "--skip-ruff-files",
-            "backend/app/foo.py,scripts/bar.py",
-        ]
-    ) == 0
-    assert capsys.readouterr().out.splitlines() == [
-        "--exclude",
-        "app/foo.py",
-        "--exclude",
-        "../scripts/bar.py",
-    ]
-
-
-def test_evaluate_receipt_ignores_forced_ci_events(tmp_path: Path) -> None:
-    skip = evaluate_receipt(
-        root=tmp_path,
-        event_name="schedule",
-        commit=COMMIT,
-        receipt_ref=f"{RECEIPT_REF_PREFIX}{COMMIT}",
-    )
-    assert skip == ReceiptSkip()
-    skip = evaluate_receipt(
-        root=tmp_path,
-        event_name="workflow_dispatch",
-        commit=COMMIT,
-        receipt_ref=f"{RECEIPT_REF_PREFIX}{COMMIT}",
-    )
-    assert skip == ReceiptSkip()
-
-
-def test_evaluate_receipt_reads_matching_git_ref(tmp_path: Path) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    env = isolated_check_env()
-
-    def git(*args: str, input_text: str | None = None) -> str:
-        completed = subprocess.run(
-            ["git", *args],
-            cwd=repo,
-            check=True,
-            capture_output=True,
-            text=True,
-            env=env,
-            input=input_text,
-        )
-        return completed.stdout.strip()
-
-    git("init", "-b", "main")
-    git("config", "user.name", "Gate Test")
-    git("config", "user.email", "gate-test@example.invalid")
-    (repo / "README.md").write_text("ok\n", encoding="utf-8")
-    git("add", "README.md")
-    git("-c", f"core.hooksPath={os.devnull}", "commit", "-m", "init")
-    commit = git("rev-parse", "HEAD")
-    tree = git("rev-parse", "HEAD^{tree}")
-    receipt = _receipt(
-        commit=commit,
-        tree=tree,
-        checks=[CHECK_FRONTEND],
-        ruff_files=[],
-        pytest_files=[],
-    )
-    blob = git(
-        "hash-object",
-        "-w",
-        "--stdin",
-        input_text=json.dumps(receipt, sort_keys=True, separators=(",", ":")),
-    )
-    ref = f"{RECEIPT_REF_PREFIX}{commit}"
-    git("update-ref", ref, blob)
-
-    skip = evaluate_receipt(
-        root=repo,
-        event_name="push",
-        commit=commit,
-        receipt_ref=ref,
-    )
-    assert skip.skip_frontend_static is True
-    assert skip.skip_ruff_files == ()
-    assert load_receipt_from_ref(repo, "refs/heads/main") is None
-
-
-def test_missing_receipt_outputs_do_not_skip(tmp_path: Path) -> None:
-    output = tmp_path / "github-output"
-    write_receipt_outputs(output, ReceiptSkip())
-    assert output.read_text(encoding="utf-8").splitlines() == [
-        "skip_frontend_static=false",
-        "skip_ruff_files=",
-    ]
-
-
-def test_publish_receipt_failure_does_not_fail_the_hook(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setattr(
-        "check_pre_vcs_gates.build_push_receipt",
-        lambda root, plan, commit=None: (_ for _ in ()).throw(
-            GateError("cannot write receipt blob")
-        ),
-    )
-    publish_push_receipt(ROOT, "origin", plan(["backend/app/core/auth/jwt.py"]))
-    assert "CI will re-run cheap checks" in capsys.readouterr().err
-
-
-def test_receipt_does_not_claim_ci_only_surfaces() -> None:
-    skip = receipt_skips(_receipt(), commit=COMMIT, tree=TREE)
-    dumped = skip.__dict__
-    for forbidden in (
-        "g2",
-        "coverage",
-        "mypy",
-        "security",
-        "vendor_postgres",
-        "build",
-        "gen:api-types",
-        "audit",
-    ):
-        assert forbidden not in dumped

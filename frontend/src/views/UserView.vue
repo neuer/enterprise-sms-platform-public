@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import AdminStepUpDialog from "../components/AdminStepUpDialog.vue"
+import { useAdminStepUp } from "../composables/useAdminStepUp"
+const adminStepUp = useAdminStepUp()
 import { ElMessage } from "element-plus"
 import { computed, onMounted, reactive, ref } from "vue"
 
@@ -14,16 +17,16 @@ import {
   type UserSyncStatus,
 } from "../api/users"
 import EmptyState from "../components/EmptyState.vue"
-import { confirmAuditedAction } from "../lib/confirm"
+import FilterSeg from "../components/FilterSeg.vue"
+import ListPagination from "../components/ListPagination.vue"
+import { usePagedList } from "../composables/usePagedList"
+import { useConfirmActions } from "../lib/confirm"
+const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { DEFAULT_PAGE_SIZE, ROLE_LABELS, toOptions } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 
-const users = ref<ManagedUser[]>([])
-const total = ref(0)
-const loading = ref(false)
 const saving = ref(false)
-const errorMessage = ref("")
 const selected = ref<ManagedUser | null>(null)
 const createDrawerOpen = ref(false)
 const roleDrawerOpen = ref(false)
@@ -36,7 +39,6 @@ const filters = reactive({
   providerCode: "",
   role: "" as UserRole | "",
   status: "" as 0 | 1 | "",
-  page: 1,
   pageSize: DEFAULT_PAGE_SIZE,
 })
 const createForm = reactive({
@@ -51,7 +53,7 @@ const passwordPolicy = ref<PasswordPolicy>({
   max_length: 128,
   required_character_classes: 3,
   forbid_username: true,
-  description: "12–128 位，至少包含大小写字母、数字、特殊字符中的三类，不能包含用户名",
+  description: "12–128 位，至少包含大小写字母、数字、特殊字符中的三类，不能包含用户名；服务端检查常见或泄露密码",
 })
 
 const roleTag: Record<UserRole, "danger" | "warning" | "primary" | "info"> = {
@@ -134,24 +136,25 @@ function disabledRowClass({ row }: { row: ManagedUser }): string {
   return row.status === 0 ? "user-row-off" : ""
 }
 
-let loadToken = 0
-
-async function load(): Promise<void> {
-  const token = ++loadToken
-  loading.value = true
-  errorMessage.value = ""
-  try {
-    const page = await listUsers(filters)
-    if (token !== loadToken) return
-    users.value = page.items
-    total.value = page.total
-  } catch (error) {
-    if (token !== loadToken) return
-    errorMessage.value = errorText(error, "用户台账加载失败")
-  } finally {
-    if (token === loadToken) loading.value = false
-  }
-}
+const {
+  items: users,
+  total,
+  page,
+  loading,
+  errorMessage,
+  load,
+  search,
+  reset: resetFilters,
+} = usePagedList({
+  fetcher: (page) => listUsers({ ...filters, page }),
+  errorMessage: "用户台账加载失败",
+  resetFilters: () => {
+    filters.keyword = ""
+    filters.providerCode = ""
+    filters.role = ""
+    filters.status = ""
+  },
+})
 
 async function loadPolicy(): Promise<void> {
   try {
@@ -161,35 +164,18 @@ async function loadPolicy(): Promise<void> {
   }
 }
 
-function search(): void {
-  filters.page = 1
-  void load()
-}
-
-function resetFilters(): void {
-  filters.keyword = ""
-  filters.providerCode = ""
-  filters.role = ""
-  filters.status = ""
-  filters.page = 1
-  void load()
-}
-
 /** 认证源 / 角色 / 状态 seg 点选即重查，与黑名单、上行回复页同一语言。 */
 function setProvider(value: string): void {
-  if (value === filters.providerCode) return
   filters.providerCode = value
   search()
 }
 
 function setRole(value: UserRole | ""): void {
-  if (value === filters.role) return
   filters.role = value
   search()
 }
 
 function setStatus(value: 0 | 1 | ""): void {
-  if (value === filters.status) return
   filters.status = value
   search()
 }
@@ -326,15 +312,39 @@ async function saveLocalUser(): Promise<void> {
   }
   saving.value = true
   try {
-    await createLocalUser({
+    const payload = {
       username,
       display_name: displayName,
       dept: createForm.dept.trim(),
       role: createForm.role,
       temporary_password: createForm.temporary_password,
-    })
+    }
+    let expiresAt: string | null = null
+    try {
+      if (payload.role === "admin") {
+        const parameters = {
+          username: payload.username,
+          display_name: payload.display_name,
+          dept: payload.dept,
+          role: payload.role,
+        }
+        const saved = await adminStepUp.run(
+          { operation: "user_create_admin", target_id: "new", parameters },
+          `创建管理员 ${username}`,
+          (token) => createLocalUser(payload, token),
+        )
+        if (!saved) return
+        expiresAt = saved.temporary_password_expires_at
+      } else {
+        expiresAt = (await createLocalUser(payload)).temporary_password_expires_at
+      }
+    } finally {
+      payload.temporary_password = ""
+    }
     closeCreate()
-    ElMessage.success("本地账号已创建，首次登录须修改临时密码 · 本次操作已记入审计")
+    ElMessage.success(
+      `本地账号已创建，临时密码有效至 ${formatDateTime(expiresAt)}；首次登录须修改，过期需管理员重置 · 本次操作已记入审计`,
+    )
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "本地账号创建失败"))
@@ -355,7 +365,18 @@ async function saveRole(): Promise<void> {
   saving.value = true
   try {
     const roleOverride = selected.value.provider_code === "local" ? true : overrideDraft.value
-    await updateUserRole(selected.value.account_id, roleDraft.value, roleOverride)
+    const accountId = selected.value.account_id
+    const role = roleDraft.value
+    const saved = await adminStepUp.run(
+      {
+        operation: "user_role_change",
+        target_id: String(accountId),
+        parameters: { role, role_override: roleOverride },
+      },
+      "修改账号角色策略",
+      (token) => updateUserRole(accountId, role, roleOverride, token),
+    )
+    if (!saved) return
     roleDrawerOpen.value = false
     ElMessage.success("角色策略已更新，既有会话已失效 · 本次操作已记入审计")
     await load()
@@ -379,6 +400,8 @@ function closePasswordReset(): void {
 
 async function confirmPasswordReset(): Promise<void> {
   if (!selected.value) return
+  const target = selected.value
+  const draft = resetPasswordDraft.value
   const passwordIssue = passwordProblem(resetPasswordDraft.value, selected.value.username)
   if (passwordIssue) {
     ElMessage.warning(passwordIssue)
@@ -386,6 +409,7 @@ async function confirmPasswordReset(): Promise<void> {
   }
   if (
     !(await confirmAuditedAction({
+      isCurrent: () => selected.value === target && resetPasswordDraft.value === draft && resetDrawerOpen.value,
       title: "确认重置密码",
       body: `将重置 ${selected.value.display_name || selected.value.username} 的本地密码，并立即吊销现有会话；用户下次登录必须修改密码。`,
       auditNote: "重置行为、操作人与对象 account_id 将写入审计日志；临时密码不回显。",
@@ -395,9 +419,24 @@ async function confirmPasswordReset(): Promise<void> {
     return
   try {
     saving.value = true
-    await resetLocalPassword(selected.value.account_id, resetPasswordDraft.value)
+    const accountId = target.account_id
+    let password = draft
+    let expiresAt: string | null = null
+    try {
+      const saved = await adminStepUp.run(
+        { operation: "user_password_reset", target_id: String(accountId), parameters: { action: "reset" } },
+        "重置账号临时密码",
+        (token) => resetLocalPassword(accountId, password, token),
+      )
+      if (!saved) return
+      expiresAt = saved.temporary_password_expires_at
+    } finally {
+      password = ""
+    }
     closePasswordReset()
-    ElMessage.success("临时密码已重置，下次登录须修改 · 本次操作已记入审计")
+    ElMessage.success(
+      `临时密码已重置，有效至 ${formatDateTime(expiresAt)}；首次登录须修改，过期需管理员重置 · 本次操作已记入审计`,
+    )
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "密码重置失败"))
@@ -407,6 +446,7 @@ async function confirmPasswordReset(): Promise<void> {
 }
 
 async function changeStatus(user: ManagedUser): Promise<void> {
+  user = { ...user }
   const nextStatus: 0 | 1 = user.status === 1 ? 0 : 1
   const action = nextStatus === 1 ? "启用" : "停用"
   if (
@@ -423,7 +463,12 @@ async function changeStatus(user: ManagedUser): Promise<void> {
   )
     return
   try {
-    await updateUserStatus(user.account_id, nextStatus)
+    const saved = await adminStepUp.run(
+      { operation: "user_status_change", target_id: String(user.account_id), parameters: { status: nextStatus } },
+      `${action}账号`,
+      (token) => updateUserStatus(user.account_id, nextStatus, token),
+    )
+    if (!saved) return
     ElMessage.success(`账号已${action} · 本次操作已记入审计`)
     await load()
   } catch (error) {
@@ -432,6 +477,7 @@ async function changeStatus(user: ManagedUser): Promise<void> {
 }
 
 async function forceLogout(user: ManagedUser): Promise<void> {
+  user = { ...user }
   if (
     !(await confirmAuditedAction({
       title: "确认强制下线",
@@ -456,6 +502,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <AdminStepUpDialog :controller="adminStepUp" />
   <section class="page-heading user-heading">
     <div>
       <p class="eyebrow">IDENTITY LEDGER / 身份治理</p>
@@ -483,45 +530,36 @@ onMounted(() => {
     </label>
     <div class="user-fld">
       <span>认证源</span>
-      <div class="user-seg" role="group" aria-label="认证源筛选" data-testid="user-provider-seg">
-        <button
-          v-for="option in providerOptions"
-          :key="option.key"
-          type="button"
-          :class="{ on: filters.providerCode === option.value }"
-          :data-testid="`user-provider-${option.key}`"
-          @click="setProvider(option.value)"
-          >{{ option.label }}</button
-        >
-      </div>
+      <FilterSeg
+        :model-value="filters.providerCode"
+        :options="providerOptions"
+        data-testid="user-provider-seg"
+        button-testid-prefix="user-provider"
+        aria-label="认证源筛选"
+        @update:model-value="setProvider"
+      />
     </div>
     <div class="user-fld">
       <span>角色</span>
-      <div class="user-seg" role="group" aria-label="角色筛选" data-testid="user-role-seg">
-        <button
-          v-for="option in roleSegOptions"
-          :key="option.key"
-          type="button"
-          :class="{ on: filters.role === option.value }"
-          :data-testid="`user-role-${option.key}`"
-          @click="setRole(option.value)"
-          >{{ option.label }}</button
-        >
-      </div>
+      <FilterSeg
+        :model-value="filters.role"
+        :options="roleSegOptions"
+        data-testid="user-role-seg"
+        button-testid-prefix="user-role"
+        aria-label="角色筛选"
+        @update:model-value="setRole"
+      />
     </div>
     <div class="user-fld">
       <span>状态</span>
-      <div class="user-seg" role="group" aria-label="状态筛选" data-testid="user-status-seg">
-        <button
-          v-for="option in statusOptions"
-          :key="option.key"
-          type="button"
-          :class="{ on: filters.status === option.value }"
-          :data-testid="`user-status-${option.key}`"
-          @click="setStatus(option.value)"
-          >{{ option.label }}</button
-        >
-      </div>
+      <FilterSeg
+        :model-value="filters.status"
+        :options="statusOptions"
+        data-testid="user-status-seg"
+        button-testid-prefix="user-status"
+        aria-label="状态筛选"
+        @update:model-value="setStatus"
+      />
     </div>
     <div class="user-filter-go">
       <el-button data-testid="user-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
@@ -539,7 +577,11 @@ onMounted(() => {
       ><p>本地用户名：3–64 位 ASCII 字母、数字、点、下划线或短横线；不区分大小写，创建后不可修改。</p></div
     >
     <div
-      ><span>密码规则</span><p>{{ passwordPolicy.description }}；创建或重置后为临时密码，首次登录必须修改。</p></div
+      ><span>密码规则</span
+      ><p
+        >{{ passwordPolicy.description }}；创建或重置后为临时密码，默认有效期 24 小时（管理员可配置 1–168
+        小时），首次登录必须修改，过期需管理员重置。</p
+      ></div
     >
   </aside>
 
@@ -695,16 +737,7 @@ onMounted(() => {
       <el-button data-testid="empty-create-local-user" type="primary" @click="openCreate">创建本地账号</el-button>
     </div>
 
-    <footer class="user-pagination">
-      <span>共 {{ total }} 名用户 · 每页 20</span>
-      <el-pagination
-        v-model:current-page="filters.page"
-        :page-size="filters.pageSize"
-        :total="total"
-        layout="prev, pager, next"
-        @current-change="load"
-      />
-    </footer>
+    <ListPagination v-model:page="page" :total="total" unit="名用户" @change="load" />
   </section>
 
   <el-drawer

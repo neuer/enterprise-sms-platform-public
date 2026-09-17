@@ -47,3 +47,8 @@ def test_missing_region_or_partial_non_app_report_fails_closed() -> None:
         report = _report()
         del report["files"]["app/services/export_worker.py"]  # type: ignore[index]
         evaluate_coverage(report)
+
+
+def test_high_percent_partial_app_inventory_is_rejected() -> None:
+    with pytest.raises(CoverageGateError, match="file inventory"):
+        evaluate_coverage(_report(), expected_files={"app/missing.py"})

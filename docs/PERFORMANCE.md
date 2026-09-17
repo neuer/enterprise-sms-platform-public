@@ -10,10 +10,13 @@
    检查万级主体解析的 SQL 上界、admission 公平性，以及容量报告不得含手机号/正文。
 2. **候选版本门禁**：在真实 PostgreSQL/Redis/Celery/Nginx 环境采集指标后，用
    `scripts/perf_capacity.py` 绑定精确 Commit 与镜像摘要。10,000 recipients/request
-   必须设置 `OUTBOX_POSTGRES_DSN` 或 `PERF_ALLOW_10K=1`。超过 P99、`sql_count`、
-   `converge_s` 阈值即失败。
-3. **周期性故障矩阵**：`scripts/perf_fault_matrix.py` 固定半成功、冷投影和 backlog
-   恢复不得自动重发。场景包括 `vendor_success_response_lost`、
+   必须设置 `OUTBOX_POSTGRES_DSN` 或 `PERF_ALLOW_10K=1`（仅允许录入万号报告，不证明已采样）。
+   按 NFR-01 判定普通受理 P95<2000ms、万级批次 P95<3000ms；P99、`sql_count`、
+   `converge_s` 仍是另外的回归上限，不能代替 NFR。拒绝/失败请求必须为零。
+3. **代码级故障矩阵**：`scripts/perf_fault_matrix.py --execute` 执行固定的已有业务
+   pytest 节点，包括程序化依赖和隔离 PostgreSQL 回归，输出 `scope=code_regression`。
+   默认不执行时是 `not_run`；缺依赖、skip、缺结果或进程失败均不能 `passed`。
+   此结果不代表真实故障或 backlog 吞吐验收，后者仍在专项环境执行。场景包括 `vendor_success_response_lost`、
    `vendor_success_mark_submitted_failed`、`submitting_timeout_uncertain`、
    `redis_flush_projection_rebuild`、`worker_broker_backlog_drain`。
 
@@ -26,13 +29,53 @@ P50/P95/P99、`sql_count`、锁等待、`pool_occupancy`、`wal_bytes`、`redis_
 ```bash
 uv run --project backend python scripts/perf_capacity.py \
   --scenario recipients_10000 \
+  --expected-commit "$PERF_TARGET_COMMIT" \
   --metrics-json var/perf/recipients_10000.metrics.json \
   --output var/perf/recipients_10000.report.json
 ```
 
+`--expected-commit` 使用独立记录的被测版本；不自动取报告机 HEAD。metrics JSON 的
+`measurement` 对象必须完整包含以下字段，版本/场景/计数不一致、无时区窗口、非有限值、
+负数或错误单位均失败。报告 schema v2 的 `commit`/`image_digests` 属于被测运行态，
+`reporter_commit` 单列报告工具版本。输入是外部采样声明，工具做结构和一致性校验，
+不主动采样、不认证声明来源；正式归档仍需保留可复核的采集原件。
+
+| measurement 字段 | 合同 |
+|---|---|
+| source | 固定 `isolated-runtime-capture`，合成/未知来源不可作为实测 |
+| commit / collector_commit | 被测版本与采集器版本的完整40位SHA；被测版本等于expected-commit |
+| image_digests | 非空服务名到`sha256:`摘要映射，记录全部参与运行镜像；不得写主机或Registry凭据 |
+| config_sha256 | 有效配置快照的`sha256:`摘要，不写配置明文或凭据 |
+| scenario / latency_unit | 与所选场景相同；延迟单位固定`ms` |
+| started_at / finished_at | 含时区ISO8601，结束严格晚于开始 |
+| request_count | accepted_count + rejected_count + failed_count |
+| sample_count / accepted_count | 相等且为正；分位数只计受理成功样本，失败率另行判定 |
+| rejected_count / failed_count | 非负整数，正式通过必须都为0 |
+
+完整代码级矩阵通过 `SMS_PERF_FAULT_MATRIX=1 scripts/verify_vendor_postgres_recovery.sh`
+执行。既有入口准备一次性迁移库，功能集成回归后在同一隔离库运行
+`perf_fault_matrix.py --execute`，无需手工生成或暴露DSN。这是功能回归，不产生压力负载。
+单独执行矩阵而未配置隔离库时相关场景明确为`not_run`，不能通过修改清单常量或
+忽略pytest退出码制造通过。
+矩阵诊断仅保留固定测试节点、状态和异常类型白名单，不输出JUnit正文、依赖错误消息或原始日志。
+
 ## 专项三阶段压测
 
-`scripts/perf_smoke.py` 是测试环境的有界三阶段压测：阶段 1 以 30 RPS 持续 60 秒，verify:notice:market=2:3:5，API 受理要求 `P95<2000ms`；阶段 2 同时施加 verify 1 RPS 和 bulk 3 RPS 持续 60 秒，verify 从受理到 mock Send 要求 `P95<2s`；阶段 3 停止施压后要求 PostgreSQL active 批次与 realtime/bulk/callback 队列在 `480s` 内清零。
+`scripts/perf_smoke.py` 是测试环境的有界三阶段压测：阶段 1 以 30 RPS 持续 60 秒，verify:notice:market=2:3:5，API 受理要求 `P95<2000ms`；阶段 2 同时施加 verify 1 RPS 和 bulk 3 RPS 持续 60 秒，verify 从实际请求开始（含API受理）到观察到 mock Send 要求 `P95<2s`；阶段 3 停止施压后要求 PostgreSQL active 批次与 realtime/bulk/callback 队列在 `480s` 内清零。
+
+发生器仍按默认30 RPS/60秒提交计划，但最多64个在途请求，没有无界线程池排队。
+在途已满或实际开始比计划迟到超过0.25秒时停止增加负载，收尾已提交请求并判定本轮
+无效；不会把目标RPS当成实发RPS。结果包含 `load_measurements` 的计划/实际开始/完成
+窗口、开始/完成RPS、迟到峰值、在途峰值、失败/未开始数量，失败也输出已取得的聚合测量。
+RPS分母分别是声明的计划窗口、含迟到的实际开始窗口、含尾部完成时间的完成窗口。
+verify同时报告受理与受理后等待P95，但门槛仅按每个样本的完整时延计算；不得相加两个P95。
+Mock Send为平台侧观测终点，不是手机收到短信。
+
+runtime指标仅覆盖本次scrape对应的API进程，所有runtime/数据库池序列包含
+`process_instance`，不得拼成跨进程连续累计值。事件循环delay是最近完成采样，另有
+`event_loop_delay_peak_seconds`生命周期峰值；数据库事实缓存不缓存runtime采样。
+RSS保留高水位语义，不代表当前RSS。压测结果保留该进程身份与
+`runtime_memory_semantics=process_high_water_mark`，不宣称已采集全部API/Celery进程。
 
 阶段 1 的 future scheduled 批次仅用于测量受理延迟。脚本无论成功或中途失败，均必须使用对应应用 API Key 逐批调用正式取消接口，走状态机、配额回补与审计；不得直接更新数据库。结果字段 `cancelled_scheduled_batches` 必须等于阶段 1 已受理的 scheduled 数，任何取消失败均以 `PERF-04` fail-closed，错误只报告失败数量。
 
@@ -45,7 +88,7 @@ uv run --project backend python scripts/perf_smoke.py \
   --keys deploy/secrets/dev-apikeys.txt
 ```
 
-短参数只用于开发诊断，不构成交付证据。执行脚本前必须由测试负责人确认独占的干净测试环境、完成 seed-dev，且 sys_config 为 vendor_qps=5、reserved_realtime_qps=2；`verify_all.sh` 不再准备或执行性能压测。结果只归档请求数、P95、排空秒数、scheduled 取消数量、Git commit 与 Compose 镜像 digest，不归档请求 body、手机号、JWT 或 API Key。
+短参数只用于开发诊断，不构成交付证据。执行脚本前必须由测试负责人确认独占的干净测试环境、完成 seed-dev，且 sys_config 为 vendor_qps=5、reserved_realtime_qps=2；`verify_all.sh` 不再准备或执行性能压测。结果只归档无PII聚合测量、进程范围、请求数、P95、排空秒数、scheduled 取消数量、Git commit 与 Compose 镜像 digest，不归档请求 body、手机号、JWT 或 API Key。
 
 ## `[HANDOVER]` 全日 Locust 10 万条
 

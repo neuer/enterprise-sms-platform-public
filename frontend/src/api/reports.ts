@@ -1,3 +1,4 @@
+import { nextShanghaiMidnight } from "../lib/time"
 import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS } from "./auth"
 import { apiRequest, authorizedBlob, ApiRequestError, DOWNLOAD_TIMEOUT_MS } from "./client"
 import type { MessageCategory } from "../lib/labels"
@@ -31,6 +32,7 @@ export interface ReportSummary {
 }
 
 export interface ReportDimSummary {
+  is_other: boolean
   dim_value: string
   dim_label: string
   total: number
@@ -41,7 +43,24 @@ export interface ReportDimSummary {
   success_rate: number
 }
 
+export interface ReportTrend {
+  periods: string[]
+  series: Array<{
+    dim_value: string
+    dim_label: string
+    is_other: boolean
+    total: number[]
+    total_segments: number[]
+  }>
+}
+
 export interface ReportResult {
+  total: number
+  page: number
+  size: number
+  metric: ReportTrendMetric
+  dimension_total: number
+  trend: ReportTrend
   granularity: ReportGranularity
   group_by: ReportGroupBy
   category: ReportCategory
@@ -71,15 +90,34 @@ export interface ReportFilters {
   end: string
 }
 
-export function getReport(filters: ReportFilters): Promise<ReportResult> {
+export type ReportSort = "period_start" | "total" | "total_segments" | "success_rate"
+
+export interface ReportPageOptions {
+  page?: number
+  size?: number
+  sort?: ReportSort
+  order?: "asc" | "desc"
+  metric?: ReportTrendMetric
+}
+
+export function getReport(
+  filters: ReportFilters,
+  options: ReportPageOptions = {},
+  signal?: AbortSignal,
+): Promise<ReportResult> {
   const query = new URLSearchParams({
     granularity: filters.granularity,
     group_by: filters.groupBy,
     category: filters.category,
     start: filters.start,
     end: filters.end,
+    page: String(options.page ?? 1),
+    size: String(options.size ?? 20),
+    sort: options.sort ?? "period_start",
+    order: options.order ?? "desc",
+    metric: options.metric ?? "total",
   })
-  return apiRequest<ReportResult>(`/reports/stats?${query}`, { method: "GET" })
+  return apiRequest<ReportResult>(`/reports/stats?${query}`, { method: "GET", signal })
 }
 
 export function createDetailExport(filters: ReportFilters, decrypted: boolean): Promise<ExportTask> {
@@ -89,7 +127,7 @@ export function createDetailExport(filters: ReportFilters, decrypted: boolean): 
     body: JSON.stringify({
       filters: {
         start: `${filters.start}T00:00:00+08:00`,
-        end: `${filters.end}T23:59:59+08:00`,
+        end_exclusive: nextShanghaiMidnight(filters.end),
         category: filters.category === "all" ? null : filters.category,
       },
       decrypted,
@@ -97,26 +135,31 @@ export function createDetailExport(filters: ReportFilters, decrypted: boolean): 
   })
 }
 
-export function getExportTask(id: string): Promise<ExportTask> {
-  return apiRequest<ExportTask>(`/reports/export/${id}`, { method: "GET" })
+export function getExportTask(id: string, signal?: AbortSignal): Promise<ExportTask> {
+  return apiRequest<ExportTask>(`/reports/export/${id}`, { method: "GET", signal })
 }
 
-export function issueExportStepUp(id: string, password: string): Promise<{ token: string; expires_in: 300 }> {
+export function issueExportStepUp(
+  id: string,
+  password: string,
+  signal?: AbortSignal,
+): Promise<{ token: string; expires_in: 300 }> {
   return apiRequest<{ token: string; expires_in: 300 }>(
     `/reports/export/${id}/step-up`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ password }),
+      signal,
     },
     PASSWORD_AUTH_REQUEST_TIMEOUT_MS,
   )
 }
 
-export async function downloadExport(task: ExportTask, stepUpToken?: string): Promise<Blob> {
+export async function downloadExport(task: ExportTask, stepUpToken?: string, signal?: AbortSignal): Promise<Blob> {
   if (!task.download_url) throw new ApiRequestError(0, "EXPORT_NOT_READY", "导出文件尚未就绪")
   // authorizedBlob 内部统一注入 Bearer，并让 Deadline 覆盖正文读取。
   const headers: Record<string, string> = {}
   if (stepUpToken) headers["X-Export-Step-Up"] = stepUpToken
-  return authorizedBlob(task.download_url, { headers }, DOWNLOAD_TIMEOUT_MS)
+  return authorizedBlob(task.download_url, { headers, signal }, DOWNLOAD_TIMEOUT_MS)
 }

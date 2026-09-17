@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 import ssl
 import time
 from contextlib import suppress
@@ -19,6 +20,8 @@ from app.core.auth.backends import (
     ProviderCapacityUnavailable,
     ProviderUnavailable,
 )
+from app.core.auth.capacity_metrics import observe_ldap
+from app.core.auth.ldap_timing import LdapTimingProfile
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 
 LDAP_MAX_RESPONSE_BYTES = 256 * 1024
@@ -100,6 +103,7 @@ class LdapConfig:
     ca_certs_file: str
     connect_timeout_s: float
     receive_timeout_s: float
+    timing_profile: LdapTimingProfile | None = None
 
 
 def _attribute_value(entry: object, name: str) -> object:
@@ -145,7 +149,9 @@ class LdapPasswordProvider:
     ) -> AuthenticatedIdentity:
         if not login_name or not password:
             raise InvalidCredentials("用户名或密码错误")
+        self._require_timing_profile()
         deadline = _MonotonicDeadline.after(self._authentication_deadline_s)
+        started = time.monotonic()
         try:
             return await run_bounded(
                 self._authenticate_sync,
@@ -157,12 +163,17 @@ class LdapPasswordProvider:
             )
         except ExecutorBackpressure:
             raise ProviderCapacityUnavailable("LDAP 认证容量暂不可用") from None
+        except InvalidCredentials:
+            observe_ldap("credential_uniform", time.monotonic() - started)
+            raise
         except TimeoutError:
+            observe_ldap("deadline")
             raise ProviderUnavailable("LDAP 服务暂不可用") from None
 
     async def test_connection(self) -> None:
         """仅验证服务绑定；不接收也不记录任何用户密码。"""
 
+        self._require_timing_profile()
         deadline = _MonotonicDeadline.after(self._connection_test_deadline_s)
         try:
             await run_bounded(
@@ -180,11 +191,7 @@ class LdapPasswordProvider:
     def _authentication_deadline_s(self) -> float:
         """覆盖服务/用户两次连接和三次响应，避免外层先于 ldap3 超时。"""
 
-        return (
-            2 * self.config.connect_timeout_s
-            + 3 * self.config.receive_timeout_s
-            + 1
-        )
+        return 2 * self.config.connect_timeout_s + 3 * self.config.receive_timeout_s + 1
 
     @property
     def _connection_test_deadline_s(self) -> float:
@@ -240,7 +247,11 @@ class LdapPasswordProvider:
                 receive_timeout_s=self.config.receive_timeout_s,
             )
             deadline.remaining()
-            connection.bind(read_server_info=False)
+            if not connection.bind(read_server_info=False):
+                # ldap3 对部分 result 不抛异常；禁止把返回 False 当作成功认证。
+                if getattr(connection, "result", {}).get("result") == 49:
+                    raise LDAPInvalidCredentialsResult(result=49)
+                raise ProviderUnavailable("LDAP 服务暂不可用")
             deadline.remaining()
             return connection
         except Exception:
@@ -305,6 +316,7 @@ class LdapPasswordProvider:
         service: Connection | None = None
         user_connection: Connection | None = None
         try:
+            profile = self._require_timing_profile()
             server = self._server(deadline)
             service = self._service_connection(server, deadline)
             search_filter = self.config.user_search_filter.format(
@@ -329,7 +341,13 @@ class LdapPasswordProvider:
                 attributes=attributes,
                 size_limit=2,
             )
+            result_code = getattr(service, "result", {}).get("result")
+            # sizeLimitExceeded 仅在已取得至少两个结果时证明非唯一；其它
+            # 不完整结果不能拿来认证或伪装成错误密码。
+            if result_code != 0 and not (result_code == 4 and len(service.entries) >= 2):
+                raise ProviderUnavailable("LDAP 服务暂不可用")
             if len(service.entries) != 1:
+                self._reject_with_second_stage(server, deadline, profile)
                 raise InvalidCredentials("用户名或密码错误")
             deadline.remaining()
             entry = service.entries[0]
@@ -373,6 +391,44 @@ class LdapPasswordProvider:
         finally:
             self._safe_close(user_connection)
             self._safe_close(service)
+
+    def _require_timing_profile(self) -> LdapTimingProfile:
+        profile = self.config.timing_profile
+        if profile is None:
+            raise ProviderUnavailable("LDAP 安全第二阶段配置不可用")
+        profile.require_current(self.config.server, self.config.bind_dn)
+        return profile
+
+    def _reject_with_second_stage(
+        self,
+        server: Any,
+        deadline: _MonotonicDeadline,
+        profile: LdapTimingProfile,
+    ) -> None:
+        """复用同一 TLS/字节/总时限边界；只接受专用目标的明确无效凭据拒绝。"""
+
+        connection: Connection | None = None
+        try:
+            profile.require_current(self.config.server, self.config.bind_dn)
+            connection = self._open_bounded_connection(
+                server,
+                deadline,
+                user=profile.sink_dn,
+                password=secrets.token_urlsafe(48),
+            )
+        except LDAPInvalidCredentialsResult:
+            deadline.remaining()
+            return
+        except (LDAPException, OSError, TimeoutError) as error:
+            observe_ldap("sink_failure")
+            if isinstance(error, TimeoutError):
+                observe_ldap("deadline")
+            raise ProviderUnavailable("LDAP 安全第二阶段暂不可用") from None
+        finally:
+            self._safe_close(connection)
+        # 任意成功（包括匿名 Bind）说明目录合同失效，不能退回快速 401。
+        observe_ldap("sink_failure")
+        raise ProviderUnavailable("LDAP 安全第二阶段暂不可用")
 
 
 # 兼容尚未迁移的导入；运行装配只使用 LdapPasswordProvider。

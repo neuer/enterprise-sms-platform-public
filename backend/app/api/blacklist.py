@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.runtime import AuthFacade, get_auth_facade
@@ -66,7 +67,7 @@ def _item(entry: BlacklistEntry) -> BlacklistItem:
     )
 
 
-async def get_blacklist_service() -> AsyncIterator[BlacklistService]:
+async def get_blacklist_service(_actor: AdminActor) -> AsyncIterator[BlacklistService]:
     settings = get_settings()
     redis = Redis.from_url(settings.redis_control_url, decode_responses=True)
     try:

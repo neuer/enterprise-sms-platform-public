@@ -1,11 +1,16 @@
 <script setup lang="ts">
+import { triggerRule, formatSegments } from "../lib/approvalText"
+
 import { computed, ref } from "vue"
 
 import type { ApprovalAction, ApprovalListItem, ApprovalStatus } from "../api/approvals"
+
 import CategoryTag from "./CategoryTag.vue"
+
 import EmptyState from "./EmptyState.vue"
+
 import StatusTag from "./StatusTag.vue"
-import { CATEGORY_LABELS } from "../lib/labels"
+
 import { formatDateTime, formatDurationHms } from "../lib/time"
 
 const REASON_MAX_LENGTH = 256
@@ -18,7 +23,7 @@ const props = defineProps<{
   now: number
   loading: boolean
   decidingId: number | null
-  currentUsername: string
+  currentAccountId: number
 }>()
 
 const emit = defineEmits<{
@@ -29,23 +34,7 @@ const emit = defineEmits<{
 const emptyTitle = computed(() => (props.status === "pending" ? "当前没有待审批记录" : "当前分类没有审批记录"))
 
 function isMine(item: ApprovalListItem): boolean {
-  return item.applicant === props.currentUsername
-}
-
-function categoryLabel(category: ApprovalListItem["category"]): string {
-  return CATEGORY_LABELS[category]
-}
-
-function triggerRule(item: ApprovalListItem): string {
-  if (item.trigger_threshold_source === "legacy_unknown" || item.trigger_threshold === null) {
-    return "历史阈值不可确认"
-  }
-  const base = `${categoryLabel(item.category)} ≥ ${item.trigger_threshold} 个号码`
-  return item.trigger_threshold_source === "snapshot" ? `${base} · 提交时阈值快照` : base
-}
-
-function formatSegments(value: number | null): string {
-  return value === null ? "—" : `${value.toLocaleString()} 条`
+  return item.applicant_account_id === props.currentAccountId
 }
 
 function scheduleChip(item: ApprovalListItem): string {
@@ -191,6 +180,9 @@ function confirmQuick(item: ApprovalListItem): void {
           <span v-if="isMine(item)" class="approval-avoid-note" :data-testid="`approval-avoid-${item.id}`"
             >本人提交 · 按规则回避</span
           >
+          <span v-else-if="item.applicant_account_id == null" class="approval-avoid-note">
+            历史申请人身份不完整，无法执行审批
+          </span>
           <div v-else class="approval-row-actions" :data-testid="`approval-actions-${item.id}`">
             <button
               type="button"

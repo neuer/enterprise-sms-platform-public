@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.backends import ProviderUnavailable
 from app.core.auth.providers import LdapProviderKind
 from app.services.auth_provider import (
@@ -19,8 +20,11 @@ from app.services.auth_provider import (
     ProviderSummary,
     ProviderTestResult,
     UntestedProviderConfig,
+    role_mapping_revision,
     validate_ldap_allowed,
 )
+
+AUTHORIZATION = AdminAuthorization(1, 11, 1, "local", None)
 
 ADMIN = "admin"
 IP = "10.0.0.8"
@@ -49,9 +53,7 @@ def test_ldap_provider_kind_rejects_target_outside_deployment_allowlist() -> Non
     )
     assert kind.validate_config(valid_ad_config())["server"] == "ldaps://dc01.example.com:636"
     with pytest.raises(InvalidProviderConfig, match="部署允许列表"):
-        kind.validate_config(
-            {**valid_ad_config(), "server": "ldaps://evil.example.com:636"}
-        )
+        kind.validate_config({**valid_ad_config(), "server": "ldaps://evil.example.com:636"})
 
 
 def test_ldap_allowed_list_empty_fails_closed() -> None:
@@ -139,6 +141,7 @@ class FakeProviderRepository:
         code: str,
         config: dict[str, object],
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> ProviderRecord:
@@ -189,8 +192,10 @@ class FakeProviderRepository:
         self,
         code: str,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
+        expected_draft_version: int,
     ) -> ProviderRecord:
         current = self.records[code]
         if current.tested_version != current.draft_version:
@@ -209,8 +214,10 @@ class FakeProviderRepository:
         self,
         code: str,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
+        expected_draft_version: int,
     ) -> ProviderRecord:
         current = self.records[code]
         saved = replace(current, enabled=False)
@@ -227,6 +234,8 @@ class FakeProviderRepository:
         code: str,
         mappings: tuple[ExternalRoleMapping, ...],
         *,
+        expected_revision: str,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]:
@@ -280,9 +289,9 @@ async def test_local_provider_is_immutable() -> None:
     service = AuthProviderService(repository, FakeProviderRegistry())
 
     with pytest.raises(ImmutableProvider):
-        await service.save_draft("local", {}, actor=ADMIN, ip=IP)
+        await service.save_draft("local", {}, authorization=AUTHORIZATION, actor=ADMIN, ip=IP)
     with pytest.raises(ImmutableProvider):
-        await service.disable("local", actor=ADMIN, ip=IP)
+        await service.disable("local", authorization=AUTHORIZATION, actor=ADMIN, ip=IP)
 
     assert repository.calls == []
 
@@ -293,11 +302,14 @@ async def test_only_current_tested_draft_can_activate() -> None:
     registry = FakeProviderRegistry(succeeds=True)
     service = AuthProviderService(repository, registry)
 
-    first = await service.save_draft("ad", valid_ad_config(), actor=ADMIN, ip=IP)
+    first = await service.save_draft(
+        "ad", valid_ad_config(), authorization=AUTHORIZATION, actor=ADMIN, ip=IP
+    )
     tested = await service.test_draft("ad", actor=ADMIN, ip=IP)
     second = await service.save_draft(
         "ad",
         {**valid_ad_config(), "base_dn": "DC=new,DC=example,DC=com"},
+        authorization=AUTHORIZATION,
         actor=ADMIN,
         ip=IP,
     )
@@ -305,7 +317,7 @@ async def test_only_current_tested_draft_can_activate() -> None:
     assert tested.success and first.draft_version == 2
     assert second.draft_version == 3 and second.tested_version is None
     with pytest.raises(UntestedProviderConfig):
-        await service.activate("ad", actor=ADMIN, ip=IP)
+        await service.activate("ad", authorization=AUTHORIZATION, actor=ADMIN, ip=IP)
 
 
 @pytest.mark.asyncio
@@ -313,13 +325,15 @@ async def test_failed_test_never_authorizes_activation() -> None:
     repository = FakeProviderRepository((provider(),))
     service = AuthProviderService(repository, FakeProviderRegistry(succeeds=False))
 
-    await service.save_draft("ad", valid_ad_config(), actor=ADMIN, ip=IP)
+    await service.save_draft(
+        "ad", valid_ad_config(), authorization=AUTHORIZATION, actor=ADMIN, ip=IP
+    )
     result = await service.test_draft("ad", actor=ADMIN, ip=IP)
 
     assert result == ProviderTestResult(False, "LDAP_BIND_FAILED")
     assert repository.records["ad"].tested_version is None
     with pytest.raises(UntestedProviderConfig):
-        await service.activate("ad", actor=ADMIN, ip=IP)
+        await service.activate("ad", authorization=AUTHORIZATION, actor=ADMIN, ip=IP)
 
 
 @pytest.mark.asyncio
@@ -327,10 +341,12 @@ async def test_successful_current_test_activates_and_disable_preserves_config() 
     repository = FakeProviderRepository((provider(),))
     service = AuthProviderService(repository, FakeProviderRegistry())
 
-    draft = await service.save_draft("ad", valid_ad_config(), actor=ADMIN, ip=IP)
+    draft = await service.save_draft(
+        "ad", valid_ad_config(), authorization=AUTHORIZATION, actor=ADMIN, ip=IP
+    )
     await service.test_draft("ad", actor=ADMIN, ip=IP)
-    active = await service.activate("ad", actor=ADMIN, ip=IP)
-    disabled = await service.disable("ad", actor=ADMIN, ip=IP)
+    active = await service.activate("ad", authorization=AUTHORIZATION, actor=ADMIN, ip=IP)
+    disabled = await service.disable("ad", authorization=AUTHORIZATION, actor=ADMIN, ip=IP)
 
     assert active.enabled
     assert active.active_version == draft.draft_version
@@ -357,6 +373,8 @@ async def test_role_mapping_replace_is_provider_scoped_validated_and_local_is_im
     replaced = await service.replace_role_mappings(
         "ad",
         mappings,
+        expected_revision=role_mapping_revision(()),
+        authorization=AUTHORIZATION,
         actor=ADMIN,
         ip=IP,
     )
@@ -373,6 +391,8 @@ async def test_role_mapping_replace_is_provider_scoped_validated_and_local_is_im
                 ExternalRoleMapping("CN=Same", "admin", "平台部"),
                 ExternalRoleMapping(" CN=Same ", "viewer", "业务一部"),
             ),
+            expected_revision=role_mapping_revision(()),
+            authorization=AUTHORIZATION,
             actor=ADMIN,
             ip=IP,
         )
@@ -381,6 +401,8 @@ async def test_role_mapping_replace_is_provider_scoped_validated_and_local_is_im
         await service.replace_role_mappings(
             "ad",
             (ExternalRoleMapping("CN=Missing-Dept", "viewer"),),
+            expected_revision=role_mapping_revision(()),
+            authorization=AUTHORIZATION,
             actor=ADMIN,
             ip=IP,
         )
@@ -388,6 +410,8 @@ async def test_role_mapping_replace_is_provider_scoped_validated_and_local_is_im
         await service.replace_role_mappings(
             "local",
             (),
+            expected_revision=role_mapping_revision(()),
+            authorization=AUTHORIZATION,
             actor=ADMIN,
             ip=IP,
         )
@@ -423,6 +447,7 @@ async def test_ad_draft_requires_strict_non_sensitive_ldaps_config(
         await service.save_draft(
             "ad",
             {**valid_ad_config(), **updates},
+            authorization=AUTHORIZATION,
             actor=ADMIN,
             ip=IP,
         )

@@ -76,8 +76,7 @@ describe("模板管理", () => {
     // 已绑定厂商编号的 pending 显示「厂商审核中」；未绑定显示「提交厂商中」
     expect(wrapper.get(".template-table").text()).toContain("厂商审核中 · #21")
     expect(wrapper.find(".status-tag--pending").exists()).toBe(true)
-    expect(wrapper.find(".template-mobile-list").exists()).toBe(true)
-    expect(wrapper.get("[data-testid='template-mobile-detail-1']").attributes("aria-label")).toContain("验证码")
+    expect(wrapper.find(".template-mobile-list").exists()).toBe(false)
 
     const detailDrawer = wrapper.findAllComponents({ name: "ElDrawer" })[0]
     expect(detailDrawer.props("modelValue")).toBe(false)

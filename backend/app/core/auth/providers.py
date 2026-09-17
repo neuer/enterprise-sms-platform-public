@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Protocol
 
 from app.core.auth.backends import (
@@ -11,6 +12,7 @@ from app.core.auth.backends import (
     ProviderUnavailable,
 )
 from app.core.auth.ldap_real import LdapConfig, LdapPasswordProvider
+from app.core.auth.ldap_timing import load_ldap_timing_profile
 from app.core.auth.local import LocalAccountReader, LocalHashPool, LocalPasswordProvider
 from app.core.auth.mock import MockLdapProvider
 from app.core.auth.passwords import LocalPasswordHasher
@@ -100,12 +102,13 @@ class AuthProviderRegistry:
         if record.kind != "local" and record.active_config is None:
             raise ProviderDisabled("认证源未激活")
         handler = self._handler(record.kind)
-        return await handler.authenticate(
+        identity = await handler.authenticate(
             record,
             login_name,
             password,
             purpose=purpose,
         )
+        return replace(identity, provider_id=record.id, provider_version=record.active_version)
 
 
 class LocalProviderKind:
@@ -172,6 +175,7 @@ class LdapProviderKind:
                 ca_certs_file=str(self.settings.ldap_ca_certs_file),
                 connect_timeout_s=value.connect_timeout_s,
                 receive_timeout_s=value.receive_timeout_s,
+                timing_profile=load_ldap_timing_profile(self.settings.ldap_timing_profile_file),
             )
         )
 

@@ -232,6 +232,8 @@ class SqlOpsRepository:
             parse_queue_pause_claim(values[1]),
             int(row["balance"]) if row["balance"] is not None else None,
             int(row["threshold"]),
+            realtime_claim=values[0],
+            bulk_claim=values[1],
         )
 
     async def resume_batches(
@@ -288,8 +290,33 @@ class SqlOpsRepository:
         finally:
             await engine.dispose()
 
-    async def clear_queue_pauses(self) -> None:
-        await self.redis.delete("queue:paused:realtime", "queue:paused:bulk")
+    async def clear_queue_pauses(self, snapshot: QueueSnapshot) -> bool:
+        """只清除已核验的精确暂停代次；新停止信号必须保留。"""
+
+        script = """
+        for i=1,2 do
+          local value=redis.call('GET',KEYS[i])
+          if ARGV[i*2-1]=='0' then
+            if value then return 0 end
+          elseif not value or value~=ARGV[i*2] then
+            return 0
+          end
+        end
+        redis.call('DEL',KEYS[1],KEYS[2])
+        return 1
+        """
+        return bool(
+            await self.redis.eval(
+                script,
+                2,
+                "queue:paused:realtime",
+                "queue:paused:bulk",
+                "0" if snapshot.realtime_claim is None else "1",
+                snapshot.realtime_claim or "",
+                "0" if snapshot.bulk_claim is None else "1",
+                snapshot.bulk_claim or "",
+            )
+        )
 
     async def list_stale_unprocessed_raw_ids(
         self,
@@ -350,8 +377,15 @@ class SqlOpsRepository:
             await engine.dispose()
 
     async def claim_raw_for_replay(
-        self, raw_id: int, *, allow_manual: bool = True
+        self,
+        raw_id: int,
+        *,
+        allow_manual: bool = True,
+        principal: SecurityPrincipal | None = None,
+        ip: str | None = None,
     ) -> RawReplayClaim | None:
+        if allow_manual and (principal is None or ip is None):
+            raise RuntimeError("raw replay intent principal unavailable")
         allowed = claim_eligibilities(allow_manual=allow_manual)
         eligibility_sql = ", ".join(f"'{item}'" for item in allowed)
         capture_sql = (
@@ -413,8 +447,28 @@ class SqlOpsRepository:
                 claimed = bool(row["claimed"])
                 lease = None
                 if claimed:
-                    lease = lease_from_row(row) or RawProcessingLease(
-                        int(row["id"]), lease_id, 1
+                    lease = lease_from_row(row) or RawProcessingLease(int(row["id"]), lease_id, 1)
+                if claimed and allow_manual:
+                    assert principal is not None
+                    assert lease is not None
+                    await bind_connection_audit_subject(
+                        connection,
+                        subject_kind="human",
+                        actor_name=principal.login_name,
+                        account_id=principal.account_id,
+                        identity_id=principal.identity_id,
+                    )
+                    await insert_audit(
+                        connection,
+                        AuditEvent(
+                            principal=principal,
+                            role=principal.role,
+                            ip=ip,
+                            action="raw_replay_requested",
+                            object_type="raw_vendor_log",
+                            object_id=str(raw_id),
+                            after={"lease_epoch": lease.epoch},
+                        ),
                     )
                 return RawReplayClaim(
                     record=self._raw_replay_record(row),
@@ -560,9 +614,10 @@ class SqlOpsRepository:
                     identity_id=principal.identity_id,
                 )
                 current = (
-                    await connection.execute(
-                        text(
-                            """
+
+                        await connection.execute(
+                            text(
+                                """
                             SELECT processed,parse_state,replay_eligibility,
                               (
                                 processing_lease_id IS NOT NULL
@@ -572,9 +627,10 @@ class SqlOpsRepository:
                             WHERE id=:raw_id
                             FOR UPDATE
                             """
-                        ),
-                        {"raw_id": raw_id},
-                    )
+                            ),
+                            {"raw_id": raw_id},
+                        )
+
                 ).mappings().one_or_none()
                 if current is None:
                     raise RawReplayConflict("原始报文不存在")
@@ -793,6 +849,19 @@ class SqlOpsRepository:
                     account_id=principal.account_id,
                     identity_id=principal.identity_id,
                 )
+                intent_id = await connection.scalar(
+                    text("""
+                    SELECT a.id FROM audit_log a JOIN raw_vendor_log r
+                      ON a.object_id=CAST(r.id AS text)
+                    WHERE r.id=:raw_id AND a.object_type='raw_vendor_log'
+                      AND a.action='raw_replay_requested' AND a.actor_subject_kind='human'
+                      AND a.after_val->>'lease_epoch'=CAST(r.processing_lease_epoch AS text)
+                    ORDER BY a.id DESC LIMIT 1
+                """),
+                    {"raw_id": raw_id},
+                )
+                if intent_id is None:
+                    raise RuntimeError("raw replay original intent unavailable")
                 await insert_audit(
                     connection,
                     AuditEvent(
@@ -802,7 +871,7 @@ class SqlOpsRepository:
                         action="raw_replay",
                         object_type="raw_vendor_log",
                         object_id=str(raw_id),
-                        after={"source": source, "items": items},
+                        after={"source": source, "items": items, "intent_audit_id": int(intent_id)},
                     ),
                 )
         finally:

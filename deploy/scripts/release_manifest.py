@@ -19,6 +19,7 @@ class ReleaseManifestError(ValueError):
 class MigrationCompatibility(StrEnum):
     NONE = "none"
     EXPAND = "expand"
+    COLD_CUTOVER = "cold_cutover"
     MANUAL = "manual"
 
 
@@ -48,6 +49,10 @@ class ReleaseManifest:
 
 
 _IMAGE_NAMES = ("api", "web", "postgres", "redis")
+ONE_TIME_COLD_CUTOVER = (
+    "0084_auth_security_and_ad_freshness",
+    "0116_usage_release_generation",
+)
 OFFLINE_EXPAND_MIGRATION = (
     "0080_security_daily_delivery_generation",
     "0081_sign_adoption_contract",
@@ -361,7 +366,17 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
     if compatibility is MigrationCompatibility.MANUAL:
         raise ReleaseManifestError("manual migration is not automatable")
     migration_changes_schema = migration_from != migration_target
-    if migration_changes_schema is not (compatibility is MigrationCompatibility.EXPAND):
+    cold_cutover = compatibility is MigrationCompatibility.COLD_CUTOVER
+    if cold_cutover and (
+        mode != "production"
+        or schema_version != 2
+        or (migration_from, migration_target) != ONE_TIME_COLD_CUTOVER
+        or not all(spec.changed for spec in images.values())
+    ):
+        raise ReleaseManifestError("cold cutover is restricted to the one-time all-four update")
+    if migration_changes_schema is not (
+        compatibility is MigrationCompatibility.EXPAND or cold_cutover
+    ):
         raise ReleaseManifestError(
             "migration.compatibility must be expand exactly when migration changes schema"
         )
@@ -373,7 +388,10 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
             )
         if migration_changes_schema and (
             changed_count != len(_IMAGE_NAMES)
-            or (migration_from, migration_target) not in OFFLINE_EXPAND_MIGRATIONS
+            or (
+                (migration_from, migration_target) not in OFFLINE_EXPAND_MIGRATIONS
+                and not cold_cutover
+            )
         ):
             raise ReleaseManifestError(
                 "offline production migration must be the approved all-four expand update"
@@ -430,7 +448,7 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
         images["postgres"].changed or migration_changes_schema
     )
     backup_required = backup_allowed and not (
-        offline_full_no_migration_update or offline_approved_expand_update
+        offline_full_no_migration_update or offline_approved_expand_update or cold_cutover
     )
     backup_evidence: Mapping[str, object] | None
     if backup_candidate is None:

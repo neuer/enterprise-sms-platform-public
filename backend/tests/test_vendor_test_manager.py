@@ -939,7 +939,10 @@ def test_critical_resume_probes_balance_before_clearing_pause() -> None:
                 "resume-1",
             )
 
-        def clear_pause(self, pause_kind: str) -> None:
+        def pause_snapshot(self) -> tuple[str, ...]:
+            return ("",) * 9
+
+        def clear_pause(self, pause_kind: str, snapshot: tuple[str, ...]) -> None:
             self.events.append(f"clear_{pause_kind}")
 
     operations = PauseOperations()
@@ -963,6 +966,9 @@ def test_rotation_failure_layers_critical_pause_over_existing_manual_pause() -> 
     }
 
     def redis(*arguments: str) -> str:
+        if arguments[0] == "INCR":
+            values[arguments[1]] = str(int(values.get(arguments[1], "0")) + 1)
+            return values[arguments[1]]
         if arguments[0] == "GET":
             return values.get(arguments[1], "")
         if arguments[0] == "SET":
@@ -972,16 +978,23 @@ def test_rotation_failure_layers_critical_pause_over_existing_manual_pause() -> 
             values[key] = value
             return "OK"
         if arguments[0] == "EVAL":
-            assert arguments[2] == "6"
-            keys = arguments[3:9]
-            assert keys[-2:] == (
-                "queue:paused:vendor-test-rotation-failed:realtime",
-                "queue:paused:vendor-test-rotation-failed:bulk",
-            )
+            if arguments[2] == "5":
+                keys = arguments[3:8]
+                values[keys[0]] = str(int(values.get(keys[0], "0")) + 1)
+                for key in keys[1:3]:
+                    values[key] = arguments[8]
+                for key in keys[3:5]:
+                    values.setdefault(key, arguments[9])
+                return "1"
+            assert arguments[2] == "9"
+            keys = arguments[3:12]
+            if len(arguments) == 12:
+                return json.dumps([values.get(key, "") for key in keys])
+            assert list(arguments[12:21]) == [values.get(key, "") for key in keys]
             for key in keys[:2]:
                 if values.get(key) != "vendor-test-manual":
                     values.pop(key, None)
-            for key in keys[2:]:
+            for key in keys[2:6]:
                 values.pop(key, None)
             return "1"
         raise AssertionError(arguments)
@@ -995,10 +1008,11 @@ def test_rotation_failure_layers_critical_pause_over_existing_manual_pause() -> 
     assert values["queue:paused:realtime"] == "vendor-test-manual"
     assert values["queue:paused:bulk"] == "vendor-test-manual"
 
-    operations.clear_pause("critical")
+    operations.clear_pause("critical", operations.pause_snapshot())
 
     assert operations.current_pause_kind() == "manual"
     assert values == {
+        "ratelimit:queue:pause-generation": "1",
         "queue:paused:realtime": "vendor-test-manual",
         "queue:paused:bulk": "vendor-test-manual",
     }
@@ -1018,7 +1032,10 @@ def test_manual_resume_never_clears_daily_or_critical_pause() -> None:
         def probe_balance(self) -> manager_module.BalanceProbe:
             raise AssertionError
 
-        def clear_pause(self, pause_kind: str) -> None:
+        def pause_snapshot(self) -> tuple[str, ...]:
+            return ("",) * 9
+
+        def clear_pause(self, pause_kind: str, snapshot: tuple[str, ...]) -> None:
             raise AssertionError(f"must preserve {pause_kind}")
 
     with pytest.raises(manager_module.VendorTestActivationError, match="daily"):

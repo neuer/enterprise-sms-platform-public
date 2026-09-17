@@ -1,6 +1,7 @@
 /* 模板与签名：两页查询栏同构共享块 / 编辑器 / 审核轨迹（见块内注释）。 */
-/* 模板/签名两页查询栏同构：sign-filter-bar/sign-fld/sign-keyword/sign-seg/sign-filter-note
-   与 template-* 共用以下规则（移动端见 760px 媒体块），按页复制即缺陷。 */
+/* 模板/签名两页查询栏同构：sign-filter-bar/sign-fld/sign-keyword/sign-filter-note
+   与 template-* 共用以下规则（移动端见 760px 媒体块），按页复制即缺陷；
+   厂商状态 seg 已并入 FilterSeg 单点（shared.css）。 */
 .template-filter-bar,
 .sign-filter-bar {
   display: flex;
@@ -37,49 +38,8 @@
   width: 220px;
 }
 
-.template-seg,
-.sign-seg {
-  display: flex;
-  height: 34px;
-  overflow: hidden;
-  border: 1px solid var(--hair);
-  border-radius: 7px;
-}
-
-.template-seg button,
-.sign-seg button {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  padding: 0 13px;
-  color: var(--tx-2);
-  font: inherit;
-  font-size: 11.5px;
-  font-weight: 400;
-  background: var(--sink);
-  border: 0;
-  cursor: pointer;
-}
-
-.template-seg button i,
-.sign-seg button i {
-  color: var(--tx-3);
-  font-family: var(--mono);
-  font-size: 10px;
-  font-style: normal;
-  font-variant-numeric: tabular-nums;
-}
-
-.template-seg button.on,
-.sign-seg button.on {
-  color: #eaf1ed;
-  background: var(--verdi);
-}
-
-.template-seg button.on i,
-.sign-seg button.on i {
-  color: rgba(234, 241, 237, 0.75);
-}
+/* 厂商状态 seg 已并入 FilterSeg 单点（shared.css），计数圆点样式同样由单点的
+   .filter-seg button i 承载；本文件不再保留 template-seg/sign-seg 散件。 */
 
 .template-filter-note,
 .sign-filter-note {
@@ -409,7 +369,7 @@
   margin-bottom: 18px;
 }
 
-/* 签名页查询栏（sign-filter-bar/sign-fld/sign-keyword/sign-seg/sign-filter-note）与模板页同构，
+/* 签名页查询栏（sign-filter-bar/sign-fld/sign-keyword/sign-filter-note）与模板页同构，
    规则统一在 template 区共享块维护（移动端见 760px 媒体块），此处不再重复定义。 */
 
 .sign-alert {

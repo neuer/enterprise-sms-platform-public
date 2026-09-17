@@ -4,19 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import math
+import re
 import subprocess
 import time
 import urllib.parse
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Lock
+from threading import BoundedSemaphore, Event, Lock
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 
@@ -29,6 +31,11 @@ TAB_ID = "00000000000000000000000000000001"
 
 class PerformanceFailure(RuntimeError):
     """性能失败只公开阶段与聚合指标，不回显请求或敏感载荷。"""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.load_measurements: dict[str, LoadMeasurement] = {}
+        self.cleanup_failed = False
 
 
 class Runner(Protocol):
@@ -186,8 +193,7 @@ def build_acceptance_events(rps: int, seconds: int) -> list[LoadEvent]:
         "market",
     )
     return [
-        LoadEvent(index, index / rps, cycle[index % len(cycle)])
-        for index in range(rps * seconds)
+        LoadEvent(index, index / rps, cycle[index % len(cycle)]) for index in range(rps * seconds)
     ]
 
 
@@ -208,6 +214,39 @@ def build_mixed_events(seconds: int) -> list[LoadEvent]:
     return events
 
 
+@dataclass(frozen=True, slots=True)
+class LoadMeasurement:
+    planned_requests: int
+    started_requests: int
+    completed_requests: int
+    failed_requests: int
+    cancelled_requests: int
+    interrupted: bool
+    not_started_requests: int
+    target_rps: float
+    planned_window_s: float
+    actual_start_window_s: float
+    completion_window_s: float
+    actual_started_rps: float
+    actual_completed_rps: float
+    max_start_lag_s: float
+    start_lag_limit_s: float
+    peak_in_flight: int
+    valid: bool
+
+
+class MeasuredResults[T](list[T]):
+    def __init__(self, values: Sequence[T], measurement: LoadMeasurement) -> None:
+        super().__init__(values)
+        self.measurement = measurement
+
+
+class LoadGenerationFailure(PerformanceFailure):
+    def __init__(self, measurement: LoadMeasurement) -> None:
+        super().__init__("PERF-00 offered load was not achieved or requests failed")
+        self.measurement = measurement
+
+
 def run_open_loop[T](
     events: Sequence[LoadEvent],
     handler: Callable[[LoadEvent], T],
@@ -215,20 +254,108 @@ def run_open_loop[T](
     clock: Callable[[], float] = time.monotonic,
     sleeper: Callable[[float], None] = time.sleep,
     max_workers: int = 64,
-) -> list[T]:
-    """按绝对单调时点提交，不因单请求变慢而主动降载。"""
+    max_start_lag_s: float = 0.25,
+) -> MeasuredResults[T]:
+    """固定时点、有界在途；发生器积压或迟到时排完已提交请求并判无效。"""
 
-    if max_workers < 1:
-        raise ValueError("max_workers must be positive")
+    if max_workers < 1 or not math.isfinite(max_start_lag_s) or max_start_lag_s < 0:
+        raise ValueError("invalid load generator bounds")
+    if (
+        not events
+        or any(not math.isfinite(event.offset_s) or event.offset_s < 0 for event in events)
+        or any(
+            left.offset_s > right.offset_s for left, right in zip(events, events[1:], strict=False)
+        )
+    ):
+        raise ValueError("load events must be nonempty and ordered")
     started = clock()
+    slots = BoundedSemaphore(max_workers)
+    guard = Lock()
+    late_start = Event()
+    starts: list[float] = []
+    completions: list[float] = []
+    lags: list[float] = []
+    failures = 0
+    cancellations = 0
+    interrupted = False
+    in_flight = 0
+    peak_in_flight = 0
+
+    def execute(event: LoadEvent) -> T:
+        nonlocal failures, cancellations, in_flight
+        actual = clock()
+        with guard:
+            starts.append(actual)
+            lag = max(0.0, actual - started - event.offset_s)
+            lags.append(lag)
+            if lag > max_start_lag_s:
+                late_start.set()
+        try:
+            return handler(event)
+        except BaseException as error:
+            with guard:
+                failures += 1
+                cancellations += isinstance(error, (CancelledError, asyncio.CancelledError))
+            raise
+        finally:
+            with guard:
+                completions.append(clock())
+                in_flight -= 1
+            slots.release()
+
+    values: list[T] = []
+    futures: list[Future[T]] = []
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        for event in events:
-            delay = started + event.offset_s - clock()
-            if delay > 0:
-                sleeper(delay)
-            futures.append(executor.submit(handler, event))
-        return [future.result() for future in futures]
+        try:
+            for event in events:
+                delay = started + event.offset_s - clock()
+                if delay > 0:
+                    sleeper(delay)
+                if late_start.is_set() or not slots.acquire(blocking=False):
+                    break
+                with guard:
+                    in_flight += 1
+                    peak_in_flight = max(peak_in_flight, in_flight)
+                futures.append(executor.submit(execute, event))
+        except KeyboardInterrupt:
+            interrupted = True
+        for future in futures:
+            try:
+                values.append(future.result())
+            except KeyboardInterrupt:
+                interrupted = True
+            except (Exception, asyncio.CancelledError):
+                # 聚合失败，不输出依赖异常正文；所有已提交写入仍须完成收尾。
+                pass
+    spacing = (events[-1].offset_s - events[0].offset_s) / max(1, len(events) - 1)
+    planned_window = max(events[-1].offset_s + spacing, 1e-9)
+    launch_window = max(planned_window, max(starts, default=started) - started + spacing)
+    completion_window = max(planned_window, max(completions, default=started) - started)
+    measurement = LoadMeasurement(
+        planned_requests=len(events),
+        started_requests=len(starts),
+        completed_requests=len(completions),
+        failed_requests=failures,
+        cancelled_requests=cancellations,
+        interrupted=interrupted,
+        not_started_requests=len(events) - len(starts),
+        target_rps=len(events) / planned_window,
+        planned_window_s=planned_window,
+        actual_start_window_s=launch_window,
+        completion_window_s=completion_window,
+        actual_started_rps=len(starts) / launch_window,
+        actual_completed_rps=len(completions) / completion_window,
+        max_start_lag_s=max(lags, default=0.0),
+        start_lag_limit_s=max_start_lag_s,
+        peak_in_flight=peak_in_flight,
+        valid=len(starts) == len(events)
+        and failures == 0
+        and not interrupted
+        and max(lags, default=0) <= max_start_lag_s,
+    )
+    if not measurement.valid:
+        raise LoadGenerationFailure(measurement)
+    return MeasuredResults(values, measurement)
 
 
 @dataclass(frozen=True, slots=True)
@@ -293,8 +420,7 @@ class DrainProbe:
                     "-d",
                     "sms",
                     "-Atc",
-                    "SELECT count(*) FROM sms_batch "
-                    "WHERE status IN ('queued','sending')",
+                    "SELECT count(*) FROM sms_batch WHERE status IN ('queued','sending')",
                 ),
                 cwd=self.repository_root,
             )
@@ -359,12 +485,15 @@ class PerformanceConfig:
     cleanup_workers: int = 64
 
     def validate(self) -> None:
-        if min(
-            self.acceptance_rps,
-            self.acceptance_seconds,
-            self.mixed_seconds,
-            self.drain_timeout_s,
-        ) < 1:
+        if (
+            min(
+                self.acceptance_rps,
+                self.acceptance_seconds,
+                self.mixed_seconds,
+                self.drain_timeout_s,
+            )
+            < 1
+        ):
             raise ValueError("performance durations and rates must be positive")
         if not 1 <= self.cleanup_workers <= 64:
             raise ValueError("cleanup_workers must be between 1 and 64")
@@ -386,6 +515,11 @@ class PerformanceResult:
     drain_seconds: float
     cancelled_scheduled_batches: int
     cleanup_seconds: float
+    load_measurements: Mapping[str, LoadMeasurement]
+    runtime_process_instance: str
+    verify_acceptance_p95_s: float
+    verify_post_accept_p95_s: float
+    runtime_memory_semantics: str = "process_high_water_mark"
 
 
 Scheduler = Callable[[Sequence[LoadEvent], Callable[[LoadEvent], Any]], list[Any]]
@@ -398,20 +532,41 @@ def _object(value: object, stage: str) -> Mapping[str, Any]:
 
 
 def _prometheus_value(document: str, sample: str) -> float:
-    """读取一个精确的低基数 Prometheus 样本，缺失或非有限值均失败。"""
+    """精确样本只允许一个值，避免重复进程序列被悄悄取第一条。"""
 
-    prefix = f"{sample} "
+    matches = [
+        line[len(sample) + 1 :] for line in document.splitlines() if line.startswith(f"{sample} ")
+    ]
+    if len(matches) != 1:
+        raise PerformanceFailure("PERF-02 runtime metrics are incomplete or ambiguous")
+    try:
+        value = float(matches[0])
+    except ValueError:
+        raise PerformanceFailure("PERF-02 runtime metrics are invalid") from None
+    if not math.isfinite(value) or value < 0:
+        raise PerformanceFailure("PERF-02 runtime metrics are invalid")
+    return value
+
+
+def _runtime_process_document(document: str) -> tuple[str, str]:
+    """本次 scrape 只取一个显式进程实例；保留身份，绝不宣称全局采集。"""
+
+    process_pattern = re.compile(r'process_instance="([a-zA-Z0-9_-]{1,64})"')
+    instances: set[str] = set()
+    normalized: list[str] = []
     for line in document.splitlines():
-        if not line.startswith(prefix):
+        if not line.startswith("sms_runtime_"):
             continue
-        try:
-            value = float(line.removeprefix(prefix))
-        except ValueError as error:
-            raise PerformanceFailure("PERF-02 runtime metrics are invalid") from error
-        if not math.isfinite(value) or value < 0:
-            raise PerformanceFailure("PERF-02 runtime metrics are invalid")
-        return value
-    raise PerformanceFailure("PERF-02 runtime metrics are incomplete")
+        match = process_pattern.search(line)
+        if match is None:
+            raise PerformanceFailure("PERF-02 runtime sample lacks process identity")
+        instances.add(match.group(1))
+        line = line[: match.start()] + line[match.end() :]
+        line = line.replace("{,", "{").replace(",}", "}").replace("{}", "")
+        normalized.append(line)
+    if len(instances) != 1:
+        raise PerformanceFailure("PERF-02 runtime scrape must represent exactly one process")
+    return "\n".join(normalized), instances.pop()
 
 
 class PerformanceSuite:
@@ -448,11 +603,15 @@ class PerformanceSuite:
         self.clock = clock
         self.sleeper = sleeper
         self.run_id = run_id or uuid4().hex[:8]
-        self.phone_run_bucket = int.from_bytes(
-            hashlib.sha256(self.run_id.encode()).digest()[:2], "big"
-        ) % 10_000
+        self.phone_run_bucket = (
+            int.from_bytes(hashlib.sha256(self.run_id.encode()).digest()[:2], "big") % 10_000
+        )
         self._scheduled_batches: list[tuple[str, str]] = []
         self._scheduled_lock = Lock()
+        self._load_measurements: dict[str, LoadMeasurement] = {}
+        self._runtime_process_instance = "unavailable"
+        self._verify_acceptance: list[float] = []
+        self._verify_post_accept: list[float] = []
 
     def _phone(self, namespace: int, index: int) -> str:
         tail = namespace * 20_000_000 + self.phone_run_bucket * 2_000 + index
@@ -488,6 +647,23 @@ class PerformanceSuite:
             raise PerformanceFailure(f"PERF-01 API acceptance returned HTTP {response.status}")
         return _object(response.data, "PERF-01"), elapsed
 
+    def _run_load[T](
+        self,
+        phase: str,
+        events: Sequence[LoadEvent],
+        handler: Callable[[LoadEvent], T],
+    ) -> list[T]:
+        """成功或失败均保存本阶段实际负载测量，供统一失败输出复用。"""
+
+        try:
+            result = self.scheduler(events, handler)
+        except LoadGenerationFailure as error:
+            self._load_measurements[phase] = error.measurement
+            raise
+        if isinstance(result, MeasuredResults):
+            self._load_measurements[phase] = result.measurement
+        return result
+
     def _phase_one(self) -> tuple[int, float]:
         scheduled_at = (datetime.now(UTC) + timedelta(days=2)).isoformat()
         app_by_kind = {"verify": "app-iam", "notice": "app-oa", "market": "app-mkt"}
@@ -516,10 +692,9 @@ class PerformanceSuite:
                 self._scheduled_batches.append((batch_no, app))
             return elapsed
 
-        samples = self.scheduler(
-            build_acceptance_events(
-                self.config.acceptance_rps, self.config.acceptance_seconds
-            ),
+        samples = self._run_load(
+            "acceptance",
+            build_acceptance_events(self.config.acceptance_rps, self.config.acceptance_seconds),
             accept,
         )
         p95 = percentile95(samples)
@@ -583,6 +758,7 @@ class PerformanceSuite:
 
         def mixed(event: LoadEvent) -> float | None:
             if event.kind == "verify":
+                request_started = self.clock()
                 data, _elapsed = self._api_send(
                     app="app-iam",
                     category="verify",
@@ -595,7 +771,14 @@ class PerformanceSuite:
                 batch_no = data.get("batch_no")
                 if not isinstance(batch_no, str):
                     raise PerformanceFailure("PERF-02 verify response omitted batch_no")
-                return self._wait_mock_send(batch_no, self.clock())
+                http_completed = self.clock()
+                end_to_end = self._wait_mock_send(batch_no, request_started)
+                with self._scheduled_lock:
+                    self._verify_acceptance.append(http_completed - request_started)
+                    self._verify_post_accept.append(
+                        max(0.0, end_to_end - (http_completed - request_started))
+                    )
+                return end_to_end
             response = self.api.request(
                 "POST",
                 "/api/v1/web/messages/send",
@@ -610,15 +793,14 @@ class PerformanceSuite:
                 },
                 headers={"Authorization": f"Bearer {token}"},
             )
-            if response.status != 200 or _object(response.data, "PERF-02").get(
-                "status"
-            ) != "queued":
-                raise PerformanceFailure(
-                    f"PERF-02 bulk acceptance returned HTTP {response.status}"
-                )
+            if (
+                response.status != 200
+                or _object(response.data, "PERF-02").get("status") != "queued"
+            ):
+                raise PerformanceFailure(f"PERF-02 bulk acceptance returned HTTP {response.status}")
             return None
 
-        results = self.scheduler(build_mixed_events(self.config.mixed_seconds), mixed)
+        results = self._run_load("mixed", build_mixed_events(self.config.mixed_seconds), mixed)
         samples = [value for value in results if isinstance(value, float)]
         p95 = percentile95(samples)
         if p95 >= 2:
@@ -634,10 +816,8 @@ class PerformanceSuite:
             headers={"Authorization": f"Bearer {self.metrics_token}"},
         )
         if response.status != 200 or not isinstance(response.data, str):
-            raise PerformanceFailure(
-                f"PERF-02 runtime metrics returned HTTP {response.status}"
-            )
-        document = response.data
+            raise PerformanceFailure(f"PERF-02 runtime metrics returned HTTP {response.status}")
+        document, self._runtime_process_instance = _runtime_process_document(response.data)
         values = (
             _prometheus_value(
                 document,
@@ -692,9 +872,7 @@ class PerformanceSuite:
         batch_no, app = batch
         response = self.api.request(
             "POST",
-            "/api/v1/messages/batches/"
-            + urllib.parse.quote(batch_no, safe="")
-            + "/cancel",
+            "/api/v1/messages/batches/" + urllib.parse.quote(batch_no, safe="") + "/cancel",
             headers={"X-Api-Key": self.keys[app]},
         )
         return response.status
@@ -713,8 +891,7 @@ class PerformanceSuite:
         workers = min(self.config.cleanup_workers, len(scheduled))
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
-                executor.submit(self._cancel_scheduled_batch, batch): batch
-                for batch in scheduled
+                executor.submit(self._cancel_scheduled_batch, batch): batch for batch in scheduled
             }
             for future in as_completed(futures):
                 batch = futures[future]
@@ -739,29 +916,31 @@ class PerformanceSuite:
                 f"cleanup_seconds={cleanup_seconds:.3f} "
                 "outcomes="
                 + ",".join(
-                    f"{outcome}:{count}"
-                    for outcome, count in sorted(failed_outcomes.items())
+                    f"{outcome}:{count}" for outcome, count in sorted(failed_outcomes.items())
                 )
             )
         return cancelled, cleanup_seconds
 
     def run(self) -> PerformanceResult:
         phase_error: Exception | None = None
-        measurements: tuple[
-            int,
-            float,
-            int,
-            int,
-            float,
-            float,
-            int,
-            int,
-            int,
-            int,
-            int,
-            float,
-        ] | None = None
-        cleanup_error: PerformanceFailure | None = None
+        measurements: (
+            tuple[
+                int,
+                float,
+                int,
+                int,
+                float,
+                float,
+                int,
+                int,
+                int,
+                int,
+                int,
+                float,
+            ]
+            | None
+        ) = None
+        cleanup_error: Exception | None = None
         cancelled = 0
         cleanup_seconds = 0.0
         try:
@@ -793,25 +972,31 @@ class PerformanceSuite:
                 phase_error = error
         try:
             cancelled, cleanup_seconds = self._cleanup_scheduled_batches()
-        except PerformanceFailure as error:
+        except Exception as error:
             cleanup_error = error
-        if phase_error is not None:
-            if cleanup_error is not None:
-                phase_summary = (
-                    str(phase_error)
-                    if isinstance(phase_error, PerformanceFailure)
-                    else f"performance phase failed: {type(phase_error).__name__}"
-                )
-                raise PerformanceFailure(f"{phase_summary}; {cleanup_error}") from None
-            raise phase_error
-        if cleanup_error is not None:
-            raise cleanup_error
+        if phase_error is not None or cleanup_error is not None:
+            parts: list[str] = []
+            for failure_part in (phase_error, cleanup_error):
+                if failure_part is not None:
+                    parts.append(
+                        str(failure_part)
+                        if isinstance(failure_part, PerformanceFailure)
+                        else f"performance phase failed: {type(failure_part).__name__}"
+                    )
+            failure = PerformanceFailure("; ".join(parts))
+            failure.load_measurements = dict(self._load_measurements)
+            failure.cleanup_failed = cleanup_error is not None
+            raise failure from None
         if measurements is None:
             raise PerformanceFailure("performance measurements are unavailable")
         return PerformanceResult(
             *measurements,
             cancelled,
             cleanup_seconds,
+            dict(self._load_measurements),
+            self._runtime_process_instance,
+            percentile95(self._verify_acceptance),
+            percentile95(self._verify_post_accept),
         )
 
 
@@ -823,6 +1008,20 @@ def _load_keys(path: Path) -> dict[str, str]:
     if not isinstance(value, dict) or any(not isinstance(item, str) for item in value.values()):
         raise ValueError("performance key file must be a string mapping")
     return {str(key): str(item) for key, item in value.items()}
+
+
+def failure_payload(error: Exception) -> dict[str, object]:
+    """统一输出所有已测聚合值，普通门禁/排空和清理失败也不能丢失负载窗口。"""
+
+    payload: dict[str, object] = {"status": "failed", "error": str(error)}
+    if isinstance(error, PerformanceFailure):
+        payload["load_measurements"] = {
+            phase: asdict(measurement) for phase, measurement in error.load_measurements.items()
+        }
+        payload["cleanup_failed"] = error.cleanup_failed
+    if isinstance(error, LoadGenerationFailure):
+        payload["load_measurement"] = asdict(error.measurement)
+    return payload
 
 
 def main() -> int:
@@ -877,7 +1076,7 @@ def main() -> int:
             ),
         ).run()
     except (OSError, UnicodeError, ValueError, PerformanceFailure) as error:
-        print(json.dumps({"status": "failed", "error": str(error)}, ensure_ascii=False))
+        print(json.dumps(failure_payload(error), ensure_ascii=False))
         return 1
     finally:
         api_client.close()

@@ -29,3 +29,13 @@ def mask_phone_in_text(value: str | None) -> str | None:
     if value is None:
         return None
     return PHONE_IN_TEXT.sub(PHONE_REDACTION, value)
+
+
+def reject_phone_business_id(value: str | None, *, field_name: str) -> None:
+    """业务标识拒绝嵌入手机号，仅兼容完整 UUID/32 位 hex 标识中的数字碰撞。"""
+
+    if value is None:
+        return
+    if re.fullmatch(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value):
+        return
+    reject_phone_in_text(value, field_name=field_name)

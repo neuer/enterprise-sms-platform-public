@@ -19,7 +19,7 @@ class FakeConnection:
 
     async def execute(self, statement: object, params: Any = None) -> FakeResult:
         self.calls.append((str(statement), params))
-        return FakeResult(8 if len(self.calls) == 3 else 0)
+        return FakeResult(8 if len(self.calls) == 4 else 0)
 
 
 class FakeContext:
@@ -54,22 +54,23 @@ async def test_day_rebuild_is_locked_atomic_and_contains_all_rollups() -> None:
 
     assert await repository.aggregate_day(date(2026, 7, 12)) == 8
 
-    assert len(connection.calls) == 3
+    assert len(connection.calls) == 4
     lock_sql, lock_params = connection.calls[0]
     assert "pg_advisory_xact_lock" in lock_sql
     assert lock_params == {"lock_key": date(2026, 7, 12).toordinal()}
-    delete_sql, delete_params = connection.calls[1]
+    delete_sql, delete_params = connection.calls[2]
     assert "DELETE FROM stat_daily" in delete_sql
     assert delete_params == {"stat_date": date(2026, 7, 12)}
 
-    insert_sql, params = connection.calls[2]
+    insert_sql, params = connection.calls[3]
     assert "INSERT INTO stat_daily" in insert_sql
     assert "('app', CAST(f.app_id AS text))" in insert_sql
     assert "('dept', f.dept)" in insert_sql
     assert "('all', '')" in insert_sql
     assert "(f.category), ('all')" in insert_sql
-    assert "sum(f.segments)" in insert_sql
-    assert "f.status IN ('unknown','other')" in insert_sql
+    assert "sum(f.segments*f.total)" in insert_sql
+    assert "GROUP BY m.batch_id" in insert_sql
+    assert "m.status IN ('unknown','other')" in insert_sql
     assert params == {
         "stat_date": date(2026, 7, 12),
         "start_at": datetime(2026, 7, 11, 16, 0, tzinfo=UTC),

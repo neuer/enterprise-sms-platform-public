@@ -3,8 +3,9 @@ import { ElConfigProvider, ElMessage } from "element-plus"
 import zhCn from "element-plus/es/locale/lang/zh-cn"
 import { computed, defineAsyncComponent, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
-import { getDashboard } from "./api/dashboard"
+import { getBalance } from "./api/dashboard"
 import { usePolling } from "./composables/usePolling"
+import { useLatestRead } from "./composables/useLatestRead"
 import { getTheme, toggleTheme, type ThemeMode } from "./lib/theme"
 import appRouter, { deriveNavigation } from "./router"
 import { useApprovalBadgeStore } from "./stores/approvalBadge"
@@ -34,7 +35,7 @@ function switchTheme(): void {
 const authenticatedShell = computed(() => !publicRoute.value && session.isAuthenticated)
 const dashboardRoute = computed(() => route.path === "/dashboard")
 const approvalRoute = computed(() => route.path === "/approvals")
-const approverRole = computed(() => session.role === "approver" || session.role === "admin")
+const approverRole = computed(() => session.canDecrypt)
 const balanceLabel = computed(() =>
   currentBalance.value === null ? "厂商余额暂无数据" : `厂商余额 ${currentBalance.value.toLocaleString()} 计费条`,
 )
@@ -50,6 +51,17 @@ const visibleNavigation = computed(() =>
     }))
     .filter((section) => section.items.length > 0),
 )
+
+const resourceLoadFailed = ref(false)
+function handleResourceLoadFailed(): void {
+  resourceLoadFailed.value = true
+}
+function handleResourceLoadRecovered(): void {
+  resourceLoadFailed.value = false
+}
+function reloadResources(): void {
+  window.location.reload()
+}
 
 function handleUnauthorized(): void {
   if (!session.isAuthenticated && route.path !== "/login") void router.replace("/login")
@@ -87,19 +99,22 @@ function handleKeydown(event: KeyboardEvent): void {
 
 function handleDashboardBalance(event: Event): void {
   const balance = (event as CustomEvent<{ currentBalance?: number | null }>).detail?.currentBalance
-  if (authenticatedShell.value && (balance === null || Number.isFinite(balance))) {
+  if (authenticatedShell.value && session.role === "admin" && (balance === null || Number.isFinite(balance))) {
     currentBalance.value = balance ?? null
   }
 }
 
+const balanceRead = useLatestRead()
+
 async function refreshBalance(): Promise<void> {
+  const signal = balanceRead.start()
   try {
-    const snapshot = await getDashboard()
-    if (authenticatedShell.value) {
-      currentBalance.value = snapshot.operations?.current_balance ?? null
+    const snapshot = await getBalance(signal)
+    if (!signal.aborted && authenticatedShell.value && session.role === "admin") {
+      currentBalance.value = snapshot.current_balance
     }
   } catch {
-    currentBalance.value = null
+    if (!signal.aborted) currentBalance.value = null
   }
 }
 
@@ -107,7 +122,7 @@ async function refreshBalance(): Promise<void> {
 const balancePolling = usePolling(refreshBalance, {
   intervalMs: 60_000,
   immediate: true,
-  enabled: computed(() => authenticatedShell.value && !dashboardRoute.value),
+  enabled: computed(() => authenticatedShell.value && session.role === "admin" && !dashboardRoute.value),
 })
 
 function syncApprovalBadgePolling(): void {
@@ -119,6 +134,10 @@ function syncApprovalBadgePolling(): void {
   }
 }
 
+watch([authenticatedShell, dashboardRoute, () => session.role], () => {
+  if (!authenticatedShell.value || session.role !== "admin" || dashboardRoute.value) balanceRead.cancel()
+  if (!authenticatedShell.value || session.role !== "admin") currentBalance.value = null
+})
 watch(() => route.fullPath, closeNavigation)
 watch(
   authenticatedShell,
@@ -134,6 +153,8 @@ onBeforeMount(() => {
 })
 
 onMounted(() => {
+  window.addEventListener("sms:workspace-load-error", handleResourceLoadFailed)
+  window.addEventListener("sms:workspace-load-recovered", handleResourceLoadRecovered)
   window.addEventListener("sms:unauthorized", handleUnauthorized)
   window.addEventListener("sms:reauth-required", handleReauthenticationRequired)
   window.addEventListener("sms:session-refreshed", handleSessionRefreshed)
@@ -143,6 +164,8 @@ onMounted(() => {
   balancePolling.start()
 })
 onBeforeUnmount(() => {
+  window.removeEventListener("sms:workspace-load-error", handleResourceLoadFailed)
+  window.removeEventListener("sms:workspace-load-recovered", handleResourceLoadRecovered)
   window.removeEventListener("sms:unauthorized", handleUnauthorized)
   window.removeEventListener("sms:reauth-required", handleReauthenticationRequired)
   window.removeEventListener("sms:session-refreshed", handleSessionRefreshed)
@@ -172,6 +195,10 @@ async function handlePasswordChanged(): Promise<void> {
 
 <template>
   <el-config-provider :locale="zhCn">
+    <div v-if="resourceLoadFailed" role="alert" class="resource-recovery">
+      <p>页面资源加载失败。重新加载后可重试，未提交的内容将被清空。</p>
+      <el-button @click="reloadResources">重新加载页面</el-button>
+    </div>
     <div v-if="publicRoute" class="public-shell">
       <!-- 身份门背景：光带（桌面纵贯曲线 / 移动端上半弧光）+ 白鹭水印 -->
       <svg class="login-flow login-flow-desktop" viewBox="0 0 1440 900" preserveAspectRatio="none" aria-hidden="true">
@@ -345,3 +372,16 @@ async function handlePasswordChanged(): Promise<void> {
     </div>
   </el-config-provider>
 </template>
+
+<style scoped>
+.resource-recovery {
+  position: fixed;
+  inset: 12px 12px auto;
+  z-index: 10000;
+  padding: 16px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+</style>

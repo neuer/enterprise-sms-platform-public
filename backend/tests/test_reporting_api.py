@@ -66,7 +66,7 @@ def test_stats_endpoint_passes_typed_filters_and_returns_server_rate() -> None:
         {
             "dim_value": "7", "dim_label": "OA应用", "total": 10,
             "total_segments": 12, "delivered": 8, "failed": 2,
-            "unknown": 1, "success_rate": 0.8,
+            "unknown": 1, "success_rate": 0.8, "is_other": False,
         }
     ]
     assert body["can_export_decrypted"] is False
@@ -88,3 +88,17 @@ def test_stats_endpoint_requires_bearer() -> None:
     client, _ = make_client()
     response = client.get("/api/v1/web/reports/stats")
     assert response.status_code == 401
+
+
+def test_stats_endpoint_validates_page_and_order_before_repository_work() -> None:
+    client, service = make_client()
+    for params in (
+        {"page": 0}, {"page": 1_000_001}, {"size": 0}, {"size": 101},
+        {"sort": "total;DROP TABLE stat_daily"}, {"order": "random"}, {"metric": "unknown"},
+    ):
+        response = client.get(
+            "/api/v1/web/reports/stats", params=params,
+            headers={"Authorization": "Bearer jwt"},
+        )
+        assert response.status_code == 422
+    assert service.calls == []

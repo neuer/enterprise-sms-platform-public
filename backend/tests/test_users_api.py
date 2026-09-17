@@ -5,7 +5,9 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 
 import app.api.users as users_api
+from app.api.admin_step_up import get_admin_step_up_service
 from app.core.auth.accounts import AccountSourceConflict
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.passwords import PasswordPolicyViolation
 from app.core.auth.roles import Role
@@ -20,6 +22,8 @@ from app.services.user_management import (
     UserPage,
     UserRecord,
 )
+
+AUTHORIZATION = AdminAuthorization(1, 11, 1, "local", None)
 
 NOW = datetime(2026, 7, 16, 8, tzinfo=UTC)
 
@@ -95,6 +99,7 @@ class FakeService:
         role: Role,
         role_override: bool,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -113,6 +118,7 @@ class FakeService:
         status: int,
         *,
         actor_account_id: int,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -126,6 +132,7 @@ class FakeService:
         account_id: int,
         temporary_password: str,
         *,
+        authorization: AdminAuthorization,
         actor: str,
         ip: str,
     ) -> UserRecord:
@@ -135,10 +142,18 @@ class FakeService:
         return record()
 
 
+class ApprovedStepUp:
+    """业务错误映射测试使用已批准授权；安全边界由真实服务 API 测试覆盖。"""
+
+    async def consume(self, token: str | None, **kwargs: object) -> None:
+        del token, kwargs
+
+
 def client(
     role: Role = "admin",
 ) -> tuple[TestClient, FakeService, FakeFacade]:
     app = create_app()
+    app.dependency_overrides[get_admin_step_up_service] = lambda: ApprovedStepUp()
     service = FakeService()
     facade = FakeFacade(role)
     app.dependency_overrides[get_auth_facade] = lambda: facade
@@ -167,6 +182,7 @@ def test_admin_list_exposes_provider_credential_and_account_status() -> None:
         "status": 1,
         "identity_status": 1,
         "credential_status": "must_change",
+        "temporary_password_expires_at": None,
         "source_groups": [],
         "sync_status": "local",
         "last_synced_at": None,
@@ -316,6 +332,7 @@ def test_admin_dependencies_reject_before_constructing_user_service(
 
     monkeypatch.setattr(users_api, "UserManagementService", record_construction)
     app = create_app()
+    app.dependency_overrides[get_admin_step_up_service] = lambda: ApprovedStepUp()
     facade = FakeFacade("viewer")
     app.dependency_overrides[get_auth_facade] = lambda: facade
     browser = TestClient(app, raise_server_exceptions=False)

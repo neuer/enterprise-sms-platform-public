@@ -623,7 +623,8 @@ class FakeRepository:
 
     async def lease_due(self, *, limit: int, lease_seconds: int) -> list[OutboxLease]:
         self.events.append(("lease", (limit, lease_seconds)))
-        return self.leases
+        leases, self.leases = self.leases[:limit], self.leases[limit:]
+        return leases
 
     async def mark_published(self, event_id: UUID, lease_id: UUID) -> None:
         self.events.append(("published", (event_id, lease_id)))

@@ -301,22 +301,34 @@ def test_role_update_uses_account_id_from_login_response() -> None:
                     },
                 },
             ),
+            HttpResponse(200, {"token": "role-grant"}),
             HttpResponse(200, {}),
         ]
     )
-    suite = UatSuite(http, None, {})
+    suite = UatSuite(http, None, {}, mock_password="synthetic-password")
     suite._tokens["admin01"] = "admin-token"
 
     suite.login("operator01")
     suite._set_role("approver", True)
 
-    assert http.calls[1][0][:2] == (
+    assert http.calls[2][0][:2] == (
         "PUT",
         "/api/v1/web/admin/users/42/role",
     )
-    assert http.calls[1][1]["payload"] == {
+    assert http.calls[2][1]["payload"] == {
         "role": "approver",
         "role_override": True,
+    }
+
+
+    assert http.calls[1][0][:2] == ("POST", "/api/v1/web/admin/step-up")
+    assert http.calls[1][1]["payload"] == {
+        "operation": "user_role_change", "target_id": "42",
+        "parameters": {"role": "approver", "role_override": True},
+        "password": "synthetic-password",
+    }
+    assert http.calls[2][1]["headers"] == {
+        "Authorization": "Bearer admin-token", "X-Admin-Step-Up": "role-grant",
     }
 
 
@@ -393,6 +405,7 @@ def test_approval_expiration_case_requires_reserve_refund_and_alert(
     probe = FakeQuotaProbe(quota_values)
     suite = UatSuite(http, None, {}, probe=probe, run_id="fixed-run")  # type: ignore[arg-type]
     suite._tokens.update({"admin01": "admin-token", "operator01": "operator-token"})
+    monkeypatch.setattr(suite, "_wait_admission_ready_for_volume", lambda *_args, **_kwargs: None)
 
     def immediate_wait(
         case_id: str,
@@ -613,3 +626,65 @@ def test_force_resume_cleanup_verifies_pause_codes_are_cleared() -> None:
     failed._tokens["admin01"] = "safe-token"
     with pytest.raises(UatFailure, match="queue pause cleanup failed"):
         failed._force_resume_and_verify_unpaused("16")
+
+
+@pytest.mark.parametrize(
+    "response",
+    [HttpResponse(401, {"code": "STEP_UP_REQUIRED"}), HttpResponse(200, {})],
+)
+def test_role_uat_does_not_write_without_reauthentication_grant(response: HttpResponse) -> None:
+    http = FakeHttp([response])
+    suite = UatSuite(http, None, {}, mock_password="synthetic-password")
+    suite._tokens["admin01"] = "admin-token"
+    suite._account_ids["operator01"] = 42
+    with pytest.raises(UatFailure) as failure:
+        suite._set_role("approver", True)
+    assert "synthetic-password" not in str(failure.value)
+    assert len(http.calls) == 1
+    assert http.calls[0][0][:2] == ("POST", "/api/v1/web/admin/step-up")
+
+
+@pytest.mark.parametrize("path", ["/api/v1/web/auth/login", "/api/v1/web/admin/step-up"])
+def test_authentication_uat_obeys_explicit_admission_retry(path: str, monkeypatch) -> None:
+    busy = HttpResponse(429, {"code": "RATE_LIMITED", "detail": {
+        "auth_admission_retry": True, "retry_after_seconds": 15,
+    }})
+    success = HttpResponse(200, {"token": "synthetic-token"})
+    http = FakeHttp([busy, success])
+    suite = UatSuite(http, None, {})
+    delays = []
+    monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
+    assert suite._authentication_request(path, payload={}) == success
+    assert delays == [15]
+    assert len(http.calls) == 2
+
+
+@pytest.mark.parametrize("status,detail", [
+    (401, {"auth_admission_retry": True, "retry_after_seconds": 1}),
+    (429, None),
+    (429, {"auth_admission_retry": False, "retry_after_seconds": 1}),
+    (429, {"auth_admission_retry": True, "retry_after_seconds": 300}),
+    (429, {"auth_admission_retry": True, "retry_after_seconds": True}),
+])
+def test_authentication_uat_never_retries_other_rejections(
+    status: int, detail, monkeypatch,
+) -> None:
+    response = HttpResponse(status, {"code": "RATE_LIMITED", "detail": detail})
+    http = FakeHttp([response])
+    suite = UatSuite(http, None, {})
+    delays = []
+    monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
+    assert suite._authentication_request("/api/v1/web/auth/login", payload={}) == response
+    assert delays == [] and len(http.calls) == 1
+
+
+def test_authentication_uat_retry_budget_is_bounded(monkeypatch) -> None:
+    busy = HttpResponse(429, {"code": "RATE_LIMITED", "detail": {
+        "auth_admission_retry": True, "retry_after_seconds": 30,
+    }})
+    http = FakeHttp([busy, busy, busy])
+    suite = UatSuite(http, None, {})
+    delays = []
+    monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
+    assert suite._authentication_request("/api/v1/web/auth/login", payload={}) == busy
+    assert delays == [30, 30] and len(http.calls) == 3

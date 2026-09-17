@@ -1,9 +1,12 @@
+import { defaultSessionDocument } from "../api/sessionDocument"
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 import { ElMessage, ElMessageBox } from "element-plus"
-import { ref, type Ref } from "vue"
+import { watch, getCurrentScope, onScopeDispose, ref, type Ref } from "vue"
 
 import { downloadExport, getExportTask, issueExportStepUp, type ExportTask } from "../api/reports"
 import { saveBlob } from "../lib/download"
 import { errorText } from "../lib/error"
+import { useLatestRead } from "./useLatestRead"
 import { usePolling } from "./usePolling"
 
 export interface UseExportTaskOptions {
@@ -50,17 +53,47 @@ export function useExportTask(options: UseExportTaskOptions): ExportTaskControll
   const exportTask = ref<ExportTask | null>(null)
   const exportError = ref("")
   const exportBusy = ref(false)
+  const lifecycle = useLatestRead()
+  let current: AbortSignal | undefined
+  let disposed = false
+  let downloadController: AbortController | undefined
+  watch(
+    () => exportTask.value?.id,
+    () => downloadController?.abort(),
+    { flush: "sync" },
+  )
+
+  function invalidate(): void {
+    lifecycle.cancel()
+    downloadController?.abort()
+    polling.stop()
+    exportTask.value = null
+    exportBusy.value = false
+    exportError.value = ""
+  }
+  window.addEventListener(SESSION_CLEARING_EVENT, invalidate)
+  if (getCurrentScope())
+    onScopeDispose(() => {
+      disposed = true
+      invalidate()
+      window.removeEventListener(SESSION_CLEARING_EVENT, invalidate)
+    })
 
   /** 查询一次导出任务状态；终态或查询失败返回 true 停止轮询。 */
   async function pollOnce(): Promise<boolean> {
-    if (!exportTask.value) return true
+    const signal = current
+    const task = exportTask.value
+    if (!task || !signal || signal.aborted) return true
     try {
-      exportTask.value = await getExportTask(exportTask.value.id)
+      const result = await getExportTask(task.id, signal)
+      if (signal.aborted) return false
+      exportTask.value = result
+      return result.status === "done" || result.status === "failed"
     } catch (error) {
+      if (signal.aborted) return false
       exportError.value = errorText(error, "导出状态查询失败")
       return true
     }
-    return exportTask.value.status === "done" || exportTask.value.status === "failed"
   }
 
   const polling = usePolling(pollOnce, {
@@ -72,38 +105,62 @@ export function useExportTask(options: UseExportTaskOptions): ExportTaskControll
   })
 
   async function start(create: () => Promise<ExportTask>): Promise<boolean> {
+    if (disposed) return false
+    downloadController?.abort()
+    const signal = lifecycle.start()
+    current = signal
+    polling.stop()
+    exportTask.value = null
     exportBusy.value = true
     exportError.value = ""
     try {
-      exportTask.value = await create()
+      const result = await create()
+      if (signal.aborted) return false
+      exportTask.value = result
       // 重复发起导出会开启新任务：restart 重置旧轮询链，保证任何时候只有一条。
       polling.restart()
       return true
     } catch (error) {
+      if (signal.aborted) return false
       exportError.value = errorText(error, "导出创建失败")
       return false
     } finally {
-      exportBusy.value = false
+      if (!signal.aborted) exportBusy.value = false
     }
   }
 
   async function download(filenamePrefix: string): Promise<void> {
     const task = exportTask.value
-    if (!task) return
+    if (!task || disposed) return
+    const origin = defaultSessionDocument.captureOrigin()
+    downloadController?.abort()
+    const controller = new AbortController()
+    downloadController = controller
+    const release = defaultSessionDocument.trackController(controller)
+    const live = () =>
+      !disposed &&
+      !controller.signal.aborted &&
+      defaultSessionDocument.isOriginCurrent(origin) &&
+      exportTask.value?.id === task.id
     let password: string | null = null
+    let stepUpToken: string | undefined
     try {
-      let stepUpToken: string | undefined
       if (task.decrypted) {
         password = await promptExportPassword()
-        if (password === null) return
-        stepUpToken = (await issueExportStepUp(task.id, password)).token
+        if (password === null || !live()) return
+        stepUpToken = (await issueExportStepUp(task.id, password, controller.signal)).token
+        password = null
+        if (!live()) return
       }
-      const blob = await downloadExport(task, stepUpToken)
+      const blob = await downloadExport(task, stepUpToken, controller.signal)
+      if (!live()) return
       saveBlob(blob, `${filenamePrefix}-${task.id}.csv`)
     } catch (error) {
-      ElMessage.error(errorText(error, "下载失败"))
+      if (live()) ElMessage.error(errorText(error, "下载失败"))
     } finally {
       password = null
+      stepUpToken = undefined
+      release()
     }
   }
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 _AGENT_STALE_PAUSE_SCRIPT = (
+    "redis.call('incr','ratelimit:queue:pause-generation'); "
     "redis.call('set',KEYS[1],ARGV[1]); "
     "redis.call('set',KEYS[2],ARGV[1]); return 1"
 )

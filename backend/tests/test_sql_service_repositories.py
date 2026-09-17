@@ -1054,6 +1054,8 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
                         "created_at": report.report_time,
                         "batch_id": 3,
                         "chunk_id": 7,
+                        "status": "sent",
+                        "prior_report_state_drift": False,
                     }
                 ]
             ),
@@ -1066,6 +1068,8 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
                         "created_at": report.report_time,
                         "batch_id": 3,
                         "chunk_id": 7,
+                        "status": "sent",
+                        "prior_report_state_drift": False,
                     }
                 ]
             ),
@@ -1073,7 +1077,7 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
             FakeResult(scalar=8),
             FakeResult(),
             FakeResult(),
-            FakeResult(),
+            FakeResult(scalar=3),
             FakeResult(scalar="sending"),
             FakeResult(),
         ]
@@ -1097,6 +1101,11 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
     assert "stat_dirty_date" in connection.calls[8][0]
     assert "ON CONFLICT(stat_date) DO NOTHING" in connection.calls[8][0]
     assert "WHEN b.status='completed_unknown' THEN 'completed_unknown'" in connection.calls[9][0]
+    assert "GROUP BY" not in connection.calls[9][0]
+    assert connection.calls[9][1] == {
+        "batch_id": 3, "delta": 0, "delivered_delta": 1, "failed_delta": 0,
+        "active_delta": -1,
+    }
     assert "SELECT status FROM sms_batch" in connection.calls[10][0]
     assert "late_evidence_at" in connection.calls[11][0]
     assert "unknown_terminal" in connection.calls[11][0]
@@ -1427,7 +1436,7 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = BatchQueryService()
-    connection = FakeConnection([FakeResult(scalar=0), FakeResult(rows=[]), FakeResult(rows=[])])
+    connection = FakeConnection([FakeResult(rows=[]), FakeResult(rows=[])])
     bind_engine(monkeypatch, service, connection)
 
     result = await service.list_batches(
@@ -1445,7 +1454,7 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
     )
 
     assert result == {"total": 0, "status_counts": {}, "items": []}
-    for sql, params in (connection.calls[0], connection.calls[2]):
+    for sql, params in (connection.calls[1],):
         assert "IS NULL" not in sql
         assert "b.status=ANY(:statuses)" in sql
         assert params == {
@@ -1454,11 +1463,11 @@ async def test_batch_list_builds_only_present_filters_for_asyncpg(
             "limit": 20,
             "offset": 0,
         }
-    counts_sql, counts_params = connection.calls[1]
+    counts_sql, counts_params = connection.calls[0]
     assert "GROUP BY b.status" in counts_sql
     assert ":statuses" not in counts_sql
     assert counts_params == {"scope_dept": "业务一部"}
-    rows_sql = connection.calls[2][0]
+    rows_sql = connection.calls[1][0]
     assert "count(*) FILTER (WHERE m.status='pending')" in rows_sql
     assert "count(*) FILTER (WHERE m.status='sent')" in rows_sql
     assert "count(*) FILTER (WHERE m.status='other')" in rows_sql
@@ -1471,7 +1480,6 @@ async def test_batch_list_status_counts_are_faceted_without_status_filter(
     service = BatchQueryService()
     connection = FakeConnection(
         [
-            FakeResult(scalar=3),
             FakeResult(
                 rows=[
                     {"status": "sending", "n": 2},
@@ -1497,8 +1505,10 @@ async def test_batch_list_status_counts_are_faceted_without_status_filter(
         size=20,
     )
 
+    assert result["total"] == 2
+    assert len(connection.calls) == 2
     assert result["status_counts"] == {"sending": 2, "balance_blocked": 1}
-    counts_sql, counts_params = connection.calls[1]
+    counts_sql, counts_params = connection.calls[0]
     assert "b.category=:category" in counts_sql
     assert ":statuses" not in counts_sql
     assert counts_params == {"category": "notice"}
@@ -1509,7 +1519,7 @@ async def test_batch_list_batch_no_filter_escapes_like_wildcards(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service = BatchQueryService()
-    connection = FakeConnection([FakeResult(scalar=0), FakeResult(rows=[]), FakeResult(rows=[])])
+    connection = FakeConnection([FakeResult(rows=[]), FakeResult(rows=[])])
     bind_engine(monkeypatch, service, connection)
 
     await service.list_batches(
@@ -1642,7 +1652,9 @@ async def test_pipeline_read_repository_returns_config_filters_and_idempotency(
     assert fingerprint is not None
     assert fingerprint.digest == "a" * 64
     assert fingerprint.key_version == 2
-    assert "balance_blocked" in connection.calls[0][0]
+    assert (
+        "b.status NOT IN ('completed','rejected','expired','cancelled')" in connection.calls[0][0]
+    )
 
     connection = FakeConnection([FakeResult(rows=[])])
     bind_engine(monkeypatch, store, connection)
@@ -1670,6 +1682,8 @@ async def test_resend_repository_scopes_batch_and_reads_only_failed_ciphertext(
         "is_test": False,
     }
     failed = {
+        "id": 1,
+        "created_at": datetime(2026, 9, 12, tzinfo=UTC),
         "phone_enc": b"ciphertext",
         "phone_hmac": "a" * 64,
         "key_version": 2,

@@ -42,6 +42,12 @@ class ConfigSpec:
 
 # 系统参数唯一注册表：新增参数只需在此登记并同步 schema.sql seed。
 CONFIG_SPECS: dict[str, ConfigSpec] = {
+    "auth_admission_policy": ConfigSpec(
+        '{"version":1,"shared_burst":100,"shared_window":200,"shared_refill_ms":1000,'
+        '"global_burst":8,"global_refill_ms":250,"global_concurrent":4,"source_concurrent":2,'
+        '"spray_failures":12,"spray_sources":4,"spray_delay_ms":250}',
+        "json", GROUP_SECURITY,
+    ),
     "approval_threshold": ConfigSpec("100", "int", GROUP_SENDING, maximum=1_000_000),
     "market_approval_threshold": ConfigSpec(
         "50", "int", GROUP_SENDING, maximum=1_000_000
@@ -106,6 +112,9 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     "export_retention_days": ConfigSpec("7", "int", GROUP_LIFECYCLE, maximum=90),
     "sensitive_hit_action": ConfigSpec("block", "str", GROUP_SENDING),
     "key_grace_hours": ConfigSpec("72", "int", GROUP_SECURITY, maximum=720),
+    "local_temporary_password_ttl_hours": ConfigSpec(
+        "24", "int", GROUP_SECURITY, minimum=1, maximum=168
+    ),
     "login_fail_limit": ConfigSpec("5", "int", GROUP_SECURITY, maximum=20),
     "login_lock_minutes": ConfigSpec("15", "int", GROUP_SECURITY, maximum=1_440),
     "login_ip_fail_limit": ConfigSpec("20", "int", GROUP_SECURITY, maximum=1_000),
@@ -165,6 +174,9 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
     ),
     "security_daily_config_operation_id": ConfigSpec("", "str", GROUP_SECURITY),
     "security_daily_resend_api_key": ConfigSpec("", "str", GROUP_SECURITY),
+    "security_daily_recipient_set_digest": ConfigSpec(
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "str", GROUP_SECURITY
+    ),
     "security_daily_resend_configured": ConfigSpec("false", "bool", GROUP_SECURITY),
     "api_key_unclassified_algorithms": ConfigSpec("", "str", GROUP_SECURITY),
 }
@@ -314,6 +326,12 @@ class RuntimePolicy:
     @classmethod
     def from_mapping(cls, supplied: Mapping[str, Any]) -> RuntimePolicy:
         values = DEFAULTS | {key: str(value) for key, value in supplied.items()}
+        from app.core.auth.admission_policy import AdmissionLimits
+
+        try:
+            AdmissionLimits.model_validate_json(values["auth_admission_policy"])
+        except ValueError:
+            raise InvalidRuntimePolicy("auth_admission_policy 格式或容量上界无效") from None
         parsed: dict[str, int] = {}
         for key, spec in CONFIG_SPECS.items():
             if spec.value_type == "int":

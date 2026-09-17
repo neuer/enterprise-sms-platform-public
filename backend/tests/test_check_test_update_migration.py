@@ -122,6 +122,16 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0107_report_timeout_sweep",
         "0108_chunk_failover_pending",
         "0109_report_timeout_fairness",
+        "0110_uncertain_child_provenance",
+        "0111_report_batch_active_count",
+        "0112_auth_admission_policy",
+        "0113_auth_spray_policy",
+        "0114_send_app_policy_privileges",
+        "0115_idempotency_result_lifecycle",
+        "0116_usage_release_generation",
+        "0117_review_acceptance_facts",
+        "0118_role_mapping_invalidation",
+        "0119_temporary_password_expiry",
     ]
 
 

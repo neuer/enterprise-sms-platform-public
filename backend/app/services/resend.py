@@ -11,7 +11,7 @@ from app.core.auth.accounts import ActorPrincipal
 from app.core.runtime_resources import database_engine
 from app.services.batch_query import BatchAccessScope, BatchNotFound
 from app.services.crypto import CryptoService, EncryptionContext
-from app.services.pipeline import SendRequest
+from app.services.pipeline import FailedSourceReference, SendRequest
 from app.settings import Settings, get_settings
 
 RESEND_FAILED_BIZ_ID = "failed-recipients-v1"
@@ -26,6 +26,7 @@ class EncryptedFailedPhone:
     phone_enc: bytes
     phone_hmac: str
     key_version: int
+    source: FailedSourceReference | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +78,8 @@ class SqlResendRepository:
                 phone_result = await connection.execute(
                     text(
                         """
-                        SELECT m.phone_enc,trim(m.phone_hmac) phone_hmac,m.key_version
+                        SELECT m.id,m.created_at,m.phone_enc,
+                            trim(m.phone_hmac) phone_hmac,m.key_version
                         FROM sms_message m
                         JOIN sms_batch b ON b.id=m.batch_id
                         WHERE b.batch_no=:batch_no AND m.status='failed'
@@ -91,6 +93,12 @@ class SqlResendRepository:
                         cast(bytes, row["phone_enc"]),
                         str(row["phone_hmac"]),
                         int(row["key_version"]),
+                        FailedSourceReference(
+                            int(row["id"]),
+                            row["created_at"],
+                            str(row["phone_hmac"]),
+                            int(row["key_version"]),
+                        ),
                     )
                     for row in phone_result.mappings()
                 )
@@ -150,5 +158,8 @@ class ResendService:
             biz_id=RESEND_FAILED_BIZ_ID,
             is_test=source.is_test,
             resend_of=source.batch_no,
+            failed_sources=tuple(
+                item.source for item in source.failed_phones if item.source is not None
+            ),
             resend_dept=source.dept,
         )

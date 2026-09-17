@@ -75,7 +75,7 @@ def test_runbook_defines_one_on_demand_test_deployment_workflow() -> None:
         "提交修改",
         "推送目标分支",
         "自动 Draft PR",
-        "自动 Ready",
+        "人工改为 Ready",
         "squash merge",
         "最新 `origin/main`",
         "scripts/test_update.sh plan --ref origin/main",

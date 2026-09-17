@@ -21,14 +21,19 @@ from app.services.usage_ledger import (
     _ACTIVE_RESERVATION_STATES,
     APPLY_PROJECTION_LUA,
     APPLY_PROJECTIONS_LUA,
+    BEGIN_PROJECTION_REBUILD_LUA,
     FREQUENCY_DECISION_CHUNK,
     FREQUENCY_MERGE_FUTURE_DAY_SKEW,
     FREQUENCY_MERGE_FUTURE_MINUTE_SKEW,
+    PUBLISH_PROJECTION_READY_LUA,
+    RENEW_PROJECTION_REBUILD_LUA,
     FrequencyDecisionItem,
+    ProjectionRow,
     UsageLedgerService,
     UsageProjectionUnavailable,
     UsageReservationConflict,
     _ensure_frequency_subject,
+    _lock_projection_keys,
     commit_usage_reservation,
     request_usage_release_for_batch,
     shanghai_day,
@@ -67,6 +72,25 @@ class ProjectionRedis:
     async def eval(self, script: str, numkeys: int, *args: Any) -> int:
         if self.fail or self.fail_eval:
             raise ConnectionError("synthetic redis outage")
+        if script == BEGIN_PROJECTION_REBUILD_LUA:
+            barrier, ready, token, _ttl = args
+            self.values[str(barrier)] = str(token)
+            self.values.pop(str(ready), None)
+            return 1
+        if script == RENEW_PROJECTION_REBUILD_LUA:
+            barrier, token, _ttl = args
+            return int(self.values.get(str(barrier)) == str(token))
+        if script == PUBLISH_PROJECTION_READY_LUA:
+            keys, arguments = args[:numkeys], args[numkeys:]
+            owner = self.values.get(str(keys[0]))
+            token = str(arguments[0])
+            if (not token and owner is not None) or (token and owner != token):
+                return 0
+            for key in keys[1:]:
+                self.values[str(key)] = "1"
+            if token:
+                self.values.pop(str(keys[0]), None)
+            return 1
         if script == APPLY_PROJECTION_LUA:
             assert numkeys == 2
             key, version_key, value, version, _expires_at = args
@@ -93,6 +117,16 @@ class ProjectionRedis:
             self.values[str(version_key)] = str(version)
             applied += 1
         return applied
+
+
+async def _ensure_frequency_subject_with_alias_locks(
+    connection: Any,
+    item: FrequencyDecisionItem,
+) -> tuple[UUID, str, tuple[ProjectionRow, ...]]:
+    """沿生产受理入口的 alias 锁合同调用归并内核，避免锁外快照竞态。"""
+
+    await _lock_projection_keys(connection, list(item.hmac_aliases.values()), namespace=41)
+    return await _ensure_frequency_subject(connection, item)
 
 
 async def _create_batch(
@@ -1244,7 +1278,9 @@ async def test_frequency_subject_merge_combines_live_same_window_projections() -
 
         async def merge_once() -> tuple[UUID, str, int]:
             async with engine.begin() as connection:
-                subject_id, hmac, rows = await _ensure_frequency_subject(connection, item)
+                subject_id, hmac, rows = await _ensure_frequency_subject_with_alias_locks(
+                    connection, item
+                )
                 return subject_id, hmac, len(rows)
 
         first = await merge_once()
@@ -1346,7 +1382,7 @@ async def test_frequency_subject_merge_combines_live_same_window_projections() -
 
         try:
             async with engine.begin() as connection:
-                await _ensure_frequency_subject(connection, item)
+                await _ensure_frequency_subject_with_alias_locks(connection, item)
                 raise RuntimeError("synthetic-merge-abort")
         except RuntimeError:
             pass
@@ -1566,7 +1602,9 @@ async def test_frequency_subject_merge_keeps_newest_live_window() -> None:
 
         async def merge_once() -> tuple[UUID, str, int]:
             async with engine.begin() as connection:
-                subject_id, hmac, rows = await _ensure_frequency_subject(connection, item)
+                subject_id, hmac, rows = await _ensure_frequency_subject_with_alias_locks(
+                    connection, item
+                )
                 return subject_id, hmac, len(rows)
 
         first = await merge_once()
@@ -1817,7 +1855,7 @@ async def test_frequency_subject_merge_rejects_future_window_clock_skew() -> Non
 
         with pytest.raises(UsageReservationConflict, match="frequency merge window clock skew"):
             async with engine.begin() as connection:
-                await _ensure_frequency_subject(connection, item)
+                await _ensure_frequency_subject_with_alias_locks(connection, item)
 
         async with engine.connect() as connection:
             subjects = await connection.scalar(
@@ -2190,7 +2228,9 @@ async def test_expired_source_projection_merge_completes_terminal_release() -> N
             )
 
         async with engine.begin() as connection:
-            subject_id, hmac, _rows = await _ensure_frequency_subject(connection, item)
+            subject_id, hmac, _rows = await _ensure_frequency_subject_with_alias_locks(
+                connection, item
+            )
             assert subject_id == subject_a
             assert hmac == digest_a
             await _assert_active_entries_have_projections(
@@ -2562,7 +2602,9 @@ async def test_expired_source_merge_and_release_are_safe_under_concurrency() -> 
 
         async def merge_once() -> tuple[UUID, str]:
             async with engine.begin() as connection:
-                subject_id, hmac, _rows = await _ensure_frequency_subject(connection, item)
+                subject_id, hmac, _rows = await _ensure_frequency_subject_with_alias_locks(
+                    connection, item
+                )
                 return subject_id, hmac
 
         results = await asyncio.wait_for(
@@ -2735,4 +2777,40 @@ async def test_frequency_many_sql_is_chunk_bounded_for_new_and_existing_subjects
         assert len(small_sql) <= 40
     finally:
         await cleanup()
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_projection_writer_and_rebuild_locks_exclude_each_other_until_transaction_release(
+) -> None:
+    """真实 PG 两会话验证写者提交/回滚与重建 session lock 的双向边界。"""
+
+    from app.services.usage_ledger import PROJECTION_REBUILD_KEY, _lock_projection_writer
+
+    engine = create_async_engine(make_url(os.environ["OUTBOX_POSTGRES_DSN"]))
+    redis = ProjectionRedis()
+    service = UsageLedgerService(redis, cast(Any, SimpleNamespace(database_url=engine.url)))
+    try:
+        async with engine.connect() as writer, engine.connect() as owner:
+            async with writer.begin():
+                await _lock_projection_writer(writer)
+                with pytest.raises(UsageProjectionUnavailable, match="rebuild in progress"):
+                    await service._claim_rebuild_lock(owner, "20260907")
+                await owner.rollback()
+            # Commit released the transaction-scoped shared lock.
+            token = await service._claim_rebuild_lock(owner, "20260907")
+            assert redis.values[PROJECTION_REBUILD_KEY] == token
+            try:
+                async with writer.begin():
+                    with pytest.raises(UsageProjectionUnavailable, match="rebuild in progress"):
+                        await _lock_projection_writer(writer)
+            finally:
+                await service._release_rebuild_lock(owner)
+            # Releasing the session lock permits a writer again; rollback also releases it.
+            transaction = await writer.begin()
+            await _lock_projection_writer(writer)
+            await transaction.rollback()
+            await service._claim_rebuild_lock(owner, "20260907")
+            await service._release_rebuild_lock(owner)
+    finally:
         await engine.dispose()
