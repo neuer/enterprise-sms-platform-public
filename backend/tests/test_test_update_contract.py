@@ -1474,6 +1474,46 @@ def test_rebaseline_accepts_reviewed_historical_non_runtime_paths() -> None:
 @pytest.mark.parametrize(
     "path",
     [
+        "deploy/auth-policy/.gitkeep",
+        "docs/runbooks/auth-admission-ldap.md",
+        "scripts/auth_timing_report.py",
+        "scripts/check_backend_static.py",
+        "scripts/check_coverage_gates.py",
+        "scripts/check_gate_contracts.py",
+        "scripts/dev_check_impl.sh",
+        "scripts/gate_policy.py",
+        "scripts/gate_snapshot.py",
+        "scripts/run_backend_tests.sh",
+    ],
+)
+def test_reviewed_offline_paths_do_not_trigger_runtime_update(path: str) -> None:
+    change = classify_changed_paths([path])
+    assert not change.runtime_changed
+    assert not change.components
+    assert not change.migration_changed
+    migration = "backend/migrations/versions/0116_usage_release_generation.py"
+    rebaseline = classify_rebaseline_paths([path, migration])
+    assert rebaseline.migration_changed
+    assert rebaseline.risk == "high-risk"
+    assert rebaseline.components == frozenset({"api", "web"})
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["deploy/auth-policy/policy.json", "scripts/future_gate.py"],
+)
+def test_offline_path_exceptions_do_not_allow_adjacent_runtime_paths(path: str) -> None:
+    with pytest.raises(ContractError, match="fast update forbidden"):
+        classify_changed_paths([path])
+    with pytest.raises(ContractError, match="fast update forbidden"):
+        classify_rebaseline_paths(
+            [path, "backend/migrations/versions/0116_usage_release_generation.py"]
+        )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
         "deploy/postgres.Dockerfile",
         "deploy/production-storage-initialization.md",
         "deploy/production-storage-manifest.example.json",
