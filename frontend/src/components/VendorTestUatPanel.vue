@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { isSafeBusinessId, newIdempotencyKey } from "../lib/idempotency"
 import { defaultSessionDocument } from "../api/sessionDocument"
 import { useApprovedResources } from "../composables/useApprovedResources"
 
@@ -171,6 +172,10 @@ async function runPreview(): Promise<boolean> {
 }
 
 async function send(): Promise<void> {
+  if (pendingBizId && !isSafeBusinessId(pendingBizId)) {
+    ElMessage.error("旧请求的业务标识不符合隐私规则；请先核对原发送结果，不能换号重试")
+    return
+  }
   if (!formReady.value || !selectedRecipient.value) {
     ElMessage.warning("真实 UAT 信息尚未填写完整")
     return
@@ -203,7 +208,7 @@ async function send(): Promise<void> {
     return
   sending.value = true
   try {
-    const bizId = pendingBizId || crypto.randomUUID().replaceAll("-", "")
+    const bizId = pendingBizId || newIdempotencyKey()
     if (!pendingBizId) rememberPendingBizId(bizId)
     const operation = await sendVendorTestUat({
       ...parameters,
