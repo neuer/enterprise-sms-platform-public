@@ -760,7 +760,7 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
             raise TestUpdateContractError("rebaseline requires source_ref origin/main")
         if public_cutover is not None:
             raise TestUpdateContractError("rebaseline must not carry public_cutover")
-        if components != _REBASELINE_COMPONENTS:
+        if components not in (_REBASELINE_COMPONENTS, _REBASELINE_COMPONENTS | {"redis"}):
             raise TestUpdateContractError("rebaseline requires api and web components")
         if compatibility != "expand":
             raise TestUpdateContractError("rebaseline requires expand migration")
@@ -964,7 +964,7 @@ def classify_rebaseline_paths(paths: Iterable[str]) -> ChangedScope:
     high_risk_paths = set(regular.high_risk_paths)
     high_risk_paths.update(rebaseline_high_risk_paths)
     return ChangedScope(
-        components=frozenset({"api", "web"}),
+        components=regular.components | _REBASELINE_COMPONENTS,
         migration_changed=True,
         backend_tests=regular.backend_tests,
         frontend_tests=regular.frontend_tests,

@@ -133,7 +133,9 @@ scripts/test_update.sh rebaseline --ref origin/main
 
 该入口不放宽日常分类器，只接受合同中枚举的固定历史非运行态文件和普通快速更新路径；
 两个旧运行控制脚本如出现在差异中必须成对出现，未发生差异时不要求制造伪变更。入口必须
-同时存在真实迁移前移，并强制构建 API/Web。执行前必须按
+同时存在真实迁移前移，并强制构建 API/Web。
+Redis 镜像或 ACL 入口有差异时，还必须保留 Redis 组件并在 writer 切换前更新；
+不得以强制 API/Web 清单覆盖实际受影响组件。执行前必须按
 [`deploy/README.md`](deploy/README.md) 的“一次性主机安装”把 root-owned host-control
 快照绑定到同一目标 commit，且目标 commit 的 `backend`、`frontend`、`security`、`g2`
 PR 证据必须已由合并提交的精确 `ci-gate` 绑定并验证成功。后续仍走 high-risk 的暂停、
