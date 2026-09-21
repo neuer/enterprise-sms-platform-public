@@ -107,10 +107,15 @@ _REBASELINE_MIGRATION_FROM = "0053_idempotency_scope"
 _REBASELINE_MIGRATION_TARGET = "0061_vendor_binding_outbox"
 _REBASELINE_RESUME_MIGRATION_FROM = "0079_security_daily_publish_outbox"
 _REBASELINE_RESUME_MIGRATION_TARGET = "0081_sign_adoption_contract"
+_REBASELINE_TEST_MIGRATIONS = (
+    "0108_chunk_failover_pending", "0119_temporary_password_expiry",
+)
+_REBASELINE_TEST_BASE = "d715624d18e6897f6916fcef9fbdc8622d41eb15"
 _APPROVED_REBASELINE_MIGRATIONS = frozenset(
     {
         (_REBASELINE_MIGRATION_FROM, _REBASELINE_MIGRATION_TARGET),
         (_REBASELINE_RESUME_MIGRATION_FROM, _REBASELINE_RESUME_MIGRATION_TARGET),
+        _REBASELINE_TEST_MIGRATIONS,
     }
 )
 _REBASELINE_VERIFY_STEPS = frozenset(
@@ -1594,6 +1599,15 @@ class HostTestUpdateOperations:
             shutil.rmtree(temporary_root, ignore_errors=True)
 
     def _require_approved_rebaseline_migration(self) -> None:
+        if (
+            (self.request.migration_from, self.request.migration_target)
+            == _REBASELINE_TEST_MIGRATIONS
+            and (
+                self.request.environment_mode != "pre-live"
+                or self.request.base_commit != _REBASELINE_TEST_BASE
+            )
+        ):
+            raise TestUpdateManagerError("rebaseline test baseline scope is invalid")
         if (
             self.request.operation != "rebaseline"
             or (
