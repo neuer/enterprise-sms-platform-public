@@ -6,7 +6,6 @@ import asyncio
 import os
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from uuid import uuid4
 
@@ -39,18 +38,16 @@ def test_0108_upgrade_preserves_existing_config_and_reaches_0119() -> None:
             await connection.close()
 
     def upgrade(revision: str) -> None:
-        with tempfile.TemporaryDirectory(prefix="rebaseline-secret-") as directory:
-            secret = Path(directory) / "db_owner_password"
-            secret.touch(mode=0o600)
-            secret.write_text(owner.password or "", encoding="utf-8")
-            environment = dict(
-                os.environ, DB_NAME=database, DB_HOST="127.0.0.1",
-                DB_PORT=str(owner.port), DB_OWNER_PASSWORD_FILE=str(secret),
-            )
-            result = subprocess.run(
-                [sys.executable, "-m", "alembic", "upgrade", revision],
-                cwd=backend, env=environment, capture_output=True, text=True,
-            )
+        # 复用官方一次性入口的只读 secret 文件，不复制或重新落盘密码。
+        secret_file = os.environ["DB_OWNER_PASSWORD_FILE"]
+        environment = dict(
+            os.environ, DB_NAME=database, DB_HOST="127.0.0.1",
+            DB_PORT=str(owner.port), DB_OWNER_PASSWORD_FILE=secret_file,
+        )
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", revision],
+            cwd=backend, env=environment, capture_output=True, text=True,
+        )
         # 不回显子进程原始输出，避免异常 DSN 进入测试报告。
         returncode = result.returncode
         del result
