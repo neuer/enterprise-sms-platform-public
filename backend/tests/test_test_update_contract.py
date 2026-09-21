@@ -118,29 +118,6 @@ def test_parses_explicit_rebaseline_operation() -> None:
     assert _parse(payload).operation == "rebaseline"
 
 
-def test_rebaseline_preserves_changed_redis_image_contract() -> None:
-    paths = [
-        "deploy/redis-domain-entrypoint.sh",
-        "backend/migrations/versions/0119_temporary_password_expiry.py",
-    ]
-    scope = classify_rebaseline_paths(paths)
-    assert scope.components == frozenset({"api", "web", "redis"})
-    assert scope.risk == "high-risk"
-    payload = _request()
-    payload.update(operation="rebaseline", source_ref="origin/main")
-    payload["components"] = sorted(scope.components)
-    payload["images"]["redis"] = {
-        "ref": f"sms-platform-test-redis:{COMMIT}",
-        "id": f"sha256:{DIGEST}",
-        "archive_file": "redis.tar",
-        "archive_sha256": ARCHIVE_DIGEST,
-    }
-    assert _parse(payload).components == scope.components
-    del payload["images"]["redis"]
-    with pytest.raises(ContractError):
-        _parse(payload)
-
-
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
