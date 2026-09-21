@@ -175,6 +175,7 @@ SQL
 
   ENVIRONMENT=test DEBUG=1 AUTH_MOCK=1 VENDOR_MOCK=1 \
   SMS_ISOLATED_TEST_DATABASE="$database" \
+  DB_OWNER_PASSWORD_FILE="$owner_password_file" \
   VENDOR_UAT_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
   EXPORT_AUTH_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \
   SECURITY_SESSION_POSTGRES_DSN="postgresql+asyncpg://sms_owner:${owner_password}@127.0.0.1:${port}/${database}" \

@@ -117,6 +117,13 @@ bundle/API/Web 三个大产物，但保留 manifest/request、test-update store 
 
 ### 同历史测试基线重对齐
 
+已演练的测试基线 `d715624d18e6897f6916fcef9fbdc8622d41eb15` 可在
+`pre-live` 状态下使用精确 `0108_chunk_failover_pending → 0119_temporary_password_expiry`
+区间；不接受其它基线、真实联调模式或任意未来迁移。该兼容路径不执行旧版密钥扩展，
+不升级 PostgreSQL 镜像，不增加业务功能。合并后的精确 CI、同 commit 主机控制快照、
+暂停与不安全分片检查、密文 checkpoint、迁移检查及最终 verify 仍为必要条件。
+演练仅使用旧提交规范 schema 和合成数据，不代表共享测试库已有数据已完成验收。
+
 当服务器 commit 仍是目标 `origin/main` 的祖先，但跨越多个已审核迁移，且日常 `apply`
 只因固定的旧运行凭据准备/撤销脚本与操作文档差异失败关闭时，允许一次性执行：
 

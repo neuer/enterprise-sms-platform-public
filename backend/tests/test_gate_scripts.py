@@ -138,6 +138,10 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
     assert "postgres:16-alpine" in postgres_gate
     assert "POSTGRES_PASSWORD_FILE" in postgres_gate
     assert "DB_OWNER_PASSWORD_FILE" in postgres_gate
+    assert (
+        'SMS_ISOLATED_TEST_DATABASE="$database" \\\n'
+        '  DB_OWNER_PASSWORD_FILE="$owner_password_file"'
+    ) in postgres_gate
     assert "DATA_AES_KEY_FILE" in postgres_gate
     assert "DATA_HMAC_KEY_FILE" in postgres_gate
     assert "secrets.token_bytes(32)" in postgres_gate

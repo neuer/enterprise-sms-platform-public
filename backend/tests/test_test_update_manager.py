@@ -348,6 +348,40 @@ def test_current_rebaseline_does_not_repeat_legacy_secret_expansion() -> None:
     assert store.state is State.CHECKPOINTED
 
 
+@pytest.mark.parametrize(
+    ("mode", "base", "target", "allowed"),
+    [
+        (
+            "pre-live", "d715624d18e6897f6916fcef9fbdc8622d41eb15",
+            "0119_temporary_password_expiry", True,
+        ),
+        (
+            "live", "d715624d18e6897f6916fcef9fbdc8622d41eb15",
+            "0119_temporary_password_expiry", False,
+        ),
+        ("pre-live", "a" * 40, "0119_temporary_password_expiry", False),
+        ("pre-live", "d715624d18e6897f6916fcef9fbdc8622d41eb15", "0120_unapproved", False),
+    ],
+)
+def test_test_rebaseline_is_bound_to_exact_inactive_baseline(
+    tmp_path: Path, mode: str, base: str, target: str, allowed: bool,
+) -> None:
+    operations = _rebaseline_operations(tmp_path)
+    operations.request = SimpleNamespace(
+        operation="rebaseline", migration_compatibility="expand",
+        migration_from="0108_chunk_failover_pending", migration_target=target,
+        environment_mode=mode, base_commit=base,
+    )
+    if allowed:
+        operations._require_approved_rebaseline_migration()
+        assert not update_manager_module._needs_legacy_rebaseline_secret_expansion(
+            "0108_chunk_failover_pending", target,
+        )
+    else:
+        with pytest.raises(ManagerError, match="scope is invalid"):
+            operations._require_approved_rebaseline_migration()
+
+
 def test_queued_and_scheduled_do_not_block_but_unsafe_chunk_states_do() -> None:
     operations = FakePrepareOperations({"submitting": 0, "retrying": 0, "uncertain": 1})
     store = FakeStore()
