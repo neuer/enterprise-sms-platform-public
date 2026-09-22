@@ -129,10 +129,11 @@ pre-live 的 `prepare` 还会协调旧测试环境的根 `.env`：仅允许整�
 
 1. 完成开发并运行 `scripts/dev_check.sh --changed`。
 2. 提交修改，确认本地工作树干净。
-3. 推送目标分支到 `origin`，确认自动 Draft PR 已创建。核验精确 push CI 成功并完成
-   独立 Code Review 后，人工改为 Ready；满足 required reviews、`ci-gate`、会话解决
-   与冲突保护后请求 squash merge。当前公开仓库没有自动 Ready/合并工作流；若分支
-   落后或冲突，先处理并重新推送，再核验新 head SHA 的 CI 与评审状态。
+3. 推送目标分支到 `origin`，确认自动 Draft PR 已创建。核验精确 push CI 成功且用户
+   已授权合并后，人工改为 Ready；满足实际配置的 required reviews、`ci-gate`、会话解决
+   与冲突保护后请求 squash merge。项目不额外要求独立评审或逐提交的口头确认。
+   当前公开仓库没有自动 Ready/合并工作流；若分支落后或冲突，先处理并重新推送，
+   再核验新 head SHA 的 CI 与 GitHub 实际合并条件。
 4. 确认 `gh auth status --hostname github.com` 有效；失效时只走官方设备/浏览器登录。
 5. 获取合并后的最新 `origin/main`，确认其 SHA 正是本次 PR 的 squash 结果，并核验
    该 SHA 的 GitHub Actions `ci-gate=success`；缺少时按 MAINTENANCE.md 的人工 CI 流程补齐。

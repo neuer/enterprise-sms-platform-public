@@ -22,8 +22,9 @@ cherry-pick 或推送其中的任何 Git 对象。
    正常开发后运行 `scripts/dev_check.sh --changed`。
 3. 推送分支；版本化 Hook 同时扫描工作区与新增提交，安全内容无需人工解锁。
 4. owner 分支自动创建 Draft PR；当前公开仓库没有自动 Ready/合并工作流。精确 push
-   CI 成功并完成独立 Code Review 后，由操作者将同一 SHA 的 PR 改为 Ready。
-5. required `ci-gate`、required reviews、会话解决和冲突保护全部满足后，人工请求
+   CI 成功且用户已授权合并后，可将同一 SHA 的 PR 改为 Ready；不额外要求独立评审
+   或逐提交的口头确认，评审要求以 GitHub 实际生效的分支保护和 ruleset 为准。
+5. required `ci-gate`、实际配置的 required reviews、会话解决和冲突保护全部满足后，请求
    squash merge；禁止管理员绕过，`main` 禁止直接推送、强推和删除。合并后核验
    实际 merge SHA 的 GitHub Actions `ci-gate=success`，不能以 PR head 结果替代。
 6. 只有需要共享环境验收时才更新测试服务器：先确认

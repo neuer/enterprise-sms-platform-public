@@ -36,10 +36,12 @@ git push -u origin <branch>
 
 推送时，`pre-push` Hook 会扫描工作区和即将公开的提交，只报告文件/规则而不回显命中内容。
 owner 分支会自动创建 Draft PR；当前公开仓库没有自动 Ready/合并工作流。
-精确 push CI 成功并完成独立 Code Review 后，由操作者将 PR 改为 Ready 并请求
-squash merge。required `ci-gate`、required reviews、会话解决和冲突保护全部满足后
-才能合并，禁止管理员绕过。若 PR 落后于 main 或存在冲突，先在任务分支处理并重新
-推送，再核验新 head SHA 的 CI 与评审状态。
+精确 push CI 成功且用户已授权合并后，可将 PR 改为 Ready 并请求 squash merge。
+项目流程不再额外要求独立 Code Review 或逐提交的口头评审确认；评审要求以 GitHub
+实际生效的分支保护和 ruleset 为准，已配置的 required reviews 仍须满足。
+required `ci-gate`、会话解决和冲突保护全部满足后才能合并，禁止管理员绕过。
+若 PR 落后于 main 或存在冲突，先在任务分支处理并重新推送，再核验新 head SHA 的 CI
+与 GitHub 实际合并条件；不因新提交重复索要口头评审确认。
 合并后核对 PR 的实际 merge SHA 与 `origin/main`，并验证该 SHA 的 GitHub Actions
 `ci-gate=success`；PR head 的绿色结果不能直接当作合并提交通过。当前 CI 保留受信任
 PR 证据复用和内部 dispatch 校验能力，但没有自动创建一次性 tag 或派发合并验真的
@@ -96,8 +98,8 @@ gh auth status --hostname github.com
 
 | 风险 | 测试部署 | 合并 |
 |---|---|---|
-| `web-only` / `backend-safe`、无迁移 | 合并后的 `origin/main` 按需 `apply` | 精确 CI 与独立评审通过后人工 Ready + squash |
-| `high-risk` 或迁移/控制面 | `apply` 前必须有目标 commit 的精确 `ci-gate=success` | 精确 CI 与独立评审通过后人工 Ready + squash |
+| `web-only` / `backend-safe`、无迁移 | 合并后的 `origin/main` 按需 `apply` | 用户授权、精确 CI 与实际 GitHub 合并条件满足后 Ready + squash |
+| `high-risk` 或迁移/控制面 | `apply` 前必须有目标 commit 的精确 `ci-gate=success` | 用户授权、精确 CI 与实际 GitHub 合并条件满足后 Ready + squash |
 | 未知/破坏性迁移 | fail closed，拆分并单独评审 | 禁止 |
 
 测试更新只构建受影响镜像，不重复组件测试或 G2；有迁移才创建密文 checkpoint。无迁移
@@ -140,7 +142,7 @@ PR 证据必须已由合并提交的精确 `ci-gate` 绑定并验证成功。后
 `uncertain` 拦截、密文数据库 checkpoint、expand-only 迁移、应用镜像回退、verify 和
 operator Git 复核；无共同历史、无迁移、任意新增禁止路径或非 `origin/main` 一律拒绝。
 
-PR 按上述 CI 与独立评审流程合并后，只表示仓库集成完成，不代表测试服务器已验证；按需测试更新只针对合并后的精确 `origin/main`。
+PR 按上述授权、CI 与 GitHub 合并条件完成合并后，只表示仓库集成完成，不代表测试服务器已验证；按需测试更新只针对合并后的精确 `origin/main`。
 服务器基线或保护状态异常时仍失败关闭。分支部署只作为明确的合并前验收例外；若分支已经
 通过人工验证，且 squash 生成的新 `main` commit 与已验证分支 commit 的 tree 完全一致，
 仍可运行：

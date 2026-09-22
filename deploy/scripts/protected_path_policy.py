@@ -77,7 +77,8 @@ REQUIRED_TRACKED_ROOT_GLOBS: tuple[str, ...] = (
 
 CODEOWNERS_OWNER = "@neuer"
 CODEOWNERS_HEADER = (
-    "# 安全敏感边界：短信、手机号、认证、凭据、会话与发布基础设施的变更应经过独立 Code Review。\n"
+    "# 安全敏感边界：评审要求以实际 GitHub 分支保护和 ruleset 为准，"
+    "不额外要求独立评审或口头确认。\n"
     "# 路径集合必须与 deploy/scripts/protected_path_policy.py 的安全域及发布面一致。"
     " 不要手写额外安全域规则。\n"
 )
