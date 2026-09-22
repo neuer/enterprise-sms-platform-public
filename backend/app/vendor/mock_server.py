@@ -39,6 +39,7 @@ class MockControl(BaseModel):
     times: int | None = None
     clear_send_error: bool = False
     latency_ms: int | None = None
+    send_latency_ms: int | None = None
     balance: int | None = None
     requeue_reports: bool = False
     enqueue_report: dict[str, Any] | None = None
@@ -62,6 +63,7 @@ class MockState:
             self.next_send_code: int | None = None
             self.next_send_times = 0
             self.latency_ms = 0
+            self.send_latency_ms = 0
             self.balance = DEFAULT_BALANCE
             self.task_sequence = 0
             self.template_sequence = 0
@@ -86,9 +88,9 @@ async def livez() -> dict[str, str]:
     return {"status": "alive"}
 
 
-async def _apply_latency() -> None:
+async def _apply_latency(*, send: bool = False) -> None:
     with STATE.lock:
-        latency_ms = STATE.latency_ms
+        latency_ms = STATE.latency_ms + (STATE.send_latency_ms if send else 0)
     if latency_ms:
         await asyncio.sleep(latency_ms / 1000)
 
@@ -103,7 +105,7 @@ def _validate_phone_record(record: dict[str, Any], kind: str) -> dict[str, Any]:
 async def _complete_send(payload: dict[str, Any]) -> dict[str, Any]:
     """完成一次 Send：延迟后记账。客户端超时不得取消厂商侧受理。"""
 
-    await _apply_latency()
+    await _apply_latency(send=True)
     with STATE.lock:
         if STATE.next_send_code is not None and STATE.next_send_times > 0:
             code = STATE.next_send_code
@@ -272,6 +274,10 @@ async def configure_mock(control: MockControl) -> dict[str, Any]:
             if control.latency_ms < 0:
                 raise HTTPException(status_code=422, detail="latency_ms must be non-negative")
             STATE.latency_ms = control.latency_ms
+        if control.send_latency_ms is not None:
+            if not 0 <= control.send_latency_ms <= 60_000:
+                raise HTTPException(status_code=422, detail="send_latency_ms out of range")
+            STATE.send_latency_ms = control.send_latency_ms
         if control.balance is not None:
             STATE.balance = control.balance
         if control.requeue_reports:
@@ -323,6 +329,7 @@ def _public_state() -> dict[str, Any]:
             "next_send_code": STATE.next_send_code,
             "next_send_times": STATE.next_send_times,
             "latency_ms": STATE.latency_ms,
+            "send_latency_ms": STATE.send_latency_ms,
             "balance": STATE.balance,
             "pending_reports": len(STATE.pending_reports),
             "pending_replies": len(STATE.pending_replies),

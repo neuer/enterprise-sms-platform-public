@@ -68,7 +68,7 @@ async def test_send_finishes_after_client_cancellation(
 
     monkeypatch.setattr(mock_module.asyncio, "sleep", marked_sleep)
     mock_module.STATE.reset()
-    mock_module.STATE.latency_ms = 40
+    mock_module.STATE.send_latency_ms = 40
     payload = {
         "mobile": "13800138000",
         "content": "超时验收",
@@ -223,3 +223,26 @@ def test_mock_control_restores_faults_and_retains_prior_callback_prefix() -> Non
         assert state["callback_status"] == 503 and state["callback_count"] == 1
         assert len(client.get("/_mock/callbacks").json()) == 1
         assert client.post("/_mock/state", json={"retain_callback_count": 2}).status_code == 422
+
+
+def test_send_latency_does_not_delay_consuming_report_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    with TestClient(mock_module.app) as client:
+        assert client.post("/_mock/state", json={"send_latency_ms": 12_000}).status_code == 200
+        assert client.get("/_mock/state").json()["send_latency_ms"] == 12_000
+        post(client, "/Sms/Api/Send", {"mobile": "13800138000", "content": "test"})
+        assert sleeps == [12.0]
+        post(client, "/Sms/Api/GetReport")
+        post(client, "/Sms/Api/GetReply")
+        assert sleeps == [12.0]
+        assert client.post("/_mock/state", json={"send_latency_ms": -1}).status_code == 422
+        assert client.post("/_mock/state", json={"send_latency_ms": 60_001}).status_code == 422
+        assert client.post("/_mock/state", json={"reset": True}).status_code == 200
+        assert client.get("/_mock/state").json()["send_latency_ms"] == 0

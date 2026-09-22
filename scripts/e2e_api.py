@@ -1451,11 +1451,11 @@ class UatSuite:
 
     def case_17(self) -> None:
         self._wait_send_pipeline_idle("17")
-        initial_latency = self.mock_state().get("latency_ms")
+        initial_latency = self.mock_state().get("send_latency_ms")
         if not isinstance(initial_latency, int):
             raise UatFailure("UAT-17 mock snapshot missing")
-        self._mock_config("17", {"latency_ms": 12_000})
-        self.rollback.defer(lambda: self._mock_config("17", {"latency_ms": initial_latency}))
+        self._mock_config("17", {"send_latency_ms": 12_000})
+        self.rollback.defer(lambda: self._mock_config("17", {"send_latency_ms": initial_latency}))
         data = self._expect(
             "17",
             self.api_send(
@@ -1481,7 +1481,7 @@ class UatSuite:
             return value if value == "uncertain" else None
 
         wait_until("17/uncertain", uncertain, timeout_s=35, interval_s=0.5)
-        self._mock_config("17", {"latency_ms": 0})
+        self._mock_config("17", {"send_latency_ms": 0})
         call = self.wait_send("17/send-call", batch_no, timeout_s=15)
         custom_id = call.get("customId")
         if not isinstance(custom_id, str) or len(self._send_calls(batch_no)) != 1:
