@@ -40,6 +40,7 @@ from app.services.uncertain_resolution import (
 from app.services.usage_ledger import UsageLedgerService, UsageProjectionUnavailable
 from app.services.usage_subject import SYSTEM_UNCERTAIN_RESEND_APP_NAME
 from scripts_support.maintain_partitions import maintain
+from tests.business_ids import new_business_id
 
 pytestmark = pytest.mark.skipif(
     "OUTBOX_POSTGRES_DSN" not in os.environ or "AUTH_GUARD_REDIS_URL" not in os.environ,
@@ -2057,7 +2058,7 @@ async def _r10_case(env: Any, sibling: str = "split_capacity_blocked") -> Any:
     with audit_principal_scope(actor), correlation_scope(uuid4()):
         response = await _pipeline(env.store, env.ledger, env.redis).accept(app, SendRequest(
             category="verify", mobiles=tuple(_phone(env.nonce, x) for x in (110, 111, 112)),
-            content="合成验证通知", channel="api", actor=actor, biz_id=uuid4().hex,
+            content="合成验证通知", channel="api", actor=actor, biz_id=new_business_id(),
         ))
     async with env.engine.begin() as connection:
         batch = (await connection.execute(text(

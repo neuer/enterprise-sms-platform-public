@@ -11,11 +11,25 @@ from app.api.web_messages import WebSendRequest
 from app.core.sensitive_text import reject_phone_business_id
 from app.services.idempotency import IdempotencyCoordinator, IdempotencyScope
 from app.services.vendor_test_operation_repository import SqlVendorTestOperationRepository
+from tests import business_ids
 
 PHONE = "199" + "0" * 7 + "1"
 UNSAFE_HEX = PHONE + "a" * 21
 UNSAFE_IDS = [UNSAFE_HEX, "0" + PHONE + "a" * 20, PHONE + "0" + "a" * 20]
 SAFE_HEX = "abcdefab-1234-4abc-8def-abcdefabcdef".replace("-", "")
+
+
+@pytest.mark.parametrize("raw", [*UNSAFE_IDS, "1" * 32, "0" * 32, SAFE_HEX])
+def test_synthetic_business_id_is_safe_even_for_adversarial_random_values(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    monkeypatch.setattr(business_ids, "uuid4", lambda: SimpleNamespace(hex=raw))
+    value = business_ids.new_business_id()
+    assert len(value) == 32
+    assert set(value) <= set("0123456789abcdef")
+    assert "1" not in value
+    reject_phone_business_id(value, field_name="biz_id")
+    assert IdempotencyCoordinator.key(IdempotencyScope("app", "1"), value).endswith(value)
 
 
 @pytest.mark.parametrize(

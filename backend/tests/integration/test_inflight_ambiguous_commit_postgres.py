@@ -39,6 +39,7 @@ from app.services.send_inflight import (
     resolve_ambiguous_acceptance_commit,
 )
 from scripts_support.maintain_partitions import maintain
+from tests.business_ids import new_business_id
 
 pytestmark = pytest.mark.skipif(
     "OUTBOX_POSTGRES_DSN" not in os.environ or "AUTH_GUARD_REDIS_URL" not in os.environ,
@@ -263,7 +264,7 @@ async def test_successful_commit_keeps_bound_reservation(
         store,
         _command(
             app_id=app_id,
-            biz_id=f"ok-{uuid4().hex[:12]}",
+            biz_id=f"ok-{new_business_id()[:12]}",
             fingerprint="a" * 64,
             inflight_id=reserved.id,
             inflight_generation=reserved.generation,
@@ -311,7 +312,7 @@ async def test_commit_ack_loss_resolves_to_expected_batch(
     engine, store, app_id = inflight_env
     reserved = await store.reserve_in_flight_chunks(app_id, 1, 200)
     fingerprint = "b" * 64
-    biz_id = f"ack-{uuid4().hex[:12]}"
+    biz_id = f"ack-{new_business_id()[:12]}"
     command = _command(
         app_id=app_id,
         biz_id=biz_id,
@@ -380,7 +381,7 @@ async def test_conflicting_fingerprint_is_not_released(
 ) -> None:
     engine, store, app_id = inflight_env
     reserved = await store.reserve_in_flight_chunks(app_id, 1, 200)
-    biz_id = f"cf-{uuid4().hex[:12]}"
+    biz_id = f"cf-{new_business_id()[:12]}"
     await _save(
         store,
         _command(
@@ -424,7 +425,7 @@ async def test_old_wide_acceptance_failed_cannot_release_bound(
         store,
         _command(
             app_id=app_id,
-            biz_id=f"old-{uuid4().hex[:12]}",
+            biz_id=f"old-{new_business_id()[:12]}",
             fingerprint="f" * 64,
             inflight_id=reserved.id,
             inflight_generation=reserved.generation,
@@ -463,7 +464,7 @@ async def test_concurrent_resolve_agrees_on_bound_batch(
     engine, store, app_id = inflight_env
     reserved = await store.reserve_in_flight_chunks(app_id, 1, 200)
     fingerprint = "1" * 64
-    biz_id = f"race-{uuid4().hex[:12]}"
+    biz_id = f"race-{new_business_id()[:12]}"
     stored = await _save(
         store,
         _command(
@@ -506,7 +507,7 @@ async def test_reconcile_restores_historical_acceptance_failed(
         store,
         _command(
             app_id=app_id,
-            biz_id=f"rep-{uuid4().hex[:12]}",
+            biz_id=f"rep-{new_business_id()[:12]}",
             fingerprint="2" * 64,
             inflight_id=reserved.id,
             inflight_generation=reserved.generation,
@@ -659,7 +660,7 @@ async def test_pipeline_commit_ack_loss_keeps_capacity(
         "notice",
         ["13800138000"],
         content="通知",
-        biz_id=f"pl-{uuid4().hex[:12]}",
+        biz_id=f"pl-{new_business_id()[:12]}",
     )
     principal = ApplicationPrincipal(app_id, "inflight-app", "平台部")
     try:
