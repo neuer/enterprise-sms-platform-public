@@ -32,6 +32,7 @@ from app.services.idempotency import IdempotencyCoordinator, IdempotencyScope, p
 from app.services.pipeline import BatchCommand, StoredBatch
 from app.services.pipeline_repository import SqlPipelineStore
 from scripts_support.maintain_partitions import maintain
+from tests.business_ids import new_business_id
 
 pytestmark = pytest.mark.skipif(
     "OUTBOX_POSTGRES_DSN" not in os.environ or "AUTH_GUARD_REDIS_URL" not in os.environ,
@@ -254,7 +255,7 @@ async def test_owner_completes_within_five_seconds(
 ) -> None:
     engine, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = f"c5-{uuid4().hex[:12]}"
+    biz_id = f"c5-{new_business_id()[:12]}"
     fingerprint = "a" * 64
     coordinator = IdempotencyCoordinator(redis, store)
     token = await coordinator.claim(scope, biz_id, fingerprint=fingerprint)
@@ -287,7 +288,7 @@ async def test_legal_owner_completes_after_35_60_90_120_seconds(
 
     async def _hold(seconds: int) -> str:
         scope = IdempotencyScope("app", str(app_id))
-        biz_id = f"c{seconds}-{uuid4().hex[:10]}"
+        biz_id = f"c{seconds}-{new_business_id()[:10]}"
         client = Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
         coordinator = IdempotencyCoordinator(client, store, claim_ttl_s=30)
         token = await coordinator.claim(scope, biz_id, fingerprint=fingerprint)
@@ -329,7 +330,7 @@ async def test_db_renew_and_redis_partial_failures(
 ) -> None:
     _engine, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = f"part-{uuid4().hex[:12]}"
+    biz_id = f"part-{new_business_id()[:12]}"
     coordinator = IdempotencyCoordinator(redis, store)
     token = await coordinator.claim(scope, biz_id, fingerprint="c" * 64)
     assert token is not None
@@ -372,7 +373,7 @@ async def test_db_claim_redis_initial_write_failure_keeps_owner(
 ) -> None:
     _engine, store, _unused_redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = f"ghost-{uuid4().hex[:12]}"
+    biz_id = f"ghost-{new_business_id()[:12]}"
 
     class RedisDown:
         async def eval(self, *_args: Any, **_kwargs: Any) -> Any:
@@ -402,8 +403,8 @@ async def test_redis_flush_rebuilds_active_and_completed(
 ) -> None:
     engine, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    live_biz = f"flush-a-{uuid4().hex[:10]}"
-    done_biz = f"flush-c-{uuid4().hex[:10]}"
+    live_biz = f"flush-a-{new_business_id()[:10]}"
+    done_biz = f"flush-c-{new_business_id()[:10]}"
     fingerprint = "e" * 64
     live = IdempotencyCoordinator(redis, store)
     done = IdempotencyCoordinator(redis, store)
@@ -437,7 +438,7 @@ async def test_old_master_low_generation_cannot_overwrite_owner(
 ) -> None:
     engine, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = f"oldm-{uuid4().hex[:12]}"
+    biz_id = f"oldm-{new_business_id()[:12]}"
     fingerprint = "f" * 64
     first = IdempotencyCoordinator(redis, store, claim_ttl_s=2)
     token = await first.claim(scope, biz_id, fingerprint=fingerprint)
@@ -474,7 +475,7 @@ async def test_expired_lease_takeover_and_stale_owner_cannot_finish(
 ) -> None:
     engine, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = f"stale-{uuid4().hex[:12]}"
+    biz_id = f"stale-{new_business_id()[:12]}"
     fingerprint = "1" * 64
     owner = IdempotencyCoordinator(redis, store)
     token = await owner.claim(scope, biz_id, fingerprint=fingerprint)
@@ -531,7 +532,7 @@ async def test_completed_claim_survives_commit_ack_loss_and_cannot_be_taken(
 ) -> None:
     engine, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = f"ack-{uuid4().hex[:12]}"
+    biz_id = f"ack-{new_business_id()[:12]}"
     fingerprint = "2" * 64
     coordinator = IdempotencyCoordinator(redis, store)
     token = await coordinator.claim(scope, biz_id, fingerprint=fingerprint)
@@ -574,7 +575,7 @@ async def test_two_instances_same_biz_id_and_fingerprint_conflict(
 ) -> None:
     _engine, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = f"race-{uuid4().hex[:12]}"
+    biz_id = f"race-{new_business_id()[:12]}"
     first = IdempotencyCoordinator(redis, store)
     second = IdempotencyCoordinator(redis, store)
     tokens = await asyncio.gather(
@@ -596,7 +597,7 @@ async def test_owner_kill_then_new_instance_takeover(
 ) -> None:
     _engine, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = f"kill-{uuid4().hex[:12]}"
+    biz_id = f"kill-{new_business_id()[:12]}"
     fingerprint = "5" * 64
     ready = tmp_path / "ready"
     token_file = tmp_path / "token"
@@ -648,7 +649,7 @@ async def test_mixed_old_api_set_nx_cannot_cover_new_generation(
 ) -> None:
     _engine, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = f"mix-{uuid4().hex[:12]}"
+    biz_id = f"mix-{new_business_id()[:12]}"
     fingerprint = "6" * 64
     coordinator = IdempotencyCoordinator(redis, store)
     token = await coordinator.claim(scope, biz_id, fingerprint=fingerprint)
@@ -704,7 +705,7 @@ async def test_pipeline_rejection_immediately_releases_authoritative_claim(
         pipeline._consume_request_limit = reject
     else:
         pipeline._authorize_new_send = reject
-    biz = uuid4().hex
+    biz = new_business_id()
     scope = IdempotencyScope("app", str(app_id))
     with pytest.raises(type(error)) as raised:
         await pipeline.accept(
@@ -727,7 +728,7 @@ async def test_r8_completed_retirement_helper_proves_lifecycle_before_new_genera
 
     engine, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = "r8-" + uuid4().hex[:16]
+    biz_id = "r8-" + new_business_id()[:16]
     coordinator = IdempotencyCoordinator(redis, store)
     token = await coordinator.claim(scope, biz_id, fingerprint="2" * 64)
     assert token is not None
@@ -772,7 +773,7 @@ async def test_r8_projection_repair_cannot_overwrite_newer_redis_generation(
 
     _, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = "r8-proj-" + uuid4().hex[:12]
+    biz_id = "r8-proj-" + new_business_id()[:12]
     key = IdempotencyCoordinator.claim_key(scope, biz_id)
     authoritative = IdempotencyClaimView("a" * 32, "1" * 64, 1)
     future = claim_payload(IdempotencyClaimView("b" * 32, "2" * 64, 2))
@@ -800,7 +801,7 @@ async def test_r8_stale_result_cache_does_not_delete_concurrent_new_result(
 ) -> None:
     _, _, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz_id = "r8-cache-" + uuid4().hex[:12]
+    biz_id = "r8-cache-" + new_business_id()[:12]
     key = IdempotencyCoordinator.key(scope, biz_id)
     old_result, new_result = uuid4().hex, uuid4().hex
     await redis.set(key, old_result)
@@ -827,7 +828,7 @@ async def _r8_expired_result(
 ) -> tuple[IdempotencyScope, str, str, int, IdempotencyCoordinator, str]:
     engine, store, redis, app_id = claim_env
     scope = IdempotencyScope("app", str(app_id))
-    biz = "r8-life-" + uuid4().hex[:12]
+    biz = "r8-life-" + new_business_id()[:12]
     owner = IdempotencyCoordinator(redis, store)
     token = await owner.claim(scope, biz, fingerprint="4" * 64)
     assert token is not None

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { newIdempotencyKey } from "../lib/idempotency"
 import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 
 import { STATUS_LABELS } from "../lib/labels"
@@ -67,11 +68,6 @@ const submittedSummary = ref("")
 const errorMessage = ref("")
 const sendResult = ref<SendResult | null>(null)
 const copied = ref(false)
-/** biz_id 契约上限 32 字符；UUID 必须去连字符（36→32），否则服务端 400。 */
-function newIdempotencyKey(): string {
-  return crypto.randomUUID().replaceAll("-", "")
-}
-
 const idempotencyKey = ref(newIdempotencyKey())
 let copiedTimer: number | undefined
 const {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 PHONE_IN_TEXT = re.compile(r"(?<!\d)1\d{10}(?!\d)")
+PHONE_IN_METADATA = re.compile(r"1\d{10}")
 PHONE_AS_TOKEN = re.compile(r"(?<![0-9A-Za-z])1\d{10}(?![0-9A-Za-z])")
 PHONE_REDACTION = "*" * 11
 
@@ -12,7 +13,7 @@ PHONE_REDACTION = "*" * 11
 def reject_phone_in_text(value: str | None, *, field_name: str) -> None:
     """拒绝不应承载手机号的普通元数据，错误中不得回显原值。"""
 
-    if value is not None and PHONE_IN_TEXT.search(value):
+    if value is not None and PHONE_IN_METADATA.search(value):
         raise ValueError(f"{field_name}不得包含手机号")
 
 
@@ -32,10 +33,6 @@ def mask_phone_in_text(value: str | None) -> str | None:
 
 
 def reject_phone_business_id(value: str | None, *, field_name: str) -> None:
-    """业务标识拒绝嵌入手机号，仅兼容完整 UUID/32 位 hex 标识中的数字碰撞。"""
+    """业务标识使用统一手机号检测，外形为 UUID/hex 也不得豁免。"""
 
-    if value is None:
-        return
-    if re.fullmatch(r"[0-9a-fA-F]{32}|[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value):
-        return
     reject_phone_in_text(value, field_name=field_name)

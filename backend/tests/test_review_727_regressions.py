@@ -116,10 +116,8 @@ def test_phone_business_identifiers_are_rejected_before_cache(value: str) -> Non
             helper(scope, value)
     with pytest.raises(ValueError, match="手机号"):
         format_sign_name(value)
-    assert (
-        IdempotencyCoordinator.key(scope, "19900000001" + "a" * 21)
-        == "idem:app:1:19900000001" + "a" * 21
-    )
+    with pytest.raises(ValueError, match="手机号"):
+        IdempotencyCoordinator.key(scope, "199" + "0" * 7 + "1" + "a" * 21)
     assert format_sign_name("合成通知") == "【合成通知】"
 
 

@@ -574,7 +574,7 @@
 ## D056 Owner PR 在精确 push CI 成功后自动合并（历史方案）
 
 > 当前公开仓库不提供此自动合并工作流；以下保留历史设计，现行流程以
-> MAINTENANCE.md 为准：自动 Draft、精确 CI 与独立评审、人工 Ready/合并。
+> MAINTENANCE.md 为准：自动 Draft、用户授权、精确 CI 与实际 GitHub 合并条件、人工 Ready/合并。
 
 - 决策：owner 的同仓非 `main` 分支继续自动创建 Draft PR；对应 `.github/workflows/ci.yml`
   push run 成功后，独立 `workflow_run` 校验 workflow 路径、事件、actor、head repository、

@@ -423,6 +423,39 @@ describe("系统配置页真实联调控制台", () => {
     wrapper.unmount()
   })
 
+  it.each(["199" + "0".repeat(7) + "1" + "a".repeat(21), "0" + "199" + "0".repeat(7) + "1" + "a".repeat(20)])(
+    "旧版未确认 UAT 键不符合隐私规则时不得换键再次发送 (%s)",
+    async (pendingKey) => {
+      const keyName = "sms-platform:vendor-test:uat-biz-id:v1"
+      sessionStorage.setItem(keyName, pendingKey)
+      const bodies: unknown[] = []
+      vi.stubGlobal(
+        "fetch",
+        consoleFetch({ ...baseStatus, mode: "controlled" }, (url, init) => {
+          if (url.endsWith("/vendor-test/messages") && init.method === "POST") {
+            bodies.push(JSON.parse(String(init.body)))
+            return response({ code: "INVALID_PARAM", message: "参数不符合规则" }, 400)
+          }
+          return undefined
+        }),
+      )
+      const warning = vi.spyOn(ElMessage, "error")
+      const wrapper = mountConsole()
+      await flushPromises()
+      await wrapper.getComponent("[data-testid='uat-recipient']").setValue(9)
+      await wrapper.getComponent("[data-testid='uat-app']").setValue(7)
+      await wrapper.get("[data-testid='uat-content']").setValue("通知")
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await wrapper.get("[data-testid='uat-send']").trigger("click")
+        await flushPromises()
+        expect(sessionStorage.getItem(keyName)).toBe(pendingKey)
+      }
+      expect(bodies).toHaveLength(0)
+      expect(warning).toHaveBeenCalledWith("旧请求的业务标识不符合隐私规则；请先核对原发送结果，不能换号重试")
+      wrapper.unmount()
+    },
+  )
+
   it("可在页面重录号码刷新跨版本 HMAC 索引且关闭后清空明文", async () => {
     const fetch = consoleFetch(baseStatus, (url, init) => {
       if (url.endsWith("/vendor-test/recipients/9/refresh-index") && init.method === "POST") {
