@@ -310,7 +310,8 @@ async def _apply_reservation_delta(
             await connection.execute(
                 text(
                     """
-                SELECT id, generation, app_id, state, batch_id, reserved_chunks
+                SELECT id, generation, app_id, state, batch_id, reserved_chunks,
+                       expires_at < clock_timestamp() AS expired
                 FROM send_inflight_reservation
                 WHERE id=:id
                 FOR UPDATE
@@ -332,6 +333,10 @@ async def _apply_reservation_delta(
     if expected_states is not None and state not in expected_states:
         return False
     if unbound_only and (state != "reserved" or current["batch_id"] is not None):
+        return False
+    if reason == "orphan-expired" and (
+        state != "reserved" or current["batch_id"] is not None or not current["expired"]
+    ):
         return False
     if operation == "release" and state == "released":
         return False
@@ -414,6 +419,12 @@ async def bind_in_flight_reservation(
 ) -> None:
     """在保存批次的同一事务中把预留绑定到 batch。"""
 
+    # 与回收器保持 balance→reservation 锁序；等待结束后用新语句检查实际期限。
+    await _lock_balance(connection, app_id=app_id, operation="bind", allow_create=False)
+    await connection.execute(
+        text("SELECT id FROM send_inflight_reservation WHERE id=:id FOR UPDATE"),
+        {"id": reservation_id},
+    )
     bound = await connection.execute(
         text(
             """
@@ -426,6 +437,7 @@ async def bind_in_flight_reservation(
               AND app_id=:app_id
               AND state='reserved'
               AND batch_id IS NULL
+              AND expires_at > clock_timestamp()
             RETURNING id
             """
         ),

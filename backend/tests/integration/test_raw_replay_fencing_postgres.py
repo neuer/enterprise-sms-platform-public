@@ -181,7 +181,7 @@ async def test_late_success_after_failed_takeover_only_allows_current_owner() ->
             ).mappings().one()
         assert bool(row["processed"]) is False
         assert str(row["parse_state"]) != "processed"
-        assert "takeover transient" in str(row["error"])
+        assert str(row["error"]) == "ReportProcessingError: report unattempted; replay=manual"
     finally:
         if raw_id is not None:
             async with engine.begin() as connection:

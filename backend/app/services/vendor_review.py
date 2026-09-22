@@ -21,11 +21,11 @@ def map_vendor_review_state(check_type: int, *, object_name: str) -> str:
     """把厂商三态转换为平台状态，未知值一律拒绝。"""
 
     if not isinstance(check_type, int) or isinstance(check_type, bool):
-        raise ValueError(f"unknown {object_name} checkType: {check_type}")
+        raise ValueError("unknown vendor checkType")
     try:
         return {0: "pending", 1: "approved", 2: "rejected"}[check_type]
     except KeyError:
-        raise ValueError(f"unknown {object_name} checkType: {check_type}") from None
+        raise ValueError("unknown vendor checkType") from None
 
 
 def normalize_vendor_reject_reason(state: str, remark: str | None) -> str | None:

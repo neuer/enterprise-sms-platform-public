@@ -2873,10 +2873,10 @@ paths:
                     end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
                     end_exclusive: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 不包含的终点，与 end 互斥；日期范围使用次日上海零点 }
                     category: { anyOf: [{ type: string, enum: [verify, notice, market] }, { type: 'null' }] }
-                    status: { anyOf: [{ type: string, maxLength: 16 }, { type: 'null' }] }
+                    status: { anyOf: [{ type: string, enum: [pending, sent, delivered, failed, unknown, other] }, { type: 'null' }] }
                     app_id: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] }
-                    dept: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }] }
-                    batch_no: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
+                    dept: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }], description: 不得包含手机号 }
+                    batch_no: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }], description: 不得包含手机号 }
                     phone: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }], description: 请求后立即转phone_hmac，export_task.filters禁止保存明文 }
                 decrypted: { type: boolean, default: false, description: 是否导出明文手机号（按角色，记审计） }
       responses:

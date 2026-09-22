@@ -8,6 +8,7 @@ from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.sensitive_text import reject_phone_in_text
 from app.services.crypto import CryptoService
 
 MAX_EXPORT_ROWS = 100_000
@@ -52,6 +53,23 @@ class ExportFilterSet:
     scope_dept: str | None
     dataset: Literal["message", "unmatched"] = "message"
     end_exclusive: datetime | None = None
+
+    def __post_init__(self) -> None:
+        """所有构造与历史任务重载统一拒绝不安全过滤元数据。"""
+
+        if self.status is not None and self.status not in {
+            "pending",
+            "sent",
+            "delivered",
+            "failed",
+            "unknown",
+            "other",
+        }:
+            raise ValueError("invalid export status")
+        if self.category is not None and self.category not in {"verify", "notice", "market"}:
+            raise ValueError("invalid export category")
+        reject_phone_in_text(self.batch_no, field_name="batch_no")
+        reject_phone_in_text(self.scope_dept, field_name="dept")
 
     def safe_json(self) -> dict[str, object]:
         """可持久化过滤器；只含索引和部门 scope，不含手机号。"""

@@ -648,6 +648,8 @@ class ReportIngestService:
         status = value["reportStatus"]
         if not isinstance(status, int) or isinstance(status, bool):
             raise ValueError("reportStatus must be an integer")
+        if status not in {0, 1, 2, 3, 99}:
+            raise ValueError("reportStatus is outside the vendor contract")
         raw_report_time = value["reportTime"]
         if not isinstance(raw_report_time, str):
             raise ValueError("reportTime must be a string")
@@ -909,9 +911,7 @@ class ReportIngestService:
                 changed_batches.clear()
 
             try:
-                if not isinstance(data, list) or any(
-                    not isinstance(item, dict) for item in data
-                ):
+                if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
                     raise ValueError("GetReport.data must be an object array")
                 # custom_ids 索引元数据在共享路径重建：spill 恢复与人工/自动重放
                 # 落库的 raw 同样要对 uncertain 定位可见（规则 4 数据源）。
@@ -962,7 +962,7 @@ class ReportIngestService:
                 await flush_failure_rates()
                 await self.repository.mark_error(
                     raw_id,
-                    f"{type(error).__name__}: {error}"[:256],
+                    f"{type(error).__name__}: report persistence failed",
                     **({} if lease is None else {"lease": lease}),
                 )
                 raise

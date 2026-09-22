@@ -429,8 +429,7 @@ async def test_reconcile_task_propagates_unexpected_operation_finalizer_failure(
         await task_module._reconcile()
 
     assert uat_ran["value"] is True
-    assert isinstance(captured.value.__cause__, RuntimeError)
-    assert "private-finalizer-detail" in str(captured.value.__cause__)
+    assert captured.value.__cause__ is None
     assert "private-finalizer-detail" not in str(captured.value)
     assert alerts[0]["alert_type"] == "reconcile_domain_failed"
     assert alerts[0]["detail"] == {
@@ -800,9 +799,7 @@ def test_reconcile_loads_policy_only_inside_uncertain_domain() -> None:
             "uncertain",
             "policy_invalid",
             "InvalidRuntimePolicy",
-            lambda: InvalidRuntimePolicy(
-                f"callback_allow_cidrs rejected {PREFLIGHT_LEAK}"
-            ),
+            lambda: InvalidRuntimePolicy(f"callback_allow_cidrs rejected {PREFLIGHT_LEAK}"),
             id="uncertain-policy-invalid",
         ),
         pytest.param(
@@ -915,7 +912,7 @@ async def test_reconcile_preflight_fault_matrix_isolates_each_domain(
     assert probe.alerts[0]["alert_type"] == "reconcile_domain_failed"
     assert probe.alerts[0]["dedup_key"] == f"reconcile_domain_failed:{failed_domain}"
     assert PREFLIGHT_LEAK not in str(captured.value)
-    assert PREFLIGHT_LEAK in str(captured.value.__cause__)
+    assert captured.value.__cause__ is None
     assert PREFLIGHT_LEAK not in caplog.text
     assert PREFLIGHT_LEAK not in repr(probe.alerts)
 
@@ -933,9 +930,7 @@ async def test_corrupt_runtime_policy_does_not_block_delivery_raw_uat(
             pass
 
         async def load(self) -> object:
-            return RuntimePolicy.from_mapping(
-                {"callback_allow_cidrs": CORRUPT_POLICY_VALUE}
-            )
+            return RuntimePolicy.from_mapping({"callback_allow_cidrs": CORRUPT_POLICY_VALUE})
 
     probe = _install_reconcile_probe(
         monkeypatch,
@@ -955,7 +950,7 @@ async def test_corrupt_runtime_policy_does_not_block_delivery_raw_uat(
         "vendor-uat",
         "raw-replay",
     ]
-    assert isinstance(captured.value.__cause__, InvalidRuntimePolicy)
+    assert captured.value.__cause__ is None
     assert probe.alerts[0]["detail"] == {
         "domain": "uncertain",
         "error_type": "InvalidRuntimePolicy",
@@ -1022,3 +1017,36 @@ async def test_persistent_uncertain_preflight_does_not_starve_other_domain_rto(
         assert probe.succeeded_at[domain][1] > first_at
     assert probe.succeeded_at["uncertain"] == []
     assert [alert["detail"]["domain"] for alert in probe.alerts] == ["uncertain", "uncertain"]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_real_policy_failure_does_not_leak_through_task_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import json
+    import traceback
+
+    from celery.backends.base import Backend
+
+    from app.tasks import celery_app, log_task_failure
+    from app.tasks import reconcile as task_module
+
+    marker = "synthetic-secret-13800138000"
+
+    class CorruptPolicyLoader:
+        def __init__(self, settings: object) -> None:
+            pass
+
+        async def load(self) -> object:
+            return RuntimePolicy.from_mapping({"callback_retry_schedule": marker})
+
+    probe = _install_reconcile_probe(monkeypatch, task_module, policy_loader=CorruptPolicyLoader)
+    with pytest.raises(task_module.ReconcilePartialFailure) as captured:
+        await task_module._reconcile()
+    error = captured.value
+    log_task_failure(task_id="synthetic-task", exception=error, traceback=error.__traceback__)
+    rendered = "".join(traceback.format_exception(error))
+    serialized = Backend(app=celery_app).prepare_exception(error, serializer="json")
+    assert marker not in rendered + caplog.text + json.dumps(serialized)
+    assert len(probe.succeeded) == 4

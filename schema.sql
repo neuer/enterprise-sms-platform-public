@@ -1,6 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.105  2026-09-12
+-- v1.6.106  2026-09-22
+-- v1.6.106：受控联调恢复绑定请求指纹；生命周期事实最小权限。
 -- v1.6.105：临时密码独立期限；历史未改密凭据迁移时一次性宽限 24 小时。
 -- v1.6.104：目录映射按事务去重安全版本失效，保留直接 DML 触发保护。
 -- v1.6.103：UAT 受理关联与自动日报非敏感发信配置投影。
@@ -1399,6 +1400,15 @@ CREATE TABLE vendor_test_operation (
     batch_no       VARCHAR(64),
     acceptance_reference_required BOOLEAN NOT NULL DEFAULT true,
     acceptance_biz_id VARCHAR(32),
+    acceptance_request_hash VARCHAR(64),
+    acceptance_key_version SMALLINT,
+    CONSTRAINT ck_vendor_test_acceptance_fingerprint CHECK (
+      (acceptance_request_hash IS NULL AND acceptance_key_version IS NULL)
+      OR (acceptance_request_hash IS NOT NULL AND acceptance_key_version IS NOT NULL
+          AND acceptance_request_hash ~ '^[0-9a-f]{64}$'
+          AND acceptance_key_version BETWEEN 1 AND 32767)
+    ),
+
     acceptance_app_id BIGINT REFERENCES app(id) ON DELETE RESTRICT,
     CONSTRAINT ck_vendor_test_acceptance_reference CHECK (
       (acceptance_biz_id IS NULL AND acceptance_app_id IS NULL)
@@ -3500,7 +3510,7 @@ CREATE OR REPLACE FUNCTION advance_auth_admission_revision()
 RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog AS $$
 BEGIN
   IF NEW.key = 'auth_admission_policy' THEN
-    NEW.updated_at := GREATEST(clock_timestamp(), OLD.updated_at + interval '1 microsecond');
+    NEW.updated_at := GREATEST( clock_timestamp(), OLD.updated_at + interval '1 microsecond' );
   END IF;
   RETURN NEW;
 END
@@ -3553,3 +3563,6 @@ $$;
 REVOKE ALL ON FUNCTION lock_callback_idempotency_batch(BIGINT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION lock_callback_idempotency_batch(BIGINT) TO sms_callback;
 REVOKE ALL ON FUNCTION lock_idempotency_result_batch() FROM PUBLIC;
+
+-- 生命周期事实由 CAS 推进，不允许发送角色删除。
+REVOKE DELETE ON sms_uncertain_resolution, sms_uncertain_child, usage_chunk_allocation, usage_chunk_release, send_inflight_balance, send_inflight_reservation, send_inflight_reconcile_fact, send_admission_state, send_runtime_heartbeat FROM sms_send;

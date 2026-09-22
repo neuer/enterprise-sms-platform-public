@@ -148,7 +148,9 @@ class FakeOperations:
             return True
         return await self.heartbeat_ticks.get()
 
-    async def prepare_uat_acceptance(self, operation_id: str, *, biz_id: str, app_id: int) -> bool:
+    async def prepare_uat_acceptance(
+        self, operation_id: str, *, biz_id: str, app_id: int, request_hash: str, key_version: int
+    ) -> bool:
         self.events.append(("prepare_uat_acceptance", operation_id))
         return True
 
@@ -280,14 +282,19 @@ class FakePreviewSigns:
 
 
 class FakePipeline:
+    async def acceptance_fingerprint(
+        self, app: ApiAppContext, request: SendRequest
+    ) -> tuple[str, int]:
+        return "a" * 64, 1
+
     def __init__(self) -> None:
         self.calls: list[tuple[ApiAppContext, SendRequest]] = []
 
-    async def accept(self, app: ApiAppContext, request: SendRequest) -> BatchResponse:
+    async def accept(
+        self, app: ApiAppContext, request: SendRequest, **kwargs: object
+    ) -> BatchResponse:
         self.calls.append((app, request))
-        return BatchResponse(
-            "batch-uat", False, 1, 0, 0, 0, 1, 1, "queued", None, None
-        )
+        return BatchResponse("batch-uat", False, 1, 0, 0, 0, 1, 1, "queued", None, None)
 
 
 def test_uat_biz_id_is_deterministic_collision_resistant_and_within_contract() -> None:
@@ -758,6 +765,7 @@ async def test_long_acceptance_renews_operation_lease_until_batch_is_attached() 
             self,
             app: ApiAppContext,
             request: SendRequest,
+            **kwargs: object,
         ) -> BatchResponse:
             entered.set()
             await release.wait()
@@ -834,6 +842,7 @@ async def test_heartbeat_storage_failure_does_not_mask_guarded_batch_attachment(
             self,
             app: ApiAppContext,
             request: SendRequest,
+            **kwargs: object,
         ) -> BatchResponse:
             entered.set()
             await release.wait()
@@ -964,7 +973,13 @@ async def test_expired_operation_cannot_accept_after_waiting_for_guard() -> None
                 self.events.append(("acceptance_guard_exit", operation_id))
 
         async def prepare_uat_acceptance(
-            self, operation_id: str, *, biz_id: str, app_id: int
+            self,
+            operation_id: str,
+            *,
+            biz_id: str,
+            app_id: int,
+            request_hash: str,
+            key_version: int,
         ) -> bool:
             self.events.append(("prepare_uat_acceptance", operation_id))
             return False
@@ -1113,6 +1128,7 @@ async def test_cancel_during_accept_recovers_pg_fact_without_reaccept() -> None:
             self,
             app: ApiAppContext,
             request: SendRequest,
+            **kwargs: object,
         ) -> BatchResponse:
             self.calls.append((app, request))
             entered.set()
@@ -1177,6 +1193,7 @@ async def test_accept_unknown_result_stays_nonterminal_until_pg_fact_recovery() 
             self,
             app: ApiAppContext,
             request: SendRequest,
+            **kwargs: object,
         ) -> BatchResponse:
             self.calls.append((app, request))
             raise RuntimeError("accept commit result unknown")
@@ -1267,3 +1284,34 @@ async def test_page_uat_pipeline_uses_shared_application_rate_limiter(
         assert pipeline.admission_guard is guard
 
     assert redis.closed is True
+
+
+@pytest.mark.asyncio
+async def test_deterministic_idempotency_conflict_finishes_uat_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.idempotency import IdempotencyConflict
+
+    uat, operations, _, pipeline = service()
+
+    async def conflict(app: ApiAppContext, request: SendRequest, **kwargs: object) -> BatchResponse:
+        raise IdempotencyConflict("different request")
+
+    monkeypatch.setattr(pipeline, "accept", conflict)
+    with pytest.raises(IdempotencyConflict):
+        await uat.send(
+            operation_id=OPERATION_ID,
+            biz_id="reused-business-key",
+            recipient_id=9,
+            app_id=7,
+            category="notice",
+            principal=ADMIN,
+            content="test",
+            template_id=None,
+            template_params=None,
+            sign_name=None,
+            consent_confirmed=False,
+            remark=None,
+        )
+    assert operations.record.status == "failed"
+    assert operations.record.batch_no is None

@@ -306,3 +306,25 @@ async def test_exclusive_end_survives_normalization_and_rejects_ambiguous_end() 
 def test_unknown_persisted_dataset_fails_closed(dataset) -> None:
     with pytest.raises(ValueError, match="dataset"):
         ExportFilterSet.from_safe_json({"dataset": dataset})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["status", "batch_no", "dept"])
+@pytest.mark.parametrize("marker", ["13800138000", "prefix13800138000suffix"])
+async def test_export_rejects_phone_in_metadata_before_query(field: str, marker: str) -> None:
+    repository = FakeRepository(count=0)
+    service = ExportService(repository, crypto(), retention_days=30)
+    with pytest.raises(ValueError) as error:
+        await service.create(
+            ExportRequestFilters(**{field: marker}),
+            decrypted=False,
+            principal=principal(1, "admin", "admin"),
+        )
+    assert marker not in str(error.value)
+    assert repository.calls == []
+
+
+def test_persisted_export_filters_cannot_bypass_metadata_validation() -> None:
+    for field in ("status", "batch_no", "scope_dept"):
+        with pytest.raises(ValueError):
+            ExportFilterSet.from_safe_json({"dataset": "message", field: "13800138000"})

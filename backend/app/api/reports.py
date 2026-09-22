@@ -9,7 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.authorization import (
@@ -24,6 +24,7 @@ from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.jobtrack import JOB_SPECS
 from app.core.runtime_resources import database_engine, redis_client
+from app.core.sensitive_text import reject_phone_in_text
 from app.services.crypto import CryptoService
 from app.services.current_alerts import CurrentAlertService
 from app.services.current_alerts_repository import SqlCurrentAlertRepository
@@ -68,11 +69,17 @@ class ExportFiltersModel(BaseModel):
     end: datetime | None = None
     end_exclusive: datetime | None = None
     category: Literal["verify", "notice", "market"] | None = None
-    status: str | None = Field(default=None, max_length=16)
+    status: Literal["pending", "sent", "delivered", "failed", "unknown", "other"] | None = None
     app_id: int | None = Field(default=None, ge=1)
     dept: str | None = Field(default=None, max_length=128)
     batch_no: str | None = Field(default=None, max_length=32)
     phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
+
+    @field_validator("batch_no", "dept")
+    @classmethod
+    def safe_metadata(cls, value: str | None) -> str | None:
+        reject_phone_in_text(value, field_name="export metadata")
+        return value
 
 
 class ExportCreateModel(BaseModel):

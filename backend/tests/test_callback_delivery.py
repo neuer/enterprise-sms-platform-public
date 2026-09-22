@@ -949,3 +949,92 @@ async def test_callback_https_mtls_uses_real_chain_pinned_ip_host_and_sni(
         await transport.aclose()
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_callback_failure_drops_exception_values_and_chains(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    marker = "synthetic-secret-13800138000"
+
+    class FailingTransport(FakeTransport):
+        async def post(self, **kwargs: Any) -> int:
+            try:
+                int(marker)
+            except ValueError as error:
+                raise RuntimeError("unsafe " + marker) from error
+
+    material = CallbackMaterial(
+        task("batch.finished", "secret"),
+        batch=BatchFinishedData("B", None, "notice", "completed", 1, 0, 1, 0, datetime.now(UTC)),
+    )
+    outcome = await CallbackDelivery(
+        FakeRepository(material), crypto(), FakeValidator(), FailingTransport()
+    ).deliver(9, LEASE_ID)
+    assert outcome.success is False
+    assert outcome.error == "RuntimeError"
+    assert marker not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [200, 503])
+async def test_callback_reason_phrase_cannot_reach_httpx_logs(
+    caplog: pytest.LogCaptureFixture,
+    status: int,
+) -> None:
+    import logging
+
+    marker = "synthetic-secret-13800138000"
+
+    async def response(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status, content=b"", request=request, extensions={"reason_phrase": marker.encode()}
+        )
+
+    transport = HttpxCallbackTransport(transport=httpx.MockTransport(response))
+    try:
+        with caplog.at_level(logging.DEBUG):
+            observed = await transport._bounded_status(
+                httpx.Request("POST", "http://callback.test/hook")
+            )
+        assert observed == status
+        assert marker not in caplog.text
+    finally:
+        await transport.aclose()
+
+
+@pytest.mark.asyncio
+async def test_real_callback_header_parser_failure_keeps_final_logs_safe(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    marker = "synthetic-secret-13800138000"
+
+    async def response(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=b"",
+            headers={"content-length": marker},
+            request=request,
+            extensions={"reason_phrase": marker.encode()},
+        )
+
+    transport = HttpxCallbackTransport(transport=httpx.MockTransport(response))
+    material = CallbackMaterial(
+        task("batch.finished", "secret"),
+        batch=BatchFinishedData("B", None, "notice", "completed", 1, 0, 1, 0, datetime.now(UTC)),
+    )
+    try:
+        with caplog.at_level(logging.DEBUG):
+            outcome = await CallbackDelivery(
+                FakeRepository(material),
+                crypto(),
+                FakeValidator(),
+                transport,
+            ).deliver(9, LEASE_ID)
+        assert not outcome.success and outcome.error == "ValueError"
+        assert marker not in caplog.text
+    finally:
+        await transport.aclose()

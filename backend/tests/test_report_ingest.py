@@ -740,3 +740,58 @@ async def test_lease_heartbeat_loss_stops_large_item_writes_without_burning_atte
     assert "apply" not in names
     assert "processed" not in names
     assert "error" not in names
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [13800138000, -13800138000, 32768, 4, True])
+async def test_invalid_report_status_is_rejected_before_sql_and_retains_raw(status: object) -> None:
+    item = {**report(), "reportStatus": status}
+    repository = FakeRepository()
+    service = ReportIngestService(FakeGateway([item]), repository, crypto(), alerts=FakeAlerts())
+    assert await service.poll_once() == 1
+    assert repository.events[0][0] == "persist_raw"
+    assert not any(event in {"apply", "unmatched", "processed"} for event, _ in repository.events)
+    errors = [value for event, value in repository.events if event == "error"]
+    assert errors
+    if isinstance(status, int) and abs(status) > 100:
+        assert str(status) not in repr(errors)
+
+
+@pytest.mark.parametrize("status", [0, 1, 2, 3, 99])
+def test_all_documented_vendor_report_statuses_remain_supported(status: int) -> None:
+    service = ReportIngestService(None, FakeRepository(), crypto())
+    assert service._parse({**report(), "reportStatus": status}).report_status == status
+
+
+@pytest.mark.asyncio
+async def test_report_sql_error_summary_never_persists_driver_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import uuid4
+
+    from app.services import report_repository as module
+    from app.services.raw_lease import RawProcessingLease
+
+    persisted: dict[str, Any] = {}
+
+    class Engine:
+        async def dispose(self) -> None:
+            pass
+
+    async def commit(engine: Any, sql: str, params: dict[str, Any], **kwargs: Any) -> None:
+        persisted.update(params)
+
+    repository = module.SqlReportRepository(SimpleNamespace())
+    monkeypatch.setattr(repository, "_engine", Engine)
+    monkeypatch.setattr(module, "commit_fenced_raw_update", commit)
+    await repository.mark_error(
+        1,
+        "OperationalError: parameters=('synthetic-secret-13800138000',)",
+        lease=RawProcessingLease(1, uuid4(), 1),
+    )
+    assert "13800138000" not in repr(persisted)
+    assert "synthetic-secret" not in repr(persisted)
+    assert str(persisted["error"]).startswith("OperationalError:")
+    assert persisted["processed"] is False
+    assert persisted["parse_state"] == "transient_failure"
+    assert persisted["replay_eligibility"] == "automatic"

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol, TypeVar
 
-from redis.exceptions import LockError
+from redis.exceptions import LockError, RedisError
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.sensitive_text import reject_phone_in_text
@@ -18,6 +18,16 @@ from app.services.crypto import PHONE_PATTERN, CryptoService
 BLACKLIST_KEY = "blacklist:phone_hmacs"
 BLACKLIST_LOADED_KEY = "blacklist:phone_hmacs:loaded"
 BLACKLIST_LOCK_KEY = "blacklist:phone_hmacs:lock"
+BLACKLIST_MATCH_LUA = """
+if not redis.call('GET', KEYS[1]) then return false end
+local result = {}
+for offset = 1, #ARGV, 1024 do
+    local finish = math.min(offset + 1023, #ARGV)
+    local flags = redis.call('SMISMEMBER', KEYS[2], unpack(ARGV, offset, finish))
+    for _, flag in ipairs(flags) do result[#result + 1] = flag end
+end
+return result
+"""
 VALID_SOURCES = frozenset({"manual", "reply_optout", "import"})
 MAX_PAGE_SIZE = 100
 T = TypeVar("T")
@@ -118,21 +128,18 @@ class RedisBlacklistCache:
     ) -> set[str]:
         if not candidates:
             return set()
-        # 快路径：已装载即免锁点查。锁只保护重建与变更；受理读路径不再
-        # 全平台串行化。变更/重建期间读到的是旧快照（亚秒陈旧），事实源
-        # 始终是 PostgreSQL。
-        if not await self.redis.get(BLACKLIST_LOADED_KEY):
-            try:
+        # 标记校验与集合查询必须原子执行，避免失效/重建期间读到旧 SET。
+        try:
+            if not await self.redis.get(BLACKLIST_LOADED_KEY):
                 await self._rebuild(loader)
-            except BlacklistCacheUnavailable:
-                # 锁被并发重建/变更占用：集合仍在时按旧快照点查即可；
-                # 集合缺失（Redis 清空）绝不允许把空缓存当作无黑名单。
-                if not await self.redis.exists(BLACKLIST_KEY):
-                    raise
-        flags = await self.redis.smismember(BLACKLIST_KEY, list(candidates))
-        return {
-            value for value, present in zip(candidates, flags, strict=True) if present
-        }
+            flags = await self.redis.eval(
+                BLACKLIST_MATCH_LUA, 2, BLACKLIST_LOADED_KEY, BLACKLIST_KEY, *candidates
+            )
+        except RedisError:
+            raise BlacklistCacheUnavailable("blacklist authority unavailable") from None
+        if flags is None:
+            raise BlacklistCacheUnavailable("blacklist changed during lookup")
+        return {value for value, present in zip(candidates, flags, strict=True) if present}
 
     async def _rebuild(self, loader: Callable[[], Awaitable[set[str]]]) -> None:
         try:

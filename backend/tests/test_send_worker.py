@@ -868,12 +868,14 @@ async def test_delay_and_parameter_errors_are_not_immediately_retried() -> None:
 @pytest.mark.asyncio
 async def test_unknown_vendor_code_fails_closed_without_retry() -> None:
     store = FakeStore()
-    gateway = FakeGateway([VendorApiError(987654, "unknown"), "must-not-retry"])
+    with pytest.raises(VendorProtocolError) as captured:
+        VendorApiError(987654, "unknown")
+    gateway = FakeGateway([captured.value, "must-not-retry"])
 
     await SendWorker(gateway, store, FakeBucket()).submit(chunk(), lane="realtime")
 
     assert gateway.calls == 1
-    assert ("failed", (3, 987654)) in store.events
+    assert ("uncertain", 3) in store.events
     assert not any(event[0] in {"retrying", "delay", "split"} for event in store.events)
 
 

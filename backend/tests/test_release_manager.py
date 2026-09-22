@@ -45,9 +45,7 @@ OFFLINE_AUTH_EXPAND_MIGRATION = (
     "0082_outbox_realtime_report_queue",
     "0084_auth_security_and_ad_freshness",
 )
-DEFAULT_PRODUCTION_ENVIRONMENT_FILE = (
-    release_manager_module._PRODUCTION_ENVIRONMENT_FILE
-)
+DEFAULT_PRODUCTION_ENVIRONMENT_FILE = release_manager_module._PRODUCTION_ENVIRONMENT_FILE
 IMAGE_NAMES = ("api", "web", "postgres", "redis")
 CONTROL_SMOKE_IMAGES = {
     "api": {
@@ -111,6 +109,28 @@ def production_environment_authority(
         "_PRODUCTION_ENVIRONMENT_GID",
         os.getegid(),
     )
+
+
+def _assert_no_service_start(commands: list[list[str]], services: set[str]) -> None:
+    assert not any("up" in command and services.intersection(command) for command in commands)
+
+
+@pytest.mark.parametrize(
+    "service",
+    [
+        "redis-broker",
+        "redis-auth",
+        "redis-control",
+        "api",
+        "worker-realtime",
+        "worker-bulk",
+        "worker-callback",
+    ],
+)
+def test_no_start_assertion_detects_forbidden_command(service: str) -> None:
+    _assert_no_service_start([["compose", "up", "-d", "web"]], {service})
+    with pytest.raises(AssertionError):
+        _assert_no_service_start([["compose", "up", "-d", service, "web"]], {service})
 
 
 def _image_id(name: str) -> str:
@@ -4437,7 +4457,7 @@ def test_term_after_data_step_stops_before_redis_and_persists_resume_point(
     state = manager.status(manifest["release_id"])
     assert state["state"] == "activating"
     assert state["interrupted_signal"] == "SIGTERM"
-    assert not any("up" in command and command[-1] == "redis" for command in runner.calls)
+    _assert_no_service_start(runner.calls, {"redis-broker", "redis-auth", "redis-control"})
 
 
 def test_resume_after_env_replacement_before_config_observation(
@@ -4551,7 +4571,7 @@ def test_resume_after_backend_success_does_not_restart_backend_before_web(
     resumed.resume(manifest["release_id"])
 
     actions = _compose_actions(resumed_runner)
-    assert not any(command[-5:] == list(_BACKEND_TEST_SERVICES) for command in actions)
+    _assert_no_service_start(actions, set(_BACKEND_TEST_SERVICES))
     assert sum("up" in command and command[-1] == "web" for command in actions) == 1
     assert resumed.status(manifest["release_id"])["state"] == "succeeded"
 

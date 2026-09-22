@@ -576,6 +576,13 @@ async def test_controlled_api_preauthorization_limits_once_and_is_reused_by_acce
         async def check(self, *, app_id: int, limit_per_minute: int) -> None:
             self.calls.append((app_id, limit_per_minute))
 
+    class RecordingAdmission:
+        calls = 0
+
+        async def authorize(self, **kwargs: object) -> None:
+            self.calls += 1
+
+    admission = RecordingAdmission()
     limiter = RecordingLimiter()
     pipeline = SendPipeline(
         store=FakeStore(),
@@ -587,6 +594,7 @@ async def test_controlled_api_preauthorization_limits_once_and_is_reused_by_acce
         config=PipelineConfig(),
         acceptance_limiter=limiter,  # type: ignore[arg-type]
         vendor_test_console_only=True,
+        admission_guard=admission,  # type: ignore[arg-type]
     )
     app = ApiAppContext(
         7,
@@ -619,6 +627,8 @@ async def test_controlled_api_preauthorization_limits_once_and_is_reused_by_acce
     )
 
     assert limiter.calls == [(7, 9)]
+    # 号码解析前预检一次，渲染计费后成本准入一次；应用限流仍只扣一次。
+    assert admission.calls == 2
 
 
 @pytest.mark.asyncio
@@ -3123,3 +3133,42 @@ async def test_replay_if_present_rewrites_uat_plaintext_identity() -> None:
     assert replayed is not None
     assert rewritten.protected_mobiles
     assert rewritten.mobiles == ()
+
+
+@pytest.mark.asyncio
+async def test_uat_recovery_fingerprint_preserves_key_version_across_acceptance() -> None:
+    service_crypto = rotated_crypto()
+    store = FakeStore()
+    idem = FakeIdempotency()
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=idem,
+        crypto=service_crypto,
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    app = ApiAppContext(7, "uat", "平台部", frozenset({"notice"}))
+    request = SendRequest(
+        "notice",
+        (),
+        content="通知",
+        biz_id="uat-key-rotation",
+        is_test=True,
+        protected_mobiles=(
+            service_crypto.protect_phone("13800138000", table="vendor_test_recipient"),
+        ),
+        protected_hmac_candidates=tuple(service_crypto.hmac_candidates("13800138000").items()),
+        vendor_test_uat=True,
+    )
+    policy = policy_for_category("notice", app.allowed_categories)
+    old_hash = pipeline._request_hash(request, app, policy, key_version=1)
+    idem.stored_request_hash = old_hash
+    digest, version = await pipeline.acceptance_fingerprint(app, request)
+    assert (digest, version) == (old_hash, 1)
+    # 旧结果恰好在指纹读取后退役，新的提交仍与恢复引用使用相同版本。
+    idem.stored_request_hash = None
+    await pipeline.accept(app, request, fingerprint_key_version=version)
+    assert store.commands[0].request_hash == digest
+    assert store.commands[0].request_hash_key_version == version

@@ -636,6 +636,15 @@ async def send_vendor_test_api_uat(
         return replayed
     await _require_vendor_test_api_ready()
     try:
+        preauthorization = await pipeline.preauthorize(app, payload.category)
+    except (
+        ApplicationRateLimitExceeded,
+        CategoryNotAllowed,
+        ControlPlaneUnavailable,
+        SendAdmissionRejected,
+    ) as error:
+        raise _error(error) from None
+    try:
         recipient = await _resolve_vendor_test_api_recipient(payload.mobiles[0])
     except RecipientNotFound:
         raise ApiError(
@@ -676,6 +685,7 @@ async def send_vendor_test_api_uat(
                 protected_hmac_candidates=recipient.hmac_candidates,
                 vendor_test_uat=True,
             ),
+            preauthorization=preauthorization,
         )
     except (
         AllFiltered,

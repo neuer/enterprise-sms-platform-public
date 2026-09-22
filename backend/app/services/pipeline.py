@@ -726,6 +726,20 @@ class SendPipeline:
             key_version=key_version,
         )
 
+    async def acceptance_fingerprint(
+        self, app: ApiAppContext, request: SendRequest
+    ) -> tuple[str, int]:
+        """提供与受理幂等记录一致的版本化指纹，供受控恢复绑定。"""
+
+        version = self.crypto.active_version
+        if request.biz_id:
+            scope = self._idempotency_scope(request, app)
+            stored = await self.idempotency.request_fingerprint(scope, request.biz_id)
+            if stored is not None:
+                version = stored.key_version
+        policy = self._resolve_policy(app, request, None)
+        return self._request_hash(request, app, policy, key_version=version), version
+
     @staticmethod
     def _resolve_policy(
         app: ApiAppContext,
@@ -1182,6 +1196,7 @@ class SendPipeline:
         request: SendRequest,
         *,
         preauthorization: AcceptancePreauthorization | None = None,
+        fingerprint_key_version: int | None = None,
     ) -> BatchResponse:
         if self.vendor_test_console_only and not request.vendor_test_uat:
             raise VendorTestConsoleOnly
@@ -1196,7 +1211,11 @@ class SendPipeline:
             )
         idem_scope = self._idempotency_scope(request, app)
         policy = self._resolve_policy(app, request, preauthorization)
-        request_hash_key_version = self.crypto.active_version
+        request_hash_key_version = (
+            self.crypto.active_version
+            if fingerprint_key_version is None
+            else fingerprint_key_version
+        )
         request_hash = self._request_hash(
             request,
             app,
@@ -1272,7 +1291,8 @@ class SendPipeline:
                 raise IdempotencyClaimLost("idempotency claim lost")
 
         try:
-            await self._authorize_new_send(request)
+            if preauthorization is None:
+                await self._authorize_new_send(request)
             await self._consume_request_limit(app, request, preauthorization)
             renewal = self.idempotency.heartbeat(idem_scope, biz_id, token, lost)
             try:
@@ -1405,7 +1425,7 @@ class SendPipeline:
             raise ValueError("手机号格式无效")
         if request.vendor_test_uat and recipient_count != 1:
             raise ValueError("真实联调 UAT 仅允许一个已登记号码")
-        if not request.biz_id:
+        if not request.biz_id and preauthorization is None:
             await self._authorize_new_send(request)
         if has_protected and not request.vendor_test_uat:
             raise ValueError("加密号码只能由真实联调 UAT 使用")

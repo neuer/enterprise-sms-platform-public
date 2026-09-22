@@ -195,14 +195,14 @@ async def test_reserve_release_keeps_balance_equal_to_active_sum(
     reserved = await store.reserve_in_flight_chunks(app_id, 3, 200)
     assert await _balance(engine, app_id) == 3
     released = await store.release_in_flight_reservation(
-        reserved.id, reserved.generation, "orphan-expired", app_id
+        reserved.id, reserved.generation, "acceptance-failed", app_id
     )
     assert released is True
     assert (await _reservation(engine, reserved.id))["state"] == "released"
     assert await _balance(engine, app_id) == 0
     assert (
         await store.release_in_flight_reservation(
-            reserved.id, reserved.generation, "orphan-expired", app_id
+            reserved.id, reserved.generation, "acceptance-failed", app_id
         )
         is False
     )
@@ -226,7 +226,7 @@ async def test_release_rolls_back_when_balance_below_amount(
     )
     with pytest.raises(InFlightInvariantViolation):
         await store.release_in_flight_reservation(
-            reserved.id, reserved.generation, "orphan-expired", app_id
+            reserved.id, reserved.generation, "acceptance-failed", app_id
         )
     assert (await _reservation(engine, reserved.id))["state"] == "reserved"
     assert await _balance(engine, app_id) == 3
@@ -359,3 +359,150 @@ async def test_concurrent_last_capacity_has_one_winner(
         await store.reserve_in_flight_chunks(app_id, 1, 1)
     assert await _balance(engine, app_id) == 1
     assert (await _reservation(engine, first.id))["state"] == "reserved"
+
+
+@pytest.mark.asyncio
+async def test_orphan_release_rechecks_expiry_and_binding_under_lock(
+    conservation_env: tuple[Any, SqlPipelineStore, int],
+) -> None:
+    engine, store, app_id = conservation_env
+    reservation = await store.reserve_in_flight_chunks(app_id, 2, 200)
+    assert not await store.release_in_flight_reservation(
+        reservation.id, reservation.generation, "orphan-expired", app_id
+    )
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("""
+            UPDATE send_inflight_reservation SET expires_at=clock_timestamp()-interval '1 second'
+            WHERE id=:id
+        """),
+            {"id": reservation.id},
+        )
+    assert await store.release_in_flight_reservation(
+        reservation.id, reservation.generation, "orphan-expired", app_id
+    )
+    assert not await store.release_in_flight_reservation(
+        reservation.id, reservation.generation, "orphan-expired", app_id
+    )
+    assert await _balance(engine, app_id) == 0
+
+
+@pytest.mark.asyncio
+async def test_expired_reservation_cannot_bind_even_in_old_transaction(
+    conservation_env: tuple[Any, SqlPipelineStore, int],
+) -> None:
+    from app.services.send_inflight import bind_in_flight_reservation
+
+    engine, store, app_id = conservation_env
+    reservation = await store.reserve_in_flight_chunks(app_id, 1, 200)
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            await connection.execute(
+                text("""
+                UPDATE send_inflight_reservation SET expires_at=now()+interval '20 milliseconds'
+                WHERE id=:id
+            """),
+                {"id": reservation.id},
+            )
+            await connection.execute(text("SELECT pg_sleep(0.03)"))
+            with pytest.raises(RuntimeError, match="bind failed"):
+                await bind_in_flight_reservation(
+                    connection,
+                    reservation_id=reservation.id,
+                    generation=reservation.generation,
+                    batch_id=0,
+                    app_id=app_id,
+                )
+        finally:
+            await transaction.rollback()
+    assert await _balance(engine, app_id) == 1
+    assert (await _reservation(engine, reservation.id))["batch_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_orphan_candidate_cannot_release_a_bound_reservation(
+    conservation_env: tuple[Any, SqlPipelineStore, int],
+) -> None:
+    from app.services.send_inflight import bind_in_flight_reservation
+
+    engine, store, app_id = conservation_env
+    reservation = await store.reserve_in_flight_chunks(app_id, 2, 200)
+    # 清理器缓存旧候选；另一个事务先绑定，再由清理器进行最终锁后复查。
+    async with engine.begin() as connection:
+        batch_id = (
+            await connection.execute(
+                text("""
+            INSERT INTO sms_batch(batch_no,channel,app_id,dept,content,
+                                  display_content_enc,send_content_enc,status,total)
+            VALUES(:batch_no,'api',:app,'test','[encrypted]',:cipher,:cipher,'queued',1)
+            RETURNING id
+        """),
+                {"batch_no": uuid4().hex, "app": app_id, "cipher": b"synthetic-cipher"},
+            )
+        ).scalar_one()
+        await bind_in_flight_reservation(
+            connection,
+            reservation_id=reservation.id,
+            generation=reservation.generation,
+            batch_id=batch_id,
+            app_id=app_id,
+        )
+        await connection.execute(
+            text("""
+            UPDATE send_inflight_reservation SET expires_at=clock_timestamp()-interval '1 second'
+            WHERE id=:id
+        """),
+            {"id": reservation.id},
+        )
+    assert not await store.release_in_flight_reservation(
+        reservation.id, reservation.generation, "orphan-expired", app_id
+    )
+    assert await _balance(engine, app_id) == 2
+    assert (await _reservation(engine, reservation.id))["batch_id"] == batch_id
+
+
+@pytest.mark.asyncio
+async def test_bind_rechecks_expiry_after_waiting_for_balance_lock(
+    conservation_env: tuple[Any, SqlPipelineStore, int],
+) -> None:
+    import asyncio
+
+    from app.services.send_inflight import bind_in_flight_reservation
+
+    engine, store, app_id = conservation_env
+    reservation = await store.reserve_in_flight_chunks(app_id, 1, 200)
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("""
+            UPDATE send_inflight_reservation
+            SET expires_at=clock_timestamp()+interval '100 milliseconds'
+            WHERE id=:id
+        """),
+            {"id": reservation.id},
+        )
+    entered = asyncio.Event()
+
+    async def bind() -> None:
+        async with engine.begin() as connection:
+            entered.set()
+            await bind_in_flight_reservation(
+                connection,
+                reservation_id=reservation.id,
+                generation=reservation.generation,
+                batch_id=0,
+                app_id=app_id,
+            )
+
+    async with engine.begin() as blocker:
+        await blocker.execute(
+            text("SELECT app_id FROM send_inflight_balance WHERE app_id=:app FOR UPDATE"),
+            {"app": app_id},
+        )
+        pending = asyncio.create_task(bind())
+        await entered.wait()
+        await blocker.execute(text("SELECT pg_sleep(0.15)"))
+        assert not pending.done()
+    with pytest.raises(RuntimeError, match="bind failed"):
+        await pending
+    assert await _balance(engine, app_id) == 1

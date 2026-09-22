@@ -327,3 +327,37 @@ async def test_vendor_total_timeout_covers_slow_chunked_response() -> None:
     with pytest.raises(VendorTotalTimeout):
         await client.get_balance()
     await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [13800138000, -13800138000, 987654321])
+async def test_unknown_numeric_code_is_protocol_failure_without_reflection(
+    code: int, caplog: Any
+) -> None:
+    client = make_client(
+        RecordingTransport({"/Sms/Api/Send": {"code": code, "msg": None, "data": None}})
+    )
+    with caplog.at_level(logging.DEBUG), pytest.raises(VendorProtocolError) as error:
+        await client.send(["13800138000"], "测试")
+    assert error.value.result_unknown
+    assert str(code) not in str(error.value) + caplog.text
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_vendor_reason_phrase_never_enters_httpx_log(caplog: Any) -> None:
+    marker = "synthetic-secret-13800138000"
+
+    async def response(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            stream=RawStream(b'{"code":0,"data":{"balance":1}}'),
+            extensions={"reason_phrase": marker.encode()},
+            request=request,
+        )
+
+    client = make_client(httpx.MockTransport(response))
+    with caplog.at_level(logging.DEBUG):
+        await client._request_raw("/Sms/Api/GetBalance")
+    assert marker not in caplog.text
+    await client.aclose()
