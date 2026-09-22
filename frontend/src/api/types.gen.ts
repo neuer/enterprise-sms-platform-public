@@ -6604,9 +6604,11 @@ export interface paths {
                             /** @description 不包含的终点，与 end 互斥；日期范围使用次日上海零点 */
                             end_exclusive?: string | null;
                             category?: ("verify" | "notice" | "market") | null;
-                            status?: string | null;
+                            status?: ("pending" | "sent" | "delivered" | "failed" | "unknown" | "other") | null;
                             app_id?: number | null;
+                            /** @description 不得包含手机号 */
                             dept?: string | null;
+                            /** @description 不得包含手机号 */
                             batch_no?: string | null;
                             /** @description 请求后立即转phone_hmac，export_task.filters禁止保存明文 */
                             phone?: string | null;

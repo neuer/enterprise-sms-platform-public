@@ -34,7 +34,8 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture
 async def context():
     engine = create_async_engine(make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"]))
-    suffix = uuid4().hex
+    # 随机主体仍保持唯一，但不能偶然构成被审计隐私约束拒绝的数字串。
+    suffix = uuid4().hex.translate(str.maketrans("0123456789", "ghijklmnop"))
     accounts = []
     identities = []
     async with engine.begin() as c:

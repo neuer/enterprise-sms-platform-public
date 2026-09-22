@@ -122,6 +122,13 @@ async def test_real_postgres_guard_expiry_and_batch_truth_recovery() -> None:
         async with engine.begin() as connection:
             await connection.execute(
                 text(
+                    "DELETE FROM idempotency_record WHERE batch_id IN "
+                    "(SELECT id FROM sms_batch WHERE batch_no=:batch_no)"
+                ),
+                {"batch_no": BATCH_NO},
+            )
+            await connection.execute(
+                text(
                     """
                     DELETE FROM audit_log
                     WHERE object_type='vendor_test_operation'
@@ -169,7 +176,11 @@ async def test_real_postgres_guard_expiry_and_batch_truth_recovery() -> None:
         async with repository.acceptance_guard(EXPIRED_ID):
             assert (
                 await repository.prepare_uat_acceptance(
-                    EXPIRED_ID, biz_id="synthetic-expired", app_id=APP_ID
+                    EXPIRED_ID,
+                    biz_id="synthetic-expired",
+                    app_id=APP_ID,
+                    request_hash="a" * 64,
+                    key_version=1,
                 )
                 is False
             )
@@ -211,7 +222,11 @@ async def test_real_postgres_guard_expiry_and_batch_truth_recovery() -> None:
         batch_running = await repository.claim_uat_running(BATCH_ID)
         assert batch_running is not None
         assert await repository.prepare_uat_acceptance(
-            BATCH_ID, biz_id="synthetic-custom-uat", app_id=APP_ID
+            BATCH_ID,
+            biz_id="synthetic-custom-uat",
+            app_id=APP_ID,
+            request_hash="a" * 64,
+            key_version=1,
         )
         async with engine.begin() as connection:
             await connection.execute(
@@ -247,6 +262,32 @@ async def test_real_postgres_guard_expiry_and_batch_truth_recovery() -> None:
                     "identity_id": principal.identity_id,
                 },
             )
+        # 同业务编号的旧指纹不得成为本次受理的事实。
+        assert await repository.uat_result(BATCH_ID, batch_no=None) is None
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("""
+                INSERT INTO idempotency_record(
+                  app_id,scope_kind,scope_id,biz_id,request_hash,request_hash_key_version,
+                  batch_id,expires_at)
+                SELECT app_id,'account',:scope,biz_id,:hash,1,id,now()+interval '1 day'
+                FROM sms_batch WHERE batch_no=:batch_no
+            """),
+                {
+                    "scope": f"{principal.account_id}:{principal.identity_id}",
+                    "hash": "b" * 64,
+                    "batch_no": BATCH_NO,
+                },
+            )
+        assert await repository.uat_result(BATCH_ID, batch_no=None) is None
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("""
+                UPDATE idempotency_record SET request_hash=:hash
+                WHERE batch_id=(SELECT id FROM sms_batch WHERE batch_no=:batch_no)
+            """),
+                {"hash": "a" * 64, "batch_no": BATCH_NO},
+            )
         assert (
             await repository.expire_uat_if_stale(
                 BATCH_ID,
@@ -254,12 +295,50 @@ async def test_real_postgres_guard_expiry_and_batch_truth_recovery() -> None:
             )
             is None
         )
+        # 恢复中断跨过幂等保留期后，实际清理入口仍须保留恢复所需事实。
+        from datetime import UTC, datetime
+
+        from app.services.housekeeping_repository import SqlHousekeepingRepository
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("""
+                UPDATE sms_batch SET status='completed',total=0 WHERE batch_no=:batch_no
+            """),
+                {"batch_no": BATCH_NO},
+            )
+            await connection.execute(
+                text("""
+                UPDATE idempotency_record SET expires_at=now()-interval '1 day'
+                WHERE batch_id=(SELECT id FROM sms_batch WHERE batch_no=:batch_no)
+            """),
+                {"batch_no": BATCH_NO},
+            )
+        housekeeping = SqlHousekeepingRepository(settings)
+        page = await housekeeping._cleanup_idempotency_page(datetime.now(UTC), None, 100)
+        assert page.affected == 0
+        assert await repository.uat_result(BATCH_ID, batch_no=None) is not None
         recovered, changed = await VendorTestUatReconciler(repository).recover(
             batch_running,
         )
         assert changed is True
         assert recovered.status == "running"
         assert recovered.batch_no == BATCH_NO
+        # 附着已完成后允许正常退役；后续观察使用已验证的批次引用。
+        page = await housekeeping._cleanup_idempotency_page(datetime.now(UTC), None, 100)
+        assert page.affected == 1
+        assert await repository.uat_result(BATCH_ID, batch_no=BATCH_NO) is not None
+        # 历史记录即使已经附着，也不能在缺少原始请求证明时自动确认。
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("""
+                UPDATE vendor_test_operation
+                SET acceptance_request_hash=NULL,acceptance_key_version=NULL
+                WHERE id=:id
+                """),
+                {"id": BATCH_ID},
+            )
+        assert await repository.uat_result(BATCH_ID, batch_no=BATCH_NO) is None
     finally:
         await cleanup()
         if principal is not None:

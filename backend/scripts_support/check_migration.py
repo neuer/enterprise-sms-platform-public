@@ -55,6 +55,63 @@ SELECT row_value FROM (
   JOIN pg_class rel ON rel.oid = con.conrelid
   JOIN pg_namespace ns ON ns.oid = rel.relnamespace
   WHERE ns.nspname = 'public' AND rel.relname <> 'alembic_version'
+
+  UNION ALL
+  SELECT concat_ws('|','P',role.rolname,rel.relname,priv.name)
+  FROM pg_roles role CROSS JOIN pg_class rel
+  JOIN pg_namespace ns ON ns.oid=rel.relnamespace
+  CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('DELETE'),('TRUNCATE'),
+                     ('REFERENCES'),('TRIGGER')) priv(name)
+  WHERE ns.nspname='public' AND rel.relkind IN ('r','p','v','m','f')
+    AND rel.relname <> 'alembic_version'
+    AND role.rolname IN ('sms_auth','sms_accept','sms_send','sms_callback',
+                         'sms_export','sms_scheduler','sms_metrics')
+    AND has_table_privilege(role.oid,rel.oid,priv.name)
+
+  UNION ALL
+  SELECT concat_ws('|','PC',role.rolname,rel.relname,col.attname,priv.name)
+  FROM pg_roles role CROSS JOIN pg_class rel
+  JOIN pg_namespace ns ON ns.oid=rel.relnamespace
+  JOIN pg_attribute col ON col.attrelid=rel.oid AND col.attnum>0 AND NOT col.attisdropped
+  CROSS JOIN (VALUES ('SELECT'),('INSERT'),('UPDATE'),('REFERENCES')) priv(name)
+  WHERE ns.nspname='public' AND rel.relkind IN ('r','p','v','m','f')
+    AND rel.relname <> 'alembic_version'
+    AND role.rolname IN ('sms_auth','sms_accept','sms_send','sms_callback',
+                         'sms_export','sms_scheduler','sms_metrics')
+    AND has_column_privilege(role.oid,rel.oid,col.attnum,priv.name)
+
+  UNION ALL
+  SELECT concat_ws('|','PS',role.rolname,rel.relname,priv.name)
+  FROM pg_roles role CROSS JOIN pg_class rel
+  JOIN pg_namespace ns ON ns.oid=rel.relnamespace
+  CROSS JOIN (VALUES ('USAGE'),('SELECT'),('UPDATE')) priv(name)
+  WHERE ns.nspname='public' AND rel.relkind='S'
+    AND role.rolname IN ('sms_auth','sms_accept','sms_send','sms_callback',
+                         'sms_export','sms_scheduler','sms_metrics')
+    AND has_sequence_privilege(role.oid,rel.oid,priv.name)
+
+  UNION ALL
+  SELECT concat_ws('|','PF',role.rolname,proc.proname,pg_get_function_identity_arguments(proc.oid))
+  FROM pg_roles role CROSS JOIN pg_proc proc
+  JOIN pg_namespace ns ON ns.oid=proc.pronamespace
+  WHERE ns.nspname='public'
+    AND role.rolname IN ('sms_auth','sms_accept','sms_send','sms_callback',
+                         'sms_export','sms_scheduler','sms_metrics')
+    AND has_function_privilege(role.oid,proc.oid,'EXECUTE')
+
+  UNION ALL
+  SELECT concat_ws('|','F',proc.proname,pg_get_function_identity_arguments(proc.oid),
+    proc.prosecdef::text,proc.provolatile::text,proc.proconfig::text,
+    regexp_replace(pg_get_functiondef(proc.oid), '\s+', ' ', 'g'))
+  FROM pg_proc proc JOIN pg_namespace ns ON ns.oid=proc.pronamespace
+  WHERE ns.nspname='public' AND proc.prokind IN ('f','p')
+
+  UNION ALL
+  SELECT concat_ws('|','TR',rel.relname,trg.tgname,trg.tgenabled::text,
+                   pg_get_triggerdef(trg.oid,true))
+  FROM pg_trigger trg JOIN pg_class rel ON rel.oid=trg.tgrelid
+  JOIN pg_namespace ns ON ns.oid=rel.relnamespace
+  WHERE ns.nspname='public' AND NOT trg.tgisinternal
 ) catalog
 ORDER BY row_value;
 """
@@ -99,7 +156,7 @@ def run_async_check[T](operation: Awaitable[T]) -> T:
 
 
 def compare_catalogs(schema_rows: Sequence[str], alembic_rows: Sequence[str]) -> None:
-    """比较四类结构集合并输出双向差异。"""
+    """比较结构、有效权限、函数及触发器集合并输出双向差异。"""
 
     schema_set = set(schema_rows)
     alembic_set = set(alembic_rows)
@@ -1209,6 +1266,25 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
         )
 
 
+def verify_lifecycle_write_boundaries(container: str, database: str) -> None:
+    """使用发送运行角色执行合法读取，并证实不能删除生命周期事实。"""
+
+    for table in (
+        "sms_uncertain_resolution",
+        "sms_uncertain_child",
+        "usage_chunk_allocation",
+        "usage_chunk_release",
+        "send_inflight_balance",
+        "send_inflight_reservation",
+        "send_inflight_reconcile_fact",
+        "send_admission_state",
+        "send_runtime_heartbeat",
+    ):
+        docker_psql(container, database, f"SET ROLE sms_send; SELECT count(*) FROM {table}")
+        assert_role_sql_denied(container, database, "sms_send", f"DELETE FROM {table} WHERE false")
+        assert_role_sql_denied(container, database, "sms_send", f"TRUNCATE {table}")
+
+
 def run_check() -> None:
     """分别构建两个空库并比较表、列、索引和约束。"""
 
@@ -1260,6 +1336,8 @@ def run_check() -> None:
             "SELECT version_num FROM alembic_version",
         ).strip()
         compare_catalogs(catalog(container, "schema_build"), catalog(container, "alembic_build"))
+        verify_lifecycle_write_boundaries(container, "schema_build")
+        verify_lifecycle_write_boundaries(container, "alembic_build")
         verify_audit_payload_guard(container, "schema_build")
         verify_audit_payload_guard(container, "alembic_build")
         verify_audit_context_forgery_rejected(container, "schema_build")
@@ -1302,13 +1380,10 @@ def run_check() -> None:
             env=migration_env,
             check=False,
         )
-        blocked_output = (
-            blocked_outbox_downgrade.stdout + blocked_outbox_downgrade.stderr
-        )
+        blocked_output = blocked_outbox_downgrade.stdout + blocked_outbox_downgrade.stderr
         if (
             blocked_outbox_downgrade.returncode == 0
-            or "cannot downgrade transactional outbox with unfinished events"
-            not in blocked_output
+            or "cannot downgrade transactional outbox with unfinished events" not in blocked_output
         ):
             raise RuntimeError("unfinished outbox downgrade was not rejected")
         preserved_outbox = docker_psql(
@@ -1370,8 +1445,7 @@ def run_check() -> None:
         docker_psql(
             container,
             "legacy_approval_build",
-            "ALTER TABLE approval ALTER COLUMN trigger_threshold_source "
-            "SET DEFAULT 'snapshot'",
+            "ALTER TABLE approval ALTER COLUMN trigger_threshold_source SET DEFAULT 'snapshot'",
         )
         baseline_approval_default = docker_psql(
             container,
@@ -1640,7 +1714,7 @@ def run_check() -> None:
             password_engine = create_async_engine(database_url, hide_parameters=True)
             async with password_engine.connect() as connection:
                 password_row = (
-
+                    (
                         await connection.execute(
                             text(
                                 """
@@ -1657,8 +1731,10 @@ def run_check() -> None:
                             ),
                             {"identity_id": principals[0].identity_id},
                         )
-
-                ).mappings().one()
+                    )
+                    .mappings()
+                    .one()
+                )
             await password_engine.dispose()
             if (
                 password_row["password_hash"] != "new-audit-probe-hash"
@@ -1687,8 +1763,7 @@ def run_check() -> None:
                 other_failures = sorted(
                     type(item).__name__
                     for item in results
-                    if isinstance(item, BaseException)
-                    and not isinstance(item, InvalidAdminQuery)
+                    if isinstance(item, BaseException) and not isinstance(item, InvalidAdminQuery)
                 )
                 raise RuntimeError(
                     "concurrent config updates bypassed final policy gate: "
@@ -1720,7 +1795,7 @@ def run_check() -> None:
             audit_engine = create_async_engine(database_url, hide_parameters=True)
             async with audit_engine.connect() as connection:
                 attributed = (
-
+                    (
                         await connection.execute(
                             text(
                                 """
@@ -1733,8 +1808,10 @@ def run_check() -> None:
                             """
                             )
                         )
-
-                ).mappings().one()
+                    )
+                    .mappings()
+                    .one()
+                )
             if (
                 attributed["actor"] != principals[0].login_name
                 or attributed["actor_subject_kind"] != "human"

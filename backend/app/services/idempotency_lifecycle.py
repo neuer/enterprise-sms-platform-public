@@ -1,4 +1,5 @@
 """幂等结果共享生命周期；批次锁先于 Claim 锁，数据库时间决定是否可退役。"""
+
 from __future__ import annotations
 
 from typing import Any
@@ -21,35 +22,61 @@ RESULT_WORK_PROTECTED_SQL = """
     SELECT 1 FROM callback_task t WHERE t.batch_id=b.id
       AND t.status NOT IN ('done','dead')
   )
+  OR EXISTS (
+    SELECT 1 FROM vendor_test_operation operation
+    WHERE operation.operation_type='uat_send'
+      AND operation.status IN ('requested','running')
+      AND operation.batch_no IS NULL
+      AND operation.acceptance_app_id=b.app_id
+      AND operation.actor_account_id=b.creator_account_id
+      AND operation.actor_identity_id=b.creator_identity_id
+      AND operation.acceptance_biz_id=b.biz_id
+      AND b.channel='web' AND b.is_test=true
+      AND (operation.acceptance_request_hash IS NULL OR
+           (operation.acceptance_request_hash=i.request_hash
+            AND operation.acceptance_key_version=i.request_hash_key_version))
+  )
   OR (b.status='completed' AND b.total>0
       AND NOT EXISTS (SELECT 1 FROM sms_chunk c WHERE c.batch_id=b.id))
 )
 """
 
-IDEMPOTENCY_LIVE_SQL = """(
+IDEMPOTENCY_LIVE_SQL = (
+    """(
  i.expires_at IS NULL OR i.expires_at > now()
  OR i.request_hash IS NULL OR i.request_hash_key_version IS NULL
- OR """ + RESULT_WORK_PROTECTED_SQL + ")"
+ OR """
+    + RESULT_WORK_PROTECTED_SQL
+    + ")"
+)
 
-CLAIM_RESULT_LIVE_SQL = """(
+CLAIM_RESULT_LIVE_SQL = (
+    """(
  COALESCE(i.expires_at,q.result_expires_at) IS NULL
  OR COALESCE(i.expires_at,q.result_expires_at) > now()
- OR """ + RESULT_WORK_PROTECTED_SQL + ")"
+ OR """
+    + RESULT_WORK_PROTECTED_SQL
+    + ")"
+)
 
-CLAIM_RESULT_SQL = """
+CLAIM_RESULT_SQL = (
+    """
  SELECT q.token,q.fingerprint,q.generation,q.state,q.batch_id,
    q.expires_at > now() AS lease_valid,
    i.id AS result_id,
    (CASE WHEN i.id IS NOT NULL THEN
       trim(i.request_hash)=trim(q.fingerprint) AND i.request_hash_key_version IS NOT NULL
     ELSE q.result_expires_at IS NOT NULL END) AS result_verified,
- """ + CLAIM_RESULT_LIVE_SQL + """ AS result_protected
+ """
+    + CLAIM_RESULT_LIVE_SQL
+    + """ AS result_protected
  FROM idempotency_claim q
  LEFT JOIN sms_batch b ON b.id=q.batch_id
  LEFT JOIN idempotency_record i ON i.batch_id=q.batch_id
    AND i.scope_kind=q.scope_kind AND i.scope_id=q.scope_id AND i.biz_id=q.biz_id
  WHERE q.scope_kind=:scope_kind AND q.scope_id=:scope_id AND q.biz_id=:biz_id
 """
+)
 
 
 def require_completed_result(row: dict[str, Any]) -> None:

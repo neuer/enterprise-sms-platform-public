@@ -23,9 +23,7 @@ from app.settings import get_settings
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 PARTITION_PARENTS = ("sms_message", "sms_reply")
 PARTITION_NAME = re.compile(r"^(sms_message|sms_reply)_(\d{4})_(0[1-9]|1[0-2])$")
-PARTITION_BOUND = re.compile(
-    r"^FOR VALUES FROM \('([^']+)'\) TO \('([^']+)'\)$"
-)
+PARTITION_BOUND = re.compile(r"^FOR VALUES FROM \('([^']+)'\) TO \('([^']+)'\)$")
 PARTITION_LOCK_KEY = 7_318_612_406_017_390_923
 
 
@@ -219,11 +217,7 @@ async def maintain(
         existing[name] = parent
 
     missing = tuple(spec for spec in plan.create if spec.name not in existing)
-    expired = sorted(
-        name
-        for name in existing
-        if partition_start(name) < plan.drop_before
-    )
+    expired = sorted(name for name in existing if partition_start(name) < plan.drop_before)
     if not dry_run:
         for spec in missing:
             await connection.execute(
@@ -236,6 +230,22 @@ async def maintain(
         for name in expired:
             if existing[name] == "sms_message":
                 await _invalidate_message_partition_counts(connection, name)
+                # 保留追加式报告事实，仅删除已过保留期消息的派生关联。
+                await connection.execute(
+                    text(f"""
+                    DELETE FROM report_event_projection projection
+                    USING {_qualified(name)} message
+                    WHERE projection.message_id=message.id
+                      AND projection.message_created_at=message.created_at
+                """)
+                )
+                # 正常 DETACH 校验外键并移除分区依赖；禁止 CASCADE 删除全局约束。
+                await connection.execute(
+                    DDL(  # type: ignore[no-untyped-call]
+                        f"ALTER TABLE {_qualified('sms_message')} "
+                        f"DETACH PARTITION {_qualified(name)}"
+                    )
+                )
             await connection.execute(
                 DDL(  # type: ignore[no-untyped-call]
                     f"DROP TABLE {_qualified(name)}"

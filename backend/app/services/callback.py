@@ -20,6 +20,7 @@ from uuid import UUID
 import httpx
 
 from app.core.correlation import current_correlation_id
+from app.core.sensitive_http import sensitive_http_request
 from app.services.crypto import CryptoService, EncryptionContext
 
 LOGGER = logging.getLogger(__name__)
@@ -202,35 +203,36 @@ class HttpxCallbackTransport:
         await self._client.aclose()
 
     async def _bounded_status(self, request: httpx.Request) -> int:
-        response = await self._client.send(request, stream=True)
-        try:
-            header_bytes = sum(
-                len(name.encode("ascii", "ignore")) + len(value.encode("latin-1", "ignore")) + 4
-                for name, value in response.headers.multi_items()
-            )
-            if header_bytes > self.max_response_header_bytes:
-                raise ValueError("callback response headers exceed limit")
-            content_encoding = response.headers.get("content-encoding", "").strip().casefold()
-            if content_encoding not in {"", "identity"}:
-                raise ValueError("callback response content-encoding is forbidden")
-            declared = response.headers.get("content-length")
-            if declared is not None:
-                try:
-                    declared_length = int(declared)
-                except ValueError as exc:
-                    raise ValueError("callback response content-length is invalid") from exc
-                if declared_length < 0:
-                    raise ValueError("callback response content-length is invalid")
-                if declared_length > self.max_response_body_bytes:
-                    raise ValueError("callback response body exceeds limit")
-            received = 0
-            async for chunk in response.aiter_bytes():
-                received += len(chunk)
-                if received > self.max_response_body_bytes:
-                    raise ValueError("callback response body exceeds limit")
-            return response.status_code
-        finally:
-            await response.aclose()
+        with sensitive_http_request():
+            response = await self._client.send(request, stream=True)
+            try:
+                header_bytes = sum(
+                    len(name.encode("ascii", "ignore")) + len(value.encode("latin-1", "ignore")) + 4
+                    for name, value in response.headers.multi_items()
+                )
+                if header_bytes > self.max_response_header_bytes:
+                    raise ValueError("callback response headers exceed limit")
+                content_encoding = response.headers.get("content-encoding", "").strip().casefold()
+                if content_encoding not in {"", "identity"}:
+                    raise ValueError("callback response content-encoding is forbidden")
+                declared = response.headers.get("content-length")
+                if declared is not None:
+                    try:
+                        declared_length = int(declared)
+                    except ValueError as exc:
+                        raise ValueError("callback response content-length is invalid") from exc
+                    if declared_length < 0:
+                        raise ValueError("callback response content-length is invalid")
+                    if declared_length > self.max_response_body_bytes:
+                        raise ValueError("callback response body exceeds limit")
+                received = 0
+                async for chunk in response.aiter_bytes():
+                    received += len(chunk)
+                    if received > self.max_response_body_bytes:
+                        raise ValueError("callback response body exceeds limit")
+                return response.status_code
+            finally:
+                await response.aclose()
 
     async def post(
         self,
@@ -425,9 +427,7 @@ class CallbackDelivery:
                     "X-Sms-Timestamp": timestamp,
                     "X-Sms-Signature": signature,
                     "X-Sms-Signature-Version": str(material.task.signature_version),
-                    "X-Sms-Secret-Version": str(
-                        material.task.callback_secret_key_version
-                    ),
+                    "X-Sms-Secret-Version": str(material.task.callback_secret_key_version),
                 },
                 timeout_s=self.timeout_s,
                 follow_redirects=False,
@@ -444,7 +444,6 @@ class CallbackDelivery:
                     "callback_task_id": task_id,
                     "error_type": failure_kind,
                 },
-                exc_info=(type(error), error, error.__traceback__),
             )
             return DeliveryOutcome(False, None, failure_kind)
         finally:

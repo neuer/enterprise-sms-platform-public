@@ -356,3 +356,31 @@ def test_uat_api_returns_safe_503_when_pending_operation_cannot_be_restored() ->
         "detail": None,
     }
     assert "private pending detail" not in response.text
+
+
+def test_uat_conflict_returns_error_without_recovering_an_old_batch() -> None:
+    from app.services.idempotency import IdempotencyConflict
+
+    class ConflictingUat(Uat):
+        async def send(self, **values: object) -> VendorTestOperation:
+            raise IdempotencyConflict("different request")
+
+        async def get(self, operation_id: str) -> VendorTestOperation | None:
+            raise AssertionError("a deterministic conflict must not enter recovery")
+
+    http, _, _ = client(uat=ConflictingUat())
+    response = http.post(
+        "/api/v1/web/admin/vendor-test/messages",
+        headers=headers(),
+        json={
+            "recipient_id": 9,
+            "app_id": 7,
+            "biz_id": "c" * 32,
+            "category": "notice",
+            "content": "test",
+            "consent_confirmed": False,
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "IDEMPOTENCY_CONFLICT"
+    assert "batch_no" not in response.json()

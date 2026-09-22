@@ -827,10 +827,31 @@ class SqlReportRepository:
     ) -> None:
         token = self._lease_for(raw_id, lease)
         engine = self._engine()
+        error_type = "ReportProcessingError"
+        if error is not None:
+            candidate_type = error.partition(":")[0]
+            if candidate_type in {
+                "OperationalError",
+                "DataError",
+                "IntegrityError",
+                "InterfaceError",
+                "TimeoutError",
+                "ConnectionError",
+                "VendorProtocolError",
+                "VendorApiError",
+                "ValueError",
+                "TypeError",
+                "RuntimeError",
+            }:
+                error_type = candidate_type
         params: dict[str, Any] = {
             "id": raw_id,
             "processed": processed,
-            "error": error,
+            "error": (
+                f"{error_type}: report {parse_state}; replay={replay_eligibility}"
+                if error is not None
+                else None
+            ),
             "parse_state": parse_state,
             "replay_eligibility": replay_eligibility,
             "lease_id": str(token.lease_id),

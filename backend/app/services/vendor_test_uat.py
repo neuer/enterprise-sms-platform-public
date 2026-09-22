@@ -17,7 +17,7 @@ from app.services.app_repository import SqlAppRepository
 from app.services.billing_preview import BillingPreview, build_billing_preview
 from app.services.crypto import CryptoService, ProtectedPhone
 from app.services.freq import FrequencyLimiter
-from app.services.idempotency import IdempotencyCoordinator
+from app.services.idempotency import IdempotencyConflict, IdempotencyCoordinator
 from app.services.pipeline import BatchResponse, PipelineConfig, SendPipeline, SendRequest
 from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRenderer
 from app.services.queue import CeleryQueuePublisher
@@ -77,7 +77,7 @@ class UatOperationRepository(Protocol):
     ) -> AbstractAsyncContextManager[None]: ...
 
     async def prepare_uat_acceptance(
-        self, operation_id: str, *, biz_id: str, app_id: int
+        self, operation_id: str, *, biz_id: str, app_id: int, request_hash: str, key_version: int
     ) -> bool: ...
 
     async def heartbeat(self, operation_id: str) -> bool: ...
@@ -311,9 +311,7 @@ class VendorTestUatService:
                 operation_id,
                 "uat_send",
                 principal=principal,
-                conflicting_types=frozenset(
-                    {"uat_send", "reset_configuration"}
-                ),
+                conflicting_types=frozenset({"uat_send", "reset_configuration"}),
             )
         except VendorTestOperationConflict:
             raise RecipientBusy("已有真实联调操作正在执行") from None
@@ -329,20 +327,6 @@ class VendorTestUatService:
             recipient = await self.recipients.resolve_for_send(recipient_id)
             app = self._app(await self.apps.get(app_id), app_id)
             async with self.operations.acceptance_guard(operation_id):
-                if not await self.operations.prepare_uat_acceptance(
-                    operation_id,
-                    biz_id=biz_id or vendor_test_uat_biz_id(operation_id),
-                    app_id=app_id,
-                ):
-                    # 等待 guard 期间 lease 可能已经被对账关闭，或其他恢复器
-                    # 已附着 batch；此后只能读 PostgreSQL 事实源，绝不能 accept。
-                    accept_started = True
-                    current = await self.operations.get(operation_id)
-                    if current is None or current.operation_type != "uat_send":
-                        raise VendorTestOperationConflict("UAT operation 状态冲突")
-                    return (
-                        await VendorTestUatReconciler(self.operations).recover(current)
-                    )[0]
                 async with self.pipeline_factory(app) as pipeline:
                     admission_guard = getattr(pipeline, "admission_guard", None)
                     if admission_guard is not None:
@@ -351,43 +335,56 @@ class VendorTestUatService:
                             channel="web",
                             recipient_count=1,
                         )
+                    request = SendRequest(
+                        category=category,
+                        mobiles=(),
+                        content=content,
+                        template_id=template_id,
+                        template_params=template_params,
+                        sign_name=sign_name,
+                        channel="web",
+                        consent_confirmed=consent_confirmed,
+                        actor=principal,
+                        is_test=True,
+                        remark=remark,
+                        biz_id=biz_id or vendor_test_uat_biz_id(operation_id),
+                        protected_mobiles=(
+                            ProtectedPhone(
+                                phone_enc=recipient.phone_enc,
+                                phone_hmac=recipient.phone_hmac,
+                                phone_mask=recipient.phone_mask,
+                                key_version=recipient.key_version,
+                            ),
+                        ),
+                        protected_hmac_candidates=recipient.hmac_candidates,
+                        vendor_test_uat=True,
+                    )
+                    request_hash, key_version = await pipeline.acceptance_fingerprint(app, request)
+                    if not await self.operations.prepare_uat_acceptance(
+                        operation_id,
+                        biz_id=biz_id or vendor_test_uat_biz_id(operation_id),
+                        app_id=app_id,
+                        request_hash=request_hash,
+                        key_version=key_version,
+                    ):
+                        # 等待 guard 期间 lease 可能已经被对账关闭，或其他恢复器
+                        # 已附着 batch；此后只能读 PostgreSQL 事实源，绝不能 accept。
+                        accept_started = True
+                        current = await self.operations.get(operation_id)
+                        if current is None or current.operation_type != "uat_send":
+                            raise VendorTestOperationConflict("UAT operation 状态冲突")
+                        return (await VendorTestUatReconciler(self.operations).recover(current))[0]
                     accept_started = True
                     response: BatchResponse = await pipeline.accept(
-                        app,
-                        SendRequest(
-                            category=category,
-                            mobiles=(),
-                            content=content,
-                            template_id=template_id,
-                            template_params=template_params,
-                            sign_name=sign_name,
-                            channel="web",
-                            consent_confirmed=consent_confirmed,
-                            actor=principal,
-                            is_test=True,
-                            remark=remark,
-                            biz_id=biz_id or vendor_test_uat_biz_id(operation_id),
-                            protected_mobiles=(
-                                ProtectedPhone(
-                                    phone_enc=recipient.phone_enc,
-                                    phone_hmac=recipient.phone_hmac,
-                                    phone_mask=recipient.phone_mask,
-                                    key_version=recipient.key_version,
-                                ),
-                            ),
-                            protected_hmac_candidates=recipient.hmac_candidates,
-                            vendor_test_uat=True,
-                        ),
+                        app, request, fingerprint_key_version=key_version
                     )
                 return await self.operations.attach_batch(
                     operation_id,
                     batch_no=response.batch_no,
                 )
         except Exception as error:
-            if accept_started:
-                raise VendorTestOperationPending(
-                    "UAT 提交结果等待 PostgreSQL 事实源对账"
-                ) from None
+            if accept_started and not isinstance(error, IdempotencyConflict):
+                raise VendorTestOperationPending("UAT 提交结果等待 PostgreSQL 事实源对账") from None
             await self.operations.complete(
                 operation_id,
                 status="failed",

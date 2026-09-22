@@ -94,6 +94,8 @@ async def test_unsafe_id_cannot_reach_redis_or_uat_database() -> None:
             "abcdefab-1234-4abc-8def-abcdefabcdef",
             biz_id=UNSAFE_HEX,
             app_id=1,
+            request_hash="a" * 64,
+            key_version=1,
         )
 
 

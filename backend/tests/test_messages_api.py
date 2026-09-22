@@ -1248,3 +1248,41 @@ def test_resend_failed_reenters_pipeline_and_returns_traceability(
         "status": "queued",
     }
     assert pipeline.calls[0][1].resend_of == "original-1"
+
+
+def test_uat_application_limit_precedes_recipient_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.app_ratelimit import ApplicationRateLimitExceeded
+
+    pipeline = FakePipeline()
+    calls: list[str] = []
+
+    async def preauthorize(_app: ApiAppContext, _category: str) -> object:
+        calls.append("limit")
+        raise ApplicationRateLimitExceeded
+
+    async def factory(_app: ApiAppContext) -> FakePipeline:
+        return pipeline
+
+    async def resolve(_phone: str) -> VendorTestRecipientForSend:
+        calls.append("resolve")
+        raise AssertionError("rate limit must precede recipient query")
+
+    monkeypatch.setattr(pipeline, "preauthorize", preauthorize)
+    monkeypatch.setattr(messages_module, "_pipeline", factory)
+    monkeypatch.setattr(
+        messages_module, "_require_vendor_test_api_ready", allow_vendor_test_api_ready
+    )
+    monkeypatch.setattr(messages_module, "_resolve_vendor_test_api_recipient", resolve)
+    response = TestClient(make_app()).post(
+        "/api/v1/messages/uat-send",
+        headers={"X-Api-Key": "valid"},
+        json={
+            "category": "notice",
+            "mobiles": ["13800138000"],
+            "content": "test",
+            "biz_id": "limit-uat",
+        },
+    )
+    assert response.status_code == 429
+    assert calls == ["limit"]
+    assert pipeline.calls == []

@@ -119,7 +119,7 @@ async def _reconcile() -> int:
     ):
         total += await _run_domain(name, operation, settings, failures)
     if failures:
-        raise ReconcilePartialFailure(f"reconcile domains failed: {len(failures)}") from failures[0]
+        raise ReconcilePartialFailure(f"reconcile domains failed: {len(failures)}") from None
     return total
 
 

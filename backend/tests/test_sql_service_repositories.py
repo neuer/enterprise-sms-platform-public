@@ -1177,7 +1177,7 @@ async def test_report_repository_tracks_raw_errors_and_expires_each_batch_once(
     assert connection.calls[1][1] == {
         "id": 5,
         "processed": False,
-        "error": "bad payload",
+        "error": "ReportProcessingError: report unattempted; replay=manual",
         "parse_state": "unattempted",
         "replay_eligibility": "manual",
         "lease_id": str(error_lease.lease_id),
@@ -1595,7 +1595,9 @@ async def test_pipeline_read_repository_returns_config_filters_and_idempotency(
         async def get(self, key: str) -> str:
             return "1"
 
-        async def smismember(self, key: str, values: list[str]) -> list[bool]:
+        async def eval(
+            self, script: str, count: int, loaded: str, key: str, *values: str
+        ) -> list[bool]:
             return [value in {"a", "b"} for value in values]
 
         async def aclose(self) -> None:

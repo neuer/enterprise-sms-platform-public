@@ -495,13 +495,17 @@ class SqlVendorTestOperationRepository:
         finally:
             await engine.dispose()
 
-    async def prepare_uat_acceptance(self, operation_id: str, *, biz_id: str, app_id: int) -> bool:
+    async def prepare_uat_acceptance(
+        self, operation_id: str, *, biz_id: str, app_id: int, request_hash: str, key_version: int
+    ) -> bool:
         """在 guard 内确认 running lease 仍有效，并刷新至完整窗口。"""
 
         operation_id = _operation_id(operation_id)
         from app.core.sensitive_text import reject_phone_business_id
 
         reject_phone_business_id(biz_id, field_name="biz_id")
+        if re.fullmatch(r"[0-9a-f]{64}", request_hash) is None or not 1 <= key_version <= 32767:
+            raise ValueError("invalid UAT acceptance fingerprint")
         if not biz_id or len(biz_id) > 32 or app_id < 1:
             raise ValueError("invalid UAT acceptance reference")
         engine = self._engine()
@@ -512,13 +516,17 @@ class SqlVendorTestOperationRepository:
                         """
                         UPDATE vendor_test_operation SET
                           lease_expires_at=now()+make_interval(secs=>:lease_seconds),
-                          acceptance_biz_id=:biz_id,acceptance_app_id=:app_id
+                          acceptance_biz_id=:biz_id,acceptance_app_id=:app_id,
+                          acceptance_request_hash=:request_hash,
+                          acceptance_key_version=:key_version
                         WHERE id=CAST(:id AS uuid)
                           AND operation_type='uat_send'
                           AND status='running'
                           AND batch_no IS NULL
                           AND (acceptance_biz_id IS NULL OR
-                               (acceptance_biz_id=:biz_id AND acceptance_app_id=:app_id))
+                               (acceptance_biz_id=:biz_id AND acceptance_app_id=:app_id
+                                AND acceptance_request_hash=:request_hash
+                                AND acceptance_key_version=:key_version))
                           AND lease_expires_at > now()
                         RETURNING id
                         """
@@ -527,6 +535,8 @@ class SqlVendorTestOperationRepository:
                         "id": operation_id,
                         "biz_id": biz_id,
                         "app_id": app_id,
+                        "request_hash": request_hash,
+                        "key_version": key_version,
                         "lease_seconds": UAT_ACCEPTANCE_LEASE_SECONDS,
                     },
                 )
@@ -599,9 +609,17 @@ class SqlVendorTestOperationRepository:
                           AND operation.lease_expires_at <= now()
                           AND (operation.acceptance_reference_required
                                OR operation.acceptance_biz_id IS NOT NULL)
+                          AND (operation.acceptance_request_hash IS NOT NULL
+                               OR operation.acceptance_biz_id IS NULL)
                           AND NOT EXISTS (
                             SELECT 1 FROM sms_batch batch
                             WHERE batch.biz_id=operation.acceptance_biz_id
+                              AND EXISTS (
+                                SELECT 1 FROM idempotency_record idem
+                                WHERE idem.batch_id=batch.id
+                                  AND idem.request_hash=operation.acceptance_request_hash
+                                  AND idem.request_hash_key_version=operation.acceptance_key_version
+                              )
                               AND batch.app_id=operation.acceptance_app_id
                               AND batch.creator_account_id=operation.actor_account_id
                               AND batch.creator_identity_id=operation.actor_identity_id
@@ -778,6 +796,13 @@ class SqlVendorTestOperationRepository:
                           AND b.creator_account_id=operation.actor_account_id
                           AND b.creator_identity_id=operation.actor_identity_id
                           AND b.biz_id=operation.acceptance_biz_id
+                              AND operation.acceptance_request_hash IS NOT NULL
+                              AND (trim(b.batch_no)=operation.batch_no OR EXISTS (
+                                SELECT 1 FROM idempotency_record idem
+                                WHERE idem.batch_id=b.id
+                                  AND idem.request_hash=operation.acceptance_request_hash
+                                  AND idem.request_hash_key_version=operation.acceptance_key_version
+                              ))
                           AND (CAST(:batch_no AS varchar(64)) IS NULL
                                OR trim(b.batch_no)=CAST(:batch_no AS varchar(64)))
                         ORDER BY b.id,c.id

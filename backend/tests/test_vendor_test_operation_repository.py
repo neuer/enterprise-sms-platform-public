@@ -467,7 +467,12 @@ async def test_prepare_uat_acceptance_rechecks_lease_after_guard_wait() -> None:
     running["operation_type"] = "uat_send"
     repo, connection = repository([FakeResult([running])])
 
-    assert await repo.prepare_uat_acceptance(OPERATION_ID, biz_id="synthetic-uat", app_id=1) is True
+    assert (
+        await repo.prepare_uat_acceptance(
+            OPERATION_ID, biz_id="synthetic-uat", app_id=1, request_hash="a" * 64, key_version=1
+        )
+        is True
+    )
 
     sql, params = connection.calls[0]
     assert "status='running'" in sql
@@ -475,7 +480,12 @@ async def test_prepare_uat_acceptance_rechecks_lease_after_guard_wait() -> None:
     assert "batch_no IS NULL" in sql
     assert "make_interval(secs=>:lease_seconds)" in sql
     assert params == {
-        "id": OPERATION_ID, "lease_seconds": 60, "biz_id": "synthetic-uat", "app_id": 1
+        "id": OPERATION_ID,
+        "lease_seconds": 60,
+        "biz_id": "synthetic-uat",
+        "app_id": 1,
+        "request_hash": "a" * 64,
+        "key_version": 1,
     }
 
 

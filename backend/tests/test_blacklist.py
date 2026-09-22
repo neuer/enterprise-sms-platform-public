@@ -264,7 +264,11 @@ async def test_cache_rebuild_cannot_publish_stale_snapshot_after_mutation() -> N
             assert transaction
             return Pipeline(self)
 
-        async def smismember(self, key: str, candidates: list[str]) -> list[bool]:
+        async def eval(
+            self, script: str, count: int, loaded: str, key: str, *candidates: str
+        ) -> list[bool] | None:
+            if not self.values.get(loaded):
+                return None
             return [candidate in self.members.get(key, set()) for candidate in candidates]
 
     redis = FakeRedis()
@@ -323,7 +327,11 @@ class _FastPathRedis:
     async def get(self, key: str) -> str | None:
         return self.values.get(key)
 
-    async def smismember(self, key: str, candidates: list[str]) -> list[bool]:
+    async def eval(
+        self, script: str, count: int, loaded: str, key: str, *candidates: str
+    ) -> list[bool] | None:
+        if not self.values.get(loaded):
+            return None
         return [candidate in self.members.get(key, set()) for candidate in candidates]
 
 
@@ -343,7 +351,11 @@ class _BusyLockRedis:
     async def exists(self, key: str) -> int:
         return 1 if key in self.members else 0
 
-    async def smismember(self, key: str, candidates: list[str]) -> list[bool]:
+    async def eval(
+        self, script: str, count: int, loaded: str, key: str, *candidates: str
+    ) -> list[bool] | None:
+        if not self.values.get(loaded):
+            return None
         return [candidate in self.members.get(key, set()) for candidate in candidates]
 
 
@@ -356,11 +368,12 @@ async def test_loaded_cache_read_takes_no_lock() -> None:
 
 
 @pytest.mark.asyncio
-async def test_busy_rebuild_lock_degrades_to_stale_snapshot() -> None:
+async def test_busy_rebuild_lock_with_stale_snapshot_fails_closed() -> None:
     cache = RedisBlacklistCache(_BusyLockRedis(set_exists=True))
     hit = "a" * 64
 
-    assert await cache.matches({hit}, lambda: _immediate(set())) == {hit}
+    with pytest.raises(BlacklistCacheUnavailable):
+        await cache.matches({hit}, lambda: _immediate(set()))
 
 
 @pytest.mark.asyncio
@@ -412,3 +425,21 @@ async def test_heartbeat_lock_extends_with_absolute_ttl(
             await real_sleep(0)
     assert calls
     assert calls[0] == (120, True)
+
+
+@pytest.mark.asyncio
+async def test_invalidation_during_blacklist_lookup_fails_closed() -> None:
+    class InvalidatingRedis(_FastPathRedis):
+        loaded = True
+
+        async def get(self, _key: str) -> str | None:
+            return "1" if self.loaded else None
+
+        async def eval(self, script: str, count: int, loaded: str, key: str, *members: str) -> None:
+            self.loaded = False
+            return None
+
+    with pytest.raises(BlacklistCacheUnavailable):
+        await RedisBlacklistCache(InvalidatingRedis()).matches(
+            {"a" * 64}, lambda: _immediate(set())
+        )
