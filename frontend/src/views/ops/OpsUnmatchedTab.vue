@@ -159,10 +159,10 @@ watch(
           />
         </label>
         <div class="ops-filter-go">
-          <el-button data-testid="ops-unmatched-search" @click="searchUnmatched">查询</el-button>
+          <el-button type="primary" data-testid="ops-unmatched-search" @click="searchUnmatched">查询</el-button>
           <el-button @click="resetUnmatched">重置</el-button>
           <el-checkbox v-model="exportDecrypted">授权明文</el-checkbox>
-          <el-button type="primary" :loading="exportBusy" @click="exportUnmatched">导出对账</el-button>
+          <el-button :loading="exportBusy" @click="exportUnmatched">导出对账</el-button>
         </div>
         <p class="ops-privacy"
           >手机号明文仅随请求体提交，服务端立即转换为 HMAC

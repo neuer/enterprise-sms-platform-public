@@ -6,7 +6,7 @@ defineProps<{ controller: AdminStepUpController }>()
   <el-dialog
     :model-value="controller.state.open"
     title="验证当前账号"
-    width="420px"
+    width="min(420px, 92vw)"
     destroy-on-close
     :close-on-click-modal="false"
     @update:model-value="

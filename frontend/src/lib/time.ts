@@ -97,6 +97,13 @@ export function formatDurationHms(remainingMs: number): string {
   return [hours, minutes, seconds].map((unit) => String(unit).padStart(2, "0")).join(":")
 }
 
+/** 秒数的人性化时长单点实现：≥1 天按天、≥1 小时按小时（均保留 1 位小数），否则按分钟取整；负值归零。 */
+export function formatDuration(seconds: number): string {
+  if (seconds >= 86400) return `${(seconds / 86400).toFixed(1)} 天`
+  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} 小时`
+  return `${Math.max(0, Math.round(seconds / 60))} 分钟`
+}
+
 /** Asia/Shanghai 日历日 `YYYY-MM-DD`；与本地浏览器时区无关。 */
 export function shanghaiDateKey(date: Date = new Date()): string {
   return DATE_KEY.format(date)

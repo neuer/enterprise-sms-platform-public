@@ -46,7 +46,7 @@ scripts/local_test.sh up
 | `operator01` | 操作员 | Web 发送、批次、回复与本部门数据 |
 | `viewer01` | 查看员 | 本部门只读查询与报表 |
 
-密码由测试负责人从本机 `deploy/secrets/ldap_bind_password` 的 0600 文件通过受控渠道提供；不要把值复制到聊天、截图、Issue 或命令参数。浏览器打开 Web 登录地址，输入任一用户名与该轮密码即可。登录使用现有 `/api/v1/web/auth/login` 获取 Bearer access JWT，refresh 由 HttpOnly Cookie 保存；退出会调用服务端吊销接口、清除 refresh Cookie 并清理浏览器会话。切换角色时先点击右上角“退出”，不要手工复用旧 token。
+密码由测试负责人从本机 `deploy/secrets/ldap_bind_password` 的 0600 文件通过受控渠道提供；不要把值复制到聊天、截图、Issue 或命令参数。浏览器打开 Web 登录地址，**先在登录页选择「AD 账号」认证源**（四个 seed 账号都是 AD 身份，页面默认选中「本地账号」，不切换会一直提示认证失败），再输入任一用户名与该轮密码即可。登录使用现有 `/api/v1/web/auth/login` 获取 Bearer access JWT，refresh 由 HttpOnly Cookie 保存；退出会调用服务端吊销接口、清除 refresh Cookie 并清理浏览器会话。切换角色时先点击右上角“退出”，不要手工复用旧 token。
 
 连续五次输错密码会建立可恢复的账号失败标记并在当次返回 423；从未触发 IP 限流的出口提交正确凭据并完成账号绑定后会自动清除该标记，无需重置数据。同 IP 高频失败仍会独立触发限流；登录失败不需要销毁测试数据，按认证状态定位原因。
 

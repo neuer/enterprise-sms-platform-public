@@ -5,7 +5,7 @@ import ListPagination from "../../components/ListPagination.vue"
 
 import { ElMessage } from "element-plus"
 
-import { watch } from "vue"
+import { ref, watch } from "vue"
 
 import {
   listUncertain,
@@ -21,6 +21,8 @@ const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../../lib/error"
 
 import { DEFAULT_PAGE_SIZE } from "../../lib/labels"
+
+import { formatDuration } from "../../lib/time"
 
 import EmptyState from "../../components/EmptyState.vue"
 
@@ -43,12 +45,6 @@ const UNCERTAIN_EMPTY = {
   title: "当前没有结果未知的分片",
   description:
     "uncertain 禁止自动重发；仅 reconcile 可按厂商报文修复，到期进入保守终态后须双人确认处置。Web 重发使用源批次部门与受控 system 计费主体，不会使用 app_id=-1。",
-}
-
-function duration(seconds: number): string {
-  if (seconds >= 86400) return `${(seconds / 86400).toFixed(1)} 天`
-  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} 小时`
-  return `${Math.max(0, Math.round(seconds / 60))} 分钟`
 }
 
 function resolutionLabel(action: string | null | undefined): string {
@@ -83,8 +79,12 @@ async function load(_tab?: string): Promise<void> {
   if (props.active) await uncertainList.load()
 }
 
+// 处置在途守卫：提出/确认请求返回前拦截重复提交，防止同一处置被写入两次。
+const resolutionBusy = ref(false)
+
 async function proposeResolution(item: UncertainItem, action: UncertainResolutionAction): Promise<void> {
   item = { ...item }
+  if (resolutionBusy.value) return
   if (
     !(await confirmAuditedAction({
       title: "确认提出处置",
@@ -94,18 +94,21 @@ async function proposeResolution(item: UncertainItem, action: UncertainResolutio
     }))
   )
     return
+  resolutionBusy.value = true
   try {
     await proposeUncertainResolution(item.chunk_id, action)
     ElMessage.success("已提出处置 · 本次操作已记入审计")
     await load("uncertain")
   } catch (error) {
     ElMessage.error(errorText(error, "提出处置失败"))
+  } finally {
+    resolutionBusy.value = false
   }
 }
 
 async function confirmResolution(item: UncertainItem): Promise<void> {
   item = { ...item }
-  if (item.resolution_id == null) return
+  if (item.resolution_id == null || resolutionBusy.value) return
   if (
     !(await confirmAuditedAction({
       title: "确认处置",
@@ -115,12 +118,15 @@ async function confirmResolution(item: UncertainItem): Promise<void> {
     }))
   )
     return
+  resolutionBusy.value = true
   try {
     await confirmUncertainResolution(item.resolution_id)
     ElMessage.success("处置已确认 · 本次操作已记入审计")
     await load("uncertain")
   } catch (error) {
     ElMessage.error(errorText(error, "确认处置失败"))
+  } finally {
+    resolutionBusy.value = false
   }
 }
 watch(
@@ -166,7 +172,7 @@ watch(
           ><el-table-column prop="phone_count" label="号码数" width="90" /><el-table-column label="停留" width="110"
             ><template #default="{ row }"
               ><el-tag :type="row.age_seconds >= 86400 ? 'danger' : 'warning'">{{
-                duration(row.age_seconds)
+                formatDuration(row.age_seconds)
               }}</el-tag></template
             ></el-table-column
           ><el-table-column label="处置" min-width="220"
@@ -204,7 +210,7 @@ watch(
               ><strong>{{ item.batch_no }}</strong
               ><StatusTag :status="item.status" /></header
             ><code>{{ item.custom_id }}</code
-            ><p>{{ item.phone_count }} 个号码 · {{ duration(item.age_seconds) }}</p
+            ><p>{{ item.phone_count }} 个号码 · {{ formatDuration(item.age_seconds) }}</p
             ><template v-if="item.status === 'unknown_terminal' && !item.resolution_id"
               ><el-button
                 v-for="option in RESOLUTION_ACTIONS"

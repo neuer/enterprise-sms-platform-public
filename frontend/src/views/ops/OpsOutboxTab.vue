@@ -25,7 +25,7 @@ import { errorText } from "../../lib/error"
 
 import { DEFAULT_PAGE_SIZE } from "../../lib/labels"
 
-import { formatDateTime } from "../../lib/time"
+import { formatDateTime, formatDuration } from "../../lib/time"
 
 import EmptyState from "../../components/EmptyState.vue"
 
@@ -58,12 +58,6 @@ const outboxEmpty = computed(() =>
     ? { title: "没有符合筛选条件的投递事件", description: "调整事件状态后重新查询，也可重置查看全部事件。" }
     : { title: "暂无投递事件", description: "Outbox 事件由业务事务写入，dispatcher 按租约逐步投递。" },
 )
-
-function duration(seconds: number): string {
-  if (seconds >= 86400) return `${(seconds / 86400).toFixed(1)} 天`
-  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} 小时`
-  return `${Math.max(0, Math.round(seconds / 60))} 分钟`
-}
 
 const outboxList = usePagedList({
   fetcher: async (page, signal) => {
@@ -191,7 +185,7 @@ watch(
           ><span>失败尝试</span><strong>{{ outboxStats.failed_attempts }}</strong></article
         >
         <article
-          ><span>最老积压</span><strong>{{ duration(outboxStats.oldest_age_seconds) }}</strong></article
+          ><span>最老积压</span><strong>{{ formatDuration(outboxStats.oldest_age_seconds) }}</strong></article
         >
       </div>
       <section class="ops-results">

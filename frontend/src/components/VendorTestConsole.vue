@@ -118,7 +118,14 @@ const resetOperationFailed = computed(
 )
 
 const statusPresentation = computed(() => {
-  if (!status.value) return { title: "状态读取中", detail: "正在连接本机控制代理", tone: "neutral" }
+  if (!status.value) {
+    // 加载失败停留在 null：横幅已给出错误与重连入口，头部必须同步为失败终态，
+    // 不能继续显示“状态读取中”造成两个互相矛盾的状态并存。
+    if (errorMessage.value) {
+      return { title: "状态读取失败", detail: "控制代理暂不可用，处置后点击上方重新连接", tone: "danger" }
+    }
+    return { title: "状态读取中", detail: "正在连接本机控制代理", tone: "neutral" }
+  }
   if (status.value.pause_kind === "daily") {
     return { title: "日预算已封顶", detail: "达到 100 条后当日不可人工恢复", tone: "danger" }
   }
@@ -734,7 +741,7 @@ onBeforeUnmount(() => {
     <el-dialog
       v-model="refreshVisible"
       title="刷新号码索引"
-      width="440px"
+      width="min(440px, 92vw)"
       destroy-on-close
       append-to-body
       @closed="clearIndexRefresh"

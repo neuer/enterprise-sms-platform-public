@@ -59,7 +59,7 @@ const {
 } = usePagedList({
   fetcher: (page) =>
     listReplies({
-      phone: phone.value.trim() || undefined,
+      phone: validPhone.value,
       ...rangeToIsoParams(range.value),
       disposition: disposition.value,
       page,
@@ -78,6 +78,12 @@ function isOptOutContent(content: string): boolean {
 
 /** 手机号即时校验提示：空或合法为 undefined，非法时表单内联展示。 */
 const phoneError = computed(() => phoneProblem(phone.value.trim()))
+
+/** 非法手机号永不发往服务端（服务端 pattern 校验只会 400 整单拒绝）；显式「查询」仍会即时提示要求修正。 */
+const validPhone = computed(() => {
+  const value = phone.value.trim()
+  return value && !phoneProblem(value) ? value : undefined
+})
 
 const filtering = computed(() => Boolean(phone.value.trim()) || Boolean(range.value) || disposition.value !== "all")
 const emptyState = computed(() =>
@@ -102,8 +108,11 @@ function search(): void {
 }
 
 function setDisposition(next: ReplyDisposition): void {
+  if (disposition.value === next) return
   disposition.value = next
-  search()
+  // 处置切换与手机号校验解耦：手机号输入框中的临时非法内容不阻塞 seg 重查
+  // （非法号码不随请求发出），避免出现 seg 已切换但列表仍是旧口径的不一致。
+  listSearch()
 }
 
 /** 跳转批次列表并直达该批次详情抽屉（批次页消费 batch_no 查询参数）。 */

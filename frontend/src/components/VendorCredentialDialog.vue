@@ -82,7 +82,7 @@ watch(
   <el-dialog
     :model-value="modelValue"
     :title="title()"
-    width="520px"
+    width="min(520px, 92vw)"
     destroy-on-close
     append-to-body
     class="vendor-credential-dialog"

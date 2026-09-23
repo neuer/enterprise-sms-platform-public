@@ -6,7 +6,7 @@ import type { useOpsQueue } from "../../composables/useOpsQueue"
 import type { UnwrapRef } from "vue"
 
 const props = defineProps<{ active: boolean; state: UnwrapRef<ReturnType<typeof useOpsQueue>> }>()
-const { queue, forceResume, loading, errorMessage, recover } = toRefs(props.state)
+const { queue, forceResume, loading, errorMessage, recover, queueBlocked } = toRefs(props.state)
 watch(
   () => props.active,
   (active) => {
@@ -49,7 +49,7 @@ watch(
           /><p>{{
             forceResume ? "将绕过余额与暂停原因守卫，操作会写审计。" : "仅余额达到阈值且暂停码为 999 时允许恢复。"
           }}</p
-          ><el-button type="danger" @click="recover">恢复队列</el-button></div
+          ><el-button type="danger" :disabled="!queueBlocked" @click="recover">恢复队列</el-button></div
         ></template
       >
     </section>

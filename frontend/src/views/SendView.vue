@@ -123,6 +123,19 @@ const testLimitExceeded = computed(
   () => form.isTest && testSendMax.value !== null && recipientCount.value > testSendMax.value,
 )
 
+// 与服务端 web_messages.py 的 50_000 上限同口径；客户端只提前提示，服务端仍为权威裁决（规则 40 上界）。
+const MAX_RECIPIENTS_PER_BATCH = 50_000
+const recipientLimitExceeded = computed(() => recipientCount.value > MAX_RECIPIENTS_PER_BATCH)
+
+// 定时必须落在未来时刻；过期时间提交只会被服务端拒绝，提前禁用并提示。
+const scheduleInPast = computed(
+  () =>
+    form.scheduleEnabled &&
+    !!form.scheduledAt &&
+    Number.isFinite(Date.parse(form.scheduledAt)) &&
+    Date.parse(form.scheduledAt) <= Date.now(),
+)
+
 const sendDisabled = computed(
   () =>
     busy.value ||
@@ -131,6 +144,8 @@ const sendDisabled = computed(
     !contentReady.value ||
     (form.category === "market" && !form.consentConfirmed) ||
     testLimitExceeded.value ||
+    recipientLimitExceeded.value ||
+    scheduleInPast.value ||
     (form.scheduleEnabled && (!form.scheduledAt || !Number.isFinite(Date.parse(form.scheduledAt)))),
 )
 const scheduledAtValue = computed(() => (form.scheduleEnabled && form.scheduledAt ? form.scheduledAt : ""))
@@ -661,6 +676,7 @@ onBeforeUnmount(() => {
             :rows="5"
             resize="vertical"
             placeholder="每行一个手机号，也支持逗号或空格分隔"
+            aria-label="收信号码，每行一个手机号，也支持逗号或空格分隔"
             :disabled="busy"
           />
           <div v-if="pastedMobiles.length" class="phone-stats" data-testid="phone-stats">
@@ -687,6 +703,9 @@ onBeforeUnmount(() => {
               invalidMobiles[0]
             }}」；请修正后再提交。
           </p>
+          <p v-if="recipientLimitExceeded" class="mobiles-invalid-hint" data-testid="recipient-limit-hint">
+            超出单次 50,000 个号码上限（当前 {{ recipientCount.toLocaleString() }} 个）；请删减或分批提交。
+          </p>
         </template>
         <div v-else class="upload-zone">
           <el-upload
@@ -698,6 +717,7 @@ onBeforeUnmount(() => {
             :http-request="handleUpload"
             :disabled="busy"
           >
+            <!-- el-upload 不透传 aria-label；根节点 role=button 的可访问名取自下列可见文本 -->
             <strong>拖入 CSV / XLSX，或点击选择</strong>
             <span>≤10MB · ≤5万行 · 24小时有效</span>
           </el-upload>
@@ -770,6 +790,7 @@ onBeforeUnmount(() => {
           type="textarea"
           :rows="4"
           maxlength="500"
+          aria-label="短信内容，最终内容含签名与退订语不超过 500 字"
           :disabled="busy"
         />
         <div v-else class="template-fields">
@@ -830,6 +851,7 @@ onBeforeUnmount(() => {
             v-model="form.remark"
             maxlength="200"
             placeholder="发送备注（可选，写入批次与审计）"
+            aria-label="发送备注（可选，写入批次与审计）"
             :disabled="busy"
           />
         </div>
@@ -848,6 +870,7 @@ onBeforeUnmount(() => {
             popper-class="qingluan-date-popper"
             value-format="YYYY-MM-DDTHH:mm:ss+08:00"
             placeholder="选择发送时间（必填）"
+            aria-label="定时发送时间"
             :disabled="busy || form.isTest || !form.scheduleEnabled"
           />
           <label class="opt">
@@ -857,6 +880,9 @@ onBeforeUnmount(() => {
             >
           </label>
         </div>
+        <p v-if="scheduleInPast" class="test-limit-hint" data-testid="schedule-past-hint">
+          定时时间早于当前时刻；请选择未来的发送时间，或取消定时立即发送。
+        </p>
         <p v-if="testLimitExceeded" class="test-limit-hint" data-testid="test-limit-hint">
           测试发送最多 {{ testSendMax }} 个号码，当前
           {{ recipientCount.toLocaleString() }} 个；请删减号码，或取消测试发送按正式批次提交。

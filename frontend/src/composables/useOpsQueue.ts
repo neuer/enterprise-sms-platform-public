@@ -37,6 +37,8 @@ export function useOpsQueue() {
   }
 
   async function recover(): Promise<void> {
+    // 双队列均在运行时服务端只会恢复 0 个批次，直接拦截避免误导性成功提示。
+    if (!queueBlocked.value) return
     if (
       !(await confirmAuditedAction({
         title: "确认恢复双队列",

@@ -877,7 +877,7 @@ onMounted(() => void refresh())
     </template>
   </el-drawer>
 
-  <el-dialog v-model="previewOpen" title="安全日报纯文本预览" width="720px">
+  <el-dialog v-model="previewOpen" title="安全日报纯文本预览" width="min(720px, 92vw)">
     <pre class="security-preview-text">{{ previewText }}</pre>
   </el-dialog>
 
