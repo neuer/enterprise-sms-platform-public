@@ -44,7 +44,7 @@ export interface CreateLocalUserInput {
   temporary_password: string
 }
 
-export function listUsers(filters: UserFilters): Promise<UserPage> {
+export function listUsers(filters: UserFilters, signal?: AbortSignal): Promise<UserPage> {
   const query = new URLSearchParams({
     page: String(filters.page),
     page_size: String(filters.pageSize),
@@ -53,7 +53,7 @@ export function listUsers(filters: UserFilters): Promise<UserPage> {
   if (filters.providerCode) query.set("provider_code", filters.providerCode)
   if (filters.role) query.set("role", filters.role)
   if (filters.status !== "") query.set("status", String(filters.status))
-  return apiRequest<UserPage>(`/admin/users?${query}`, { method: "GET" })
+  return apiRequest<UserPage>(`/admin/users?${query}`, { method: "GET", signal })
 }
 
 export function createLocalUser(payload: CreateLocalUserInput, token?: string): Promise<ManagedUser> {

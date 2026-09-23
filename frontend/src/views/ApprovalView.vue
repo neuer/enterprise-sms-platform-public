@@ -18,6 +18,8 @@ import {
 import { ApiRequestError } from "../api/client"
 import type { Category } from "../api/webMessages"
 import ApprovalList from "../components/ApprovalList.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
 import { usePagedList } from "../composables/usePagedList"
@@ -412,7 +414,7 @@ onMounted(() => {
     </div>
   </div>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="approval-error" />
+  <LoadErrorAlert :message="errorMessage" class="approval-error" @retry="load()" />
 
   <ApprovalList
     v-loading="loading"

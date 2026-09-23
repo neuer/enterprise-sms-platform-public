@@ -21,6 +21,7 @@ import {
 import { listApps, type ManagedApp } from "../api/apps"
 import { ApiRequestError } from "../api/client"
 import PhoneMask from "./PhoneMask.vue"
+import LoadErrorAlert from "./LoadErrorAlert.vue"
 import VendorCredentialDialog from "./VendorCredentialDialog.vue"
 import VendorTestRecipientDialog from "./VendorTestRecipientDialog.vue"
 import VendorTestUatPanel from "./VendorTestUatPanel.vue"
@@ -552,9 +553,7 @@ onBeforeUnmount(() => {
 
 <template>
   <section v-loading="loading" class="vendor-test-console" aria-labelledby="vendor-test-heading">
-    <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" show-icon>
-      <template #default><el-button link type="primary" @click="load">重新连接控制代理</el-button></template>
-    </el-alert>
+    <LoadErrorAlert :message="errorMessage" retry-text="重新连接控制代理" @retry="load" />
 
     <header class="vendor-test-status" :class="`is-${statusPresentation.tone}`">
       <div class="vendor-test-state-mark" aria-hidden="true"><i></i><span>LIVE</span></div>

@@ -108,5 +108,6 @@
 - API 契约类型：`src/api/types.gen.ts` 由 `npm run gen:api-types` 从根 `openapi.yaml` 生成（openapi-typescript），CI frontend job 对生成产物做 `git diff --exit-code` 零漂移门禁，禁止手改；`src/api/` 手写 interface 逐步迁移为生成类型引用（范例见 `webMessages.ts` 的 SendResult）
 
 - 列表共用 `FilterSeg`、`ListPagination` 和 `usePagedList`；分页加载沿用 `useLatestRead` 的取消与迟到结果守卫，切换上下文时调用 `cancel()`。计费分段使用独立的 `BillingSegments`。
+- 加载失败错误条统一 `src/components/LoadErrorAlert.vue`（错误标题 + 内联重试按钮，类名透传保留页面间距类），列表/快照加载失败不允许裸 el-alert 无重试入口；行内详情触发器键盘激活统一 `src/lib/directives.ts` 的 `v-row-activate`（Enter/Space 触发并阻断冒泡防穿透 row-click），不再手写 `@keydown.enter/space.stop.prevent` 对
 - 已审核签名与模板读取复用 `useApprovedResources`，签名/模板管理列表复用 `useVendorResourceList`；权限展示使用 session 能力 getter，服务端授权仍为最终边界。
 - 运维各页签放在 `views/ops/`，各自拥有查询和操作状态；首次访问后保留筛选，隐藏时取消读取。队列摘要与控制由 `useOpsQueue` 单点提供。API 示例和安全日报配置分别由 `ApiDemoDialog`、`SecurityDailyConfigDialog` 承载；配置密钥随关闭清空。模板预览、审批文案、日期范围、手机号提示和状态选项复用 `lib/` 对应工具。

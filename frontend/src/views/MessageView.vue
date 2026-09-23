@@ -7,6 +7,8 @@ import { ElMessage } from "element-plus"
 
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
 import PhoneMask from "../components/PhoneMask.vue"
@@ -94,17 +96,21 @@ const {
   load: run,
   cancel: cancelQuery,
 } = usePagedList({
-  fetcher: async (page) => {
+  fetcher: async (page, signal) => {
     const queryPhone = searchedPhone.value || phone.value
     const { start, end } = rangeToIsoParams(range.value)
     if (mode.value === "list") {
-      const result = await searchMessages(queryPhone, {
-        start,
-        end,
-        category: category.value || undefined,
-        status: status.value || undefined,
-        page,
-      })
+      const result = await searchMessages(
+        queryPhone,
+        {
+          start,
+          end,
+          category: category.value || undefined,
+          status: status.value || undefined,
+          page,
+        },
+        signal,
+      )
       return {
         items: result.items,
         total: result.total,
@@ -114,12 +120,12 @@ const {
         firstPhone: result.items[0]?.phone,
       }
     }
-    const next = await getTimeline(queryPhone, start, end)
+    const next = await getTimeline(queryPhone, start, end, signal)
     let firstId: number | undefined
     let firstPhone: string | undefined
     if (canDecrypt.value) {
       try {
-        const firstPage = await searchMessages(queryPhone, { page: 1 })
+        const firstPage = await searchMessages(queryPhone, { page: 1 }, signal)
         firstId = firstPage.items[0]?.id
         firstPhone = firstPage.items[0]?.phone
       } catch {
@@ -261,7 +267,7 @@ async function revealSearched(): Promise<string> {
     >
   </form>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+  <LoadErrorAlert :message="errorMessage" @retry="run()" />
 
   <div v-if="badge" class="message-badge">
     <div class="message-badge-num">

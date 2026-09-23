@@ -23,6 +23,7 @@ import {
   type LdapProviderConfig,
 } from "../api/admin"
 import EmptyState from "../components/EmptyState.vue"
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import VendorTestConsole from "../components/VendorTestConsole.vue"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAction, confirmAuditedAction } = useConfirmActions()
@@ -627,18 +628,18 @@ onMounted(() => {
         <div v-if="roleMappings.length" class="role-mapping-list">
           <div v-for="(mapping, index) in roleMappings" :key="mapping.rowKey" class="role-mapping-row">
             <el-input
-              :disabled="mappingsSaving"
               v-model="mapping.external_group"
+              :disabled="mappingsSaving"
               :data-testid="`mapping-group-${index}`"
               placeholder="CN=SMS-Operators,OU=Groups,..."
             />
             <el-input
-              :disabled="mappingsSaving"
               v-model="mapping.dept"
+              :disabled="mappingsSaving"
               :data-testid="`mapping-dept-${index}`"
               placeholder="授权部门"
             />
-            <el-select :disabled="mappingsSaving" v-model="mapping.role" :data-testid="`mapping-role-${index}`">
+            <el-select v-model="mapping.role" :disabled="mappingsSaving" :data-testid="`mapping-role-${index}`">
               <el-option v-for="(label, role) in ROLE_LABELS" :key="role" :label="label" :value="role" />
             </el-select>
             <el-button :disabled="mappingsSaving" type="danger" link @click="removeRoleMapping(index)">移除</el-button>
@@ -668,9 +669,7 @@ onMounted(() => {
     aria-labelledby="config-tab-runtime"
     class="config-runtime-panel"
   >
-    <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false">
-      <template #default><el-button link type="primary" @click="load">重新加载</el-button></template>
-    </el-alert>
+    <LoadErrorAlert :message="errorMessage" @retry="load" />
 
     <div class="config-filter-bar">
       <label class="config-fld"

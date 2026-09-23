@@ -13,8 +13,11 @@ import {
 import EmptyState from "../components/EmptyState.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePagedList } from "../composables/usePagedList"
 import { useConfirmActions } from "../lib/confirm"
+import { vRowActivate } from "../lib/directives"
 const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { formatDateTime } from "../lib/time"
@@ -255,9 +258,7 @@ onMounted(() => {
     >
   </aside>
 
-  <el-alert v-if="errorMessage" class="callback-alert" :title="errorMessage" type="error" show-icon :closable="false">
-    <template #default><el-button link type="primary" @click="load">重新加载</el-button></template>
-  </el-alert>
+  <LoadErrorAlert class="callback-alert" :message="errorMessage" @retry="load" />
 
   <section class="callback-results">
     <template v-if="items.length || loading">
@@ -307,12 +308,12 @@ onMounted(() => {
         <el-table-column label="操作" width="150" fixed="right">
           <template #default="{ row }">
             <el-button
+              v-row-activate="() => openDetail(row)"
               :data-testid="`callback-detail-${row.id}`"
               link
               type="primary"
               :aria-label="`查看回调任务 CB-${row.id} 的详情`"
               @click.stop="openDetail(row)"
-              @keydown.enter.stop.prevent="openDetail(row)"
               >详情</el-button
             >
             <el-button

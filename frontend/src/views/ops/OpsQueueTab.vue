@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { toRefs, watch } from "vue"
 
+import LoadErrorAlert from "../../components/LoadErrorAlert.vue"
+
 import type { useOpsQueue } from "../../composables/useOpsQueue"
 
 import type { UnwrapRef } from "vue"
@@ -16,7 +18,7 @@ watch(
 </script>
 <template>
   <div
-    ><el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+    ><LoadErrorAlert :message="errorMessage" @retry="state.load()" />
     <section
       id="ops-panel-queue"
       v-loading="loading"

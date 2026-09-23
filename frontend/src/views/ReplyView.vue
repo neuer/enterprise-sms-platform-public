@@ -9,6 +9,8 @@ import { useRouter } from "vue-router"
 
 import EmptyState from "../components/EmptyState.vue"
 
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
+
 import FilterSeg from "../components/FilterSeg.vue"
 
 import ListPagination from "../components/ListPagination.vue"
@@ -20,7 +22,7 @@ import { blacklistReply, listReplies, type ReplyDisposition, type ReplyItem } fr
 import { usePagedList } from "../composables/usePagedList"
 
 import { useConfirmActions } from "../lib/confirm"
-const { confirmAction } = useConfirmActions()
+const { confirmAuditedAction } = useConfirmActions()
 
 import { errorText } from "../lib/error"
 
@@ -57,13 +59,16 @@ const {
   search: listSearch,
   reset,
 } = usePagedList({
-  fetcher: (page) =>
-    listReplies({
-      phone: validPhone.value,
-      ...rangeToIsoParams(range.value),
-      disposition: disposition.value,
-      page,
-    }),
+  fetcher: (page, signal) =>
+    listReplies(
+      {
+        phone: validPhone.value,
+        ...rangeToIsoParams(range.value),
+        disposition: disposition.value,
+        page,
+      },
+      signal,
+    ),
   errorMessage: "回复列表加载失败",
   resetFilters: () => {
     phone.value = ""
@@ -123,9 +128,10 @@ function openBatch(batchNo: string): void {
 async function optout(item: ReplyItem): Promise<void> {
   item = { ...item }
   if (
-    !(await confirmAction({
+    !(await confirmAuditedAction({
       title: "退订加黑确认",
-      body: `将回复号码 ${item.phone} 加入退订黑名单？加入后发送将自动剔除该号码；加黑行为与操作人将写入审计日志。`,
+      body: `将回复号码 ${item.phone} 加入退订黑名单？加入后发送将自动剔除该号码。`,
+      auditNote: "加黑行为与操作人将写入审计日志。",
       confirmText: "加入黑名单",
     }))
   )
@@ -202,7 +208,7 @@ onMounted(load)
     >
   </form>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+  <LoadErrorAlert :message="errorMessage" @retry="load" />
 
   <section class="reply-results">
     <el-table v-loading="loading" :data="items" row-key="id" class="reply-table">

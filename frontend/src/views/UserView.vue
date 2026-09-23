@@ -19,6 +19,8 @@ import {
 import EmptyState from "../components/EmptyState.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePagedList } from "../composables/usePagedList"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
@@ -146,7 +148,7 @@ const {
   search,
   reset: resetFilters,
 } = usePagedList({
-  fetcher: (page) => listUsers({ ...filters, page }),
+  fetcher: (page, signal) => listUsers({ ...filters, page }, signal),
   errorMessage: "用户台账加载失败",
   resetFilters: () => {
     filters.keyword = ""
@@ -585,9 +587,7 @@ onMounted(() => {
     >
   </aside>
 
-  <el-alert v-if="errorMessage" class="user-alert" :title="errorMessage" type="error" show-icon :closable="false">
-    <template #default><el-button link type="primary" @click="load">重新加载</el-button></template>
-  </el-alert>
+  <LoadErrorAlert class="user-alert" :message="errorMessage" @retry="load" />
 
   <section class="user-results">
     <template v-if="users.length || loading">

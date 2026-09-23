@@ -69,8 +69,12 @@ describe("回复查询", () => {
     await optout!.trigger("click")
     await flushPromises()
     expect(confirm).toHaveBeenCalledTimes(1)
-    expect(confirm.mock.calls[0][0]).toContain("138****8000")
-    expect(confirm.mock.calls[0][0]).toContain("加入后发送将自动剔除该号码；加黑行为与操作人将写入审计日志")
+    // confirmAuditedAction 两段式：首参为 h() VNode（后果段 + 审计段），提取段落文本断言
+    const message = confirm.mock.calls[0][0] as { children: Array<{ children: string }> }
+    const flat = message.children.map((child) => child.children).join("\n")
+    expect(flat).toContain("138****8000")
+    expect(flat).toContain("加入后发送将自动剔除该号码")
+    expect(flat).toContain("加黑行为与操作人将写入审计日志")
     expect(fetch.mock.calls[1][0]).toBe("/api/v1/web/replies/5/blacklist")
     expect(fetch.mock.calls[1][1].method).toBe("POST")
     expect(toast).toHaveBeenCalledWith("已加入退订黑名单 · 本次操作已记入审计")

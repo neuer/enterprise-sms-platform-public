@@ -408,7 +408,10 @@ describe("安全日报页面", () => {
     await wrapper.get("[data-testid='security-daily-status-high']").trigger("click")
     await flushPromises()
 
-    expect(api.listSecurityDailyReports).toHaveBeenLastCalledWith(expect.objectContaining({ status: "high", page: 1 }))
+    expect(api.listSecurityDailyReports).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "high", page: 1 }),
+      expect.any(AbortSignal),
+    )
     expect(wrapper.text()).toContain("没有符合筛选条件的安全日报")
     expect(wrapper.text()).not.toContain("暂无已生成安全日报")
 
@@ -416,6 +419,7 @@ describe("安全日报页面", () => {
     await flushPromises()
     expect(api.listSecurityDailyReports).toHaveBeenLastCalledWith(
       expect.objectContaining({ status: undefined, page: 1 }),
+      expect.any(AbortSignal),
     )
     wrapper.unmount()
   })
@@ -450,6 +454,7 @@ describe("安全日报页面", () => {
     await flushPromises()
     expect(api.listSecurityDailyReports).toHaveBeenLastCalledWith(
       expect.objectContaining({ dateFrom: "2026-07-01", dateTo: "2026-07-15", page: 1 }),
+      expect.any(AbortSignal),
     )
     wrapper.unmount()
   })

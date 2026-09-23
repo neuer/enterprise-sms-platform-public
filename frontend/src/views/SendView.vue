@@ -212,6 +212,8 @@ const previewKey = computed(() =>
 )
 const lastPreviewKey = ref("")
 let previewTimer: number | undefined
+// 预检请求真实取消：新预览取代在途旧请求，不只是丢弃迟到响应。
+let previewAbort: AbortController | undefined
 
 const previewReady = computed(
   () =>
@@ -234,16 +236,22 @@ function isValidPreview(value: BillingPreview | null): value is BillingPreview {
 }
 
 async function runPreview(key: string): Promise<void> {
+  previewAbort?.abort()
+  const controller = new AbortController()
+  previewAbort = controller
   previewLoading.value = true
   previewError.value = ""
   try {
-    const result = await previewBilling({
-      category: form.category,
-      ...contentPayload(),
-      sign_name: form.signName || undefined,
-      accepted_count: previewCount.value,
-      consent_confirmed: form.consentConfirmed,
-    })
+    const result = await previewBilling(
+      {
+        category: form.category,
+        ...contentPayload(),
+        sign_name: form.signName || undefined,
+        accepted_count: previewCount.value,
+        consent_confirmed: form.consentConfirmed,
+      },
+      controller.signal,
+    )
     if (disposed || key !== previewKey.value) return
     if (isValidPreview(result)) {
       preview.value = result
@@ -263,6 +271,7 @@ async function runPreview(key: string): Promise<void> {
 watch(previewKey, () => {
   window.clearTimeout(previewTimer)
   if (!previewReady.value) {
+    previewAbort?.abort()
     preview.value = null
     previewError.value = ""
     previewLoading.value = false
@@ -601,6 +610,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   clearSessionDraft()
   disposed = true
+  previewAbort?.abort()
   window.removeEventListener(SESSION_CLEARING_EVENT, clearSessionDraft)
   window.clearTimeout(previewTimer)
   window.clearTimeout(copiedTimer)
@@ -632,8 +642,8 @@ onBeforeUnmount(() => {
             class="notice"
             data-testid="category-notice"
             :class="{ on: form.category === 'notice', selected: form.category === 'notice' }"
-            @click="chooseCategory('notice')"
             :disabled="busy"
+            @click="chooseCategory('notice')"
           >
             <b>通知短信<span class="cat-tag notice">NOTICE</span></b>
             <small>实时通道 · 黑名单默认拦截<br />≥100 号码需审批</small>
@@ -643,8 +653,8 @@ onBeforeUnmount(() => {
             class="market"
             data-testid="category-market"
             :class="{ on: form.category === 'market', selected: form.category === 'market' }"
-            @click="chooseCategory('market')"
             :disabled="busy"
+            @click="chooseCategory('market')"
           >
             <b>营销短信<span class="cat-tag market">MARKET</span></b>
             <small>批量通道 · 08:00–21:00 · 强制退订语<br />≥50 号码需审批 · 同号同应用 1 条/天</small>
@@ -732,7 +742,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="importState === 'failed'" class="import-box failed" data-testid="import-failed">
             <p>{{ importError || "号码文件解析失败" }}</p>
-            <button type="button" class="text-action" @click="resetImport" :disabled="busy">重新上传</button>
+            <button type="button" class="text-action" :disabled="busy" @click="resetImport">重新上传</button>
           </div>
           <div v-if="importState === 'ready' && imported" class="import-box" data-testid="import-ready">
             <div class="import-ready">
@@ -753,11 +763,11 @@ onBeforeUnmount(() => {
                   v-if="imported.invalid_download_url"
                   data-testid="download-invalid"
                   type="button"
-                  @click="downloadInvalidFile"
                   :disabled="busy"
+                  @click="downloadInvalidFile"
                   >下载剔除清单</button
                 >
-                <button type="button" @click="resetImport" :disabled="busy">重新上传</button>
+                <button type="button" :disabled="busy" @click="resetImport">重新上传</button>
               </div>
             </div>
             <p class="import-meta">
@@ -799,8 +809,8 @@ onBeforeUnmount(() => {
             data-testid="template-select"
             filterable
             placeholder="选择已审核模板"
-            @change="selectTemplate"
             :disabled="busy"
+            @change="selectTemplate"
           >
             <el-option v-for="item in approvedTemplates" :key="item.id" :label="item.name" :value="String(item.id)" />
           </el-select>
@@ -1001,7 +1011,7 @@ onBeforeUnmount(() => {
         <header><i></i>已受理 · {{ sendStatusLabel(sendResult.status) }}</header>
         <div class="batch-row">
           <code>{{ sendResult.batch_no }}</code>
-          <button type="button" @click="copyBatchNo" :disabled="busy">{{ copied ? "已复制" : "复制批次号" }}</button>
+          <button type="button" :disabled="busy" @click="copyBatchNo">{{ copied ? "已复制" : "复制批次号" }}</button>
         </div>
         <p class="result-line" data-testid="submitted-summary">{{ submittedSummary }}</p>
         <p class="result-line">{{ sendSuccessText(sendResult) }}。</p>

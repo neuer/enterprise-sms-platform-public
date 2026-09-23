@@ -9,7 +9,7 @@ export interface SmsSign {
   vendor_reject_reason: string | null
 }
 
-export const listSigns = () => apiRequest<SmsSign[]>("/signs", { method: "GET" })
+export const listSigns = (signal?: AbortSignal) => apiRequest<SmsSign[]>("/signs", { method: "GET", signal })
 export const createSign = (name: string) =>
   apiRequest<SmsSign>("/signs", {
     method: "POST",

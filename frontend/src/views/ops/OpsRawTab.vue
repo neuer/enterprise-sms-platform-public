@@ -30,6 +30,8 @@ import { formatDateTime } from "../../lib/time"
 
 import EmptyState from "../../components/EmptyState.vue"
 
+import LoadErrorAlert from "../../components/LoadErrorAlert.vue"
+
 const props = defineProps<{ active: boolean }>()
 
 const rawSource = ref<"" | RawLogItem["source"]>("")
@@ -195,9 +197,7 @@ watch(
 </script>
 <template>
   <div>
-    <el-alert v-if="errorMessage" class="ops-alert" :title="errorMessage" type="error" :closable="false"
-      ><template #default><el-button link type="primary" @click="load()">重新加载</el-button></template></el-alert
-    >
+    <LoadErrorAlert class="ops-alert" :message="errorMessage" @retry="load()" />
     <section id="ops-panel-raw" v-loading="loading" class="ops-panel" role="tabpanel" aria-labelledby="ops-tab-raw">
       <header class="ops-panel-title"
         ><div><strong>原始报文保险箱</strong><small>密文载荷与完整性摘要不对外返回</small></div></header

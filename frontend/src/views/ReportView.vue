@@ -18,6 +18,8 @@ import {
 } from "../api/reports"
 import ReportTrendChart from "../components/ReportTrendChart.vue"
 import EmptyState from "../components/EmptyState.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { useExportTask } from "../composables/useExportTask"
 import { CHART_DIM_VARS } from "../lib/chartTheme"
 import { formatPercent } from "../lib/format"
@@ -321,9 +323,7 @@ onMounted(() => void load())
     <el-alert v-if="exportError" :title="exportError" type="error" :closable="false" class="export-strip-error" />
   </div>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" class="report-error"
-    ><template #default><el-button link type="primary" @click="load()">重新查询</el-button></template></el-alert
-  >
+  <LoadErrorAlert class="report-error" :message="errorMessage" retry-text="重新查询" @retry="load()" />
 
   <template v-if="result">
     <section class="report-kpis" aria-label="区间关键指标">

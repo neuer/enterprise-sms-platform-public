@@ -6,6 +6,8 @@ import BalanceChart from "../components/BalanceChart.vue"
 import ChannelMonitor from "../components/ChannelMonitor.vue"
 import EmptyState from "../components/EmptyState.vue"
 import TrendChart from "../components/TrendChart.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePolling } from "../composables/usePolling"
 import { jobDescription } from "../lib/jobDescriptions"
 import { formatPercent } from "../lib/format"
@@ -138,9 +140,7 @@ onMounted(refreshPolling.start)
     </div>
   </section>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" class="dashboard-error">
-    <template #default><el-button link type="primary" @click="load">重新加载</el-button></template>
-  </el-alert>
+  <LoadErrorAlert class="dashboard-error" :message="errorMessage" @retry="load" />
 
   <div v-if="snapshot" class="dashboard-shell">
     <div class="zone-label"><span>业务成果 · 今日</span></div>

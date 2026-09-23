@@ -97,11 +97,13 @@ export async function previewBilling(
   payload: Omit<WebMessagePayload, "mobiles" | "import_id" | "is_test" | "scheduled_at" | "remark" | "biz_id"> & {
     accepted_count: number
   },
+  signal?: AbortSignal,
 ): Promise<BillingPreview> {
   return apiRequest<BillingPreview>("/billing/preview", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   })
 }
 

@@ -253,16 +253,19 @@ const {
   load: loadReports,
 } = usePagedList({
   page: toRef(filters, "page"),
-  fetcher: (page) =>
-    listSecurityDailyReports({
-      dateFrom: filters.dateFrom || undefined,
-      dateTo: filters.dateTo || undefined,
-      status: filters.status || undefined,
-      generationStatus: filters.generationStatus || undefined,
-      deliveryStatus: filters.deliveryStatus || undefined,
-      page,
-      pageSize: filters.pageSize,
-    }),
+  fetcher: (page, signal) =>
+    listSecurityDailyReports(
+      {
+        dateFrom: filters.dateFrom || undefined,
+        dateTo: filters.dateTo || undefined,
+        status: filters.status || undefined,
+        generationStatus: filters.generationStatus || undefined,
+        deliveryStatus: filters.deliveryStatus || undefined,
+        page,
+        pageSize: filters.pageSize,
+      },
+      signal,
+    ),
   errorMessage: "安全日报列表暂不可用，请刷新重试",
   formatError: (error) => apiErrorMessage(error, "安全日报列表暂不可用，请刷新重试"),
   clearOnLoad: true,
@@ -671,8 +674,18 @@ onMounted(() => void refresh())
         >
         <el-table-column label="操作" width="170" fixed="right"
           ><template #default="scope"
-            ><el-button link type="primary" @click.stop="openReport(scope.row.id)">查看详情</el-button
-            ><el-button v-if="canRetry(scope.row)" link type="warning" @click.stop="openReport(scope.row.id)"
+            ><el-button
+              link
+              type="primary"
+              :aria-label="`查看 ${scope.row.report_date} 安全日报详情`"
+              @click.stop="openReport(scope.row.id)"
+              >查看详情</el-button
+            ><el-button
+              v-if="canRetry(scope.row)"
+              link
+              type="warning"
+              :aria-label="`处理 ${scope.row.report_date} 安全日报的投递失败`"
+              @click.stop="openReport(scope.row.id)"
               >处理失败</el-button
             ></template
           ></el-table-column

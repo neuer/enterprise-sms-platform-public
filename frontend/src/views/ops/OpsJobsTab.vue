@@ -18,6 +18,8 @@ import { formatDateTime } from "../../lib/time"
 
 import EmptyState from "../../components/EmptyState.vue"
 
+import LoadErrorAlert from "../../components/LoadErrorAlert.vue"
+
 const props = defineProps<{ active: boolean }>()
 
 const jobs = ref<JobItem[]>([])
@@ -89,9 +91,7 @@ watch(
 </script>
 <template>
   <div>
-    <el-alert v-if="errorMessage" class="ops-alert" :title="errorMessage" type="error" :closable="false"
-      ><template #default><el-button link type="primary" @click="load()">重新加载</el-button></template></el-alert
-    >
+    <LoadErrorAlert class="ops-alert" :message="errorMessage" @retry="load()" />
     <section id="ops-panel-jobs" v-loading="loading" class="ops-panel" role="tabpanel" aria-labelledby="ops-tab-jobs">
       <header class="ops-panel-title"
         ><div

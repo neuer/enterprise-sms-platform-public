@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { rangeToIsoParams } from "../lib/time"
+import { vRowActivate } from "../lib/directives"
 import { computed, onMounted, reactive, ref } from "vue"
 
 import { ElMessage } from "element-plus"
@@ -7,6 +8,8 @@ import { ElMessage } from "element-plus"
 import { listAuditActions, listAudits, type AuditItem } from "../api/admin"
 import EmptyState from "../components/EmptyState.vue"
 import ListPagination from "../components/ListPagination.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePagedList } from "../composables/usePagedList"
 import { copyText } from "../lib/clipboard"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
@@ -316,9 +319,7 @@ onMounted(() => {
     >
   </aside>
 
-  <el-alert v-if="errorMessage" class="audit-alert" :title="errorMessage" type="error" :closable="false"
-    ><template #default><el-button link type="primary" @click="load">重新加载</el-button></template></el-alert
-  >
+  <LoadErrorAlert class="audit-alert" :message="errorMessage" @retry="load" />
 
   <section class="audit-results">
     <template v-if="items.length || loading">
@@ -347,11 +348,11 @@ onMounted(() => {
         ><el-table-column label="操作" width="80"
           ><template #default="{ row }"
             ><el-button
+              v-row-activate="() => detail(row)"
               link
               type="primary"
               :aria-label="`查看审计事件 #${row.id} 的详情`"
               @click.stop="detail(row)"
-              @keydown.enter.stop.prevent="detail(row)"
               >详情</el-button
             ></template
           ></el-table-column

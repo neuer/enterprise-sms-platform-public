@@ -97,7 +97,7 @@ export function estimateWorstCaseCapacity(input: {
   }
 }
 
-export const listApps = () => apiRequest<ManagedApp[]>("/admin/apps", { method: "GET" })
+export const listApps = (signal?: AbortSignal) => apiRequest<ManagedApp[]>("/admin/apps", { method: "GET", signal })
 
 export const getApp = (id: number) => apiRequest<ManagedApp>(`/admin/apps/${id}`, { method: "GET" })
 

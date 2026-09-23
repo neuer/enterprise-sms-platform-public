@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useVendorResourceList } from "../composables/useVendorResourceList"
 import { contentPlaceholders, contentParts, vendorPreviewOf, type ContentPart } from "../lib/templatePreview"
+import { vRowActivate } from "../lib/directives"
 import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
 import { computed, onMounted, reactive, ref, watch } from "vue"
@@ -17,6 +18,8 @@ import {
   type TemplateState,
 } from "../api/templates"
 import EmptyState from "../components/EmptyState.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import StatusTag from "../components/StatusTag.vue"
 import { useMobileLayout } from "../composables/useMobileLayout"
 import { useConfirmActions } from "../lib/confirm"
@@ -304,7 +307,7 @@ onMounted(load)
     <span class="template-filter-note">接口全量返回 · 前端过滤</span>
   </div>
 
-  <el-alert v-if="errorMessage" class="template-alert" :title="errorMessage" type="error" :closable="false" />
+  <LoadErrorAlert class="template-alert" :message="errorMessage" @retry="load" />
 
   <section class="template-results">
     <el-table
@@ -318,13 +321,12 @@ onMounted(load)
       <el-table-column label="模板名称" min-width="180">
         <template #default="{ row }">
           <button
+            v-row-activate="() => openDetail(row)"
             :data-testid="`template-detail-${row.id}`"
             class="table-row-detail template-name"
             type="button"
             :aria-label="`查看模板 ${row.name} 的详情`"
             @click.stop="openDetail(row)"
-            @keydown.enter.stop.prevent="openDetail(row)"
-            @keydown.space.stop.prevent="openDetail(row)"
           >
             {{ row.name }}
           </button>
@@ -392,13 +394,12 @@ onMounted(load)
       <article v-for="row in filtered" :key="row.id">
         <header>
           <button
+            v-row-activate="() => openDetail(row)"
             :data-testid="`template-mobile-detail-${row.id}`"
             class="table-row-detail template-name"
             type="button"
             :aria-label="`查看模板 ${row.name} 的详情`"
             @click="openDetail(row)"
-            @keydown.enter.stop.prevent="openDetail(row)"
-            @keydown.space.stop.prevent="openDetail(row)"
           >
             {{ row.name }}
           </button>
