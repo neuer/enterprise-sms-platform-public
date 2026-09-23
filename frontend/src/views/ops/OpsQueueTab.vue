@@ -32,15 +32,22 @@ watch(
       <template v-if="queue"
         ><div class="queue-status-grid"
           ><article
-            ><span>REALTIME</span
-            ><strong>{{ queue.realtime_code ? `暂停 · ${queue.realtime_code}` : "运行中" }}</strong></article
+            ><span>REALTIME</span><strong>{{ queue.realtime_code ? `暂停 · ${queue.realtime_code}` : "运行中" }}</strong
+            ><small v-if="queue.vendor_test_realtime_code" class="vendor-test-pause"
+              >联调暂停 · {{ queue.vendor_test_realtime_code }}</small
+            ></article
           ><article
-            ><span>BULK</span><strong>{{ queue.bulk_code ? `暂停 · ${queue.bulk_code}` : "运行中" }}</strong></article
+            ><span>BULK</span><strong>{{ queue.bulk_code ? `暂停 · ${queue.bulk_code}` : "运行中" }}</strong
+            ><small v-if="queue.vendor_test_bulk_code" class="vendor-test-pause"
+              >联调暂停 · {{ queue.vendor_test_bulk_code }}</small
+            ></article
           ><article
             ><span>余额</span
             ><strong>{{ queue.balance === null ? "无快照" : `余额 ${queue.balance.toLocaleString()}` }}</strong
             ><small>阈值 {{ queue.threshold.toLocaleString() }}</small></article
           ></div
+        ><p v-if="queue.vendor_test_realtime_code || queue.vendor_test_bulk_code" class="vendor-test-pause-note"
+          >真实联调安全暂停独立于双队列断路器，发送链路已关闭；请前往「系统参数 → 真实联调」页签完成处置与认证恢复。</p
         ><div class="break-glass"
           ><el-switch
             v-model="forceResume"

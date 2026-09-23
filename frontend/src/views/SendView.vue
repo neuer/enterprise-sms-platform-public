@@ -25,6 +25,8 @@ import {
 import { listTemplates } from "../api/templates"
 import { listSigns } from "../api/signs"
 import { getDashboard } from "../api/dashboard"
+import { ApiRequestError } from "../api/client"
+import { admissionReasonOf, admissionReasonText } from "../lib/admissionReason"
 import BillingSegments from "../components/BillingSegments.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
@@ -66,6 +68,8 @@ let draftRevision = 0
 let disposed = false
 const submittedSummary = ref("")
 const errorMessage = ref("")
+// 准入 503（DEPENDENCY_UNAVAILABLE）时展示通往运维中心队列页签的出口。
+const errorAdmission = ref(false)
 const sendResult = ref<SendResult | null>(null)
 const copied = ref(false)
 const idempotencyKey = ref(newIdempotencyKey())
@@ -467,6 +471,7 @@ async function downloadInvalidFile(): Promise<void> {
 
 function resetFeedback(): void {
   errorMessage.value = ""
+  errorAdmission.value = false
 }
 
 function chooseCategory(category: Category): void {
@@ -550,7 +555,15 @@ async function submit(): Promise<void> {
     submittedSummary.value = `${payload.category === "market" ? "营销短信" : "通知短信"} · ${payload.import_id ? "文件导入" : "手工粘贴"} · ${payload.scheduled_at ? formatDateTime(payload.scheduled_at) : "立即受理"}`
   } catch (error) {
     if (disposed || generation !== requestGeneration || revision !== draftRevision) return
-    errorMessage.value = errorText(error, "发送受理失败")
+    // 准入 503 附 reason 时给出中文解释与运维中心出口；未知 reason 回退通用文案不吞诊断。
+    if (error instanceof ApiRequestError && error.status === 503) {
+      const reason = error.code === "DEPENDENCY_UNAVAILABLE" ? admissionReasonOf(error) : null
+      const text = reason ? admissionReasonText(reason) : null
+      errorAdmission.value = true
+      errorMessage.value = text ? `发送通道暂时不可用：${text}` : errorText(error, "发送受理失败")
+    } else {
+      errorMessage.value = errorText(error, "发送受理失败")
+    }
   } finally {
     if (!disposed && generation === requestGeneration) busy.value = false
   }
@@ -572,6 +585,10 @@ async function copyBatchNo(): Promise<void> {
 
 function goBatches(): void {
   void router?.push("/batches")
+}
+
+function goOpsQueue(): void {
+  void router?.push("/ops?tab=queue")
 }
 
 function resetForAnother(): void {
@@ -1032,7 +1049,13 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+      <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false">
+        <template v-if="errorAdmission" #default
+          ><el-button link type="primary" data-testid="send-admission-ops-link" @click="goOpsQueue"
+            >前往运维中心查看队列</el-button
+          ></template
+        >
+      </el-alert>
 
       <div v-if="!sendResult" class="submit-wrap">
         <el-button

@@ -59,6 +59,8 @@ scripts/local_test.sh down    # 停止容器，保留数据卷
 
 `scripts/local_test.sh reset` 会删除本地测试卷并重新 seed；仅在操作者明确要求重建该环境数据时使用，不作为首次运行、修复测试或处理登录失败的默认步骤。
 
+注意：本地 Mock 栈没有 vendor-control-agent 容器。管理员打开「系统参数 → 真实联调」页签时，控制状态读取会按 fail-closed 设计写入 `queue:paused:vendor-test-agent-stale:*` 安全闩锁——发送入口仍受理（queued），但 worker 停止下发。该状态现在会在「运维中心 → 队列恢复」与当前告警中可见；本地环境需要继续发送时，用 `docker compose -f deploy/docker-compose.yml exec -T redis-control sh -c 'export REDISCLI_AUTH="$(cat /run/secrets/redis_control_password)"; redis-cli --user sms_control --no-auth-warning DEL queue:paused:vendor-test-agent-stale:realtime queue:paused:vendor-test-agent-stale:bulk'` 清除（仅限本地 Mock；生产该闩锁由「真实联调」页的认证恢复流程解除，不得手工清键）。
+
 查看安全日志时禁止开启 shell trace，也不要输出 `deploy/secrets/` 或 `dev-apikeys.txt` 内容：
 
 ```bash

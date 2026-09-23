@@ -220,6 +220,10 @@ class SqlCurrentAlertRepository:
                 "queue:paused:realtime",
                 "queue:paused:bulk",
                 "alert:vendor:consecutive_failures",
+                "queue:paused:vendor-test-agent-stale:realtime",
+                "queue:paused:vendor-test-agent-stale:bulk",
+                "queue:paused:vendor-test-daily:realtime",
+                "queue:paused:vendor-test-daily:bulk",
             )
         try:
             failures = int(values[2]) if values[2] is not None else 0
@@ -231,4 +235,10 @@ class SqlCurrentAlertRepository:
             parse_queue_pause_claim(values[0]),
             parse_queue_pause_claim(values[1]),
             failures,
+            vendor_test_realtime_code=(
+                parse_queue_pause_claim(values[3]) or parse_queue_pause_claim(values[5])
+            ),
+            vendor_test_bulk_code=(
+                parse_queue_pause_claim(values[4]) or parse_queue_pause_claim(values[6])
+            ),
         )

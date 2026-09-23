@@ -226,6 +226,10 @@ class SqlOpsRepository:
         values = await self.redis.mget(
             "queue:paused:realtime",
             "queue:paused:bulk",
+            "queue:paused:vendor-test-agent-stale:realtime",
+            "queue:paused:vendor-test-agent-stale:bulk",
+            "queue:paused:vendor-test-daily:realtime",
+            "queue:paused:vendor-test-daily:bulk",
         )
         return QueueSnapshot(
             parse_queue_pause_claim(values[0]),
@@ -234,6 +238,13 @@ class SqlOpsRepository:
             int(row["threshold"]),
             realtime_claim=values[0],
             bulk_claim=values[1],
+            # agent-stale critical 优先于 daily 展示：同为暂停，critical 需人工处置。
+            vendor_test_realtime_code=(
+                parse_queue_pause_claim(values[2]) or parse_queue_pause_claim(values[4])
+            ),
+            vendor_test_bulk_code=(
+                parse_queue_pause_claim(values[3]) or parse_queue_pause_claim(values[5])
+            ),
         )
 
     async def resume_batches(

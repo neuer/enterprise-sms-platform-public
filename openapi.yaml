@@ -3708,6 +3708,12 @@ components:
         bulk_code: { anyOf: [{ type: string }, { type: 'null' }] }
         balance: { anyOf: [{ type: integer }, { type: 'null' }] }
         threshold: { type: integer }
+        vendor_test_realtime_code:
+          anyOf: [{ type: string }, { type: 'null' }]
+          description: 真实联调独立暂停码（agent-stale critical 或 daily 预算）；发送链路已消费，此前运维不可见
+        vendor_test_bulk_code:
+          anyOf: [{ type: string }, { type: 'null' }]
+          description: 同 realtime 通道口径的批量通道真实联调暂停码
 
     QueueResumeModel:
       type: object

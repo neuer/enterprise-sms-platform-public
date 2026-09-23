@@ -7318,6 +7318,10 @@ export interface components {
             bulk_code: string | null;
             balance: number | null;
             threshold: number;
+            /** @description 真实联调独立暂停码（agent-stale critical 或 daily 预算）；发送链路已消费，此前运维不可见 */
+            vendor_test_realtime_code?: string | null;
+            /** @description 同 realtime 通道口径的批量通道真实联调暂停码 */
+            vendor_test_bulk_code?: string | null;
         };
         QueueResumeModel: {
             resumed_batches: number;

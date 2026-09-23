@@ -230,6 +230,8 @@ class QueueStatusModel(BaseModel):
     bulk_code: str | None
     balance: int | None
     threshold: int
+    vendor_test_realtime_code: str | None = None
+    vendor_test_bulk_code: str | None = None
 
 
 class QueueResumeModel(BaseModel):
