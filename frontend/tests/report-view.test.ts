@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import ElementPlus, { ElMessageBox, ElPagination } from "element-plus"
+import ElementPlus, { ElDatePicker, ElMessageBox, ElPagination } from "element-plus"
 import { createPinia } from "pinia"
 import { vi } from "vitest"
 
@@ -132,6 +132,43 @@ describe("统计报表页", () => {
     expect(wrapper.get(".rank-num small").text()).toContain("消息数 15")
     wrapper.unmount()
     vi.unstubAllGlobals()
+  })
+  it("范围含当日时提示聚合快照口径，改选历史范围后隐藏", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => response(report)),
+    )
+    const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
+    try {
+      await flushPromises()
+      // 默认范围（近 30 天）含当日、默认按应用：聚合快照与 Web 归属两条口径都提示
+      const hint = wrapper.get("[data-testid='report-freshness-hint']")
+      expect(hint.text()).toContain("每 5 分钟聚合")
+      expect(hint.text()).toContain("仪表盘")
+      expect(hint.text()).toContain("Web 手工发送按「部门」维度归集")
+
+      // 切到部门维度：应用归属条款隐去，当日口径条款保留
+      await wrapper.get("[data-testid='report-group-dept']").trigger("click")
+      await flushPromises()
+      const deptHint = wrapper.get("[data-testid='report-freshness-hint']")
+      expect(deptHint.text()).toContain("每 5 分钟聚合")
+      expect(deptHint.text()).not.toContain("Web 手工发送")
+
+      // 部门维度 + 历史范围：提示整体隐藏
+      wrapper.findComponent(ElDatePicker).vm.$emit("update:modelValue", ["2026-06-01", "2026-06-30"])
+      await flushPromises()
+      expect(wrapper.find("[data-testid='report-freshness-hint']").exists()).toBe(false)
+
+      // 历史范围切回应用维度：只剩归属条款（与日期无关）
+      await wrapper.get("[data-testid='report-group-app']").trigger("click")
+      await flushPromises()
+      const appHint = wrapper.get("[data-testid='report-freshness-hint']")
+      expect(appHint.text()).not.toContain("每 5 分钟聚合")
+      expect(appHint.text()).toContain("Web 手工发送按「部门」维度归集")
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
   })
   it("按计费条排行时条宽、主数字和占比使用计费条口径", async () => {
     const fetch = vi.fn(async () =>

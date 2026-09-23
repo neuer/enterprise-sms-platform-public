@@ -44,6 +44,8 @@ const timeRange = ref<[Date, Date] | null>(null)
 const actionOptions = ref<string[]>([])
 // 更多筛选（低频精确字段：稳定账号 ID / 关联 ID，收进气泡）
 const moreOpen = ref(false)
+/** 高频 session_refresh 默认折叠（服务端 exclude_action），勾选后恢复完整账本。 */
+const showSessionRefresh = ref(false)
 
 const {
   items,
@@ -55,7 +57,16 @@ const {
   search: listSearch,
   reset,
 } = usePagedList({
-  fetcher: (page, signal) => listAudits({ ...filters, page }, signal),
+  fetcher: (page, signal) =>
+    listAudits(
+      {
+        ...filters,
+        // 显式选择动作（含 session_refresh 本身）时不折叠，避免与动作过滤矛盾
+        excludeAction: showSessionRefresh.value || filters.action.trim() ? "" : "session_refresh",
+        page,
+      },
+      signal,
+    ),
   errorMessage: "审计日志加载失败",
   resetFilters: () => {
     filters.actor = ""
@@ -67,6 +78,7 @@ const {
     timeRange.value = null
     filters.start = ""
     filters.end = ""
+    showSessionRefresh.value = false
   },
 })
 
@@ -295,10 +307,19 @@ onMounted(() => {
     <div class="audit-filter-go">
       <el-button type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="audit-reset" @click="reset">重置</el-button>
+      <el-checkbox
+        v-model="showSessionRefresh"
+        class="audit-session-toggle"
+        data-testid="audit-show-session-refresh"
+        @change="search"
+        >显示会话刷新</el-checkbox
+      >
     </div>
     <p class="audit-privacy"
       >操作人 / 动作 / 对象类型 / 对象 ID 与时间为服务端等值筛选；稳定账号 ID 与关联 ID（request
-      ID）为精确匹配，收进「更多筛选」并带激活计数。筛选与分页均在服务端执行，不走「接口全量返回 · 前端过滤」。</p
+      ID）为精确匹配，收进「更多筛选」并带激活计数。高频 session_refresh 会话刷新事件默认折叠（服务端
+      exclude_action），勾选「显示会话刷新」恢复完整账本；显式选择动作时不折叠。筛选与分页均在服务端执行，不走「接口全量返回
+      · 前端过滤」。</p
     >
   </form>
 

@@ -125,6 +125,7 @@ async def list_audit_logs(
     actor_account_id: Annotated[int | None, Query(ge=1)] = None,
     correlation_id: UUID | None = None,
     action: Annotated[str | None, Query(max_length=48)] = None,
+    exclude_action: Annotated[str | None, Query(max_length=48)] = None,
     object_type: Annotated[str | None, Query(max_length=32)] = None,
     object_id: Annotated[str | None, Query(max_length=64)] = None,
     start: datetime | None = None,
@@ -146,6 +147,7 @@ async def list_audit_logs(
                 actor_account_id=actor_account_id,
                 correlation_id=correlation_id,
                 object_id=object_id,
+                exclude_action=exclude_action,
             )
         )
     except InvalidAdminQuery as error:

@@ -38,6 +38,7 @@ class AuditQuery:
     actor_account_id: int | None = None
     correlation_id: UUID | None = None
     object_id: str | None = None
+    exclude_action: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -294,6 +295,7 @@ class AdminService:
             ("action", query.action, 48),
             ("object_type", query.object_type, 32),
             ("object_id", query.object_id, 64),
+            ("exclude_action", query.exclude_action, 48),
         ):
             if value is not None and len(value) > limit:
                 raise InvalidAdminQuery(f"{label} 过滤值过长")

@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import ElementPlus from "element-plus"
+import ElementPlus, { ElMessageBox } from "element-plus"
 import { createPinia, setActivePinia } from "pinia"
 import { vi } from "vitest"
 
@@ -360,9 +360,16 @@ describe("审批中心", () => {
     const rejectButton = wrapper.get("[data-testid='drawer-reject']")
     expect(rejectButton.attributes("disabled")).toBeDefined()
     await wrapper.get("[data-testid='drawer-decision-reason']").setValue("同意，注意营销时间窗")
+    const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     await wrapper.get("[data-testid='drawer-approve']").trigger("click")
     await flushPromises()
 
+    // 抽屉决策与行内快捷同强度：先两段式确认（后果 + 审计细字）再提交
+    expect(confirm).toHaveBeenCalledWith(
+      expect.anything(),
+      "确认通过",
+      expect.objectContaining({ confirmButtonText: "确认通过", cancelButtonText: "取消" }),
+    )
     const decisionCall = fetchMock.mock.calls.find((call) => String(call[0]).includes("/decision"))
     expect(JSON.parse(String(decisionCall![1]?.body))).toEqual({
       action: "approve",
@@ -388,12 +395,33 @@ describe("审批中心", () => {
     await flushPromises()
     const listCallsBefore = listCalls(fetchMock).length
 
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     await wrapper.get("[data-testid='drawer-approve']").trigger("click")
     await flushPromises()
 
     expect(document.body.textContent).toContain("该审批单已被处理或状态已变化，列表已刷新")
     expect(wrapper.getComponent({ name: "ElDrawer" }).props("modelValue")).toBe(false)
     expect(listCalls(fetchMock).length).toBe(listCallsBefore + 1)
+  })
+
+  it("抽屉决策取消确认不提交且抽屉保持打开", async () => {
+    const item = makeItem()
+    const fetchMock = stubApprovalsFetch({
+      list: listBody([item]),
+      detail: { ...item, content: "【企业短信】内容" },
+    })
+
+    const wrapper = mountApproverView()
+    await flushPromises()
+    await wrapper.get(`[data-testid='approval-detail-${item.id}']`).trigger("click")
+    await flushPromises()
+
+    vi.spyOn(ElMessageBox, "confirm").mockRejectedValue("cancel")
+    await wrapper.get("[data-testid='drawer-approve']").trigger("click")
+    await flushPromises()
+
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("/decision"))).toBe(false)
+    expect(wrapper.getComponent({ name: "ElDrawer" }).props("modelValue")).toBe(true)
   })
 
   it("已办页签展示去向列：入队、改派、释放与系统自动过期", async () => {

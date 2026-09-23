@@ -568,6 +568,47 @@ describe("审计与系统参数", () => {
     vi.unstubAllGlobals()
   })
 
+  it("默认折叠 session_refresh，可勾选恢复完整账本；显式动作过滤时不折叠", async () => {
+    const fetch = auditFetch()
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(AuditView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    const params = () => new URL(lastAuditQuery(fetch), "http://localhost").searchParams
+    expect(params().get("exclude_action")).toBe("session_refresh")
+
+    const toggle = wrapper.get("[data-testid='audit-show-session-refresh']")
+    await toggle.find("input").setValue(true)
+    await flushPromises()
+    expect(params().get("exclude_action")).toBeNull()
+
+    await toggle.find("input").setValue(false)
+    await flushPromises()
+    expect(params().get("exclude_action")).toBe("session_refresh")
+
+    // 显式选择动作（含 session_refresh 本身）时不再叠加排除，避免与动作过滤矛盾
+    wrapper.findComponent({ name: "ElSelect" }).vm.$emit("update:modelValue", "session_refresh")
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("查询"))!
+      .trigger("click")
+    await flushPromises()
+    expect(params().get("action")).toBe("session_refresh")
+    expect(params().get("exclude_action")).toBeNull()
+
+    // 重置恢复默认折叠口径
+    await wrapper.get("[data-testid='audit-reset']").trigger("click")
+    await flushPromises()
+    expect(params().get("exclude_action")).toBe("session_refresh")
+    expect(params().get("action")).toBeNull()
+
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("审计行点击与键盘 Enter 打开详情抽屉，时间范围按 ISO8601 +08:00 提交", async () => {
     const fetch = auditFetch()
     vi.stubGlobal("fetch", fetch)

@@ -7,6 +7,7 @@ import { ACCESS_ONLY_SESSION_MESSAGE, isAccessOnlySessionMode } from "../api/ref
 import loginMarkUrl from "../assets/brand/login-egret-icon.png"
 import { useSessionStore } from "../stores/session"
 import { errorText } from "../lib/error"
+import { recallLoginProvider, rememberLoginProvider } from "../lib/loginProvider"
 
 const router = useRouter()
 const session = useSessionStore()
@@ -81,6 +82,8 @@ function selectProvider(code: string): void {
   }
   clearProviderHint()
   providerCode.value = code
+  // 只记显式选择；默认选中（onMounted）不落盘
+  rememberLoginProvider(code)
 }
 
 // ── radiogroup 键盘语义：Tab 只进入一次（roving tabindex），方向键在组内移动并选中 ──
@@ -112,9 +115,14 @@ function onProviderKeydown(event: KeyboardEvent): void {
 onMounted(async () => {
   try {
     await session.loadProviders()
-    // 默认选中服务端返回的第一个已知认证源；提交仍只走当前选中的认证源，失败不自动回退
+    // 默认选中顺序：上次显式选择的认证源（未开通则忽略）→ 服务端返回的第一个已知认证源；
+    // 提交仍只走当前选中的认证源，失败不自动回退
     const known = new Set<string>(PROVIDER_CATALOG.map((item) => item.code))
-    providerCode.value = session.providers.find((provider) => known.has(provider.code))?.code ?? ""
+    const remembered = recallLoginProvider()
+    providerCode.value =
+      remembered !== null && isEnabled(remembered)
+        ? remembered
+        : (session.providers.find((provider) => known.has(provider.code))?.code ?? "")
   } catch (error) {
     errorMessage.value = errorText(error, "认证源列表加载失败")
   } finally {

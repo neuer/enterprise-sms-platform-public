@@ -311,4 +311,36 @@ describe("登录页", () => {
 
     expect(wrapper.find("[data-testid='login-access-only']").exists()).toBe(false)
   })
+
+  it("记住上次显式选择的认证源并在下次访问时优先选中", async () => {
+    localStorage.setItem("sms-login-provider", "ad")
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider, adProvider])))
+
+    const { wrapper } = await mountLogin()
+
+    expect(wrapper.get("[data-testid='provider-ad']").classes()).toContain("on")
+    expect(wrapper.get(".login-field-label").text()).toBe("企业 AD 账号")
+  })
+
+  it("显式切换写入记忆；记忆中的认证源未开通时回退服务端默认", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider, adProvider])))
+    const { wrapper } = await mountLogin()
+
+    await wrapper.get("[data-testid='provider-ad']").trigger("click")
+    expect(localStorage.getItem("sms-login-provider")).toBe("ad")
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider])))
+    const second = await mountLogin()
+    expect(second.wrapper.get("[data-testid='provider-local']").classes()).toContain("on")
+    expect(second.wrapper.get("[data-testid='provider-ad']").attributes("aria-disabled")).toBe("true")
+  })
+
+  it("记忆中的非法值被忽略，回退服务端默认", async () => {
+    localStorage.setItem("sms-login-provider", "oauth2")
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider, adProvider])))
+
+    const { wrapper } = await mountLogin()
+
+    expect(wrapper.get("[data-testid='provider-local']").classes()).toContain("on")
+  })
 })

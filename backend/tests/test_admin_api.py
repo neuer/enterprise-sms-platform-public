@@ -95,9 +95,23 @@ def client(role: Role = "admin") -> tuple[TestClient, FakeService]:
     return TestClient(app), service
 
 
+def test_audit_query_supports_exclude_action() -> None:
+    http, service = client()
+    headers = {"Authorization": "Bearer test"}
+
+    response = http.get(
+        "/api/v1/web/admin/audit-logs?exclude_action=session_refresh&page=1&page_size=20",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert service.queries[0].exclude_action == "session_refresh"
+
+
 def test_admin_can_query_audits_and_update_configs() -> None:
     http, service = client()
     headers = {"Authorization": "Bearer test"}
+
 
     audits = http.get(
         "/api/v1/web/admin/audit-logs?action=config_update&object_id=vendor_qps"

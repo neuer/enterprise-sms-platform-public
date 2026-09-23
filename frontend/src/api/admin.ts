@@ -44,6 +44,8 @@ export interface AuditFilters {
   end: string
   page: number
   pageSize: number
+  /** 从结果排除指定动作（服务端等值排除）；空串不排除。 */
+  excludeAction?: string
 }
 
 export interface ConfigItem {
@@ -129,6 +131,7 @@ export function listAudits(filters: AuditFilters, signal?: AbortSignal): Promise
   if (filters.actor.trim()) query.set("actor", filters.actor.trim())
   if (filters.actorAccountId.trim()) query.set("actor_account_id", filters.actorAccountId.trim())
   if (filters.action.trim()) query.set("action", filters.action.trim())
+  if (filters.excludeAction?.trim()) query.set("exclude_action", filters.excludeAction.trim())
   if (filters.objectType.trim()) query.set("object_type", filters.objectType.trim())
   if (filters.objectId.trim()) query.set("object_id", filters.objectId.trim())
   if (filters.correlationId.trim()) query.set("correlation_id", filters.correlationId.trim())

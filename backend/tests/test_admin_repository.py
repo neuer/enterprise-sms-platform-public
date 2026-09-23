@@ -146,6 +146,22 @@ async def test_audit_list_uses_parameterized_filters_and_stable_pagination() -> 
 
 
 @pytest.mark.asyncio
+async def test_audit_list_exclude_action_is_parameterized() -> None:
+    repo, connection = repository([FakeResult(scalar=0), FakeResult([])])
+    query = AuditQuery(None, None, None, None, None, 1, 20, exclude_action="session_refresh")
+
+    items, total = await repo.list_audits(query)
+
+    assert total == 0 and items == ()
+    count_sql, count_params = connection.calls[0]
+    assert "action<>:exclude_action" in count_sql
+    assert count_params["exclude_action"] == "session_refresh"
+    list_sql, list_params = connection.calls[1]
+    assert "action<>:exclude_action" in list_sql
+    assert list_params["exclude_action"] == "session_refresh"
+
+
+@pytest.mark.asyncio
 async def test_audit_action_listing_is_distinct_ordered_and_capped() -> None:
     repo, connection = repository(
         [FakeResult([{"action": "config_update"}, {"action": "user_create"}])]

@@ -55,7 +55,8 @@
   --hair-2: rgba(255, 255, 255, 0.05);
   --tx: #c9d2cc;
   --tx-2: #8b978f;
-  --tx-3: #6d7a72;
+  /* 弱化辅文令牌：面板背景上 WCAG AA ≥4.5:1（实测 4.9–5.7），勿再调浅 */
+  --tx-3: #84918a;
   --tx-hi: #eaf1ed;
   --verdi: #0e7a63;
   --verdi-l: #2fa184;
@@ -148,7 +149,8 @@
   --hair-2: rgba(21, 32, 26, 0.05);
   --tx: #2c3731;
   --tx-2: #54625a;
-  --tx-3: #7d8b81;
+  /* 亮底弱化辅文：最浅面板（白）上 AA ≥4.5:1（实测 4.5–5.6），层级仍浅于 --tx-2 */
+  --tx-3: #5d6b62;
   --tx-hi: #14211a;
   /* 品牌绿 --verdi 不变；亮底上文字级绿色向深取，保证对比度 */
   --verdi-l: #0f8a6c;
@@ -1082,7 +1084,7 @@ button:focus-visible {
   --hair-2: rgba(255, 255, 255, 0.05);
   --tx: #c9d2cc;
   --tx-2: #8b978f;
-  --tx-3: #6d7a72;
+  --tx-3: #84918a;
   --tx-hi: #eaf1ed;
   --verdi-l: #2fa184;
   --amber: #d8a35c;
@@ -1096,7 +1098,7 @@ button:focus-visible {
   --surface-soft: #141d19;
   --surface-strong: #0c1512;
   --ink-soft: #8b978f;
-  --muted: #6d7a72;
+  --muted: #84918a;
   --verdi-text: #71c4ad;
   color: var(--tx);
 }

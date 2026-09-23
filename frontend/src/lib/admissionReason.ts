@@ -5,6 +5,8 @@
 export const ADMISSION_REASON_TEXT: Readonly<Record<string, string>> = {
   queues_paused: "实时与批量队列均被暂停",
   queue_paused: "部分发送队列被暂停",
+  realtime_paused: "实时发送队列已暂停",
+  bulk_paused: "批量发送队列已暂停",
   outbox_backlog: "投递通道积压超限",
   outbox_oldest: "投递通道最老事件滞留超时",
   outbox_dead: "投递通道死信过多",
@@ -14,6 +16,12 @@ export const ADMISSION_REASON_TEXT: Readonly<Record<string, string>> = {
   snapshot_unavailable: "准入快照暂不可用（失败关闭）",
   dispatcher_heartbeat_stale: "投递调度心跳过期",
   send_lanes_heartbeat_stale: "发送通道心跳过期",
+  realtime_heartbeat_stale: "实时发送通道心跳过期",
+  bulk_heartbeat_stale: "批量发送通道心跳过期",
+  degraded_bulk: "平台降级保护中，营销批量发送暂不放行",
+  degraded_volume: "平台降级保护中，仅放行小批量发送，请减少号码量后重试",
+  recovery_volume: "平台恢复保护中，仅放行小批量发送，请减少号码量或稍后重试",
+  recovery_segment_cost: "平台恢复保护中，仅放行小内容量发送，请稍后重试",
 }
 
 /** 从错误 detail 提取准入 reason；非准入错误返回 null。 */

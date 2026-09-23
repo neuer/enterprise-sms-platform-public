@@ -240,6 +240,17 @@
   margin-left: auto;
 }
 
+/* 审计「显示会话刷新」开关：与检索条按钮同排，视觉权重低于主按钮 */
+.audit-session-toggle {
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.audit-session-toggle .el-checkbox__label {
+  color: var(--tx-2);
+  font-size: 11px;
+}
+
 .reply-privacy,
 .blacklist-privacy,
 .sensitive-filter-note,

@@ -189,6 +189,22 @@ async def test_audit_actions_pass_through_repository() -> None:
 
 
 @pytest.mark.asyncio
+async def test_audit_query_exclude_action_length_is_bounded() -> None:
+    repository = FakeRepository()
+    service = AdminService(repository)
+
+    await service.list_audits(
+        AuditQuery(None, None, None, None, None, 1, 20, exclude_action="session_refresh")
+    )
+
+    assert repository.audit_queries[0].exclude_action == "session_refresh"
+    with pytest.raises(InvalidAdminQuery, match="exclude_action 过滤值过长"):
+        await service.list_audits(
+            AuditQuery(None, None, None, None, None, 1, 20, exclude_action="x" * 49)
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("key", "value"),
     (
