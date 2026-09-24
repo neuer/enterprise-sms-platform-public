@@ -177,7 +177,7 @@ async function send(): Promise<void> {
     return
   }
   if (!formReady.value || !selectedRecipient.value) {
-    ElMessage.warning("真实 UAT 信息尚未填写完整")
+    ElMessage.warning("单号码 UAT 信息尚未填写完整")
     return
   }
   const snapshot = () => ({
@@ -198,10 +198,10 @@ async function send(): Promise<void> {
   if (!billing) return
   if (
     !(await confirmAction({
-      title: "确认发送真实 UAT",
+      title: "确认发送单号码 UAT",
       isCurrent: current,
-      body: `将向 ${selectedRecipient.value.label}（${selectedRecipient.value.phone_mask}）发送 1 个真实号码。本次预计消耗 ${billing.quota_cost} 条计费额度（${billing.est_segments} 个计费段）；受控联调每日总上限为 ${props.dailyLimit} 条。`,
-      confirmText: `确认发送（预计 ${billing.quota_cost} 条）`,
+      body: `将向 ${selectedRecipient.value.label}（${selectedRecipient.value.phone_mask}）发送 1 个真实号码。本次预计消耗 ${billing.quota_cost} 计费条；受控联调每日总上限为 ${props.dailyLimit} 计费条。`,
+      confirmText: `确认发送（预计 ${billing.quota_cost} 计费条）`,
       cancelText: "继续检查",
     }))
   )
@@ -213,7 +213,7 @@ async function send(): Promise<void> {
     const operation = await sendVendorTestUat({
       ...parameters,
       biz_id: bizId,
-      remark: "系统配置页真实 UAT",
+      remark: "系统配置页单号码 UAT",
     })
     clearPendingBizId()
     emit("operation", operation)
@@ -221,7 +221,7 @@ async function send(): Promise<void> {
     if (error instanceof ApiRequestError && error.status >= 400 && error.status < 500) {
       clearPendingBizId()
     }
-    ElMessage.error(errorText(error, "真实 UAT 提交失败"))
+    ElMessage.error(errorText(error, "单号码 UAT 提交失败"))
   } finally {
     sending.value = false
   }
@@ -237,7 +237,7 @@ onMounted(() => void loadApprovedOptions())
         <p class="eyebrow">SINGLE RECIPIENT UAT</p>
         <h3 id="vendor-uat-title">单号码真实发送</h3>
       </div>
-      <span>每日总预算 {{ dailyLimit }} 条</span>
+      <span>每日总预算 {{ dailyLimit }} 计费条</span>
     </header>
 
     <el-alert
@@ -364,8 +364,8 @@ onMounted(() => void loadApprovedOptions())
     <div class="vendor-billing-preview" :class="{ ready: preview }">
       <template v-if="preview">
         <span>后端计费预览</span>
-        <strong>预计 {{ preview.quota_cost }} 条</strong>
-        <small>最终 {{ preview.final_length }} 字 · {{ preview.est_segments }} 个计费段</small>
+        <strong>预计 {{ preview.quota_cost }} 计费条</strong>
+        <small>最终 {{ preview.final_length }} 字 · {{ preview.est_segments }} 计费条</small>
       </template>
       <template v-else>
         <span>后端计费预览</span>
@@ -379,7 +379,7 @@ onMounted(() => void loadApprovedOptions())
         >预检计费</el-button
       >
       <el-button data-testid="uat-send" type="danger" plain :loading="sending" :disabled="!formReady" @click="send"
-        >发送真实 UAT</el-button
+        >发送单号码 UAT</el-button
       >
     </footer>
   </section>

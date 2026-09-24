@@ -74,7 +74,7 @@ async function trigger(item: JobItem): Promise<void> {
         title: "确认任务触发",
         body: `手动触发 ${item.job_name} 将立即投递一次执行，不改变 beat 既有调度。`,
         auditNote: "触发行为与操作人将写入审计日志。",
-        confirmText: "手动触发",
+        confirmText: "确认触发",
       }))
     )
       return

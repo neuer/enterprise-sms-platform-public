@@ -125,13 +125,13 @@ onScopeDispose(clearConfigurationSecrets)
           show-password
           autocomplete="off"
           :disabled="clearConfigApiKey"
-          placeholder="留空保持当前 Key"
+          placeholder="留空保持当前 Resend Key"
         />
         <div class="form-tip"
           >当前状态：{{ currentConfiguration?.resend_api_key_configured ? "已配置" : "未配置" }}；Key 不会回显。</div
         >
         <el-checkbox v-if="currentConfiguration?.resend_api_key_configured" v-model="clearConfigApiKey"
-          >清空当前 Key</el-checkbox
+          >清空当前 Resend Key</el-checkbox
         >
       </el-form-item>
       <el-form-item label="收件人（每行一个，也可用逗号分隔，最多 3 个）">

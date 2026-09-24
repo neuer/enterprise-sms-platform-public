@@ -942,7 +942,7 @@ onBeforeUnmount(() => {
             <span><i class="g"></i>签名</span>
             <span v-if="finalParts.suffix"><i class="a"></i>退订语 · 服务端自动追加</span>
           </div>
-          <span class="mono">{{ preview?.final_length }} 字 · {{ preview?.est_segments }} 段</span>
+          <span class="mono">{{ preview?.final_length }} 字 · {{ preview?.est_segments }} 计费条</span>
         </footer>
       </section>
 
@@ -968,7 +968,7 @@ onBeforeUnmount(() => {
         <header>计费 <small>services/billing.py 单点口径</small></header>
         <BillingSegments :parts="preview.segment_parts" :next-hint="nextSegmentHint" />
         <div class="cost-line">
-          <span class="fx">{{ previewCount.toLocaleString() }} × {{ preview.est_segments }} 段 =</span>
+          <span class="fx">{{ previewCount.toLocaleString() }} 号码 × {{ preview.est_segments }} 计费条 =</span>
           <strong>{{ preview.quota_cost.toLocaleString() }}<small>计费条</small></strong>
         </div>
         <p class="boundary"
@@ -1050,7 +1050,7 @@ onBeforeUnmount(() => {
             >剔除 <b>{{ removedTotal(sendResult).toLocaleString() }}</b></span
           >
           <span
-            >预扣 <b>{{ sendResult.quota_cost.toLocaleString() }}</b> 条</span
+            >预扣 <b>{{ sendResult.quota_cost.toLocaleString() }}</b> 计费条</span
           >
         </div>
         <div class="result-acts">

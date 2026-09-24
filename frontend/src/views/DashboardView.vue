@@ -65,8 +65,8 @@ const balanceRunwayLabel = computed(() => {
 })
 
 function channelMonitorError(reason: DashboardChannelMonitor["degraded_reason"]): string {
-  if (reason === "snapshot_incomplete") return "Redis 运行快照字段不完整，信道指标暂不可用"
-  return "Redis 控制快照暂不可用，信道指标已降级"
+  if (reason === "snapshot_incomplete") return "Redis 运行快照字段不完整，通道指标暂不可用"
+  return "Redis 控制快照暂不可用，通道指标已降级"
 }
 
 /** 内容指纹不含 refreshed_at（每次响应的请求时刻，不代表数据变化），仅刻画实际展示数据。 */
@@ -171,7 +171,7 @@ onMounted(refreshPolling.start)
       </router-link>
       <router-link to="/reports" class="metric-link" data-testid="metric-success">
         <el-card shadow="never" class="metric-card">
-          <span>送达成功率</span>
+          <span>成功率</span>
           <span class="kpi-go">→ 报表</span>
           <strong>{{ formatPercent(snapshot.overall_success_rate) }}</strong>
           <small>送达 /（送达 + 失败）</small>
@@ -218,15 +218,15 @@ onMounted(refreshPolling.start)
       <el-card shadow="never" class="dashboard-panel trend-panel">
         <template #header
           ><div class="panel-title"
-            ><div><strong>近 7 日发送趋势</strong><small>按类目 · 消息条数</small></div
+            ><div><strong>近 7 日发送趋势</strong><small>按类别 · 消息条数</small></div
             ><router-link to="/reports" class="panel-jump">报表 →</router-link></div
           ></template
         >
         <TrendChart v-if="snapshot.trend?.length" :points="snapshot.trend" />
         <div v-if="snapshot.trend?.length" class="trend-legend">
-          <span><i class="verify"></i>验证码</span>
-          <span><i class="notice"></i>通知</span>
-          <span><i class="market"></i>营销</span>
+          <span v-for="category in ['verify', 'notice', 'market']" :key="category"
+            ><i :class="category"></i>{{ CATEGORY_LABELS[category] }}</span
+          >
         </div>
         <EmptyState v-else title="趋势暂不可用" description="统计聚合任务每日运行后生成趋势。" />
       </el-card>

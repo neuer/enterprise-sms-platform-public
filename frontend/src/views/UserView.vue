@@ -93,7 +93,7 @@ const roleSegOptions = [
 ]
 const statusOptions = [
   { label: "全部", value: "" as 0 | 1 | "", key: "all" },
-  { label: "有效", value: 1 as 0 | 1, key: "active" },
+  { label: "启用", value: 1 as 0 | 1, key: "active" },
   { label: "停用", value: 0 as 0 | 1, key: "disabled" },
 ]
 
@@ -646,7 +646,7 @@ onMounted(() => {
         <el-table-column label="状态 / 同步" min-width="210">
           <template #default="{ row }">
             <el-tag size="small" :type="row.status === 1 ? 'success' : 'info'">{{
-              row.status === 1 ? "有效" : "停用"
+              row.status === 1 ? "启用" : "停用"
             }}</el-tag>
             <span class="sync-state" :class="row.sync_status"><i></i>{{ syncLabel(row.sync_status) }}</span>
             <div class="user-times">
@@ -702,7 +702,7 @@ onMounted(() => {
               ><code class="user-code">{{ user.username }}</code></div
             >
             <el-tag size="small" :type="user.status === 1 ? 'success' : 'info'">{{
-              user.status === 1 ? "有效" : "停用"
+              user.status === 1 ? "启用" : "停用"
             }}</el-tag>
           </header>
           <div class="identity-tags">

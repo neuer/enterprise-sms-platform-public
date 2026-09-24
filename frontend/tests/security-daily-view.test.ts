@@ -624,7 +624,7 @@ describe("安全日报页面", () => {
 
     const message = vnodeText(confirm.mock.calls[0][0])
     expect(message).toContain("已脱敏结构化报告")
-    expect(message).toContain("独立 mailer")
+    expect(message).toContain("独立投递器（mailer）")
     expect(message).toContain("幂等")
     expect(message).toContain("写入审计日志")
     expect(api.sendSecurityDailyReport).toHaveBeenCalledWith(1)

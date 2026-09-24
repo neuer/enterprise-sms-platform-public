@@ -376,9 +376,9 @@ describe("批次与号码查询", () => {
       .find((item) => item.text().includes("查看详情"))!
       .trigger("click")
     await flushPromises()
-    expect(wrapper.text()).toContain("仍有 27 条未终态（待处理 2 + 待回执 25）")
+    expect(wrapper.text()).toContain("仍有 27 条未终态（待处理 2 + 已提交 25）")
     const composition = wrapper.get(".batch-hero-nums").text()
-    for (const expected of ["待处理2", "待回执25", "送达10", "失败0", "未知2", "其他1"]) {
+    for (const expected of ["待处理2", "已提交25", "送达10", "失败0", "未知2", "其他1"]) {
       expect(composition).toContain(expected)
     }
 

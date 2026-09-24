@@ -359,7 +359,7 @@ onMounted(() => void load())
         <p class="kpi-foot">条 / 消息 {{ segmentsPerMessage }}</p>
       </el-card>
       <el-card shadow="never" class="report-kpi">
-        <span>送达成功率</span>
+        <span>成功率</span>
         <strong>{{ formatRate(result.summary.success_rate) }}</strong>
         <small>送达 /（送达 + 失败），未知不入分母</small>
         <div class="kpi-kv"

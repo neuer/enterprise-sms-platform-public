@@ -376,7 +376,7 @@ describe("管理员治理页面", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("运行概览 · 今日")
-    expect(wrapper.text()).toContain("成功率 98.6%（delivered/(delivered+failed)）")
+    expect(wrapper.text()).toContain("成功率 98.6%（送达 /（送达 + 失败），未知不入分母）")
     expect(wrapper.text()).toContain("每分钟限流")
     expect(wrapper.text()).toContain("频控覆盖")
     expect(wrapper.text()).toContain("验证码 2/分")
@@ -984,7 +984,7 @@ describe("管理员治理页面", () => {
 
     expect(wrapper.find(".blacklist-mobile-list").exists()).toBe(true)
     expect(String(fetch.mock.calls[0][0])).toContain("/api/v1/web/admin/blacklist?page=1&size=20")
-    expect(wrapper.get("[data-testid='mobile-blacklist-delete-aaaaaaaa']").text()).toContain("移除")
+    expect(wrapper.get("[data-testid='mobile-blacklist-delete-aaaaaaaa']").text()).toContain("移出")
     expect(wrapper.text()).toContain("138****8000")
     expect(wrapper.find(".phone-mask").exists()).toBe(true)
     expect(wrapper.text()).not.toContain("13800138000")

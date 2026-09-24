@@ -56,7 +56,7 @@ function resolutionLabel(action: string | null | undefined): string {
 function resolutionStateLabel(state: string | null | undefined): string {
   const labels: Record<string, string> = {
     proposed: "待确认",
-    approved: "已批准",
+    approved: "已通过",
     effect_pending: "待生效",
     applying: "生效中",
     effect_applied: "已生效",
@@ -94,7 +94,7 @@ async function proposeResolution(item: UncertainItem, action: UncertainResolutio
       title: "确认提出处置",
       body: `对批次 ${item.batch_no} 提出「${resolutionLabel(action)}」。确认后须另一名管理员复核；重发只会创建新批次，不会把旧分片改回待发送。`,
       auditNote: "提出行为与操作人将写入审计日志。",
-      confirmText: "提出处置",
+      confirmText: "确认提出",
     }))
   )
     return
@@ -164,7 +164,7 @@ watch(
       >
       <section class="ops-results">
         <el-table :data="uncertain" row-key="chunk_id" class="ops-table"
-          ><el-table-column prop="batch_no" label="批次" min-width="160" /><el-table-column label="状态" width="110"
+          ><el-table-column prop="batch_no" label="批次号" min-width="160" /><el-table-column label="状态" width="110"
             ><template #default="{ row }"><StatusTag :status="row.status" /></template></el-table-column
           ><el-table-column label="customId" min-width="160"
             ><template #default="{ row }"

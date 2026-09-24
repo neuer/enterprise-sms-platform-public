@@ -262,7 +262,7 @@ async function remove(item: SmsSign): Promise<void> {
   try {
     if (
       !(await confirmAuditedAction({
-        title: "删除签名",
+        title: "确认删除签名",
         body: `确认删除签名「${item.name}」？删除后不可恢复；已通过、被应用设为默认签名或已被批次引用的签名不可删除。`,
         auditNote: "删除行为与操作人将写入审计日志。",
         confirmText: "确认删除",

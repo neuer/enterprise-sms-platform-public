@@ -727,7 +727,7 @@ watch(moreOpen, (open) => {
             }}</small></div
           >
           <div
-            ><span>待回执</span><b>{{ composeOf(selected).sent.toLocaleString() }}</b
+            ><span>已提交</span><b>{{ composeOf(selected).sent.toLocaleString() }}</b
             ><small>{{
               selected.total > 0 ? formatPercent(composeOf(selected).sent / selected.total) : "—"
             }}</small></div
@@ -769,7 +769,7 @@ watch(moreOpen, (open) => {
 
       <p v-if="selected.status === 'sending' && activeOf(selected) > 0" class="batch-note"
         >仍有 {{ activeOf(selected).toLocaleString() }} 条未终态（待处理
-        {{ composeOf(selected).pending.toLocaleString() }} + 待回执
+        {{ composeOf(selected).pending.toLocaleString() }} + 已提交
         {{
           composeOf(selected).sent.toLocaleString()
         }}），批次保持发送中，直至提交完成、结果核对、回执到达或报告超时。构成非成功率。</p

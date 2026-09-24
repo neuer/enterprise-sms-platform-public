@@ -141,7 +141,7 @@ async function add(): Promise<void> {
   try {
     const result = await addSensitiveWords(uniqueWords.value)
     const skippedTip = result.skipped ? ` · 已存在跳过 ${result.skipped} 个` : ""
-    ElMessage.success(`新增 ${result.added} 个${skippedTip} · 本次操作已记入审计`)
+    ElMessage.success(`已添加 ${result.added} 个${skippedTip} · 本次操作已记入审计`)
     drawerOpen.value = false
     page.value = 1
     await load()
@@ -161,10 +161,10 @@ async function remove(item: SensitiveWordItem): Promise<void> {
   try {
     if (
       !(await confirmAuditedAction({
-        title: "删除敏感词确认",
+        title: "确认删除敏感词",
         body: `删除“${item.word}”？删除后该词不再参与命中判定（当前策略为${policy.value === "block" ? "命中阻断" : "仅审计"}，验证码 / 通知 / 营销全类别一致生效）。`,
         auditNote: "删除行为与操作人将写入审计日志；审计只记数量，不记词面。",
-        confirmText: "删除敏感词",
+        confirmText: "确认删除",
       }))
     )
       return
@@ -277,7 +277,7 @@ onMounted(() => {
   <el-drawer v-model="drawerOpen" class="sensitive-drawer" size="min(440px, 92vw)" :teleported="false">
     <template #header>
       <div class="sensitive-drawer-head">
-        <div class="sensitive-drawer-title">添加敏感词到词库</div>
+        <div class="sensitive-drawer-title">添加敏感词</div>
         <code>POST /api/v1/web/admin/sensitive-words · 跳过已存在</code>
       </div>
     </template>
@@ -311,7 +311,7 @@ onMounted(() => {
         <div>
           <el-button @click="drawerOpen = false">取消</el-button>
           <el-button data-testid="sensitive-add" type="primary" :disabled="!canSubmit" :loading="saving" @click="add"
-            >加入词库</el-button
+            >确认添加</el-button
           >
         </div>
       </div>

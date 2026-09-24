@@ -14,5 +14,5 @@ export function triggerRule(item: ApprovalListItem): string {
 }
 
 export function formatSegments(value: number | null): string {
-  return value === null ? "—" : `${value.toLocaleString()} 条`
+  return value === null ? "—" : `${value.toLocaleString()} 计费条`
 }

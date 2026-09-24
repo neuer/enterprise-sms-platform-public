@@ -57,7 +57,7 @@ describe("黑名单 / 敏感词 qingluan 结构契约（规范 §8/§8a）", () 
 
   it("敏感词：审计 toast 句式（删除与添加分账）", () => {
     expect(sensitive).toContain("已删除敏感词 · 本次操作已记入审计")
-    expect(sensitive).toMatch(/新增 \$\{result\.added\} 个.*本次操作已记入审计/s)
+    expect(sensitive).toMatch(/已添加 \$\{result\.added\} 个.*本次操作已记入审计/s)
   })
 })
 

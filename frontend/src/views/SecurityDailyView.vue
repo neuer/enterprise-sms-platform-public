@@ -46,7 +46,7 @@ const generationLabels: Record<GenerationStatus, string> = {
 }
 const deliveryLabels: Record<DeliveryStatus, string> = {
   not_sent: "未投递",
-  pending: "等待 mailer",
+  pending: "等待投递器",
   sending: "投递中",
   sent: "已投递",
   failed: "投递失败",
@@ -92,11 +92,11 @@ const generationSegOptions = [
 const deliverySegOptions = [
   { label: "全部", value: "" as DeliveryStatus | "", key: "all" },
   { label: "未投递", value: "not_sent" as DeliveryStatus, key: "not-sent" },
-  { label: "等待 mailer", value: "pending" as DeliveryStatus, key: "pending" },
+  { label: "等待投递器", value: "pending" as DeliveryStatus, key: "pending" },
   { label: "投递中", value: "sending" as DeliveryStatus, key: "sending" },
   { label: "已投递", value: "sent" as DeliveryStatus, key: "sent" },
   { label: "投递失败", value: "failed" as DeliveryStatus, key: "failed" },
-  { label: "结果未知", value: "unknown" as DeliveryStatus, key: "unknown" },
+  { label: "投递结果未知", value: "unknown" as DeliveryStatus, key: "unknown" },
 ]
 
 const overview = ref<SecurityDailyOverview | null>(null)
@@ -414,7 +414,7 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
     !(await confirmAuditedAction({
       title: `确认${operation}`,
       isCurrent: () => selected.value === report,
-      body: `确认${operation} ${report.report_date} 的安全日报？邮件正文只来自已脱敏结构化报告，投递由独立 mailer 执行并回写状态，同日重复投递有幂等保护。`,
+      body: `确认${operation} ${report.report_date} 的安全日报？邮件正文只来自已脱敏结构化报告，投递由独立投递器（mailer）执行并回写状态，同日重复投递有幂等保护。`,
       auditNote: `${operation}行为、操作人与日报 id 将写入审计日志。`,
       confirmText: `确认${operation}`,
     }))
@@ -427,7 +427,7 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
     } else {
       await sendSecurityDailyReport(report.id)
     }
-    ElMessage.success("投递请求已受理，状态将在 mailer 回写后更新 · 本次操作已记入审计")
+    ElMessage.success("投递请求已受理，状态将在投递器回写后更新 · 本次操作已记入审计")
     await refresh()
     if (drawerOpen.value && selected.value?.id === report.id) await openReport(report.id)
   } catch (error) {
@@ -450,7 +450,7 @@ function canRetry(report: SecurityDailyReport): boolean {
     overview.value?.configuration_state === "ready" &&
     report.generation_status === "ready" &&
     report.delivery_status === "failed" &&
-    !(report.last_error ?? "").startsWith("投递结果未知") &&
+    !(report.last_error ?? "").startsWith(deliveryLabels.unknown) &&
     !isHistoricSupersededSent(report),
   )
 }
@@ -601,13 +601,11 @@ onMounted(() => void refresh())
     >
     <div
       ><span>配置例外</span
-      ><p
-        >Resend Key 明文仅存专用配置并同步独立 mailer，审计只记 configured 状态与收件人数量；Key 保存后不回显。</p
-      ></div
+      ><p>Resend Key 明文仅存专用配置并同步独立投递器，审计只记 configured 状态与收件人数量；Key 保存后不回显。</p></div
     >
     <div
       ><span>投递语义</span
-      ><p>投递由独立 mailer 执行并回写状态，页面查询时惰性同步；投递失败可重试，同日重复投递有幂等保护。</p></div
+      ><p>投递由独立投递器执行并回写状态，页面查询时惰性同步；投递失败可重试，同日重复投递有幂等保护。</p></div
     >
   </aside>
 

@@ -355,11 +355,11 @@ async function disableProvider(): Promise<void> {
   if (!provider) return
   if (
     !(await confirmAuditedAction({
-      title: "确认禁用 AD",
+      title: "确认停用 AD",
       isCurrent: () => adProvider.value === provider,
-      body: "禁用后登录页不再显示 AD，已有 AD 会话也将在后续认证校验时失效，无法继续访问或刷新；草稿、生效配置与角色映射继续保留，可随时重新测试并启用。",
-      auditNote: "禁用行为与操作人将写入审计日志。",
-      confirmText: "禁用 AD",
+      body: "停用后登录页不再显示 AD，已有 AD 会话也将在后续认证校验时失效，无法继续访问或刷新；草稿、生效配置与角色映射继续保留，可随时重新测试并启用。",
+      auditNote: "停用行为与操作人将写入审计日志。",
+      confirmText: "停用 AD",
     }))
   )
     return
@@ -378,9 +378,9 @@ async function disableProvider(): Promise<void> {
     if (!saved) return
     hydrateProvider(saved)
     disabledPreserved.value = true
-    ElMessage.success("AD 已禁用，配置与角色映射均已保留 · 本次操作已记入审计")
+    ElMessage.success("AD 已停用，配置与角色映射均已保留 · 本次操作已记入审计")
   } catch (error) {
-    ElMessage.error(errorText(error, "AD 认证源禁用失败"))
+    ElMessage.error(errorText(error, "AD 认证源停用失败"))
   } finally {
     providerSaving.value = false
   }
@@ -506,7 +506,7 @@ onMounted(() => {
         <div class="provider-mark ad">AD</div>
         <div>
           <strong>{{ adProvider.name }}</strong>
-          <p>{{ adProvider.enabled ? "AD 当前已启用" : "AD 当前已禁用" }}</p>
+          <p>{{ adProvider.enabled ? "AD 当前已启用" : "AD 当前已停用" }}</p>
         </div>
         <div class="provider-version-state">
           <span>草稿版本 v{{ adProvider.draft_version }}</span>
@@ -628,7 +628,7 @@ onMounted(() => {
           plain
           :loading="providerSaving"
           @click="disableProvider"
-          >禁用 AD</el-button
+          >停用 AD</el-button
         >
       </div>
 

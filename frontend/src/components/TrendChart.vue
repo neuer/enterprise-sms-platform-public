@@ -8,6 +8,7 @@ import { ref, watch } from "vue"
 import type { DashboardTrendPoint } from "../api/dashboard"
 import { useChart } from "../composables/useChart"
 import { getChartTheme } from "../lib/chartTheme"
+import { CATEGORY_LABELS } from "../lib/labels"
 import { shanghaiDateKey } from "../lib/time"
 
 echarts.use([BarChart, GridComponent, TooltipComponent, CanvasRenderer])
@@ -45,7 +46,7 @@ const { render } = useChart(root, (chart) => {
     },
     series: [
       {
-        name: "验证码",
+        name: CATEGORY_LABELS.verify,
         type: "bar",
         stack: "total",
         barMaxWidth: 42,
@@ -53,14 +54,14 @@ const { render } = useChart(root, (chart) => {
         itemStyle: { color: theme.green },
       },
       {
-        name: "通知",
+        name: CATEGORY_LABELS.notice,
         type: "bar",
         stack: "total",
         data: props.points.map((item) => item.notice),
         itemStyle: { color: theme.blue },
       },
       {
-        name: "营销",
+        name: CATEGORY_LABELS.market,
         type: "bar",
         stack: "total",
         data: props.points.map((item) => item.market),

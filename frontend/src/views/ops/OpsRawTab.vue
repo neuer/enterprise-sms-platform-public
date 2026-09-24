@@ -40,7 +40,7 @@ const rawProcessed = ref<"" | "true" | "false">("")
 
 const RAW_SOURCE_OPTIONS: { key: string; label: string; value: "" | RawLogItem["source"] }[] = [
   { key: "all", label: "全部", value: "" },
-  { key: "report", label: "报告", value: "report" },
+  { key: "report", label: "状态报告", value: "report" },
   { key: "reply", label: "回复", value: "reply" },
 ]
 

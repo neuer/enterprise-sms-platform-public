@@ -304,7 +304,7 @@ function finishOperation(operation: VendorTestOperation): void {
   } else {
     ElMessage.success(
       operation.operation_type === "uat_send"
-        ? "真实 UAT 已被厂商受理"
+        ? "单号码 UAT 已被厂商受理"
         : operation.operation_type === "reset_configuration"
           ? "测试环境已切回 Mock，正式厂商凭据已撤销；测试号码与生产环境未变"
           : "受控操作成功",
@@ -473,7 +473,7 @@ async function resume(): Promise<void> {
   if (
     !(await confirmAction({
       title: "恢复受控联调",
-      body: "确认恢复人工暂停并重新开放已登记号码的真实 UAT。",
+      body: "确认恢复人工暂停并重新开放已登记号码的单号码 UAT。",
       confirmText: "恢复联调",
       cancelText: "继续暂停",
     }))
@@ -499,7 +499,7 @@ async function disableRecipient(recipient: VendorTestRecipient): Promise<void> {
   if (
     !(await confirmAction({
       title: "停用测试号码",
-      body: `停用 ${recipient.label}（${recipient.phone_mask}）后不可再用于真实 UAT。`,
+      body: `停用 ${recipient.label}（${recipient.phone_mask}）后不可再用于单号码 UAT。`,
       confirmText: "停用号码",
       cancelText: "保留号码",
     }))
@@ -574,7 +574,7 @@ onBeforeUnmount(() => {
           ><dt>收件人</dt><dd>{{ status.active_recipient_count }} 个已登记</dd></div
         >
         <div
-          ><dt>预算</dt><dd>{{ status.daily_limit }} 条/日</dd></div
+          ><dt>预算</dt><dd>{{ status.daily_limit }} 计费条/日</dd></div
         >
         <div
           ><dt>心跳</dt><dd>{{ formatDateTime(status.heartbeat_at, "状态时间无效") }}</dd></div
@@ -676,7 +676,7 @@ onBeforeUnmount(() => {
                 ><PhoneMask :value="recipient.phone_mask"
               /></div>
               <el-tag :type="recipient.status === 'active' ? 'success' : 'info'" size="small">
-                {{ recipient.status === "active" ? "有效" : "已停用" }}
+                {{ recipient.status === "active" ? "启用" : "已停用" }}
               </el-tag>
               <div v-if="recipient.status === 'active'" class="vendor-recipient-actions">
                 <el-button

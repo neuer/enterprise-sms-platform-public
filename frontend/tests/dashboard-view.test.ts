@@ -167,7 +167,7 @@ describe("仪表盘", () => {
     vi.unstubAllGlobals()
   })
 
-  it("成功后轮询失败时保留最后值并把信道标记为陈旧", async () => {
+  it("成功后轮询失败时保留最后值并把通道标记为陈旧", async () => {
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(response(snapshot))

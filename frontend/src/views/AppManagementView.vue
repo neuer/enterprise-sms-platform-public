@@ -232,7 +232,7 @@ const detailRateText = computed(() => {
   const current = detail.value
   if (!current) return "—"
   const rate = rateOf(current)
-  return rate === null ? "—" : `${formatPercent(rate)}（delivered/(delivered+failed)）`
+  return rate === null ? "—" : `${formatPercent(rate)}（送达 /（送达 + 失败），未知不入分母）`
 })
 
 const demoOpen = ref(false)
@@ -509,7 +509,7 @@ async function rotateKey(item: ManagedApp): Promise<void> {
     )
     await load()
   } catch (error) {
-    ElMessage.error(errorText(error, "Key 轮换失败"))
+    ElMessage.error(errorText(error, "API Key 轮换失败"))
   } finally {
     if (!secretRevealed) clearSecret()
   }
@@ -530,7 +530,7 @@ async function revokeKey(item: ManagedApp): Promise<void> {
     )
       return
     await revokeOldAppKey(item.id)
-    ElMessage.success("旧 Key 已作废 · 本次操作已记入审计")
+    ElMessage.success("旧 API Key 已作废 · 本次操作已记入审计")
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "作废失败"))

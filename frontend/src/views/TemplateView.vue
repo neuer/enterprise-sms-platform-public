@@ -245,7 +245,7 @@ async function remove(item: SmsTemplate): Promise<void> {
   try {
     if (
       !(await confirmAuditedAction({
-        title: "删除模板",
+        title: "确认删除模板",
         body: `确认删除模板「${item.name}」？删除后不可恢复；已绑定厂商编号或已被批次引用的模板不可删除。`,
         auditNote: "删除行为与操作人将写入审计日志。",
         confirmText: "确认删除",

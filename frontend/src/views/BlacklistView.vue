@@ -153,7 +153,7 @@ async function remove(item: BlacklistItem): Promise<void> {
   try {
     if (
       !(await confirmAuditedAction({
-        title: "移出黑名单确认",
+        title: "确认移出黑名单",
         body: `将 ${item.phone_mask} 移出黑名单？移出后通知与营销发送不再拦截该号码（验证码本就不拦截）。`,
         auditNote: "移除行为与操作人将写入审计日志；审计只记数量，不记号码。",
         confirmText: "移出黑名单",
@@ -249,7 +249,7 @@ onMounted(() => void load())
             :loading="removingHmac === row.phone_hmac"
             :disabled="removingHmac !== null"
             @click="remove(row)"
-            >移除</el-button
+            >移出</el-button
           >
         </template>
       </el-table-column>
@@ -272,7 +272,7 @@ onMounted(() => void load())
             :loading="removingHmac === item.phone_hmac"
             :disabled="removingHmac !== null"
             @click="remove(item)"
-            >移除</el-button
+            >移出</el-button
           >
         </footer>
       </article>
