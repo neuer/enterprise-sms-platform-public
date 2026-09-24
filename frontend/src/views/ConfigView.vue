@@ -23,6 +23,7 @@ import {
   type LdapProviderConfig,
 } from "../api/admin"
 import EmptyState from "../components/EmptyState.vue"
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import VendorTestConsole from "../components/VendorTestConsole.vue"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAction, confirmAuditedAction } = useConfirmActions()
@@ -204,6 +205,15 @@ function setNumber(key: string, value: number | undefined): void {
 function resetToDefault(item: ConfigItem): void {
   values[item.key] = item.default
   mark(item.key)
+}
+
+/** 敏感项「清除配置」后的待清除态：已配置 + 已触碰 + 值为空 ⇒ 保存时将置空，与“留空保持原值”语义相反，必须显式可见。 */
+function isPendingClear(item: ConfigItem): boolean {
+  return item.sensitive && item.configured && touched.has(item.key) && (values[item.key] ?? "") === ""
+}
+
+function undoClear(key: string): void {
+  touched.delete(key)
 }
 
 function isModified(item: ConfigItem): boolean {
@@ -618,18 +628,18 @@ onMounted(() => {
         <div v-if="roleMappings.length" class="role-mapping-list">
           <div v-for="(mapping, index) in roleMappings" :key="mapping.rowKey" class="role-mapping-row">
             <el-input
-              :disabled="mappingsSaving"
               v-model="mapping.external_group"
+              :disabled="mappingsSaving"
               :data-testid="`mapping-group-${index}`"
               placeholder="CN=SMS-Operators,OU=Groups,..."
             />
             <el-input
-              :disabled="mappingsSaving"
               v-model="mapping.dept"
+              :disabled="mappingsSaving"
               :data-testid="`mapping-dept-${index}`"
               placeholder="授权部门"
             />
-            <el-select :disabled="mappingsSaving" v-model="mapping.role" :data-testid="`mapping-role-${index}`">
+            <el-select v-model="mapping.role" :disabled="mappingsSaving" :data-testid="`mapping-role-${index}`">
               <el-option v-for="(label, role) in ROLE_LABELS" :key="role" :label="label" :value="role" />
             </el-select>
             <el-button :disabled="mappingsSaving" type="danger" link @click="removeRoleMapping(index)">移除</el-button>
@@ -659,9 +669,7 @@ onMounted(() => {
     aria-labelledby="config-tab-runtime"
     class="config-runtime-panel"
   >
-    <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false">
-      <template #default><el-button link type="primary" @click="load">重新加载</el-button></template>
-    </el-alert>
+    <LoadErrorAlert :message="errorMessage" @retry="load" />
 
     <div class="config-filter-bar">
       <label class="config-fld"
@@ -743,7 +751,13 @@ onMounted(() => {
               :data-testid="`config-${item.key}`"
               :type="item.sensitive ? 'password' : 'text'"
               :show-password="item.sensitive"
-              :placeholder="item.sensitive && item.configured ? '留空保持原值' : '输入参数值'"
+              :placeholder="
+                item.sensitive && item.configured
+                  ? isPendingClear(item)
+                    ? '已标记清除，保存后置空；可点下方撤销'
+                    : '留空保持原值'
+                  : '输入参数值'
+              "
               @input="mark(item.key)"
             />
             <small
@@ -757,10 +771,22 @@ onMounted(() => {
               FORMAT_HINTS[item.key]
             }}</small>
             <div v-if="item.sensitive && item.configured" class="secret-control">
-              <small>已配置，值不回显</small>
-              <!-- 多语句内联处理器依赖分号分隔：prettier 的 semi:false 折行会产生非法 Vue 表达式，故豁免格式化 -->
-              <!-- prettier-ignore -->
-              <el-button link type="danger" @click="values[item.key] = ''; mark(item.key)">清除配置</el-button>
+              <template v-if="isPendingClear(item)">
+                <small class="pending-clear-badge">待清除 · 保存后该值置空</small>
+                <el-button
+                  link
+                  type="primary"
+                  :data-testid="`config-undo-clear-${item.key}`"
+                  @click="undoClear(item.key)"
+                  >撤销</el-button
+                >
+              </template>
+              <template v-else>
+                <small>已配置，值不回显</small>
+                <!-- 多语句内联处理器依赖分号分隔：prettier 的 semi:false 折行会产生非法 Vue 表达式，故豁免格式化 -->
+                <!-- prettier-ignore -->
+                <el-button link type="danger" @click="values[item.key] = ''; mark(item.key)">清除配置</el-button>
+              </template>
             </div>
             <small v-else-if="item.sensitive">未配置 · 当前 log-sink</small>
             <div class="config-item-meta">

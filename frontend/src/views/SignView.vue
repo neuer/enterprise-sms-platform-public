@@ -16,9 +16,12 @@ import {
   type SmsSign,
 } from "../api/signs"
 import EmptyState from "../components/EmptyState.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import StatusTag from "../components/StatusTag.vue"
 import { useMobileLayout } from "../composables/useMobileLayout"
 import { useConfirmActions } from "../lib/confirm"
+import { vRowActivate } from "../lib/directives"
 const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
@@ -306,7 +309,7 @@ onMounted(load)
     <span class="sign-filter-note">接口全量返回 · 前端过滤</span>
   </div>
 
-  <el-alert v-if="errorMessage" class="sign-alert" :title="errorMessage" type="error" :closable="false" />
+  <LoadErrorAlert class="sign-alert" :message="errorMessage" @retry="load" />
 
   <section class="sign-results">
     <el-table
@@ -320,13 +323,12 @@ onMounted(load)
       <el-table-column label="规范签名" min-width="220">
         <template #default="{ row }">
           <button
+            v-row-activate="() => openDetail(row)"
             :data-testid="`sign-detail-${row.id}`"
             class="table-row-detail sign-name"
             type="button"
             :aria-label="`查看签名 ${row.name} 的详情`"
             @click.stop="openDetail(row)"
-            @keydown.enter.stop.prevent="openDetail(row)"
-            @keydown.space.stop.prevent="openDetail(row)"
           >
             【{{ row.name }}】
           </button>
@@ -384,13 +386,12 @@ onMounted(load)
       <article v-for="row in filtered" :key="row.id">
         <header>
           <button
+            v-row-activate="() => openDetail(row)"
             :data-testid="`mobile-sign-detail-${row.id}`"
             class="table-row-detail sign-name"
             type="button"
             :aria-label="`查看签名 ${row.name} 的详情`"
             @click="openDetail(row)"
-            @keydown.enter.stop.prevent="openDetail(row)"
-            @keydown.space.stop.prevent="openDetail(row)"
           >
             【{{ row.name }}】
           </button>

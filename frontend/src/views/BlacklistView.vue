@@ -10,6 +10,8 @@ import {
   type BlacklistSource,
 } from "../api/blacklist"
 import EmptyState from "../components/EmptyState.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
 import PhoneMask from "../components/PhoneMask.vue"
@@ -210,7 +212,7 @@ onMounted(() => void load())
     >
   </form>
 
-  <el-alert v-if="errorMessage" class="blacklist-alert" :title="errorMessage" type="error" :closable="false" />
+  <LoadErrorAlert class="blacklist-alert" :message="errorMessage" @retry="load" />
 
   <section class="blacklist-results">
     <el-table v-loading="loading" :data="items" row-key="phone_hmac" class="blacklist-table">

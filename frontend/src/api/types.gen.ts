@@ -6236,6 +6236,8 @@ export interface paths {
                     /** @description 按 request ID 查询同一请求或异步链路的审计事件 */
                     correlation_id?: string | null;
                     action?: string | null;
+                    /** @description 从结果中排除指定动作（如默认折叠 session_refresh 高频会话事件）；与 action 精确过滤互斥使用 */
+                    exclude_action?: string | null;
                     object_type?: string | null;
                     /** @description 按对象 ID 串联同一业务对象的全部审计事件（如批次号、配置 key） */
                     object_id?: string | null;
@@ -7318,6 +7320,10 @@ export interface components {
             bulk_code: string | null;
             balance: number | null;
             threshold: number;
+            /** @description 真实联调独立暂停码（agent-stale critical 或 daily 预算）；发送链路已消费，此前运维不可见 */
+            vendor_test_realtime_code?: string | null;
+            /** @description 同 realtime 通道口径的批量通道真实联调暂停码 */
+            vendor_test_bulk_code?: string | null;
         };
         QueueResumeModel: {
             resumed_batches: number;

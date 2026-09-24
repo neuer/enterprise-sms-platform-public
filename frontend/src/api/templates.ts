@@ -22,7 +22,8 @@ export interface TemplatePayload {
   var_specs: VarSpec[]
 }
 
-export const listTemplates = () => apiRequest<SmsTemplate[]>("/templates", { method: "GET" })
+export const listTemplates = (signal?: AbortSignal) =>
+  apiRequest<SmsTemplate[]>("/templates", { method: "GET", signal })
 export const createTemplate = (payload: TemplatePayload) =>
   apiRequest<SmsTemplate>("/templates", {
     method: "POST",

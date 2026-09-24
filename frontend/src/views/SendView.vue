@@ -25,6 +25,8 @@ import {
 import { listTemplates } from "../api/templates"
 import { listSigns } from "../api/signs"
 import { getDashboard } from "../api/dashboard"
+import { ApiRequestError } from "../api/client"
+import { admissionReasonOf, admissionReasonText } from "../lib/admissionReason"
 import BillingSegments from "../components/BillingSegments.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
@@ -66,6 +68,8 @@ let draftRevision = 0
 let disposed = false
 const submittedSummary = ref("")
 const errorMessage = ref("")
+// 准入 503（DEPENDENCY_UNAVAILABLE）时展示通往运维中心队列页签的出口。
+const errorAdmission = ref(false)
 const sendResult = ref<SendResult | null>(null)
 const copied = ref(false)
 const idempotencyKey = ref(newIdempotencyKey())
@@ -123,6 +127,19 @@ const testLimitExceeded = computed(
   () => form.isTest && testSendMax.value !== null && recipientCount.value > testSendMax.value,
 )
 
+// 与服务端 web_messages.py 的 50_000 上限同口径；客户端只提前提示，服务端仍为权威裁决（规则 40 上界）。
+const MAX_RECIPIENTS_PER_BATCH = 50_000
+const recipientLimitExceeded = computed(() => recipientCount.value > MAX_RECIPIENTS_PER_BATCH)
+
+// 定时必须落在未来时刻；过期时间提交只会被服务端拒绝，提前禁用并提示。
+const scheduleInPast = computed(
+  () =>
+    form.scheduleEnabled &&
+    !!form.scheduledAt &&
+    Number.isFinite(Date.parse(form.scheduledAt)) &&
+    Date.parse(form.scheduledAt) <= Date.now(),
+)
+
 const sendDisabled = computed(
   () =>
     busy.value ||
@@ -131,6 +148,8 @@ const sendDisabled = computed(
     !contentReady.value ||
     (form.category === "market" && !form.consentConfirmed) ||
     testLimitExceeded.value ||
+    recipientLimitExceeded.value ||
+    scheduleInPast.value ||
     (form.scheduleEnabled && (!form.scheduledAt || !Number.isFinite(Date.parse(form.scheduledAt)))),
 )
 const scheduledAtValue = computed(() => (form.scheduleEnabled && form.scheduledAt ? form.scheduledAt : ""))
@@ -197,6 +216,8 @@ const previewKey = computed(() =>
 )
 const lastPreviewKey = ref("")
 let previewTimer: number | undefined
+// 预检请求真实取消：新预览取代在途旧请求，不只是丢弃迟到响应。
+let previewAbort: AbortController | undefined
 
 const previewReady = computed(
   () =>
@@ -219,16 +240,22 @@ function isValidPreview(value: BillingPreview | null): value is BillingPreview {
 }
 
 async function runPreview(key: string): Promise<void> {
+  previewAbort?.abort()
+  const controller = new AbortController()
+  previewAbort = controller
   previewLoading.value = true
   previewError.value = ""
   try {
-    const result = await previewBilling({
-      category: form.category,
-      ...contentPayload(),
-      sign_name: form.signName || undefined,
-      accepted_count: previewCount.value,
-      consent_confirmed: form.consentConfirmed,
-    })
+    const result = await previewBilling(
+      {
+        category: form.category,
+        ...contentPayload(),
+        sign_name: form.signName || undefined,
+        accepted_count: previewCount.value,
+        consent_confirmed: form.consentConfirmed,
+      },
+      controller.signal,
+    )
     if (disposed || key !== previewKey.value) return
     if (isValidPreview(result)) {
       preview.value = result
@@ -248,6 +275,7 @@ async function runPreview(key: string): Promise<void> {
 watch(previewKey, () => {
   window.clearTimeout(previewTimer)
   if (!previewReady.value) {
+    previewAbort?.abort()
     preview.value = null
     previewError.value = ""
     previewLoading.value = false
@@ -443,6 +471,7 @@ async function downloadInvalidFile(): Promise<void> {
 
 function resetFeedback(): void {
   errorMessage.value = ""
+  errorAdmission.value = false
 }
 
 function chooseCategory(category: Category): void {
@@ -526,7 +555,15 @@ async function submit(): Promise<void> {
     submittedSummary.value = `${payload.category === "market" ? "营销短信" : "通知短信"} · ${payload.import_id ? "文件导入" : "手工粘贴"} · ${payload.scheduled_at ? formatDateTime(payload.scheduled_at) : "立即受理"}`
   } catch (error) {
     if (disposed || generation !== requestGeneration || revision !== draftRevision) return
-    errorMessage.value = errorText(error, "发送受理失败")
+    // 准入 503 附 reason 时给出中文解释与运维中心出口；未知 reason 回退通用文案不吞诊断。
+    if (error instanceof ApiRequestError && error.status === 503) {
+      const reason = error.code === "DEPENDENCY_UNAVAILABLE" ? admissionReasonOf(error) : null
+      const text = reason ? admissionReasonText(reason) : null
+      errorAdmission.value = true
+      errorMessage.value = text ? `发送通道暂时不可用：${text}` : errorText(error, "发送受理失败")
+    } else {
+      errorMessage.value = errorText(error, "发送受理失败")
+    }
   } finally {
     if (!disposed && generation === requestGeneration) busy.value = false
   }
@@ -548,6 +585,10 @@ async function copyBatchNo(): Promise<void> {
 
 function goBatches(): void {
   void router?.push("/batches")
+}
+
+function goOpsQueue(): void {
+  void router?.push("/ops?tab=queue")
 }
 
 function resetForAnother(): void {
@@ -586,6 +627,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   clearSessionDraft()
   disposed = true
+  previewAbort?.abort()
   window.removeEventListener(SESSION_CLEARING_EVENT, clearSessionDraft)
   window.clearTimeout(previewTimer)
   window.clearTimeout(copiedTimer)
@@ -617,8 +659,8 @@ onBeforeUnmount(() => {
             class="notice"
             data-testid="category-notice"
             :class="{ on: form.category === 'notice', selected: form.category === 'notice' }"
-            @click="chooseCategory('notice')"
             :disabled="busy"
+            @click="chooseCategory('notice')"
           >
             <b>通知短信<span class="cat-tag notice">NOTICE</span></b>
             <small>实时通道 · 黑名单默认拦截<br />≥100 号码需审批</small>
@@ -628,8 +670,8 @@ onBeforeUnmount(() => {
             class="market"
             data-testid="category-market"
             :class="{ on: form.category === 'market', selected: form.category === 'market' }"
-            @click="chooseCategory('market')"
             :disabled="busy"
+            @click="chooseCategory('market')"
           >
             <b>营销短信<span class="cat-tag market">MARKET</span></b>
             <small>批量通道 · 08:00–21:00 · 强制退订语<br />≥50 号码需审批 · 同号同应用 1 条/天</small>
@@ -661,6 +703,7 @@ onBeforeUnmount(() => {
             :rows="5"
             resize="vertical"
             placeholder="每行一个手机号，也支持逗号或空格分隔"
+            aria-label="收信号码，每行一个手机号，也支持逗号或空格分隔"
             :disabled="busy"
           />
           <div v-if="pastedMobiles.length" class="phone-stats" data-testid="phone-stats">
@@ -687,6 +730,9 @@ onBeforeUnmount(() => {
               invalidMobiles[0]
             }}」；请修正后再提交。
           </p>
+          <p v-if="recipientLimitExceeded" class="mobiles-invalid-hint" data-testid="recipient-limit-hint">
+            超出单次 50,000 个号码上限（当前 {{ recipientCount.toLocaleString() }} 个）；请删减或分批提交。
+          </p>
         </template>
         <div v-else class="upload-zone">
           <el-upload
@@ -698,6 +744,7 @@ onBeforeUnmount(() => {
             :http-request="handleUpload"
             :disabled="busy"
           >
+            <!-- el-upload 不透传 aria-label；根节点 role=button 的可访问名取自下列可见文本 -->
             <strong>拖入 CSV / XLSX，或点击选择</strong>
             <span>≤10MB · ≤5万行 · 24小时有效</span>
           </el-upload>
@@ -712,7 +759,7 @@ onBeforeUnmount(() => {
           </div>
           <div v-if="importState === 'failed'" class="import-box failed" data-testid="import-failed">
             <p>{{ importError || "号码文件解析失败" }}</p>
-            <button type="button" class="text-action" @click="resetImport" :disabled="busy">重新上传</button>
+            <button type="button" class="text-action" :disabled="busy" @click="resetImport">重新上传</button>
           </div>
           <div v-if="importState === 'ready' && imported" class="import-box" data-testid="import-ready">
             <div class="import-ready">
@@ -733,11 +780,11 @@ onBeforeUnmount(() => {
                   v-if="imported.invalid_download_url"
                   data-testid="download-invalid"
                   type="button"
-                  @click="downloadInvalidFile"
                   :disabled="busy"
+                  @click="downloadInvalidFile"
                   >下载剔除清单</button
                 >
-                <button type="button" @click="resetImport" :disabled="busy">重新上传</button>
+                <button type="button" :disabled="busy" @click="resetImport">重新上传</button>
               </div>
             </div>
             <p class="import-meta">
@@ -770,6 +817,7 @@ onBeforeUnmount(() => {
           type="textarea"
           :rows="4"
           maxlength="500"
+          aria-label="短信内容，最终内容含签名与退订语不超过 500 字"
           :disabled="busy"
         />
         <div v-else class="template-fields">
@@ -778,8 +826,8 @@ onBeforeUnmount(() => {
             data-testid="template-select"
             filterable
             placeholder="选择已审核模板"
-            @change="selectTemplate"
             :disabled="busy"
+            @change="selectTemplate"
           >
             <el-option v-for="item in approvedTemplates" :key="item.id" :label="item.name" :value="String(item.id)" />
           </el-select>
@@ -830,6 +878,7 @@ onBeforeUnmount(() => {
             v-model="form.remark"
             maxlength="200"
             placeholder="发送备注（可选，写入批次与审计）"
+            aria-label="发送备注（可选，写入批次与审计）"
             :disabled="busy"
           />
         </div>
@@ -848,6 +897,7 @@ onBeforeUnmount(() => {
             popper-class="qingluan-date-popper"
             value-format="YYYY-MM-DDTHH:mm:ss+08:00"
             placeholder="选择发送时间（必填）"
+            aria-label="定时发送时间"
             :disabled="busy || form.isTest || !form.scheduleEnabled"
           />
           <label class="opt">
@@ -857,6 +907,9 @@ onBeforeUnmount(() => {
             >
           </label>
         </div>
+        <p v-if="scheduleInPast" class="test-limit-hint" data-testid="schedule-past-hint">
+          定时时间早于当前时刻；请选择未来的发送时间，或取消定时立即发送。
+        </p>
         <p v-if="testLimitExceeded" class="test-limit-hint" data-testid="test-limit-hint">
           测试发送最多 {{ testSendMax }} 个号码，当前
           {{ recipientCount.toLocaleString() }} 个；请删减号码，或取消测试发送按正式批次提交。
@@ -975,7 +1028,7 @@ onBeforeUnmount(() => {
         <header><i></i>已受理 · {{ sendStatusLabel(sendResult.status) }}</header>
         <div class="batch-row">
           <code>{{ sendResult.batch_no }}</code>
-          <button type="button" @click="copyBatchNo" :disabled="busy">{{ copied ? "已复制" : "复制批次号" }}</button>
+          <button type="button" :disabled="busy" @click="copyBatchNo">{{ copied ? "已复制" : "复制批次号" }}</button>
         </div>
         <p class="result-line" data-testid="submitted-summary">{{ submittedSummary }}</p>
         <p class="result-line">{{ sendSuccessText(sendResult) }}。</p>
@@ -996,7 +1049,13 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+      <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false">
+        <template v-if="errorAdmission" #default
+          ><el-button link type="primary" data-testid="send-admission-ops-link" @click="goOpsQueue"
+            >前往运维中心查看队列</el-button
+          ></template
+        >
+      </el-alert>
 
       <div v-if="!sendResult" class="submit-wrap">
         <el-button

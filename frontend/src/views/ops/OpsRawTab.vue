@@ -30,6 +30,8 @@ import { formatDateTime } from "../../lib/time"
 
 import EmptyState from "../../components/EmptyState.vue"
 
+import LoadErrorAlert from "../../components/LoadErrorAlert.vue"
+
 const props = defineProps<{ active: boolean }>()
 
 const rawSource = ref<"" | RawLogItem["source"]>("")
@@ -129,10 +131,15 @@ function canReevaluate(item: RawLogItem): boolean {
   return !item.processed && (item.capture_state === "complete" || item.capture_state === "complete_too_large")
 }
 
-function replayStatus(item: RawLogItem): string {
-  if (item.processed) return "已处理"
-  if (canReplay(item)) return "可重放"
-  return "不可重放"
+/** 未处理且具备自动重放资格的报文由系统接续处理，不按危险态呈现，避免误导人工介入。 */
+function replayStatus(item: RawLogItem): { label: string; tag: "success" | "warning" | "danger" } {
+  if (item.processed) return { label: "已处理", tag: "success" }
+  if (canReplay(item)) {
+    return item.replay_eligibility === "automatic"
+      ? { label: "待自动重放", tag: "warning" }
+      : { label: "可重放", tag: "warning" }
+  }
+  return { label: "不可重放", tag: "danger" }
 }
 
 async function replay(item: RawLogItem): Promise<void> {
@@ -190,9 +197,7 @@ watch(
 </script>
 <template>
   <div>
-    <el-alert v-if="errorMessage" class="ops-alert" :title="errorMessage" type="error" :closable="false"
-      ><template #default><el-button link type="primary" @click="load()">重新加载</el-button></template></el-alert
-    >
+    <LoadErrorAlert class="ops-alert" :message="errorMessage" @retry="load()" />
     <section id="ops-panel-raw" v-loading="loading" class="ops-panel" role="tabpanel" aria-labelledby="ops-tab-raw">
       <header class="ops-panel-title"
         ><div><strong>原始报文保险箱</strong><small>密文载荷与完整性摘要不对外返回</small></div></header
@@ -231,7 +236,7 @@ watch(
             ><template #default="{ row }">{{ row.item_count }} / {{ row.custom_id_count }}</template></el-table-column
           ><el-table-column label="状态" width="110"
             ><template #default="{ row }"
-              ><el-tag :type="row.processed ? 'success' : 'danger'">{{ replayStatus(row) }}</el-tag></template
+              ><el-tag :type="replayStatus(row).tag">{{ replayStatus(row).label }}</el-tag></template
             ></el-table-column
           ><el-table-column label="完整性" width="120"
             ><template #default="{ row }"
@@ -254,7 +259,7 @@ watch(
           ><article v-for="item in rawLogs" :key="item.id"
             ><header
               ><strong>RAW-{{ item.id }} · {{ item.source }}</strong
-              ><el-tag :type="item.processed ? 'success' : 'danger'">{{ replayStatus(item) }}</el-tag></header
+              ><el-tag :type="replayStatus(item).tag">{{ replayStatus(item).label }}</el-tag></header
             ><p
               >{{ item.item_count }} 项 · {{ item.custom_id_count }} customId ·
               {{ captureMeta(item.capture_state).label }}</p

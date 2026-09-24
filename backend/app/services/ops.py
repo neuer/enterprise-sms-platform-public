@@ -220,6 +220,10 @@ class QueueSnapshot:
     threshold: int
     realtime_claim: str | bytes | None = None
     bulk_claim: str | bytes | None = None
+    # 真实联调独立暂停键（agent-stale critical / daily 预算）只读投影：
+    # 发送链路早已消费这些键，运维与告警此前不可见，形成静默停摆盲区。
+    vendor_test_realtime_code: str | None = None
+    vendor_test_bulk_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -2721,6 +2721,7 @@ paths:
         - { name: actor_account_id, in: query, required: false, schema: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] }, description: 按不可变账号 ID 串联登录名变更前后的审计事件 }
         - { name: correlation_id, in: query, required: false, schema: { anyOf: [{ type: string, format: uuid }, { type: 'null' }] }, description: 按 request ID 查询同一请求或异步链路的审计事件 }
         - { name: action, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 48 }, { type: 'null' }] } }
+        - { name: exclude_action, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 48 }, { type: 'null' }] }, description: 从结果中排除指定动作（如默认折叠 session_refresh 高频会话事件）；与 action 精确过滤互斥使用 }
         - { name: object_type, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] } }
         - { name: object_id, in: query, required: false, schema: { anyOf: [{ type: string, maxLength: 64 }, { type: 'null' }] }, description: 按对象 ID 串联同一业务对象的全部审计事件（如批次号、配置 key） }
         - { name: start, in: query, required: false, schema: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] } }
@@ -3708,6 +3709,12 @@ components:
         bulk_code: { anyOf: [{ type: string }, { type: 'null' }] }
         balance: { anyOf: [{ type: integer }, { type: 'null' }] }
         threshold: { type: integer }
+        vendor_test_realtime_code:
+          anyOf: [{ type: string }, { type: 'null' }]
+          description: 真实联调独立暂停码（agent-stale critical 或 daily 预算）；发送链路已消费，此前运维不可见
+        vendor_test_bulk_code:
+          anyOf: [{ type: string }, { type: 'null' }]
+          description: 同 realtime 通道口径的批量通道真实联调暂停码
 
     QueueResumeModel:
       type: object

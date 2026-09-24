@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { toRefs, watch } from "vue"
 
+import LoadErrorAlert from "../../components/LoadErrorAlert.vue"
+
 import type { useOpsQueue } from "../../composables/useOpsQueue"
 
 import type { UnwrapRef } from "vue"
 
 const props = defineProps<{ active: boolean; state: UnwrapRef<ReturnType<typeof useOpsQueue>> }>()
-const { queue, forceResume, loading, errorMessage, recover } = toRefs(props.state)
+const { queue, forceResume, loading, errorMessage, recover, queueBlocked } = toRefs(props.state)
 watch(
   () => props.active,
   (active) => {
@@ -16,7 +18,7 @@ watch(
 </script>
 <template>
   <div
-    ><el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+    ><LoadErrorAlert :message="errorMessage" @retry="state.load()" />
     <section
       id="ops-panel-queue"
       v-loading="loading"
@@ -30,15 +32,22 @@ watch(
       <template v-if="queue"
         ><div class="queue-status-grid"
           ><article
-            ><span>REALTIME</span
-            ><strong>{{ queue.realtime_code ? `暂停 · ${queue.realtime_code}` : "运行中" }}</strong></article
+            ><span>REALTIME</span><strong>{{ queue.realtime_code ? `暂停 · ${queue.realtime_code}` : "运行中" }}</strong
+            ><small v-if="queue.vendor_test_realtime_code" class="vendor-test-pause"
+              >联调暂停 · {{ queue.vendor_test_realtime_code }}</small
+            ></article
           ><article
-            ><span>BULK</span><strong>{{ queue.bulk_code ? `暂停 · ${queue.bulk_code}` : "运行中" }}</strong></article
+            ><span>BULK</span><strong>{{ queue.bulk_code ? `暂停 · ${queue.bulk_code}` : "运行中" }}</strong
+            ><small v-if="queue.vendor_test_bulk_code" class="vendor-test-pause"
+              >联调暂停 · {{ queue.vendor_test_bulk_code }}</small
+            ></article
           ><article
             ><span>余额</span
             ><strong>{{ queue.balance === null ? "无快照" : `余额 ${queue.balance.toLocaleString()}` }}</strong
             ><small>阈值 {{ queue.threshold.toLocaleString() }}</small></article
           ></div
+        ><p v-if="queue.vendor_test_realtime_code || queue.vendor_test_bulk_code" class="vendor-test-pause-note"
+          >真实联调安全暂停独立于双队列断路器，发送链路已关闭；请前往「系统参数 → 真实联调」页签完成处置与认证恢复。</p
         ><div class="break-glass"
           ><el-switch
             v-model="forceResume"
@@ -49,7 +58,7 @@ watch(
           /><p>{{
             forceResume ? "将绕过余额与暂停原因守卫，操作会写审计。" : "仅余额达到阈值且暂停码为 999 时允许恢复。"
           }}</p
-          ><el-button type="danger" @click="recover">恢复队列</el-button></div
+          ><el-button type="danger" :disabled="!queueBlocked" @click="recover">恢复队列</el-button></div
         ></template
       >
     </section>

@@ -18,6 +18,8 @@ import {
 } from "../api/reports"
 import ReportTrendChart from "../components/ReportTrendChart.vue"
 import EmptyState from "../components/EmptyState.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { useExportTask } from "../composables/useExportTask"
 import { CHART_DIM_VARS } from "../lib/chartTheme"
 import { formatPercent } from "../lib/format"
@@ -77,6 +79,19 @@ const scopeLabel = computed(() => {
 })
 
 const granularityLabel: Record<ReportGranularity, string> = { day: "日", week: "周", month: "月" }
+/** 报表读 stat_daily 聚合快照（aggregate_stats 每 5 分钟滚动重建，含当日）；
+    范围含今日时提示口径，避免与仪表盘实时计数矛盾时被误读为数据丢失。
+    「应用」维度只含 API 应用发送（Web 手工发送 app_id 为空，按部门归集），同样需要明示。 */
+const reportHints = computed(() => {
+  const hints: string[] = []
+  if (dateRange.value[1] >= shanghaiDateKey()) {
+    hints.push("报表为每 5 分钟聚合的统计快照，当日数据可能滞后数分钟；实时进度以仪表盘为准。")
+  }
+  if (groupBy.value === "app") {
+    hints.push("「应用」维度仅统计 API 应用发送，Web 手工发送按「部门」维度归集。")
+  }
+  return hints
+})
 const granularityOptions: Array<{ label: string; value: ReportGranularity }> = [
   { label: "日", value: "day" },
   { label: "周", value: "week" },
@@ -304,6 +319,9 @@ onMounted(() => void load())
     <el-checkbox v-if="canDecrypt" v-model="decrypted" class="report-decrypted">含明文手机号</el-checkbox>
   </form>
   <p v-if="filtersDirty" class="report-dirty-hint">筛选条件已变更，点击「查询」刷新结果。</p>
+  <p v-if="reportHints.length" class="report-freshness-hint" data-testid="report-freshness-hint">
+    {{ reportHints.join(" ") }}
+  </p>
 
   <div v-if="exportTask || exportError" class="export-strip" data-testid="export-strip">
     <template v-if="exportTask">
@@ -321,9 +339,7 @@ onMounted(() => void load())
     <el-alert v-if="exportError" :title="exportError" type="error" :closable="false" class="export-strip-error" />
   </div>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" class="report-error"
-    ><template #default><el-button link type="primary" @click="load()">重新查询</el-button></template></el-alert
-  >
+  <LoadErrorAlert class="report-error" :message="errorMessage" retry-text="重新查询" @retry="load()" />
 
   <template v-if="result">
     <section class="report-kpis" aria-label="区间关键指标">

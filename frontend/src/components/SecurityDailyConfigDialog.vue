@@ -109,7 +109,7 @@ onScopeDispose(clearConfigurationSecrets)
   <el-dialog
     v-model="configOpen"
     title="安全日报邮件配置"
-    width="560px"
+    width="min(560px, 92vw)"
     destroy-on-close
     @closed="clearConfigurationSecrets"
   >

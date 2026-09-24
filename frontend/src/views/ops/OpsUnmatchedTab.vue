@@ -19,6 +19,8 @@ import { formatDateTime } from "../../lib/time"
 
 import EmptyState from "../../components/EmptyState.vue"
 
+import LoadErrorAlert from "../../components/LoadErrorAlert.vue"
+
 import PhoneMask from "../../components/PhoneMask.vue"
 
 import { useExportTask } from "../../composables/useExportTask"
@@ -118,9 +120,7 @@ watch(
 </script>
 <template>
   <div>
-    <el-alert v-if="errorMessage" class="ops-alert" :title="errorMessage" type="error" :closable="false"
-      ><template #default><el-button link type="primary" @click="load()">重新加载</el-button></template></el-alert
-    >
+    <LoadErrorAlert class="ops-alert" :message="errorMessage" @retry="load()" />
     <section
       id="ops-panel-unmatched"
       v-loading="loading"
@@ -159,10 +159,10 @@ watch(
           />
         </label>
         <div class="ops-filter-go">
-          <el-button data-testid="ops-unmatched-search" @click="searchUnmatched">查询</el-button>
+          <el-button type="primary" data-testid="ops-unmatched-search" @click="searchUnmatched">查询</el-button>
           <el-button @click="resetUnmatched">重置</el-button>
           <el-checkbox v-model="exportDecrypted">授权明文</el-checkbox>
-          <el-button type="primary" :loading="exportBusy" @click="exportUnmatched">导出对账</el-button>
+          <el-button :loading="exportBusy" @click="exportUnmatched">导出对账</el-button>
         </div>
         <p class="ops-privacy"
           >手机号明文仅随请求体提交，服务端立即转换为 HMAC

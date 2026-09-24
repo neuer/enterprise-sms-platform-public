@@ -23,9 +23,11 @@ import { useLatestRead } from "../../composables/useLatestRead"
 
 import { DEFAULT_PAGE_SIZE } from "../../lib/labels"
 
-import { formatDateTime } from "../../lib/time"
+import { formatDateTime, formatDuration } from "../../lib/time"
 
 import EmptyState from "../../components/EmptyState.vue"
+
+import LoadErrorAlert from "../../components/LoadErrorAlert.vue"
 
 import { usePolling } from "../../composables/usePolling"
 
@@ -86,12 +88,6 @@ const currentWarnCount = computed(() => currentAlerts.value?.items.filter((item)
 const currentUnknownText = computed(
   () => currentAlerts.value?.unknown_sources.map((source) => CURRENT_SOURCE_LABELS[source] ?? source).join("、") ?? "",
 )
-
-function duration(seconds: number): string {
-  if (seconds >= 86400) return `${(seconds / 86400).toFixed(1)} 天`
-  if (seconds >= 3600) return `${(seconds / 3600).toFixed(1)} 小时`
-  return `${Math.max(0, Math.round(seconds / 60))} 分钟`
-}
 
 const alertList = usePagedList({
   fetcher: (page, signal) =>
@@ -171,7 +167,7 @@ function levelTag(level: AlertItem["level"]): "danger" | "warning" | "info" {
 function currentDuration(item: CurrentAlertItem): string {
   if (!item.since || !currentAlerts.value) return "起始时间未知"
   const seconds = Math.max(0, (Date.parse(currentAlerts.value.refreshed_at) - Date.parse(item.since)) / 1000)
-  return `持续 ${duration(seconds)}`
+  return `持续 ${formatDuration(seconds)}`
 }
 
 function currentImpact(item: CurrentAlertItem): string {
@@ -215,9 +211,7 @@ onMounted(() => currentAlertPolling.start())
 </script>
 <template>
   <div>
-    <el-alert v-if="errorMessage" class="ops-alert" :title="errorMessage" type="error" :closable="false"
-      ><template #default><el-button link type="primary" @click="load()">重新加载</el-button></template></el-alert
-    >
+    <LoadErrorAlert class="ops-alert" :message="errorMessage" @retry="load()" />
     <section
       id="ops-panel-alerts"
       v-loading="loading"

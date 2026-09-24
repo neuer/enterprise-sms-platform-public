@@ -4,7 +4,7 @@ import { JOB_DESCRIPTIONS, jobDescription } from "../src/lib/jobDescriptions"
 
 describe("后台任务中文用途说明", () => {
   it("覆盖所有已注册任务说明", () => {
-    expect(Object.keys(JOB_DESCRIPTIONS)).toHaveLength(16)
+    expect(Object.keys(JOB_DESCRIPTIONS)).toHaveLength(18)
     for (const description of Object.values(JOB_DESCRIPTIONS)) {
       expect(description.trim()).not.toBe("")
     }
@@ -17,6 +17,7 @@ describe("后台任务中文用途说明", () => {
       dispatch_imports: "投递加密导入文件的分块解析、批量写入和崩溃恢复任务",
       dispatch_scheduled: "扫描到点的定时批次并投递到发送队列",
       expire_approvals: "将超过有效期的审批申请置为过期",
+      expire_report_timeouts: "将超过本地等待时限仍无厂商回执的消息置为超时终态",
       housekeeping: "执行业务数据生命周期清理和导入文件清理",
       poll_balance: "定时轮询厂商余额并更新平台余额快照",
       poll_reply: "轮询厂商上行回复，保存原始报文后解析入库",
@@ -25,6 +26,7 @@ describe("后台任务中文用途说明", () => {
       sync_signs: "同步待处理签名的厂商状态",
       sync_templates: "同步待处理模板的厂商状态",
       reconcile_usage_projection: "恢复超时预留；确认漂移后按事实账本覆盖 Redis 投影并复核",
+      security_daily_generate: "生成每日安全日报并按页面配置投递给收件人",
     })
   })
 

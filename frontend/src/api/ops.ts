@@ -87,6 +87,9 @@ export interface QueueStatus {
   bulk_code: string | null
   balance: number | null
   threshold: number
+  /** 真实联调独立暂停码（agent-stale critical / daily 预算）；旧服务端不返回时缺省为 null。 */
+  vendor_test_realtime_code?: string | null
+  vendor_test_bulk_code?: string | null
 }
 export interface QueueResumeResult {
   resumed_batches: number

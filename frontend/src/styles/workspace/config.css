@@ -381,6 +381,12 @@
   border-color: color-mix(in srgb, var(--red), transparent 55%);
   color: var(--red);
 }
+
+/* 敏感项待清除徽标：保存即置空，用红色强调这是破坏性待决动作。 */
+.secret-control .pending-clear-badge {
+  color: var(--red);
+  font-weight: 600;
+}
 .secret-control {
   display: flex;
   align-items: center;

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { rangeToIsoParams } from "../lib/time"
+import { vRowActivate } from "../lib/directives"
 import { usePagedList } from "../composables/usePagedList"
 import ListPagination from "../components/ListPagination.vue"
 import FilterSeg from "../components/FilterSeg.vue"
@@ -11,6 +12,8 @@ import PhoneMask from "../components/PhoneMask.vue"
 import PhoneReveal from "../components/PhoneReveal.vue"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import StatusTag from "../components/StatusTag.vue"
 import { listApps, type ManagedApp } from "../api/apps"
 import {
@@ -31,7 +34,7 @@ import {
   MESSAGE_STATUS_OPTIONS,
 } from "../lib/labels"
 import { useConfirmActions } from "../lib/confirm"
-const { confirmAction } = useConfirmActions()
+const { confirmAuditedAction } = useConfirmActions()
 import { formatPercent } from "../lib/format"
 import { formatDateTime, formatDateTimeMinute, toApiDateTime } from "../lib/time"
 import { errorText } from "../lib/error"
@@ -269,17 +272,19 @@ async function cancelSelected(): Promise<void> {
   const target = selected.value
   const batch = target.batch_no
   if (
-    !(await confirmAction({
+    !(await confirmAuditedAction({
       isCurrent: () => selected.value === target && canScheduleOps.value,
       title: "确认取消",
       body: `取消批次 ${batch}？配额将按规则回补。`,
+      auditNote: "取消行为与操作人将写入审计日志。",
+      confirmText: "确认取消",
     }))
   )
     return
   try {
     await cancelBatch(batch)
     drawer.value = false
-    ElMessage.success("批次已取消")
+    ElMessage.success("批次已取消 · 本次操作已记入审计")
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "取消失败"))
@@ -310,16 +315,18 @@ async function resendFailed(): Promise<void> {
   const target = selected.value
   const batch = target.batch_no
   if (
-    !(await confirmAction({
+    !(await confirmAuditedAction({
       isCurrent: () => selected.value === target && canResendFailed.value,
       title: "确认重发",
       body: "失败号码将生成新批次并完整重走频控、审批和时间窗。",
+      auditNote: "重发行为与操作人将写入审计日志。",
+      confirmText: "确认重发",
     }))
   )
     return
   try {
     const result = await resendFailedBatch(batch)
-    ElMessage.success(`重发批次 ${result.batch_no} 已创建`)
+    ElMessage.success(`重发批次 ${result.batch_no} 已创建 · 本次操作已记入审计`)
     drawer.value = false
     await load()
   } catch (error) {
@@ -495,7 +502,7 @@ watch(moreOpen, (open) => {
     >
   </FilterSeg>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="batch-error" />
+  <LoadErrorAlert :message="errorMessage" class="batch-error" @retry="load()" />
   <div class="batch-ledger">
     <el-table v-loading="loading" :data="items" row-key="batch_no" class="query-table" @row-click="openBatch">
       <el-table-column label="批次 / 时间" min-width="248">
@@ -576,11 +583,11 @@ watch(moreOpen, (open) => {
       <el-table-column label="操作" width="92" fixed="right">
         <template #default="{ row }"
           ><el-button
+            v-row-activate="() => openBatch(row)"
             link
             type="primary"
             :aria-label="`查看批次 ${row.batch_no} 的详情`"
             @click.stop="openBatch(row)"
-            @keydown.enter.stop.prevent="openBatch(row)"
             >查看详情</el-button
           ></template
         >

@@ -131,7 +131,7 @@ class FakeOpsService:
 
 class FakeJobs:
     def __init__(self) -> None:
-        self.triggered: list[tuple[str, str, str]] = []
+        self.triggered: list[tuple[str, str, str, int]] = []
 
     async def list(self) -> tuple[JobRecord, ...]:
         return (JobRecord("poll_report", NOW, "success", 120, 1, 1.0, False),)
@@ -148,11 +148,12 @@ class FakeJobs:
 
 
 class FakeQueue:
-    def __init__(self) -> None:
-        self.calls: list[tuple[bool, str, str]] = []
+    def __init__(self, snapshot: QueueSnapshot | None = None) -> None:
+        self.snapshot = snapshot or QueueSnapshot("999", "999", 20000, 10000)
+        self.calls: list[tuple[bool, str, str, int, int]] = []
 
     async def status(self) -> QueueSnapshot:
-        return QueueSnapshot("999", "999", 20000, 10000)
+        return self.snapshot
 
     async def resume(
         self,
@@ -168,8 +169,8 @@ class FakeQueue:
 
 class FakeReplay:
     def __init__(self) -> None:
-        self.calls: list[tuple[int, str, str]] = []
-        self.reevaluations: list[tuple[int, str, str]] = []
+        self.calls: list[tuple[int, str, str, int, int]] = []
+        self.reevaluations: list[tuple[int, str, str, int, int]] = []
 
     async def replay(
         self,
@@ -278,13 +279,15 @@ class FakeOutbox:
         return self.retry_result
 
 
-def client(role: Role = "admin") -> tuple[TestClient, dict[str, Any]]:
+def client(
+    role: Role = "admin", queue_snapshot: QueueSnapshot | None = None
+) -> tuple[TestClient, dict[str, Any]]:
     app = create_app()
     values = {
         "repo": FakeRepository(),
         "ops": FakeOpsService(),
         "jobs": FakeJobs(),
-        "queue": FakeQueue(),
+        "queue": FakeQueue(queue_snapshot),
         "replay": FakeReplay(),
         "export": FakeExport(),
         "outbox": FakeOutbox(),
@@ -338,7 +341,28 @@ def test_ops_lists_return_safe_complete_models() -> None:
         "bulk_code": "999",
         "balance": 20000,
         "threshold": 10000,
+        "vendor_test_realtime_code": None,
+        "vendor_test_bulk_code": None,
     }
+
+
+def test_queue_status_exposes_vendor_test_pause_codes() -> None:
+    """真实联调独立暂停键必须随队列状态透出，不得只在发送链路可见。"""
+    snapshot = QueueSnapshot(
+        None,
+        None,
+        20000,
+        10000,
+        vendor_test_realtime_code="vendor-test-agent-stale",
+        vendor_test_bulk_code="daily_limit",
+    )
+    browser, _ = client(queue_snapshot=snapshot)
+    headers = {"Authorization": "Bearer admin.jwt"}
+
+    queue = browser.get("/api/v1/web/admin/queue/status", headers=headers).json()
+    assert queue["realtime_code"] is None
+    assert queue["vendor_test_realtime_code"] == "vendor-test-agent-stale"
+    assert queue["vendor_test_bulk_code"] == "daily_limit"
 
 
 def test_ops_writes_are_audited_and_return_contract_statuses() -> None:

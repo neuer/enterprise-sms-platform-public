@@ -214,6 +214,13 @@
   width: 100%;
 }
 
+/* el-upload 根节点是 div[role=button][tabindex]，base.css 的 a/button 焦点环覆盖不到，
+   键盘聚焦时须给出可见焦点。 */
+.upload-zone .el-upload:focus-visible {
+  outline: 2px solid var(--verdi);
+  outline-offset: 2px;
+}
+
 .upload-zone .el-upload-dragger {
   display: grid;
   gap: 3px;

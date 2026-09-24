@@ -5,6 +5,12 @@ export default defineConfig({
   base: "/",
   plugins: [vue()],
   build: {
+    // 字体禁止内联为 data: URL：CSP font-src 'self' 不含 data: 来源，
+    // Noto Sans SC Variable 小切片一旦被内联会被浏览器整页拦截。
+    assetsInlineLimit(filePath: string): boolean | undefined {
+      if (/\.(?:woff2?|ttf|otf|eot)(?:[?#].*)?$/i.test(filePath)) return false
+      return undefined
+    },
     rollupOptions: {
       output: {
         // vue 家族独立 vendor chunk（缓存稳定）；element-plus 不手工归并——

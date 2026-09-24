@@ -59,7 +59,7 @@ watch(
   <el-dialog
     :model-value="modelValue"
     title="登记真实联调收件人"
-    width="480px"
+    width="min(480px, 92vw)"
     destroy-on-close
     append-to-body
     class="vendor-recipient-dialog"

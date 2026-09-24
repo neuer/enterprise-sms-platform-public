@@ -26,6 +26,8 @@ import { useLatestRead } from "../composables/useLatestRead"
 import { listSigns } from "../api/signs"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { copyText } from "../lib/clipboard"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction, captureCurrent } = useConfirmActions()
@@ -69,6 +71,7 @@ const rotatingCallbackId = ref<number | null>(null)
 /** 今日用量联查结果（dim_value = app.id 字符串）；完整联查成功前单元格显示「—」。 */
 const dailyUsage = ref<Map<string, ReportRow>>(new Map())
 const usageRead = useLatestRead()
+const listRead = useLatestRead()
 const usageUnavailable = ref(true)
 /** 已通过厂商审核的签名清单；加载失败不阻塞表单，下拉显示不可用并可重试。 */
 
@@ -237,14 +240,16 @@ function openDemo(item: ManagedApp): void {
 }
 
 async function load(): Promise<void> {
+  const signal = listRead.start()
   loading.value = true
   errorMessage.value = ""
   try {
-    items.value = await listApps()
+    const result = await listApps(signal)
+    if (!signal.aborted) items.value = result
   } catch (error) {
-    errorMessage.value = errorText(error, "应用列表加载失败")
+    if (!signal.aborted) errorMessage.value = errorText(error, "应用列表加载失败")
   } finally {
-    loading.value = false
+    if (!signal.aborted) loading.value = false
   }
 }
 
@@ -667,9 +672,7 @@ onMounted(() => {
     <span class="apps-filter-note">接口全量返回 · 前端过滤</span>
   </div>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="apps-alert">
-    <template #default><el-button link type="primary" @click="load">重新加载</el-button></template>
-  </el-alert>
+  <LoadErrorAlert class="apps-alert" :message="errorMessage" @retry="load" />
 
   <section class="apps-results">
     <el-table

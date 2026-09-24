@@ -3,6 +3,8 @@ import { triggerRule, formatSegments } from "../lib/approvalText"
 
 import { computed, ref } from "vue"
 
+import { ClickOutside as vClickOutside } from "element-plus"
+
 import type { ApprovalAction, ApprovalListItem, ApprovalStatus } from "../api/approvals"
 
 import CategoryTag from "./CategoryTag.vue"
@@ -129,6 +131,13 @@ function closeQuick(): void {
   quickReason.value = ""
 }
 
+/** 受控 Popover 的兜底关闭：点击行操作区以外（含其它行、页面空白）收起；
+   操作区内部点击仍走引用按钮的 toggle 语义，避免 mousedown 先行关闭又被 click 重开。 */
+function onQuickClickOutside(event: MouseEvent): void {
+  if ((event.target as HTMLElement | null)?.closest(".approval-row-actions")) return
+  closeQuick()
+}
+
 const quickConfirmDisabled = computed(() => {
   if (props.decidingId !== null || quickTarget.value === null) return true
   const reason = quickReason.value.trim()
@@ -210,7 +219,7 @@ function confirmQuick(item: ApprovalListItem): void {
                   >通过</el-button
                 >
               </template>
-              <div class="approval-quick">
+              <div v-click-outside="onQuickClickOutside" class="approval-quick">
                 <p class="approval-quick-title">快捷通过 · {{ item.batch_no }}</p>
                 <el-input
                   v-model="quickReason"
@@ -220,6 +229,7 @@ function confirmQuick(item: ApprovalListItem): void {
                   show-word-limit
                   placeholder="审批意见（选填，≤256 字）"
                   data-testid="approval-quick-reason-approve"
+                  @keydown.esc="closeQuick"
                 />
                 <p class="approval-quick-tip">决策写审计 · 冲突时自动刷新列表</p>
                 <div class="approval-quick-actions">
@@ -253,7 +263,7 @@ function confirmQuick(item: ApprovalListItem): void {
                   >驳回</el-button
                 >
               </template>
-              <div class="approval-quick">
+              <div v-click-outside="onQuickClickOutside" class="approval-quick">
                 <p class="approval-quick-title">快捷驳回 · {{ item.batch_no }}</p>
                 <el-input
                   v-model="quickReason"
@@ -263,6 +273,7 @@ function confirmQuick(item: ApprovalListItem): void {
                   show-word-limit
                   placeholder="驳回原因（必填，≤256 字）"
                   data-testid="approval-quick-reason-reject"
+                  @keydown.esc="closeQuick"
                 />
                 <p class="approval-quick-tip">驳回原因必填 · 配额由服务端幂等回补</p>
                 <div class="approval-quick-actions">
@@ -284,7 +295,8 @@ function confirmQuick(item: ApprovalListItem): void {
     </template>
 
     <template v-else>
-      <table class="approval-table">
+      <!-- 空分类不渲染空表头骨架，只留空态；加载中保留表头以承载 v-loading 遮罩高度 -->
+      <table v-if="items.length || loading" class="approval-table">
         <thead>
           <tr>
             <th>批次号 / 申请时间</th>

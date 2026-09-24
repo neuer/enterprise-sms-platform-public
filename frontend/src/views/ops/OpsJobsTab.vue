@@ -18,6 +18,8 @@ import { formatDateTime } from "../../lib/time"
 
 import EmptyState from "../../components/EmptyState.vue"
 
+import LoadErrorAlert from "../../components/LoadErrorAlert.vue"
+
 const props = defineProps<{ active: boolean }>()
 
 const jobs = ref<JobItem[]>([])
@@ -34,6 +36,8 @@ const snapshotLoading = ref(false)
 const snapshotError = ref("")
 const loading = snapshotLoading
 const errorMessage = snapshotError
+// 触发在途守卫：确认框结束后到请求返回前拦截重复点击，避免同一任务被重复投递。
+const triggeringJobName = ref<string | null>(null)
 async function load(_tab?: string): Promise<void> {
   if (!props.active) return
   const signal = snapshotRead.start()
@@ -51,6 +55,7 @@ async function load(_tab?: string): Promise<void> {
 
 async function trigger(item: JobItem): Promise<void> {
   item = { ...item }
+  if (triggeringJobName.value) return
   if (
     !(await confirmAuditedAction({
       title: "确认任务触发",
@@ -60,11 +65,16 @@ async function trigger(item: JobItem): Promise<void> {
     }))
   )
     return
+  triggeringJobName.value = item.job_name
   try {
     await triggerJob(item.job_name)
     ElMessage.success("任务已投递 · 本次操作已记入审计")
+    // 触发后重查心跳：让操作者立刻看到 last_status/耗时变化，而不是停留在旧快照。
+    await load("jobs")
   } catch (error) {
     ElMessage.error(errorText(error, "任务触发失败"))
+  } finally {
+    triggeringJobName.value = null
   }
 }
 watch(
@@ -81,9 +91,7 @@ watch(
 </script>
 <template>
   <div>
-    <el-alert v-if="errorMessage" class="ops-alert" :title="errorMessage" type="error" :closable="false"
-      ><template #default><el-button link type="primary" @click="load()">重新加载</el-button></template></el-alert
-    >
+    <LoadErrorAlert class="ops-alert" :message="errorMessage" @retry="load()" />
     <section id="ops-panel-jobs" v-loading="loading" class="ops-panel" role="tabpanel" aria-labelledby="ops-tab-jobs">
       <header class="ops-panel-title"
         ><div
@@ -116,7 +124,14 @@ watch(
             ><template #default="{ row }">{{ formatDateTime(row.last_run_at) }}</template></el-table-column
           ><el-table-column label="操作" width="110"
             ><template #default="{ row }"
-              ><el-button link type="primary" @click="trigger(row)">手动触发</el-button></template
+              ><el-button
+                link
+                type="primary"
+                :loading="triggeringJobName === row.job_name"
+                :disabled="Boolean(triggeringJobName) && triggeringJobName !== row.job_name"
+                @click="trigger(row)"
+                >手动触发</el-button
+              ></template
             ></el-table-column
           ><template #empty><EmptyState :title="JOBS_EMPTY.title" :description="JOBS_EMPTY.description" /></template
         ></el-table>
@@ -131,7 +146,14 @@ watch(
             ><p
               >{{ item.last_items }} 项 · {{ item.last_duration_ms ?? 0 }}ms ·
               {{ item.last_run_at ? (item.success_rate_24h * 100).toFixed(1) + "%" : "—" }}</p
-            ><el-button link type="primary" @click="trigger(item)">手动触发</el-button></article
+            ><el-button
+              link
+              type="primary"
+              :loading="triggeringJobName === item.job_name"
+              :disabled="Boolean(triggeringJobName) && triggeringJobName !== item.job_name"
+              @click="trigger(item)"
+              >手动触发</el-button
+            ></article
           ><EmptyState v-if="!jobs.length" :title="JOBS_EMPTY.title" :description="JOBS_EMPTY.description"
         /></div>
       </section>

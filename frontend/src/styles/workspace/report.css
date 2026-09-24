@@ -84,6 +84,13 @@
   font-size: 11px;
 }
 
+/* 当日口径提示：常驻中性细字，不用琥珀（非告警语义） */
+.report-freshness-hint {
+  margin: -8px 4px 12px;
+  color: var(--tx-3);
+  font-size: 11px;
+}
+
 /* 导出状态条：内联跟随筛选条，仅有任务时出现 */
 .export-strip {
   display: flex;

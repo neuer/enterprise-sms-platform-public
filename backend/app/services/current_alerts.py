@@ -100,6 +100,9 @@ class ControlCurrentFacts:
     realtime_pause_code: str | None
     bulk_pause_code: str | None
     vendor_consecutive_failures: int
+    # 真实联调独立暂停键（agent-stale / daily）只读投影；缺省 None 兼容既有构造点。
+    vendor_test_realtime_code: str | None = None
+    vendor_test_bulk_code: str | None = None
 
 
 class CurrentAlertRepository(Protocol):
@@ -386,6 +389,22 @@ class CurrentAlertService:
                     {
                         "realtime_code": facts.realtime_pause_code,
                         "bulk_code": facts.bulk_pause_code,
+                    },
+                    None,
+                    now,
+                    "queue",
+                )
+            )
+        if facts.vendor_test_realtime_code or facts.vendor_test_bulk_code:
+            items.append(
+                CurrentAlert(
+                    "vendor_test_paused",
+                    "vendor_test_paused",
+                    "crit",
+                    "真实联调安全暂停生效中，发送链路已关闭",
+                    {
+                        "realtime_code": facts.vendor_test_realtime_code,
+                        "bulk_code": facts.vendor_test_bulk_code,
                     },
                     None,
                     now,

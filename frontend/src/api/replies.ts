@@ -23,7 +23,7 @@ export interface ReplyFilters {
   page: number
 }
 
-export function listReplies(filters: ReplyFilters): Promise<ReplyPage> {
+export function listReplies(filters: ReplyFilters, signal?: AbortSignal): Promise<ReplyPage> {
   const body: {
     page: number
     phone?: string
@@ -38,6 +38,7 @@ export function listReplies(filters: ReplyFilters): Promise<ReplyPage> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   })
 }
 

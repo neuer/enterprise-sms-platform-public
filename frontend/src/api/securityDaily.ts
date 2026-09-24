@@ -171,7 +171,10 @@ export function generateSecurityDailyReport(): Promise<SecurityDailyReport> {
   })
 }
 
-export function listSecurityDailyReports(filters: SecurityDailyFilters = {}): Promise<SecurityDailyPage> {
+export function listSecurityDailyReports(
+  filters: SecurityDailyFilters = {},
+  signal?: AbortSignal,
+): Promise<SecurityDailyPage> {
   const query = new URLSearchParams({
     page: String(filters.page ?? 1),
     page_size: String(filters.pageSize ?? DEFAULT_PAGE_SIZE),
@@ -181,7 +184,7 @@ export function listSecurityDailyReports(filters: SecurityDailyFilters = {}): Pr
   if (filters.status) query.set("status", filters.status)
   if (filters.generationStatus) query.set("generation_status", filters.generationStatus)
   if (filters.deliveryStatus) query.set("delivery_status", filters.deliveryStatus)
-  return apiRequest<SecurityDailyPage>(`${basePath}/reports?${query.toString()}`, { method: "GET" })
+  return apiRequest<SecurityDailyPage>(`${basePath}/reports?${query.toString()}`, { method: "GET", signal })
 }
 
 export function getSecurityDailyReport(reportId: number): Promise<SecurityDailyReport> {

@@ -18,6 +18,8 @@ import {
 import { ApiRequestError } from "../api/client"
 import type { Category } from "../api/webMessages"
 import ApprovalList from "../components/ApprovalList.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
 import { usePagedList } from "../composables/usePagedList"
@@ -26,6 +28,7 @@ import { statusOptionsOf, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime, formatDurationHms, formatHms } from "../lib/time"
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
+import { useConfirmActions } from "../lib/confirm"
 import { useApprovalBadgeStore } from "../stores/approvalBadge"
 import { useSessionStore } from "../stores/session"
 
@@ -36,6 +39,7 @@ const TICK_INTERVAL_MS = 1_000
 
 const session = useSessionStore()
 const approvalBadge = useApprovalBadgeStore()
+const { confirmAuditedAction } = useConfirmActions()
 
 const status = ref<ApprovalStatus>("pending")
 const category = ref<Category | "">("")
@@ -285,12 +289,31 @@ function onQuick(item: ApprovalListItem, action: ApprovalAction, reason?: string
   void submitDecision(item.id, action, reason)
 }
 
-function submitDrawerDecision(action: ApprovalAction): void {
-  if (!selected.value) return
+/**
+ * 抽屉决策与行内 Popover 同强度：先两段式确认（后果 + 审计细字）再提交。
+ * 驳回已要求必填意见，确认框是第二道 friction，不是替代。
+ */
+async function submitDrawerDecision(action: ApprovalAction): Promise<void> {
+  const target = selected.value
+  if (!target) return
   const reason = decisionReasonTrimmed.value
   if (action === "reject" && !reason) return
   if (reason.length > REASON_MAX_LENGTH) return
-  void submitDecision(selected.value.id, action, reason || undefined)
+  if (
+    !(await confirmAuditedAction({
+      isCurrent: () => selected.value === target && canDecideSelected.value,
+      title: action === "approve" ? "确认通过" : "确认驳回",
+      body:
+        action === "approve"
+          ? `通过批次 ${target.batch_no}？${previewDecision(target)}。`
+          : `驳回批次 ${target.batch_no}？配额将由服务端幂等回补。`,
+      auditNote: "审批决策与操作人将写入审计日志。",
+      confirmText: action === "approve" ? "确认通过" : "确认驳回",
+      danger: action === "reject",
+    }))
+  )
+    return
+  await submitDecision(target.id, action, reason || undefined)
 }
 
 /**
@@ -412,7 +435,7 @@ onMounted(() => {
     </div>
   </div>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" class="approval-error" />
+  <LoadErrorAlert :message="errorMessage" class="approval-error" @retry="load()" />
 
   <ApprovalList
     v-loading="loading"

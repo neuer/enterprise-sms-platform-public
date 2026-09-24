@@ -4,7 +4,7 @@ import { usePagedList } from "./usePagedList"
 
 /** 模板与签名台账共用加载、状态计数及关键词筛选；编辑与授权仍由各页面负责。 */
 export function useVendorResourceList<T extends { vendor_state: string }>(options: {
-  fetcher: () => Promise<T[]>
+  fetcher: (signal: AbortSignal) => Promise<T[]>
   states: readonly T["vendor_state"][]
   searchText: (item: T) => string
   errorMessage: string
@@ -12,8 +12,8 @@ export function useVendorResourceList<T extends { vendor_state: string }>(option
   const stateFilter = ref("all") as Ref<T["vendor_state"] | "all">
   const keyword = ref("")
   const { items, loading, errorMessage, load } = usePagedList({
-    fetcher: async () => {
-      const items = await options.fetcher()
+    fetcher: async (_page, signal) => {
+      const items = await options.fetcher(signal)
       return { items, total: items.length }
     },
     errorMessage: options.errorMessage,

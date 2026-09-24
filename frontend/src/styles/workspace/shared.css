@@ -240,6 +240,17 @@
   margin-left: auto;
 }
 
+/* 审计「显示会话刷新」开关：与检索条按钮同排，视觉权重低于主按钮 */
+.audit-session-toggle {
+  margin-left: 4px;
+  white-space: nowrap;
+}
+
+.audit-session-toggle .el-checkbox__label {
+  color: var(--tx-2);
+  font-size: 11px;
+}
+
 .reply-privacy,
 .blacklist-privacy,
 .sensitive-filter-note,
@@ -837,8 +848,10 @@ main {
 }
 
 /* Element Plus 表格空态槽自带 line-height:60px 与 50% 宽度，
-   会让 EmptyState 换行文案出现巨大行距；统一归一化。 */
-.el-table__empty-text {
+   会让 EmptyState 换行文案出现巨大行距；统一归一化。
+   须以 .el-table 前缀提权：el-table.css 在本样式之后加载，
+   同优先级下会后发制人。 */
+.el-table .el-table__empty-text {
   width: auto;
   line-height: 1.6;
 }

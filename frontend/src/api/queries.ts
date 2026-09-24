@@ -139,7 +139,11 @@ export interface MessageSearchFilters {
   page?: number
 }
 
-function jsonPost<T>(path: string, body: Record<string, string | number | undefined>): Promise<T> {
+function jsonPost<T>(
+  path: string,
+  body: Record<string, string | number | undefined>,
+  signal?: AbortSignal,
+): Promise<T> {
   const payload: Record<string, string | number> = {}
   for (const [key, value] of Object.entries(body)) {
     if (value !== undefined) payload[key] = value
@@ -148,22 +152,36 @@ function jsonPost<T>(path: string, body: Record<string, string | number | undefi
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+    signal,
   })
 }
 
-export function searchMessages(phone: string, filters: MessageSearchFilters = {}): Promise<MessagePage> {
-  return jsonPost<MessagePage>("/messages", {
-    phone,
-    start: filters.start,
-    end: filters.end,
-    category: filters.category,
-    status: filters.status,
-    page: filters.page,
-  })
+export function searchMessages(
+  phone: string,
+  filters: MessageSearchFilters = {},
+  signal?: AbortSignal,
+): Promise<MessagePage> {
+  return jsonPost<MessagePage>(
+    "/messages",
+    {
+      phone,
+      start: filters.start,
+      end: filters.end,
+      category: filters.category,
+      status: filters.status,
+      page: filters.page,
+    },
+    signal,
+  )
 }
 
-export function getTimeline(phone: string, start?: string, end?: string): Promise<TimelineResult> {
-  return jsonPost<TimelineResult>("/messages/timeline", { phone, start, end })
+export function getTimeline(
+  phone: string,
+  start?: string,
+  end?: string,
+  signal?: AbortSignal,
+): Promise<TimelineResult> {
+  return jsonPost<TimelineResult>("/messages/timeline", { phone, start, end }, signal)
 }
 
 export function decryptMessagePhone(id: number): Promise<{ phone: string }> {

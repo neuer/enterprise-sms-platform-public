@@ -9,6 +9,8 @@ import { useRouter } from "vue-router"
 
 import EmptyState from "../components/EmptyState.vue"
 
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
+
 import FilterSeg from "../components/FilterSeg.vue"
 
 import ListPagination from "../components/ListPagination.vue"
@@ -20,7 +22,7 @@ import { blacklistReply, listReplies, type ReplyDisposition, type ReplyItem } fr
 import { usePagedList } from "../composables/usePagedList"
 
 import { useConfirmActions } from "../lib/confirm"
-const { confirmAction } = useConfirmActions()
+const { confirmAuditedAction } = useConfirmActions()
 
 import { errorText } from "../lib/error"
 
@@ -57,13 +59,16 @@ const {
   search: listSearch,
   reset,
 } = usePagedList({
-  fetcher: (page) =>
-    listReplies({
-      phone: phone.value.trim() || undefined,
-      ...rangeToIsoParams(range.value),
-      disposition: disposition.value,
-      page,
-    }),
+  fetcher: (page, signal) =>
+    listReplies(
+      {
+        phone: validPhone.value,
+        ...rangeToIsoParams(range.value),
+        disposition: disposition.value,
+        page,
+      },
+      signal,
+    ),
   errorMessage: "回复列表加载失败",
   resetFilters: () => {
     phone.value = ""
@@ -78,6 +83,12 @@ function isOptOutContent(content: string): boolean {
 
 /** 手机号即时校验提示：空或合法为 undefined，非法时表单内联展示。 */
 const phoneError = computed(() => phoneProblem(phone.value.trim()))
+
+/** 非法手机号永不发往服务端（服务端 pattern 校验只会 400 整单拒绝）；显式「查询」仍会即时提示要求修正。 */
+const validPhone = computed(() => {
+  const value = phone.value.trim()
+  return value && !phoneProblem(value) ? value : undefined
+})
 
 const filtering = computed(() => Boolean(phone.value.trim()) || Boolean(range.value) || disposition.value !== "all")
 const emptyState = computed(() =>
@@ -102,8 +113,11 @@ function search(): void {
 }
 
 function setDisposition(next: ReplyDisposition): void {
+  if (disposition.value === next) return
   disposition.value = next
-  search()
+  // 处置切换与手机号校验解耦：手机号输入框中的临时非法内容不阻塞 seg 重查
+  // （非法号码不随请求发出），避免出现 seg 已切换但列表仍是旧口径的不一致。
+  listSearch()
 }
 
 /** 跳转批次列表并直达该批次详情抽屉（批次页消费 batch_no 查询参数）。 */
@@ -114,9 +128,10 @@ function openBatch(batchNo: string): void {
 async function optout(item: ReplyItem): Promise<void> {
   item = { ...item }
   if (
-    !(await confirmAction({
+    !(await confirmAuditedAction({
       title: "退订加黑确认",
-      body: `将回复号码 ${item.phone} 加入退订黑名单？加入后发送将自动剔除该号码；加黑行为与操作人将写入审计日志。`,
+      body: `将回复号码 ${item.phone} 加入退订黑名单？加入后发送将自动剔除该号码。`,
+      auditNote: "加黑行为与操作人将写入审计日志。",
       confirmText: "加入黑名单",
     }))
   )
@@ -193,7 +208,7 @@ onMounted(load)
     >
   </form>
 
-  <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false" />
+  <LoadErrorAlert :message="errorMessage" @retry="load" />
 
   <section class="reply-results">
     <el-table v-loading="loading" :data="items" row-key="id" class="reply-table">

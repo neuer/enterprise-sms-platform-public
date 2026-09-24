@@ -12,6 +12,8 @@ import {
 import EmptyState from "../components/EmptyState.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
+
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { usePagedList } from "../composables/usePagedList"
 import { useConfirmActions } from "../lib/confirm"
@@ -210,7 +212,7 @@ onMounted(() => {
     </div>
   </section>
 
-  <el-alert v-if="policyError" :title="policyError" type="error" :closable="false" />
+  <LoadErrorAlert :message="policyError" @retry="loadPolicy" />
 
   <form class="sensitive-filter-bar" @submit.prevent="search">
     <label class="sensitive-fld">
@@ -235,9 +237,7 @@ onMounted(() => {
     >
   </form>
 
-  <el-alert v-if="errorMessage" class="sensitive-alert" :title="errorMessage" type="error" show-icon :closable="false"
-    ><template #default><el-button link type="primary" @click="load">重新加载</el-button></template></el-alert
-  >
+  <LoadErrorAlert class="sensitive-alert" :message="errorMessage" @retry="load" />
 
   <section v-loading="loading" class="sensitive-results">
     <div v-if="items.length" class="sensitive-wall" data-testid="sensitive-wall">

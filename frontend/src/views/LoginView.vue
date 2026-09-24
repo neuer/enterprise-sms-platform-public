@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue"
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 
 import PasswordChangeView from "./PasswordChangeView.vue"
@@ -7,6 +7,7 @@ import { ACCESS_ONLY_SESSION_MESSAGE, isAccessOnlySessionMode } from "../api/ref
 import loginMarkUrl from "../assets/brand/login-egret-icon.png"
 import { useSessionStore } from "../stores/session"
 import { errorText } from "../lib/error"
+import { recallLoginProvider, rememberLoginProvider } from "../lib/loginProvider"
 
 const router = useRouter()
 const session = useSessionStore()
@@ -81,14 +82,47 @@ function selectProvider(code: string): void {
   }
   clearProviderHint()
   providerCode.value = code
+  // 只记显式选择；默认选中（onMounted）不落盘
+  rememberLoginProvider(code)
+}
+
+// ── radiogroup 键盘语义：Tab 只进入一次（roving tabindex），方向键在组内移动并选中 ──
+const providerSwitch = ref<HTMLElement | null>(null)
+const passwordInput = ref<{ focus: () => void } | null>(null)
+
+function providerTabindex(code: string, index: number): 0 | -1 {
+  if (providerCode.value) return providerCode.value === code ? 0 : -1
+  return index === 0 ? 0 : -1
+}
+
+function onProviderKeydown(event: KeyboardEvent): void {
+  const delta = ["ArrowLeft", "ArrowUp"].includes(event.key)
+    ? -1
+    : ["ArrowRight", "ArrowDown"].includes(event.key)
+      ? 1
+      : 0
+  if (delta === 0) return
+  const buttons = Array.from(providerSwitch.value?.querySelectorAll<HTMLButtonElement>("button[role=radio]") ?? [])
+  if (!buttons.length) return
+  event.preventDefault()
+  const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+  const next = buttons[(current + delta + buttons.length) % buttons.length]
+  next.focus()
+  const code = next.dataset.testid?.replace("provider-", "")
+  if (code) selectProvider(code)
 }
 
 onMounted(async () => {
   try {
     await session.loadProviders()
-    // 默认选中服务端返回的第一个已知认证源；提交仍只走当前选中的认证源，失败不自动回退
+    // 默认选中顺序：上次显式选择的认证源（未开通则忽略）→ 服务端返回的第一个已知认证源；
+    // 提交仍只走当前选中的认证源，失败不自动回退
     const known = new Set<string>(PROVIDER_CATALOG.map((item) => item.code))
-    providerCode.value = session.providers.find((provider) => known.has(provider.code))?.code ?? ""
+    const remembered = recallLoginProvider()
+    providerCode.value =
+      remembered !== null && isEnabled(remembered)
+        ? remembered
+        : (session.providers.find((provider) => known.has(provider.code))?.code ?? "")
   } catch (error) {
     errorMessage.value = errorText(error, "认证源列表加载失败")
   } finally {
@@ -125,6 +159,9 @@ async function submit() {
     await router.replace("/dashboard")
   } catch (error) {
     errorMessage.value = errorText(error, "登录失败，请稍后重试")
+    // 失败态把焦点送回密码框：密码已清空，操作者可立即重新输入。
+    await nextTick()
+    passwordInput.value?.focus()
   } finally {
     password.value = ""
     submitting.value = false
@@ -170,7 +207,14 @@ function invalidateInitialPasswordChange(message: string): void {
           <p id="login-sources-label" class="sr-only">身份来源</p>
           <span v-if="loadingProviders" class="provider-loading">正在读取认证源…</span>
           <template v-else>
-            <div class="provider-switch" role="radiogroup" aria-labelledby="login-sources-label" aria-label="认证源">
+            <div
+              ref="providerSwitch"
+              class="provider-switch"
+              role="radiogroup"
+              aria-labelledby="login-sources-label"
+              aria-label="认证源"
+              @keydown="onProviderKeydown"
+            >
               <template v-for="(provider, index) in catalog" :key="provider.code">
                 <span v-if="index > 0" class="provider-switch-sep" aria-hidden="true">·</span>
                 <div class="provider-switch-item" :class="{ 'is-off': !provider.enabled }">
@@ -179,6 +223,7 @@ function invalidateInitialPasswordChange(message: string): void {
                     :data-testid="`provider-${provider.code}`"
                     type="button"
                     role="radio"
+                    :tabindex="providerTabindex(provider.code, index)"
                     :aria-checked="providerCode === provider.code"
                     :aria-disabled="!provider.enabled"
                     :aria-label="provider.enabled ? provider.name : `${provider.name}，未开通`"
@@ -201,6 +246,7 @@ function invalidateInitialPasswordChange(message: string): void {
             v-model="username"
             data-testid="login-username"
             autocomplete="username"
+            autofocus
             :placeholder="accountLabel"
             :aria-label="accountLabel"
             size="large"
@@ -211,6 +257,7 @@ function invalidateInitialPasswordChange(message: string): void {
           <label class="login-field-label" for="login-password">密码</label>
           <el-input
             id="login-password"
+            ref="passwordInput"
             v-model="password"
             data-testid="login-password"
             autocomplete="current-password"

@@ -129,6 +129,34 @@ async def test_current_alerts_are_derived_from_live_facts_and_sorted_by_severity
 
 
 @pytest.mark.asyncio
+async def test_vendor_test_pause_surfaces_as_current_alert() -> None:
+    """真实联调独立暂停键（agent-stale/daily）必须出现在当前告警，不得静默停摆。"""
+    result = await CurrentAlertService(
+        FakeRepository(
+            database_facts(),
+            ControlCurrentFacts(
+                None,
+                None,
+                0,
+                vendor_test_realtime_code="vendor-test-agent-stale",
+                vendor_test_bulk_code="daily_limit",
+            ),
+        ),
+        SPECS,
+        clock=lambda: NOW,
+    ).get()
+
+    alert = next((item for item in result.items if item.key == "vendor_test_paused"), None)
+    assert alert is not None
+    assert alert.level == "crit"
+    assert alert.target == "queue"
+    assert alert.detail == {
+        "realtime_code": "vendor-test-agent-stale",
+        "bulk_code": "daily_limit",
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("status", "threshold_seconds"),
     (("success", 120), ("running", 60)),

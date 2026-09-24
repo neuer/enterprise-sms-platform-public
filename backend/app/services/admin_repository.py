@@ -253,6 +253,8 @@ class SqlAdminRepository:
           AND (CAST(:correlation_id AS uuid) IS NULL
                OR correlation_id=:correlation_id)
           AND (CAST(:action AS varchar(48)) IS NULL OR action=:action)
+          AND (CAST(:exclude_action AS varchar(48)) IS NULL
+               OR action<>:exclude_action)
           AND (CAST(:object_type AS varchar(32)) IS NULL OR object_type=:object_type)
           AND (CAST(:object_id AS varchar(64)) IS NULL OR object_id=:object_id)
           AND (CAST(:start AS timestamptz) IS NULL OR created_at>=:start)
@@ -263,6 +265,7 @@ class SqlAdminRepository:
             "actor_account_id": query.actor_account_id,
             "correlation_id": query.correlation_id,
             "action": query.action,
+            "exclude_action": query.exclude_action,
             "object_type": query.object_type,
             "object_id": query.object_id,
             "start": query.start,

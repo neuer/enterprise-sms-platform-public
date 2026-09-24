@@ -3,7 +3,7 @@ import { useLatestRead } from "./useLatestRead"
 
 /** 已审核资源选项：按页面独立加载，失败清空，旧请求和卸载后的结果不得重新填入。 */
 export function useApprovedResources<T extends { vendor_state: string }>(
-  fetcher: () => Promise<T[]>,
+  fetcher: (signal: AbortSignal) => Promise<T[]>,
   onError?: (error: unknown) => void,
 ) {
   const items = shallowRef<T[]>([])
@@ -15,7 +15,7 @@ export function useApprovedResources<T extends { vendor_state: string }>(
     const signal = read.start()
     loading.value = true
     try {
-      const result = await fetcher()
+      const result = await fetcher(signal)
       if (signal.aborted) return
       items.value = Array.isArray(result) ? result : []
       unavailable.value = false
