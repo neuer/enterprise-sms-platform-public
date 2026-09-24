@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from "vue"
 
 import { AuthApiError, initialPasswordChangeRequest, passwordPolicyRequest, type PasswordPolicy } from "../api/auth"
 import loginMarkUrl from "../assets/brand/login-egret-icon.png"
+import { useLatestRead } from "../composables/useLatestRead"
 import { errorText } from "../lib/error"
 
 const props = defineProps<{ changeToken: string; expiresAt: number }>()
@@ -23,6 +24,8 @@ const policy = ref<PasswordPolicy>({
 })
 let expiryTimer: number | undefined
 
+const policyRead = useLatestRead()
+
 onMounted(async () => {
   const remaining = props.expiresAt - Date.now()
   if (!props.changeToken || !Number.isFinite(remaining) || remaining <= 0) {
@@ -30,8 +33,11 @@ onMounted(async () => {
     return
   }
   expiryTimer = window.setTimeout(() => emit("invalid", "改密会话已过期，请重新登录"), remaining)
+  const signal = policyRead.start()
   try {
-    policy.value = await passwordPolicyRequest()
+    const latest = await passwordPolicyRequest(signal)
+    if (signal.aborted) return
+    policy.value = latest
   } catch {
     // 保留与服务端相同的内置规则文案；提交仍由服务端做权威校验。
   }

@@ -185,6 +185,8 @@ const moreActiveCount = computed(
 const moreActive = computed(() => moreActiveCount.value > 0)
 
 const batchRead = useLatestRead()
+const deepLinkRead = useLatestRead()
+const appsRead = useLatestRead()
 
 let openToken = 0
 
@@ -376,9 +378,14 @@ onMounted(() => {
   // 深链 /batches?batch_no=xxx：从回复页等入口直达批次详情抽屉
   const target = typeof route?.query.batch_no === "string" ? route.query.batch_no.trim() : ""
   if (target) {
-    getBatch(target)
-      .then((batch) => openBatch(batch))
-      .catch(() => ElMessage.error("未找到对应批次或无权限查看"))
+    const signal = deepLinkRead.start()
+    getBatch(target, signal)
+      .then((batch) => {
+        if (!signal.aborted) openBatch(batch)
+      })
+      .catch((error) => {
+        if (!signal.aborted) ElMessage.error(errorText(error, "未找到对应批次或无权限查看"))
+      })
   }
 })
 
@@ -394,12 +401,13 @@ watch(drawer, (open) => {
 watch(moreOpen, (open) => {
   if (!open || appsRequested || !isAdmin.value) return
   appsRequested = true
-  listApps()
+  const signal = appsRead.start()
+  listApps(signal)
     .then((apps) => {
-      appOptions.value = apps.filter((app) => app.status === 1)
+      if (!signal.aborted) appOptions.value = apps.filter((app) => app.status === 1)
     })
     .catch(() => {
-      appOptions.value = []
+      if (!signal.aborted) appOptions.value = []
     })
 })
 </script>

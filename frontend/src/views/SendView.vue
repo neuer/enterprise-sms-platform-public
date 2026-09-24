@@ -30,6 +30,7 @@ import { admissionReasonOf, admissionReasonText } from "../lib/admissionReason"
 import BillingSegments from "../components/BillingSegments.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
+import { useLatestRead } from "../composables/useLatestRead"
 import { copyText } from "../lib/clipboard"
 import { saveBlob } from "../lib/download"
 import { PHONE_RE } from "../lib/phone"
@@ -66,6 +67,7 @@ const busy = ref(false)
 let requestGeneration = 0
 let draftRevision = 0
 let disposed = false
+let uploadAbort: AbortController | null = null
 const submittedSummary = ref("")
 const errorMessage = ref("")
 // 准入 503（DEPENDENCY_UNAVAILABLE）时展示通往运维中心队列页签的出口。
@@ -429,12 +431,16 @@ watch(
   },
 )
 
+const uiPolicyRead = useLatestRead()
 async function loadUiPolicy(): Promise<void> {
+  const signal = uiPolicyRead.start()
   try {
-    const result = await getDashboard()
+    const result = await getDashboard(signal)
+    if (signal.aborted) return
     const value = result.ui_policy.test_send_max
     testSendMax.value = typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null
   } catch {
+    if (signal.aborted) return
     testSendMax.value = null
     ElMessage.warning("测试发送号码上限读取失败，测试发送的号码上限提示暂不可用；正式发送不受影响")
   }
@@ -501,13 +507,16 @@ function resetImport(): void {
 async function handleUpload(options: UploadRequestOptions): Promise<void> {
   if (busy.value || disposed) return
   const generation = ++requestGeneration
+  uploadAbort?.abort()
+  const controller = new AbortController()
+  uploadAbort = controller
   resetFeedback()
   importState.value = "parsing"
   importFilename.value = options.file.name
   importError.value = ""
   busy.value = true
   try {
-    const result = await uploadPhones(options.file)
+    const result = await uploadPhones(options.file, controller.signal)
     if (disposed || generation !== requestGeneration) return
     imported.value = result
     importState.value = "ready"
@@ -628,6 +637,7 @@ onBeforeUnmount(() => {
   clearSessionDraft()
   disposed = true
   previewAbort?.abort()
+  uploadAbort?.abort()
   window.removeEventListener(SESSION_CLEARING_EVENT, clearSessionDraft)
   window.clearTimeout(previewTimer)
   window.clearTimeout(copiedTimer)

@@ -9,6 +9,7 @@ import TrendChart from "../components/TrendChart.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePolling } from "../composables/usePolling"
+import { useLatestRead } from "../composables/useLatestRead"
 import { jobDescription } from "../lib/jobDescriptions"
 import { formatPercent } from "../lib/format"
 import { CATEGORY_LABELS } from "../lib/labels"
@@ -75,12 +76,16 @@ function contentFingerprint(value: DashboardSnapshot): string {
 
 let lastFingerprint = ""
 
+const dashRead = useLatestRead()
+
 async function load(): Promise<void> {
   if (loading.value) return
+  const signal = dashRead.start()
   loading.value = true
   errorMessage.value = ""
   try {
-    const result = await getDashboard()
+    const result = await getDashboard(signal)
+    if (signal.aborted) return
     const channelMonitor = result.operations?.channel_monitor
     if (channelMonitor && !channelMonitor.stale) {
       lastChannelSuccessAt.value = result.refreshed_at
@@ -101,6 +106,7 @@ async function load(): Promise<void> {
       }
     }
   } catch (error) {
+    if (signal.aborted) return
     if (snapshot.value?.operations) {
       snapshot.value = {
         ...snapshot.value,
@@ -118,7 +124,7 @@ async function load(): Promise<void> {
     }
     errorMessage.value = errorText(error, "仪表盘加载失败")
   } finally {
-    loading.value = false
+    if (!signal.aborted) loading.value = false
   }
 }
 

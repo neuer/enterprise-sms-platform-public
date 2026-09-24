@@ -11,6 +11,7 @@ import ListPagination from "../components/ListPagination.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePagedList } from "../composables/usePagedList"
+import { useLatestRead } from "../composables/useLatestRead"
 import { copyText } from "../lib/clipboard"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
@@ -147,10 +148,15 @@ function diffRows(before: Record<string, unknown> | null, after: Record<string, 
     .sort((a, b) => DIFF_RANK[a.state] - DIFF_RANK[b.state] || a.key.localeCompare(b.key))
 }
 
+const actionsRead = useLatestRead()
 async function loadActions(): Promise<void> {
+  const signal = actionsRead.start()
   try {
-    actionOptions.value = await listAuditActions()
+    const actions = await listAuditActions(signal)
+    if (signal.aborted) return
+    actionOptions.value = actions
   } catch {
+    if (signal.aborted) return
     actionOptions.value = []
     ElMessage.warning("动作选项加载失败，筛选可稍后重试")
   }

@@ -651,7 +651,7 @@ describe("安全日报页面", () => {
     expect(message).toContain("处理中的投递请求时将被拒绝")
     expect(message).toContain("写入审计日志")
     expect(api.generateSecurityDailyReport).toHaveBeenCalledOnce()
-    expect(api.getSecurityDailyReport).toHaveBeenCalledWith(3)
+    expect(api.getSecurityDailyReport).toHaveBeenCalledWith(3, expect.any(AbortSignal))
     expect(wrapper.text()).toContain("安全预览")
     wrapper.unmount()
     vi.restoreAllMocks()
@@ -753,6 +753,47 @@ describe("安全日报页面", () => {
     await flushPromises()
     expect(wrapper.text()).toContain("安全日报运行状态")
     expect(api.getSecurityDailyOverview).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it("卸载取消在途概览读取", async () => {
+    let overviewSignal: AbortSignal | undefined
+    api.getSecurityDailyOverview.mockImplementation((signal?: AbortSignal) => {
+      overviewSignal = signal
+      return new Promise(() => {})
+    })
+    api.listSecurityDailyReports.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
+
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    expect(overviewSignal).toBeTruthy()
+    expect(overviewSignal!.aborted).toBe(false)
+
+    wrapper.unmount()
+    expect(overviewSignal!.aborted).toBe(true)
+  })
+
+  it("关闭详情抽屉取消在途详情读取", async () => {
+    let detailSignal: AbortSignal | undefined
+    api.getSecurityDailyReport.mockImplementation((_id: number, signal?: AbortSignal) => {
+      detailSignal = signal
+      return new Promise(() => {})
+    })
+
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("查看详情"))!
+      .trigger("click")
+    await flushPromises()
+    expect(detailSignal).toBeTruthy()
+    expect(detailSignal!.aborted).toBe(false)
+
+    // jsdom 下 el-drawer 的 afterLeave 不触发，直接经 v-model 事件模拟关闭
+    wrapper.findComponent({ name: "ElDrawer" }).vm.$emit("update:modelValue", false)
+    await flushPromises()
+    expect(detailSignal!.aborted).toBe(true)
     wrapper.unmount()
   })
 

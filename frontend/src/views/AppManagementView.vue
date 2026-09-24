@@ -306,13 +306,17 @@ async function loadDailyUsage(): Promise<void> {
   }
 }
 
+const keyGraceRead = useLatestRead()
 async function loadKeyGraceHours(): Promise<void> {
+  const signal = keyGraceRead.start()
   try {
-    const configs = await listConfigs()
+    const configs = await listConfigs(signal)
+    if (signal.aborted) return
     const raw = configs.find((item) => item.key === "key_grace_hours")?.value
     const value = Number(raw)
     keyGraceHours.value = Number.isInteger(value) && value > 0 ? value : null
   } catch {
+    if (signal.aborted) return
     keyGraceHours.value = null
     ElMessage.warning("密钥轮换宽限期读取失败，页面显示可能不完整")
   }

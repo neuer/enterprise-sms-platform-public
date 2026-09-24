@@ -16,6 +16,7 @@ import ListPagination from "../components/ListPagination.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePagedList } from "../composables/usePagedList"
+import { useLatestRead } from "../composables/useLatestRead"
 import { useConfirmActions } from "../lib/confirm"
 import { vRowActivate } from "../lib/directives"
 const { confirmAuditedAction } = useConfirmActions()
@@ -114,10 +115,15 @@ const {
   },
 })
 
+const appsRead = useLatestRead()
 async function loadApps(): Promise<void> {
+  const signal = appsRead.start()
   try {
-    apps.value = await listApps()
+    const result = await listApps(signal)
+    if (signal.aborted) return
+    apps.value = result
   } catch {
+    if (signal.aborted) return
     apps.value = []
     ElMessage.warning("应用列表加载失败，筛选可稍后重试")
   }

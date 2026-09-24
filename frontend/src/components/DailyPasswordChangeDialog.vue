@@ -4,6 +4,7 @@ import { computed, ref, watch } from "vue"
 
 import { AuthApiError, passwordPolicyRequest, type PasswordPolicy } from "../api/auth"
 import { useSessionStore } from "../stores/session"
+import { useLatestRead } from "../composables/useLatestRead"
 import { errorText } from "../lib/error"
 
 const props = defineProps<{ modelValue: boolean }>()
@@ -38,6 +39,7 @@ function clearSensitiveFields(): void {
   errorMessage.value = ""
 }
 
+const policyRead = useLatestRead()
 watch(
   () => props.modelValue,
   async (opened) => {
@@ -45,8 +47,11 @@ watch(
       clearSensitiveFields()
       return
     }
+    const signal = policyRead.start()
     try {
-      policy.value = await passwordPolicyRequest()
+      const latest = await passwordPolicyRequest(signal)
+      if (signal.aborted) return
+      policy.value = latest
     } catch {
       // 保留与后端默认规则一致的提示，提交时仍由服务端权威校验。
     }

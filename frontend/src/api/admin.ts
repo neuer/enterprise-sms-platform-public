@@ -140,7 +140,8 @@ export function listAudits(filters: AuditFilters, signal?: AbortSignal): Promise
   return apiRequest<AuditPage>(`/admin/audit-logs?${query}`, { method: "GET", signal })
 }
 
-export const listAuditActions = () => apiRequest<string[]>("/admin/audit-logs/actions", { method: "GET" })
+export const listAuditActions = (signal?: AbortSignal) =>
+  apiRequest<string[]>("/admin/audit-logs/actions", { method: "GET", signal })
 
 export const listConfigs = (signal?: AbortSignal) =>
   apiRequest<ConfigItem[]>("/admin/configs", { method: "GET", signal })
@@ -157,8 +158,8 @@ function providerPath(providerCode: string, suffix = ""): string {
   return `/admin/auth-providers/${encodeURIComponent(providerCode)}${suffix}`
 }
 
-export function getAuthProvider(providerCode: string): Promise<AuthProviderAdmin> {
-  return apiRequest<AuthProviderAdmin>(providerPath(providerCode), { method: "GET" })
+export function getAuthProvider(providerCode: string, signal?: AbortSignal): Promise<AuthProviderAdmin> {
+  return apiRequest<AuthProviderAdmin>(providerPath(providerCode), { method: "GET", signal })
 }
 
 export function saveAuthProviderDraft(
@@ -193,9 +194,10 @@ export function disableAuthProvider(providerCode: string, token?: string): Promi
   })
 }
 
-export function listAuthProviderRoleMappings(providerCode: string): Promise<RoleMappings> {
+export function listAuthProviderRoleMappings(providerCode: string, signal?: AbortSignal): Promise<RoleMappings> {
   return apiRequest<RoleMappings>(providerPath(providerCode, "/role-mappings"), {
     method: "GET",
+    signal,
   })
 }
 
@@ -305,8 +307,8 @@ function jsonRequest(method: string, body?: unknown): RequestInit {
   }
 }
 
-export function getVendorTestStatus(): Promise<VendorTestStatus> {
-  return vendorRequest<VendorTestStatus>("/status", { method: "GET" })
+export function getVendorTestStatus(signal?: AbortSignal): Promise<VendorTestStatus> {
+  return vendorRequest<VendorTestStatus>("/status", { method: "GET", signal })
 }
 
 export function issueVendorTestStepUp(
@@ -337,8 +339,8 @@ export function installVendorCredentials(
   )
 }
 
-export function listVendorTestRecipients(): Promise<VendorTestRecipient[]> {
-  return vendorRequest<VendorTestRecipient[]>("/recipients", { method: "GET" })
+export function listVendorTestRecipients(signal?: AbortSignal): Promise<VendorTestRecipient[]> {
+  return vendorRequest<VendorTestRecipient[]>("/recipients", { method: "GET", signal })
 }
 
 export function addVendorTestRecipient(label: string, phone: string): Promise<VendorTestRecipient> {
@@ -377,8 +379,11 @@ export function resumeVendorTest(stepUpToken?: string): Promise<VendorTestOperat
   )
 }
 
-export function getVendorTestOperation(operationId: string): Promise<VendorTestOperation> {
-  return vendorRequest<VendorTestOperation>(`/operations/${encodeURIComponent(operationId)}`, { method: "GET" })
+export function getVendorTestOperation(operationId: string, signal?: AbortSignal): Promise<VendorTestOperation> {
+  return vendorRequest<VendorTestOperation>(`/operations/${encodeURIComponent(operationId)}`, {
+    method: "GET",
+    signal,
+  })
 }
 
 export function sendVendorTestUat(payload: VendorTestUatPayload): Promise<VendorTestOperation> {
@@ -389,6 +394,9 @@ export function previewVendorTestUat(payload: VendorTestUatPreviewPayload): Prom
   return vendorRequest<BillingPreview>("/messages/preview", jsonRequest("POST", payload))
 }
 
-export function getVendorTestUat(operationId: string): Promise<VendorTestOperation> {
-  return vendorRequest<VendorTestOperation>(`/messages/${encodeURIComponent(operationId)}`, { method: "GET" })
+export function getVendorTestUat(operationId: string, signal?: AbortSignal): Promise<VendorTestOperation> {
+  return vendorRequest<VendorTestOperation>(`/messages/${encodeURIComponent(operationId)}`, {
+    method: "GET",
+    signal,
+  })
 }

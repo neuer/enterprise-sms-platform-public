@@ -70,8 +70,8 @@ export interface DashboardSnapshot {
   operations?: DashboardOperations | null
 }
 
-export async function getDashboard(): Promise<DashboardSnapshot> {
-  return apiRequest<DashboardSnapshot>("/reports/dashboard", { method: "GET" })
+export async function getDashboard(signal?: AbortSignal): Promise<DashboardSnapshot> {
+  return apiRequest<DashboardSnapshot>("/reports/dashboard", { method: "GET", signal })
 }
 
 export interface BalanceSnapshot {

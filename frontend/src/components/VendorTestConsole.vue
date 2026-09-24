@@ -26,6 +26,7 @@ import VendorCredentialDialog from "./VendorCredentialDialog.vue"
 import VendorTestRecipientDialog from "./VendorTestRecipientDialog.vue"
 import VendorTestUatPanel from "./VendorTestUatPanel.vue"
 import { usePolling } from "../composables/usePolling"
+import { useLatestRead } from "../composables/useLatestRead"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAction } = useConfirmActions()
 import { errorText } from "../lib/error"
@@ -52,8 +53,10 @@ const stepUpPassword = ref("")
 const resetConfirmation = ref("")
 const stepUpAction = ref<"activate" | "reset_configuration" | "resume_critical" | null>(null)
 const controlBusy = ref(false)
-let loadGeneration = 0
-let disposed = false
+// 三条读通道各自只保留最新请求；作用域销毁自动取消，替代手写 generation/disposed 守卫。
+const loadRead = useLatestRead()
+const restoreRead = useLatestRead()
+const pollRead = useLatestRead()
 // 轮询连续失败只提示一次，恢复成功后重置；避免控制代理短暂不可用时每个轮询周期弹一条错误。
 let pollFailureNotified = false
 
@@ -143,27 +146,27 @@ const statusPresentation = computed(() => {
 })
 
 async function load(): Promise<boolean> {
-  const generation = ++loadGeneration
+  const signal = loadRead.start()
   loading.value = true
   loadErrorMessage.value = ""
   try {
     const [nextStatus, nextRecipients, nextApps] = await Promise.all([
-      getVendorTestStatus(),
-      listVendorTestRecipients(),
-      listApps(),
+      getVendorTestStatus(signal),
+      listVendorTestRecipients(signal),
+      listApps(signal),
     ])
-    if (disposed || generation !== loadGeneration) return false
+    if (signal.aborted) return false
     status.value = nextStatus
     recipients.value = nextRecipients
     apps.value = nextApps
     return true
   } catch (error) {
-    if (!disposed && generation === loadGeneration) {
+    if (!signal.aborted) {
       loadErrorMessage.value = errorText(error, "真实联调状态加载失败")
     }
     return false
   } finally {
-    if (!disposed && generation === loadGeneration) loading.value = false
+    if (!signal.aborted) loading.value = false
   }
 }
 
@@ -226,13 +229,14 @@ function rememberedOperation(): Pick<VendorTestOperation, "operation_id" | "oper
 async function restoreOperation(): Promise<boolean> {
   const remembered = rememberedOperation()
   if (!remembered) return true
+  const signal = restoreRead.start()
   operationRestoring.value = true
   try {
     const operation =
       remembered.operation_type === "uat_send"
-        ? await getVendorTestUat(remembered.operation_id)
-        : await getVendorTestOperation(remembered.operation_id)
-    if (disposed) return true
+        ? await getVendorTestUat(remembered.operation_id, signal)
+        : await getVendorTestOperation(remembered.operation_id, signal)
+    if (signal.aborted) return true
     activeOperation.value = operation
     restoreErrorMessage.value = ""
     operationRestoring.value = false
@@ -240,7 +244,7 @@ async function restoreOperation(): Promise<boolean> {
     else operationPolling.start()
     return true
   } catch (error) {
-    if (disposed) return true
+    if (signal.aborted) return true
     if (isGoneOperation(error)) {
       forgetOperation()
       operationRestoring.value = false
@@ -266,7 +270,6 @@ const restorePolling = usePolling(restoreOperation, {
 async function refreshCompletedProjection(): Promise<boolean> {
   operationCompletionRefreshing.value = true
   const refreshed = await load()
-  if (disposed) return true
   if (refreshed) {
     forgetOperation()
     operationCompletionRefreshing.value = false
@@ -312,12 +315,13 @@ function finishOperation(operation: VendorTestOperation): void {
 async function pollOperation(): Promise<boolean> {
   const current = activeOperation.value
   if (!current || terminal(current)) return true
+  const signal = pollRead.start()
   try {
     const next =
       current.operation_type === "uat_send"
-        ? await getVendorTestUat(current.operation_id)
-        : await getVendorTestOperation(current.operation_id)
-    if (disposed || activeOperation.value?.operation_id !== next.operation_id) return true
+        ? await getVendorTestUat(current.operation_id, signal)
+        : await getVendorTestOperation(current.operation_id, signal)
+    if (signal.aborted || activeOperation.value?.operation_id !== next.operation_id) return true
     pollFailureNotified = false
     activeOperation.value = next
     if (terminal(next)) {
@@ -325,7 +329,7 @@ async function pollOperation(): Promise<boolean> {
       return true
     }
   } catch (error) {
-    if (disposed) return true
+    if (signal.aborted) return true
     // 出错续轮：吞错返回 false，按固定间隔等下一周期；连续失败只提示一次。
     if (!pollFailureNotified) {
       pollFailureNotified = true
@@ -546,7 +550,6 @@ onMounted(() => {
   void load()
 })
 onBeforeUnmount(() => {
-  disposed = true
   clearStepUp()
 })
 </script>

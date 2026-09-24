@@ -22,6 +22,7 @@ import ListPagination from "../components/ListPagination.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePagedList } from "../composables/usePagedList"
+import { useLatestRead } from "../composables/useLatestRead"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
@@ -158,11 +159,15 @@ const {
   },
 })
 
+const policyRead = useLatestRead()
 async function loadPolicy(): Promise<void> {
+  const signal = policyRead.start()
   try {
-    passwordPolicy.value = await passwordPolicyRequest()
+    const policy = await passwordPolicyRequest(signal)
+    if (signal.aborted) return
+    passwordPolicy.value = policy
   } catch {
-    // 后端仍会执行同一密码策略；规则接口短暂不可用时保留当前版本的安全缺省文案。
+    // 后端仍会执行同一密码策略；规则接口短暂不可用或被取消时保留当前版本的安全缺省文案。
   }
 }
 

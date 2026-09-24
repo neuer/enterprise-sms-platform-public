@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useVendorResourceList } from "../composables/useVendorResourceList"
+import { useLatestRead } from "../composables/useLatestRead"
 import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
 import { computed, onMounted, ref } from "vue"
@@ -137,12 +138,15 @@ const detailTrail = computed<TrailStep[]>(() => {
   ]
 })
 
+const signAppsRead = useLatestRead()
 async function loadSignApps(signName: string): Promise<void> {
   if (!isAdmin.value) return
+  const signal = signAppsRead.start()
   signAppsLoading.value = true
   signAppsError.value = false
   try {
-    const apps = await listApps()
+    const apps = await listApps(signal)
+    if (signal.aborted) return
     // 停用应用同样计入删除约束（服务端 NOT EXISTS 不过滤 status），这里一并列出。
     signApps.value = apps.filter((app) => {
       const configured = app.default_sign?.trim()
@@ -152,10 +156,11 @@ async function loadSignApps(signName: string): Promise<void> {
       return normalized === signName
     })
   } catch {
+    if (signal.aborted) return
     signAppsError.value = true
     signApps.value = []
   } finally {
-    signAppsLoading.value = false
+    if (!signal.aborted) signAppsLoading.value = false
   }
 }
 

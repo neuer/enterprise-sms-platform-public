@@ -30,6 +30,7 @@ const { confirmAction, confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { ROLE_LABELS } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
+import { useLatestRead } from "../composables/useLatestRead"
 import { useSessionStore } from "../stores/session"
 
 type ConfigTab = "runtime" | "providers" | "vendor-test"
@@ -166,30 +167,43 @@ function hydrateProvider(provider: AuthProviderAdmin): void {
   providerDirty.value = false
 }
 
+const configRead = useLatestRead()
+const providerRead = useLatestRead()
+
 async function load(): Promise<void> {
+  const signal = configRead.start()
   loading.value = true
   errorMessage.value = ""
   try {
-    hydrate(await listConfigs())
+    const items = await listConfigs(signal)
+    if (signal.aborted) return
+    hydrate(items)
   } catch (error) {
+    if (signal.aborted) return
     errorMessage.value = errorText(error, "系统参数加载失败")
   } finally {
-    loading.value = false
+    if (!signal.aborted) loading.value = false
   }
 }
 
 async function loadProvider(): Promise<void> {
+  const signal = providerRead.start()
   providerLoading.value = true
   providerError.value = ""
   try {
-    const [provider, mappings] = await Promise.all([getAuthProvider("ad"), listAuthProviderRoleMappings("ad")])
+    const [provider, mappings] = await Promise.all([
+      getAuthProvider("ad", signal),
+      listAuthProviderRoleMappings("ad", signal),
+    ])
+    if (signal.aborted) return
     hydrateProvider(provider)
     roleMappingsRevision.value = mappings.revision
     roleMappings.value = mappings.mappings.map((item) => ({ ...item, rowKey: ++roleMappingKeySeq }))
   } catch (error) {
+    if (signal.aborted) return
     providerError.value = errorText(error, "认证源配置加载失败")
   } finally {
-    providerLoading.value = false
+    if (!signal.aborted) providerLoading.value = false
   }
 }
 

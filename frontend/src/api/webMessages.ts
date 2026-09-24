@@ -67,7 +67,7 @@ export interface WebMessagePayload {
  */
 export type SendResult = paths["/api/v1/web/messages/send"]["post"]["responses"]["200"]["content"]["application/json"]
 
-export async function uploadPhones(file: File): Promise<ImportResult> {
+export async function uploadPhones(file: File, signal?: AbortSignal): Promise<ImportResult> {
   const form = new FormData()
   form.append("file", file)
   let result = await apiRequest<ImportResult>("/messages/import", { method: "POST", body: form })
@@ -77,9 +77,11 @@ export async function uploadPhones(file: File): Promise<ImportResult> {
     if (Date.now() >= deadline) {
       throw new ApiRequestError(0, "IMPORT_PENDING", "号码文件仍在后台解析，请稍后重试")
     }
+    signal?.throwIfAborted()
     await new Promise((resolve) => window.setTimeout(resolve, delay))
     result = await apiRequest<ImportResult>(`/messages/import/${result.import_id}`, {
       method: "GET",
+      signal,
     })
     delay = Math.min(1_000, delay * 2)
   }

@@ -273,12 +273,15 @@ const {
   clearOnError: true,
 })
 
+const overviewRead = useLatestRead()
 async function loadOverview(): Promise<void> {
+  const signal = overviewRead.start()
   overviewErrorMessage.value = ""
   overview.value = null
   try {
-    overview.value = await getSecurityDailyOverview()
+    overview.value = await getSecurityDailyOverview(signal)
   } catch (error) {
+    if (signal.aborted) return
     overview.value = null
     overviewErrorMessage.value = apiErrorMessage(error, "安全日报概览暂不可用，请刷新重试")
   }
@@ -372,7 +375,7 @@ async function openReport(reportId: number): Promise<void> {
     document.querySelector<HTMLElement>(".el-drawer__body")?.scrollTo({ top: 0 })
   })
   try {
-    const report = await getSecurityDailyReport(reportId)
+    const report = await getSecurityDailyReport(reportId, signal)
     if (signal.aborted) return
     selected.value = report
   } catch (error) {
@@ -390,7 +393,7 @@ async function openPreview(): Promise<void> {
   const signal = previewRead.start()
   previewLoading.value = true
   try {
-    const preview = await previewSecurityDailyReport(reportId)
+    const preview = await previewSecurityDailyReport(reportId, signal)
     if (signal.aborted) return
     previewText.value = preview.available ? preview.text : (preview.message ?? "数据不可用")
     previewOpen.value = true

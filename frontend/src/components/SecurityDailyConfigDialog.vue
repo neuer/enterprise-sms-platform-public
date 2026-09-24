@@ -35,7 +35,7 @@ async function openConfiguration(): Promise<void> {
   configApiKey.value = ""
   clearConfigApiKey.value = false
   try {
-    const configuration = await getSecurityDailyConfiguration()
+    const configuration = await getSecurityDailyConfiguration(signal)
     if (signal.aborted) return
     currentConfiguration.value = configuration
     configEnabled.value = configuration.enabled
