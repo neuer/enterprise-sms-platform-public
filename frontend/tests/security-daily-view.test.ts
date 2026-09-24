@@ -730,8 +730,29 @@ describe("安全日报页面", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("安全日报独立投递控制面不可用")
-    expect(wrapper.text()).toContain("安全日报记录暂不可用")
+    // 加载失败只经 LoadErrorAlert 呈现一次（含重试入口），不再叠加空态
+    expect(wrapper.text()).toContain("重新加载")
+    expect(wrapper.text()).not.toContain("安全日报记录暂不可用")
     expect(wrapper.text()).not.toContain("2026-07-13")
+    wrapper.unmount()
+  })
+
+  it("概览加载失败经 LoadErrorAlert 提供重试入口", async () => {
+    api.getSecurityDailyOverview.mockRejectedValueOnce(new Error("控制面超时"))
+    api.listSecurityDailyReports.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
+
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("控制面超时")
+    const retry = wrapper.findAll("button").find((button) => button.text().includes("重新加载"))
+    expect(retry).toBeTruthy()
+
+    api.getSecurityDailyOverview.mockResolvedValue(overview)
+    await retry!.trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("安全日报运行状态")
+    expect(api.getSecurityDailyOverview).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
 

@@ -1921,7 +1921,7 @@ paths:
   /api/v1/web/admin/vendor-test/status:
     get:
       tags: [admin]
-      summary: 真实运营商受控联调安全状态
+      summary: 真实厂商受控联调安全状态
       security: [{ BearerAuth: [] }]
       responses:
         '200':
@@ -2074,7 +2074,7 @@ paths:
   /api/v1/web/admin/vendor-test/activate:
     post:
       tags: [admin]
-      summary: 异步激活真实运营商受控联调
+      summary: 异步激活真实厂商受控联调
       security: [{ BearerAuth: [] }]
       requestBody:
         required: true

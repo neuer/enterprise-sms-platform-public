@@ -391,7 +391,7 @@ onMounted(() => {
       >
     </template>
     <div v-else-if="filtering" class="audit-empty-action">
-      <EmptyState title="没有符合条件的审计事件" description="调整筛选条件或扩大时间范围后重新查询。" />
+      <EmptyState title="没有符合筛选条件的审计事件" description="调整筛选条件或扩大时间范围后重新查询。" />
       <el-button data-testid="audit-clear-filters" @click="reset">清除筛选</el-button>
     </div>
     <div v-else class="audit-empty-action">

@@ -4225,7 +4225,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 真实运营商受控联调安全状态 */
+        /** 真实厂商受控联调安全状态 */
         get: {
             parameters: {
                 query?: never;
@@ -4595,7 +4595,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 异步激活真实运营商受控联调 */
+        /** 异步激活真实厂商受控联调 */
         post: {
             parameters: {
                 query?: never;

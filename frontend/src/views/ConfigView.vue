@@ -479,9 +479,7 @@ onMounted(() => {
       <span>登录时由用户明确选择，不自动回退</span>
     </header>
 
-    <el-alert v-if="providerError" :title="providerError" type="error" :closable="false" show-icon>
-      <template #default><el-button link type="primary" @click="loadProvider">重新加载</el-button></template>
-    </el-alert>
+    <LoadErrorAlert :message="providerError" @retry="loadProvider" />
 
     <article data-testid="local-provider" class="provider-local-row">
       <div class="provider-mark local">LOCAL</div>

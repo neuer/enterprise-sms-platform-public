@@ -137,7 +137,7 @@ const statusPresentation = computed(() => {
     return { title: "待激活", detail: "真实出口保持关闭，完成检查后可二次认证激活", tone: "neutral" }
   }
   if (status.value.mode === "controlled") {
-    return { title: "受控联调中", detail: "仅登记号码可通过真实运营商出口发送", tone: "success" }
+    return { title: "受控联调中", detail: "仅登记号码可通过真实厂商出口发送", tone: "success" }
   }
   return { title: "安全阻断", detail: "需先完成错误处置，再按暂停类型恢复", tone: "danger" }
 })
@@ -293,14 +293,14 @@ function finishOperation(operation: VendorTestOperation): void {
           "测试环境可能处于部分切换状态，请勿发送，并按安全代码恢复同一操作",
       )
     } else if (operation.vendor_code !== null) {
-      ElMessage.error(`运营商返回错误代码 ${operation.vendor_code}`)
+      ElMessage.error(`厂商返回错误代码 ${operation.vendor_code}`)
     } else {
       ElMessage.error(`受控操作失败：${operation.safe_code || "CONTROL_OPERATION_FAILED"}`)
     }
   } else {
     ElMessage.success(
       operation.operation_type === "uat_send"
-        ? "真实 UAT 已被运营商受理"
+        ? "真实 UAT 已被厂商受理"
         : operation.operation_type === "reset_configuration"
           ? "测试环境已切回 Mock，正式厂商凭据已撤销；测试号码与生产环境未变"
           : "受控操作成功",
@@ -361,7 +361,7 @@ async function requestActivation(): Promise<void> {
   // 取消 / 关闭时操作者保留当前关闭状态。
   if (
     !(await confirmAction({
-      title: "激活真实运营商受控联调",
+      title: "激活真实厂商受控联调",
       body: "确认正式凭据已安装、至少登记一个自有测试号码，并理解激活后仅允许系统配置页单号码 UAT。",
       confirmText: "进入二次认证",
       cancelText: "继续检查",
@@ -455,7 +455,7 @@ async function resume(): Promise<void> {
     if (
       !(await confirmAction({
         title: "恢复安全阻断",
-        body: "确认已完成余额或运营商错误处置。恢复前系统会再次检查余额。",
+        body: "确认已完成余额或厂商错误处置。恢复前系统会再次检查余额。",
         confirmText: "进入二次认证",
         cancelText: "继续阻断",
       }))
@@ -558,7 +558,7 @@ onBeforeUnmount(() => {
     <header class="vendor-test-status" :class="`is-${statusPresentation.tone}`">
       <div class="vendor-test-state-mark" aria-hidden="true"><i></i><span>LIVE</span></div>
       <div>
-        <p class="eyebrow">CONTROLLED CARRIER LINK</p>
+        <p class="eyebrow">CONTROLLED VENDOR LINK</p>
         <h2 id="vendor-test-heading">{{ statusPresentation.title }}</h2>
         <p>{{ statusPresentation.detail }}</p>
       </div>
@@ -582,7 +582,7 @@ onBeforeUnmount(() => {
       <span><i></i>仅系统配置页入口</span>
       <span><i></i>仅登记号码</span>
       <span><i></i>超时不自动重发</span>
-      <span><i></i>运营商报备默认已完成，返回错误时仅告知代码</span>
+      <span><i></i>厂商报备默认已完成，返回错误时仅告知代码</span>
     </div>
 
     <div class="vendor-test-layout">
@@ -724,7 +724,7 @@ onBeforeUnmount(() => {
         ><span>安全代码</span><code>{{ activeOperation.safe_code }}</code></div
       >
       <div v-if="activeOperation.vendor_code !== null"
-        ><span>运营商错误代码</span><code>{{ activeOperation.vendor_code }}</code></div
+        ><span>厂商错误代码</span><code>{{ activeOperation.vendor_code }}</code></div
       >
       <p v-if="resetOperationPending" class="vendor-operation-guidance">
         正在切回 Mock，请勿发送或重复操作；切换前历史未决记录会保留。

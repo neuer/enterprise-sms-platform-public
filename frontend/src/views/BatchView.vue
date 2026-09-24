@@ -63,6 +63,7 @@ const selected = ref<BatchItem | null>(null)
 const detailStatus = ref("")
 const rescheduleOpen = ref(false)
 const scheduledAt = ref("")
+const rescheduling = ref(false)
 const canWrite = computed(() => session.canWrite)
 const canDecrypt = computed(() => session.canDecrypt)
 const isAdmin = computed(() => session.isAdmin)
@@ -298,15 +299,30 @@ function openReschedule(): void {
 }
 
 async function saveReschedule(): Promise<void> {
-  if (!selected.value || !scheduledAt.value) return
+  if (!selected.value || !scheduledAt.value || rescheduling.value) return
+  const target = selected.value
+  const batch = target.batch_no
+  if (
+    !(await confirmAuditedAction({
+      isCurrent: () => selected.value === target && canScheduleOps.value,
+      title: "确认改期",
+      body: `批次 ${batch} 将改到新的定时时间，并重新执行审批判定；到达新时间前批次保持「已排期」。`,
+      auditNote: "改期行为与操作人将写入审计日志。",
+      confirmText: "确认改期",
+    }))
+  )
+    return
+  rescheduling.value = true
   try {
-    await rescheduleBatch(selected.value.batch_no, toApiDateTime(new Date(scheduledAt.value)))
+    await rescheduleBatch(batch, toApiDateTime(new Date(scheduledAt.value)))
     rescheduleOpen.value = false
     drawer.value = false
-    ElMessage.success("批次已改期并重新执行审批判定")
+    ElMessage.success("批次已改期并重新执行审批判定 · 本次操作已记入审计")
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "改期失败"))
+  } finally {
+    rescheduling.value = false
   }
 }
 
@@ -592,7 +608,7 @@ watch(moreOpen, (open) => {
           ></template
         >
       </el-table-column>
-      <template #empty><EmptyState title="没有符合条件的批次" description="调整筛选条件后重新查询。" /></template>
+      <template #empty><EmptyState title="没有符合筛选条件的批次" description="调整筛选条件后重新查询。" /></template>
     </el-table>
     <div class="query-mobile-list">
       <article v-for="item in items" :key="item.batch_no">
@@ -818,7 +834,7 @@ watch(moreOpen, (open) => {
           label="回执时间"
           min-width="178"
           ><template #default="{ row }">{{ formatDateTime(row.report_time) }}</template></el-table-column
-        ><template #empty><EmptyState title="没有符合条件的明细" description="调整状态筛选后查看。" /></template
+        ><template #empty><EmptyState title="没有符合筛选条件的明细" description="调整状态筛选后查看。" /></template
       ></el-table>
       <ListPagination
         v-model:page="detailPage"
@@ -839,7 +855,13 @@ watch(moreOpen, (open) => {
       placeholder="选择新的发送时间"
     /><template #footer
       ><el-button @click="rescheduleOpen = false">取消</el-button
-      ><el-button type="primary" :disabled="!scheduledAt" @click="saveReschedule">确认改期</el-button></template
+      ><el-button
+        type="primary"
+        :loading="rescheduling"
+        :disabled="!scheduledAt || rescheduling"
+        @click="saveReschedule"
+        >确认改期</el-button
+      ></template
     ></el-dialog
   >
 </template>

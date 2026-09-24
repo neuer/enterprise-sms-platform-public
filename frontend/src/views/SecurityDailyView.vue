@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import SecurityDailyConfigDialog from "../components/SecurityDailyConfigDialog.vue"
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { apiErrorMessage } from "../lib/securityDaily"
 import { useLatestRead } from "../composables/useLatestRead"
 import { usePagedList } from "../composables/usePagedList"
@@ -461,7 +462,7 @@ onMounted(() => void refresh())
   <section class="page-heading security-daily-heading">
     <div>
       <p class="eyebrow">SECURITY DAILY / 安全日报</p>
-      <h1>服务器安全日报</h1>
+      <h1>安全日报</h1>
       <p
         >固定 08:00（北京时间）汇总前一自然日；页面只展示脱敏结构化证据，手机号与密钥永不进入界面，Resend Key
         保存后不回显。写操作全部写入审计。</p
@@ -476,14 +477,7 @@ onMounted(() => void refresh())
     </div>
   </section>
 
-  <el-alert
-    v-if="overviewErrorMessage"
-    class="security-daily-alert"
-    :title="overviewErrorMessage"
-    type="error"
-    show-icon
-    :closable="false"
-  />
+  <LoadErrorAlert class="security-daily-alert" :message="overviewErrorMessage" @retry="loadOverview" />
 
   <section v-if="overview" class="security-daily-overview" aria-label="安全日报概览">
     <div class="security-daily-state">
@@ -613,16 +607,7 @@ onMounted(() => void refresh())
     >
   </aside>
 
-  <el-alert
-    v-if="reportsErrorMessage"
-    class="security-daily-alert"
-    :title="reportsErrorMessage"
-    type="error"
-    show-icon
-    :closable="false"
-  >
-    <template #default><el-button link type="primary" @click="loadReports">重新加载</el-button></template>
-  </el-alert>
+  <LoadErrorAlert class="security-daily-alert" :message="reportsErrorMessage" @retry="loadReports" />
 
   <section class="security-daily-results">
     <template v-if="reports.length || loading">
@@ -692,14 +677,11 @@ onMounted(() => void refresh())
         >
       </el-table>
     </template>
-    <div v-else-if="reportsErrorMessage" class="security-daily-empty-action">
-      <EmptyState title="安全日报记录暂不可用" description="请刷新重试；若持续失败，请检查独立投递控制面状态。" />
-    </div>
-    <div v-else-if="filtering" class="security-daily-empty-action">
+    <div v-else-if="!reportsErrorMessage && filtering" class="security-daily-empty-action">
       <EmptyState title="没有符合筛选条件的安全日报" description="调整报告日期或状态筛选后重新查询。" />
       <el-button data-testid="security-daily-clear-filters" @click="resetFilters">清除筛选</el-button>
     </div>
-    <div v-else class="security-daily-empty-action">
+    <div v-else-if="!reportsErrorMessage" class="security-daily-empty-action">
       <EmptyState :title="reportsEmptyTitle" :description="reportsEmptyDescription" />
     </div>
 

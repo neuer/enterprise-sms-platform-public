@@ -729,7 +729,7 @@ onMounted(() => {
       </div>
     </template>
     <div v-else-if="filtering" class="user-empty-action">
-      <EmptyState title="没有符合条件的账号" description="调整关键词或筛选条件后重新查询。" />
+      <EmptyState title="没有符合筛选条件的账号" description="调整关键词或筛选条件后重新查询。" />
       <el-button data-testid="clear-user-filters" @click="resetFilters">清除筛选</el-button>
     </div>
     <div v-else class="user-empty-action">

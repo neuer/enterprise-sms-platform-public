@@ -673,7 +673,7 @@ describe("审计与系统参数", () => {
       .find((button) => button.text().includes("查询"))!
       .trigger("click")
     await flushPromises()
-    expect(wrapper.text()).toContain("没有符合条件的审计事件")
+    expect(wrapper.text()).toContain("没有符合筛选条件的审计事件")
 
     await wrapper.get("[data-testid='audit-clear-filters']").trigger("click")
     await flushPromises()

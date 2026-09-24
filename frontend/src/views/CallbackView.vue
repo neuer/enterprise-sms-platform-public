@@ -383,7 +383,7 @@ onMounted(() => {
       </div>
     </template>
     <div v-else-if="filtering" class="callback-empty-action">
-      <EmptyState title="没有符合筛选的回调任务" description="调整状态、应用、事件或批次号后重新查询。" />
+      <EmptyState title="没有符合筛选条件的回调任务" description="调整状态、应用、事件或批次号后重新查询。" />
       <el-button data-testid="clear-callback-filters" @click="resetFilters">清除筛选</el-button>
     </div>
     <div v-else class="callback-empty-action">
