@@ -240,18 +240,6 @@
   font: 10px/1.4 var(--mono);
   font-variant-numeric: tabular-nums;
 }
-.vendor-empty-state {
-  margin-top: 12px;
-  padding: 18px;
-  border: 1px dashed var(--line-2);
-  background: var(--surface-soft);
-  text-align: center;
-}
-.vendor-empty-state p {
-  margin: 5px 0 0;
-  color: var(--muted);
-  font-size: 10px;
-}
 .vendor-uat-panel > .el-alert {
   margin-top: 14px;
 }

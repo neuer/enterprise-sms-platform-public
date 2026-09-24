@@ -144,24 +144,30 @@ async function add(): Promise<void> {
   }
 }
 
+// 移出在途守卫：进入即置位（confirm 之前），拦截确认框期间的重复点击。
+const removingHmac = ref<string | null>(null)
 async function remove(item: BlacklistItem): Promise<void> {
   item = { ...item }
-  if (
-    !(await confirmAuditedAction({
-      title: "移出黑名单确认",
-      body: `将 ${item.phone_mask} 移出黑名单？移出后通知与营销发送不再拦截该号码（验证码本就不拦截）。`,
-      auditNote: "移除行为与操作人将写入审计日志；审计只记数量，不记号码。",
-      confirmText: "移出黑名单",
-    }))
-  )
-    return
+  if (removingHmac.value !== null) return
+  removingHmac.value = item.phone_hmac
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "移出黑名单确认",
+        body: `将 ${item.phone_mask} 移出黑名单？移出后通知与营销发送不再拦截该号码（验证码本就不拦截）。`,
+        auditNote: "移除行为与操作人将写入审计日志；审计只记数量，不记号码。",
+        confirmText: "移出黑名单",
+      }))
+    )
+      return
     await deleteBlacklist(item.phone_hmac)
     ElMessage.success("已移出黑名单 · 本次操作已记入审计")
     if (items.value.length === 1 && page.value > 1) page.value -= 1
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "移除失败"))
+  } finally {
+    removingHmac.value = null
   }
 }
 
@@ -186,7 +192,7 @@ onMounted(() => void load())
         :options="sourceOptions"
         data-testid="blacklist-source-seg"
         button-testid-prefix="blacklist-source"
-        aria-label="来源筛选"
+        label="来源筛选"
         @update:model-value="setSource"
       />
     </div>
@@ -240,6 +246,8 @@ onMounted(() => void load())
             :data-testid="`blacklist-delete-${row.phone_hmac.slice(0, 8)}`"
             link
             type="danger"
+            :loading="removingHmac === row.phone_hmac"
+            :disabled="removingHmac !== null"
             @click="remove(row)"
             >移除</el-button
           >
@@ -261,6 +269,8 @@ onMounted(() => void load())
             :data-testid="`mobile-blacklist-delete-${item.phone_hmac.slice(0, 8)}`"
             link
             type="danger"
+            :loading="removingHmac === item.phone_hmac"
+            :disabled="removingHmac !== null"
             @click="remove(item)"
             >移除</el-button
           >

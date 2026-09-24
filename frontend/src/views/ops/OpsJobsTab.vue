@@ -66,17 +66,18 @@ async function load(_tab?: string): Promise<void> {
 async function trigger(item: JobItem): Promise<void> {
   item = { ...item }
   if (triggeringJobName.value) return
-  if (
-    !(await confirmAuditedAction({
-      title: "确认任务触发",
-      body: `手动触发 ${item.job_name} 将立即投递一次执行，不改变 beat 既有调度。`,
-      auditNote: "触发行为与操作人将写入审计日志。",
-      confirmText: "手动触发",
-    }))
-  )
-    return
+  // 进函数即置 busy（confirm 之前），确认框期间拦截重复点击。
   triggeringJobName.value = item.job_name
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "确认任务触发",
+        body: `手动触发 ${item.job_name} 将立即投递一次执行，不改变 beat 既有调度。`,
+        auditNote: "触发行为与操作人将写入审计日志。",
+        confirmText: "手动触发",
+      }))
+    )
+      return
     await triggerJob(item.job_name)
     ElMessage.success("任务已投递 · 本次操作已记入审计")
     // 触发后重查心跳：让操作者立刻看到 last_status/耗时变化，而不是停留在旧快照。
@@ -162,7 +163,7 @@ watch(
               @click="trigger(item)"
               >手动触发</el-button
             ></article
-          ><EmptyState v-if="!jobs.length" :title="JOBS_EMPTY.title" :description="JOBS_EMPTY.description"
+          ><EmptyState v-if="!loading && !jobs.length" :title="JOBS_EMPTY.title" :description="JOBS_EMPTY.description"
         /></div>
       </section>
     </section>

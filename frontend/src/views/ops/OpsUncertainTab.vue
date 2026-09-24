@@ -87,6 +87,8 @@ const resolutionBusy = ref(false)
 async function proposeResolution(item: UncertainItem, action: UncertainResolutionAction): Promise<void> {
   item = { ...item }
   if (resolutionBusy.value) return
+  // 进函数即置 busy（confirm 之前），确认框期间拦截重复点击。
+  resolutionBusy.value = true
   if (
     !(await confirmAuditedAction({
       title: "确认提出处置",
@@ -96,7 +98,6 @@ async function proposeResolution(item: UncertainItem, action: UncertainResolutio
     }))
   )
     return
-  resolutionBusy.value = true
   try {
     await proposeUncertainResolution(item.chunk_id, action)
     ElMessage.success("已提出处置 · 本次操作已记入审计")
@@ -111,6 +112,7 @@ async function proposeResolution(item: UncertainItem, action: UncertainResolutio
 async function confirmResolution(item: UncertainItem): Promise<void> {
   item = { ...item }
   if (item.resolution_id == null || resolutionBusy.value) return
+  resolutionBusy.value = true
   if (
     !(await confirmAuditedAction({
       title: "确认处置",
@@ -120,7 +122,6 @@ async function confirmResolution(item: UncertainItem): Promise<void> {
     }))
   )
     return
-  resolutionBusy.value = true
   try {
     await confirmUncertainResolution(item.resolution_id)
     ElMessage.success("处置已确认 · 本次操作已记入审计")
@@ -228,7 +229,7 @@ watch(
               >确认处置</el-button
             ></article
           ><EmptyState
-            v-if="!uncertain.length"
+            v-if="!loading && !uncertain.length"
             :title="UNCERTAIN_EMPTY.title"
             :description="UNCERTAIN_EMPTY.description"
         /></div>

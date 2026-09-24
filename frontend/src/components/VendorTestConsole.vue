@@ -21,6 +21,7 @@ import {
 import { listApps, type ManagedApp } from "../api/apps"
 import { ApiRequestError } from "../api/client"
 import PhoneMask from "./PhoneMask.vue"
+import EmptyState from "./EmptyState.vue"
 import LoadErrorAlert from "./LoadErrorAlert.vue"
 import VendorCredentialDialog from "./VendorCredentialDialog.vue"
 import VendorTestRecipientDialog from "./VendorTestRecipientDialog.vue"
@@ -696,9 +697,7 @@ onBeforeUnmount(() => {
               </div>
             </article>
           </div>
-          <div v-else class="vendor-empty-state">
-            <strong>尚未登记测试号码</strong><p>登记自有号码后，真实出口仍保持关闭，需另行激活。</p>
-          </div>
+          <EmptyState v-else title="尚未登记测试号码" description="登记自有号码后，真实出口仍保持关闭，需另行激活。" />
         </section>
       </section>
 

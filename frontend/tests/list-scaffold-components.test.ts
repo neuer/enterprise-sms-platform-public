@@ -61,10 +61,10 @@ describe("FilterSeg", () => {
     { label: "导入", value: "import", testid: "custom-import" },
   ]
 
-  it("渲染 role=group 与选项按钮，激活项带 on 类；透传 aria-label 与 data-testid 到组容器", () => {
+  it("渲染 role=group 与选项按钮，激活项带 on 类；label prop 渲染为组容器 aria-label", () => {
     const wrapper = mount(FilterSeg, {
-      props: { modelValue: "manual", options },
-      attrs: { "aria-label": "来源筛选", "data-testid": "demo-seg" },
+      props: { modelValue: "manual", options, label: "来源筛选" },
+      attrs: { "data-testid": "demo-seg" },
     })
     const group = wrapper.get("[role='group']")
     expect(group.attributes("aria-label")).toBe("来源筛选")
@@ -77,14 +77,14 @@ describe("FilterSeg", () => {
 
   it("按钮 testid 由前缀与 key 推导，option.testid 可覆盖", () => {
     const wrapper = mount(FilterSeg, {
-      props: { modelValue: "", options, buttonTestidPrefix: "demo-source" },
+      props: { modelValue: "", options, label: "来源筛选", buttonTestidPrefix: "demo-source" },
     })
     const testids = wrapper.findAll("button").map((button) => button.attributes("data-testid"))
     expect(testids).toEqual(["demo-source-all", "demo-source-manual", "custom-import"])
   })
 
   it("点击非激活项 emit 新值；点击当前项不重复 emit", async () => {
-    const wrapper = mount(FilterSeg, { props: { modelValue: "", options } })
+    const wrapper = mount(FilterSeg, { props: { modelValue: "", options, label: "来源筛选" } })
     const buttons = wrapper.findAll("button")
     await buttons[2].trigger("click")
     expect(wrapper.emitted("update:modelValue")).toEqual([["import"]])
@@ -94,7 +94,7 @@ describe("FilterSeg", () => {
   })
 
   it("整体或单项 disabled 时不 emit", async () => {
-    const wrapper = mount(FilterSeg, { props: { modelValue: "", options, disabled: true } })
+    const wrapper = mount(FilterSeg, { props: { modelValue: "", options, label: "来源筛选", disabled: true } })
     await wrapper.findAll("button")[1].trigger("click")
     expect(wrapper.emitted("update:modelValue")).toBeUndefined()
   })
@@ -103,6 +103,7 @@ describe("FilterSeg", () => {
     const wrapper = mount(FilterSeg, {
       props: {
         modelValue: "a",
+        label: "演示分组",
         options: [
           { label: "甲", value: "a", count: 3 },
           { label: "乙", value: "b", count: null, class: "hot" },
@@ -122,7 +123,7 @@ describe("FilterSeg", () => {
 
   it("class 透传合并到根节点（变体类承载紧凑/胶囊/分组样式）", () => {
     const wrapper = mount(FilterSeg, {
-      props: { modelValue: "", options },
+      props: { modelValue: "", options, label: "来源筛选" },
       attrs: { class: "filter-seg--compact" },
     })
     const root = wrapper.get("[role='group']")

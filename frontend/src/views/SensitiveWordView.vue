@@ -152,24 +152,30 @@ async function add(): Promise<void> {
   }
 }
 
+// 删除在途守卫：进入即置位（confirm 之前），拦截确认框期间的重复点击。
+const removingId = ref<number | null>(null)
 async function remove(item: SensitiveWordItem): Promise<void> {
   item = { ...item }
-  if (
-    !(await confirmAuditedAction({
-      title: "删除敏感词确认",
-      body: `删除“${item.word}”？删除后该词不再参与命中判定（当前策略为${policy.value === "block" ? "命中阻断" : "仅审计"}，验证码 / 通知 / 营销全类别一致生效）。`,
-      auditNote: "删除行为与操作人将写入审计日志；审计只记数量，不记词面。",
-      confirmText: "删除敏感词",
-    }))
-  )
-    return
+  if (removingId.value !== null) return
+  removingId.value = item.id
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "删除敏感词确认",
+        body: `删除“${item.word}”？删除后该词不再参与命中判定（当前策略为${policy.value === "block" ? "命中阻断" : "仅审计"}，验证码 / 通知 / 营销全类别一致生效）。`,
+        auditNote: "删除行为与操作人将写入审计日志；审计只记数量，不记词面。",
+        confirmText: "删除敏感词",
+      }))
+    )
+      return
     await deleteSensitiveWord(item.id)
     ElMessage.success("已删除敏感词 · 本次操作已记入审计")
     if (items.value.length === 1 && page.value > 1) page.value -= 1
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "删除失败"))
+  } finally {
+    removingId.value = null
   }
 }
 
@@ -196,7 +202,7 @@ onMounted(() => {
           :model-value="policy"
           :options="policyOptions"
           button-testid-prefix="sensitive-policy"
-          aria-label="命中策略"
+          label="命中策略"
           :disabled="policySaving || policyLoading || !policy || Boolean(policyError)"
           @update:model-value="setPolicy"
         />
@@ -255,6 +261,7 @@ onMounted(() => {
             class="sensitive-tile-del"
             :data-testid="`sensitive-delete-${item.id}`"
             :aria-label="`删除 ${item.word}`"
+            :disabled="removingId !== null"
             @click="remove(item)"
             >✕</button
           >

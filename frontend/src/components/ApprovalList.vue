@@ -4,6 +4,7 @@ import { triggerRule, formatSegments } from "../lib/approvalText"
 import { computed, ref } from "vue"
 
 import { ClickOutside as vClickOutside } from "element-plus"
+import { vRowActivate } from "../lib/directives"
 
 import type { ApprovalAction, ApprovalListItem, ApprovalStatus } from "../api/approvals"
 
@@ -314,10 +315,10 @@ function confirmQuick(item: ApprovalListItem): void {
           <tr
             v-for="item in items"
             :key="item.id"
+            v-row-activate="() => emit('detail', item)"
             :data-testid="`approval-row-${item.id}`"
             tabindex="0"
             @click="emit('detail', item)"
-            @keydown.enter="emit('detail', item)"
           >
             <td data-label="批次号 / 申请时间">
               <span class="approval-batch-cell">

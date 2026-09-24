@@ -36,7 +36,7 @@ describe("黑名单 / 敏感词 qingluan 结构契约（规范 §8/§8a）", () 
 
   it("敏感词：命中策略 seg + 单行检索条 + 查询/重置", () => {
     expect(sensitive).toContain('class="sensitive-filter-bar"')
-    expect(sensitive).toContain('aria-label="命中策略"')
+    expect(sensitive).toContain('label="命中策略"')
     // 策略 seg 按钮 testid 由 FilterSeg 按前缀派生：sensitive-policy-${value}
     expect(sensitive).toContain('button-testid-prefix="sensitive-policy"')
     expect(sensitive).toContain('data-testid="sensitive-filter-keyword"')

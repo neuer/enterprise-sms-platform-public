@@ -196,7 +196,7 @@ onMounted(() => {
         :options="statusSegOptions"
         data-testid="callback-status-seg"
         button-testid-prefix="callback-status"
-        aria-label="投递状态筛选"
+        label="投递状态筛选"
         @update:model-value="setStatus"
       />
     </div>
@@ -207,7 +207,7 @@ onMounted(() => {
         :options="eventSegOptions"
         data-testid="callback-event-seg"
         button-testid-prefix="callback-event"
-        aria-label="事件筛选"
+        label="事件筛选"
         @update:model-value="setEvent"
       />
     </div>

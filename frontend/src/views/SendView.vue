@@ -702,7 +702,7 @@ onBeforeUnmount(() => {
               ...[{ label: '文件导入', value: 'import' as const }],
             ]"
             class="filter-seg--pill"
-            aria-label="号码来源"
+            label="号码来源"
             :disabled="busy"
           />
         </header>
@@ -817,7 +817,7 @@ onBeforeUnmount(() => {
               ...[{ label: '审核模板', value: 'template' as const }],
             ]"
             class="filter-seg--pill"
-            aria-label="内容来源"
+            label="内容来源"
             :disabled="busy"
           />
         </header>

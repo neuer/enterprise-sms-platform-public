@@ -270,27 +270,31 @@ const canResendFailed = computed(
   () => canWrite.value && selected.value?.channel === "web" && (selected.value?.failed ?? 0) > 0,
 )
 
+const cancelling = ref(false)
 async function cancelSelected(): Promise<void> {
-  if (!selected.value || !canScheduleOps.value) return
+  if (!selected.value || !canScheduleOps.value || cancelling.value) return
   const target = selected.value
   const batch = target.batch_no
-  if (
-    !(await confirmAuditedAction({
-      isCurrent: () => selected.value === target && canScheduleOps.value,
-      title: "确认取消",
-      body: `取消批次 ${batch}？配额将按规则回补。`,
-      auditNote: "取消行为与操作人将写入审计日志。",
-      confirmText: "确认取消",
-    }))
-  )
-    return
+  cancelling.value = true
   try {
+    if (
+      !(await confirmAuditedAction({
+        isCurrent: () => selected.value === target && canScheduleOps.value,
+        title: "确认取消",
+        body: `取消批次 ${batch}？配额将按规则回补。`,
+        auditNote: "取消行为与操作人将写入审计日志。",
+        confirmText: "确认取消",
+      }))
+    )
+      return
     await cancelBatch(batch)
     drawer.value = false
     ElMessage.success("批次已取消 · 本次操作已记入审计")
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "取消失败"))
+  } finally {
+    cancelling.value = false
   }
 }
 
@@ -328,27 +332,31 @@ async function saveReschedule(): Promise<void> {
   }
 }
 
+const resending = ref(false)
 async function resendFailed(): Promise<void> {
-  if (!selected.value || !canResendFailed.value) return
+  if (!selected.value || !canResendFailed.value || resending.value) return
   const target = selected.value
   const batch = target.batch_no
-  if (
-    !(await confirmAuditedAction({
-      isCurrent: () => selected.value === target && canResendFailed.value,
-      title: "确认重发",
-      body: "失败号码将生成新批次并完整重走频控、审批和时间窗。",
-      auditNote: "重发行为与操作人将写入审计日志。",
-      confirmText: "确认重发",
-    }))
-  )
-    return
+  resending.value = true
   try {
+    if (
+      !(await confirmAuditedAction({
+        isCurrent: () => selected.value === target && canResendFailed.value,
+        title: "确认重发",
+        body: "失败号码将生成新批次并完整重走频控、审批和时间窗。",
+        auditNote: "重发行为与操作人将写入审计日志。",
+        confirmText: "确认重发",
+      }))
+    )
+      return
     const result = await resendFailedBatch(batch)
     ElMessage.success(`重发批次 ${result.batch_no} 已创建 · 本次操作已记入审计`)
     drawer.value = false
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "重发失败"))
+  } finally {
+    resending.value = false
   }
 }
 
@@ -429,11 +437,11 @@ watch(moreOpen, (open) => {
     </div>
     <div class="batch-fld">
       <span>类别</span>
-      <FilterSeg v-model="category" :options="categoryOptions" aria-label="类别" data-testid="batch-category-filter" />
+      <FilterSeg v-model="category" :options="categoryOptions" label="类别" data-testid="batch-category-filter" />
     </div>
     <div class="batch-fld">
       <span>渠道</span>
-      <FilterSeg v-model="channel" :options="channelOptions" aria-label="渠道" data-testid="batch-channel-filter" />
+      <FilterSeg v-model="channel" :options="channelOptions" label="渠道" data-testid="batch-channel-filter" />
     </div>
     <div class="batch-fld">
       <span>创建时间</span>
@@ -461,12 +469,7 @@ watch(moreOpen, (open) => {
         </template>
         <div class="batch-more">
           <label>测试发送</label>
-          <FilterSeg
-            v-model="isTest"
-            :options="isTestOptions"
-            aria-label="测试发送"
-            data-testid="batch-is-test-filter"
-          />
+          <FilterSeg v-model="isTest" :options="isTestOptions" label="测试发送" data-testid="batch-is-test-filter" />
           <label>应用</label>
           <el-select
             v-if="appOptions.length"
@@ -510,7 +513,7 @@ watch(moreOpen, (open) => {
     :options="statusChipOptions"
     class="filter-seg--chips"
     data-testid="batch-status-chips"
-    aria-label="按状态分组筛选"
+    label="按状态分组筛选"
     button-testid-prefix="batch-chip"
     @update:model-value="selectGroup"
   >
@@ -678,13 +681,25 @@ watch(moreOpen, (open) => {
     </template>
     <template v-if="selected">
       <div v-if="canWrite" class="batch-actions">
-        <el-button type="danger" plain :disabled="!canScheduleOps" data-testid="cancel-batch" @click="cancelSelected"
+        <el-button
+          type="danger"
+          plain
+          :loading="cancelling"
+          :disabled="!canScheduleOps || cancelling"
+          data-testid="cancel-batch"
+          @click="cancelSelected"
           >取消批次</el-button
         >
-        <el-button :disabled="!canScheduleOps" data-testid="reschedule-batch" @click="openReschedule">改期</el-button>
+        <el-button
+          :disabled="!canScheduleOps || cancelling || resending"
+          data-testid="reschedule-batch"
+          @click="openReschedule"
+          >改期</el-button
+        >
         <el-button
           v-if="selected.failed > 0"
-          :disabled="!canResendFailed"
+          :loading="resending"
+          :disabled="!canResendFailed || resending"
           data-testid="resend-failed"
           @click="resendFailed"
           >重发失败（{{ selected.failed.toLocaleString() }}）</el-button

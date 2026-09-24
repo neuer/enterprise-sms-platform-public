@@ -27,6 +27,7 @@ import {
   type SecurityStatus,
 } from "../api/securityDaily"
 import EmptyState from "../components/EmptyState.vue"
+import { vRowActivate } from "../lib/directives"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
@@ -551,7 +552,7 @@ onMounted(() => void refresh())
           :options="statusSegOptions"
           button-testid-prefix="security-daily-status"
           class="filter-seg--compact"
-          aria-label="安全状态筛选"
+          label="安全状态筛选"
           data-testid="security-daily-status-seg"
           @update:model-value="setStatus"
         />
@@ -563,7 +564,7 @@ onMounted(() => void refresh())
           :options="generationSegOptions"
           button-testid-prefix="security-daily-generation"
           class="filter-seg--compact"
-          aria-label="生成状态筛选"
+          label="生成状态筛选"
           data-testid="security-daily-generation-seg"
           @update:model-value="setGenerationStatus"
         />
@@ -575,7 +576,7 @@ onMounted(() => void refresh())
           :options="deliverySegOptions"
           button-testid-prefix="security-daily-delivery"
           class="filter-seg--compact"
-          aria-label="投递状态筛选"
+          label="投递状态筛选"
           data-testid="security-daily-delivery-seg"
           @update:model-value="setDeliveryStatus"
         />
@@ -663,6 +664,7 @@ onMounted(() => void refresh())
         <el-table-column label="操作" width="170" fixed="right"
           ><template #default="scope"
             ><el-button
+              v-row-activate="() => openReport(scope.row.id)"
               link
               type="primary"
               :aria-label="`查看 ${scope.row.report_date} 安全日报详情`"

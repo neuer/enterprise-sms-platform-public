@@ -101,21 +101,23 @@ function outboxStateMeta(state: OutboxState): { label: string; tag: "info" | "wa
 
 async function retryOutbox(item: OutboxEventItem): Promise<void> {
   item = { ...item }
-  if (
-    !(await confirmAuditedAction({
-      title: "确认重推 Outbox 事件",
-      body: h("p", [
-        "将死信事件 ",
-        h("strong", item.event_type),
-        `（${item.aggregate_type}/${item.aggregate_id}）重置为待投递，dispatcher 将按租约重新投递。`,
-      ]),
-      auditNote: "重推行为与操作人将写入审计日志。",
-      confirmText: "重推事件",
-    }))
-  )
-    return
+  if (retryingOutboxId.value !== null) return
+  // 进函数即置 busy（confirm 之前），确认框期间拦截重复点击。
+  retryingOutboxId.value = item.id
   try {
-    retryingOutboxId.value = item.id
+    if (
+      !(await confirmAuditedAction({
+        title: "确认重推 Outbox 事件",
+        body: h("p", [
+          "将死信事件 ",
+          h("strong", item.event_type),
+          `（${item.aggregate_type}/${item.aggregate_id}）重置为待投递，dispatcher 将按租约重新投递。`,
+        ]),
+        auditNote: "重推行为与操作人将写入审计日志。",
+        confirmText: "重推事件",
+      }))
+    )
+      return
     await retryOutboxEvent(item.id)
     ElMessage.success("事件已重置为待投递 · 本次操作已记入审计")
     await load("outbox")
@@ -161,7 +163,7 @@ watch(
               ...OUTBOX_STATE_OPTIONS,
             ]"
             button-testid-prefix="ops-outbox-state"
-            aria-label="Outbox 事件状态筛选"
+            label="Outbox 事件状态筛选"
             data-testid="ops-outbox-state"
             @update:model-value="setOutboxState"
           />
@@ -246,7 +248,10 @@ watch(
               @click="retryOutbox(item)"
               >重推</el-button
             ></article
-          ><EmptyState v-if="!outboxEvents.length" :title="outboxEmpty.title" :description="outboxEmpty.description"
+          ><EmptyState
+            v-if="!loading && !outboxEvents.length"
+            :title="outboxEmpty.title"
+            :description="outboxEmpty.description"
         /></div>
         <ListPagination
           v-model:page="outboxPage"

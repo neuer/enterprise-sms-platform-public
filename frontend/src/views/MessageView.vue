@@ -252,7 +252,7 @@ async function revealSearched(): Promise<string> {
           ...[{ label: '列表', value: 'list' as const, testid: 'message-view-list' }],
           ...[{ label: '时间线', value: 'timeline' as const, testid: 'message-view-timeline' }],
         ]"
-        aria-label="查询视图"
+        label="查询视图"
         data-testid="message-mode-seg"
         @update:model-value="switchMode"
       />

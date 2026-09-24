@@ -212,7 +212,10 @@ watch(
             ><header><PhoneMask :value="item.phone_mask" /><el-tag type="warning">无主报告</el-tag></header
             ><code>{{ item.custom_id || "—" }}</code
             ><p>{{ item.report_desc || "未知结果" }} · {{ formatDateTime(item.report_time) }}</p></article
-          ><EmptyState v-if="!unmatched.length" :title="unmatchedEmpty.title" :description="unmatchedEmpty.description"
+          ><EmptyState
+            v-if="!loading && !unmatched.length"
+            :title="unmatchedEmpty.title"
+            :description="unmatchedEmpty.description"
         /></div>
         <ListPagination
           v-model:page="unmatchedPage"

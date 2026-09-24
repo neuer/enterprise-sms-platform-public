@@ -704,7 +704,7 @@ onMounted(() => {
             ...groupOptions.map((value) => ({ value, label: value })),
           ]"
           button-testid-prefix="config-group"
-          aria-label="参数分组筛选"
+          label="参数分组筛选"
           data-testid="config-group-seg"
           @update:model-value="setGroup"
         />

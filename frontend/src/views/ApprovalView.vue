@@ -364,7 +364,7 @@ onMounted(() => {
         :options="statusTabs"
         data-testid="approval-status-seg"
         button-testid-prefix="approval-status"
-        aria-label="审批状态"
+        label="审批状态"
         @update:model-value="onStatusChange"
       >
         <template #option="{ option }">

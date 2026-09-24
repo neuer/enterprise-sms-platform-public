@@ -68,6 +68,9 @@ const keyGraceHours = ref<number | null>(null)
 const secretOperation = ref<SecretOperation | null>(null)
 const rotatingKeyId = ref<number | null>(null)
 const rotatingCallbackId = ref<number | null>(null)
+// 行级动作在途守卫：进入即置位（confirm 之前），拦截确认框期间的重复点击。
+const revokingKeyId = ref<number | null>(null)
+const statusBusyId = ref<number | null>(null)
 /** 今日用量联查结果（dim_value = app.id 字符串）；完整联查成功前单元格显示「—」。 */
 const dailyUsage = ref<Map<string, ReportRow>>(new Map())
 const usageRead = useLatestRead()
@@ -514,22 +517,25 @@ async function rotateKey(item: ManagedApp): Promise<void> {
 
 async function revokeKey(item: ManagedApp): Promise<void> {
   item = { ...item }
-  if (!item.old_key_prefix || !item.old_key_expires_at) return
-  if (
-    !(await confirmAuditedAction({
-      title: "立即作废旧 Key？",
-      body: `旧 Key ${item.old_key_prefix}•••• 原定 ${formatDateTime(item.old_key_expires_at)} 到期，作废后立即失效；仍使用旧 Key 的调用方将收到 401。`,
-      auditNote: "作废行为与操作人将写入审计日志。",
-      confirmText: "确认作废",
-    }))
-  )
-    return
+  if (!item.old_key_prefix || !item.old_key_expires_at || revokingKeyId.value !== null) return
+  revokingKeyId.value = item.id
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "立即作废旧 Key？",
+        body: `旧 Key ${item.old_key_prefix}•••• 原定 ${formatDateTime(item.old_key_expires_at)} 到期，作废后立即失效；仍使用旧 Key 的调用方将收到 401。`,
+        auditNote: "作废行为与操作人将写入审计日志。",
+        confirmText: "确认作废",
+      }))
+    )
+      return
     await revokeOldAppKey(item.id)
     ElMessage.success("旧 Key 已作废 · 本次操作已记入审计")
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "作废失败"))
+  } finally {
+    revokingKeyId.value = null
   }
 }
 
@@ -562,43 +568,49 @@ async function rotateCallback(item: ManagedApp): Promise<void> {
 
 async function disable(item: ManagedApp): Promise<void> {
   item = { ...item }
-  if (
-    !(await confirmAuditedAction({
-      title: `停用应用 ${item.name}？`,
-      body: h("ul", { class: "apps-conseq" }, [
-        h("li", "当前与宽限期旧 API Key 立即吊销，发送/查询返回 401"),
-        h("li", "在途批次继续到终态，历史数据保留可查"),
-        h("li", "未终结的旧回调在同一事务隔离为不可重试"),
-        h("li", "恢复需管理员在详情抽屉重新启用"),
-      ]),
-      auditNote: "操作记审计（app_disable）· 操作人写入审计主体",
-      confirmText: "确认停用",
-    }))
-  )
-    return
+  if (statusBusyId.value !== null) return
+  statusBusyId.value = item.id
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: `停用应用 ${item.name}？`,
+        body: h("ul", { class: "apps-conseq" }, [
+          h("li", "当前与宽限期旧 API Key 立即吊销，发送/查询返回 401"),
+          h("li", "在途批次继续到终态，历史数据保留可查"),
+          h("li", "未终结的旧回调在同一事务隔离为不可重试"),
+          h("li", "恢复需管理员在详情抽屉重新启用"),
+        ]),
+        auditNote: "操作记审计（app_disable）· 操作人写入审计主体",
+        confirmText: "确认停用",
+      }))
+    )
+      return
     await disableApp(item.id)
     ElMessage.success(`应用 ${item.name} 已停用 · 本次操作已记入审计`)
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "停用失败"))
+  } finally {
+    statusBusyId.value = null
   }
 }
 
 /** 启用不再从列表行拼全字段 PUT：先取权威配置再仅改 status，消除字段漂移写坏配置的风险。 */
 async function enable(item: ManagedApp): Promise<void> {
   item = { ...item }
+  if (statusBusyId.value !== null) return
+  statusBusyId.value = item.id
   const isCurrent = captureCurrent()
-  if (
-    !(await confirmAuditedAction({
-      title: "确认启用",
-      body: `启用应用 ${item.name}？`,
-      auditNote: "启用行为与操作人将写入审计日志。",
-      confirmText: "确认启用",
-    }))
-  )
-    return
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "确认启用",
+        body: `启用应用 ${item.name}？`,
+        auditNote: "启用行为与操作人将写入审计日志。",
+        confirmText: "确认启用",
+      }))
+    )
+      return
     const current = await getApp(item.id)
     if (!isCurrent()) return
     await updateApp(item.id, {
@@ -625,6 +637,8 @@ async function enable(item: ManagedApp): Promise<void> {
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "启用失败"))
+  } finally {
+    statusBusyId.value = null
   }
 }
 
@@ -659,7 +673,7 @@ onMounted(() => {
         v-model="categoryFilter"
         :options="CATEGORY_FILTERS"
         button-testid-prefix="apps-category"
-        aria-label="类别筛选"
+        label="类别筛选"
         data-testid="apps-category-seg"
       />
     </div>
@@ -669,7 +683,7 @@ onMounted(() => {
         v-model="statusFilter"
         :options="STATUS_FILTERS"
         button-testid-prefix="apps-status"
-        aria-label="状态筛选"
+        label="状态筛选"
         data-testid="apps-status-seg"
       />
     </div>
@@ -845,7 +859,13 @@ onMounted(() => {
             {{ graceHoursLeft(detail) }}h），到期自动失效</small
           >
           <span class="apps-key-act">
-            <el-button :data-testid="`revoke-old-key-${detail.id}`" link type="danger" @click="revokeKey(detail)"
+            <el-button
+              :data-testid="`revoke-old-key-${detail.id}`"
+              link
+              type="danger"
+              :loading="revokingKeyId === detail.id"
+              :disabled="revokingKeyId !== null"
+              @click="revokeKey(detail)"
               >立即作废</el-button
             >
           </span>
@@ -906,10 +926,22 @@ onMounted(() => {
         <el-button :data-testid="`edit-app-${detail.id}`" @click="editFromDetail">编辑配置</el-button>
         <el-button :data-testid="`demo-script-${detail.id}`" @click="openDemo(detail)">接入示例</el-button>
         <span class="apps-foot-sp"></span>
-        <el-button v-if="detail.status" :data-testid="`disable-app-${detail.id}`" type="danger" @click="disable(detail)"
+        <el-button
+          v-if="detail.status"
+          :data-testid="`disable-app-${detail.id}`"
+          type="danger"
+          :loading="statusBusyId === detail.id"
+          :disabled="statusBusyId !== null"
+          @click="disable(detail)"
           >停用应用</el-button
         >
-        <el-button v-else :data-testid="`enable-app-${detail.id}`" type="success" @click="enable(detail)"
+        <el-button
+          v-else
+          :data-testid="`enable-app-${detail.id}`"
+          type="success"
+          :loading="statusBusyId === detail.id"
+          :disabled="statusBusyId !== null"
+          @click="enable(detail)"
           >启用应用</el-button
         >
       </div>
