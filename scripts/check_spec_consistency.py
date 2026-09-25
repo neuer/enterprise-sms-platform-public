@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -114,10 +115,12 @@ require(
     frontend_scripts.get("build:g2") == "vite build",
     "frontend build:g2 必须执行 Vite 生产构建",
 )
+EXPECTED_GEN_SCRIPT = (
+    "openapi-typescript ../openapi.yaml -o src/api/types.gen.ts && node scripts/stamp-api-types.mjs"
+)
 require(
-    frontend_scripts.get("gen:api-types")
-    == "openapi-typescript ../openapi.yaml -o src/api/types.gen.ts",
-    "frontend 必须提供 gen:api-types 契约类型生成脚本（CI 据此做零漂移门禁）",
+    frontend_scripts.get("gen:api-types") == EXPECTED_GEN_SCRIPT,
+    "frontend 必须提供 gen:api-types 契约类型生成脚本（含哈希钉戳后处理，CI 据此做零漂移门禁）",
 )
 
 uat_cases = re.findall(r"^\|\s*(\d{2})\s*\|", uat, flags=re.MULTILINE)
@@ -279,6 +282,18 @@ frontend_gen_types = read("frontend/src/api/types.gen.ts")
 require(
     "completed_unknown" in frontend_gen_types,
     "前端生成契约类型必须包含 completed_unknown",
+)
+# 契约类型零漂移的本地戳：openapi.yaml 内容哈希必须等于生成文件首行钉戳，
+# 防止「改了契约没重新生成类型」在本地全绿、到 CI 才失败。
+spec_digest = hashlib.sha256((ROOT / "openapi.yaml").read_bytes()).hexdigest()
+first_line = frontend_gen_types.splitlines()[0] if frontend_gen_types else ""
+STALE_TYPES_MESSAGE = (
+    "frontend/src/api/types.gen.ts 与 openapi.yaml 不同步："
+    "请在 frontend/ 运行 npm run gen:api-types 并提交生成文件"
+)
+require(
+    first_line == f"/* openapi.yaml sha256:{spec_digest} */",
+    STALE_TYPES_MESSAGE,
 )
 
 if (ROOT / ".git").exists():

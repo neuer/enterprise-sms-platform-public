@@ -50,6 +50,16 @@ def test_spec_docs_run_cheap_consistency_only() -> None:
     assert CHECK_VENDOR_PG not in result.checks
 
 
+def test_openapi_contract_change_runs_spec_consistency() -> None:
+    # openapi.yaml 变更必须触发规格一致性检查（含 types.gen.ts 哈希戳零漂移比对），
+    # 防止「改契约不重新生成前端类型」在本地全绿、到 CI 才失败。
+    result = plan(["openapi.yaml"])
+
+    assert CHECK_SPEC in result.checks
+    assert CHECK_MIGRATION not in result.checks
+    assert CHECK_VENDOR_PG not in result.checks
+
+
 def test_frontend_only_does_not_run_heavy_pg_gates() -> None:
     result = plan(["frontend/src/views/DashboardView.vue"])
 
