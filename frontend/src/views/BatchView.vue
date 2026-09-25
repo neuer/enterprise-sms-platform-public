@@ -831,7 +831,7 @@ watch(moreOpen, (open) => {
         ><el-select
           v-model="detailStatus"
           data-testid="batch-detail-status"
-          style="width: 128px"
+          class="batch-detail-status"
           placeholder="全部状态"
           clearable
           @change="filterDetails"

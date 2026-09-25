@@ -988,7 +988,7 @@ onMounted(() => {
             filterable
             :loading="signsLoading"
             :placeholder="approvedSigns.length ? '从已通过签名中选择' : '暂无已通过签名'"
-            style="width: 100%"
+            class="apps-form-select"
           >
             <el-option v-for="sign in approvedSigns" :key="sign.id" :value="sign.name" :label="`【${sign.name}】`" />
             <el-option v-if="legacySign" :value="legacySign" :label="`【${legacySign}】（未通过审核的遗留值）`" />
@@ -1085,13 +1085,13 @@ onMounted(() => {
           <el-input
             v-model="form.unlimited_quota_exempt_until"
             placeholder="无限配额豁免 ISO8601"
-            style="margin-top: 8px"
+            class="apps-form-stacked"
           />
           <el-input
             v-model="form.admission_exempt_note"
             maxlength="200"
             placeholder="豁免原因（生产必填）"
-            style="margin-top: 8px"
+            class="apps-form-stacked"
           />
         </el-form-item>
         <el-form-item label="回调 URL">

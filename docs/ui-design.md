@@ -37,7 +37,7 @@
 
 ### 2.3 形状与层次
 
-圆角：el-card 统一覆写 11px / 自绘面板与结果区 12px（运行健康区 ChannelMonitor 卡同为此层级）/ 内嵌信息块与类别卡 10px / 控件 7px（--el-border-radius-base）/ 标签沿用 Element 默认 4px（未覆写 --el-tag-border-radius）。以 `hair` 细边框和 panel 层级代替大面积阴影；阴影只允许 Drawer 与 Popover。间距采用 4 基数。品牌印章允许 verdi 深浅渐变，普通按钮禁用装饰性渐变与大圆角胶囊。
+圆角：el-card 统一覆写 11px / 自绘面板与结果区 12px（运行健康区 ChannelMonitor 卡同为此层级）/ 内嵌信息块与类别卡 10px / 控件 7px（--el-border-radius-base）/ 标签覆写 5px（console-dark.css 对 .el-tag 统一覆写，亮暗主题一致；Element 默认 4px 不再生效）。徽标/圆点另有 50%/999px 圆形用法。以 `hair` 细边框和 panel 层级代替大面积阴影；阴影只允许 Drawer、Popover、系统参数保存条（config-savebar 浮起）与移动端侧栏抽屉。间距以 4 基数为主，检索条/卡片内边距等沿既有档位（8/10/12/14/16），新增局部间距优先取既有档位而非新造数值。品牌印章允许 verdi 深浅渐变，普通按钮禁用装饰性渐变与大圆角胶囊。
 
 ## 3. 布局
 

@@ -249,10 +249,6 @@
   letter-spacing: 0.08em;
 }
 
-.user-mobile-list {
-  display: none;
-}
-
 @media (max-width: 760px) {
   .user-heading {
     align-items: stretch;
@@ -268,24 +264,6 @@
   .user-table {
     display: none;
   }
-  .user-mobile-list {
-    display: grid;
-    gap: 10px;
-    padding: 12px;
-  }
-  .user-mobile-list article {
-    padding: 14px;
-    border: 1px solid var(--hair);
-    border-radius: 10px;
-    background: var(--panel-2);
-  }
-  .user-mobile-list header,
-  .user-mobile-list footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-  }
   .user-mobile-list header > div {
     min-width: 0;
   }
@@ -293,7 +271,6 @@
     margin-top: 12px;
   }
   .user-mobile-list p {
-    margin: 12px 0 0;
     color: var(--tx-2);
   }
   .user-mobile-list footer {

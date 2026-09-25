@@ -3,15 +3,15 @@
    深色是默认主题；此处只覆写钉死深色值、无法靠令牌/color-mix 自动跟随的规则（壳层 + 全部业务页）。
    登录页在明亮模式下保持深色（theme.css 的 .public-shell 令牌钉回），属于有意保留。 */
 [data-theme="light"] .el-button--default {
-  --el-button-bg-color: #ffffff;
+  --el-button-bg-color: var(--panel);
   --el-button-border-color: var(--hair);
   --el-button-text-color: var(--tx);
 }
 [data-theme="light"] .el-button--primary.is-disabled,
 [data-theme="light"] .el-button--primary.is-disabled:hover {
   color: var(--tx-3);
-  background: #dce3dc;
-  border-color: #dce3dc;
+  background: var(--el-disabled-bg-color);
+  border-color: var(--el-disabled-border-color);
 }
 [data-theme="light"] .el-overlay {
   background: var(--el-mask-color);

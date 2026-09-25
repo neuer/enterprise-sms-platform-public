@@ -101,7 +101,7 @@ async function copyDemo(): Promise<void> {
       data-testid="demo-template-select"
       placeholder="选择已审核模板"
       :loading="demoTemplatesLoading"
-      style="width: 100%"
+      class="demo-template-select"
     >
       <el-option
         v-for="template in approvedTemplates"

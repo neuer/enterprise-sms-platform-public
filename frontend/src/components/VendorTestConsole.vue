@@ -903,7 +903,7 @@ onBeforeUnmount(() => {
 }
 
 .vendor-operation-guidance.is-danger {
-  color: var(--red);
+  color: var(--verm);
 }
 
 @media (max-width: 360px) {

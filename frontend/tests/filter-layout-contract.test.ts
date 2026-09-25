@@ -55,7 +55,7 @@ describe("全站筛选布局契约", () => {
     expect(replyView).not.toContain("↗")
     expect(replyView).not.toContain("厂商未回传 customId")
     expect(css).toMatch(
-      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
+      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
     expect(css).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
@@ -81,7 +81,7 @@ describe("全站筛选布局契约", () => {
     expect(auditView).not.toContain("audit-filter-card")
     expect(auditView).not.toContain("audit-result-title")
     expect(css).toMatch(
-      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
+      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
     expect(css).toMatch(
       /\.user-rules,\s*\.config-rules,\s*\.ops-rules,\s*\.callback-rules,\s*\.security-daily-rules,\s*\.audit-rules\s*\{[^}]*display:\s*flex/s,
@@ -104,7 +104,7 @@ describe("全站筛选布局契约", () => {
     expect(userView).not.toContain("user-pulse")
     expect(userView).not.toContain("account-rules")
     expect(css).toMatch(
-      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
+      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
     expect(css).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(css).toMatch(
@@ -129,7 +129,7 @@ describe("全站筛选布局契约", () => {
     expect(configView).not.toContain("config-restart-alert")
     expect(configView).not.toContain("config-heading-note")
     expect(css).toMatch(
-      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
+      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
     expect(css).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
@@ -152,7 +152,7 @@ describe("全站筛选布局契约", () => {
     expect(callbackView).not.toContain("callback-filter-card")
     expect(callbackView).not.toContain("callback-table-card")
     expect(css).toMatch(
-      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
+      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
     expect(css).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(css).toMatch(
@@ -208,7 +208,9 @@ describe("全站筛选布局契约", () => {
     expect(messageView).not.toContain("filter-toolbar")
     expect(messageView).not.toContain("<el-segmented")
     expect(messageView).not.toContain("view-switch")
-    expect(css).toMatch(/\.message-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(
+      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
+    )
     expect(css).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
@@ -264,7 +266,9 @@ describe("全站筛选布局契约", () => {
     expect(signView).not.toContain("filter-grid")
     expect(signView).not.toContain("<el-segmented")
     expect(signView).not.toContain("<el-card")
-    expect(css).toMatch(/\.template-filter-bar,\s*\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(
+      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
+    )
     expect(css).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
 
@@ -279,7 +283,9 @@ describe("全站筛选布局契约", () => {
     expect(templateView).not.toContain("filter-grid")
     expect(templateView).not.toContain("<el-segmented")
     expect(templateView).not.toContain("<el-card")
-    expect(css).toMatch(/\.template-filter-bar,\s*\.sign-filter-bar\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(
+      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
+    )
     expect(css).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(css).toMatch(/\.template-filter-bar,\s*\.sign-filter-bar\s*\{\s*align-items:\s*flex-start/s)
   })
@@ -299,7 +305,7 @@ describe("全站筛选布局契约", () => {
     expect(sensitiveWordView).not.toContain("governance-entry")
     expect(sensitiveWordView).not.toContain("sensitive-mobile-list")
     expect(css).toMatch(
-      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
+      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
     expect(css).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(css).toMatch(/\.sensitive-wall\s*\{[^}]*display:\s*grid[^}]*auto-fill/s)
@@ -317,7 +323,7 @@ describe("全站筛选布局契约", () => {
     expect(blacklistView).not.toContain("<el-card")
     expect(blacklistView).not.toContain("governance-entry")
     expect(css).toMatch(
-      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
+      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
     expect(css).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
   })
@@ -345,7 +351,7 @@ describe("全站筛选布局契约", () => {
     expect(opsView).not.toContain("ops-workbench")
     expect(opsView).not.toContain("ops-filter-title")
     expect(css).toMatch(
-      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar\s*\{[^}]*display:\s*flex/s,
+      /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
     expect(css).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
     expect(css).toMatch(

@@ -131,8 +131,8 @@
   letter-spacing: 0.08em;
 }
 .provider-mark.local {
-  border-color: color-mix(in srgb, var(--cyan), transparent 45%);
-  color: var(--cyan);
+  border-color: color-mix(in srgb, var(--slate), transparent 45%);
+  color: var(--slate);
 }
 .provider-mark.ad {
   border-color: color-mix(in srgb, var(--amber), transparent 45%);
@@ -181,13 +181,13 @@
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--red);
+  background: var(--verm);
 }
 .provider-readiness .ready {
-  color: var(--green);
+  color: var(--verdi);
 }
 .provider-readiness .ready i {
-  background: var(--green);
+  background: var(--verdi);
 }
 .provider-readiness .stale {
   color: var(--amber);
@@ -198,7 +198,7 @@
 .provider-preserved {
   margin: -5px 0 16px;
   padding: 10px 12px;
-  border-left: 3px solid var(--cyan);
+  border-left: 3px solid var(--slate);
   background: var(--surface-soft);
   color: var(--ink-soft);
   font-size: 11px;
@@ -378,13 +378,13 @@
   font: 8px/1 var(--mono);
 }
 .secret-badge {
-  border-color: color-mix(in srgb, var(--red), transparent 55%);
-  color: var(--red);
+  border-color: color-mix(in srgb, var(--verm), transparent 55%);
+  color: var(--verm);
 }
 
 /* 敏感项待清除徽标：保存即置空，用红色强调这是破坏性待决动作。 */
 .secret-control .pending-clear-badge {
-  color: var(--red);
+  color: var(--verm);
   font-weight: 600;
 }
 .secret-control {

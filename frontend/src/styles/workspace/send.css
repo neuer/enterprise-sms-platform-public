@@ -20,7 +20,7 @@
   height: 7px;
   background: var(--verdi-l);
   border-radius: 50%;
-  box-shadow: 0 0 8px rgba(47, 161, 132, 0.6);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--verdi-l) 60%, transparent);
 }
 
 .send-workbench {
@@ -59,7 +59,7 @@
 
 .form-index {
   color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10px;
   letter-spacing: 0.1em;
 }
@@ -250,7 +250,7 @@
 
 .phone-stats b {
   color: var(--tx-hi);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -458,7 +458,7 @@
 
 .preview-state {
   color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10.5px;
 }
 
@@ -551,7 +551,7 @@
 }
 
 .final-meta .mono {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -586,7 +586,7 @@
 
 .removed b {
   color: var(--tx);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
 }
 
 .removed small {
@@ -639,7 +639,7 @@
 
 .quota-row b {
   color: var(--tx);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -770,7 +770,7 @@
   height: 8px;
   background: var(--verdi-l);
   border-radius: 50%;
-  box-shadow: 0 0 8px rgba(47, 161, 132, 0.6);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--verdi-l) 60%, transparent);
 }
 
 .batch-row {
@@ -821,7 +821,7 @@
 
 .result-stats b {
   color: var(--tx);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
 }
 
 .result-acts {
@@ -848,12 +848,12 @@
 }
 
 .send-submit.el-button--primary.approval {
-  --el-button-bg-color: #9a6b2a;
-  --el-button-border-color: #9a6b2a;
-  --el-button-hover-bg-color: #b07c33;
-  --el-button-hover-border-color: #b07c33;
-  --el-button-active-bg-color: #9a6b2a;
-  --el-button-active-border-color: #9a6b2a;
+  --el-button-bg-color: var(--amber);
+  --el-button-border-color: var(--amber);
+  --el-button-hover-bg-color: color-mix(in srgb, var(--amber) 88%, var(--on-accent));
+  --el-button-hover-border-color: color-mix(in srgb, var(--amber) 88%, var(--on-accent));
+  --el-button-active-bg-color: var(--amber);
+  --el-button-active-border-color: var(--amber);
 }
 
 .send-submit.el-button--primary.is-disabled,
