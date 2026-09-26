@@ -2,28 +2,14 @@ import { adminStepUpHeaders } from "./adminStepUp"
 import { apiRequest } from "./client"
 import type { NumberedPage } from "./pagination"
 import type { UserRole } from "./auth"
-export type UserProvider = "local" | "ad" | string
-export type UserSyncStatus = "local" | "synced" | "pending" | "disabled"
-export type CredentialStatus = "active" | "must_change" | null
+import type { components } from "./types.gen"
 
-export interface ManagedUser {
-  account_id: number
-  identity_id: number
-  provider_code: UserProvider
-  username: string
-  display_name: string
-  dept: string
-  role: UserRole
-  role_override: boolean
-  status: 0 | 1
-  identity_status: 0 | 1
-  credential_status: CredentialStatus
-  temporary_password_expires_at: string | null
-  source_groups: string[]
-  sync_status: UserSyncStatus
-  last_synced_at: string | null
-  last_login_at: string | null
-}
+/** 契约为自由 string；保留已知取值的字面量并集仅作文档（类型等价于 string）。 */
+export type UserProvider = "local" | "ad" | string
+export type UserSyncStatus = components["schemas"]["User"]["sync_status"]
+export type CredentialStatus = components["schemas"]["User"]["credential_status"]
+
+export type ManagedUser = components["schemas"]["User"]
 
 export type UserPage = NumberedPage<ManagedUser>
 
@@ -36,13 +22,7 @@ export interface UserFilters {
   pageSize: number
 }
 
-export interface CreateLocalUserInput {
-  username: string
-  display_name: string
-  dept: string
-  role: UserRole
-  temporary_password: string
-}
+export type CreateLocalUserInput = components["schemas"]["LocalUserCreate"]
 
 export function listUsers(filters: UserFilters, signal?: AbortSignal): Promise<UserPage> {
   const query = new URLSearchParams({

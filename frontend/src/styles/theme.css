@@ -90,6 +90,7 @@
   --chart-amber: #d8a35c;
   --chart-violet: #9b7ed9;
   --chart-teal: #5b8c7b;
+  /* 「其他」维度序列色：非文本图形件，面板上对比度 ≥3:1（实测 3.6），刻意弱化于正文色阶 */
   --chart-dim: #6d7a72;
   --chart-tip-bg: #141d19;
   --chart-tip-border: rgba(255, 255, 255, 0.08);
@@ -172,7 +173,7 @@
   --chart-amber: #d8a35c;
   --chart-violet: #9b7ed9;
   --chart-teal: #5b8c7b;
-  --chart-dim: #8fa39a;
+  --chart-dim: #748a80; /* 亮底「其他」序列：白底 3.7 / 面板 3.3（图形件 ≥3:1），仍浅于 --tx-3 保持弱化层级 */
   --chart-tip-bg: #ffffff;
   --chart-tip-border: rgba(21, 32, 26, 0.12);
   --chart-tip-text: #2c3731; /* == --tx，禁用 var() 别名 */

@@ -1,7 +1,6 @@
 import { adminStepUpHeaders } from "./adminStepUp"
 import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS, type UserRole } from "./auth"
 import type { VendorCredentialEnvelope, VendorSealSession } from "../lib/vendorSeal"
-import type { MessageCategory } from "../lib/labels"
 import {
   type ApiErrorBody,
   ApiRequestError,
@@ -11,24 +10,9 @@ import {
 } from "./client"
 import type { BillingPreview } from "./webMessages"
 import type { NumberedPage } from "./pagination"
+import type { components } from "./types.gen"
 
-export interface AuditItem {
-  id: number
-  correlation_id: string
-  actor: string
-  actor_subject_kind: "human" | "api_app" | "system" | "legacy_unknown"
-  actor_account_id: number | null
-  actor_identity_id: number | null
-  actor_app_id: number | null
-  role: string | null
-  ip: string | null
-  action: string
-  object_type: string | null
-  object_id: string | null
-  before_val: Record<string, unknown> | null
-  after_val: Record<string, unknown> | null
-  created_at: string
-}
+export type AuditItem = components["schemas"]["AuditModel"]
 
 // 与 api/pagination.ts 的 NumberedPage<AuditItem> 同形（items/total/page/page_size），别名引用单点。
 export type AuditPage = NumberedPage<AuditItem>
@@ -48,43 +32,18 @@ export interface AuditFilters {
   excludeAction?: string
 }
 
-export interface ConfigItem {
-  key: string
-  value: string | null
-  value_type: "str" | "int" | "bool" | "json"
-  description: string | null
-  group: string
-  sensitive: boolean
-  configured: boolean
-  beat_restart_required: boolean
-  updated_by: string | null
-  updated_at: string | null
-  default: string
-  min_value: number | null
-  max_value: number | null
-}
+export type ConfigItem = components["schemas"]["ConfigModel"]
 
-export interface ConfigUpdate {
-  key: string
-  value: string | null
-}
+export type ConfigUpdate = components["schemas"]["ConfigUpdateModel"]
 
 export type AdminUserRole = UserRole
 
-export interface LdapProviderConfig {
-  server: string
-  base_dn: string
-  bind_dn: string
-  user_search_filter: string
-  username_attribute: string
-  display_name_attribute: string
-  dept_attribute: string
-  subject_attribute: string
-  group_attribute: string
-  connect_timeout_s: number
-  receive_timeout_s: number
-}
+export type LdapProviderConfig = components["schemas"]["LdapProviderConfig"]
 
+// 保留手写：生成契约 AuthProviderAdmin 的 draft_config/active_config 是
+// { [key: string]: unknown } 白名单字典（服务端按认证源动态裁剪字段）；本页仅管理
+// AD/LDAP 认证源，表单 hydrate（Object.assign(adForm, draft_config)）与草稿编辑依赖
+// LdapProviderConfig 的精确字段类型。其余字段与生成 schema 逐字段一致。
 export interface AuthProviderAdmin {
   code: string
   name: string
@@ -101,27 +60,13 @@ export interface AuthProviderAdmin {
   ca_available: boolean
 }
 
-export interface AuthProviderTestResult {
-  success: boolean
-  result_code: string
-}
+export type AuthProviderTestResult = components["schemas"]["AuthProviderTestResult"]
 
-export interface ExternalRoleMapping {
-  external_group: string
-  role: AdminUserRole
-  dept: string | null
-}
+export type ExternalRoleMapping = components["schemas"]["AuthProviderRoleMapping"]
 
-export interface RoleMappings {
-  revision: string
-  mappings: ExternalRoleMapping[]
-}
+export type RoleMappings = components["schemas"]["AuthProviderRoleMappings"]
 
-export interface ExternalRoleMappingUpdate {
-  external_group: string
-  role: AdminUserRole
-  dept: string
-}
+export type ExternalRoleMappingUpdate = components["schemas"]["AuthProviderRoleMappingUpdate"]
 
 export function listAudits(filters: AuditFilters, signal?: AbortSignal): Promise<AuditPage> {
   const query = new URLSearchParams({
@@ -214,21 +159,17 @@ export function replaceAuthProviderRoleMappings(
   })
 }
 
-export type VendorTestMode = "setup_required" | "inactive" | "controlled" | "blocked"
-export type VendorPauseKind = "manual" | "critical" | "daily" | null
-export type VendorOperationStatus = "requested" | "running" | "succeeded" | "failed"
-export type VendorOperationType =
-  "install_credentials" | "rotate_credentials" | "activate" | "pause" | "resume" | "reset_configuration" | "uat_send"
+export type VendorTestMode = components["schemas"]["VendorTestStatusModel"]["mode"]
+export type VendorPauseKind = components["schemas"]["VendorTestStatusModel"]["pause_kind"]
+export type VendorOperationStatus = components["schemas"]["VendorTestOperationModel"]["status"]
+export type VendorOperationType = components["schemas"]["VendorTestOperationModel"]["operation_type"]
 
-export interface VendorTestStatus {
-  mode: VendorTestMode
-  heartbeat_at: string
-  credential_configured: boolean
-  active_recipient_count: number
-  pause_kind: VendorPauseKind
-  daily_limit: 100
-}
+export type VendorTestStatus = components["schemas"]["VendorTestStatusModel"]
 
+// 保留手写：生成契约 VendorTestOperationModel 把 safe_code/vendor_code/batch_no/checkpoint_id
+// 标为可缺省，但后端 response_model 始终序列化这四个字段（缺省为 null），且 VendorTestConsole
+// 以 `!== null` 判定"有无厂商错误码"（undefined !== null 恒为 true，与 null 语义不同），
+// 故维持"键必存在、值可空"的精确类型；其余字段与生成 schema 逐字段一致。
 export interface VendorTestOperation {
   operation_id: string
   operation_type: VendorOperationType
@@ -241,37 +182,15 @@ export interface VendorTestOperation {
   completed_at: string | null
 }
 
-export interface VendorTestRecipient {
-  id: number
-  label: string
-  phone_mask: string
-  status: "active" | "disabled"
-  created_at: string
-  disabled_at: string | null
-}
+export type VendorTestRecipient = components["schemas"]["RecipientModel"]
 
-export interface VendorStepUpResponse {
-  token: string
-  expires_in: 300
-}
+export type VendorStepUpResponse = components["schemas"]["StepUpResponseModel"]
 
-export type VendorStepUpOperation =
-  "install_credentials" | "rotate_credentials" | "activate" | "reset_configuration" | "resume_critical"
+export type VendorStepUpOperation = components["schemas"]["StepUpRequestModel"]["operation"]
 
-export interface VendorTestUatPayload {
-  recipient_id: number
-  app_id: number
-  biz_id: string
-  category: MessageCategory
-  content?: string
-  template_id?: number
-  template_params?: string[]
-  sign_name?: string
-  consent_confirmed: boolean
-  remark?: string
-}
+export type VendorTestUatPayload = components["schemas"]["UatMessageRequestModel"]
 
-export type VendorTestUatPreviewPayload = Omit<VendorTestUatPayload, "recipient_id" | "remark" | "biz_id">
+export type VendorTestUatPreviewPayload = components["schemas"]["UatPreviewRequestModel"]
 
 /**
  * vendor-test 薄封装：错误归一化复用 client.ts 的 ApiRequestError 回退链，

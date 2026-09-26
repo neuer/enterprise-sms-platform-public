@@ -1,45 +1,20 @@
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { apiRequest } from "./client"
 import type { NumberedPage } from "./pagination"
+import type { components } from "./types.gen"
 
-export type SecurityStatus = "normal" | "attention" | "high"
-export type GenerationSource = "auto" | "manual"
-export type GenerationStatus = "pending" | "ready" | "failed" | "unavailable"
-export type DeliveryStatus = "not_sent" | "pending" | "sending" | "sent" | "failed" | "unknown"
-export type SecurityDailyConfigurationState = "disabled" | "dispatcher_missing" | "recipients_empty" | "ready"
+export type SecurityStatus = components["schemas"]["SecurityDailyReportModel"]["status"]
+export type GenerationSource = components["schemas"]["SecurityDailyReportModel"]["generation_source"]
+export type GenerationStatus = components["schemas"]["SecurityDailyReportModel"]["generation_status"]
+export type DeliveryStatus = components["schemas"]["SecurityDailyReportModel"]["delivery_status"]
+export type SecurityDailyConfigurationState = components["schemas"]["SecurityDailyOverviewModel"]["configuration_state"]
 
-export interface SecurityDailyOverview {
-  enabled: boolean
-  configuration_state: SecurityDailyConfigurationState
-  schedule_time: string
-  timezone: string
-  period_description: string
-  last_generated_at: string | null
-  last_delivered_at: string | null
-  next_scheduled_at: string | null
-  latest_failure: string | null
-  delivery_status: DeliveryStatus | null
-  recipient_count: number
-  resend_configured: boolean
-  sender_domain: string
-  sender_address: string
-  beat_restart_required: boolean
-}
+export type SecurityDailyOverview = components["schemas"]["SecurityDailyOverviewModel"]
+export type SecurityDailyConfiguration = components["schemas"]["SecurityDailyConfigurationModel"]
+export type SecurityDailyConfigurationUpdate = components["schemas"]["SecurityDailyConfigurationUpdateModel"]
 
-export interface SecurityDailyConfiguration {
-  enabled: boolean
-  recipients: string[]
-  resend_api_key_configured: boolean
-  sender_domain: string
-  sender_address: string
-}
-
-export interface SecurityDailyConfigurationUpdate {
-  enabled: boolean
-  recipients: string[]
-  resend_api_key?: string | null
-}
-
+// 生成契约将报告 payload 声明为泛型 object（additionalProperties，无字段结构），
+// 以下 payload 子结构无对应 schema，按实际生成/消费结构保留手写。
 export interface SecurityMetric {
   label: string
   value: string
@@ -95,46 +70,24 @@ export interface SecurityDailyPayload {
   coverage: SecurityCoverageItem[]
 }
 
-export interface SecurityDailyReport {
-  id: number
-  report_date: string
-  period_start: string
-  period_end: string
-  status: SecurityStatus
-  generation_source: GenerationSource
-  generation_status: GenerationStatus
-  delivery_status: DeliveryStatus
-  generated_at: string | null
-  delivered_at: string | null
-  recipient_count: number
-  retry_count: number
-  last_error: string | null
-  last_error_at: string | null
-  updated_at: string
+// 契约 SecurityDailyReportModel 的 payload/timeline 为宽松 object/object[] 且声明为可选；
+// 前端保留必填的结构化 payload 与 timeline，其余字段直接绑定生成 schema。
+export type SecurityDailyReport = Omit<components["schemas"]["SecurityDailyReportModel"], "payload" | "timeline"> & {
   payload: SecurityDailyPayload | null
   timeline: Array<{ type: string; at: string; label: string; detail?: string | null }>
 }
 
+// 分页壳保持 NumberedPage 封装（契约 SecurityDailyPageModel 的 items 引用宽松 report 模型）。
 export type SecurityDailyPage = NumberedPage<SecurityDailyReport>
 
-export interface SecurityDailyPreview {
-  report_date: string
-  status: SecurityStatus
-  available: boolean
-  message: string | null
-  html: string
-  text: string
+// 契约 SecurityDailyPreviewModel 的 payload 同样为宽松 object，保留结构化手写 payload。
+export type SecurityDailyPreview = Omit<components["schemas"]["SecurityDailyPreviewModel"], "payload"> & {
   payload: SecurityDailyPayload | null
 }
 
-export interface SecurityDailyDeliveryResponse {
-  request_id: string
-  report_date: string
-  action: "send" | "retry"
-  state: "pending" | "sent" | "failed" | "unknown"
-  idempotent: boolean
-}
+export type SecurityDailyDeliveryResponse = components["schemas"]["SecurityDailyDeliveryResponseModel"]
 
+// 请求侧 camelCase 筛选参数仅用于查询串拼装，契约无对应 schema，保持手写。
 export interface SecurityDailyFilters {
   dateFrom?: string
   dateTo?: string

@@ -1,21 +1,10 @@
 import { apiRequest } from "./client"
+import type { components } from "./types.gen"
 
-export type TemplateState = "draft" | "pending" | "approved" | "rejected"
-export interface VarSpec {
-  pos: number
-  max_len: number
-}
-export interface SmsTemplate {
-  id: number
-  name: string
-  content: string
-  var_specs: VarSpec[]
-  /** 历史兼容字段；模板为全局资源，不参与权限或发送判断。 */
-  dept: string
-  vendor_template_id: string | null
-  vendor_state: TemplateState
-  vendor_reject_reason: string | null
-}
+export type TemplateState = components["schemas"]["Template"]["vendor_state"]
+/** 契约未提供命名 schema，取 Template.var_specs 的内联元素类型。 */
+export type VarSpec = components["schemas"]["Template"]["var_specs"][number]
+export type SmsTemplate = components["schemas"]["Template"]
 export interface TemplatePayload {
   name: string
   content: string

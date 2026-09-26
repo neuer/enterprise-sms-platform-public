@@ -1,11 +1,8 @@
 import { apiRequest } from "./client"
 import type { MessageCategory } from "../lib/labels"
+import type { components } from "./types.gen"
 
-export interface FrequencyOverride {
-  verify_per_minute?: number
-  verify_per_day?: number
-  market_per_day?: number
-}
+export type FrequencyOverride = components["schemas"]["FrequencyOverride"]
 
 const frequencyOverrideKeys = new Set<keyof FrequencyOverride>([
   "verify_per_minute",
@@ -29,6 +26,12 @@ export function parseFrequencyOverride(input: string): FrequencyOverride | null 
   return Object.fromEntries(entries) as FrequencyOverride
 }
 
+/**
+ * 与生成契约 App 的实质差异：契约把 default_sign、freq_override、allowed_ips、
+ * ip_allowlist_exempt_until、unlimited_quota_exempt_until、admission_exempt_note、
+ * callback_url、old_key_prefix、old_key_expires_at 标为可选（服务端默认值所致）；
+ * 运行时响应恒返回这些字段，本类型按实际响应收紧为必选，故保留手写。
+ */
 export interface ManagedApp {
   id: number
   name: string

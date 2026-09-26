@@ -1,32 +1,10 @@
 import { apiRequest, apiRequestAbs } from "./client"
-import { DEFAULT_PAGE_SIZE, type MessageCategory } from "../lib/labels"
+import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import type { Page } from "./pagination"
+import type { components, paths } from "./types.gen"
 
-export interface BatchItem {
-  batch_no: string
-  category: MessageCategory
-  channel: "api" | "web"
-  app_name: string | null
-  creator: string | null
-  dept: string
-  content: string
-  status: string
-  deferred_reason: string | null
-  resend_of: string | null
-  is_test: boolean
-  segments: number
-  quota_cost: number
-  total: number
-  removed_freq_limit: number
-  pending: number
-  sent: number
-  delivered: number
-  failed: number
-  unknown: number
-  other: number
-  scheduled_at: string | null
-  created_at: string
-}
+/** 批次契约：openapi.yaml components.schemas.Batch（status 为契约批次状态枚举）。 */
+export type BatchItem = components["schemas"]["Batch"]
 
 export interface BatchPage extends Page<BatchItem> {
   status_counts: Record<string, number>
@@ -45,55 +23,27 @@ export interface BatchFilters {
   page: number
 }
 
-export interface BatchMessage {
-  id: number
-  phone: string
-  status: string
-  vendor_task_id: string | null
-  report_desc: string | null
-  report_time: string | null
-}
+/** 批次明细契约：openapi.yaml components.schemas.MessageDetail。 */
+export type BatchMessage = components["schemas"]["MessageDetail"]
 
 export type BatchMessagePage = Page<BatchMessage>
 
-export interface MessageItem {
-  id: number
-  phone: string
-  status: string
-  report_desc: string | null
-  report_time: string | null
-  created_at: string
-  batch_no: string
-  category: string
-  content: string
-  sender: string | null
-}
+/** `/api/v1/web/messages` 200 响应（号码搜索结果），MessageItem/PhoneBadge 的契约来源。 */
+type MessageSearchResult = paths["/api/v1/web/messages"]["post"]["responses"]["200"]["content"]["application/json"]
 
-export interface PhoneBadge {
-  blacklisted: boolean
-  blacklist_source: string | null
-  recv_30d: number
-}
+export type MessageItem = MessageSearchResult["items"][number]
+
+export type PhoneBadge = MessageSearchResult["badge"]
 
 export interface MessagePage extends Page<MessageItem> {
   badge: PhoneBadge
 }
 
-export interface TimelineEvent {
-  ts: string
-  direction: "out" | "in"
-  category: string | null
-  batch_no: string | null
-  content: string
-  status: string | null
-  sender: string | null
-}
+/** 号码时间线契约：`/api/v1/web/messages/timeline` 200 响应。 */
+export type TimelineResult =
+  paths["/api/v1/web/messages/timeline"]["post"]["responses"]["200"]["content"]["application/json"]
 
-export interface TimelineResult {
-  badge: PhoneBadge
-  events: TimelineEvent[]
-  truncated: boolean
-}
+export type TimelineEvent = TimelineResult["events"][number]
 
 export function listBatches(filters: BatchFilters, signal?: AbortSignal): Promise<BatchPage> {
   const query = new URLSearchParams({ page: String(filters.page), size: String(DEFAULT_PAGE_SIZE) })

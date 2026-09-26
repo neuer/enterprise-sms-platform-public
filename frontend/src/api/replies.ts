@@ -1,14 +1,8 @@
 import { apiRequest } from "./client"
 import type { Page } from "./pagination"
+import type { components } from "./types.gen"
 
-export interface ReplyItem {
-  id: number
-  phone: string
-  content: string
-  batch_no: string | null
-  reply_time: string
-  blacklisted: boolean
-}
+export type ReplyItem = components["schemas"]["Reply"]
 
 export type ReplyPage = Page<ReplyItem>
 

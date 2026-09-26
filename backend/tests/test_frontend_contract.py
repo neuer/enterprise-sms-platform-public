@@ -202,6 +202,7 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
     callback_api = read("frontend/src/api/callbacks.ts")
     ops_api = read("frontend/src/api/ops.ts")
     reports_api = read("frontend/src/api/reports.ts")
+    types_gen = read("frontend/src/api/types.gen.ts")
     export_task = read("frontend/src/composables/useExportTask.ts")
     credential_dialog = read("frontend/src/components/VendorCredentialDialog.vue")
     vendor_seal = read("frontend/src/lib/vendorSeal.ts")
@@ -216,9 +217,10 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
     assert '"X-Export-Step-Up"' in reports_api
     assert "issueExportStepUp" in export_task
     assert 'inputType: "password"' in export_task
-    assert "reset_configuration" in admin_api
-    assert "correlation_id" in admin_api
-    assert "correlation_id" in callback_api
+    # 操作类型枚举与审计字段经 types.gen.ts 生成类型承载（批次 K 迁移后字面量不再出现在手写 API 层）
+    assert "reset_configuration" in admin_api or "reset_configuration" in types_gen
+    assert "correlation_id" in admin_api or "correlation_id" in types_gen
+    assert "correlation_id" in callback_api or "correlation_id" in types_gen
     assert "isVendorCredentialSecureContext" in credential_dialog
     assert "isVendorCredentialSecureContext" in vendor_seal
 
