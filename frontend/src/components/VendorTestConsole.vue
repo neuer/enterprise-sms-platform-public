@@ -21,11 +21,13 @@ import {
 import { listApps, type ManagedApp } from "../api/apps"
 import { ApiRequestError } from "../api/client"
 import PhoneMask from "./PhoneMask.vue"
+import EmptyState from "./EmptyState.vue"
 import LoadErrorAlert from "./LoadErrorAlert.vue"
 import VendorCredentialDialog from "./VendorCredentialDialog.vue"
 import VendorTestRecipientDialog from "./VendorTestRecipientDialog.vue"
 import VendorTestUatPanel from "./VendorTestUatPanel.vue"
 import { usePolling } from "../composables/usePolling"
+import { useLatestRead } from "../composables/useLatestRead"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAction } = useConfirmActions()
 import { errorText } from "../lib/error"
@@ -52,8 +54,10 @@ const stepUpPassword = ref("")
 const resetConfirmation = ref("")
 const stepUpAction = ref<"activate" | "reset_configuration" | "resume_critical" | null>(null)
 const controlBusy = ref(false)
-let loadGeneration = 0
-let disposed = false
+// 三条读通道各自只保留最新请求；作用域销毁自动取消，替代手写 generation/disposed 守卫。
+const loadRead = useLatestRead()
+const restoreRead = useLatestRead()
+const pollRead = useLatestRead()
 // 轮询连续失败只提示一次，恢复成功后重置；避免控制代理短暂不可用时每个轮询周期弹一条错误。
 let pollFailureNotified = false
 
@@ -137,33 +141,33 @@ const statusPresentation = computed(() => {
     return { title: "待激活", detail: "真实出口保持关闭，完成检查后可二次认证激活", tone: "neutral" }
   }
   if (status.value.mode === "controlled") {
-    return { title: "受控联调中", detail: "仅登记号码可通过真实运营商出口发送", tone: "success" }
+    return { title: "受控联调中", detail: "仅登记号码可通过真实厂商出口发送", tone: "success" }
   }
   return { title: "安全阻断", detail: "需先完成错误处置，再按暂停类型恢复", tone: "danger" }
 })
 
 async function load(): Promise<boolean> {
-  const generation = ++loadGeneration
+  const signal = loadRead.start()
   loading.value = true
   loadErrorMessage.value = ""
   try {
     const [nextStatus, nextRecipients, nextApps] = await Promise.all([
-      getVendorTestStatus(),
-      listVendorTestRecipients(),
-      listApps(),
+      getVendorTestStatus(signal),
+      listVendorTestRecipients(signal),
+      listApps(signal),
     ])
-    if (disposed || generation !== loadGeneration) return false
+    if (signal.aborted) return false
     status.value = nextStatus
     recipients.value = nextRecipients
     apps.value = nextApps
     return true
   } catch (error) {
-    if (!disposed && generation === loadGeneration) {
+    if (!signal.aborted) {
       loadErrorMessage.value = errorText(error, "真实联调状态加载失败")
     }
     return false
   } finally {
-    if (!disposed && generation === loadGeneration) loading.value = false
+    if (!signal.aborted) loading.value = false
   }
 }
 
@@ -226,13 +230,14 @@ function rememberedOperation(): Pick<VendorTestOperation, "operation_id" | "oper
 async function restoreOperation(): Promise<boolean> {
   const remembered = rememberedOperation()
   if (!remembered) return true
+  const signal = restoreRead.start()
   operationRestoring.value = true
   try {
     const operation =
       remembered.operation_type === "uat_send"
-        ? await getVendorTestUat(remembered.operation_id)
-        : await getVendorTestOperation(remembered.operation_id)
-    if (disposed) return true
+        ? await getVendorTestUat(remembered.operation_id, signal)
+        : await getVendorTestOperation(remembered.operation_id, signal)
+    if (signal.aborted) return true
     activeOperation.value = operation
     restoreErrorMessage.value = ""
     operationRestoring.value = false
@@ -240,7 +245,7 @@ async function restoreOperation(): Promise<boolean> {
     else operationPolling.start()
     return true
   } catch (error) {
-    if (disposed) return true
+    if (signal.aborted) return true
     if (isGoneOperation(error)) {
       forgetOperation()
       operationRestoring.value = false
@@ -266,7 +271,6 @@ const restorePolling = usePolling(restoreOperation, {
 async function refreshCompletedProjection(): Promise<boolean> {
   operationCompletionRefreshing.value = true
   const refreshed = await load()
-  if (disposed) return true
   if (refreshed) {
     forgetOperation()
     operationCompletionRefreshing.value = false
@@ -293,14 +297,14 @@ function finishOperation(operation: VendorTestOperation): void {
           "测试环境可能处于部分切换状态，请勿发送，并按安全代码恢复同一操作",
       )
     } else if (operation.vendor_code !== null) {
-      ElMessage.error(`运营商返回错误代码 ${operation.vendor_code}`)
+      ElMessage.error(`厂商返回错误代码 ${operation.vendor_code}`)
     } else {
       ElMessage.error(`受控操作失败：${operation.safe_code || "CONTROL_OPERATION_FAILED"}`)
     }
   } else {
     ElMessage.success(
       operation.operation_type === "uat_send"
-        ? "真实 UAT 已被运营商受理"
+        ? "单号码 UAT 已被厂商受理"
         : operation.operation_type === "reset_configuration"
           ? "测试环境已切回 Mock，正式厂商凭据已撤销；测试号码与生产环境未变"
           : "受控操作成功",
@@ -312,12 +316,13 @@ function finishOperation(operation: VendorTestOperation): void {
 async function pollOperation(): Promise<boolean> {
   const current = activeOperation.value
   if (!current || terminal(current)) return true
+  const signal = pollRead.start()
   try {
     const next =
       current.operation_type === "uat_send"
-        ? await getVendorTestUat(current.operation_id)
-        : await getVendorTestOperation(current.operation_id)
-    if (disposed || activeOperation.value?.operation_id !== next.operation_id) return true
+        ? await getVendorTestUat(current.operation_id, signal)
+        : await getVendorTestOperation(current.operation_id, signal)
+    if (signal.aborted || activeOperation.value?.operation_id !== next.operation_id) return true
     pollFailureNotified = false
     activeOperation.value = next
     if (terminal(next)) {
@@ -325,7 +330,7 @@ async function pollOperation(): Promise<boolean> {
       return true
     }
   } catch (error) {
-    if (disposed) return true
+    if (signal.aborted) return true
     // 出错续轮：吞错返回 false，按固定间隔等下一周期；连续失败只提示一次。
     if (!pollFailureNotified) {
       pollFailureNotified = true
@@ -361,7 +366,7 @@ async function requestActivation(): Promise<void> {
   // 取消 / 关闭时操作者保留当前关闭状态。
   if (
     !(await confirmAction({
-      title: "激活真实运营商受控联调",
+      title: "激活真实厂商受控联调",
       body: "确认正式凭据已安装、至少登记一个自有测试号码，并理解激活后仅允许系统配置页单号码 UAT。",
       confirmText: "进入二次认证",
       cancelText: "继续检查",
@@ -455,7 +460,7 @@ async function resume(): Promise<void> {
     if (
       !(await confirmAction({
         title: "恢复安全阻断",
-        body: "确认已完成余额或运营商错误处置。恢复前系统会再次检查余额。",
+        body: "确认已完成余额或厂商错误处置。恢复前系统会再次检查余额。",
         confirmText: "进入二次认证",
         cancelText: "继续阻断",
       }))
@@ -468,7 +473,7 @@ async function resume(): Promise<void> {
   if (
     !(await confirmAction({
       title: "恢复受控联调",
-      body: "确认恢复人工暂停并重新开放已登记号码的真实 UAT。",
+      body: "确认恢复人工暂停并重新开放已登记号码的单号码 UAT。",
       confirmText: "恢复联调",
       cancelText: "继续暂停",
     }))
@@ -494,7 +499,7 @@ async function disableRecipient(recipient: VendorTestRecipient): Promise<void> {
   if (
     !(await confirmAction({
       title: "停用测试号码",
-      body: `停用 ${recipient.label}（${recipient.phone_mask}）后不可再用于真实 UAT。`,
+      body: `停用 ${recipient.label}（${recipient.phone_mask}）后不可再用于单号码 UAT。`,
       confirmText: "停用号码",
       cancelText: "保留号码",
     }))
@@ -546,7 +551,6 @@ onMounted(() => {
   void load()
 })
 onBeforeUnmount(() => {
-  disposed = true
   clearStepUp()
 })
 </script>
@@ -558,7 +562,7 @@ onBeforeUnmount(() => {
     <header class="vendor-test-status" :class="`is-${statusPresentation.tone}`">
       <div class="vendor-test-state-mark" aria-hidden="true"><i></i><span>LIVE</span></div>
       <div>
-        <p class="eyebrow">CONTROLLED CARRIER LINK</p>
+        <p class="eyebrow">CONTROLLED VENDOR LINK</p>
         <h2 id="vendor-test-heading">{{ statusPresentation.title }}</h2>
         <p>{{ statusPresentation.detail }}</p>
       </div>
@@ -570,7 +574,7 @@ onBeforeUnmount(() => {
           ><dt>收件人</dt><dd>{{ status.active_recipient_count }} 个已登记</dd></div
         >
         <div
-          ><dt>预算</dt><dd>{{ status.daily_limit }} 条/日</dd></div
+          ><dt>预算</dt><dd>{{ status.daily_limit }} 计费条/日</dd></div
         >
         <div
           ><dt>心跳</dt><dd>{{ formatDateTime(status.heartbeat_at, "状态时间无效") }}</dd></div
@@ -582,7 +586,7 @@ onBeforeUnmount(() => {
       <span><i></i>仅系统配置页入口</span>
       <span><i></i>仅登记号码</span>
       <span><i></i>超时不自动重发</span>
-      <span><i></i>运营商报备默认已完成，返回错误时仅告知代码</span>
+      <span><i></i>厂商报备默认已完成，返回错误时仅告知代码</span>
     </div>
 
     <div class="vendor-test-layout">
@@ -672,7 +676,7 @@ onBeforeUnmount(() => {
                 ><PhoneMask :value="recipient.phone_mask"
               /></div>
               <el-tag :type="recipient.status === 'active' ? 'success' : 'info'" size="small">
-                {{ recipient.status === "active" ? "有效" : "已停用" }}
+                {{ recipient.status === "active" ? "启用" : "已停用" }}
               </el-tag>
               <div v-if="recipient.status === 'active'" class="vendor-recipient-actions">
                 <el-button
@@ -693,9 +697,7 @@ onBeforeUnmount(() => {
               </div>
             </article>
           </div>
-          <div v-else class="vendor-empty-state">
-            <strong>尚未登记测试号码</strong><p>登记自有号码后，真实出口仍保持关闭，需另行激活。</p>
-          </div>
+          <EmptyState v-else title="尚未登记测试号码" description="登记自有号码后，真实出口仍保持关闭，需另行激活。" />
         </section>
       </section>
 
@@ -724,7 +726,7 @@ onBeforeUnmount(() => {
         ><span>安全代码</span><code>{{ activeOperation.safe_code }}</code></div
       >
       <div v-if="activeOperation.vendor_code !== null"
-        ><span>运营商错误代码</span><code>{{ activeOperation.vendor_code }}</code></div
+        ><span>厂商错误代码</span><code>{{ activeOperation.vendor_code }}</code></div
       >
       <p v-if="resetOperationPending" class="vendor-operation-guidance">
         正在切回 Mock，请勿发送或重复操作；切换前历史未决记录会保留。
@@ -901,7 +903,7 @@ onBeforeUnmount(() => {
 }
 
 .vendor-operation-guidance.is-danger {
-  color: var(--red);
+  color: var(--verm);
 }
 
 @media (max-width: 360px) {

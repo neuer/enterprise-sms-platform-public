@@ -13,7 +13,7 @@
 .approval-counts-pill {
   padding: 5px 12px;
   color: var(--tx-hi);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 11px;
   background: color-mix(in srgb, var(--verdi) 18%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--verdi-l) 40%, var(--hair));
@@ -36,7 +36,7 @@
   align-items: center;
   padding: 5px 11px;
   color: var(--tx-2);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10.5px;
   background: var(--panel);
   border: 1px solid var(--hair);
@@ -88,7 +88,7 @@
 }
 
 .filter-seg button.on .approval-seg-count {
-  color: #eaf1ed;
+  color: var(--on-accent);
   background: rgba(255, 255, 255, 0.12);
 }
 
@@ -118,7 +118,7 @@
 
 .approval-poll-hint {
   color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 9.5px;
   white-space: nowrap;
 }
@@ -163,8 +163,8 @@
 }
 
 .approval-row.is-urgent {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--red) 7%, var(--card)), var(--card) 34%);
-  border-color: color-mix(in srgb, var(--red) 45%, var(--line));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--verm) 7%, var(--card)), var(--card) 34%);
+  border-color: color-mix(in srgb, var(--verm) 45%, var(--line));
 }
 
 .approval-row.is-soon {
@@ -195,7 +195,7 @@
 }
 
 .approval-row.is-urgent .approval-cd b {
-  color: var(--red);
+  color: var(--verm);
 }
 
 .approval-row.is-soon .approval-cd b {

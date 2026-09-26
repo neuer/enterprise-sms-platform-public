@@ -30,6 +30,7 @@ import { admissionReasonOf, admissionReasonText } from "../lib/admissionReason"
 import BillingSegments from "../components/BillingSegments.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
+import { useLatestRead } from "../composables/useLatestRead"
 import { copyText } from "../lib/clipboard"
 import { saveBlob } from "../lib/download"
 import { PHONE_RE } from "../lib/phone"
@@ -66,6 +67,7 @@ const busy = ref(false)
 let requestGeneration = 0
 let draftRevision = 0
 let disposed = false
+let uploadAbort: AbortController | null = null
 const submittedSummary = ref("")
 const errorMessage = ref("")
 // 准入 503（DEPENDENCY_UNAVAILABLE）时展示通往运维中心队列页签的出口。
@@ -429,12 +431,16 @@ watch(
   },
 )
 
+const uiPolicyRead = useLatestRead()
 async function loadUiPolicy(): Promise<void> {
+  const signal = uiPolicyRead.start()
   try {
-    const result = await getDashboard()
+    const result = await getDashboard(signal)
+    if (signal.aborted) return
     const value = result.ui_policy.test_send_max
     testSendMax.value = typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null
   } catch {
+    if (signal.aborted) return
     testSendMax.value = null
     ElMessage.warning("测试发送号码上限读取失败，测试发送的号码上限提示暂不可用；正式发送不受影响")
   }
@@ -501,13 +507,16 @@ function resetImport(): void {
 async function handleUpload(options: UploadRequestOptions): Promise<void> {
   if (busy.value || disposed) return
   const generation = ++requestGeneration
+  uploadAbort?.abort()
+  const controller = new AbortController()
+  uploadAbort = controller
   resetFeedback()
   importState.value = "parsing"
   importFilename.value = options.file.name
   importError.value = ""
   busy.value = true
   try {
-    const result = await uploadPhones(options.file)
+    const result = await uploadPhones(options.file, controller.signal)
     if (disposed || generation !== requestGeneration) return
     imported.value = result
     importState.value = "ready"
@@ -628,6 +637,7 @@ onBeforeUnmount(() => {
   clearSessionDraft()
   disposed = true
   previewAbort?.abort()
+  uploadAbort?.abort()
   window.removeEventListener(SESSION_CLEARING_EVENT, clearSessionDraft)
   window.clearTimeout(previewTimer)
   window.clearTimeout(copiedTimer)
@@ -692,7 +702,7 @@ onBeforeUnmount(() => {
               ...[{ label: '文件导入', value: 'import' as const }],
             ]"
             class="filter-seg--pill"
-            aria-label="号码来源"
+            label="号码来源"
             :disabled="busy"
           />
         </header>
@@ -807,7 +817,7 @@ onBeforeUnmount(() => {
               ...[{ label: '审核模板', value: 'template' as const }],
             ]"
             class="filter-seg--pill"
-            aria-label="内容来源"
+            label="内容来源"
             :disabled="busy"
           />
         </header>
@@ -932,7 +942,7 @@ onBeforeUnmount(() => {
             <span><i class="g"></i>签名</span>
             <span v-if="finalParts.suffix"><i class="a"></i>退订语 · 服务端自动追加</span>
           </div>
-          <span class="mono">{{ preview?.final_length }} 字 · {{ preview?.est_segments }} 段</span>
+          <span class="mono">{{ preview?.final_length }} 字 · {{ preview?.est_segments }} 计费条</span>
         </footer>
       </section>
 
@@ -958,7 +968,7 @@ onBeforeUnmount(() => {
         <header>计费 <small>services/billing.py 单点口径</small></header>
         <BillingSegments :parts="preview.segment_parts" :next-hint="nextSegmentHint" />
         <div class="cost-line">
-          <span class="fx">{{ previewCount.toLocaleString() }} × {{ preview.est_segments }} 段 =</span>
+          <span class="fx">{{ previewCount.toLocaleString() }} 号码 × {{ preview.est_segments }} 计费条 =</span>
           <strong>{{ preview.quota_cost.toLocaleString() }}<small>计费条</small></strong>
         </div>
         <p class="boundary"
@@ -1040,7 +1050,7 @@ onBeforeUnmount(() => {
             >剔除 <b>{{ removedTotal(sendResult).toLocaleString() }}</b></span
           >
           <span
-            >预扣 <b>{{ sendResult.quota_cost.toLocaleString() }}</b> 条</span
+            >预扣 <b>{{ sendResult.quota_cost.toLocaleString() }}</b> 计费条</span
           >
         </div>
         <div class="result-acts">

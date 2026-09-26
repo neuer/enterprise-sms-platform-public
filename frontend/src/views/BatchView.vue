@@ -63,6 +63,7 @@ const selected = ref<BatchItem | null>(null)
 const detailStatus = ref("")
 const rescheduleOpen = ref(false)
 const scheduledAt = ref("")
+const rescheduling = ref(false)
 const canWrite = computed(() => session.canWrite)
 const canDecrypt = computed(() => session.canDecrypt)
 const isAdmin = computed(() => session.isAdmin)
@@ -184,6 +185,8 @@ const moreActiveCount = computed(
 const moreActive = computed(() => moreActiveCount.value > 0)
 
 const batchRead = useLatestRead()
+const deepLinkRead = useLatestRead()
+const appsRead = useLatestRead()
 
 let openToken = 0
 
@@ -267,27 +270,31 @@ const canResendFailed = computed(
   () => canWrite.value && selected.value?.channel === "web" && (selected.value?.failed ?? 0) > 0,
 )
 
+const cancelling = ref(false)
 async function cancelSelected(): Promise<void> {
-  if (!selected.value || !canScheduleOps.value) return
+  if (!selected.value || !canScheduleOps.value || cancelling.value) return
   const target = selected.value
   const batch = target.batch_no
-  if (
-    !(await confirmAuditedAction({
-      isCurrent: () => selected.value === target && canScheduleOps.value,
-      title: "确认取消",
-      body: `取消批次 ${batch}？配额将按规则回补。`,
-      auditNote: "取消行为与操作人将写入审计日志。",
-      confirmText: "确认取消",
-    }))
-  )
-    return
+  cancelling.value = true
   try {
+    if (
+      !(await confirmAuditedAction({
+        isCurrent: () => selected.value === target && canScheduleOps.value,
+        title: "确认取消",
+        body: `取消批次 ${batch}？配额将按规则回补。`,
+        auditNote: "取消行为与操作人将写入审计日志。",
+        confirmText: "确认取消",
+      }))
+    )
+      return
     await cancelBatch(batch)
     drawer.value = false
     ElMessage.success("批次已取消 · 本次操作已记入审计")
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "取消失败"))
+  } finally {
+    cancelling.value = false
   }
 }
 
@@ -298,39 +305,58 @@ function openReschedule(): void {
 }
 
 async function saveReschedule(): Promise<void> {
-  if (!selected.value || !scheduledAt.value) return
-  try {
-    await rescheduleBatch(selected.value.batch_no, toApiDateTime(new Date(scheduledAt.value)))
-    rescheduleOpen.value = false
-    drawer.value = false
-    ElMessage.success("批次已改期并重新执行审批判定")
-    await load()
-  } catch (error) {
-    ElMessage.error(errorText(error, "改期失败"))
-  }
-}
-
-async function resendFailed(): Promise<void> {
-  if (!selected.value || !canResendFailed.value) return
+  if (!selected.value || !scheduledAt.value || rescheduling.value) return
   const target = selected.value
   const batch = target.batch_no
   if (
     !(await confirmAuditedAction({
-      isCurrent: () => selected.value === target && canResendFailed.value,
-      title: "确认重发",
-      body: "失败号码将生成新批次并完整重走频控、审批和时间窗。",
-      auditNote: "重发行为与操作人将写入审计日志。",
-      confirmText: "确认重发",
+      isCurrent: () => selected.value === target && canScheduleOps.value,
+      title: "确认改期",
+      body: `批次 ${batch} 将改到新的定时时间，并重新执行审批判定；到达新时间前批次保持「已排期」。`,
+      auditNote: "改期行为与操作人将写入审计日志。",
+      confirmText: "确认改期",
     }))
   )
     return
+  rescheduling.value = true
   try {
+    await rescheduleBatch(batch, toApiDateTime(new Date(scheduledAt.value)))
+    rescheduleOpen.value = false
+    drawer.value = false
+    ElMessage.success("批次已改期并重新执行审批判定 · 本次操作已记入审计")
+    await load()
+  } catch (error) {
+    ElMessage.error(errorText(error, "改期失败"))
+  } finally {
+    rescheduling.value = false
+  }
+}
+
+const resending = ref(false)
+async function resendFailed(): Promise<void> {
+  if (!selected.value || !canResendFailed.value || resending.value) return
+  const target = selected.value
+  const batch = target.batch_no
+  resending.value = true
+  try {
+    if (
+      !(await confirmAuditedAction({
+        isCurrent: () => selected.value === target && canResendFailed.value,
+        title: "确认重发",
+        body: "失败号码将生成新批次并完整重走频控、审批和时间窗。",
+        auditNote: "重发行为与操作人将写入审计日志。",
+        confirmText: "确认重发",
+      }))
+    )
+      return
     const result = await resendFailedBatch(batch)
     ElMessage.success(`重发批次 ${result.batch_no} 已创建 · 本次操作已记入审计`)
     drawer.value = false
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "重发失败"))
+  } finally {
+    resending.value = false
   }
 }
 
@@ -360,9 +386,14 @@ onMounted(() => {
   // 深链 /batches?batch_no=xxx：从回复页等入口直达批次详情抽屉
   const target = typeof route?.query.batch_no === "string" ? route.query.batch_no.trim() : ""
   if (target) {
-    getBatch(target)
-      .then((batch) => openBatch(batch))
-      .catch(() => ElMessage.error("未找到对应批次或无权限查看"))
+    const signal = deepLinkRead.start()
+    getBatch(target, signal)
+      .then((batch) => {
+        if (!signal.aborted) openBatch(batch)
+      })
+      .catch((error) => {
+        if (!signal.aborted) ElMessage.error(errorText(error, "未找到对应批次或无权限查看"))
+      })
   }
 })
 
@@ -378,12 +409,13 @@ watch(drawer, (open) => {
 watch(moreOpen, (open) => {
   if (!open || appsRequested || !isAdmin.value) return
   appsRequested = true
-  listApps()
+  const signal = appsRead.start()
+  listApps(signal)
     .then((apps) => {
-      appOptions.value = apps.filter((app) => app.status === 1)
+      if (!signal.aborted) appOptions.value = apps.filter((app) => app.status === 1)
     })
     .catch(() => {
-      appOptions.value = []
+      if (!signal.aborted) appOptions.value = []
     })
 })
 </script>
@@ -405,11 +437,11 @@ watch(moreOpen, (open) => {
     </div>
     <div class="batch-fld">
       <span>类别</span>
-      <FilterSeg v-model="category" :options="categoryOptions" aria-label="类别" data-testid="batch-category-filter" />
+      <FilterSeg v-model="category" :options="categoryOptions" label="类别" data-testid="batch-category-filter" />
     </div>
     <div class="batch-fld">
       <span>渠道</span>
-      <FilterSeg v-model="channel" :options="channelOptions" aria-label="渠道" data-testid="batch-channel-filter" />
+      <FilterSeg v-model="channel" :options="channelOptions" label="渠道" data-testid="batch-channel-filter" />
     </div>
     <div class="batch-fld">
       <span>创建时间</span>
@@ -437,12 +469,7 @@ watch(moreOpen, (open) => {
         </template>
         <div class="batch-more">
           <label>测试发送</label>
-          <FilterSeg
-            v-model="isTest"
-            :options="isTestOptions"
-            aria-label="测试发送"
-            data-testid="batch-is-test-filter"
-          />
+          <FilterSeg v-model="isTest" :options="isTestOptions" label="测试发送" data-testid="batch-is-test-filter" />
           <label>应用</label>
           <el-select
             v-if="appOptions.length"
@@ -486,7 +513,7 @@ watch(moreOpen, (open) => {
     :options="statusChipOptions"
     class="filter-seg--chips"
     data-testid="batch-status-chips"
-    aria-label="按状态分组筛选"
+    label="按状态分组筛选"
     button-testid-prefix="batch-chip"
     @update:model-value="selectGroup"
   >
@@ -592,7 +619,7 @@ watch(moreOpen, (open) => {
           ></template
         >
       </el-table-column>
-      <template #empty><EmptyState title="没有符合条件的批次" description="调整筛选条件后重新查询。" /></template>
+      <template #empty><EmptyState title="没有符合筛选条件的批次" description="调整筛选条件后重新查询。" /></template>
     </el-table>
     <div class="query-mobile-list">
       <article v-for="item in items" :key="item.batch_no">
@@ -654,13 +681,25 @@ watch(moreOpen, (open) => {
     </template>
     <template v-if="selected">
       <div v-if="canWrite" class="batch-actions">
-        <el-button type="danger" plain :disabled="!canScheduleOps" data-testid="cancel-batch" @click="cancelSelected"
+        <el-button
+          type="danger"
+          plain
+          :loading="cancelling"
+          :disabled="!canScheduleOps || cancelling"
+          data-testid="cancel-batch"
+          @click="cancelSelected"
           >取消批次</el-button
         >
-        <el-button :disabled="!canScheduleOps" data-testid="reschedule-batch" @click="openReschedule">改期</el-button>
+        <el-button
+          :disabled="!canScheduleOps || cancelling || resending"
+          data-testid="reschedule-batch"
+          @click="openReschedule"
+          >改期</el-button
+        >
         <el-button
           v-if="selected.failed > 0"
-          :disabled="!canResendFailed"
+          :loading="resending"
+          :disabled="!canResendFailed || resending"
           data-testid="resend-failed"
           @click="resendFailed"
           >重发失败（{{ selected.failed.toLocaleString() }}）</el-button
@@ -688,7 +727,7 @@ watch(moreOpen, (open) => {
             }}</small></div
           >
           <div
-            ><span>待回执</span><b>{{ composeOf(selected).sent.toLocaleString() }}</b
+            ><span>已提交</span><b>{{ composeOf(selected).sent.toLocaleString() }}</b
             ><small>{{
               selected.total > 0 ? formatPercent(composeOf(selected).sent / selected.total) : "—"
             }}</small></div
@@ -730,7 +769,7 @@ watch(moreOpen, (open) => {
 
       <p v-if="selected.status === 'sending' && activeOf(selected) > 0" class="batch-note"
         >仍有 {{ activeOf(selected).toLocaleString() }} 条未终态（待处理
-        {{ composeOf(selected).pending.toLocaleString() }} + 待回执
+        {{ composeOf(selected).pending.toLocaleString() }} + 已提交
         {{
           composeOf(selected).sent.toLocaleString()
         }}），批次保持发送中，直至提交完成、结果核对、回执到达或报告超时。构成非成功率。</p
@@ -792,7 +831,7 @@ watch(moreOpen, (open) => {
         ><el-select
           v-model="detailStatus"
           data-testid="batch-detail-status"
-          style="width: 128px"
+          class="batch-detail-status"
           placeholder="全部状态"
           clearable
           @change="filterDetails"
@@ -818,7 +857,7 @@ watch(moreOpen, (open) => {
           label="回执时间"
           min-width="178"
           ><template #default="{ row }">{{ formatDateTime(row.report_time) }}</template></el-table-column
-        ><template #empty><EmptyState title="没有符合条件的明细" description="调整状态筛选后查看。" /></template
+        ><template #empty><EmptyState title="没有符合筛选条件的明细" description="调整状态筛选后查看。" /></template
       ></el-table>
       <ListPagination
         v-model:page="detailPage"
@@ -839,7 +878,13 @@ watch(moreOpen, (open) => {
       placeholder="选择新的发送时间"
     /><template #footer
       ><el-button @click="rescheduleOpen = false">取消</el-button
-      ><el-button type="primary" :disabled="!scheduledAt" @click="saveReschedule">确认改期</el-button></template
+      ><el-button
+        type="primary"
+        :loading="rescheduling"
+        :disabled="!scheduledAt || rescheduling"
+        @click="saveReschedule"
+        >确认改期</el-button
+      ></template
     ></el-dialog
   >
 </template>

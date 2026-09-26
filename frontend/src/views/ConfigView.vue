@@ -30,6 +30,7 @@ const { confirmAction, confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { ROLE_LABELS } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
+import { useLatestRead } from "../composables/useLatestRead"
 import { useSessionStore } from "../stores/session"
 
 type ConfigTab = "runtime" | "providers" | "vendor-test"
@@ -166,30 +167,43 @@ function hydrateProvider(provider: AuthProviderAdmin): void {
   providerDirty.value = false
 }
 
+const configRead = useLatestRead()
+const providerRead = useLatestRead()
+
 async function load(): Promise<void> {
+  const signal = configRead.start()
   loading.value = true
   errorMessage.value = ""
   try {
-    hydrate(await listConfigs())
+    const items = await listConfigs(signal)
+    if (signal.aborted) return
+    hydrate(items)
   } catch (error) {
+    if (signal.aborted) return
     errorMessage.value = errorText(error, "系统参数加载失败")
   } finally {
-    loading.value = false
+    if (!signal.aborted) loading.value = false
   }
 }
 
 async function loadProvider(): Promise<void> {
+  const signal = providerRead.start()
   providerLoading.value = true
   providerError.value = ""
   try {
-    const [provider, mappings] = await Promise.all([getAuthProvider("ad"), listAuthProviderRoleMappings("ad")])
+    const [provider, mappings] = await Promise.all([
+      getAuthProvider("ad", signal),
+      listAuthProviderRoleMappings("ad", signal),
+    ])
+    if (signal.aborted) return
     hydrateProvider(provider)
     roleMappingsRevision.value = mappings.revision
     roleMappings.value = mappings.mappings.map((item) => ({ ...item, rowKey: ++roleMappingKeySeq }))
   } catch (error) {
+    if (signal.aborted) return
     providerError.value = errorText(error, "认证源配置加载失败")
   } finally {
-    providerLoading.value = false
+    if (!signal.aborted) providerLoading.value = false
   }
 }
 
@@ -341,11 +355,11 @@ async function disableProvider(): Promise<void> {
   if (!provider) return
   if (
     !(await confirmAuditedAction({
-      title: "确认禁用 AD",
+      title: "确认停用 AD",
       isCurrent: () => adProvider.value === provider,
-      body: "禁用后登录页不再显示 AD，已有 AD 会话也将在后续认证校验时失效，无法继续访问或刷新；草稿、生效配置与角色映射继续保留，可随时重新测试并启用。",
-      auditNote: "禁用行为与操作人将写入审计日志。",
-      confirmText: "禁用 AD",
+      body: "停用后登录页不再显示 AD，已有 AD 会话也将在后续认证校验时失效，无法继续访问或刷新；草稿、生效配置与角色映射继续保留，可随时重新测试并启用。",
+      auditNote: "停用行为与操作人将写入审计日志。",
+      confirmText: "停用 AD",
     }))
   )
     return
@@ -364,9 +378,9 @@ async function disableProvider(): Promise<void> {
     if (!saved) return
     hydrateProvider(saved)
     disabledPreserved.value = true
-    ElMessage.success("AD 已禁用，配置与角色映射均已保留 · 本次操作已记入审计")
+    ElMessage.success("AD 已停用，配置与角色映射均已保留 · 本次操作已记入审计")
   } catch (error) {
-    ElMessage.error(errorText(error, "AD 认证源禁用失败"))
+    ElMessage.error(errorText(error, "AD 认证源停用失败"))
   } finally {
     providerSaving.value = false
   }
@@ -479,9 +493,7 @@ onMounted(() => {
       <span>登录时由用户明确选择，不自动回退</span>
     </header>
 
-    <el-alert v-if="providerError" :title="providerError" type="error" :closable="false" show-icon>
-      <template #default><el-button link type="primary" @click="loadProvider">重新加载</el-button></template>
-    </el-alert>
+    <LoadErrorAlert :message="providerError" @retry="loadProvider" />
 
     <article data-testid="local-provider" class="provider-local-row">
       <div class="provider-mark local">LOCAL</div>
@@ -494,7 +506,7 @@ onMounted(() => {
         <div class="provider-mark ad">AD</div>
         <div>
           <strong>{{ adProvider.name }}</strong>
-          <p>{{ adProvider.enabled ? "AD 当前已启用" : "AD 当前已禁用" }}</p>
+          <p>{{ adProvider.enabled ? "AD 当前已启用" : "AD 当前已停用" }}</p>
         </div>
         <div class="provider-version-state">
           <span>草稿版本 v{{ adProvider.draft_version }}</span>
@@ -616,7 +628,7 @@ onMounted(() => {
           plain
           :loading="providerSaving"
           @click="disableProvider"
-          >禁用 AD</el-button
+          >停用 AD</el-button
         >
       </div>
 
@@ -692,7 +704,7 @@ onMounted(() => {
             ...groupOptions.map((value) => ({ value, label: value })),
           ]"
           button-testid-prefix="config-group"
-          aria-label="参数分组筛选"
+          label="参数分组筛选"
           data-testid="config-group-seg"
           @update:model-value="setGroup"
         />

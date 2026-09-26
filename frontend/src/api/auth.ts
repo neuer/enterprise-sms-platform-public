@@ -121,19 +121,29 @@ function requireJson<T>(body: T | null): T {
   return body
 }
 
-export async function providerRequest(): Promise<AuthProvider[]> {
+export async function providerRequest(signal?: AbortSignal): Promise<AuthProvider[]> {
   return requireJson(
-    await authJson<AuthProvider[]>("/api/v1/web/auth/providers", {
-      headers: { Accept: "application/json" },
-    }),
+    await authJson<AuthProvider[]>(
+      "/api/v1/web/auth/providers",
+      {
+        headers: { Accept: "application/json" },
+      },
+      undefined,
+      signal,
+    ),
   )
 }
 
-export async function passwordPolicyRequest(): Promise<PasswordPolicy> {
+export async function passwordPolicyRequest(signal?: AbortSignal): Promise<PasswordPolicy> {
   return requireJson(
-    await authJson<PasswordPolicy>("/api/v1/web/auth/password-policy", {
-      headers: { Accept: "application/json" },
-    }),
+    await authJson<PasswordPolicy>(
+      "/api/v1/web/auth/password-policy",
+      {
+        headers: { Accept: "application/json" },
+      },
+      undefined,
+      signal,
+    ),
   )
 }
 

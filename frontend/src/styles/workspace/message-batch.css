@@ -45,8 +45,9 @@
   font-size: 12px;
 }
 
-.query-mobile-list {
-  display: none;
+/* 号码明细状态筛选宽度（原内联 style 收编） */
+.batch-detail-status {
+  width: 128px;
 }
 
 .batch-detail-head {
@@ -76,7 +77,7 @@
   align-items: center;
   padding: 5px 11px;
   color: var(--tx-2);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10.5px;
   white-space: nowrap;
   background: var(--panel);
@@ -141,12 +142,6 @@
 .batch-filter-dates .el-range__icon {
   margin-right: 2px;
   font-size: 12px;
-}
-.batch-filter-actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-left: auto;
 }
 .batch-dirty {
   color: var(--amber);
@@ -525,18 +520,6 @@
   text-decoration: underline;
 }
 
-.message-filter-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 14px;
-  padding: 14px 16px 10px;
-  margin-bottom: 14px;
-  background: var(--panel);
-  border: 1px solid var(--hair);
-  border-radius: 12px;
-}
-
 .message-fld {
   display: grid;
   gap: 5px;
@@ -550,6 +533,11 @@
 
 .message-filter-phone {
   width: 250px;
+}
+
+/* 号码页表头类别/状态筛选宽度（原内联 style 收编） */
+.message-head-select {
+  width: 118px;
 }
 
 .message-filter-phone .el-input__inner {
@@ -571,30 +559,9 @@
   font-size: 11px;
 }
 
-.message-filter-go {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-left: auto;
-}
-
 .message-phone-error {
   color: var(--verm);
   font-size: 10.5px;
-}
-
-.message-privacy {
-  flex: 1 0 100%;
-  margin: 0;
-  padding-top: 8px;
-  border-top: 1px solid var(--hair-2);
-  color: var(--tx-3);
-  font-size: 10.5px;
-}
-
-.message-privacy code {
-  color: var(--tx-2);
-  font: 10px var(--mono);
 }
 
 .message-badge {
@@ -680,13 +647,6 @@
 .message-badge-reveal small {
   color: var(--tx-3);
   font-size: 10px;
-}
-
-.message-results {
-  padding: 2px 8px 8px;
-  background: var(--panel);
-  border: 1px solid var(--hair);
-  border-radius: 12px;
 }
 
 .message-content {
@@ -865,22 +825,6 @@
   }
   .query-table {
     display: none;
-  }
-  .query-mobile-list {
-    display: grid;
-    gap: 10px;
-  }
-  .query-mobile-list article {
-    padding: 14px;
-    border: 1px solid var(--line);
-    background: var(--surface-soft);
-  }
-  .query-mobile-list header,
-  .query-mobile-list footer {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
   }
   .query-mobile-list p {
     color: var(--ink-soft);

@@ -2,19 +2,6 @@
 /* 模板/签名两页查询栏同构：sign-filter-bar/sign-fld/sign-keyword/sign-filter-note
    与 template-* 共用以下规则（移动端见 760px 媒体块），按页复制即缺陷；
    厂商状态 seg 已并入 FilterSeg 单点（shared.css）。 */
-.template-filter-bar,
-.sign-filter-bar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 14px;
-  padding: 14px 16px;
-  margin-bottom: 14px;
-  background: var(--panel);
-  border: 1px solid var(--hair);
-  border-radius: 12px;
-}
-
 .template-fld,
 .sign-fld {
   display: grid;
@@ -41,14 +28,6 @@
 /* 厂商状态 seg 已并入 FilterSeg 单点（shared.css），计数圆点样式同样由单点的
    .filter-seg button i 承载；本文件不再保留 template-seg/sign-seg 散件。 */
 
-.template-filter-note,
-.sign-filter-note {
-  margin-left: auto;
-  align-self: center;
-  color: var(--tx-3);
-  font: 11px var(--mono);
-}
-
 .template-alert {
   margin-bottom: 14px;
 }
@@ -66,7 +45,7 @@
 
 .muted {
   color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10px;
 }
 
@@ -112,84 +91,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.template-foot {
-  display: flex;
-  gap: 14px;
-  align-items: center;
-  padding: 10px 16px;
-  color: var(--tx-3);
-  font-size: 11px;
-  border-top: 1px solid var(--hair-2);
-}
-
-.template-foot-role {
-  margin-left: auto;
-  font-family: var(--mono);
-  font-size: 10.5px;
-}
-
-.template-drawer-head {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-  padding-right: 8px;
-}
-
-.template-drawer-title {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  color: var(--tx-hi);
-  font-size: 13.5px;
-  font-weight: 600;
-}
-
-.template-drawer-head code {
-  display: block;
-  color: var(--tx-3);
-  font: 11px var(--mono);
-}
-
-.template-content-block {
-  display: grid;
-  gap: 6px;
-  margin-top: 13px;
-  padding: 11px 14px;
-  border: 1px solid var(--hair);
-  border-radius: 10px;
-}
-
-.template-content-block > span {
-  color: var(--tx-3);
-  font-size: 10px;
-  letter-spacing: 0.12em;
-}
-
-.template-content-block p {
-  margin: 0;
-  color: var(--tx-hi);
-  font-size: 12.5px;
-  line-height: 1.8;
-}
-
-.template-fact-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px 18px;
-  margin: 16px 0 0;
-}
-
-.template-fact-grid dt {
-  color: var(--tx-3);
-  font-size: 10.5px;
-}
-
-.template-fact-grid dd {
-  margin: 1px 0 0;
-  color: var(--tx);
-  font-size: 12px;
-}
-
 .template-spec-card {
   display: grid;
   gap: 9px;
@@ -221,15 +122,6 @@
   color: var(--tx-3);
   font-size: 10px;
   font-style: normal;
-}
-
-.template-trail {
-  display: flex;
-  align-items: center;
-  padding: 12px 14px;
-  background: var(--sink);
-  border: 1px solid var(--hair);
-  border-radius: 10px;
 }
 
 .trail-step {
@@ -291,27 +183,10 @@
   margin-top: 14px;
 }
 
-.template-proof-hint {
-  display: block;
-  margin-top: 6px;
-  color: var(--tx-3);
-  font-size: 10px;
-}
-
 .template-vendor-preview {
   color: var(--tx);
   font-family: var(--mono);
   font-size: 11.5px;
-}
-
-.template-detail-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
 }
 
 .template-detail-actions .why {

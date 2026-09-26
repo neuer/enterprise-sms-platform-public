@@ -18,7 +18,11 @@
 .config-filter-bar,
 .ops-filter-bar,
 .callback-filter-bar,
-.audit-filter-bar {
+.audit-filter-bar,
+.message-filter-bar,
+.template-filter-bar,
+.sign-filter-bar,
+.apps-filter-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
@@ -114,7 +118,7 @@
 }
 
 .filter-seg button.on {
-  color: #eaf1ed;
+  color: var(--on-accent);
   background: var(--verdi);
 }
 
@@ -128,7 +132,7 @@
 }
 
 .filter-seg button.on i {
-  color: rgba(234, 241, 237, 0.75);
+  color: color-mix(in srgb, var(--on-accent) 75%, transparent);
 }
 
 .filter-seg--compact {
@@ -233,7 +237,9 @@
 .user-filter-go,
 .ops-filter-go,
 .callback-filter-go,
-.audit-filter-go {
+.audit-filter-go,
+.message-filter-go,
+.batch-filter-actions {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -258,7 +264,8 @@
 .config-privacy,
 .ops-privacy,
 .callback-privacy,
-.audit-privacy {
+.audit-privacy,
+.message-privacy {
   flex: 1 0 100%;
   margin: 0;
   padding-top: 8px;
@@ -274,7 +281,8 @@
 .config-privacy code,
 .ops-privacy code,
 .callback-privacy code,
-.audit-privacy code {
+.audit-privacy code,
+.message-privacy code {
   color: var(--tx-2);
   font: 10px var(--mono);
 }
@@ -284,6 +292,37 @@
   font-size: 10.5px;
 }
 
+/* 列表页脚条共享组（模板/签名/应用管理）：计数 + 右端角色注记，按页复制即缺陷。 */
+.template-foot,
+.sign-foot,
+.apps-foot {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 16px;
+  color: var(--tx-3);
+  font-size: 11px;
+  border-top: 1px solid var(--hair-2);
+}
+
+.template-foot-role,
+.sign-foot-role,
+.apps-foot-role {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+/* 检索条内联注记共享组：右对齐 mono 小字（区别于整行 privacy 注脚），按页复制即缺陷。 */
+.apps-filter-note,
+.template-filter-note,
+.sign-filter-note {
+  margin-left: auto;
+  align-self: center;
+  color: var(--tx-3);
+  font: 11px var(--mono);
+}
+
 .reply-results,
 .blacklist-results,
 .sensitive-results,
@@ -291,7 +330,8 @@
 .ops-results,
 .callback-results,
 .security-daily-results,
-.audit-results {
+.audit-results,
+.message-results {
   padding: 2px 8px 8px;
   background: var(--panel);
   border: 1px solid var(--hair);
@@ -305,7 +345,7 @@
 .phone-mask,
 .mono-time,
 .batch-code {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -523,7 +563,7 @@
 
 .callback-pulse strong {
   color: var(--verdi);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 32px;
   font-weight: 400;
 }
@@ -558,7 +598,7 @@
 .retry-count,
 .http-code,
 .callback-table time {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 11px;
 }
 
@@ -576,8 +616,81 @@
   overflow-wrap: anywhere;
 }
 
-.callback-mobile-list {
+/* 移动端卡片列表共享骨架：桌面隐藏，760px 起卡片网格；视觉统一 surface-soft/line/6px 圆角。
+   各页仅保留内容级差异（dl 事实栅格、footer 分隔线、字体细节），骨架按页复制即缺陷。 */
+.callback-mobile-list,
+.audit-mobile-list,
+.ops-mobile-list,
+.query-mobile-list,
+.user-mobile-list,
+.sign-mobile-list,
+.blacklist-mobile-list,
+.template-mobile-list {
   display: none;
+}
+
+@media (max-width: 760px) {
+  .callback-mobile-list,
+  .audit-mobile-list,
+  .ops-mobile-list,
+  .query-mobile-list,
+  .user-mobile-list,
+  .sign-mobile-list,
+  .blacklist-mobile-list,
+  .template-mobile-list {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .callback-mobile-list article,
+  .audit-mobile-list article,
+  .ops-mobile-list article,
+  .query-mobile-list article,
+  .user-mobile-list article,
+  .sign-mobile-list article,
+  .blacklist-mobile-list article,
+  .template-mobile-list article {
+    display: grid;
+    gap: 9px;
+    min-width: 0;
+    padding: 14px;
+    background: var(--surface-soft);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+  }
+
+  .callback-mobile-list header,
+  .callback-mobile-list footer,
+  .audit-mobile-list header,
+  .ops-mobile-list header,
+  .query-mobile-list header,
+  .query-mobile-list footer,
+  .user-mobile-list header,
+  .user-mobile-list footer,
+  .sign-mobile-list header,
+  .sign-mobile-list footer,
+  .blacklist-mobile-list header,
+  .blacklist-mobile-list footer,
+  .template-mobile-list header,
+  .template-mobile-list footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 10px;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .callback-mobile-list p,
+  .audit-mobile-list p,
+  .ops-mobile-list p,
+  .query-mobile-list p,
+  .user-mobile-list p,
+  .sign-mobile-list p,
+  .blacklist-mobile-list p,
+  .template-mobile-list p {
+    margin: 0;
+  }
 }
 
 @media (max-width: 760px) {
@@ -592,37 +705,14 @@
     display: none;
   }
 
-  .callback-mobile-list {
-    display: grid;
-    gap: 10px;
-    padding: 12px 8px;
-  }
-
-  .callback-mobile-list article {
-    min-width: 0;
-    padding: 14px;
-    background: var(--panel-2);
-    border: 1px solid var(--hair);
-    border-radius: 10px;
-  }
-
-  .callback-mobile-list header,
-  .callback-mobile-list footer {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    justify-content: space-between;
-  }
-
   .callback-mobile-list header small,
   .callback-mobile-list time {
     color: var(--tx-3);
-    font-family: "IBM Plex Mono", monospace;
+    font-family: var(--mono);
     font-size: 10px;
   }
 
   .callback-mobile-list p {
-    margin: 12px 0 0;
     color: var(--tx-2);
   }
 
@@ -650,7 +740,7 @@
   .callback-mobile-list dd {
     margin: 1px 0 0;
     overflow-wrap: anywhere;
-    font-family: "IBM Plex Mono", monospace;
+    font-family: var(--mono);
     font-size: 10px;
   }
 
@@ -720,7 +810,7 @@
 .balance strong {
   margin-left: 4px;
   color: var(--tx);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 12px;
 }
 
@@ -751,7 +841,7 @@ main {
 .eyebrow {
   margin: 0 0 3px;
   color: var(--verdi);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.12em;
@@ -770,7 +860,7 @@ main {
 
 .page-heading time {
   color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10px;
 }
 

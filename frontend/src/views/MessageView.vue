@@ -252,7 +252,7 @@ async function revealSearched(): Promise<string> {
           ...[{ label: '列表', value: 'list' as const, testid: 'message-view-list' }],
           ...[{ label: '时间线', value: 'timeline' as const, testid: 'message-view-timeline' }],
         ]"
-        aria-label="查询视图"
+        label="查询视图"
         data-testid="message-mode-seg"
         @update:model-value="switchMode"
       />
@@ -368,7 +368,7 @@ async function revealSearched(): Promise<string> {
           placeholder="全部类别"
           clearable
           size="small"
-          style="width: 118px"
+          class="message-head-select"
           @change="applyFilters"
         >
           <el-option
@@ -384,7 +384,7 @@ async function revealSearched(): Promise<string> {
           placeholder="全部状态"
           clearable
           size="small"
-          style="width: 118px"
+          class="message-head-select"
           @change="applyFilters"
         >
           <el-option v-for="option in statusOptions" :key="option.value" :value="option.value" :label="option.label" />

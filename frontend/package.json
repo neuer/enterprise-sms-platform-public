@@ -11,7 +11,7 @@
     "build": "npm run typecheck && npm run build:g2",
     "build:g2": "vite build",
     "typecheck": "vue-tsc --noEmit",
-    "gen:api-types": "openapi-typescript ../openapi.yaml -o src/api/types.gen.ts",
+    "gen:api-types": "openapi-typescript ../openapi.yaml -o src/api/types.gen.ts && node scripts/stamp-api-types.mjs",
     "test": "vitest run",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",

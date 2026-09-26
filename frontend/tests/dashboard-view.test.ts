@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import ElementPlus from "element-plus"
+import ElementPlus, { ElMessage } from "element-plus"
 import { vi } from "vitest"
 
 const chart = vi.hoisted(() => ({
@@ -167,7 +167,7 @@ describe("仪表盘", () => {
     vi.unstubAllGlobals()
   })
 
-  it("成功后轮询失败时保留最后值并把信道标记为陈旧", async () => {
+  it("成功后轮询失败时保留最后值并把通道标记为陈旧", async () => {
     const fetch = vi
       .fn()
       .mockResolvedValueOnce(response(snapshot))
@@ -268,6 +268,30 @@ describe("仪表盘", () => {
     wrapper.unmount()
     vi.unstubAllGlobals()
     vi.useRealTimers()
+  })
+
+  it("卸载取消在途仪表盘读取，取消不产生失败提示", async () => {
+    const signals: AbortSignal[] = []
+    const fetch = vi.fn(
+      (url: string, init?: RequestInit) =>
+        new Promise((_, reject) => {
+          const signal = init?.signal as AbortSignal
+          signals.push(signal)
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true })
+        }),
+    )
+    vi.stubGlobal("fetch", fetch)
+    const errorToast = vi.spyOn(ElMessage, "error")
+    const wrapper = mountDashboard()
+    await flushPromises()
+    expect(signals).toHaveLength(1)
+
+    wrapper.unmount()
+    await flushPromises()
+    expect(signals[0].aborted).toBe(true)
+    expect(errorToast).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
   })
 })
 

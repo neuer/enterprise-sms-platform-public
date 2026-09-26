@@ -4,6 +4,7 @@ import { triggerRule, formatSegments } from "../lib/approvalText"
 import { computed, ref } from "vue"
 
 import { ClickOutside as vClickOutside } from "element-plus"
+import { vRowActivate } from "../lib/directives"
 
 import type { ApprovalAction, ApprovalListItem, ApprovalStatus } from "../api/approvals"
 
@@ -97,7 +98,7 @@ function destinationOf(item: ApprovalListItem): Destination {
         : { title: "已进入定时", note }
     }
     if (item.batch_status === "queued") {
-      return { title: "已进入发送队列", note: `${item.category === "market" ? "bulk" : "realtime"} 通道` }
+      return { title: "已进入发送队列", note: item.category === "market" ? "批量通道" : "实时通道" }
     }
     return { title: "已进入发送流程", note: null }
   }
@@ -271,11 +272,11 @@ function confirmQuick(item: ApprovalListItem): void {
                   :rows="3"
                   maxlength="256"
                   show-word-limit
-                  placeholder="驳回原因（必填，≤256 字）"
+                  placeholder="审批意见（驳回必填，≤256 字）"
                   data-testid="approval-quick-reason-reject"
                   @keydown.esc="closeQuick"
                 />
-                <p class="approval-quick-tip">驳回原因必填 · 配额由服务端幂等回补</p>
+                <p class="approval-quick-tip">驳回时审批意见必填 · 配额由服务端幂等回补</p>
                 <div class="approval-quick-actions">
                   <el-button size="small" @click="closeQuick">取消</el-button>
                   <el-button
@@ -314,10 +315,10 @@ function confirmQuick(item: ApprovalListItem): void {
           <tr
             v-for="item in items"
             :key="item.id"
+            v-row-activate="() => emit('detail', item)"
             :data-testid="`approval-row-${item.id}`"
             tabindex="0"
             @click="emit('detail', item)"
-            @keydown.enter="emit('detail', item)"
           >
             <td data-label="批次号 / 申请时间">
               <span class="approval-batch-cell">

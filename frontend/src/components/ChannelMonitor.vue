@@ -55,7 +55,7 @@ function displayNumber(value: number | null): string {
   <section
     data-testid="channel-monitor"
     :class="['channel-monitor', { 'monitor-stale': stale }]"
-    aria-label="短信信道实时监视"
+    aria-label="短信通道实时监视"
   >
     <span class="monitor-live"><i aria-hidden="true"></i>{{ stale ? "数据暂不可用" : "LIVE" }}</span>
 

@@ -10,6 +10,8 @@ const { confirmAuditedAction } = useConfirmActions()
 
 import { errorText } from "../../lib/error"
 
+import { formatPercent } from "../../lib/format"
+
 import { useLatestRead } from "../../composables/useLatestRead"
 
 import { jobDescription } from "../../lib/jobDescriptions"
@@ -27,6 +29,14 @@ const jobs = ref<JobItem[]>([])
 const JOBS_EMPTY = {
   title: "暂无任务心跳记录",
   description: "心跳由 API 进程内巡检汇总，任务须以 tracked_job 声明预期间隔。",
+}
+
+/** 健康列文案：停滞优先于最近一次结果；last_status 是后端原始英文枚举，展示前必须中文化。 */
+function healthLabel(row: JobItem): string {
+  if (row.stalled) return "停滞"
+  if (row.last_status === "success") return "成功"
+  if (row.last_status === "failed") return "失败"
+  return "无记录"
 }
 
 const snapshotRead = useLatestRead()
@@ -56,17 +66,18 @@ async function load(_tab?: string): Promise<void> {
 async function trigger(item: JobItem): Promise<void> {
   item = { ...item }
   if (triggeringJobName.value) return
-  if (
-    !(await confirmAuditedAction({
-      title: "确认任务触发",
-      body: `手动触发 ${item.job_name} 将立即投递一次执行，不改变 beat 既有调度。`,
-      auditNote: "触发行为与操作人将写入审计日志。",
-      confirmText: "手动触发",
-    }))
-  )
-    return
+  // 进函数即置 busy（confirm 之前），确认框期间拦截重复点击。
   triggeringJobName.value = item.job_name
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "确认任务触发",
+        body: `手动触发 ${item.job_name} 将立即投递一次执行，不改变 beat 既有调度。`,
+        auditNote: "触发行为与操作人将写入审计日志。",
+        confirmText: "确认触发",
+      }))
+    )
+      return
     await triggerJob(item.job_name)
     ElMessage.success("任务已投递 · 本次操作已记入审计")
     // 触发后重查心跳：让操作者立刻看到 last_status/耗时变化，而不是停留在旧快照。
@@ -110,7 +121,7 @@ watch(
           ><el-table-column label="健康" width="100"
             ><template #default="{ row }"
               ><span class="job-health" :class="{ danger: row.stalled || row.last_status === 'failed' }"
-                ><i></i>{{ row.stalled ? "stalled" : row.last_status || "无记录" }}</span
+                ><i></i>{{ healthLabel(row) }}</span
               ></template
             ></el-table-column
           ><el-table-column prop="last_duration_ms" label="耗时 ms" width="100" /><el-table-column
@@ -118,7 +129,7 @@ watch(
             label="处理量"
             width="90" /><el-table-column label="24h 成功率" width="120"
             ><template #default="{ row }">{{
-              row.last_run_at ? (row.success_rate_24h * 100).toFixed(1) + "%" : "—"
+              row.last_run_at ? formatPercent(row.success_rate_24h) : "—"
             }}</template></el-table-column
           ><el-table-column label="最近运行" width="180"
             ><template #default="{ row }">{{ formatDateTime(row.last_run_at) }}</template></el-table-column
@@ -139,13 +150,11 @@ watch(
           ><article v-for="item in jobs" :key="item.job_name"
             ><header
               ><strong>{{ item.job_name }}</strong
-              ><span class="job-health" :class="{ danger: item.stalled }"
-                ><i></i>{{ item.stalled ? "stalled" : item.last_status || "无记录" }}</span
-              ></header
+              ><span class="job-health" :class="{ danger: item.stalled }"><i></i>{{ healthLabel(item) }}</span></header
             ><p class="job-description">{{ jobDescription(item.job_name) }}</p
             ><p
               >{{ item.last_items }} 项 · {{ item.last_duration_ms ?? 0 }}ms ·
-              {{ item.last_run_at ? (item.success_rate_24h * 100).toFixed(1) + "%" : "—" }}</p
+              {{ item.last_run_at ? formatPercent(item.success_rate_24h) : "—" }}</p
             ><el-button
               link
               type="primary"
@@ -154,7 +163,7 @@ watch(
               @click="trigger(item)"
               >手动触发</el-button
             ></article
-          ><EmptyState v-if="!jobs.length" :title="JOBS_EMPTY.title" :description="JOBS_EMPTY.description"
+          ><EmptyState v-if="!loading && !jobs.length" :title="JOBS_EMPTY.title" :description="JOBS_EMPTY.description"
         /></div>
       </section>
     </section>

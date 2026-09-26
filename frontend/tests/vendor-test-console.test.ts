@@ -175,7 +175,7 @@ describe("系统配置页真实联调控制台", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain(expected)
-    expect(wrapper.text()).toContain("100 条/日")
+    expect(wrapper.text()).toContain("100 计费条/日")
     expect(wrapper.text()).not.toContain("secretName")
     wrapper.unmount()
   })
@@ -334,15 +334,15 @@ describe("系统配置页真实联调控制台", () => {
     await wrapper.get("[data-testid='uat-preview']").trigger("click")
     await flushPromises()
 
-    expect(wrapper.text()).toContain("预计 1 条")
+    expect(wrapper.text()).toContain("预计 1 计费条")
     await wrapper.get("[data-testid='uat-send']").trigger("click")
     await flushPromises()
     expect(confirm).toHaveBeenCalledWith(
-      expect.stringContaining("本次预计消耗 1 条计费额度（1 个计费段）"),
-      "确认发送真实 UAT",
-      expect.objectContaining({ confirmButtonText: "确认发送（预计 1 条）" }),
+      expect.stringContaining("本次预计消耗 1 计费条"),
+      "确认发送单号码 UAT",
+      expect.objectContaining({ confirmButtonText: "确认发送（预计 1 计费条）" }),
     )
-    expect(String(confirm.mock.calls[0]?.[0])).toContain("每日总上限为 100 条")
+    expect(String(confirm.mock.calls[0]?.[0])).toContain("每日总上限为 100 计费条")
     expect(String(confirm.mock.calls[0]?.[0])).not.toContain("消耗每日 100 条预算")
     await vi.advanceTimersByTimeAsync(800)
     await flushPromises()
@@ -355,7 +355,7 @@ describe("系统配置页真实联调控制台", () => {
       category: "notice",
       content: "维护通知",
       consent_confirmed: false,
-      remark: "系统配置页真实 UAT",
+      remark: "系统配置页单号码 UAT",
     })
     expect(JSON.stringify(send)).not.toContain("13900000001")
     expect(wrapper.text()).toContain("UAT-001")
@@ -364,7 +364,7 @@ describe("系统配置页真实联调控制台", () => {
     wrapper.unmount()
   })
 
-  it("真实 UAT 响应不明确时重试复用同一浏览器幂等键", async () => {
+  it("单号码 UAT 响应不明确时重试复用同一浏览器幂等键", async () => {
     const bodies: Array<{ biz_id: string }> = []
     const fetch = consoleFetch({ ...baseStatus, mode: "controlled" }, (url, init) => {
       if (url.endsWith("/vendor-test/messages/preview")) {
@@ -485,7 +485,7 @@ describe("系统配置页真实联调控制台", () => {
     wrapper.unmount()
   })
 
-  it("可在页面选择已审核模板、参数和签名完成真实 UAT", async () => {
+  it("可在页面选择已审核模板、参数和签名完成单号码 UAT", async () => {
     const operation = {
       operation_id: "00000000-0000-4000-8000-000000000098",
       operation_type: "uat_send",
@@ -551,7 +551,7 @@ describe("系统配置页真实联调控制台", () => {
       template_params: ["今日 22:00"],
       sign_name: "平台",
       consent_confirmed: false,
-      remark: "系统配置页真实 UAT",
+      remark: "系统配置页单号码 UAT",
     })
     expect(JSON.stringify(sendCall)).not.toContain("13900000001")
     expect(wrapper.text()).toContain("UAT-TEMPLATE-001")

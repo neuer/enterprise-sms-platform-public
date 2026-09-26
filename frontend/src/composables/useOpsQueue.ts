@@ -4,13 +4,14 @@ import { computed, h, ref } from "vue"
 
 import { getQueueStatus, resumeQueue, type QueueStatus } from "../api/ops"
 
-import { confirmAuditedAction } from "../lib/confirm"
+import { useConfirmActions } from "../lib/confirm"
 
 import { errorText } from "../lib/error"
 
 import { useLatestRead } from "../composables/useLatestRead"
 
 export function useOpsQueue() {
+  const { confirmAuditedAction } = useConfirmActions()
   const queue = ref<QueueStatus | null>(null)
 
   const forceResume = ref(false)
@@ -36,28 +37,33 @@ export function useOpsQueue() {
     }
   }
 
+  // 恢复在途守卫：进入即置位（confirm 之前），拦截确认框期间的重复点击。
+  const recovering = ref(false)
   async function recover(): Promise<void> {
     // 双队列均在运行时服务端只会恢复 0 个批次，直接拦截避免误导性成功提示。
-    if (!queueBlocked.value) return
-    if (
-      !(await confirmAuditedAction({
-        title: "确认恢复双队列",
-        body: forceResume.value
-          ? h("p", ["FORCE 已开启：将", h("strong", "绕过余额与暂停原因守卫"), "，实时与批量队列立即恢复投递。"])
-          : h("p", "仅在余额达标且暂停码为 999 时恢复，不满足条件时服务端拒绝。"),
-        auditNote: "恢复行为、force 取值与操作人将写入审计日志。",
-        confirmText: "恢复队列",
-      }))
-    )
-      return
+    if (!queueBlocked.value || recovering.value) return
+    recovering.value = true
     try {
+      if (
+        !(await confirmAuditedAction({
+          title: "确认恢复双队列",
+          body: forceResume.value
+            ? h("p", ["FORCE 已开启：将", h("strong", "绕过余额与暂停原因守卫"), "，实时与批量队列立即恢复投递。"])
+            : h("p", "仅在余额达标且暂停码为 999 时恢复，不满足条件时服务端拒绝。"),
+          auditNote: "恢复行为、force 取值与操作人将写入审计日志。",
+          confirmText: "恢复队列",
+        }))
+      )
+        return
       const result = await resumeQueue(forceResume.value)
       queueRecovered.value = true
       ElMessage.success(`已恢复 ${result.resumed_batches} 个批次 · 本次操作已记入审计`)
       await load("queue")
     } catch (error) {
       ElMessage.error(errorText(error, "队列恢复失败"))
+    } finally {
+      recovering.value = false
     }
   }
-  return { queue, queueBlocked, queueRecovered, forceResume, loading, errorMessage, load, recover }
+  return { queue, queueBlocked, queueRecovered, forceResume, loading, errorMessage, load, recover, recovering }
 }

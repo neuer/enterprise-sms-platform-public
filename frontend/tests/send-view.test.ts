@@ -510,7 +510,7 @@ describe("人工发送工作台", () => {
     await flushPromises()
 
     expect(wrapper.get("[data-testid='final-content']").text()).toBe("【平台】维护通知")
-    expect(wrapper.text()).toContain("2 × 1 段 =")
+    expect(wrapper.text()).toContain("2 号码 × 1 计费条 =")
     expect(wrapper.text()).toContain("3,412 / 20,000")
     expect(wrapper.get("[data-testid='send-button']").text()).toContain("立即发送")
     wrapper.unmount()

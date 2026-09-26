@@ -108,7 +108,7 @@ watch(
             show-password
           />
         </el-form-item>
-        <el-form-item label="运营商 SecretName" required>
+        <el-form-item label="厂商 SecretName" required>
           <el-input
             v-model="draft.secretName"
             data-testid="vendor-secret-name"
@@ -118,7 +118,7 @@ watch(
             show-password
           />
         </el-form-item>
-        <el-form-item label="运营商 SecretKey" required>
+        <el-form-item label="厂商 SecretKey" required>
           <el-input
             v-model="draft.secretKey"
             data-testid="vendor-secret-key"

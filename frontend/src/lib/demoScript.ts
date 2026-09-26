@@ -61,7 +61,7 @@ export function payloadJson(context: DemoContext): string {
 export function buildDemoScript(language: DemoLanguage, context: DemoContext): string {
   const base = "https://sms.example.com/api/v1"
   const head = `// 应用：${context.app.name}（id=${context.app.id}）· 模板：${context.templateName}（id=${context.templateId}）`
-  const warning = "// 正式接入必须使用已审核模板，直接内容会进入服务商人工审核"
+  const warning = "// 正式接入必须使用已审核模板，直接内容会进入厂商人工审核"
   const baseHint = "// 请把 base 替换为平台地址（测试环境 http://<服务器IP>:18080/api/v1）"
   const contentLine = context.templateContent ? `// 模板内容：${context.templateContent}` : ""
   const params = paramsLiteral(language, context.params)
@@ -69,7 +69,7 @@ export function buildDemoScript(language: DemoLanguage, context: DemoContext): s
     return [
       `# 应用：${context.app.name}（id=${context.app.id}）· 模板：${context.templateName}（id=${context.templateId}）`,
       contentLine,
-      `# 正式接入必须使用已审核模板，直接内容会进入服务商人工审核`,
+      `# 正式接入必须使用已审核模板，直接内容会进入厂商人工审核`,
       `# 请把 base 替换为平台地址（测试环境 http://<服务器IP>:18080/api/v1）`,
       `curl -X POST '${base}/messages/send' \\`,
       `  -H "X-Api-Key: $SMS_API_KEY" \\`,

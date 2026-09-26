@@ -76,14 +76,12 @@
   --sans: "Noto Sans SC Variable", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui, sans-serif;
   --serif: "Noto Serif SC Variable", "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
   --mono: "IBM Plex Mono", monospace;
-  --green: var(--verdi);
-  --red: var(--verm);
-  --cyan: var(--slate);
-  --violet: #9b7ed9;
   /* 文字级品牌绿：面板上作前景色的绿（亮/暗主题取值方向相反） */
   --verdi-text: #71c4ad;
+  /* accent（verdi）底色上的文字色 */
+  --on-accent: #eafff7;
   /* ECharts canvas 读不到 CSS 变量，图表经 lib/chartTheme.ts 读取这组 --chart-* 令牌 */
-  --chart-text: #8b978f;
+  --chart-text: #8b978f; /* == --tx-2，图表 canvas 读字面量，禁用 var() 别名 */
   --chart-axis: rgba(255, 255, 255, 0.14);
   --chart-split: rgba(255, 255, 255, 0.07);
   --chart-green: #2fa184;
@@ -95,7 +93,7 @@
   --chart-dim: #6d7a72;
   --chart-tip-bg: #141d19;
   --chart-tip-border: rgba(255, 255, 255, 0.08);
-  --chart-tip-text: #c9d2cc;
+  --chart-tip-text: #c9d2cc; /* == --tx，禁用 var() 别名 */
   --el-color-primary: var(--verdi);
   --el-color-success: var(--verdi);
   --el-color-warning: var(--amber);
@@ -157,14 +155,14 @@
   --slate: #34618f;
   --amber: #9a6b1e;
   --verm: #c2492f;
-  --violet: #7558c2;
   --verdi-text: #0b6a55;
+  --on-accent: #f2faf6;
   --el-fill-color: #e6ece6;
   --el-fill-color-lighter: #f1f5f1;
   --el-disabled-bg-color: #dce3dc;
   --el-disabled-border-color: #d2dad2;
   --el-mask-color: rgba(28, 40, 33, 0.45);
-  --chart-text: #54625a;
+  --chart-text: #54625a; /* == --tx-2，图表 canvas 读字面量，禁用 var() 别名 */
   --chart-axis: rgba(21, 32, 26, 0.22);
   --chart-split: rgba(21, 32, 26, 0.08);
   /* 亮底上大面积填充用中饱和色阶：与暗色图表同源，避免深压白底的突兀感 */
@@ -177,7 +175,7 @@
   --chart-dim: #8fa39a;
   --chart-tip-bg: #ffffff;
   --chart-tip-border: rgba(21, 32, 26, 0.12);
-  --chart-tip-text: #2c3731;
+  --chart-tip-text: #2c3731; /* == --tx，禁用 var() 别名 */
 }
 
 * {
@@ -729,7 +727,7 @@ button:focus-visible {
 .qingluan-date-popper .el-date-table td.current:not(.disabled) .el-date-table-cell__text,
 .qingluan-date-popper .el-date-table td.start-date .el-date-table-cell__text,
 .qingluan-date-popper .el-date-table td.end-date .el-date-table-cell__text {
-  color: #f3f8f5;
+  color: var(--on-accent);
   font-weight: 650;
   background: var(--verdi);
   box-shadow: none;
@@ -935,7 +933,7 @@ button:focus-visible {
 .el-tag.el-tag--success {
   --el-tag-bg-color: color-mix(in srgb, var(--verdi) 18%, var(--panel));
   --el-tag-border-color: color-mix(in srgb, var(--verdi) 42%, var(--panel));
-  --el-tag-text-color: #71c4ad;
+  --el-tag-text-color: var(--verdi-text);
 }
 
 .el-tag.el-tag--warning {
@@ -978,7 +976,7 @@ button:focus-visible {
 .el-alert--primary.is-light .el-alert__description,
 .el-alert--success.is-light,
 .el-alert--success.is-light .el-alert__description {
-  color: #71c4ad;
+  color: var(--verdi-text);
 }
 
 /* 移动端身份门（M2）：弧光只走上半屏，白鹭沉底展翅；卡片顶部对齐，

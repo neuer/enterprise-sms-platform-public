@@ -274,6 +274,10 @@ describe("统一运维中心", () => {
     expect(wrapper.text()).toContain("poll_report")
     expect(wrapper.text()).toContain("轮询厂商状态报告，保存原始报文后解析并更新发送结果")
     expect(wrapper.text()).toContain("无记录")
+    // 健康列中文化：stalled→停滞，原始英文枚举不得上屏；成功率走 formatPercent 单点
+    expect(wrapper.text()).toContain("停滞")
+    expect(wrapper.text()).not.toContain("stalled")
+    expect(wrapper.text()).toContain("75.0%")
     await wrapper
       .findAll("button")
       .find((item) => item.text().includes("手动触发"))!

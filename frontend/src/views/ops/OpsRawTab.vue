@@ -40,7 +40,7 @@ const rawProcessed = ref<"" | "true" | "false">("")
 
 const RAW_SOURCE_OPTIONS: { key: string; label: string; value: "" | RawLogItem["source"] }[] = [
   { key: "all", label: "全部", value: "" },
-  { key: "report", label: "报告", value: "report" },
+  { key: "report", label: "状态报告", value: "report" },
   { key: "reply", label: "回复", value: "reply" },
 ]
 
@@ -142,39 +142,46 @@ function replayStatus(item: RawLogItem): { label: string; tag: "success" | "warn
   return { label: "不可重放", tag: "danger" }
 }
 
+// 行级动作在途守卫：进入即置位（confirm 之前），拦截确认框期间的重复点击。
+const actionBusyId = ref<number | null>(null)
+
 async function replay(item: RawLogItem): Promise<void> {
   item = { ...item }
-  if (!canReplay(item)) return
-  if (
-    !(await confirmAuditedAction({
-      title: "确认报文重放",
-      body: `重放 raw #${item.id}：仅允许未处理且载荷完整的报文；重放重新走受控解密解析，不会产生重复下发。`,
-      auditNote: "重放行为与操作人将写入审计日志。",
-      confirmText: "确认重放",
-    }))
-  )
-    return
+  if (!canReplay(item) || actionBusyId.value !== null) return
+  actionBusyId.value = item.id
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "确认报文重放",
+        body: `重放 raw #${item.id}：仅允许未处理且载荷完整的报文；重放重新走受控解密解析，不会产生重复下发。`,
+        auditNote: "重放行为与操作人将写入审计日志。",
+        confirmText: "确认重放",
+      }))
+    )
+      return
     const result = await replayRaw(item.id)
     ElMessage.success(`重放完成，处理 ${result.processed_items} 项 · 本次操作已记入审计`)
     await load("raw")
   } catch (error) {
     ElMessage.error(errorText(error, "重放失败"))
+  } finally {
+    actionBusyId.value = null
   }
 }
 
 async function reevaluate(item: RawLogItem): Promise<void> {
-  if (!canReevaluate(item)) return
-  if (
-    !(await confirmAuditedAction({
-      title: "确认重评估报文",
-      body: `重评估 raw #${item.id}：按当前 parser 版本重新计算解析面与重放资格，只更新分类事实，不投影业务、不产生重复下发。`,
-      auditNote: "重评估行为与操作人将写入审计日志。",
-      confirmText: "确认重评估",
-    }))
-  )
-    return
+  if (!canReevaluate(item) || actionBusyId.value !== null) return
+  actionBusyId.value = item.id
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "确认重评估报文",
+        body: `重评估 raw #${item.id}：按当前 parser 版本重新计算解析面与重放资格，只更新分类事实，不投影业务、不产生重复下发。`,
+        auditNote: "重评估行为与操作人将写入审计日志。",
+        confirmText: "确认重评估",
+      }))
+    )
+      return
     const result = await reevaluateRaw(item.id)
     ElMessage.success(
       `重评估完成：解析面 ${RAW_PARSE_STATE_LABELS[result.parse_state]}，重放资格 ${RAW_ELIGIBILITY_LABELS[result.replay_eligibility]} · 本次操作已记入审计`,
@@ -182,6 +189,8 @@ async function reevaluate(item: RawLogItem): Promise<void> {
     await load("raw")
   } catch (error) {
     ElMessage.error(errorText(error, "重评估失败"))
+  } finally {
+    actionBusyId.value = null
   }
 }
 watch(
@@ -209,7 +218,7 @@ watch(
             :model-value="rawSource"
             :options="RAW_SOURCE_OPTIONS"
             button-testid-prefix="ops-raw-source"
-            aria-label="报文来源筛选"
+            label="报文来源筛选"
             data-testid="ops-raw-source-seg"
             @update:model-value="setRawSource"
           />
@@ -220,7 +229,7 @@ watch(
             :model-value="rawProcessed"
             :options="RAW_PROCESSED_OPTIONS"
             button-testid-prefix="ops-raw-processed"
-            aria-label="处理状态筛选"
+            label="处理状态筛选"
             data-testid="ops-raw-processed-seg"
             @update:model-value="setRawProcessed"
           />
@@ -248,8 +257,21 @@ watch(
             ><template #default="{ row }">{{ formatDateTime(row.fetched_at) }}</template></el-table-column
           ><el-table-column label="操作" width="130"
             ><template #default="{ row }"
-              ><el-button v-if="canReplay(row)" link type="danger" @click="replay(row)">重放</el-button
-              ><el-button v-if="canReevaluate(row)" link type="primary" @click="reevaluate(row)"
+              ><el-button
+                v-if="canReplay(row)"
+                link
+                type="danger"
+                :loading="actionBusyId === row.id"
+                :disabled="actionBusyId !== null"
+                @click="replay(row)"
+                >重放</el-button
+              ><el-button
+                v-if="canReevaluate(row)"
+                link
+                type="primary"
+                :loading="actionBusyId === row.id"
+                :disabled="actionBusyId !== null"
+                @click="reevaluate(row)"
                 >重评估</el-button
               ></template
             ></el-table-column
@@ -264,11 +286,24 @@ watch(
               >{{ item.item_count }} 项 · {{ item.custom_id_count }} customId ·
               {{ captureMeta(item.capture_state).label }}</p
             ><small>{{ item.error || formatDateTime(item.fetched_at) }}</small
-            ><el-button v-if="canReplay(item)" link type="danger" @click="replay(item)">重放</el-button
-            ><el-button v-if="canReevaluate(item)" link type="primary" @click="reevaluate(item)"
+            ><el-button
+              v-if="canReplay(item)"
+              link
+              type="danger"
+              :loading="actionBusyId === item.id"
+              :disabled="actionBusyId !== null"
+              @click="replay(item)"
+              >重放</el-button
+            ><el-button
+              v-if="canReevaluate(item)"
+              link
+              type="primary"
+              :loading="actionBusyId === item.id"
+              :disabled="actionBusyId !== null"
+              @click="reevaluate(item)"
               >重评估</el-button
             ></article
-          ><EmptyState v-if="!rawLogs.length" :title="rawEmpty.title" :description="rawEmpty.description"
+          ><EmptyState v-if="!loading && !rawLogs.length" :title="rawEmpty.title" :description="rawEmpty.description"
         /></div>
         <ListPagination
           v-model:page="rawPage"

@@ -4,7 +4,9 @@
 .blacklist-drawer-head,
 .sensitive-drawer-head,
 .user-drawer-head,
-.callback-drawer-head {
+.callback-drawer-head,
+.template-drawer-head,
+.apps-drawer-head {
   display: grid;
   gap: 3px;
   min-width: 0;
@@ -15,7 +17,9 @@
 .blacklist-drawer-title,
 .sensitive-drawer-title,
 .user-drawer-title,
-.callback-drawer-title {
+.callback-drawer-title,
+.template-drawer-title,
+.apps-drawer-title {
   display: flex;
   gap: 8px;
   align-items: center;
@@ -28,13 +32,16 @@
 .blacklist-drawer-head code,
 .sensitive-drawer-head code,
 .user-drawer-head code,
-.callback-drawer-head code {
+.callback-drawer-head code,
+.template-drawer-head code,
+.apps-drawer-head code {
   display: block;
   color: var(--tx-3);
   font: 11px var(--mono);
 }
 
-.sign-content-block {
+.sign-content-block,
+.template-content-block {
   display: grid;
   gap: 6px;
   margin-top: 13px;
@@ -43,13 +50,15 @@
   border-radius: 10px;
 }
 
-.sign-content-block > span {
+.sign-content-block > span,
+.template-content-block > span {
   color: var(--tx-3);
   font-size: 10px;
   letter-spacing: 0.12em;
 }
 
-.sign-content-block p {
+.sign-content-block p,
+.template-content-block p {
   margin: 0;
   color: var(--tx-hi);
   font-size: 12.5px;
@@ -57,7 +66,8 @@
 }
 
 .sign-fact-grid,
-.callback-fact-grid {
+.callback-fact-grid,
+.template-fact-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 7px 18px;
@@ -65,13 +75,15 @@
 }
 
 .sign-fact-grid dt,
-.callback-fact-grid dt {
+.callback-fact-grid dt,
+.template-fact-grid dt {
   color: var(--tx-3);
   font-size: 10.5px;
 }
 
 .sign-fact-grid dd,
-.callback-fact-grid dd {
+.callback-fact-grid dd,
+.template-fact-grid dd {
   margin: 1px 0 0;
   color: var(--tx);
   font-size: 12px;
@@ -97,7 +109,8 @@
   font-size: 11px;
 }
 
-.sign-trail {
+.sign-trail,
+.template-trail {
   display: flex;
   align-items: center;
   padding: 12px 14px;
@@ -116,7 +129,8 @@
   font-size: 11.5px;
 }
 
-.sign-proof-hint {
+.sign-proof-hint,
+.template-proof-hint {
   display: block;
   margin-top: 6px;
   color: var(--tx-3);
@@ -145,7 +159,8 @@
   font-size: 11px;
 }
 
-.sign-detail-actions {
+.sign-detail-actions,
+.template-detail-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -328,11 +343,6 @@
   font-size: 11px;
 }
 
-.sign-mobile-list,
-.blacklist-mobile-list {
-  display: none;
-}
-
 @media (max-width: 760px) {
   .approval-rows,
   .sign-mobile-list,
@@ -344,33 +354,6 @@
   .sign-table,
   .blacklist-table {
     display: none;
-  }
-
-  .sign-mobile-list,
-  .blacklist-mobile-list {
-    display: grid;
-    gap: 10px;
-    padding: 12px;
-  }
-
-  .sign-mobile-list article,
-  .blacklist-mobile-list article {
-    min-width: 0;
-    padding: 14px;
-    background: var(--surface-soft);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-  }
-
-  .sign-mobile-list header,
-  .sign-mobile-list footer,
-  .blacklist-mobile-list header,
-  .blacklist-mobile-list footer {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px 10px;
-    align-items: center;
-    justify-content: space-between;
   }
 
   .sign-mobile-list dl {
@@ -456,28 +439,6 @@
   /* 模板页与签名/黑名单同一断点（760px）切换卡片列表；原 640px 规则并入此块。 */
   .template-table {
     display: none;
-  }
-
-  .template-mobile-list {
-    display: grid;
-    gap: 10px;
-    padding: 12px;
-  }
-
-  .template-mobile-list article {
-    min-width: 0;
-    padding: 14px;
-    background: var(--surface-soft);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-  }
-
-  .template-mobile-list header,
-  .template-mobile-list footer {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    justify-content: space-between;
   }
 
   .template-mobile-list header .table-row-detail {
@@ -567,7 +528,7 @@
   .navigation-open .sidebar {
     transform: translateX(0);
     visibility: visible;
-    box-shadow: 18px 0 48px rgb(14 28 22 / 24%);
+    box-shadow: 18px 0 48px color-mix(in srgb, var(--sink) 60%, transparent);
     transition-delay: 0s;
   }
 
@@ -609,7 +570,7 @@
     z-index: 30;
     inset: 0;
     display: block;
-    background: rgb(14 28 22 / 44%);
+    background: var(--el-mask-color);
     border: 0;
     opacity: 0;
     pointer-events: none;

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useVendorResourceList } from "../composables/useVendorResourceList"
+import { useLatestRead } from "../composables/useLatestRead"
 import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
 import { computed, onMounted, ref } from "vue"
@@ -137,12 +138,15 @@ const detailTrail = computed<TrailStep[]>(() => {
   ]
 })
 
+const signAppsRead = useLatestRead()
 async function loadSignApps(signName: string): Promise<void> {
   if (!isAdmin.value) return
+  const signal = signAppsRead.start()
   signAppsLoading.value = true
   signAppsError.value = false
   try {
-    const apps = await listApps()
+    const apps = await listApps(signal)
+    if (signal.aborted) return
     // 停用应用同样计入删除约束（服务端 NOT EXISTS 不过滤 status），这里一并列出。
     signApps.value = apps.filter((app) => {
       const configured = app.default_sign?.trim()
@@ -152,10 +156,11 @@ async function loadSignApps(signName: string): Promise<void> {
       return normalized === signName
     })
   } catch {
+    if (signal.aborted) return
     signAppsError.value = true
     signApps.value = []
   } finally {
-    signAppsLoading.value = false
+    if (!signal.aborted) signAppsLoading.value = false
   }
 }
 
@@ -248,24 +253,30 @@ async function adopt(): Promise<void> {
   }
 }
 
+// 删除在途守卫：进入即置位（confirm 之前），拦截确认框期间的重复点击。
+const removingId = ref<number | null>(null)
 async function remove(item: SmsSign): Promise<void> {
   item = { ...item }
-  if (
-    !(await confirmAuditedAction({
-      title: "删除签名",
-      body: `确认删除签名「${item.name}」？删除后不可恢复；已通过、被应用设为默认签名或已被批次引用的签名不可删除。`,
-      auditNote: "删除行为与操作人将写入审计日志。",
-      confirmText: "确认删除",
-    }))
-  )
-    return
+  if (removingId.value !== null) return
+  removingId.value = item.id
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "确认删除签名",
+        body: `确认删除签名「${item.name}」？删除后不可恢复；已通过、被应用设为默认签名或已被批次引用的签名不可删除。`,
+        auditNote: "删除行为与操作人将写入审计日志。",
+        confirmText: "确认删除",
+      }))
+    )
+      return
     await deleteSign(item.id)
     ElMessage.success("签名已删除 · 本次操作已记入审计")
     if (detail.value?.id === item.id) detailOpen.value = false
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "签名删除失败"))
+  } finally {
+    removingId.value = null
   }
 }
 
@@ -295,7 +306,7 @@ onMounted(load)
         v-model="stateFilter"
         :options="stateOptions"
         button-testid-prefix="sign-state"
-        aria-label="厂商状态筛选"
+        label="厂商状态筛选"
         data-testid="sign-state-seg"
         ><template #option="{ option }"
           >{{ option.label }} <i>{{ option.count }}</i></template
@@ -371,6 +382,8 @@ onMounted(load)
               :data-testid="`sign-delete-${row.id}`"
               link
               type="danger"
+              :loading="removingId === row.id"
+              :disabled="removingId !== null"
               @click="remove(row)"
               >删除</el-button
             >
@@ -424,6 +437,8 @@ onMounted(load)
             :data-testid="`mobile-sign-delete-${row.id}`"
             link
             type="danger"
+            :loading="removingId === row.id"
+            :disabled="removingId !== null"
             @click="remove(row)"
             >删除</el-button
           >
@@ -523,7 +538,14 @@ onMounted(load)
         <el-button v-if="canAdopt(detail)" data-testid="sign-detail-adopt" type="primary" @click="openAdopt(detail)"
           >关联已有签名</el-button
         >
-        <el-button v-if="canDelete(detail)" data-testid="sign-detail-delete" link type="danger" @click="remove(detail)"
+        <el-button
+          v-if="canDelete(detail)"
+          data-testid="sign-detail-delete"
+          link
+          type="danger"
+          :loading="removingId === detail.id"
+          :disabled="removingId !== null"
+          @click="remove(detail)"
           >删除签名</el-button
         >
         <p class="why">已通过审核的签名不可编辑或删除，但仍可同步厂商状态；已被应用或批次引用的驳回签名请新建。</p>

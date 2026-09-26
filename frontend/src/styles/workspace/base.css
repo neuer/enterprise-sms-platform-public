@@ -51,8 +51,7 @@ button:focus-visible {
   height: 100vh;
   padding: 18px 14px 14px;
   overflow-y: auto;
-  color: #e9efeb;
-  background: var(--ink);
+  background: var(--sink);
   border-right: 1px solid var(--hair);
 }
 
@@ -69,10 +68,8 @@ button:focus-visible {
   width: 34px;
   height: 34px;
   place-items: center;
-  color: #f0f4ef;
   font-family: var(--serif);
   font-size: 18px;
-  border: 1px solid var(--tx-3);
   border-radius: 50%;
 }
 
@@ -86,7 +83,6 @@ button:focus-visible {
 
 .nav-section h2 {
   margin: 0 10px 5px;
-  color: #75827b;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.18em;
@@ -98,7 +94,6 @@ button:focus-visible {
   align-items: center;
   min-height: 36px;
   padding: 0 10px;
-  color: #b9c3bd;
   border-radius: 6px;
   transition:
     color 120ms ease,
@@ -110,9 +105,8 @@ button:focus-visible {
   width: 20px;
   height: 20px;
   place-items: center;
-  color: #9caaa2;
   font-size: 10px;
-  border: 1px solid #526159;
+  border: 1px solid var(--line-2);
   border-radius: 5px;
 }
 
@@ -120,9 +114,7 @@ button:focus-visible {
   margin-left: auto;
   padding: 1px 6px;
   color: var(--amber);
-  font:
-    600 10px/1.6 "IBM Plex Mono",
-    monospace;
+  font: 600 10px/1.6 var(--mono);
   background: color-mix(in srgb, var(--amber) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
   border-radius: 999px;
@@ -131,8 +123,7 @@ button:focus-visible {
 .sidebar-foot {
   margin: auto 8px 0;
   padding-top: 20px;
-  color: #68756e;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10px;
 }
 

@@ -245,7 +245,7 @@ describe("用户与角色", () => {
     await wrapper.get("form.user-filter-bar").trigger("submit")
     await flushPromises()
 
-    expect(wrapper.text()).toContain("没有符合条件的账号")
+    expect(wrapper.text()).toContain("没有符合筛选条件的账号")
     expect(wrapper.text()).not.toContain("尚无平台账号")
 
     await wrapper.get("[data-testid='clear-user-filters']").trigger("click")

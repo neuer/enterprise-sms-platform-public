@@ -16,6 +16,7 @@ import ListPagination from "../components/ListPagination.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePagedList } from "../composables/usePagedList"
+import { useLatestRead } from "../composables/useLatestRead"
 import { useConfirmActions } from "../lib/confirm"
 import { vRowActivate } from "../lib/directives"
 const { confirmAuditedAction } = useConfirmActions()
@@ -114,10 +115,15 @@ const {
   },
 })
 
+const appsRead = useLatestRead()
 async function loadApps(): Promise<void> {
+  const signal = appsRead.start()
   try {
-    apps.value = await listApps()
+    const result = await listApps(signal)
+    if (signal.aborted) return
+    apps.value = result
   } catch {
+    if (signal.aborted) return
     apps.value = []
     ElMessage.warning("应用列表加载失败，筛选可稍后重试")
   }
@@ -190,7 +196,7 @@ onMounted(() => {
         :options="statusSegOptions"
         data-testid="callback-status-seg"
         button-testid-prefix="callback-status"
-        aria-label="投递状态筛选"
+        label="投递状态筛选"
         @update:model-value="setStatus"
       />
     </div>
@@ -201,7 +207,7 @@ onMounted(() => {
         :options="eventSegOptions"
         data-testid="callback-event-seg"
         button-testid-prefix="callback-event"
-        aria-label="事件筛选"
+        label="事件筛选"
         @update:model-value="setEvent"
       />
     </div>
@@ -383,7 +389,7 @@ onMounted(() => {
       </div>
     </template>
     <div v-else-if="filtering" class="callback-empty-action">
-      <EmptyState title="没有符合筛选的回调任务" description="调整状态、应用、事件或批次号后重新查询。" />
+      <EmptyState title="没有符合筛选条件的回调任务" description="调整状态、应用、事件或批次号后重新查询。" />
       <el-button data-testid="clear-callback-filters" @click="resetFilters">清除筛选</el-button>
     </div>
     <div v-else class="callback-empty-action">

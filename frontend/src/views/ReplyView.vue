@@ -127,17 +127,19 @@ function openBatch(batchNo: string): void {
 
 async function optout(item: ReplyItem): Promise<void> {
   item = { ...item }
-  if (
-    !(await confirmAuditedAction({
-      title: "退订加黑确认",
-      body: `将回复号码 ${item.phone} 加入退订黑名单？加入后发送将自动剔除该号码。`,
-      auditNote: "加黑行为与操作人将写入审计日志。",
-      confirmText: "加入黑名单",
-    }))
-  )
-    return
+  if (optingOutId.value !== null) return
+  // 进函数即置 busy（confirm 之前），确认框期间拦截重复点击。
+  optingOutId.value = item.id
   try {
-    optingOutId.value = item.id
+    if (
+      !(await confirmAuditedAction({
+        title: "退订加黑确认",
+        body: `将回复号码 ${item.phone} 加入退订黑名单？加入后发送将自动剔除该号码。`,
+        auditNote: "加黑行为与操作人将写入审计日志。",
+        confirmText: "加入黑名单",
+      }))
+    )
+      return
     await blacklistReply(item.id)
     ElMessage.success("已加入退订黑名单 · 本次操作已记入审计")
     await load()
@@ -194,7 +196,7 @@ onMounted(load)
         :options="dispositionOptions"
         data-testid="reply-disposition-seg"
         button-testid-prefix="reply-disposition"
-        aria-label="处置"
+        label="处置"
         @update:model-value="setDisposition"
       />
     </div>

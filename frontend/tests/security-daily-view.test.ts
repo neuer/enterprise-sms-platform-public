@@ -624,7 +624,7 @@ describe("安全日报页面", () => {
 
     const message = vnodeText(confirm.mock.calls[0][0])
     expect(message).toContain("已脱敏结构化报告")
-    expect(message).toContain("独立 mailer")
+    expect(message).toContain("独立投递器（mailer）")
     expect(message).toContain("幂等")
     expect(message).toContain("写入审计日志")
     expect(api.sendSecurityDailyReport).toHaveBeenCalledWith(1)
@@ -651,7 +651,7 @@ describe("安全日报页面", () => {
     expect(message).toContain("处理中的投递请求时将被拒绝")
     expect(message).toContain("写入审计日志")
     expect(api.generateSecurityDailyReport).toHaveBeenCalledOnce()
-    expect(api.getSecurityDailyReport).toHaveBeenCalledWith(3)
+    expect(api.getSecurityDailyReport).toHaveBeenCalledWith(3, expect.any(AbortSignal))
     expect(wrapper.text()).toContain("安全预览")
     wrapper.unmount()
     vi.restoreAllMocks()
@@ -730,8 +730,70 @@ describe("安全日报页面", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("安全日报独立投递控制面不可用")
-    expect(wrapper.text()).toContain("安全日报记录暂不可用")
+    // 加载失败只经 LoadErrorAlert 呈现一次（含重试入口），不再叠加空态
+    expect(wrapper.text()).toContain("重新加载")
+    expect(wrapper.text()).not.toContain("安全日报记录暂不可用")
     expect(wrapper.text()).not.toContain("2026-07-13")
+    wrapper.unmount()
+  })
+
+  it("概览加载失败经 LoadErrorAlert 提供重试入口", async () => {
+    api.getSecurityDailyOverview.mockRejectedValueOnce(new Error("控制面超时"))
+    api.listSecurityDailyReports.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
+
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("控制面超时")
+    const retry = wrapper.findAll("button").find((button) => button.text().includes("重新加载"))
+    expect(retry).toBeTruthy()
+
+    api.getSecurityDailyOverview.mockResolvedValue(overview)
+    await retry!.trigger("click")
+    await flushPromises()
+    expect(wrapper.text()).toContain("安全日报运行状态")
+    expect(api.getSecurityDailyOverview).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it("卸载取消在途概览读取", async () => {
+    let overviewSignal: AbortSignal | undefined
+    api.getSecurityDailyOverview.mockImplementation((signal?: AbortSignal) => {
+      overviewSignal = signal
+      return new Promise(() => {})
+    })
+    api.listSecurityDailyReports.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 20 })
+
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    expect(overviewSignal).toBeTruthy()
+    expect(overviewSignal!.aborted).toBe(false)
+
+    wrapper.unmount()
+    expect(overviewSignal!.aborted).toBe(true)
+  })
+
+  it("关闭详情抽屉取消在途详情读取", async () => {
+    let detailSignal: AbortSignal | undefined
+    api.getSecurityDailyReport.mockImplementation((_id: number, signal?: AbortSignal) => {
+      detailSignal = signal
+      return new Promise(() => {})
+    })
+
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    await wrapper
+      .findAll("button")
+      .find((button) => button.text().includes("查看详情"))!
+      .trigger("click")
+    await flushPromises()
+    expect(detailSignal).toBeTruthy()
+    expect(detailSignal!.aborted).toBe(false)
+
+    // jsdom 下 el-drawer 的 afterLeave 不触发，直接经 v-model 事件模拟关闭
+    wrapper.findComponent({ name: "ElDrawer" }).vm.$emit("update:modelValue", false)
+    await flushPromises()
+    expect(detailSignal!.aborted).toBe(true)
     wrapper.unmount()
   })
 

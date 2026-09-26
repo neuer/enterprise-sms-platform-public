@@ -7,7 +7,7 @@
   padding: 10px 12px;
   border: 1px solid var(--line);
   background: var(--surface);
-  color: var(--green);
+  color: var(--verdi);
   font: 9px/1 var(--mono);
   letter-spacing: 0.08em;
 }
@@ -32,11 +32,8 @@
   font-family: var(--mono);
 }
 .audit-table code {
-  color: var(--green);
+  color: var(--verdi);
   font: 10px/1.4 var(--mono);
-}
-.audit-mobile-list {
-  display: none;
 }
 .audit-empty-action {
   display: grid;
@@ -97,7 +94,7 @@
   justify-items: start;
 }
 .audit-diff-key code {
-  color: var(--green);
+  color: var(--verdi);
   font: 10px/1.5 var(--mono);
   overflow-wrap: anywhere;
 }
@@ -239,30 +236,12 @@
   .audit-table {
     display: none;
   }
-  .audit-mobile-list {
-    display: grid;
-    gap: 10px;
-  }
-  .audit-mobile-list article {
-    display: grid;
-    gap: 8px;
-    padding: 14px;
-    border: 1px solid var(--line);
-    background: var(--surface-soft);
-  }
-  .audit-mobile-list header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-  }
   .audit-mobile-list code,
   .audit-mobile-list time {
     color: var(--muted);
     font: 9px/1.4 var(--mono);
   }
   .audit-mobile-list p {
-    margin: 0;
     color: var(--ink-soft);
     font-size: 11px;
   }

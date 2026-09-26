@@ -295,7 +295,7 @@ describe("审计与系统参数", () => {
     expect(wrapper.text().indexOf("认证源")).toBeLessThan(wrapper.text().indexOf("运行调度"))
     expect(wrapper.get("[data-testid='local-provider']").text()).toContain("始终启用")
     expect(wrapper.get("[data-testid='local-provider']").text()).toContain("系统内置，不可修改")
-    expect(wrapper.text()).toContain("AD 当前已禁用")
+    expect(wrapper.text()).toContain("AD 当前已停用")
     expect(wrapper.text()).toContain("草稿版本 v3")
     expect(wrapper.text()).toContain("Bind Secret 已就绪")
     expect(wrapper.text()).toContain("CA 证书已就绪")
@@ -405,7 +405,7 @@ describe("审计与系统参数", () => {
     vi.unstubAllGlobals()
   })
 
-  it("禁用 AD 保留配置并可维护目录组角色映射", async () => {
+  it("停用 AD 保留配置并可维护目录组角色映射", async () => {
     const enabled = {
       ...adProvider,
       enabled: true,
@@ -443,7 +443,7 @@ describe("审计与系统参数", () => {
       expect.anything(),
       expect.anything(),
     )
-    expect(wrapper.text()).toContain("AD 当前已禁用")
+    expect(wrapper.text()).toContain("AD 当前已停用")
     expect(wrapper.text()).toContain("配置与角色映射均已保留")
 
     await wrapper.get("[data-testid='mapping-group-0']").setValue("CN=SMS-Admins,OU=Groups,DC=example,DC=com")
@@ -673,7 +673,7 @@ describe("审计与系统参数", () => {
       .find((button) => button.text().includes("查询"))!
       .trigger("click")
     await flushPromises()
-    expect(wrapper.text()).toContain("没有符合条件的审计事件")
+    expect(wrapper.text()).toContain("没有符合筛选条件的审计事件")
 
     await wrapper.get("[data-testid='audit-clear-filters']").trigger("click")
     await flushPromises()

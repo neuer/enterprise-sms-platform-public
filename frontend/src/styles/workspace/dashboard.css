@@ -24,7 +24,7 @@
   align-items: center;
   margin-top: 4px;
   color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10px;
   letter-spacing: 0.14em;
 }
@@ -74,7 +74,7 @@
 
 .panel-jump {
   color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 9px;
 }
 
@@ -129,7 +129,7 @@
   grid-column: 1 / -1;
   margin: 5px 0 2px;
   color: var(--ink);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: clamp(27px, 3vw, 38px);
   font-weight: 400;
   line-height: 1.15;
@@ -215,7 +215,7 @@
 
 .rate-row b {
   color: var(--tx-2);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10px;
   font-weight: 400;
   font-variant-numeric: tabular-nums;
@@ -301,7 +301,7 @@
 
 .balance-now {
   color: var(--ink);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 30px;
   font-weight: 600;
   line-height: 1.2;
@@ -343,7 +343,7 @@
 
 .balance-meta b {
   color: var(--tx);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 12px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
@@ -372,7 +372,7 @@
 .panel-title small,
 .panel-title > span {
   color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 9px;
 }
 
@@ -424,7 +424,7 @@
 
 .alert-list time {
   color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 9px;
 }
 
@@ -458,7 +458,7 @@
 .disposition-row strong {
   min-width: 22px;
   color: var(--ink);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 18px;
   font-weight: 400;
   font-variant-numeric: tabular-nums;
@@ -466,7 +466,7 @@
 
 .disposition-row span {
   color: var(--tx-2);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10px;
   text-transform: uppercase;
 }
@@ -495,7 +495,7 @@
 
 .jobs-sum b {
   color: var(--ink);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 26px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -521,7 +521,7 @@
 
 .job-alert code {
   color: var(--el-color-danger);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 11px;
 }
 
@@ -535,7 +535,7 @@
   display: block;
   margin-top: 2px;
   color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10px;
 }
 

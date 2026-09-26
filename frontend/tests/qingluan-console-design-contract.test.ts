@@ -43,7 +43,7 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     expect(html).not.toMatch(/https?:\/\//)
     expect(theme).toContain("--el-disabled-bg-color: #2a3d37")
     expect(workspace).toMatch(/\.el-date-editor\.el-input\s+\.el-input__wrapper[^}]*background:\s*var\(--sink\)/s)
-    expect(workspace).toMatch(/\.el-button--primary\.is-disabled[^}]*background:\s*#2a3d37/s)
+    expect(workspace).toMatch(/\.el-button--primary\.is-disabled[^}]*background:\s*var\(--el-disabled-bg-color\)/s)
   })
 
   it("外壳呈现交接定义的品牌和五组导航语义", () => {

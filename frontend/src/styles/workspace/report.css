@@ -11,7 +11,7 @@
   border: 1px solid var(--line);
   border-radius: 7px;
   color: var(--tx-2);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10.5px;
   white-space: nowrap;
 }
@@ -112,7 +112,7 @@
   border-radius: 4px;
   background: color-mix(in srgb, var(--amber) 14%, transparent);
   color: var(--amber);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 9.5px;
   line-height: 1.8;
 }
@@ -130,7 +130,7 @@
 .export-strip .export-id,
 .export-strip strong,
 .export-strip small {
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
 }
 
 .export-strip .export-id {
@@ -176,7 +176,7 @@
   display: block;
   margin: 1px 0 0;
   color: var(--tx-hi);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 26px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -277,7 +277,7 @@
 .report-chart-card .trend-legend em {
   margin-left: auto;
   color: var(--tx-3);
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10px;
   font-style: normal;
 }
@@ -332,7 +332,7 @@
 
 .rank-num b {
   display: block;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
@@ -347,7 +347,7 @@
   display: inline-block;
   padding: 0 7px;
   border-radius: 5px;
-  font-family: "IBM Plex Mono", monospace;
+  font-family: var(--mono);
   font-size: 10px;
   line-height: 1.8;
   white-space: nowrap;
@@ -460,7 +460,7 @@
 
   .report-mobile-list time,
   .report-mobile-list dd {
-    font-family: "IBM Plex Mono", monospace;
+    font-family: var(--mono);
   }
 
   .report-mobile-list dl {

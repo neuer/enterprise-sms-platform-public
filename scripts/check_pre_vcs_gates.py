@@ -76,6 +76,7 @@ SPEC_DOCS = frozenset(
         "MAINTENANCE.md",
         "PRD.md",
         "PUBLICATION.md",
+        "openapi.yaml",
         "docs/DECISIONS.md",
         "docs/TRACEABILITY.md",
         "docs/UAT.md",

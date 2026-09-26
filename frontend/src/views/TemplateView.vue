@@ -236,23 +236,29 @@ async function sync(item: SmsTemplate): Promise<void> {
   }
 }
 
+// 删除在途守卫：进入即置位（confirm 之前），拦截确认框期间的重复点击。
+const removingId = ref<number | null>(null)
 async function remove(item: SmsTemplate): Promise<void> {
   item = { ...item }
-  if (
-    !(await confirmAuditedAction({
-      title: "删除模板",
-      body: `确认删除模板「${item.name}」？删除后不可恢复；已绑定厂商编号或已被批次引用的模板不可删除。`,
-      auditNote: "删除行为与操作人将写入审计日志。",
-      confirmText: "确认删除",
-    }))
-  )
-    return
+  if (removingId.value !== null) return
+  removingId.value = item.id
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "确认删除模板",
+        body: `确认删除模板「${item.name}」？删除后不可恢复；已绑定厂商编号或已被批次引用的模板不可删除。`,
+        auditNote: "删除行为与操作人将写入审计日志。",
+        confirmText: "确认删除",
+      }))
+    )
+      return
     await deleteTemplate(item.id)
     ElMessage.success("模板已删除 · 本次操作已记入审计")
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "模板删除失败"))
+  } finally {
+    removingId.value = null
   }
 }
 
@@ -287,7 +293,7 @@ onMounted(load)
         v-model="stateFilter"
         :options="stateOptions"
         button-testid-prefix="template-state"
-        aria-label="厂商状态筛选"
+        label="厂商状态筛选"
         data-testid="template-state-seg"
         ><template #option="{ option }"
           >{{ option.label }} <i>{{ option.count }}</i></template
@@ -382,6 +388,8 @@ onMounted(load)
               :data-testid="`template-delete-${row.id}`"
               link
               type="danger"
+              :loading="removingId === row.id"
+              :disabled="removingId !== null"
               @click="remove(row)"
               >删除</el-button
             >
@@ -430,7 +438,15 @@ onMounted(load)
             >同步</el-button
           >
           <el-button v-if="canEdit(row)" link @click="resetEditor(row)">编辑</el-button>
-          <el-button v-if="canDelete(row)" link type="danger" @click="remove(row)">删除</el-button>
+          <el-button
+            v-if="canDelete(row)"
+            link
+            type="danger"
+            :loading="removingId === row.id"
+            :disabled="removingId !== null"
+            @click="remove(row)"
+            >删除</el-button
+          >
         </footer>
       </article>
       <EmptyState v-if="!loading && !filtered.length" :title="emptyTitle" :description="emptyDescription" />
@@ -522,6 +538,8 @@ onMounted(load)
           data-testid="template-detail-delete"
           link
           type="danger"
+          :loading="removingId === detail.id"
+          :disabled="removingId !== null"
           @click="remove(detail)"
           >删除模板</el-button
         >

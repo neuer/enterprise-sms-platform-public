@@ -287,11 +287,11 @@ onMounted(() => void load())
   <form class="report-filter-bar" @submit.prevent="load()">
     <div class="report-fld">
       <span>周期</span>
-      <FilterSeg v-model="granularity" :options="granularityOptions" aria-label="周期" />
+      <FilterSeg v-model="granularity" :options="granularityOptions" label="周期" />
     </div>
     <div class="report-fld">
       <span>维度</span>
-      <FilterSeg v-model="groupBy" :options="groupByOptions" button-testid-prefix="report-group" aria-label="维度" />
+      <FilterSeg v-model="groupBy" :options="groupByOptions" button-testid-prefix="report-group" label="维度" />
     </div>
     <div class="report-fld">
       <span>类别</span>
@@ -359,7 +359,7 @@ onMounted(() => void load())
         <p class="kpi-foot">条 / 消息 {{ segmentsPerMessage }}</p>
       </el-card>
       <el-card shadow="never" class="report-kpi">
-        <span>送达成功率</span>
+        <span>成功率</span>
         <strong>{{ formatRate(result.summary.success_rate) }}</strong>
         <small>送达 /（送达 + 失败），未知不入分母</small>
         <div class="kpi-kv"
@@ -409,7 +409,7 @@ onMounted(() => void load())
               :model-value="metric"
               :options="metricOptions"
               class="filter-seg--pill"
-              aria-label="趋势指标"
+              label="趋势指标"
               @update:model-value="changeMetric"
             />
           </div>

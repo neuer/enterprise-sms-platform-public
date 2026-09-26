@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import SecurityDailyConfigDialog from "../components/SecurityDailyConfigDialog.vue"
+import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { apiErrorMessage } from "../lib/securityDaily"
 import { useLatestRead } from "../composables/useLatestRead"
 import { usePagedList } from "../composables/usePagedList"
@@ -26,6 +27,7 @@ import {
   type SecurityStatus,
 } from "../api/securityDaily"
 import EmptyState from "../components/EmptyState.vue"
+import { vRowActivate } from "../lib/directives"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
@@ -44,7 +46,7 @@ const generationLabels: Record<GenerationStatus, string> = {
 }
 const deliveryLabels: Record<DeliveryStatus, string> = {
   not_sent: "未投递",
-  pending: "等待 mailer",
+  pending: "等待投递器",
   sending: "投递中",
   sent: "已投递",
   failed: "投递失败",
@@ -90,11 +92,11 @@ const generationSegOptions = [
 const deliverySegOptions = [
   { label: "全部", value: "" as DeliveryStatus | "", key: "all" },
   { label: "未投递", value: "not_sent" as DeliveryStatus, key: "not-sent" },
-  { label: "等待 mailer", value: "pending" as DeliveryStatus, key: "pending" },
+  { label: "等待投递器", value: "pending" as DeliveryStatus, key: "pending" },
   { label: "投递中", value: "sending" as DeliveryStatus, key: "sending" },
   { label: "已投递", value: "sent" as DeliveryStatus, key: "sent" },
   { label: "投递失败", value: "failed" as DeliveryStatus, key: "failed" },
-  { label: "结果未知", value: "unknown" as DeliveryStatus, key: "unknown" },
+  { label: "投递结果未知", value: "unknown" as DeliveryStatus, key: "unknown" },
 ]
 
 const overview = ref<SecurityDailyOverview | null>(null)
@@ -272,12 +274,15 @@ const {
   clearOnError: true,
 })
 
+const overviewRead = useLatestRead()
 async function loadOverview(): Promise<void> {
+  const signal = overviewRead.start()
   overviewErrorMessage.value = ""
   overview.value = null
   try {
-    overview.value = await getSecurityDailyOverview()
+    overview.value = await getSecurityDailyOverview(signal)
   } catch (error) {
+    if (signal.aborted) return
     overview.value = null
     overviewErrorMessage.value = apiErrorMessage(error, "安全日报概览暂不可用，请刷新重试")
   }
@@ -371,7 +376,7 @@ async function openReport(reportId: number): Promise<void> {
     document.querySelector<HTMLElement>(".el-drawer__body")?.scrollTo({ top: 0 })
   })
   try {
-    const report = await getSecurityDailyReport(reportId)
+    const report = await getSecurityDailyReport(reportId, signal)
     if (signal.aborted) return
     selected.value = report
   } catch (error) {
@@ -389,7 +394,7 @@ async function openPreview(): Promise<void> {
   const signal = previewRead.start()
   previewLoading.value = true
   try {
-    const preview = await previewSecurityDailyReport(reportId)
+    const preview = await previewSecurityDailyReport(reportId, signal)
     if (signal.aborted) return
     previewText.value = preview.available ? preview.text : (preview.message ?? "数据不可用")
     previewOpen.value = true
@@ -409,7 +414,7 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
     !(await confirmAuditedAction({
       title: `确认${operation}`,
       isCurrent: () => selected.value === report,
-      body: `确认${operation} ${report.report_date} 的安全日报？邮件正文只来自已脱敏结构化报告，投递由独立 mailer 执行并回写状态，同日重复投递有幂等保护。`,
+      body: `确认${operation} ${report.report_date} 的安全日报？邮件正文只来自已脱敏结构化报告，投递由独立投递器（mailer）执行并回写状态，同日重复投递有幂等保护。`,
       auditNote: `${operation}行为、操作人与日报 id 将写入审计日志。`,
       confirmText: `确认${operation}`,
     }))
@@ -422,7 +427,7 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
     } else {
       await sendSecurityDailyReport(report.id)
     }
-    ElMessage.success("投递请求已受理，状态将在 mailer 回写后更新 · 本次操作已记入审计")
+    ElMessage.success("投递请求已受理，状态将在投递器回写后更新 · 本次操作已记入审计")
     await refresh()
     if (drawerOpen.value && selected.value?.id === report.id) await openReport(report.id)
   } catch (error) {
@@ -445,7 +450,7 @@ function canRetry(report: SecurityDailyReport): boolean {
     overview.value?.configuration_state === "ready" &&
     report.generation_status === "ready" &&
     report.delivery_status === "failed" &&
-    !(report.last_error ?? "").startsWith("投递结果未知") &&
+    !(report.last_error ?? "").startsWith(deliveryLabels.unknown) &&
     !isHistoricSupersededSent(report),
   )
 }
@@ -461,7 +466,7 @@ onMounted(() => void refresh())
   <section class="page-heading security-daily-heading">
     <div>
       <p class="eyebrow">SECURITY DAILY / 安全日报</p>
-      <h1>服务器安全日报</h1>
+      <h1>安全日报</h1>
       <p
         >固定 08:00（北京时间）汇总前一自然日；页面只展示脱敏结构化证据，手机号与密钥永不进入界面，Resend Key
         保存后不回显。写操作全部写入审计。</p
@@ -476,14 +481,7 @@ onMounted(() => void refresh())
     </div>
   </section>
 
-  <el-alert
-    v-if="overviewErrorMessage"
-    class="security-daily-alert"
-    :title="overviewErrorMessage"
-    type="error"
-    show-icon
-    :closable="false"
-  />
+  <LoadErrorAlert class="security-daily-alert" :message="overviewErrorMessage" @retry="loadOverview" />
 
   <section v-if="overview" class="security-daily-overview" aria-label="安全日报概览">
     <div class="security-daily-state">
@@ -554,7 +552,7 @@ onMounted(() => void refresh())
           :options="statusSegOptions"
           button-testid-prefix="security-daily-status"
           class="filter-seg--compact"
-          aria-label="安全状态筛选"
+          label="安全状态筛选"
           data-testid="security-daily-status-seg"
           @update:model-value="setStatus"
         />
@@ -566,7 +564,7 @@ onMounted(() => void refresh())
           :options="generationSegOptions"
           button-testid-prefix="security-daily-generation"
           class="filter-seg--compact"
-          aria-label="生成状态筛选"
+          label="生成状态筛选"
           data-testid="security-daily-generation-seg"
           @update:model-value="setGenerationStatus"
         />
@@ -578,7 +576,7 @@ onMounted(() => void refresh())
           :options="deliverySegOptions"
           button-testid-prefix="security-daily-delivery"
           class="filter-seg--compact"
-          aria-label="投递状态筛选"
+          label="投递状态筛选"
           data-testid="security-daily-delivery-seg"
           @update:model-value="setDeliveryStatus"
         />
@@ -603,26 +601,15 @@ onMounted(() => void refresh())
     >
     <div
       ><span>配置例外</span
-      ><p
-        >Resend Key 明文仅存专用配置并同步独立 mailer，审计只记 configured 状态与收件人数量；Key 保存后不回显。</p
-      ></div
+      ><p>Resend Key 明文仅存专用配置并同步独立投递器，审计只记 configured 状态与收件人数量；Key 保存后不回显。</p></div
     >
     <div
       ><span>投递语义</span
-      ><p>投递由独立 mailer 执行并回写状态，页面查询时惰性同步；投递失败可重试，同日重复投递有幂等保护。</p></div
+      ><p>投递由独立投递器执行并回写状态，页面查询时惰性同步；投递失败可重试，同日重复投递有幂等保护。</p></div
     >
   </aside>
 
-  <el-alert
-    v-if="reportsErrorMessage"
-    class="security-daily-alert"
-    :title="reportsErrorMessage"
-    type="error"
-    show-icon
-    :closable="false"
-  >
-    <template #default><el-button link type="primary" @click="loadReports">重新加载</el-button></template>
-  </el-alert>
+  <LoadErrorAlert class="security-daily-alert" :message="reportsErrorMessage" @retry="loadReports" />
 
   <section class="security-daily-results">
     <template v-if="reports.length || loading">
@@ -675,6 +662,7 @@ onMounted(() => void refresh())
         <el-table-column label="操作" width="170" fixed="right"
           ><template #default="scope"
             ><el-button
+              v-row-activate="() => openReport(scope.row.id)"
               link
               type="primary"
               :aria-label="`查看 ${scope.row.report_date} 安全日报详情`"
@@ -692,14 +680,11 @@ onMounted(() => void refresh())
         >
       </el-table>
     </template>
-    <div v-else-if="reportsErrorMessage" class="security-daily-empty-action">
-      <EmptyState title="安全日报记录暂不可用" description="请刷新重试；若持续失败，请检查独立投递控制面状态。" />
-    </div>
-    <div v-else-if="filtering" class="security-daily-empty-action">
+    <div v-else-if="!reportsErrorMessage && filtering" class="security-daily-empty-action">
       <EmptyState title="没有符合筛选条件的安全日报" description="调整报告日期或状态筛选后重新查询。" />
       <el-button data-testid="security-daily-clear-filters" @click="resetFilters">清除筛选</el-button>
     </div>
-    <div v-else class="security-daily-empty-action">
+    <div v-else-if="!reportsErrorMessage" class="security-daily-empty-action">
       <EmptyState :title="reportsEmptyTitle" :description="reportsEmptyDescription" />
     </div>
 

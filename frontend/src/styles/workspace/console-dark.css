@@ -8,7 +8,7 @@
 .sidebar {
   padding: 0 10px 12px;
   color: var(--tx);
-  background: #0d1511;
+  background: var(--sink);
   border-right: 1px solid var(--hair);
   scrollbar-color: #2a352f transparent;
 }
@@ -243,7 +243,7 @@ main {
 .el-button--primary {
   --el-button-bg-color: var(--verdi);
   --el-button-border-color: var(--verdi);
-  --el-button-text-color: #eafff7;
+  --el-button-text-color: var(--on-accent);
 }
 .el-button--default {
   --el-button-bg-color: #1b2621;
@@ -259,8 +259,8 @@ main {
 .el-button--primary.is-disabled,
 .el-button--primary.is-disabled:hover {
   color: var(--tx-3);
-  background: #2a3d37;
-  border-color: #2a3d37;
+  background: var(--el-disabled-bg-color);
+  border-color: var(--el-disabled-border-color);
 }
 .el-segmented {
   --el-segmented-bg-color: var(--sink);
@@ -270,7 +270,7 @@ main {
   border-radius: 5px;
 }
 .el-overlay {
-  background: rgba(6, 12, 9, 0.55);
+  background: var(--el-mask-color);
 }
 .el-drawer {
   box-shadow: -16px 0 48px rgba(0, 0, 0, 0.4);
@@ -345,7 +345,7 @@ main {
 }
 .disposition-row.active {
   background: linear-gradient(180deg, #241a17, #1a1513);
-  border-color: rgba(228, 106, 79, 0.5);
+  border-color: color-mix(in srgb, var(--verm) 50%, transparent);
 }
 
 .approval-counts-pill {

@@ -107,14 +107,15 @@ function urgentOf(value: unknown): number {
   return value === "pending" ? counts.value.pending_urgent : 0
 }
 
+/** 通道展示统一中文（实时通道/批量通道），与发送页、通道监视、准入文案同一口径。 */
 function laneLabel(category: Category): string {
-  return category === "market" ? "bulk" : "realtime"
+  return category === "market" ? "批量通道" : "实时通道"
 }
 
 /** 通过前预告：只依据 scheduled_at / 类别，不预判营销窗。 */
 function previewDecision(item: ApprovalListItem): string {
-  if (item.scheduled_at) return `通过后 → scheduled · ${formatSchedule(item.scheduled_at)}`
-  return `通过后 → queued / ${laneLabel(item.category)}`
+  if (item.scheduled_at) return `通过后 → 已排期 · ${formatSchedule(item.scheduled_at)}`
+  return `通过后 → 排队中 · ${laneLabel(item.category)}`
 }
 
 const contentMeta = computed(() => {
@@ -122,7 +123,7 @@ const contentMeta = computed(() => {
   const segments = selected.value?.segments
   if (!content) return null
   const parts = [`${content.length} 字`]
-  if (segments !== null && segments !== undefined) parts.push(`计费 ${segments} 条/号码`)
+  if (segments !== null && segments !== undefined) parts.push(`计费 ${segments} 计费条/号码`)
   return parts.join(" · ")
 })
 
@@ -246,7 +247,7 @@ function outcomeText(outcome: DecisionOutcome, lane: string): string {
 
 function laneOf(id: number): string {
   const item = items.value.find((entry) => entry.id === id) ?? detail.value ?? selected.value
-  return item?.category === "market" ? "bulk" : "realtime"
+  return item?.category === "market" ? "批量通道" : "实时通道"
 }
 
 async function submitDecision(id: number, action: ApprovalAction, reason?: string): Promise<void> {
@@ -364,7 +365,7 @@ onMounted(() => {
         :options="statusTabs"
         data-testid="approval-status-seg"
         button-testid-prefix="approval-status"
-        aria-label="审批状态"
+        label="审批状态"
         @update:model-value="onStatusChange"
       >
         <template #option="{ option }">
@@ -483,7 +484,7 @@ onMounted(() => {
           <dt>预计计费</dt>
           <dd>
             {{ formatSegments(selected.estimated_segments) }}
-            <template v-if="selected.segments !== null"> · {{ selected.segments }} 条/号码</template>
+            <template v-if="selected.segments !== null"> · {{ selected.segments }} 计费条/号码</template>
           </dd>
         </div>
         <div class="is-wide">

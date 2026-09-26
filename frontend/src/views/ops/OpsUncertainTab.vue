@@ -56,7 +56,7 @@ function resolutionLabel(action: string | null | undefined): string {
 function resolutionStateLabel(state: string | null | undefined): string {
   const labels: Record<string, string> = {
     proposed: "待确认",
-    approved: "已批准",
+    approved: "已通过",
     effect_pending: "待生效",
     applying: "生效中",
     effect_applied: "已生效",
@@ -87,16 +87,17 @@ const resolutionBusy = ref(false)
 async function proposeResolution(item: UncertainItem, action: UncertainResolutionAction): Promise<void> {
   item = { ...item }
   if (resolutionBusy.value) return
+  // 进函数即置 busy（confirm 之前），确认框期间拦截重复点击。
+  resolutionBusy.value = true
   if (
     !(await confirmAuditedAction({
       title: "确认提出处置",
       body: `对批次 ${item.batch_no} 提出「${resolutionLabel(action)}」。确认后须另一名管理员复核；重发只会创建新批次，不会把旧分片改回待发送。`,
       auditNote: "提出行为与操作人将写入审计日志。",
-      confirmText: "提出处置",
+      confirmText: "确认提出",
     }))
   )
     return
-  resolutionBusy.value = true
   try {
     await proposeUncertainResolution(item.chunk_id, action)
     ElMessage.success("已提出处置 · 本次操作已记入审计")
@@ -111,6 +112,7 @@ async function proposeResolution(item: UncertainItem, action: UncertainResolutio
 async function confirmResolution(item: UncertainItem): Promise<void> {
   item = { ...item }
   if (item.resolution_id == null || resolutionBusy.value) return
+  resolutionBusy.value = true
   if (
     !(await confirmAuditedAction({
       title: "确认处置",
@@ -120,7 +122,6 @@ async function confirmResolution(item: UncertainItem): Promise<void> {
     }))
   )
     return
-  resolutionBusy.value = true
   try {
     await confirmUncertainResolution(item.resolution_id)
     ElMessage.success("处置已确认 · 本次操作已记入审计")
@@ -163,7 +164,7 @@ watch(
       >
       <section class="ops-results">
         <el-table :data="uncertain" row-key="chunk_id" class="ops-table"
-          ><el-table-column prop="batch_no" label="批次" min-width="160" /><el-table-column label="状态" width="110"
+          ><el-table-column prop="batch_no" label="批次号" min-width="160" /><el-table-column label="状态" width="110"
             ><template #default="{ row }"><StatusTag :status="row.status" /></template></el-table-column
           ><el-table-column label="customId" min-width="160"
             ><template #default="{ row }"
@@ -228,7 +229,7 @@ watch(
               >确认处置</el-button
             ></article
           ><EmptyState
-            v-if="!uncertain.length"
+            v-if="!loading && !uncertain.length"
             :title="UNCERTAIN_EMPTY.title"
             :description="UNCERTAIN_EMPTY.description"
         /></div>

@@ -250,7 +250,7 @@ describe("回调任务", () => {
     await wrapper.get("input[data-testid='callback-batch-filter']").setValue("BATCH-9")
     await wrapper.get("form.callback-filter-bar").trigger("submit")
     await flushPromises()
-    expect(wrapper.text()).toContain("没有符合筛选的回调任务")
+    expect(wrapper.text()).toContain("没有符合筛选条件的回调任务")
     expect(wrapper.text()).not.toContain("当前没有回调任务")
 
     await wrapper.get("[data-testid='clear-callback-filters']").trigger("click")

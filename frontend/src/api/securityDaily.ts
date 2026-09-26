@@ -147,12 +147,12 @@ export interface SecurityDailyFilters {
 
 const basePath = "/admin/security-daily"
 
-export function getSecurityDailyOverview(): Promise<SecurityDailyOverview> {
-  return apiRequest<SecurityDailyOverview>(`${basePath}/overview`, { method: "GET" })
+export function getSecurityDailyOverview(signal?: AbortSignal): Promise<SecurityDailyOverview> {
+  return apiRequest<SecurityDailyOverview>(`${basePath}/overview`, { method: "GET", signal })
 }
 
-export function getSecurityDailyConfiguration(): Promise<SecurityDailyConfiguration> {
-  return apiRequest<SecurityDailyConfiguration>(`${basePath}/config`, { method: "GET" })
+export function getSecurityDailyConfiguration(signal?: AbortSignal): Promise<SecurityDailyConfiguration> {
+  return apiRequest<SecurityDailyConfiguration>(`${basePath}/config`, { method: "GET", signal })
 }
 
 export function updateSecurityDailyConfiguration(
@@ -187,12 +187,12 @@ export function listSecurityDailyReports(
   return apiRequest<SecurityDailyPage>(`${basePath}/reports?${query.toString()}`, { method: "GET", signal })
 }
 
-export function getSecurityDailyReport(reportId: number): Promise<SecurityDailyReport> {
-  return apiRequest<SecurityDailyReport>(`${basePath}/reports/${reportId}`, { method: "GET" })
+export function getSecurityDailyReport(reportId: number, signal?: AbortSignal): Promise<SecurityDailyReport> {
+  return apiRequest<SecurityDailyReport>(`${basePath}/reports/${reportId}`, { method: "GET", signal })
 }
 
-export function previewSecurityDailyReport(reportId: number): Promise<SecurityDailyPreview> {
-  return apiRequest<SecurityDailyPreview>(`${basePath}/reports/${reportId}/preview`, { method: "GET" })
+export function previewSecurityDailyReport(reportId: number, signal?: AbortSignal): Promise<SecurityDailyPreview> {
+  return apiRequest<SecurityDailyPreview>(`${basePath}/reports/${reportId}/preview`, { method: "GET", signal })
 }
 
 export function sendSecurityDailyReport(reportId: number): Promise<SecurityDailyDeliveryResponse> {

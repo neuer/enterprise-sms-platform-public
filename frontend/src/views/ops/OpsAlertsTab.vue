@@ -234,7 +234,7 @@ onMounted(() => currentAlertPolling.start())
             ...[{ label: '当前告警', value: 'current' as const }],
             ...[{ label: '告警历史', value: 'history' as const }],
           ]"
-          aria-label="告警视图"
+          label="告警视图"
           data-testid="ops-alert-mode"
           @update:model-value="setAlertMode"
         />
@@ -336,7 +336,7 @@ onMounted(() => currentAlertPolling.start())
               :model-value="alertLevel"
               :options="ALERT_LEVEL_OPTIONS"
               button-testid-prefix="ops-alert-level"
-              aria-label="告警等级筛选"
+              label="告警等级筛选"
               data-testid="ops-alert-level-seg"
               @update:model-value="setAlertLevel"
             />
@@ -392,7 +392,10 @@ onMounted(() => currentAlertPolling.start())
               ><strong>{{ item.title }}</strong
               ><p>{{ item.alert_type }} · {{ item.channels }}</p
               ><el-button link type="primary" @click="openAlertDetail(item)">详情</el-button></article
-            ><EmptyState v-if="!alerts.length" :title="alertEmpty.title" :description="alertEmpty.description"
+            ><EmptyState
+              v-if="!loading && !alerts.length"
+              :title="alertEmpty.title"
+              :description="alertEmpty.description"
           /></div>
           <ListPagination
             v-model:page="alertPage"

@@ -22,6 +22,8 @@ const props = withDefaults(
   defineProps<{
     modelValue: V
     options: FilterSegOption<V>[]
+    /** 按钮组的 aria-label（必选，渲染在 role="group" 容器上；漏传由类型系统拦截）。 */
+    label: string
     /** 按钮 testid 前缀：按钮 testid 为 `${前缀}-${key ?? String(value)}`；不传则按钮不带 testid。 */
     buttonTestidPrefix?: string
     disabled?: boolean
@@ -48,7 +50,7 @@ function pick(option: FilterSegOption<V>): void {
 </script>
 
 <template>
-  <div class="filter-seg" role="group">
+  <div class="filter-seg" role="group" :aria-label="label">
     <slot name="prefix" />
     <button
       v-for="option in options"

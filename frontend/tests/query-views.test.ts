@@ -376,9 +376,9 @@ describe("批次与号码查询", () => {
       .find((item) => item.text().includes("查看详情"))!
       .trigger("click")
     await flushPromises()
-    expect(wrapper.text()).toContain("仍有 27 条未终态（待处理 2 + 待回执 25）")
+    expect(wrapper.text()).toContain("仍有 27 条未终态（待处理 2 + 已提交 25）")
     const composition = wrapper.get(".batch-hero-nums").text()
-    for (const expected of ["待处理2", "待回执25", "送达10", "失败0", "未知2", "其他1"]) {
+    for (const expected of ["待处理2", "已提交25", "送达10", "失败0", "未知2", "其他1"]) {
       expect(composition).toContain(expected)
     }
 
@@ -448,6 +448,77 @@ describe("批次与号码查询", () => {
     await wrapper.get("[data-testid='cancel-batch']").trigger("click")
     await flushPromises()
     expect(fetch.mock.calls[3][0]).toBe("/api/v1/messages/batches/BATCH-SCHEDULED/cancel")
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it("批次改期需两段式确认，成功提示带审计后缀", async () => {
+    const batch = {
+      batch_no: "BATCH-SCHEDULED",
+      category: "market",
+      channel: "web",
+      app_name: null,
+      creator: "operator01",
+      dept: "业务一部",
+      content: "营销通知",
+      status: "scheduled",
+      deferred_reason: null,
+      resend_of: null,
+      is_test: false,
+      segments: 1,
+      quota_cost: 1,
+      total: 1,
+      removed_freq_limit: 0,
+      pending: 1,
+      sent: 0,
+      delivered: 0,
+      failed: 0,
+      unknown: 0,
+      other: 0,
+      scheduled_at: "2026-07-13T08:00:00+08:00",
+      created_at: "2026-07-12T08:00:00+08:00",
+    }
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
+      .mockResolvedValueOnce(response(batch))
+      .mockResolvedValueOnce(response({ total: 0, items: [] }))
+      .mockResolvedValueOnce(response(undefined))
+      .mockResolvedValueOnce(response({ total: 0, items: [] }))
+    vi.stubGlobal("fetch", fetch)
+    const confirmSpy = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "operator"
+    const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    await wrapper
+      .findAll("button")
+      .find((item) => item.text().includes("查看详情"))!
+      .trigger("click")
+    await flushPromises()
+
+    await wrapper.get("[data-testid='reschedule-batch']").trigger("click")
+    await flushPromises()
+    const picker = wrapper
+      .findAllComponents({ name: "ElDatePicker" })
+      .find((item) => item.props("type") === "datetime")!
+    picker.vm.$emit("update:modelValue", "2026-07-15T08:00:00+08:00")
+    await flushPromises()
+    const confirmButton = wrapper.findAll("button").find((item) => item.text() === "确认改期")!
+    await confirmButton.trigger("click")
+    await flushPromises()
+
+    // 两段式确认：标题 + 审计提示段，确认后才发出改期请求
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(confirmSpy.mock.calls[0]?.[1]).toBe("确认改期")
+    const rescheduleCall = fetch.mock.calls.find(
+      ([url, init]) => String(url).endsWith("/reschedule") && (init?.method ?? "GET") === "POST",
+    )
+    expect(rescheduleCall).toBeTruthy()
+    expect(String(rescheduleCall![1]?.body)).toContain("2026-07-15T08:00:00+08:00")
+    expect(document.body.textContent).toContain("批次已改期并重新执行审批判定 · 本次操作已记入审计")
     wrapper.unmount()
     vi.unstubAllGlobals()
     vi.restoreAllMocks()

@@ -22,6 +22,7 @@ import ListPagination from "../components/ListPagination.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePagedList } from "../composables/usePagedList"
+import { useLatestRead } from "../composables/useLatestRead"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
@@ -29,6 +30,8 @@ import { DEFAULT_PAGE_SIZE, ROLE_LABELS, toOptions } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 
 const saving = ref(false)
+// 行级账号动作在途守卫：进入即置位（confirm 之前），拦截确认框期间的重复点击。
+const userActionBusyId = ref<number | null>(null)
 const selected = ref<ManagedUser | null>(null)
 const createDrawerOpen = ref(false)
 const roleDrawerOpen = ref(false)
@@ -90,7 +93,7 @@ const roleSegOptions = [
 ]
 const statusOptions = [
   { label: "全部", value: "" as 0 | 1 | "", key: "all" },
-  { label: "有效", value: 1 as 0 | 1, key: "active" },
+  { label: "启用", value: 1 as 0 | 1, key: "active" },
   { label: "停用", value: 0 as 0 | 1, key: "disabled" },
 ]
 
@@ -158,11 +161,15 @@ const {
   },
 })
 
+const policyRead = useLatestRead()
 async function loadPolicy(): Promise<void> {
+  const signal = policyRead.start()
   try {
-    passwordPolicy.value = await passwordPolicyRequest()
+    const policy = await passwordPolicyRequest(signal)
+    if (signal.aborted) return
+    passwordPolicy.value = policy
   } catch {
-    // 后端仍会执行同一密码策略；规则接口短暂不可用时保留当前版本的安全缺省文案。
+    // 后端仍会执行同一密码策略；规则接口短暂不可用或被取消时保留当前版本的安全缺省文案。
   }
 }
 
@@ -449,22 +456,25 @@ async function confirmPasswordReset(): Promise<void> {
 
 async function changeStatus(user: ManagedUser): Promise<void> {
   user = { ...user }
+  if (userActionBusyId.value !== null) return
   const nextStatus: 0 | 1 = user.status === 1 ? 0 : 1
   const action = nextStatus === 1 ? "启用" : "停用"
-  if (
-    !(await confirmAuditedAction({
-      title: `确认${action}账号`,
-      body:
-        nextStatus === 0
-          ? `停用 ${user.display_name || user.username} 后，该账号将无法登录且现有会话立即失效；台账记录保留，可随时重新启用。`
-          : `将重新允许 ${user.display_name || user.username} 登录平台，角色与权限维持不变。`,
-      auditNote: `${action}行为、操作人与对象 account_id 将写入审计日志。`,
-      confirmText: action,
-      danger: nextStatus === 0,
-    }))
-  )
-    return
+  // 进函数即置 busy（confirm 之前），确认框期间拦截重复点击。
+  userActionBusyId.value = user.account_id
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: `确认${action}账号`,
+        body:
+          nextStatus === 0
+            ? `停用 ${user.display_name || user.username} 后，该账号将无法登录且现有会话立即失效；台账记录保留，可随时重新启用。`
+            : `将重新允许 ${user.display_name || user.username} 登录平台，角色与权限维持不变。`,
+        auditNote: `${action}行为、操作人与对象 account_id 将写入审计日志。`,
+        confirmText: action,
+        danger: nextStatus === 0,
+      }))
+    )
+      return
     const saved = await adminStepUp.run(
       { operation: "user_status_change", target_id: String(user.account_id), parameters: { status: nextStatus } },
       `${action}账号`,
@@ -475,25 +485,31 @@ async function changeStatus(user: ManagedUser): Promise<void> {
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, `账号${action}失败`))
+  } finally {
+    userActionBusyId.value = null
   }
 }
 
 async function forceLogout(user: ManagedUser): Promise<void> {
   user = { ...user }
-  if (
-    !(await confirmAuditedAction({
-      title: "确认强制下线",
-      body: `将立即吊销 ${user.display_name || user.username} 的全部现有会话，需重新登录。`,
-      auditNote: "强制下线行为、操作人与对象 account_id 将写入审计日志。",
-      confirmText: "强制下线",
-    }))
-  )
-    return
+  if (userActionBusyId.value !== null) return
+  userActionBusyId.value = user.account_id
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "确认强制下线",
+        body: `将立即吊销 ${user.display_name || user.username} 的全部现有会话，需重新登录。`,
+        auditNote: "强制下线行为、操作人与对象 account_id 将写入审计日志。",
+        confirmText: "强制下线",
+      }))
+    )
+      return
     await revokeUserSessions(user.account_id)
     ElMessage.success("用户已强制下线 · 本次操作已记入审计")
   } catch (error) {
     ElMessage.error(errorText(error, "强制下线失败"))
+  } finally {
+    userActionBusyId.value = null
   }
 }
 
@@ -537,7 +553,7 @@ onMounted(() => {
         :options="providerOptions"
         data-testid="user-provider-seg"
         button-testid-prefix="user-provider"
-        aria-label="认证源筛选"
+        label="认证源筛选"
         @update:model-value="setProvider"
       />
     </div>
@@ -548,7 +564,7 @@ onMounted(() => {
         :options="roleSegOptions"
         data-testid="user-role-seg"
         button-testid-prefix="user-role"
-        aria-label="角色筛选"
+        label="角色筛选"
         @update:model-value="setRole"
       />
     </div>
@@ -559,7 +575,7 @@ onMounted(() => {
         :options="statusOptions"
         data-testid="user-status-seg"
         button-testid-prefix="user-status"
-        aria-label="状态筛选"
+        label="状态筛选"
         @update:model-value="setStatus"
       />
     </div>
@@ -630,7 +646,7 @@ onMounted(() => {
         <el-table-column label="状态 / 同步" min-width="210">
           <template #default="{ row }">
             <el-tag size="small" :type="row.status === 1 ? 'success' : 'info'">{{
-              row.status === 1 ? "有效" : "停用"
+              row.status === 1 ? "启用" : "停用"
             }}</el-tag>
             <span class="sync-state" :class="row.sync_status"><i></i>{{ syncLabel(row.sync_status) }}</span>
             <div class="user-times">
@@ -659,10 +675,18 @@ onMounted(() => {
                 :data-testid="`status-${row.account_id}`"
                 link
                 :type="row.status === 1 ? 'danger' : 'success'"
+                :loading="userActionBusyId === row.account_id"
+                :disabled="userActionBusyId !== null"
                 @click="changeStatus(row)"
                 >{{ row.status === 1 ? "停用" : "启用" }}</el-button
               >
-              <el-button :data-testid="`revoke-${row.account_id}`" link type="danger" @click="forceLogout(row)"
+              <el-button
+                :data-testid="`revoke-${row.account_id}`"
+                link
+                type="danger"
+                :loading="userActionBusyId === row.account_id"
+                :disabled="userActionBusyId !== null"
+                @click="forceLogout(row)"
                 >下线</el-button
               >
             </div>
@@ -678,7 +702,7 @@ onMounted(() => {
               ><code class="user-code">{{ user.username }}</code></div
             >
             <el-tag size="small" :type="user.status === 1 ? 'success' : 'info'">{{
-              user.status === 1 ? "有效" : "停用"
+              user.status === 1 ? "启用" : "停用"
             }}</el-tag>
           </header>
           <div class="identity-tags">
@@ -717,10 +741,18 @@ onMounted(() => {
                 :data-testid="`mobile-status-${user.account_id}`"
                 link
                 :type="user.status === 1 ? 'danger' : 'success'"
+                :loading="userActionBusyId === user.account_id"
+                :disabled="userActionBusyId !== null"
                 @click="changeStatus(user)"
                 >{{ user.status === 1 ? "停用" : "启用" }}</el-button
               >
-              <el-button :data-testid="`mobile-revoke-${user.account_id}`" link type="danger" @click="forceLogout(user)"
+              <el-button
+                :data-testid="`mobile-revoke-${user.account_id}`"
+                link
+                type="danger"
+                :loading="userActionBusyId === user.account_id"
+                :disabled="userActionBusyId !== null"
+                @click="forceLogout(user)"
                 >下线</el-button
               >
             </span>
@@ -729,7 +761,7 @@ onMounted(() => {
       </div>
     </template>
     <div v-else-if="filtering" class="user-empty-action">
-      <EmptyState title="没有符合条件的账号" description="调整关键词或筛选条件后重新查询。" />
+      <EmptyState title="没有符合筛选条件的账号" description="调整关键词或筛选条件后重新查询。" />
       <el-button data-testid="clear-user-filters" @click="resetFilters">清除筛选</el-button>
     </div>
     <div v-else class="user-empty-action">

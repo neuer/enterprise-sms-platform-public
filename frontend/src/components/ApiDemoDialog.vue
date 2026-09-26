@@ -92,7 +92,7 @@ async function copyDemo(): Promise<void> {
       >应用 #{{ demoApp?.id }} · {{ demoApp?.dept }} · 类别 {{ (demoApp?.allowed_categories || []).join(" / ") }}</p
     >
     <p
-      >正式接入必须使用已审核模板（template_id）发送；直接内容会进入服务商人工审核、发送延迟大。API Key
+      >正式接入必须使用已审核模板（template_id）发送；直接内容会进入厂商人工审核、发送延迟大。API Key
       请通过环境变量注入，不要硬编码或写入日志。</p
     >
     <label class="muted" for="demo-template-select">已审核模板</label>
@@ -101,7 +101,7 @@ async function copyDemo(): Promise<void> {
       data-testid="demo-template-select"
       placeholder="选择已审核模板"
       :loading="demoTemplatesLoading"
-      style="width: 100%"
+      class="demo-template-select"
     >
       <el-option
         v-for="template in approvedTemplates"

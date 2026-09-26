@@ -1,4 +1,4 @@
-"""系统配置页中的真实运营商受控联调控制台 API。"""
+"""系统配置页中的真实厂商受控联调控制台 API。"""
 
 from __future__ import annotations
 

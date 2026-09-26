@@ -25,4 +25,25 @@ describe("v-row-activate 行内键盘激活指令", () => {
     expect(spy).toHaveBeenCalledTimes(3)
     wrapper.unmount()
   })
+
+  it("挂在行容器上时不抢占内部控件的键盘事件", async () => {
+    const rowSpy = vi.fn()
+    const innerSpy = vi.fn()
+    const Comp = defineComponent({
+      directives: { "row-activate": vRowActivate },
+      setup: () => ({ rowSpy, innerSpy }),
+      template: `<table><tbody><tr v-row-activate="() => rowSpy()"><td><button data-testid="inner" @click="innerSpy">x</button></td></tr></tbody></table>`,
+    })
+    const wrapper = mount(Comp, { attachTo: document.body })
+    const inner = wrapper.get("[data-testid='inner']")
+    // 焦点在内部按钮上：Enter 走按钮自身 click，不触发行激活
+    await inner.trigger("keydown.enter")
+    expect(rowSpy).not.toHaveBeenCalled()
+    // 焦点在行容器本身：Enter/Space 触发行激活
+    await wrapper.get("tr").trigger("keydown.enter")
+    expect(rowSpy).toHaveBeenCalledTimes(1)
+    await wrapper.get("tr").trigger("keydown", { key: " " })
+    expect(rowSpy).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
 })
