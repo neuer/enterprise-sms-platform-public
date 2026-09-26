@@ -2,86 +2,29 @@ import { nextShanghaiMidnight } from "../lib/time"
 import { PASSWORD_AUTH_REQUEST_TIMEOUT_MS } from "./auth"
 import { apiRequest, authorizedBlob, ApiRequestError, DOWNLOAD_TIMEOUT_MS } from "./client"
 import type { MessageCategory } from "../lib/labels"
+import type { components } from "./types.gen"
 
-export type ReportGranularity = "day" | "week" | "month"
-export type ReportGroupBy = "app" | "dept"
+export type ReportGranularity = components["schemas"]["ReportingModel"]["granularity"]
+export type ReportGroupBy = components["schemas"]["ReportingModel"]["group_by"]
 // 历史别名：类别部分单点为 lib/labels 的 MessageCategory（"all" 为报表聚合选项），本别名由后续收敛移除。
+// 与契约 ReportingModel.category 枚举（"verify"|"notice"|"market"|"all"）逐字面量一致。
 export type ReportCategory = MessageCategory | "all"
 /** 趋势堆叠可选指标：消息数或计费条。 */
-export type ReportTrendMetric = "total" | "total_segments"
+export type ReportTrendMetric = components["schemas"]["ReportingModel"]["metric"]
 
-export interface ReportRow {
-  period_start: string
-  dim_value: string
-  dim_label: string
-  total: number
-  total_segments: number
-  delivered: number
-  failed: number
-  unknown: number
-  success_rate: number
-}
+export type ReportRow = components["schemas"]["ReportingRowModel"]
 
-export interface ReportSummary {
-  total: number
-  total_segments: number
-  delivered: number
-  failed: number
-  unknown: number
-  success_rate: number
-}
+export type ReportSummary = components["schemas"]["ReportingSummaryModel"]
 
-export interface ReportDimSummary {
-  is_other: boolean
-  dim_value: string
-  dim_label: string
-  total: number
-  total_segments: number
-  delivered: number
-  failed: number
-  unknown: number
-  success_rate: number
-}
+export type ReportDimSummary = components["schemas"]["ReportingDimSummaryModel"]
 
-export interface ReportTrend {
-  periods: string[]
-  series: Array<{
-    dim_value: string
-    dim_label: string
-    is_other: boolean
-    total: number[]
-    total_segments: number[]
-  }>
-}
+export type ReportTrend = components["schemas"]["ReportingTrendModel"]
 
-export interface ReportResult {
-  total: number
-  page: number
-  size: number
-  metric: ReportTrendMetric
-  dimension_total: number
-  trend: ReportTrend
-  granularity: ReportGranularity
-  group_by: ReportGroupBy
-  category: ReportCategory
-  start: string
-  end: string
-  can_export_decrypted: boolean
-  summary: ReportSummary
-  dim_summary: ReportDimSummary[]
-  items: ReportRow[]
-}
+export type ReportResult = components["schemas"]["ReportingModel"]
 
-export interface ExportTask {
-  id: string
-  status: "pending" | "running" | "done" | "failed"
-  decrypted: boolean
-  row_count: number | null
-  download_url: string | null
-  expires_at: string | null
-  created_at: string
-}
+export type ExportTask = components["schemas"]["ExportTask"]
 
+// 以下为请求侧 camelCase 筛选/分页/排序参数，仅用于查询串拼装，契约无对应 schema，保持手写。
 export interface ReportFilters {
   granularity: ReportGranularity
   groupBy: ReportGroupBy
@@ -139,6 +82,8 @@ export function getExportTask(id: string, signal?: AbortSignal): Promise<ExportT
   return apiRequest<ExportTask>(`/reports/export/${id}`, { method: "GET", signal })
 }
 
+// 契约 ExportStepUpResponse.expires_in 为 number（@default 300），手写保留字面量 300（窄于契约，
+// 属实质差异故不迁移；消费方仅读取 .token）。
 export function issueExportStepUp(
   id: string,
   password: string,

@@ -1,16 +1,10 @@
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { apiRequest } from "./client"
 import type { Page } from "./pagination"
+import type { components } from "./types.gen"
 
-export type BlacklistSource = "manual" | "reply_optout" | "import"
-
-export interface BlacklistItem {
-  phone_hmac: string
-  phone_mask: string
-  source: BlacklistSource
-  remark: string | null
-  created_at: string | null
-}
+export type BlacklistItem = components["schemas"]["BlacklistItem"]
+export type BlacklistSource = BlacklistItem["source"]
 
 export type BlacklistPage = Page<BlacklistItem>
 

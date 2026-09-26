@@ -21,6 +21,11 @@ export interface QuotaSummary {
   remaining: number | null
 }
 
+/**
+ * 对应 POST /api/v1/web/billing/preview 200 的内联响应（无命名 schema）。
+ * 契约把 deferred_reason/quota 标为可选（服务端默认值所致），本类型按运行时
+ * 恒返回收紧为必选，故保留手写；SegmentPart/QuotaSummary 同为内联匿名对象，无生成对应物。
+ */
 export interface BillingPreview {
   final_length: number
   est_segments: number
@@ -34,17 +39,12 @@ export interface BillingPreview {
   quota: QuotaSummary | null
 }
 
-export interface ImportResult {
-  import_id: string
-  valid: number
-  invalid: number
-  duplicate: number
-  blacklisted: number
-  invalid_download_url: string | null
-  expires_at: string
-  status: "pending" | "processing" | "ready" | "failed"
-  error: string | null
-}
+/**
+ * 导入任务状态：逐字段对应 GET /api/v1/web/messages/import/{import_id} 200
+ * 内联响应（POST /messages/import 的 202 响应形状相同）。
+ */
+export type ImportResult =
+  paths["/api/v1/web/messages/import/{import_id}"]["get"]["responses"]["200"]["content"]["application/json"]
 
 export interface WebMessagePayload {
   category: Category

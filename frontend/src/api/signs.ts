@@ -1,13 +1,8 @@
 import { apiRequest } from "./client"
+import type { components } from "./types.gen"
 
-export type SignState = "pending" | "approved" | "rejected"
-export interface SmsSign {
-  id: number
-  name: string
-  vendor_sign_id: string | null
-  vendor_state: SignState
-  vendor_reject_reason: string | null
-}
+export type SignState = components["schemas"]["Sign"]["vendor_state"]
+export type SmsSign = components["schemas"]["Sign"]
 
 export const listSigns = (signal?: AbortSignal) => apiRequest<SmsSign[]>("/signs", { method: "GET", signal })
 export const createSign = (name: string) =>

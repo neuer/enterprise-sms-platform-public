@@ -1,31 +1,16 @@
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { apiRequest } from "./client"
 import type { Page } from "./pagination"
+import type { paths } from "./types.gen"
 
-export type CallbackStatus = "pending" | "retrying" | "done" | "dead"
-export type CallbackEvent = "batch.finished" | "message.report"
-
-export interface CallbackTask {
-  id: number
-  event_id: string
-  correlation_id: string
-  app_id: number
-  app_name: string
-  event: CallbackEvent
-  batch_no: string | null
-  reference_count: number
-  status: CallbackStatus
-  retry_count: number
-  next_retry_at: string | null
-  lease_id: string | null
-  lease_expires_at: string | null
-  takeover_count: number
-  stalled: boolean
-  last_http_code: number | null
-  last_error: string | null
-  created_at: string
-  finished_at: string | null
-}
+/**
+ * 回调任务列表项：openapi 未提供命名 schema，逐字段对应
+ * GET /api/v1/web/admin/callbacks 200 响应 items 的内联元素类型。
+ */
+export type CallbackTask =
+  paths["/api/v1/web/admin/callbacks"]["get"]["responses"]["200"]["content"]["application/json"]["items"][number]
+export type CallbackStatus = CallbackTask["status"]
+export type CallbackEvent = CallbackTask["event"]
 
 export interface CallbackPage extends Page<CallbackTask> {
   dead_total: number

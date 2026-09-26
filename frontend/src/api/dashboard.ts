@@ -1,83 +1,29 @@
 import { apiRequest } from "./client"
-import type { MessageCategory } from "../lib/labels"
+import type { components } from "./types.gen"
 
-export interface DashboardCategoryMetric {
-  category: MessageCategory
-  total: number
-  total_segments: number
-  delivered: number
-  failed: number
-  unknown: number
-  success_rate: number
-}
+export type DashboardCategoryMetric = components["schemas"]["DashboardCategoryModel"]
 
-export interface DashboardTrendPoint {
-  stat_date: string
-  verify: number
-  notice: number
-  market: number
-}
+export type DashboardTrendPoint = components["schemas"]["DashboardTrendPointModel"]
 
-export interface DashboardBalancePoint {
-  stat_date: string
-  balance: number
-}
+export type DashboardBalancePoint = components["schemas"]["DashboardBalancePointModel"]
 
-export interface DashboardAlert {
-  level: "info" | "warn" | "crit"
-  title: string
-  created_at: string
-}
+export type DashboardAlert = components["schemas"]["DashboardAlertModel"]
 
-export interface DashboardJob {
-  job_name: string
-  last_run_at: string | null
-  last_status: "running" | "success" | "failed" | null
-  stalled: boolean
-}
+export type DashboardJob = components["schemas"]["DashboardJobModel"]
 
-export interface DashboardChannelMonitor {
-  realtime_queue: number | null
-  bulk_queue: number | null
-  qps_used: number | null
-  qps_rate: number
-  reserved_realtime_qps: number
-  stale: boolean
-  degraded_reason?: "redis_unavailable" | "snapshot_incomplete" | null
-}
+export type DashboardChannelMonitor = components["schemas"]["DashboardChannelMonitorModel"]
 
-export interface DashboardUiPolicy {
-  test_send_max: number
-}
+export type DashboardUiPolicy = components["schemas"]["DashboardUiPolicyModel"]
 
-export interface DashboardOperations {
-  current_balance: number | null
-  balances: DashboardBalancePoint[]
-  alerts: DashboardAlert[]
-  dispositions: { uncertain: number; unmatched: number; callback_dead: number }
-  jobs: DashboardJob[]
-  channel_monitor: DashboardChannelMonitor
-  balance_alert_threshold: number
-}
+export type DashboardOperations = components["schemas"]["DashboardOperationsModel"]
 
-export interface DashboardSnapshot {
-  refreshed_at: string
-  categories: DashboardCategoryMetric[]
-  overall_success_rate: number
-  pending_approvals: number
-  trend: DashboardTrendPoint[]
-  ui_policy: DashboardUiPolicy
-  operations?: DashboardOperations | null
-}
+export type DashboardSnapshot = components["schemas"]["DashboardModel"]
 
 export async function getDashboard(signal?: AbortSignal): Promise<DashboardSnapshot> {
   return apiRequest<DashboardSnapshot>("/reports/dashboard", { method: "GET", signal })
 }
 
-export interface BalanceSnapshot {
-  current_balance: number | null
-  checked_at: string | null
-}
+export type BalanceSnapshot = components["schemas"]["BalanceSnapshotModel"]
 
 /** 管理员顶栏只读取最新余额事实，不触发完整仪表盘聚合。 */
 export function getBalance(signal?: AbortSignal): Promise<BalanceSnapshot> {

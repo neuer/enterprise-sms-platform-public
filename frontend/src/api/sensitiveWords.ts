@@ -1,11 +1,8 @@
 import { apiRequest } from "./client"
 import type { Page } from "./pagination"
+import type { components } from "./types.gen"
 
-export interface SensitiveWordItem {
-  id: number
-  word: string
-  created_at: string | null
-}
+export type SensitiveWordItem = components["schemas"]["SensitiveWordItem"]
 
 export type SensitiveWordPage = Page<SensitiveWordItem>
 

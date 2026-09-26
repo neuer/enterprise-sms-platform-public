@@ -1,21 +1,21 @@
 import { apiRequest } from "./client"
 import type { Page } from "./pagination"
+import type { components } from "./types.gen"
 import type { Category } from "./webMessages"
 
-export type ApprovalStatus = "pending" | "approved" | "rejected" | "expired"
+export type ApprovalStatus = components["schemas"]["ApprovalListItem"]["status"]
 
 export type ApprovalSort = "expires_asc" | "created_desc" | "decided_desc"
 
 export type ApprovalAction = "approve" | "reject"
 
-export interface ApprovalCounts {
-  pending: number
-  approved: number
-  rejected: number
-  expired: number
-  pending_urgent: number
-}
+export type ApprovalCounts = components["schemas"]["ApprovalCounts"]
 
+/**
+ * 契约 components.schemas.ApprovalListItem 的 category 为宽松 string；前端按审批业务实际
+ * 窄化为 Category（notice/market），CategoryTag 的 MessageCategory prop 与 laneLabel(Category)
+ * 均依赖该窄化，直接替换为生成类型会破坏视图类型兼容，故保留手写。
+ */
 export interface ApprovalListItem {
   id: number
   batch_no: string
@@ -39,6 +39,7 @@ export interface ApprovalListItem {
   deferred_reason: string | null
 }
 
+/** 同 ApprovalListItem：契约 ApprovalDetail 的 category 同为 string，保留手写以维持 Category 窄化。 */
 export interface ApprovalDetail extends ApprovalListItem {
   content: string
 }
@@ -57,11 +58,7 @@ export interface ApprovalPage extends Page<ApprovalListItem> {
   counts: ApprovalCounts
 }
 
-export interface DecisionOutcome {
-  status: ApprovalStatus
-  batch_status: string
-  deferred_reason: string | null
-}
+export type DecisionOutcome = components["schemas"]["DecisionOutcome"]
 
 export async function listApprovals(query: ApprovalQuery, signal?: AbortSignal): Promise<ApprovalPage> {
   const params = new URLSearchParams({ status: query.status })

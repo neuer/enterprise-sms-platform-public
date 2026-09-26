@@ -1,125 +1,30 @@
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import type { ExportTask } from "./reports"
 import type { NumberedPage } from "./pagination"
+import type { components } from "./types.gen"
 import { apiRequest } from "./client"
 
 // 与 api/pagination.ts 的 NumberedPage<T> 同形（items/total/page/page_size），别名引用单点。
 export type OpsPage<T> = NumberedPage<T>
-export interface AlertItem {
-  id: number
-  alert_type: string
-  level: "info" | "warn" | "crit"
-  title: string
-  detail: Record<string, unknown> | null
-  channels: string
-  created_at: string
-}
-export interface CurrentAlertItem {
-  key: string
-  alert_type: string
-  level: "info" | "warn" | "crit"
-  title: string
-  detail: Record<string, unknown>
-  since: string | null
-  checked_at: string
-  target: "jobs" | "raw" | "uncertain" | "callbacks" | "queue" | "outbox"
-}
-export interface CurrentAlertSnapshot {
-  refreshed_at: string
-  complete: boolean
-  unknown_sources: string[]
-  items: CurrentAlertItem[]
-}
-export type RawLogItem = import("./types.gen").components["schemas"]["RawLogModel"]
+// 以下运维列表/详情类型与 openapi.yaml components.schemas 逐字段一致，直接别名引用生成契约。
+export type AlertItem = components["schemas"]["AlertModel"]
+export type CurrentAlertItem = components["schemas"]["CurrentAlertModel"]
+export type CurrentAlertSnapshot = components["schemas"]["CurrentAlertSnapshotModel"]
+export type RawLogItem = components["schemas"]["RawLogModel"]
 export type RawCaptureState = RawLogItem["capture_state"]
 export type RawParseState = RawLogItem["parse_state"]
 export type RawReplayEligibility = RawLogItem["replay_eligibility"]
-export type RawReevaluateResult = import("./types.gen").components["schemas"]["ReevaluateResultModel"]
-export type UncertainResolutionAction =
-  "confirm_accepted" | "confirm_not_accepted" | "keep_unknown" | "resend_new_batch"
-export type UncertainResolutionState =
-  | "proposed"
-  | "approved"
-  | "effect_pending"
-  | "applying"
-  | "effect_applied"
-  | "closed"
-  | "approval_rejected"
-  | "retryable_effect_error"
-  | "manual_intervention_required"
-  | "cancelled_before_effect"
-
-export interface UncertainItem {
-  chunk_id: number
-  batch_no: string
-  custom_id: string
-  phone_count: number
-  vendor_code: number | null
-  uncertain_since: string
-  age_seconds: number
-  status: "uncertain" | "unknown_terminal"
-  resolution_id: number | null
-  resolution_action: string | null
-  resolution_state: UncertainResolutionState | null
-  proposer_account_id: number | null
-}
-export interface UnmatchedItem {
-  id: number
-  vendor_task_id: string | null
-  custom_id: string | null
-  phone_mask: string
-  report_status: number | null
-  report_desc: string | null
-  report_time: string | null
-  created_at: string
-}
-export interface JobItem {
-  job_name: string
-  last_run_at: string | null
-  last_status: "running" | "success" | "failed" | null
-  last_duration_ms: number | null
-  last_items: number
-  success_rate_24h: number
-  stalled: boolean
-}
-export interface QueueStatus {
-  realtime_code: string | null
-  bulk_code: string | null
-  balance: number | null
-  threshold: number
-  /** 真实联调独立暂停码（agent-stale critical / daily 预算）；旧服务端不返回时缺省为 null。 */
-  vendor_test_realtime_code?: string | null
-  vendor_test_bulk_code?: string | null
-}
-export interface QueueResumeResult {
-  resumed_batches: number
-  paused_codes: string[]
-}
-export interface OutboxStats {
-  pending: number
-  published: number
-  processing: number
-  dead: number
-  failed_attempts: number
-  oldest_age_seconds: number
-}
-export type OutboxState = "pending" | "leased" | "published" | "processing" | "completed" | "dead"
-export interface OutboxEventItem {
-  id: string
-  event_type: string
-  aggregate_type: string
-  aggregate_id: string
-  task_name: string
-  queue: string
-  state: OutboxState
-  attempts: number
-  max_attempts: number
-  failure_count: number
-  last_error: string | null
-  next_attempt_at: string
-  created_at: string
-  updated_at: string
-}
+export type RawReevaluateResult = components["schemas"]["ReevaluateResultModel"]
+export type UncertainResolutionAction = components["schemas"]["UncertainResolutionRequestModel"]["action"]
+export type UncertainResolutionState = components["schemas"]["UncertainResolutionModel"]["state"]
+export type UncertainItem = components["schemas"]["UncertainModel"]
+export type UnmatchedItem = components["schemas"]["UnmatchedModel"]
+export type JobItem = components["schemas"]["JobModel"]
+export type QueueStatus = components["schemas"]["QueueStatusModel"]
+export type QueueResumeResult = components["schemas"]["QueueResumeModel"]
+export type OutboxStats = components["schemas"]["OutboxStatsModel"]
+export type OutboxState = components["schemas"]["OutboxEventModel"]["state"]
+export type OutboxEventItem = components["schemas"]["OutboxEventModel"]
 
 export interface PageQuery {
   page?: number
@@ -178,6 +83,10 @@ export function listUncertain(query: PageQuery = {}, signal?: AbortSignal): Prom
   return apiRequest<OpsPage<UncertainItem>>(`/admin/chunks/uncertain?${pageParams(query)}`, { method: "GET", signal })
 }
 
+/**
+ * 与生成契约 UncertainResolutionModel 的唯一差异：契约因服务端默认值 1 把
+ * effect_generation 标为必选，本类型历史上标为可选；为不收紧既有消费方保留手写。
+ */
 export interface UncertainResolutionItem {
   id: number
   chunk_id: number
