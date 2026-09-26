@@ -45,8 +45,8 @@
   font-size: 12px;
 }
 
-/* 号码明细状态筛选宽度（原内联 style 收编） */
-.batch-detail-status {
+/* 号码明细状态筛选宽度（原内联 style 收编；复合提权压过后加载的 .el-select 默认宽度） */
+.el-select.batch-detail-status {
   width: 128px;
 }
 
@@ -300,9 +300,7 @@
   padding: 8px 4px 2px;
   margin-top: 2px;
   color: var(--tx-3);
-  font:
-    10.5px/1.5 "IBM Plex Mono",
-    monospace;
+  font: 10.5px/1.5 var(--mono);
   border-top: 1px solid var(--hair-2);
 }
 
@@ -535,8 +533,8 @@
   width: 250px;
 }
 
-/* 号码页表头类别/状态筛选宽度（原内联 style 收编） */
-.message-head-select {
+/* 号码页表头类别/状态筛选宽度（原内联 style 收编；复合提权压过后加载的 .el-select 默认宽度） */
+.el-select.message-head-select {
   width: 118px;
 }
 

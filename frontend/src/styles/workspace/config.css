@@ -44,7 +44,7 @@
 }
 .config-tabs button.active,
 .ops-tabs button.active {
-  color: var(--verdi);
+  color: var(--verdi-text);
 }
 .config-tabs button.active::after,
 .ops-tabs button.active::after {
@@ -184,7 +184,7 @@
   background: var(--verm);
 }
 .provider-readiness .ready {
-  color: var(--verdi);
+  color: var(--verdi-text);
 }
 .provider-readiness .ready i {
   background: var(--verdi);

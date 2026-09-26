@@ -71,7 +71,7 @@
   border-color: transparent;
 }
 .nav-link.active .nav-marker {
-  color: #71c4ad;
+  color: var(--verdi-text);
   border-color: transparent;
 }
 .sidebar-foot {

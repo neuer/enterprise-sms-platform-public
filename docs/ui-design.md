@@ -104,6 +104,7 @@
 - 模板/签名由 `src/composables/useMobileLayout.ts` 统一读取 760px 断点，仅挂载桌面表格或移动卡片之一；筛选、详情和未提交编辑状态保留在页面层。
 - 同类只读查询通过 `src/composables/useLatestRead.ts` 在替换和卸载时取消旧请求，API 包装贯穿 AbortSignal，继续保留代际 token 防乱序；取消不显示错误提示，真实错误仍可见，写操作不接入该取消通道。
 - 顶栏余额仅管理员在非仪表盘页按 60s 读取 `/reports/balance` 轻量投影；仪表盘路由复用其 10s 快照广播，页面隐藏暂停。未知或失败时显示暂不可用，其他角色不发余额请求。
+- Element 级联：el-* 样式在 workspace 分片与 `theme.css` 之后加载，同特异性单类规则会被覆盖。给 `el-select`/`el-date-picker` 设宽度用复合选择器（`.el-select.x`、`.x.el-date-editor`）；`theme.css` 中 tag/alert/message/pagination/plain 主按钮的重混规则加 `:root` 前缀，明亮版用 `[data-theme="light"]` 同特异性后置覆盖。文字绿色一律用 `--verdi-text`（`--verdi` 仅作填充色，暗色底上不达 AA）。`tests/element-cascade-contract.test.ts` 为门禁
 - 组件样式归口：共享组件样式优先收进 workspace 分片（CategoryTag/StatusTag/EmptyState 在 `shared.css`）；`BillingSegments`/`ChannelMonitor`/`DailyPasswordChangeDialog` 使用组件内 scoped 块属允许；`VendorTestConsole` 因 el-dialog teleport 到 body，使用带 vendor- 前缀的非 scoped 块，为列明例外
 - API 契约类型：`src/api/types.gen.ts` 由 `npm run gen:api-types` 从根 `openapi.yaml` 生成（openapi-typescript），CI frontend job 对生成产物做 `git diff --exit-code` 零漂移门禁，禁止手改；`src/api/` 手写 interface 逐步迁移为生成类型引用（范例见 `webMessages.ts` 的 SendResult）
 

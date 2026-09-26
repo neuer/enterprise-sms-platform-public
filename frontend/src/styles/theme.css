@@ -125,6 +125,39 @@
   --el-color-primary-light-8: color-mix(in srgb, var(--verdi) 20%, var(--panel));
   --el-color-primary-light-9: color-mix(in srgb, var(--verdi) 12%, var(--panel));
   --el-color-primary-dark-2: color-mix(in srgb, var(--verdi) 88%, #000000);
+  /* 语义色派生阶同理：Element 默认值按浅色界面预混（light-9 近白），toast/标签/提示条
+     在深色面板上会成亮块；这里随面板色重混，亮色主题下自动回到浅底。 */
+  --el-color-error: var(--verm);
+  --el-color-success-light-3: var(--el-color-primary-light-3);
+  --el-color-success-light-5: var(--el-color-primary-light-5);
+  --el-color-success-light-7: var(--el-color-primary-light-7);
+  --el-color-success-light-8: var(--el-color-primary-light-8);
+  --el-color-success-light-9: var(--el-color-primary-light-9);
+  --el-color-success-dark-2: var(--el-color-primary-dark-2);
+  --el-color-warning-light-3: color-mix(in srgb, var(--amber) 70%, var(--panel));
+  --el-color-warning-light-5: color-mix(in srgb, var(--amber) 50%, var(--panel));
+  --el-color-warning-light-7: color-mix(in srgb, var(--amber) 30%, var(--panel));
+  --el-color-warning-light-8: color-mix(in srgb, var(--amber) 20%, var(--panel));
+  --el-color-warning-light-9: color-mix(in srgb, var(--amber) 12%, var(--panel));
+  --el-color-warning-dark-2: color-mix(in srgb, var(--amber) 80%, #000000);
+  --el-color-danger-light-3: color-mix(in srgb, var(--verm) 70%, var(--panel));
+  --el-color-danger-light-5: color-mix(in srgb, var(--verm) 50%, var(--panel));
+  --el-color-danger-light-7: color-mix(in srgb, var(--verm) 30%, var(--panel));
+  --el-color-danger-light-8: color-mix(in srgb, var(--verm) 20%, var(--panel));
+  --el-color-danger-light-9: color-mix(in srgb, var(--verm) 12%, var(--panel));
+  --el-color-danger-dark-2: color-mix(in srgb, var(--verm) 80%, #000000);
+  --el-color-error-light-3: var(--el-color-danger-light-3);
+  --el-color-error-light-5: var(--el-color-danger-light-5);
+  --el-color-error-light-7: var(--el-color-danger-light-7);
+  --el-color-error-light-8: var(--el-color-danger-light-8);
+  --el-color-error-light-9: var(--el-color-danger-light-9);
+  --el-color-error-dark-2: var(--el-color-danger-dark-2);
+  --el-color-info-light-3: color-mix(in srgb, var(--tx-2) 70%, var(--panel));
+  --el-color-info-light-5: color-mix(in srgb, var(--tx-2) 50%, var(--panel));
+  --el-color-info-light-7: color-mix(in srgb, var(--tx-2) 30%, var(--panel));
+  --el-color-info-light-8: color-mix(in srgb, var(--tx-2) 20%, var(--panel));
+  --el-color-info-light-9: color-mix(in srgb, var(--tx-2) 12%, var(--panel));
+  --el-color-info-dark-2: color-mix(in srgb, var(--tx-2) 80%, #000000);
   color: var(--tx);
   font-family: var(--sans);
   font-size: 13px;
@@ -151,11 +184,11 @@
   /* 亮底弱化辅文：最浅面板（白）上 AA ≥4.5:1（实测 4.5–5.6），层级仍浅于 --tx-2 */
   --tx-3: #5d6b62;
   --tx-hi: #14211a;
-  /* 品牌绿 --verdi 不变；亮底上文字级绿色向深取，保证对比度 */
-  --verdi-l: #0f8a6c;
+  /* 品牌绿 --verdi 不变；亮底上文字级色向深取：白底、--panel-2 与 9% 着色标签底均 AA ≥4.5:1 */
+  --verdi-l: #0c7d62;
   --slate: #34618f;
-  --amber: #9a6b1e;
-  --verm: #c2492f;
+  --amber: #8a5f16;
+  --verm: #b0402a;
   --verdi-text: #0b6a55;
   --on-accent: #f2faf6;
   --el-fill-color: #e6ece6;
@@ -578,7 +611,7 @@ button:focus-visible {
 
 .el-date-editor:hover .el-input__icon,
 .el-date-editor.is-active .el-range__icon {
-  color: var(--verdi);
+  color: var(--verdi-text);
 }
 
 .el-picker__popper.qingluan-date-popper {
@@ -648,7 +681,7 @@ button:focus-visible {
 .qingluan-date-popper .el-picker-panel__icon-btn:hover,
 .qingluan-date-popper .el-date-picker__header-label:hover,
 .qingluan-date-popper .el-date-range-picker__header-label:hover {
-  color: var(--verdi);
+  color: var(--verdi-text);
   background: var(--surface-soft);
 }
 
@@ -703,12 +736,12 @@ button:focus-visible {
 .qingluan-date-popper .el-date-table td.available:hover .el-date-table-cell__text,
 .qingluan-date-popper .el-month-table td:not(.disabled) .cell:hover,
 .qingluan-date-popper .el-year-table td:not(.disabled) .cell:hover {
-  color: var(--verdi);
+  color: var(--verdi-text);
   background: var(--surface-soft);
 }
 
 .qingluan-date-popper .el-date-table td.today .el-date-table-cell__text {
-  color: var(--verdi);
+  color: var(--verdi-text);
   font-weight: 650;
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--verdi) 58%, transparent) inset;
 }
@@ -752,7 +785,7 @@ button:focus-visible {
 
 .qingluan-date-popper .el-month-table td.current:not(.disabled) .cell,
 .qingluan-date-popper .el-year-table td.current:not(.disabled) .cell {
-  color: var(--verdi);
+  color: var(--verdi-text);
   font-weight: 650;
   background: var(--surface-soft);
 }
@@ -777,12 +810,12 @@ button:focus-visible {
 }
 
 .qingluan-date-popper .el-time-spinner__item:hover:not(.is-disabled):not(.is-active) {
-  color: var(--verdi);
+  color: var(--verdi-text);
   background: var(--surface-soft);
 }
 
 .qingluan-date-popper .el-time-spinner__item.is-active:not(.is-disabled) {
-  color: var(--verdi);
+  color: var(--verdi-text);
   font-weight: 650;
 }
 
@@ -795,7 +828,7 @@ button:focus-visible {
 
 .qingluan-date-popper .el-picker-panel__link-btn,
 .qingluan-date-popper .el-time-panel__btn.confirm {
-  color: var(--verdi);
+  color: var(--verdi-text);
   font-weight: 650;
 }
 
@@ -804,7 +837,7 @@ button:focus-visible {
 }
 
 .qingluan-date-popper .el-picker-panel__shortcut:hover {
-  color: var(--verdi);
+  color: var(--verdi-text);
   background: var(--surface-soft);
 }
 
@@ -927,57 +960,88 @@ button:focus-visible {
   }
 }
 
-/* el-tag / el-alert 默认浅色效果按暗色面板重混：Element Plus 的 light-9 底色接近纯白，
+/* el-tag / el-alert / el-message 默认浅色效果按暗色面板重混：Element Plus 的 light-9 底色接近纯白，
    在深色界面里是刺眼的亮块且前景被冲淡；这里改成深底浅色文字，保留原有色调语义。
-   标签变量定义在 .el-tag.el-tag--* 双类选择器上，覆写必须保持同等优先级。 */
-.el-tag.el-tag--primary,
-.el-tag.el-tag--success {
+   本文件先于随工作区懒加载的 el-*.css 生效，同优先级会被后者覆盖，故一律加 :root 前缀提权；
+   明亮模式的 [data-theme="light"] 版本优先级相同且位于其后，照常胜出。 */
+:root .el-tag.el-tag--primary,
+:root .el-tag.el-tag--success {
   --el-tag-bg-color: color-mix(in srgb, var(--verdi) 18%, var(--panel));
   --el-tag-border-color: color-mix(in srgb, var(--verdi) 42%, var(--panel));
   --el-tag-text-color: var(--verdi-text);
 }
 
-.el-tag.el-tag--warning {
+:root .el-tag.el-tag--warning {
   --el-tag-bg-color: color-mix(in srgb, var(--amber) 16%, var(--panel));
   --el-tag-border-color: color-mix(in srgb, var(--amber) 40%, var(--panel));
   --el-tag-text-color: var(--amber);
 }
 
-.el-tag.el-tag--danger,
-.el-tag.el-tag--error {
+:root .el-tag.el-tag--danger,
+:root .el-tag.el-tag--error {
   --el-tag-bg-color: color-mix(in srgb, var(--verm) 16%, var(--panel));
   --el-tag-border-color: color-mix(in srgb, var(--verm) 40%, var(--panel));
   --el-tag-text-color: color-mix(in srgb, var(--verm) 68%, #ffffff);
 }
 
-.el-tag.el-tag--info {
-  --el-tag-bg-color: color-mix(in srgb, var(--tx-2) 12%, var(--panel));
+:root .el-tag.el-tag--info {
+  --el-tag-bg-color: color-mix(in srgb, var(--tx-2) 8%, var(--panel));
   --el-tag-border-color: color-mix(in srgb, var(--tx-2) 26%, var(--panel));
   --el-tag-text-color: var(--tx-2);
 }
 
-.el-alert--primary,
-.el-alert--success {
+/* 实心危险标签（严重告警 / 死信 / 需人工介入）：不参与上方浅底重混；白字压在 --verm 上仅 3.2:1，
+   底色压暗到 dark-2 达 AA。选择器多一个类，亮/暗两套重混规则都压得住。 */
+:root .el-tag.el-tag--dark.el-tag--danger {
+  --el-tag-bg-color: var(--el-color-danger-dark-2);
+  --el-tag-border-color: var(--el-color-danger-dark-2);
+  --el-tag-text-color: #ffffff;
+}
+
+:root .el-alert--primary,
+:root .el-alert--success {
   --el-alert-bg-color: color-mix(in srgb, var(--verdi) 12%, var(--panel));
 }
 
-.el-alert--warning {
+:root .el-alert--warning {
   --el-alert-bg-color: color-mix(in srgb, var(--amber) 12%, var(--panel));
 }
 
-.el-alert--error {
+:root .el-alert--error {
   --el-alert-bg-color: color-mix(in srgb, var(--verm) 12%, var(--panel));
 }
 
-.el-alert--info {
+:root .el-alert--info {
   --el-alert-bg-color: var(--panel-2);
 }
 
-.el-alert--primary.is-light,
-.el-alert--primary.is-light .el-alert__description,
-.el-alert--success.is-light,
-.el-alert--success.is-light .el-alert__description {
+:root .el-alert--primary.is-light,
+:root .el-alert--primary.is-light .el-alert__description,
+:root .el-alert--success.is-light,
+:root .el-alert--success.is-light .el-alert__description {
   color: var(--verdi-text);
+}
+
+:root .el-alert--error.is-light,
+:root .el-alert--error.is-light .el-alert__description {
+  color: color-mix(in srgb, var(--verm) 68%, #ffffff);
+}
+
+:root .el-message--success {
+  --el-message-text-color: var(--verdi-text);
+}
+
+:root .el-message--error {
+  --el-message-text-color: color-mix(in srgb, var(--verm) 68%, #ffffff);
+}
+
+/* 分页当前页与悬停、主色描边按钮：品牌绿 --verdi 作文字在深色面板上仅 3:1，改走文字级绿。 */
+:root .el-pagination {
+  --el-pagination-hover-color: var(--verdi-text);
+}
+
+:root .el-button--primary.is-plain {
+  --el-button-text-color: var(--verdi-text);
 }
 
 /* 移动端身份门（M2）：弧光只走上半屏，白鹭沉底展翅；卡片顶部对齐，
@@ -1070,6 +1134,15 @@ button:focus-visible {
 [data-theme="light"] .el-alert--success.is-light,
 [data-theme="light"] .el-alert--success.is-light .el-alert__description {
   color: var(--verdi-text);
+}
+
+[data-theme="light"] .el-alert--error.is-light,
+[data-theme="light"] .el-alert--error.is-light .el-alert__description {
+  color: var(--verm);
+}
+
+[data-theme="light"] .el-message--error {
+  --el-message-text-color: var(--verm);
 }
 
 /* 登录页是固定深色身份门：亮色模式下把公共壳子树的令牌钉回深色值。

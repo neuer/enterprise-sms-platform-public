@@ -383,6 +383,7 @@ onMounted(() => {
         v-model="category"
         class="approval-pill-select"
         data-testid="approval-category-filter"
+        :empty-values="[null, undefined]"
         @change="search"
       >
         <el-option label="全部类别" value="" />

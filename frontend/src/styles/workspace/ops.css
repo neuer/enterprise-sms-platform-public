@@ -105,7 +105,7 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  color: var(--verdi);
+  color: var(--verdi-text);
   font: 11px/1 var(--mono);
 }
 .job-health i {

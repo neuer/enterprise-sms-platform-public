@@ -232,4 +232,15 @@ const router = createRouter({
   ],
 })
 
+const APP_TITLE = "青鸾 · 企业短信管理平台"
+
+/** 浏览器标签页标题：页面名在前，多标签切换与历史记录里可直接辨认当前页。 */
+export function documentTitle(pageTitle: unknown): string {
+  return typeof pageTitle === "string" && pageTitle ? `${pageTitle} · ${APP_TITLE}` : APP_TITLE
+}
+
+router.afterEach((to, _from, failure) => {
+  if (!failure) document.title = documentTitle(to.meta.title)
+})
+
 export default router
