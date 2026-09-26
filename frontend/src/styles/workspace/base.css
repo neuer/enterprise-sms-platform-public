@@ -23,7 +23,7 @@ body {
 
 .logout-button:hover,
 .toolbar-action:hover {
-  color: var(--verdi);
+  color: var(--verdi-text);
 }
 
 a {

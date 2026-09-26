@@ -132,7 +132,7 @@
 }
 
 .filter-seg button.on i {
-  color: color-mix(in srgb, var(--on-accent) 75%, transparent);
+  color: var(--on-accent);
 }
 
 .filter-seg--compact {
@@ -201,13 +201,13 @@
 }
 
 .filter-seg--chips button.on {
-  color: var(--verdi-l);
+  color: var(--verdi-text);
   background: color-mix(in srgb, var(--verdi) 14%, transparent);
   border-color: color-mix(in srgb, var(--verdi-l) 55%, transparent);
 }
 
 .filter-seg--chips button.on b {
-  color: var(--verdi-l);
+  color: var(--verdi-text);
 }
 
 .filter-seg--chips button.hot {
@@ -377,7 +377,7 @@
 }
 
 .batch-code {
-  color: var(--verdi);
+  color: var(--verdi-text);
   font-size: 11px;
   background: transparent;
 }
@@ -562,7 +562,7 @@
 }
 
 .callback-pulse strong {
-  color: var(--verdi);
+  color: var(--verdi-text);
   font-family: var(--mono);
   font-size: 32px;
   font-weight: 400;
@@ -572,8 +572,11 @@
   color: var(--el-color-danger);
 }
 
-.callback-app-select {
-  width: 168px;
+/* 复合提权压过后加载的 .el-select { width: 100% }；只在宽屏生效，窄屏沿用上方 840px 组的铺满规则。 */
+@media (min-width: 841px) {
+  .el-select.callback-app-select {
+    width: 168px;
+  }
 }
 
 .callback-state {
@@ -840,7 +843,7 @@ main {
 
 .eyebrow {
   margin: 0 0 3px;
-  color: var(--verdi);
+  color: var(--verdi-text);
   font-family: var(--mono);
   font-size: 10px;
   font-weight: 600;

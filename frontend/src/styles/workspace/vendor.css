@@ -170,7 +170,7 @@
   font: 9px/1 var(--mono);
 }
 .vendor-readiness-list > div.ready > span {
-  color: var(--verdi);
+  color: var(--verdi-text);
 }
 .vendor-readiness-list > div > div {
   display: grid;

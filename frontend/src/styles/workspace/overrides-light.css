@@ -143,3 +143,13 @@
     color-mix(in srgb, var(--verdi) 6%, #ffffff)
   );
 }
+
+/* inline-prompt 开关关闭态：Element 的白色提示字压在浅灰轨道上几乎不可见，改用次级正文色。 */
+[data-theme="light"] .el-switch:not(.is-checked) .el-switch__inner-wrapper {
+  color: var(--tx-2);
+}
+
+/* MARKET 小徽章 10px：亮底上琥珀着色减半，保证文字 AA。 */
+[data-theme="light"] .cat-tag.market {
+  background: color-mix(in srgb, var(--amber) 7%, transparent);
+}

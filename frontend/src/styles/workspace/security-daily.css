@@ -94,7 +94,9 @@
   display: flex;
   gap: 5px;
 }
-.security-daily-date {
+/* 复合提权：el-date-picker 样式后加载，其 .el-date-editor.el-input 默认 220px 会压过单类宽度。 */
+.security-daily-date.el-date-editor {
+  --el-date-editor-width: 112px;
   width: 112px;
 }
 .security-daily-date .el-input__wrapper {
@@ -136,7 +138,7 @@
   font-weight: 500;
 }
 .security-section-label {
-  color: var(--tx-3);
+  color: var(--tx-2);
   font: 10px var(--mono);
   letter-spacing: 0.08em;
 }
@@ -413,6 +415,12 @@
   /* #71c4ad 即深色 --verdi-text：引用令牌后亮色悬停自动取亮底文字绿。 */
   --el-button-hover-link-text-color: var(--verdi-text);
   --el-button-active-color: var(--verdi-l);
+}
+
+.el-button.is-link.el-button--danger {
+  /* 与 --tx-hi 混色：深色下悬停提亮、亮色下悬停加深，不走 Element 的 light-5 变淡。 */
+  --el-button-hover-link-text-color: color-mix(in srgb, var(--verm) 70%, var(--tx-hi));
+  --el-button-active-color: var(--verm);
 }
 
 .el-tabs__item.is-active {

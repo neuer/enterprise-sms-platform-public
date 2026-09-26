@@ -386,7 +386,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(/\.security-daily-filter-bar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/s)
     expect(workspace).toMatch(/\.security-daily-fld\s*\{[^}]*display:\s*flex[^}]*align-items:\s*center/s)
     expect(workspace).toMatch(/\.security-daily-fld > span\s*\{[^}]*white-space:\s*nowrap/s)
-    expect(workspace).toMatch(/\.security-daily-date\s*\{[^}]*width:\s*112px/s)
+    expect(workspace).toMatch(/\.security-daily-date\.el-date-editor\s*\{[^}]*width:\s*112px/s)
     expect(workspace).toMatch(/\.filter-seg--compact\s*\{[^}]*height:\s*30px/s)
     expect(workspace).toMatch(/\.security-daily-filter-go\s*\{[^}]*margin-left:\s*auto/s)
     expect(workspace).toMatch(/\.security-daily-privacy\s*\{[^}]*font-size:\s*10\.5px/s)
