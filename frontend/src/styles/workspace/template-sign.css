@@ -2,18 +2,6 @@
 /* 模板/签名两页查询栏同构：sign-filter-bar/sign-fld/sign-keyword/sign-filter-note
    与 template-* 共用以下规则（移动端见 760px 媒体块），按页复制即缺陷；
    厂商状态 seg 已并入 FilterSeg 单点（shared.css）。 */
-.template-fld,
-.sign-fld {
-  display: grid;
-  gap: 5px;
-}
-
-.template-fld > span,
-.sign-fld > span {
-  color: var(--tx-3);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
 
 .template-keyword,
 .sign-keyword,

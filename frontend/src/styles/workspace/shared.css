@@ -41,11 +41,17 @@
 .config-fld,
 .ops-fld,
 .callback-fld,
-.audit-fld {
+.audit-fld,
+.apps-fld,
+.sensitive-policy,
+.message-fld,
+.template-fld,
+.sign-fld {
   display: grid;
   gap: 5px;
 }
 
+/* 筛选字段标签共享组：全站筛选条字段名同一弱化色、10.5px、不换行；新页面并入此组，按页复制即缺陷。 */
 .reply-fld > span,
 .blacklist-fld > span,
 .sensitive-fld > span,
@@ -53,7 +59,17 @@
 .config-fld > span,
 .ops-fld > span,
 .callback-fld > span,
-.audit-fld > span {
+.audit-fld > span,
+.approval-fld > span,
+.approval-fld > label,
+.apps-fld > span,
+.sensitive-policy > span,
+.batch-fld > span,
+.message-fld > span,
+.report-fld > span,
+.security-daily-fld > span,
+.template-fld > span,
+.sign-fld > span {
   color: var(--tx-3);
   font-size: var(--fs-xs);
   white-space: nowrap;
@@ -209,7 +225,7 @@
 }
 
 .filter-seg--chips button.hot {
-  color: #f0a08c;
+  color: var(--verm-text);
   border-color: color-mix(in srgb, var(--verm) 55%, transparent);
 }
 

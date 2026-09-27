@@ -118,7 +118,7 @@
 }
 
 .category-switch button:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.18);
+  border-color: color-mix(in srgb, var(--tx-hi) 18%, transparent);
 }
 
 /* 类别卡选中渐变：rgba(69,116,163)/rgba(216,163,92) 即深色 --slate/--amber，就地令牌化等价。 */
@@ -147,10 +147,9 @@
   border-radius: 4px;
 }
 
-/* 类别小徽章：底色按深色 --slate/--amber 同值就地令牌化；
-   notice 文字 #6f9bcf 保留深色值，亮色覆写见文件末尾明亮模式区块。 */
+/* 类别小徽章：底色按深色 --slate/--amber 同值就地令牌化；notice 文字走 --slate-text，随主题取值。 */
 .cat-tag.notice {
-  color: #6f9bcf;
+  color: var(--slate-text);
   background: color-mix(in srgb, var(--slate) 20%, transparent);
 }
 
@@ -428,10 +427,10 @@
   overflow-wrap: anywhere;
 }
 
-/* 模板变量高亮：底色按深色 --slate 同值令牌化；文字 #6f9bcf 保留深色值，亮色覆写见文件末尾。 */
+/* 模板变量高亮：底色按深色 --slate 同值令牌化；文字走 --slate-text，随主题取值。 */
 .template-render-preview em {
   padding: 0 3px;
-  color: #6f9bcf;
+  color: var(--slate-text);
   font-style: normal;
   background: color-mix(in srgb, var(--slate) 20%, transparent);
   border-radius: 3px;
@@ -711,7 +710,7 @@
   background: var(--verdi-l);
 }
 
-/* #6f9bcf 与 --chart-blue 在亮/暗两套主题下同值：直接引用令牌。 */
+/* 风险提示蓝点与图表 notice 系列同色：直接引用 --chart-blue。 */
 .risk-line.info::before {
   background: var(--chart-blue);
 }

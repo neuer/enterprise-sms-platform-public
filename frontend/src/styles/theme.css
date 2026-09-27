@@ -94,6 +94,10 @@
   --fs-hero: 32px;
   /* 文字级品牌绿：面板上作前景色的绿（亮/暗主题取值方向相反） */
   --verdi-text: #71c4ad;
+  /* 文字级朱红 / 蓝：深色面板上的柔和变体，明亮主题回到 --verm / --slate 本色（均 AA） */
+  --verm-text: #ef9b89;
+  --slate-text: #6f9bcf;
+  --shadow-drawer: -16px 0 48px rgba(0, 0, 0, 0.4);
   /* accent（verdi）底色上的文字色 */
   --on-accent: #eafff7;
   /* ECharts canvas 读不到 CSS 变量，图表经 lib/chartTheme.ts 读取这组 --chart-* 令牌 */
@@ -207,6 +211,9 @@
   --amber: #8a5f16;
   --verm: #b0402a;
   --verdi-text: #0b6a55;
+  --verm-text: var(--verm);
+  --slate-text: var(--slate);
+  --shadow-drawer: -16px 0 48px rgba(21, 32, 26, 0.18);
   --on-accent: #f2faf6;
   --el-fill-color: #e6ece6;
   --el-fill-color-lighter: #f1f5f1;
@@ -1222,10 +1229,5 @@ button:focus-visible {
 }
 
 .el-message--error {
-  --el-message-text-color: color-mix(in srgb, var(--verm) 68%, #ffffff);
-}
-
-/* 明亮模式：错误 toast 回到亮底深字。 */
-[data-theme="light"] .el-message--error {
-  --el-message-text-color: var(--verm);
+  --el-message-text-color: var(--verm-text);
 }

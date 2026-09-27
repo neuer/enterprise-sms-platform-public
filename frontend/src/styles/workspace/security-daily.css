@@ -85,11 +85,6 @@
   align-items: center;
   gap: 6px;
 }
-.security-daily-fld > span {
-  color: var(--tx-3);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
 .security-daily-dates {
   display: flex;
   gap: 5px;
@@ -199,7 +194,7 @@
   grid-column: 1 / -1;
 }
 .security-delivery-facts .security-error {
-  color: #d66b6b;
+  color: var(--verm-text);
 }
 .security-delivery-facts .security-error time {
   color: var(--tx-2);
@@ -258,7 +253,7 @@
   border-top: 2px solid var(--amber);
 }
 .security-metric.danger {
-  border-top: 2px solid #d66b6b;
+  border-top: 2px solid var(--verm-text);
 }
 .security-evidence-list {
   display: grid;

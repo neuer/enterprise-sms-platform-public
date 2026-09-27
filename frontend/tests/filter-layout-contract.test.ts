@@ -186,7 +186,7 @@ describe("全站筛选布局契约", () => {
     // 页级紧凑条专属样式：标签内联、日期 112px、seg 30px、按钮 margin-left:auto
     expect(css).toMatch(/\.security-daily-filter-bar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/s)
     expect(css).toMatch(/\.security-daily-fld\s*\{[^}]*display:\s*flex[^}]*align-items:\s*center/s)
-    expect(css).toMatch(/\.security-daily-fld > span\s*\{[^}]*white-space:\s*nowrap/s)
+    expect(css).toMatch(/\.security-daily-fld > span[,\s][^{]*\{[^}]*white-space:\s*nowrap/s)
     expect(css).toMatch(/\.security-daily-date\.el-date-editor\s*\{[^}]*width:\s*112px/s)
     expect(css).toMatch(/\.filter-seg--compact\s*\{[^}]*height:\s*30px/s)
     expect(css).toMatch(/\.filter-seg--compact button\s*\{[^}]*padding:\s*0 8px[^}]*font-size:\s*var\(--fs-xs\)/s)

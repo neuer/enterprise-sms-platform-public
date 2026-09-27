@@ -215,17 +215,6 @@
   flex: none;
 }
 
-.sensitive-policy {
-  display: grid;
-  gap: 5px;
-}
-
-.sensitive-policy > span {
-  color: var(--tx-3);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
-
 .sensitive-wall {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -271,7 +260,7 @@
 
 .sensitive-tile:hover .sensitive-tile-del,
 .sensitive-tile-del:focus-visible {
-  color: #ef9b89;
+  color: var(--verm-text);
 }
 
 /* 黑名单/敏感词页面专属：检索条/分页并入 reply-* 共享组，抽屉骨架并入 sign-* 共享组。 */
@@ -320,7 +309,7 @@
 }
 
 /* 预检 chips：ok 文字改用亮底自适应的 --verdi-text，两边框按深色令牌同值就地令牌化；
-   bad 文字 #ef9b89 保留深色值，亮色覆写见文件末尾明亮模式区块。 */
+   bad 文字走 --verm-text，随主题取值。 */
 .blacklist-chip-ok,
 .sensitive-chip-ok,
 .user-chip-ok {
@@ -331,7 +320,7 @@
 .blacklist-chip-bad,
 .sensitive-chip-bad,
 .user-chip-bad {
-  color: #ef9b89;
+  color: var(--verm-text);
   border-color: color-mix(in srgb, var(--verm) 45%, transparent);
 }
 
@@ -560,7 +549,7 @@
     width: 36px;
     height: 36px;
     margin-left: auto;
-    color: #b9c3bd;
+    color: var(--tx);
     font-size: var(--fs-display);
     font-weight: 300;
   }

@@ -400,7 +400,7 @@
 .el-tag.el-tag--error {
   --el-tag-bg-color: color-mix(in srgb, var(--verm) 16%, var(--panel));
   --el-tag-border-color: color-mix(in srgb, var(--verm) 40%, var(--panel));
-  --el-tag-text-color: color-mix(in srgb, var(--verm) 68%, #ffffff);
+  --el-tag-text-color: var(--verm-text);
 }
 
 .el-tag.el-tag--info {
@@ -443,7 +443,7 @@
 
 .el-alert--error.is-light,
 .el-alert--error.is-light .el-alert__description {
-  color: color-mix(in srgb, var(--verm) 68%, #ffffff);
+  color: var(--verm-text);
 }
 
 /* 分页当前页与悬停：品牌绿 --verdi 作文字在深色面板上仅 3:1，改走文字级绿。 */

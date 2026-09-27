@@ -49,12 +49,6 @@
   gap: 8px;
 }
 
-.report-fld > span {
-  color: var(--tx-3);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
-
 /* 周期/维度 seg 已并入 FilterSeg 单点（shared.css）。 */
 
 /* 复合提权：el-select.css 后加载，单类会被 .el-select 自身的 --el-select-width: 100% 覆盖。 */

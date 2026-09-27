@@ -21,6 +21,7 @@
 | --slate | #4574A3 | notice 类 |
 | --amber | #D8A35C | market 类、warning |
 | --verm | #E46A4F | danger、失败 |
+| --verdi-text / --verm-text / --slate-text | #71C4AD / #EF9B89 / #6F9BCF | 文字级绿 / 朱红 / 蓝：面板上作前景色时用这组，明亮主题自动取深色本色（均 AA）；不得再写死柔和色值再到明亮层打补丁 |
 | --chart-blue | #6F9BCF | 图表 notice 系列：slate 色相族的图表亮变体（ECharts canvas 读不到 CSS 变量，经 lib/chartTheme.ts 读取 --chart-* 令牌） |
 
 上表为默认深色令牌。主题由 `frontend/src/lib/theme.ts` 设置根元素 `data-theme`；`frontend/src/styles/theme.css` 提供深色默认值和明亮令牌覆写，`color-scheme` 随主题切换。页面、浮层、输入、禁用态、遮罩和文字层级复用当前主题 token，避免硬编码背景绕过主题。工作区规则与加载顺序见第 8 节。

@@ -30,14 +30,13 @@
 }
 
 .brand strong {
-  color: #eaf1ed;
+  color: var(--tx-hi);
   font-size: var(--fs-2xl);
   font-weight: 700;
   letter-spacing: 0.18em;
 }
 
 .brand small {
-  color: #66736c;
   font-family: var(--mono);
   font-size: var(--fs-2xs);
   letter-spacing: 0.12em;
@@ -48,26 +47,24 @@
 }
 .nav-section h2 {
   margin: 0 10px 4px;
-  color: #536159;
   font-size: var(--fs-2xs);
   letter-spacing: 0.18em;
 }
 .nav-link {
   min-height: 34px;
-  color: #839088;
+  color: var(--tx-2);
   border-radius: 6px;
 }
 .nav-link:hover {
-  color: #bdc8c1;
-  background: rgba(255, 255, 255, 0.035);
+  color: var(--tx);
+  background: color-mix(in srgb, var(--tx-hi) 4%, transparent);
 }
 .nav-link.active {
-  color: #dce6e0;
+  color: var(--tx-hi);
   background: rgba(18, 130, 104, 0.22);
   box-shadow: inset 2px 0 var(--verdi-l);
 }
 .nav-marker {
-  color: #66736c;
   border-color: transparent;
 }
 .nav-link.active .nav-marker {
@@ -75,7 +72,6 @@
   border-color: transparent;
 }
 .sidebar-foot {
-  color: #5a675f;
   border-top: 1px solid var(--hair);
 }
 
@@ -86,7 +82,7 @@
 .topbar {
   height: 56px;
   padding: 0 24px;
-  background: #111a16;
+  background: color-mix(in srgb, var(--paper) 94%, transparent);
   border-bottom: 1px solid var(--hair);
 }
 .breadcrumb {
@@ -274,7 +270,7 @@ main {
   background: var(--el-mask-color);
 }
 .el-drawer {
-  box-shadow: -16px 0 48px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-drawer);
 }
 .el-drawer__header {
   color: var(--tx-hi);
@@ -486,11 +482,11 @@ main {
   color: var(--tx-hi);
 }
 .approval-content-head em {
-  color: #93b6e0;
+  color: var(--slate-text);
   border-color: color-mix(in srgb, var(--chart-blue) 40%, transparent);
 }
 
-/* 熔断横幅：深色渐变底与浅文字保留深色值（亮色覆写见文件末尾）；边框/图标底按深色令牌同值就地令牌化。 */
+/* 熔断横幅：深色渐变底与浅文字保留深色值（亮色覆写见 overrides-light.css）；边框/图标底按深色令牌同值就地令牌化。 */
 .circuit-banner {
   display: flex;
   gap: 18px;

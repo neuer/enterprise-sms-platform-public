@@ -136,6 +136,30 @@ describe("跨页面一致性契约", () => {
     expect(css).not.toMatch(/font:[^;]*\S\s+inherit;/)
   })
 
+  it("筛选字段标签只在 shared.css 共享组定义一次，不按页复制", () => {
+    const shards = listFiles("src/styles/workspace", ".css").map((path) => ({ path, css: read(path) }))
+    const labelRules = shards.flatMap(({ path, css }) =>
+      [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]*-fld > span[^{}]*)\{([^{}]*)\}/g)]
+        .filter((match) => /white-space:\s*nowrap/.test(match[2]))
+        .map(() => path),
+    )
+    expect(labelRules).toEqual(["src/styles/workspace/shared.css"])
+  })
+
+  it("按深色调优的朱红 / 蓝文字色只以令牌定义，随主题取值，不再逐条打明亮补丁", () => {
+    const theme = read("src/styles/theme.css")
+    for (const token of ["--verm-text", "--slate-text", "--shadow-drawer"]) {
+      expect(theme.match(new RegExp(`${token}:`, "g"))?.length, token).toBe(2)
+    }
+    const styles = [
+      ...listFiles("src/styles/workspace", ".css").map(read),
+      ...[...listFiles("src/components", ".vue"), ...listFiles("src/views", ".vue")].map(read),
+    ].join("\n")
+    expect(styles).not.toMatch(/#(?:ef9b89|f0a08c|d66b6b|93b6e0|6f9bcf)\b/i)
+    expect(styles).not.toContain("rgba(255, 255, 255, 0.05)")
+    expect(read("src/styles/workspace/overrides-light.css")).not.toMatch(/\.nav-link:hover|\.batch-note|\.el-drawer\b/)
+  })
+
   it("计数千分位只经 lib/format.ts 的 formatNumber，不随浏览器语言变化", () => {
     const offenders = [...listFiles("src", ".vue"), ...listFiles("src", ".ts")].filter(
       (path) => !path.endsWith("lib/format.ts") && /\.toLocaleString\(/.test(read(path)),

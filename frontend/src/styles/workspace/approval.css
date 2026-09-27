@@ -68,13 +68,6 @@
   align-items: center;
 }
 
-.approval-fld > span,
-.approval-fld > label {
-  color: var(--tx-3);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
-
 /* 状态 seg 已并入 FilterSeg 单点；此处只保留计数徽章的页级皮肤。 */
 .approval-seg-count {
   display: inline-block;
@@ -91,7 +84,7 @@
 }
 
 .approval-seg-count.is-hot {
-  color: #f0a08c;
+  color: var(--verm-text);
   background: color-mix(in srgb, var(--verm) 25%, transparent);
 }
 

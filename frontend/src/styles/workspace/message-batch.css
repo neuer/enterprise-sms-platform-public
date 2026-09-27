@@ -107,11 +107,6 @@
   gap: 7px;
   align-items: center;
 }
-.batch-fld > span {
-  color: var(--tx-3);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
 /* 单行筛选条：批次号与时间允许收缩兜底——窗口变窄先挤输入框，仍不轻易折行 */
 .batch-filter-search {
   width: 112px;
@@ -454,7 +449,7 @@
 .batch-note {
   margin: 0 0 12px;
   padding: 8px 12px;
-  color: #93b6e0;
+  color: var(--slate-text);
   font-size: var(--fs-sm);
   background: color-mix(in srgb, var(--chart-blue) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--chart-blue) 35%, transparent);
@@ -496,17 +491,6 @@
 }
 .batch-trace:hover {
   text-decoration: underline;
-}
-
-.message-fld {
-  display: grid;
-  gap: 5px;
-}
-
-.message-fld > span {
-  color: var(--tx-3);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
 }
 
 .message-filter-phone {
@@ -566,11 +550,11 @@
   border-radius: 5px;
   color: var(--tx-2);
   font: var(--fs-xs)/1.9 var(--mono);
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--hair-2);
 }
 
 .message-badge-tag.is-listed {
-  color: #ef9b89;
+  color: var(--verm-text);
   background: color-mix(in srgb, var(--verm) 15%, transparent);
   border-color: color-mix(in srgb, var(--verm) 35%, transparent);
 }
