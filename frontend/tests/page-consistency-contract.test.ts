@@ -30,7 +30,7 @@ describe("跨页面一致性契约", () => {
 
   it("权限提示不直接展示角色代码，统一经 labels.ts 的 roleNames 输出中文角色名", () => {
     const offenders = views.filter(({ source }) =>
-      /[读写]：[^<{]*\b(?:admin|operator|approver|viewer)\b/.test(source.replace(/<script[\s\S]*?<\/script>/g, "")),
+      /[读写]：[^<{]*\b(?:admin|operator|approver|viewer)\b/.test(source.slice(source.indexOf("\n<template>"))),
     )
     expect(offenders.map(({ path }) => path)).toEqual([])
   })
