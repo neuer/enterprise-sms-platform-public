@@ -10,7 +10,9 @@ export function readViewSource(path: string, seen = new Set<string>()): string {
   if (!full.endsWith(".vue")) return source
   const children = [...source.matchAll(/from\s+["'](\.[^"']+\.vue)["']/g)]
   const owned = children.filter((match) =>
-    /\/ops\/Ops|\/(?:ApiDemoDialog|SecurityDailyConfigDialog)\.vue$/.test(match[1]),
+    /\/ops\/Ops|\/(?:ApiDemoDialog|SecurityDailyConfigDialog|AppDetailDrawer|AppEditorDrawer|User(?:Create|Role|PasswordReset)Drawer|SendPrecheckCards)\.vue$/.test(
+      match[1],
+    ),
   )
   return [source, ...owned.map((match) => readViewSource(resolve(dirname(full), match[1]), seen))].join("\n")
 }
