@@ -439,8 +439,63 @@
   margin-left: auto;
 }
 
+.list-pagination-pages {
+  padding: 0 14px;
+  color: var(--tx-2);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
 .reply-mobile-list {
   display: none;
+}
+
+/* 手机检索条折叠（组件见 src/components/MobileFilterToggle.vue）：桌面隐藏开关，折叠态不生效。 */
+.mobile-filter-toggle {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .mobile-filter-toggle {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 14px;
+    color: var(--tx-2);
+    font: inherit;
+    font-size: var(--fs-md);
+    background: var(--sink);
+    border: 1px dashed var(--hair);
+    border-radius: 8px;
+    cursor: pointer;
+  }
+
+  .mobile-filter-toggle.is-active {
+    color: var(--verdi-text);
+    border-color: color-mix(in srgb, var(--verdi-l) 55%, transparent);
+  }
+
+  .mobile-filter-toggle b {
+    min-width: 18px;
+    padding: 0 5px;
+    color: var(--on-accent);
+    font-size: var(--fs-sm);
+    line-height: 18px;
+    text-align: center;
+    background: var(--verdi);
+    border-radius: 9px;
+  }
+
+  .mobile-filter-toggle i {
+    font-style: normal;
+  }
+
+  .filter-collapsible.is-collapsed > :not(.filter-keep, .mobile-filter-toggle) {
+    display: none;
+  }
 }
 
 @media (max-width: 840px) {
@@ -966,9 +1021,22 @@ main {
 @media (max-width: 760px) {
   .audit-fld,
   .ops-fld,
-  .reply-fld {
+  .reply-fld,
+  .message-fld,
+  .user-fld,
+  .config-fld,
+  .callback-fld {
+    flex: 1 1 100%;
     min-width: 0;
     max-width: 100%;
+  }
+
+  .audit-fld > :is(.el-input, .el-select),
+  .message-fld > :is(.el-input, .el-select),
+  .user-fld > :is(.el-input, .el-select),
+  .config-fld > :is(.el-input, .el-select),
+  .callback-fld > :is(.el-input, .el-select) {
+    width: 100%;
   }
   .audit-dates.el-date-editor,
   .ops-dates.el-date-editor,

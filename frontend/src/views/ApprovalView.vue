@@ -23,6 +23,7 @@ import ApprovalList from "../components/ApprovalList.vue"
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
+import MobileFilterToggle from "../components/MobileFilterToggle.vue"
 import { usePagedList } from "../composables/usePagedList"
 import { usePolling } from "../composables/usePolling"
 import { statusOptionsOf, DEFAULT_PAGE_SIZE } from "../lib/labels"
@@ -47,6 +48,14 @@ const category = ref<Category | "">("")
 const dept = ref("")
 const q = ref("")
 const sort = ref<ApprovalSort>("expires_asc")
+const filtersCollapsed = ref(true)
+const collapsedActiveCount = computed(
+  () =>
+    (category.value ? 1 : 0) +
+    (dept.value.trim() ? 1 : 0) +
+    (q.value.trim() ? 1 : 0) +
+    (sort.value === (status.value === "pending" ? "expires_asc" : "decided_desc") ? 0 : 1),
+)
 const counts = ref<ApprovalCounts>({
   pending: 0,
   approved: 0,
@@ -358,8 +367,8 @@ onMounted(() => {
     </div>
   </section>
 
-  <div class="approval-filter-bar">
-    <div class="approval-fld">
+  <div class="approval-filter-bar filter-collapsible" :class="{ 'is-collapsed': filtersCollapsed }">
+    <div class="approval-fld filter-keep">
       <span>状态</span>
       <FilterSeg
         :model-value="status"
@@ -431,7 +440,8 @@ onMounted(() => {
         <el-option v-for="option in sortOptions" :key="option.value" :label="option.label" :value="option.value" />
       </el-select>
     </div>
-    <div class="approval-filter-go">
+    <MobileFilterToggle v-model:collapsed="filtersCollapsed" :active-count="collapsedActiveCount" />
+    <div class="approval-filter-go filter-keep">
       <el-button data-testid="approval-refresh" :loading="loading" @click="void load()">刷新</el-button>
       <el-button data-testid="approval-reset" @click="resetFilters">重置</el-button>
       <span class="approval-poll-hint">30s 自动</span>

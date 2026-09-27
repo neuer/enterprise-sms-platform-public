@@ -234,7 +234,9 @@
     align-items: stretch;
   }
   .audit-lock {
+    display: inline-block;
     align-self: flex-start;
+    margin-top: 10px;
   }
   .audit-table {
     display: none;
@@ -317,27 +319,6 @@
     min-width: 0;
     line-height: 1.5;
     white-space: normal;
-  }
-}
-
-@media (pointer: coarse), (max-width: 760px) {
-  .nav-link,
-  .topbar button,
-  .el-button,
-  .el-pagination button,
-  .el-pagination .el-pager li,
-  .el-tabs__item,
-  .el-input__wrapper,
-  .el-select__wrapper,
-  .el-date-editor {
-    min-height: 44px;
-  }
-
-  .topbar button,
-  .el-button,
-  .el-pagination button,
-  .el-pagination .el-pager li {
-    min-width: 44px;
   }
 }
 

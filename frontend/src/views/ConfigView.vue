@@ -31,6 +31,7 @@ import { errorText } from "../lib/error"
 import { ROLE_LABELS } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 import { useLatestRead } from "../composables/useLatestRead"
+import { useMobileLayout } from "../composables/useMobileLayout"
 import { useSessionStore } from "../stores/session"
 
 type ConfigTab = "runtime" | "providers" | "vendor-test"
@@ -52,6 +53,21 @@ const saving = ref(false)
 const errorMessage = ref("")
 const searchQuery = ref("")
 const activeGroup = ref("")
+// 手机上 66 项参数全展开约 15 屏：分组默认收起、点标题展开；有关键词或选定单个分组时直接展开命中结果。
+const isMobile = useMobileLayout()
+const expandedGroups = ref(new Set<string>())
+
+function groupOpen(group: string): boolean {
+  return (
+    !isMobile.value || searchQuery.value.trim() !== "" || activeGroup.value !== "" || expandedGroups.value.has(group)
+  )
+}
+
+function toggleGroup(group: string): void {
+  const next = new Set(expandedGroups.value)
+  if (!next.delete(group)) next.add(group)
+  expandedGroups.value = next
+}
 
 const adProvider = ref<AuthProviderAdmin | null>(null)
 const providerLoading = ref(false)
@@ -727,11 +743,24 @@ onMounted(() => {
         description="换个关键字或分组试试，也可清空搜索查看全部参数。"
       />
       <section v-for="[group, items] in groups" :key="group" class="config-group">
-        <header class="config-group-title"
-          ><strong>{{ group }}</strong
-          ><span>{{ items.length }} PARAMETERS</span></header
-        >
-        <div class="config-grid">
+        <header class="config-group-title">
+          <button
+            v-if="isMobile"
+            type="button"
+            class="config-group-toggle"
+            :aria-expanded="groupOpen(group)"
+            :data-testid="`config-group-toggle-${group}`"
+            @click="toggleGroup(group)"
+          >
+            <strong>{{ group }}</strong
+            ><span>{{ items.length }} PARAMETERS {{ groupOpen(group) ? "▴" : "▾" }}</span>
+          </button>
+          <template v-else
+            ><strong>{{ group }}</strong
+            ><span>{{ items.length }} PARAMETERS</span></template
+          >
+        </header>
+        <div v-show="groupOpen(group)" class="config-grid">
           <article v-for="item in items" :key="item.key" class="config-item">
             <header
               ><code>{{ item.key }}</code

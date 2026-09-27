@@ -1,0 +1,142 @@
+/* 触屏命中区单点（Apple HIG 44pt；WCAG 2.5.8 下限 24px）：本文件只放尺寸，必须在 workspace.css
+   末位导入——排在它之后的分片会以同优先级规则把命中区压回桌面紧凑尺寸。页面分片以复合选择器
+   声明的紧凑尺寸（如安全日报日期框）在此按同等优先级显式放大，不在各分片里分别处理。 */
+@media (pointer: coarse), (max-width: 760px) {
+  .nav-link,
+  .topbar button,
+  .el-button,
+  .el-pagination button,
+  .el-pagination .el-pager li,
+  .el-tabs__item,
+  .el-input__wrapper,
+  .el-select__wrapper,
+  .el-date-editor,
+  .filter-seg button,
+  .security-daily-date .el-input__wrapper,
+  .el-drawer__close-btn,
+  .el-dialog__headerbtn,
+  .el-message-box__headerbtn {
+    min-height: 44px;
+  }
+
+  .topbar button,
+  .el-button,
+  .el-pagination button,
+  .el-pagination .btn-prev,
+  .el-pagination .btn-next,
+  .el-pagination .el-pager li,
+  .filter-seg button,
+  .config-tabs button,
+  .ops-tabs button,
+  .el-drawer__close-btn,
+  .el-dialog__headerbtn,
+  .el-message-box__headerbtn {
+    min-width: 44px;
+  }
+
+  .filter-seg button {
+    justify-content: center;
+  }
+
+  /* 面板标题里的文字跳转链接：以内边距 + 等量负外边距扩大命中区，不改变标题行排版。 */
+  .panel-jump {
+    display: inline-block;
+    margin: -14px -8px;
+    padding: 14px 8px;
+  }
+
+  .opt,
+  .sign-mobile-list header .table-row-detail,
+  .template-mobile-list header .table-row-detail {
+    min-height: 44px;
+  }
+
+  .el-drawer__close-btn {
+    justify-content: center;
+  }
+
+  .filter-seg,
+  .security-daily-date .el-input__wrapper {
+    height: auto;
+  }
+
+  /* 批次状态 chips 换行后 44px 会把筛选区撑高数倍，触屏改为单行横滑。 */
+  .filter-seg--chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .filter-seg--chips button,
+  .filter-seg--chips .batch-chips-lbl,
+  .filter-seg--chips .batch-chips-meta {
+    flex: none;
+  }
+
+  .filter-seg--chips .batch-chips-meta {
+    margin-left: 8px;
+  }
+
+  .batch-more-trigger,
+  .audit-more-trigger {
+    min-height: 44px;
+  }
+
+  .el-checkbox:not(.el-table .el-checkbox),
+  .el-radio:not(.el-table .el-radio) {
+    height: auto;
+    min-height: 44px;
+  }
+
+  .el-input-number:not(.is-controls-right) .el-input-number__increase,
+  .el-input-number:not(.is-controls-right) .el-input-number__decrease {
+    width: 44px;
+  }
+
+  .el-input-number:not(.is-controls-right) .el-input__wrapper {
+    padding-right: 50px;
+    padding-left: 50px;
+  }
+}
+
+/* iOS Safari 聚焦字号 <16px 的输入框会自动放大整页；触屏输入统一 --fs-xl（16px）。
+   区间日期框两枚 16px mono 输入在手机宽度下放不进一行，改为「起始 / 结束」两行排布。
+   右侧上下叠放的步进按钮在触屏上各只有 ~20px 高，无法可靠点中，触屏改用数字键盘直接输入。 */
+@media (pointer: coarse) {
+  .el-input__inner,
+  .el-textarea__inner,
+  .el-select__input,
+  .el-date-editor .el-input__inner,
+  .el-date-editor .el-range-input,
+  .send-editor .el-textarea__inner {
+    font-size: var(--fs-xl);
+  }
+
+  .el-date-editor.el-range-editor {
+    flex-wrap: wrap;
+    row-gap: 2px;
+    height: auto;
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+
+  .el-date-editor.el-range-editor .el-range-input {
+    flex: 1 1 calc(100% - 64px);
+    height: 36px;
+    text-align: left;
+  }
+
+  .el-date-editor.el-range-editor .el-range-separator {
+    flex: none;
+  }
+
+  .el-input-number.is-controls-right .el-input-number__increase,
+  .el-input-number.is-controls-right .el-input-number__decrease {
+    display: none;
+  }
+
+  .el-input-number.is-controls-right .el-input__wrapper {
+    padding-right: 15px;
+  }
+}

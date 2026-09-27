@@ -14,6 +14,7 @@ import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 
 import ListPagination from "../components/ListPagination.vue"
+import MobileFilterToggle from "../components/MobileFilterToggle.vue"
 
 import PhoneMask from "../components/PhoneMask.vue"
 
@@ -38,6 +39,7 @@ const router = useRouter()
 const phone = ref("")
 const range = ref<[Date, Date] | null>(null)
 const disposition = ref<ReplyDisposition>("all")
+const filtersCollapsed = ref(true)
 const optingOutId = ref<number | null>(null)
 const canOptout = computed(() => session.canWrite)
 // 与服务端 Query(pattern=^1\d{10}$) 同一规则（硬性规则 8）；服务端仍为权威校验。
@@ -162,8 +164,12 @@ onMounted(load)
     </div>
   </section>
 
-  <form class="reply-filter-bar" @submit.prevent="search">
-    <label class="reply-fld">
+  <form
+    class="reply-filter-bar filter-collapsible"
+    :class="{ 'is-collapsed': filtersCollapsed }"
+    @submit.prevent="search"
+  >
+    <label class="reply-fld filter-keep">
       <span>手机号精确查询</span>
       <el-input
         v-model="phone"
@@ -200,7 +206,11 @@ onMounted(load)
         @update:model-value="setDisposition"
       />
     </div>
-    <div class="reply-filter-go">
+    <MobileFilterToggle
+      v-model:collapsed="filtersCollapsed"
+      :active-count="(range ? 1 : 0) + (disposition === 'all' ? 0 : 1)"
+    />
+    <div class="reply-filter-go filter-keep">
       <el-button data-testid="reply-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="reply-reset" @click="reset">重置</el-button>
     </div>

@@ -10,6 +10,7 @@ import EmptyState from "../components/EmptyState.vue"
 import ListPagination from "../components/ListPagination.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
+import MobileFilterToggle from "../components/MobileFilterToggle.vue"
 import { usePagedList } from "../composables/usePagedList"
 import { useLatestRead } from "../composables/useLatestRead"
 import { copyText } from "../lib/clipboard"
@@ -112,6 +113,13 @@ const filtering = computed(
 
 const moreActiveCount = computed(() => (filters.actorAccountId.trim() ? 1 : 0) + (filters.correlationId.trim() ? 1 : 0))
 const moreActive = computed(() => moreActiveCount.value > 0)
+const filtersCollapsed = ref(true)
+const collapsedActiveCount = computed(
+  () =>
+    [filters.action, filters.objectType, filters.objectId].filter((value) => value.trim()).length +
+    (timeRange.value ? 1 : 0) +
+    moreActiveCount.value,
+)
 
 const selectedDiff = computed<DiffRow[]>(() =>
   selected.value ? diffRows(selected.value.before_val, selected.value.after_val) : [],
@@ -221,8 +229,12 @@ onMounted(() => {
     <span class="audit-lock">APPEND ONLY · 36 MONTHS</span>
   </section>
 
-  <form class="audit-filter-bar" @submit.prevent="search">
-    <div class="audit-fld">
+  <form
+    class="audit-filter-bar filter-collapsible"
+    :class="{ 'is-collapsed': filtersCollapsed }"
+    @submit.prevent="search"
+  >
+    <div class="audit-fld filter-keep">
       <span>操作人</span>
       <el-input
         v-model="filters.actor"
@@ -312,7 +324,8 @@ onMounted(() => {
         </div>
       </el-popover>
     </div>
-    <div class="audit-filter-go">
+    <MobileFilterToggle v-model:collapsed="filtersCollapsed" :active-count="collapsedActiveCount" />
+    <div class="audit-filter-go filter-keep">
       <el-button type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="audit-reset" @click="reset">重置</el-button>
       <el-checkbox

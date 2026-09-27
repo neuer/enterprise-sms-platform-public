@@ -1,4 +1,4 @@
-import "@fontsource-variable/noto-sans-sc/index.css"
+import "./styles/fonts-sans.css"
 import "element-plus/theme-chalk/base.css"
 import "element-plus/theme-chalk/el-button.css"
 import "element-plus/theme-chalk/el-config-provider.css"
