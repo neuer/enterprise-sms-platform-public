@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { readThemeCss } from "./workspace-css"
+
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 const stat = (path: string) => statSync(resolve(process.cwd(), path))
 
@@ -64,7 +66,7 @@ describe("Noto Serif SC 子集契约", () => {
 
   it("入口不再引入完整 serif 字体包，theme.css 声明子集 @font-face", () => {
     expect(read("src/main.ts")).not.toContain("noto-serif-sc")
-    const theme = read("src/styles/theme.css")
+    const theme = readThemeCss()
     expect(theme).toContain('font-family: "Noto Serif SC Variable"')
     expect(theme).toContain("noto-serif-sc-subset-400.woff2")
     expect(theme).toContain("noto-serif-sc-subset-600.woff2")

@@ -1,0 +1,203 @@
+/* 设计令牌（tokens 层）：深色默认值、明亮覆写与触屏字号提升；--el-* 桥接变量压过 Element 默认值。 */
+:root {
+  color-scheme: dark;
+  --bg: #101814;
+  --panel: #18231e;
+  --panel-2: #141d19;
+  --sink: #0c1512;
+  --hair: rgba(255, 255, 255, 0.08);
+  --hair-2: rgba(255, 255, 255, 0.05);
+  --tx: #c9d2cc;
+  --tx-2: #8b978f;
+  /* 弱化辅文令牌：面板背景上 WCAG AA ≥4.5:1（实测 4.9–5.7），勿再调浅 */
+  --tx-3: #84918a;
+  --tx-hi: #eaf1ed;
+  --verdi: #0e7a63;
+  --verdi-l: #2fa184;
+  --slate: #4574a3;
+  --amber: #d8a35c;
+  --verm: #e46a4f;
+  --paper: var(--bg);
+  --card: var(--panel);
+  --ink: var(--tx-hi);
+  --line: var(--hair-2);
+  --line-2: var(--hair);
+  --surface: var(--card);
+  --surface-soft: var(--panel-2);
+  --surface-strong: var(--sink);
+  --ink-soft: var(--tx-2);
+  --muted: var(--tx-3);
+  /* 表格行悬停必须不透明：固定列叠在横向滚动内容之上，半透明会透出底下的单元格。 */
+  --row-hover: color-mix(in srgb, var(--panel) 96%, var(--tx-hi));
+  --sans: "Noto Sans SC Variable", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui, sans-serif;
+  --serif: "Noto Serif SC Variable", "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
+  --mono: "IBM Plex Mono", monospace;
+  /* 字号档位：样式只取这组令牌（登录页 clamp 流式标题除外）；10px 是桌面最小可读字号，
+     760px 以下最小两档抬到 11px（见本文件 :where(small) 之后的媒体查询）。 */
+  --fs-2xs: 10px;
+  --fs-xs: 10.5px;
+  --fs-sm: 11px;
+  --fs-md: 12px;
+  --fs-base: 12.5px;
+  --fs-body: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --fs-2xl: 18px;
+  --fs-h1: 19px;
+  --fs-3xl: 20px;
+  --fs-display: 26px;
+  --fs-hero: 32px;
+  /* 文字级品牌绿：面板上作前景色的绿（亮/暗主题取值方向相反） */
+  --verdi-text: #71c4ad;
+  /* 文字级朱红 / 蓝：深色面板上的柔和变体，明亮主题回到 --verm / --slate 本色（均 AA） */
+  --verm-text: #ef9b89;
+  --slate-text: #6f9bcf;
+  --shadow-drawer: -16px 0 48px rgba(0, 0, 0, 0.4);
+  /* 表格横向滚动时固定列的投影：提示其下还有被遮住的列 */
+  --table-fixed-shadow: rgba(0, 0, 0, 0.6);
+  /* accent（verdi）底色上的文字色 */
+  --on-accent: #eafff7;
+  /* ECharts canvas 读不到 CSS 变量，图表经 lib/chartTheme.ts 读取这组 --chart-* 令牌 */
+  --chart-text: #8b978f; /* == --tx-2，图表 canvas 读字面量，禁用 var() 别名 */
+  --chart-axis: rgba(255, 255, 255, 0.14);
+  --chart-split: rgba(255, 255, 255, 0.07);
+  --chart-green: #2fa184;
+  --chart-green-area: rgba(47, 161, 132, 0.14);
+  --chart-blue: #6f9bcf;
+  --chart-amber: #d8a35c;
+  --chart-violet: #9b7ed9;
+  --chart-teal: #5b8c7b;
+  /* 「其他」维度序列色：非文本图形件，面板上对比度 ≥3:1（实测 3.6），刻意弱化于正文色阶 */
+  --chart-dim: #6d7a72;
+  --chart-tip-bg: #141d19;
+  --chart-tip-border: rgba(255, 255, 255, 0.08);
+  --chart-tip-text: #c9d2cc; /* == --tx，禁用 var() 别名 */
+  --el-color-primary: var(--verdi);
+  --el-color-success: var(--verdi);
+  --el-color-warning: var(--amber);
+  --el-color-danger: var(--verm);
+  --el-color-info: var(--tx-2);
+  --el-border-radius-base: 7px;
+  --el-bg-color-page: var(--paper);
+  --el-bg-color: var(--panel);
+  --el-bg-color-overlay: var(--panel-2);
+  --el-text-color-primary: var(--tx);
+  --el-text-color-regular: var(--tx-2);
+  --el-text-color-secondary: var(--tx-3);
+  --el-text-color-placeholder: var(--tx-3);
+  --el-border-color: var(--line-2);
+  --el-border-color-light: var(--line);
+  --el-border-color-lighter: var(--hair-2);
+  --el-fill-color: #1c2923;
+  --el-fill-color-light: var(--panel-2);
+  --el-fill-color-lighter: #17211d;
+  --el-fill-color-blank: var(--panel);
+  --el-disabled-bg-color: #2a3d37;
+  --el-disabled-text-color: var(--tx-3);
+  --el-disabled-border-color: #2a3d37;
+  --el-mask-color: rgba(6, 12, 9, 0.66);
+  /* 主色派生阶：Element 默认 light-N 基于蓝色主色，这里按品牌绿与面板色重混，亮/暗主题自适应 */
+  --el-color-primary-light-3: color-mix(in srgb, var(--verdi) 70%, var(--panel));
+  --el-color-primary-light-5: color-mix(in srgb, var(--verdi) 50%, var(--panel));
+  --el-color-primary-light-7: color-mix(in srgb, var(--verdi) 30%, var(--panel));
+  --el-color-primary-light-8: color-mix(in srgb, var(--verdi) 20%, var(--panel));
+  --el-color-primary-light-9: color-mix(in srgb, var(--verdi) 12%, var(--panel));
+  --el-color-primary-dark-2: color-mix(in srgb, var(--verdi) 88%, #000000);
+  /* 语义色派生阶同理：Element 默认值按浅色界面预混（light-9 近白），toast/标签/提示条
+     在深色面板上会成亮块；这里随面板色重混，亮色主题下自动回到浅底。 */
+  --el-color-error: var(--verm);
+  --el-color-success-light-3: var(--el-color-primary-light-3);
+  --el-color-success-light-5: var(--el-color-primary-light-5);
+  --el-color-success-light-7: var(--el-color-primary-light-7);
+  --el-color-success-light-8: var(--el-color-primary-light-8);
+  --el-color-success-light-9: var(--el-color-primary-light-9);
+  --el-color-success-dark-2: var(--el-color-primary-dark-2);
+  --el-color-warning-light-3: color-mix(in srgb, var(--amber) 70%, var(--panel));
+  --el-color-warning-light-5: color-mix(in srgb, var(--amber) 50%, var(--panel));
+  --el-color-warning-light-7: color-mix(in srgb, var(--amber) 30%, var(--panel));
+  --el-color-warning-light-8: color-mix(in srgb, var(--amber) 20%, var(--panel));
+  --el-color-warning-light-9: color-mix(in srgb, var(--amber) 12%, var(--panel));
+  --el-color-warning-dark-2: color-mix(in srgb, var(--amber) 80%, #000000);
+  --el-color-danger-light-3: color-mix(in srgb, var(--verm) 70%, var(--panel));
+  --el-color-danger-light-5: color-mix(in srgb, var(--verm) 50%, var(--panel));
+  --el-color-danger-light-7: color-mix(in srgb, var(--verm) 30%, var(--panel));
+  --el-color-danger-light-8: color-mix(in srgb, var(--verm) 20%, var(--panel));
+  --el-color-danger-light-9: color-mix(in srgb, var(--verm) 12%, var(--panel));
+  --el-color-danger-dark-2: color-mix(in srgb, var(--verm) 80%, #000000);
+  --el-color-error-light-3: var(--el-color-danger-light-3);
+  --el-color-error-light-5: var(--el-color-danger-light-5);
+  --el-color-error-light-7: var(--el-color-danger-light-7);
+  --el-color-error-light-8: var(--el-color-danger-light-8);
+  --el-color-error-light-9: var(--el-color-danger-light-9);
+  --el-color-error-dark-2: var(--el-color-danger-dark-2);
+  --el-color-info-light-3: color-mix(in srgb, var(--tx-2) 70%, var(--panel));
+  --el-color-info-light-5: color-mix(in srgb, var(--tx-2) 50%, var(--panel));
+  --el-color-info-light-7: color-mix(in srgb, var(--tx-2) 30%, var(--panel));
+  --el-color-info-light-8: color-mix(in srgb, var(--tx-2) 20%, var(--panel));
+  --el-color-info-light-9: color-mix(in srgb, var(--tx-2) 12%, var(--panel));
+  --el-color-info-dark-2: color-mix(in srgb, var(--tx-2) 80%, #000000);
+  color: var(--tx);
+  font-family: var(--sans);
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ===== 明亮模式令牌 =====
+   深色是默认主题（上方 :root）；html[data-theme="light"] 只覆写需要变化的令牌，
+   --el-* 桥接变量与 --paper/--card 等别名引用令牌本身，随主题自动跟随。 */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #edf1ed;
+  --panel: #ffffff;
+  --panel-2: #eef2ee;
+  --sink: #e2e8e2;
+  --hair: rgba(21, 32, 26, 0.1);
+  --hair-2: rgba(21, 32, 26, 0.05);
+  --tx: #2c3731;
+  --tx-2: #54625a;
+  /* 亮底弱化辅文：最浅面板（白）上 AA ≥4.5:1（实测 4.5–5.6），层级仍浅于 --tx-2 */
+  --tx-3: #5d6b62;
+  --tx-hi: #14211a;
+  /* 品牌绿 --verdi 不变；亮底上文字级色向深取：白底、--panel-2 与 9% 着色标签底均 AA ≥4.5:1 */
+  --verdi-l: #0c7d62;
+  --slate: #34618f;
+  --amber: #8a5f16;
+  --verm: #b0402a;
+  --verdi-text: #0b6a55;
+  --verm-text: var(--verm);
+  --slate-text: var(--slate);
+  --shadow-drawer: -16px 0 48px rgba(21, 32, 26, 0.18);
+  --table-fixed-shadow: rgba(21, 32, 26, 0.2);
+  --on-accent: #f2faf6;
+  --el-fill-color: #e6ece6;
+  --el-fill-color-lighter: #f1f5f1;
+  --el-disabled-bg-color: #dce3dc;
+  --el-disabled-border-color: #d2dad2;
+  --el-mask-color: rgba(28, 40, 33, 0.45);
+  --chart-text: #54625a; /* == --tx-2，图表 canvas 读字面量，禁用 var() 别名 */
+  --chart-axis: rgba(21, 32, 26, 0.22);
+  --chart-split: rgba(21, 32, 26, 0.08);
+  /* 亮底上大面积填充用中饱和色阶：与暗色图表同源，避免深压白底的突兀感 */
+  --chart-green: #35a38a;
+  --chart-green-area: rgba(53, 163, 138, 0.14);
+  --chart-blue: #6f9bcf;
+  --chart-amber: #d8a35c;
+  --chart-violet: #9b7ed9;
+  --chart-teal: #5b8c7b;
+  --chart-dim: #748a80; /* 亮底「其他」序列：白底 3.7 / 面板 3.3（图形件 ≥3:1），仍浅于 --tx-3 保持弱化层级 */
+  --chart-tip-bg: #ffffff;
+  --chart-tip-border: rgba(21, 32, 26, 0.12);
+  --chart-tip-text: #2c3731; /* == --tx，禁用 var() 别名 */
+}
+
+/* 手机与平板上 10 / 10.5px 的中文注记难以辨认：最小两档抬到 --fs-sm（11px）。 */
+@media (pointer: coarse), (max-width: 760px) {
+  :root {
+    --fs-2xs: var(--fs-sm);
+    --fs-xs: var(--fs-sm);
+  }
+}

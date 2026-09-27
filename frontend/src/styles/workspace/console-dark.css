@@ -169,45 +169,6 @@ main {
   font-size: var(--fs-sm);
 }
 
-.el-card,
-.el-dialog,
-.el-drawer,
-.el-message-box {
-  color: var(--tx);
-  background: var(--panel);
-  border-color: var(--hair);
-}
-
-.el-card {
-  border-radius: 11px;
-}
-.el-card__header {
-  border-bottom-color: var(--hair);
-}
-.el-table {
-  --el-table-bg-color: var(--panel);
-  --el-table-tr-bg-color: var(--panel);
-  --el-table-header-bg-color: var(--panel-2);
-  --el-table-row-hover-bg-color: var(--row-hover);
-  --el-table-border-color: var(--hair-2);
-  --el-table-text-color: var(--tx);
-  --el-table-header-text-color: var(--tx-3);
-  --el-table-fixed-right-column: inset -12px 0 10px -10px var(--table-fixed-shadow);
-  --el-table-fixed-left-column: inset 12px 0 10px -10px var(--table-fixed-shadow);
-  background: transparent;
-  font-size: var(--fs-base);
-}
-
-.el-table th.el-table__cell {
-  color: var(--tx-3);
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  letter-spacing: 0.08em;
-}
-.el-table td.el-table__cell {
-  border-bottom-color: var(--hair-2);
-}
-
 /* 基础层按卡片定制的浅色表头变量特异性高于上面的 .el-table，需在深色层同特异性收编。 */
 .sign-table.el-table,
 .sign-table {
@@ -218,65 +179,6 @@ main {
 .template-table {
   --el-table-header-bg-color: var(--panel-2);
   --el-table-row-hover-bg-color: var(--row-hover);
-}
-.el-input__wrapper,
-.el-select__wrapper,
-.el-textarea__inner,
-.el-input-number,
-.el-upload-dragger {
-  color: var(--tx);
-  background: var(--sink);
-  box-shadow: 0 0 0 1px var(--hair) inset;
-}
-.el-input__inner,
-.el-textarea__inner {
-  color: var(--tx);
-}
-.el-input__inner::placeholder,
-.el-textarea__inner::placeholder {
-  color: var(--tx-3);
-}
-.el-button {
-  border-radius: 7px;
-}
-.el-button--primary {
-  --el-button-bg-color: var(--verdi);
-  --el-button-border-color: var(--verdi);
-  --el-button-text-color: var(--on-accent);
-}
-.el-button--default {
-  --el-button-bg-color: #1b2621;
-  --el-button-border-color: var(--hair);
-  --el-button-text-color: var(--tx);
-}
-.el-date-editor.el-input .el-input__wrapper,
-.el-date-editor.el-range-editor {
-  color: var(--tx);
-  background: var(--sink);
-  box-shadow: 0 0 0 1px var(--hair) inset;
-}
-.el-button--primary.is-disabled,
-.el-button--primary.is-disabled:hover {
-  color: var(--tx-3);
-  background: var(--el-disabled-bg-color);
-  border-color: var(--el-disabled-border-color);
-}
-.el-segmented {
-  --el-segmented-bg-color: var(--sink);
-  --el-segmented-item-selected-bg-color: var(--panel);
-}
-.el-tag {
-  border-radius: 5px;
-}
-.el-overlay {
-  background: var(--el-mask-color);
-}
-.el-drawer {
-  box-shadow: var(--shadow-drawer);
-}
-.el-drawer__header {
-  color: var(--tx-hi);
-  border-bottom: 1px solid var(--hair);
 }
 .empty-state strong {
   color: var(--tx-2);

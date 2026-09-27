@@ -275,9 +275,6 @@
   }
 }
 
-.el-table .cell,
-.el-descriptions__content,
-.el-message-box__message,
 .empty-state p {
   overflow-wrap: anywhere;
   word-break: break-word;
@@ -286,39 +283,6 @@
 @media (max-width: 640px) {
   main {
     padding-inline: 14px;
-  }
-
-  .el-drawer {
-    width: 100% !important;
-    max-width: 100vw;
-  }
-
-  .el-dialog,
-  .el-message-box {
-    width: calc(100vw - 24px) !important;
-    max-width: none;
-    margin-inline: auto;
-  }
-
-  .el-pagination {
-    flex-wrap: wrap;
-    gap: 4px;
-    justify-content: flex-start;
-  }
-
-  .el-pagination__jump {
-    margin-left: 0 !important;
-  }
-
-  .el-checkbox {
-    height: auto;
-    align-items: flex-start;
-  }
-
-  .el-checkbox__label {
-    min-width: 0;
-    line-height: 1.5;
-    white-space: normal;
   }
 }
 

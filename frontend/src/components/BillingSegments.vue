@@ -24,34 +24,36 @@ defineProps<{
 </template>
 
 <style scoped>
-.seg-viz {
-  margin: 4px 0 8px;
-}
+@layer components {
+  .seg-viz {
+    margin: 4px 0 8px;
+  }
 
-.seg-cells {
-  display: flex;
-  gap: 4px;
-}
+  .seg-cells {
+    display: flex;
+    gap: 4px;
+  }
 
-.seg-cells i {
-  flex: 1;
-  height: 16px;
-  border-radius: 4px;
-  background: var(--verdi);
-}
+  .seg-cells i {
+    flex: 1;
+    height: 16px;
+    border-radius: 4px;
+    background: var(--verdi);
+  }
 
-.seg-cells i.part {
-  /* 斜纹第二色即 --verdi 35%（该令牌亮/暗同值）：引用令牌，避免硬编码。 */
-  background: repeating-linear-gradient(
-    135deg,
-    var(--verdi) 0 4px,
-    color-mix(in srgb, var(--verdi) 35%, transparent) 4px 8px
-  );
-}
+  .seg-cells i.part {
+    /* 斜纹第二色即 --verdi 35%（该令牌亮/暗同值）：引用令牌，避免硬编码。 */
+    background: repeating-linear-gradient(
+      135deg,
+      var(--verdi) 0 4px,
+      color-mix(in srgb, var(--verdi) 35%, transparent) 4px 8px
+    );
+  }
 
-.seg-cells i.ghost {
-  flex: 0.6;
-  background: var(--sink);
-  border: 1px dashed var(--hair);
+  .seg-cells i.ghost {
+    flex: 0.6;
+    background: var(--sink);
+    border: 1px dashed var(--hair);
+  }
 }
 </style>

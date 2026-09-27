@@ -1,0 +1,13 @@
+/* 入口组件（按钮、输入框、toast）的 Element 覆写（element 层，与 Element 同层比较特异性）；懒加载组件的覆写在 workspace/element*.css，同层。 */
+/* 主色描边按钮：品牌绿 --verdi 作文字在深色面板上仅 3:1，改走文字级绿。 */
+.el-button--primary.is-plain {
+  --el-button-text-color: var(--verdi-text);
+}
+
+.el-message--success {
+  --el-message-text-color: var(--verdi-text);
+}
+
+.el-message--error {
+  --el-message-text-color: var(--verm-text);
+}

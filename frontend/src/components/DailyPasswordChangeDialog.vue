@@ -142,21 +142,23 @@ async function submit(): Promise<void> {
 </template>
 
 <style scoped>
-.daily-password-form {
-  margin-top: 18px;
-}
+@layer components {
+  .daily-password-form {
+    margin-top: 18px;
+  }
 
-.daily-password-error {
-  margin: -4px 0 0;
-  color: var(--el-color-danger);
-  font-size: var(--fs-body);
-}
+  .daily-password-error {
+    margin: -4px 0 0;
+    color: var(--el-color-danger);
+    font-size: var(--fs-body);
+  }
 
-.daily-password-native-submit {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
+  .daily-password-native-submit {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
 }
 </style>

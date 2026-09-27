@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { readWorkspaceCss } from "./workspace-css"
+import { readThemeCss, readWorkspaceCss } from "./workspace-css"
 
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 
@@ -16,7 +16,7 @@ describe("深色主题一致性守卫（前端打磨回归）", () => {
     const chartTheme = source("src/lib/chartTheme.ts")
     expect(chartTheme).toContain("getChartTheme")
     expect(chartTheme).toContain('"--chart-green"')
-    const theme = source("src/styles/theme.css")
+    const theme = readThemeCss()
     // 深色（默认）与明亮两套图表令牌并存
     expect(theme).toContain("--chart-green: #2fa184")
     expect(theme).toMatch(/\[data-theme="light"\]\s*\{[^}]*--chart-green: #35a38a/s)
@@ -67,7 +67,7 @@ describe("深色主题一致性守卫（前端打磨回归）", () => {
   })
 
   it("登录会话随主题切换，成功与失败气泡在两套主题下都有配色", () => {
-    const theme = source("src/styles/theme.css")
+    const theme = readThemeCss()
     expect(source("src/views/LoginView.vue")).toContain("item.tone ? `is-${item.tone}` : ''")
     expect(theme).toMatch(/\.login-bubble\.is-ok\s*\{[^}]*color:\s*var\(--login-ok-ink\)/s)
     expect(theme).toMatch(/\.login-bubble\.is-err\s*\{[^}]*color:\s*var\(--login-err-ink\)/s)

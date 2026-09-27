@@ -1,0 +1,4 @@
+/* 级联层顺序单点（docs/ui-design.md「样式分层」）：先声明的层优先级最低，层与层之间不比特异性；
+   !important 反向（先声明的层最强）。本文件必须是入口第一个样式导入，未在此声明的层名会被
+   追加到最高优先级，契约测试禁止。 */
+@layer reset, element, tokens, shell, components, pages, theme-light, touch;

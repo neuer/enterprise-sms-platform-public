@@ -1,0 +1,6 @@
+/* 入口 Element 样式（element 层）：公开壳只需的最小组件集；其余组件样式随工作区懒加载。 */
+@import "element-plus/theme-chalk/base.css" layer(element);
+@import "element-plus/theme-chalk/el-button.css" layer(element);
+@import "element-plus/theme-chalk/el-icon.css" layer(element);
+@import "element-plus/theme-chalk/el-input.css" layer(element);
+@import "element-plus/theme-chalk/el-message.css" layer(element);

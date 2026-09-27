@@ -308,14 +308,16 @@ async function handlePasswordChanged(): Promise<void> {
 </template>
 
 <style scoped>
-.resource-recovery {
-  position: fixed;
-  inset: 12px 12px auto;
-  z-index: 10000;
-  padding: 16px;
-  color: var(--ink);
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+@layer components {
+  .resource-recovery {
+    position: fixed;
+    inset: 12px 12px auto;
+    z-index: 10000;
+    padding: 16px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
 }
 </style>

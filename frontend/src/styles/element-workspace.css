@@ -1,0 +1,26 @@
+/* 工作区 Element 组件样式（element 层）：随 element-workspace.ts 懒加载；进层后加载先后不影响覆写。 */
+@import "element-plus/theme-chalk/el-alert.css" layer(element);
+@import "element-plus/theme-chalk/el-card.css" layer(element);
+@import "element-plus/theme-chalk/el-checkbox.css" layer(element);
+@import "element-plus/theme-chalk/el-date-picker-panel.css" layer(element);
+@import "element-plus/theme-chalk/el-descriptions.css" layer(element);
+@import "element-plus/theme-chalk/el-dialog.css" layer(element);
+@import "element-plus/theme-chalk/el-drawer.css" layer(element);
+@import "element-plus/theme-chalk/el-form.css" layer(element);
+@import "element-plus/theme-chalk/el-input-number.css" layer(element);
+@import "element-plus/theme-chalk/el-loading.css" layer(element);
+@import "element-plus/theme-chalk/el-message-box.css" layer(element);
+@import "element-plus/theme-chalk/el-overlay.css" layer(element);
+@import "element-plus/theme-chalk/el-pagination.css" layer(element);
+@import "element-plus/theme-chalk/el-popover.css" layer(element);
+@import "element-plus/theme-chalk/el-popper.css" layer(element);
+@import "element-plus/theme-chalk/el-scrollbar.css" layer(element);
+@import "element-plus/theme-chalk/el-segmented.css" layer(element);
+@import "element-plus/theme-chalk/el-select.css" layer(element);
+@import "element-plus/theme-chalk/el-skeleton.css" layer(element);
+@import "element-plus/theme-chalk/el-switch.css" layer(element);
+@import "element-plus/theme-chalk/el-table.css" layer(element);
+@import "element-plus/theme-chalk/el-tabs.css" layer(element);
+@import "element-plus/theme-chalk/el-tag.css" layer(element);
+@import "element-plus/theme-chalk/el-time-picker.css" layer(element);
+@import "element-plus/theme-chalk/el-upload.css" layer(element);

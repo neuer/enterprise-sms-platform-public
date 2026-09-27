@@ -1,15 +1,4 @@
-/* 壳基础：reset / 布局骨架 / 侧栏导航 / 顶栏。 */
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  min-width: 320px;
-  min-height: 100vh;
-  background: var(--paper);
-}
-
+/* 壳基础：布局骨架 / 侧栏导航 / 顶栏；元素基线在 theme/reset.css（reset 层）。 */
 .logout-button,
 .toolbar-action {
   padding: 4px 0;
@@ -24,17 +13,6 @@ body {
 .logout-button:hover,
 .toolbar-action:hover {
   color: var(--verdi-text);
-}
-
-a {
-  color: inherit;
-  text-decoration: none;
-}
-
-a:focus-visible,
-button:focus-visible {
-  outline: 2px solid var(--verdi);
-  outline-offset: 2px;
 }
 
 .app-shell {

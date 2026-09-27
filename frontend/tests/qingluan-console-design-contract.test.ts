@@ -1,13 +1,13 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { readWorkspaceCss } from "./workspace-css"
+import { readThemeCss, readWorkspaceCss } from "./workspace-css"
 
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 
 describe("青鸾 Console 深色监视台设计契约", () => {
   it("使用交接包定义的深色令牌和控制台尺寸", () => {
-    const theme = source("src/styles/theme.css")
+    const theme = readThemeCss()
     const workspace = readWorkspaceCss()
 
     expect(theme).toContain("--bg: #101814")
@@ -26,7 +26,7 @@ describe("青鸾 Console 深色监视台设计契约", () => {
   it("保留自包含字体并声明暗色浏览器控件", () => {
     const main = source("src/main.ts")
     const html = source("index.html")
-    const theme = source("src/styles/theme.css")
+    const theme = readThemeCss()
     const workspace = readWorkspaceCss()
 
     // IBM Plex Mono 手写 @font-face 只取 latin woff2（theme.css 顶部），
@@ -113,7 +113,7 @@ describe("青鸾 Console 深色监视台设计契约", () => {
   })
 
   it("所有运动在用户要求减少动态时关闭", () => {
-    const theme = source("src/styles/theme.css")
+    const theme = readThemeCss()
     const workspace = readWorkspaceCss()
     const styles = `${theme}\n${workspace}`
 

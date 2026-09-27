@@ -1,0 +1,40 @@
+/* 元素基线（reset 层，最低优先级）：只放元素选择器与减少动效。
+   减少动效的 !important 在最底层反而最强，压过任何上层的 !important。 */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--paper);
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* 浏览器默认 font-size: smaller 会按父级缩成 9.17px / 10.83px 等档外尺寸；零优先级兜底，
+   各处显式声明仍然生效。 */
+:where(small) {
+  font-size: var(--fs-sm);
+}
+
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--verdi);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

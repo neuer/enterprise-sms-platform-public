@@ -1,0 +1,11 @@
+/* 触屏命中区（touch 层）：入口只管公开壳组件（按钮、输入框）；工作区组件的同一约束在 workspace/touch.css。 */
+@media (pointer: coarse), (max-width: 760px) {
+  .el-button,
+  .el-input__wrapper {
+    min-height: 44px;
+  }
+
+  .el-button {
+    min-width: 44px;
+  }
+}
