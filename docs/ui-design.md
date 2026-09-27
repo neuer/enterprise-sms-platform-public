@@ -35,6 +35,17 @@
 | **数据字** | IBM Plex Mono（@fontsource 本地 latin woff2，400/500/600）, monospace | 批次号、customId、手机号、金额/条数/百分比、时间戳；一律 `font-variant-numeric: tabular-nums` |
 | 品牌字 | Noto Serif SC Variable（固定品牌文案子集静态实例 400/600）, Noto Serif SC, Source Han Serif SC, Songti SC, serif | 仅三处：侧栏「青鸾」印章字与品牌名、登录会话名片「青鸾」（.login-intro-name）。其余禁用衬线 |
 
+字号只取 `theme.css` 的档位令牌，样式里不写 px 字号（登录页 `clamp()` 流式标题除外；ECharts canvas 读不到 CSS 变量，坐标轴沿用 10px）：
+
+| Token | 值 | 典型用途 |
+|---|---|---|
+| --fs-2xs | 10px | 最小可读字号：徽记、mono 元信息、导航分组标题 |
+| --fs-xs / --fs-sm | 10.5px / 11px | 表头、mono 辅文 / eyebrow、副文、筛选标签 |
+| --fs-md / --fs-base / --fs-body | 12px / 12.5px / 13px | 控件与次级正文 / 表格正文 / 全局基准 |
+| --fs-lg / --fs-xl / --fs-2xl | 14px / 16px / 18px | 强调正文 / 卡片标题、登录输入 / 区块标题与指标 |
+| --fs-h1 / --fs-3xl | 19px / 20px | 页面 H1 / 大号指标 |
+| --fs-display / --fs-hero | 26px / 32px | 抽屉 hero 数字 / 仪表盘余额等主数字 |
+
 ### 2.3 形状与层次
 
 圆角：el-card 统一覆写 11px / 自绘面板与结果区 12px（运行健康区 ChannelMonitor 卡同为此层级）/ 内嵌信息块与类别卡 10px / 控件 7px（--el-border-radius-base）/ 标签覆写 5px（console-dark.css 对 .el-tag 统一覆写，亮暗主题一致；Element 默认 4px 不再生效）。徽标/圆点另有 50%/999px 圆形用法。以 `hair` 细边框和 panel 层级代替大面积阴影；阴影只允许 Drawer、Popover、系统参数保存条（config-savebar 浮起）与移动端侧栏抽屉。间距以 4 基数为主，检索条/卡片内边距等沿既有档位（8/10/12/14/16），新增局部间距优先取既有档位而非新造数值。品牌印章允许 verdi 深浅渐变，普通按钮禁用装饰性渐变与大圆角胶囊。

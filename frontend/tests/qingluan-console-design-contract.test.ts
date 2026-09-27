@@ -84,7 +84,7 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     expect(monitor).toMatch(/grid-template-columns:\s*auto\s+1fr\s+1fr\s+190px\s+auto/)
     expect(monitor).toMatch(/\.monitor-track\s*\{[^}]*height:\s*6px/s)
     expect(monitor).toMatch(/\.token-grid i\s*\{[^}]*height:\s*14px/s)
-    expect(monitor).toMatch(/\.monitor-lane strong,[\s\S]*?\.monitor-qps strong[^}]*font-size:\s*16px/s)
+    expect(monitor).toMatch(/\.monitor-lane strong,[\s\S]*?\.monitor-qps strong[^}]*font-size:\s*var\(--fs-xl\)/s)
     expect(monitor).toMatch(/\.monitor-degraded[^}]*color:\s*var\(--tx-2\)/s)
   })
 

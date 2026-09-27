@@ -111,6 +111,31 @@ describe("跨页面一致性契约", () => {
     expect(workspace).not.toMatch(/\.config-savebar span\b/)
   })
 
+  it("字号只取 --fs-* 档位令牌，不再散写 px（登录页 clamp 流式标题除外）", () => {
+    const theme = read("src/styles/theme.css")
+    const scale = [...theme.matchAll(/--fs-[\w-]+:\s*([\d.]+)px;/g)].map((match) => Number(match[1]))
+    expect(scale).toEqual([10, 10.5, 11, 12, 12.5, 13, 14, 16, 18, 19, 20, 26, 32])
+    const styles = [
+      ...listFiles("src/styles", ".css").map((path) => ({ path, css: read(path) })),
+      ...[...listFiles("src/components", ".vue"), ...listFiles("src/views", ".vue")].map((path) => ({
+        path,
+        css: read(path).split("<style").slice(1).join("<style"),
+      })),
+    ]
+    const offenders = styles.flatMap(({ path, css }) =>
+      [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/font(?:-size)?:[^;{}]*?\b[\d.]+px[^;{}]*;/g)]
+        .map((match) => match[0])
+        .filter((declaration) => !declaration.includes("clamp("))
+        .map((declaration) => `${path}: ${declaration}`),
+    )
+    expect(offenders).toEqual([])
+  })
+
+  it("font 简写不混用 inherit（整条声明会失效），继承字体族改写为 font-family: inherit", () => {
+    const css = [readWorkspaceCss(), read("src/styles/theme.css")].join("\n")
+    expect(css).not.toMatch(/font:[^;]*\S\s+inherit;/)
+  })
+
   it("计数千分位只经 lib/format.ts 的 formatNumber，不随浏览器语言变化", () => {
     const offenders = [...listFiles("src", ".vue"), ...listFiles("src", ".ts")].filter(
       (path) => !path.endsWith("lib/format.ts") && /\.toLocaleString\(/.test(read(path)),

@@ -135,7 +135,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).not.toContain("周期起始")
     expect(view).not.toContain("长短信主要来自营销类模板")
     expect(workspace).toMatch(/\.report-trend-chart\s*\{[^}]*min-height:\s*170px/s)
-    expect(workspace).toMatch(/\.report-kpi strong\s*\{[^}]*font-size:\s*26px/s)
+    expect(workspace).toMatch(/\.report-kpi strong\s*\{[^}]*font-size:\s*var\(--fs-display\)/s)
     // 结果构成图例行不得复用裸类名 compose：批次页 .compose 横条组件（height:5px; overflow:hidden）会把它裁到只剩一条缝
     expect(view).not.toContain('class="kpi-kv compose"')
     expect(view).toContain('class="kpi-kv compose-shares"')
@@ -200,7 +200,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
       /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
     expect(workspace).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
-    expect(workspace).toMatch(/\.sign-heading p:not\(\.eyebrow\)[\s\S]*font-size:\s*11px/s)
+    expect(workspace).toMatch(/\.sign-heading p:not\(\.eyebrow\)[\s\S]*font-size:\s*var\(--fs-sm\)/s)
   })
 
   it("模板管理使用单行胶囊工具条和密表格", () => {
@@ -226,7 +226,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
       /\.reply-filter-bar,\s*\.blacklist-filter-bar,\s*\.sensitive-filter-bar,\s*\.user-filter-bar,\s*\.config-filter-bar,\s*\.ops-filter-bar,\s*\.callback-filter-bar,\s*\.audit-filter-bar,\s*\.message-filter-bar,\s*\.template-filter-bar,\s*\.sign-filter-bar,\s*\.apps-filter-bar\s*\{[^}]*display:\s*flex/s,
     )
     expect(workspace).toMatch(/\.filter-seg\s*\{[^}]*border-radius:\s*7px/s)
-    expect(workspace).toMatch(/\.template-heading p:not\(\.eyebrow\)[\s\S]*font-size:\s*11px/s)
+    expect(workspace).toMatch(/\.template-heading p:not\(\.eyebrow\)[\s\S]*font-size:\s*var\(--fs-sm\)/s)
   })
 
   it("应用管理使用单行筛选条和密钥状态账本表格", () => {
@@ -282,7 +282,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(
       /\.user-rules,\s*\.config-rules,\s*\.ops-rules,\s*\.callback-rules,\s*\.security-daily-rules,\s*\.audit-rules\s*\{[^}]*display:\s*flex/s,
     )
-    expect(workspace).toMatch(/\.user-heading p:not\(\.eyebrow\)[\s\S]*?font-size:\s*11px/s)
+    expect(workspace).toMatch(/\.user-heading p:not\(\.eyebrow\)[\s\S]*?font-size:\s*var\(--fs-sm\)/s)
   })
 
   it("系统参数使用单行检索条、常驻规则条与分组参数网格", () => {
@@ -391,7 +391,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(/\.security-daily-date\.el-date-editor\s*\{[^}]*width:\s*112px/s)
     expect(workspace).toMatch(/\.filter-seg--compact\s*\{[^}]*height:\s*30px/s)
     expect(workspace).toMatch(/\.security-daily-filter-go\s*\{[^}]*margin-left:\s*auto/s)
-    expect(workspace).toMatch(/\.security-daily-privacy\s*\{[^}]*font-size:\s*10\.5px/s)
+    expect(workspace).toMatch(/\.security-daily-privacy\s*\{[^}]*font-size:\s*var\(--fs-xs\)/s)
     // 检索条不再并入 reply-* 共享尺寸组；规则条仍与 user-rules 同组
     expect(workspace).not.toMatch(/\.callback-filter-bar,\s*\.security-daily-filter-bar/)
     expect(workspace).not.toMatch(/\.callback-seg,\s*\.security-daily-seg/)

@@ -27,18 +27,18 @@
 }
 .security-daily-state strong {
   color: var(--tx-hi);
-  font-size: 13.5px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 .security-daily-state p {
   margin: 0;
   color: var(--tx-2);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 .security-daily-state em {
   margin-left: auto;
   color: var(--tx-2);
-  font: 10.5px var(--mono);
+  font: var(--fs-xs) var(--mono);
   font-style: normal;
   white-space: nowrap;
 }
@@ -59,13 +59,13 @@
 }
 .security-daily-facts dt {
   color: var(--tx-3);
-  font-size: 9.5px;
+  font-size: var(--fs-2xs);
 }
 .security-daily-facts dd {
   margin: 2px 0 0;
   overflow: hidden;
   color: var(--tx);
-  font: 11px var(--mono);
+  font: var(--fs-sm) var(--mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -87,7 +87,7 @@
 }
 .security-daily-fld > span {
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 .security-daily-dates {
@@ -118,7 +118,7 @@
   margin: 8px 0 14px;
   padding: 0 14px 2px;
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 .section-heading {
   display: flex;
@@ -127,24 +127,24 @@
 }
 .section-heading strong {
   color: var(--tx-2);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 .security-section-label {
   color: var(--tx-2);
-  font: 10px var(--mono);
+  font: var(--fs-2xs) var(--mono);
   letter-spacing: 0.08em;
 }
 .form-tip {
   margin: 6px 0;
   color: var(--tx-2);
-  font-size: 12px;
+  font-size: var(--fs-md);
   line-height: 1.6;
 }
 .security-detail-period {
   margin: 6px 0 0;
   color: var(--tx-2);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 .security-detail-heading,
 .security-detail-heading > div,
@@ -162,7 +162,7 @@
 .security-detail-heading h2 {
   margin: 5px 0 0;
   color: var(--tx-hi);
-  font-size: 18px;
+  font-size: var(--fs-2xl);
 }
 .security-detail-tags {
   display: flex;
@@ -187,12 +187,12 @@
 }
 .security-delivery-facts dt {
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .security-delivery-facts dd {
   margin: 5px 0 0;
   color: var(--tx);
-  font-size: 12px;
+  font-size: var(--fs-md);
   overflow-wrap: anywhere;
 }
 .security-delivery-facts .security-error-cell {
@@ -207,7 +207,7 @@
 .security-section-empty {
   margin: 10px 0 0;
   color: var(--tx-3);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 .security-detail-summary {
   padding: 16px;
@@ -244,11 +244,11 @@
 .security-metric span,
 .security-metric small {
   color: var(--tx-2);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .security-metric strong {
   color: var(--tx-hi);
-  font: 600 18px var(--mono);
+  font: 600 var(--fs-2xl) var(--mono);
   overflow-wrap: anywhere;
 }
 .security-metric.good {
@@ -282,11 +282,11 @@
 }
 .security-evidence-list strong {
   color: var(--tx-hi);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 .security-evidence-list span {
   color: var(--tx);
-  font-size: 12px;
+  font-size: var(--fs-md);
   line-height: 1.55;
   overflow-wrap: anywhere;
 }
@@ -306,12 +306,12 @@
 }
 .security-action-list strong {
   color: var(--tx-hi);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 .security-action-list p {
   margin: 4px 0 0;
   color: var(--tx-2);
-  font-size: 12px;
+  font-size: var(--fs-md);
   line-height: 1.6;
 }
 .security-timeline {
@@ -328,7 +328,7 @@
   gap: 10px;
   padding: 10px 12px;
   background: var(--panel);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 .security-timeline time {
   color: var(--tx-2);
@@ -347,7 +347,7 @@
   margin: 0;
   overflow: auto;
   color: var(--tx);
-  font: 12px/1.65 var(--mono);
+  font: var(--fs-md)/1.65 var(--mono);
   white-space: pre-wrap;
   background: var(--panel-2);
   border: 1px solid var(--hair);

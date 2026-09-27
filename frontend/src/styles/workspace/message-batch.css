@@ -7,7 +7,7 @@
   display: block;
   margin-top: 5px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .category-mark {
@@ -42,7 +42,7 @@
   justify-content: space-between;
   margin-top: 16px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 
 /* 号码明细状态筛选宽度（原内联 style 收编；复合提权压过后加载的 .el-select 默认宽度） */
@@ -58,7 +58,7 @@
 }
 .batch-detail-head h3 {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 .batch-detail-pagination {
   min-height: 0;
@@ -78,7 +78,7 @@
   padding: 5px 11px;
   color: var(--tx-2);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
   background: var(--panel);
   border: 1px solid var(--hair);
@@ -109,7 +109,7 @@
 }
 .batch-fld > span {
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 /* 单行筛选条：批次号与时间允许收缩兜底——窗口变窄先挤输入框，仍不轻易折行 */
@@ -125,7 +125,7 @@
 }
 .batch-dirty {
   color: var(--amber);
-  font: 10px var(--mono);
+  font: var(--fs-2xs) var(--mono);
   white-space: nowrap;
 }
 /* 批次列表与审计日志共享「更多筛选」气泡触发器与内容格：低频字段折叠 + 激活角标计数，按页复制即缺陷。 */
@@ -134,7 +134,7 @@
   padding: 3px 10px;
   color: var(--tx);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
   background: var(--sink);
   border: 1px solid var(--hair);
@@ -151,7 +151,7 @@
   margin-left: 4px;
   padding: 0 4px;
   color: var(--verdi-l);
-  font: 600 9.5px/1.6 var(--mono);
+  font: 600 var(--fs-2xs)/1.6 var(--mono);
   background: color-mix(in srgb, var(--verdi) 20%, transparent);
   border-radius: 4px;
 }
@@ -163,7 +163,7 @@
 .batch-more label,
 .audit-more label {
   color: var(--tx-3);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 .batch-more label:not(:first-child),
 .audit-more label:not(:first-child) {
@@ -194,7 +194,7 @@
   border-radius: 4px;
   background: transparent;
   color: var(--tx-2);
-  font: 9.5px/1.6 var(--mono);
+  font: var(--fs-2xs)/1.6 var(--mono);
   white-space: nowrap;
 }
 .cell-flag--sched {
@@ -230,26 +230,26 @@
   margin: 4px 0 0;
   overflow: hidden;
   color: var(--tx-2);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .cell-src {
   overflow: hidden;
   color: var(--tx);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .cell-src-dept {
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 .cell-deferred {
   display: block;
   margin-top: 2px;
   color: var(--amber);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .batch-ledger {
@@ -267,7 +267,7 @@
 }
 .batch-ledger .batch-code {
   color: var(--tx-hi);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
   letter-spacing: -0.02em;
 }
@@ -280,7 +280,7 @@
   padding: 8px 4px 2px;
   margin-top: 2px;
   color: var(--tx-3);
-  font: 10.5px/1.5 var(--mono);
+  font: var(--fs-xs)/1.5 var(--mono);
   border-top: 1px solid var(--hair-2);
 }
 
@@ -325,7 +325,7 @@
   justify-content: space-between;
   gap: 8px;
   color: var(--tx-3);
-  font: 10.5px var(--mono);
+  font: var(--fs-xs) var(--mono);
 }
 .compose-nums b {
   color: var(--tx);
@@ -343,7 +343,7 @@
   gap: 12px;
   align-items: center;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .compose-legend span {
   display: inline-flex;
@@ -363,7 +363,7 @@
   flex-wrap: wrap;
   gap: 4px 8px;
   align-items: center;
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .batch-drawer-head {
@@ -373,11 +373,11 @@
 }
 .batch-drawer-head code {
   color: var(--tx-hi);
-  font: 12px var(--mono);
+  font: var(--fs-md) var(--mono);
 }
 .batch-drawer-head small {
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 .batch-actions {
   display: flex;
@@ -390,7 +390,7 @@
   flex-basis: 100%;
   margin: 2px 0 0;
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.6;
 }
 .batch-hero {
@@ -410,12 +410,12 @@
 .batch-hero-nums span {
   display: block;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .batch-hero-nums b {
   display: block;
   color: var(--tx-hi);
-  font: 600 18px var(--mono);
+  font: 600 var(--fs-2xl) var(--mono);
   font-variant-numeric: tabular-nums;
 }
 .batch-hero-nums b.is-failed {
@@ -423,14 +423,14 @@
 }
 .batch-hero-nums small {
   color: var(--tx-3);
-  font-size: 9.5px;
+  font-size: var(--fs-2xs);
 }
 .batch-hero-quotas {
   margin: 0;
   padding-top: 9px;
   border-top: 1px solid var(--hair-2);
   color: var(--tx-3);
-  font: 10.5px var(--mono);
+  font: var(--fs-xs) var(--mono);
 }
 .batch-hero-quotas b {
   color: var(--tx);
@@ -444,18 +444,18 @@
 }
 .batch-facts dt {
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 .batch-facts dd {
   margin: 1px 0 0;
   color: var(--tx);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 .batch-note {
   margin: 0 0 12px;
   padding: 8px 12px;
   color: #93b6e0;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   background: color-mix(in srgb, var(--chart-blue) 8%, transparent);
   border: 1px solid color-mix(in srgb, var(--chart-blue) 35%, transparent);
   border-radius: 8px;
@@ -478,20 +478,20 @@
 .batch-content-card p {
   margin: 0;
   color: var(--tx-hi);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.7;
   overflow-wrap: anywhere;
 }
 .batch-content-card small {
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .batch-trace {
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--verdi-l);
-  font: 11px var(--mono);
+  font: var(--fs-sm) var(--mono);
   cursor: pointer;
 }
 .batch-trace:hover {
@@ -505,7 +505,7 @@
 
 .message-fld > span {
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 
@@ -525,7 +525,7 @@
 
 .message-phone-error {
   color: var(--verm);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .message-badge {
@@ -546,14 +546,14 @@
 }
 .message-badge-num small {
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   letter-spacing: 0.14em;
 }
 .message-badge-num .phone-mask,
 .message-badge-num .revealed-phone {
   color: var(--tx-hi);
   font-family: var(--mono);
-  font-size: 17px;
+  font-size: var(--fs-2xl);
   letter-spacing: 0.06em;
   font-variant-numeric: tabular-nums;
 }
@@ -565,7 +565,7 @@
   border: 1px solid var(--hair);
   border-radius: 5px;
   color: var(--tx-2);
-  font: 10.5px/1.9 var(--mono);
+  font: var(--fs-xs)/1.9 var(--mono);
   background: rgba(255, 255, 255, 0.05);
 }
 
@@ -577,7 +577,7 @@
 
 .message-badge-source {
   color: var(--tx-3);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 
 .message-badge-sep {
@@ -592,12 +592,12 @@
 }
 .message-badge-stat span {
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .message-badge-stat strong {
   color: var(--tx-hi);
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-variant-numeric: tabular-nums;
   font-weight: 500;
 }
@@ -610,7 +610,7 @@
 }
 .message-badge-reveal small {
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .message-content {
@@ -619,7 +619,7 @@
 }
 .message-time {
   color: var(--tx);
-  font: 11.5px var(--mono);
+  font: var(--fs-md) var(--mono);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -641,7 +641,7 @@
 .report-desc {
   margin: 5px 0 0;
   color: var(--verm);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   line-height: 1.4;
   word-break: break-all;
 }
@@ -653,7 +653,7 @@
   margin: 12px auto 0;
   padding: 8px 14px;
   color: var(--amber);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
   background: color-mix(in srgb, var(--amber) 7%, transparent);
   border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
   border-radius: 8px;
@@ -678,7 +678,7 @@
   margin: 0 0 8px;
   padding-bottom: 8px;
   color: var(--tx-hi);
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -691,7 +691,7 @@
 }
 .timeline-day-meta {
   color: var(--tx-3);
-  font: 10px/1 var(--mono);
+  font: var(--fs-2xs)/1 var(--mono);
   letter-spacing: 0.08em;
 }
 
@@ -767,17 +767,17 @@
 .timeline-event header time {
   margin-left: auto;
   color: var(--tx-3);
-  font: 10.5px/1 var(--mono);
+  font: var(--fs-xs)/1 var(--mono);
 }
 .timeline-event p {
   margin: 3px 0 0;
   color: var(--tx);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 .timeline-event footer {
   margin-top: 6px;
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 .timeline-event footer span {
   margin-left: auto;
@@ -795,7 +795,7 @@
   }
   .query-mobile-list time {
     color: var(--muted);
-    font: 10px/1 var(--mono);
+    font: var(--fs-2xs)/1 var(--mono);
   }
   .query-pagination {
     align-items: flex-start;

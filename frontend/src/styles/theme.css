@@ -78,6 +78,20 @@
   --sans: "Noto Sans SC Variable", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui, sans-serif;
   --serif: "Noto Serif SC Variable", "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
   --mono: "IBM Plex Mono", monospace;
+  /* 字号档位：样式只取这组令牌（登录页 clamp 流式标题除外）；10px 是最小可读字号。 */
+  --fs-2xs: 10px;
+  --fs-xs: 10.5px;
+  --fs-sm: 11px;
+  --fs-md: 12px;
+  --fs-base: 12.5px;
+  --fs-body: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --fs-2xl: 18px;
+  --fs-h1: 19px;
+  --fs-3xl: 20px;
+  --fs-display: 26px;
+  --fs-hero: 32px;
   /* 文字级品牌绿：面板上作前景色的绿（亮/暗主题取值方向相反） */
   --verdi-text: #71c4ad;
   /* accent（verdi）底色上的文字色 */
@@ -163,7 +177,7 @@
   --el-color-info-dark-2: color-mix(in srgb, var(--tx-2) 80%, #000000);
   color: var(--tx);
   font-family: var(--sans);
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1.6;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -404,7 +418,7 @@ button:focus-visible {
 .login-say span {
   padding: 8px 14px;
   color: var(--login-ink-2);
-  font-size: 13px;
+  font-size: var(--fs-body);
   white-space: nowrap;
   background: var(--login-bubble);
   border-radius: 16px 16px 16px 4px;
@@ -422,7 +436,7 @@ button:focus-visible {
   left: 7vw;
   margin: 0;
   color: var(--login-ink-3);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 
 .login-screen[data-mood="think"] .login-bird {
@@ -593,13 +607,13 @@ button:focus-visible {
 
 .login-who b {
   display: block;
-  font-size: 15px;
+  font-size: var(--fs-xl);
 }
 
 .login-who small {
   display: block;
   color: var(--login-ink-3);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 
 .login-who small.is-typing {
@@ -685,7 +699,7 @@ button:focus-visible {
 
 .login-intro-name {
   font-family: var(--serif);
-  font-size: 18px;
+  font-size: var(--fs-2xl);
   font-weight: 600;
   letter-spacing: 0.12em;
 }
@@ -693,7 +707,7 @@ button:focus-visible {
 .login-intro small,
 .login-divider {
   color: var(--login-ink-3);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 
 .login-divider {
@@ -707,7 +721,7 @@ button:focus-visible {
   margin: 2px 0 6px;
   padding: 5px 12px;
   color: var(--login-ink-2);
-  font-size: 12px;
+  font-size: var(--fs-md);
   text-align: center;
   background: var(--login-pill);
   border-radius: 999px;
@@ -756,7 +770,7 @@ button:focus-visible {
   padding: 9px 14px;
   color: var(--login-ink);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--fs-lg);
   line-height: 1.5;
   text-align: left;
   overflow-wrap: anywhere;
@@ -845,7 +859,7 @@ button:focus-visible {
   width: 20px;
   height: 20px;
   color: #ffffff;
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 700;
   line-height: 20px;
   text-align: center;
@@ -857,7 +871,7 @@ button:focus-visible {
   align-self: flex-end;
   margin: -4px 4px 2px 0;
   color: var(--login-ink-3);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .login-receipt.is-failed {
@@ -877,7 +891,7 @@ button:focus-visible {
   gap: 8px;
   align-items: center;
   color: var(--login-ink-2);
-  font-size: 13px;
+  font-size: var(--fs-body);
   transition: color 160ms;
 }
 
@@ -922,7 +936,7 @@ button:focus-visible {
   display: block;
   margin-top: 6px;
   color: var(--login-ink-3);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 
 .login-chips {
@@ -940,7 +954,7 @@ button:focus-visible {
   padding: 8px 14px;
   color: var(--login-chip);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 600;
   line-height: 1;
   cursor: pointer;
@@ -976,7 +990,7 @@ button:focus-visible {
 }
 
 .login-chip small {
-  font-size: 11px;
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 
@@ -1025,7 +1039,7 @@ button:focus-visible {
   margin: 0;
   padding: 0 22px 8px;
   color: var(--login-warn-ink);
-  font-size: 12px;
+  font-size: var(--fs-md);
   background: var(--login-bar);
 }
 
@@ -1060,7 +1074,7 @@ button:focus-visible {
   height: 100%;
   color: var(--login-ink);
   font: inherit;
-  font-size: 15px;
+  font-size: var(--fs-xl);
   background: transparent;
   border: 0;
   outline: 0;

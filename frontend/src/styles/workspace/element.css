@@ -33,13 +33,13 @@
 .el-date-editor .el-range-separator {
   color: var(--tx);
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-md);
   font-variant-numeric: tabular-nums;
 }
 
 .el-date-editor .el-range-input,
 .el-date-editor .el-range-separator {
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 /* Element 默认两枚输入各占 39%、分隔符吃剩余；改为输入均分剩余宽度，分隔符只占自身。 */
@@ -120,7 +120,7 @@
 .qingluan-date-popper .el-date-picker__header-label,
 .qingluan-date-popper .el-date-range-picker__header-label {
   color: var(--tx);
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 650;
   letter-spacing: 0.02em;
 }
@@ -157,7 +157,7 @@
 .qingluan-date-popper .el-time-spinner {
   color: var(--tx-2);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   font-variant-numeric: tabular-nums;
 }
 
@@ -166,7 +166,7 @@
   padding: 0;
   color: var(--tx-3);
   font-family: inherit;
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.08em;
   border-bottom: 1px solid var(--line);

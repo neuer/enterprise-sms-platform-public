@@ -189,7 +189,7 @@ describe("全站筛选布局契约", () => {
     expect(css).toMatch(/\.security-daily-fld > span\s*\{[^}]*white-space:\s*nowrap/s)
     expect(css).toMatch(/\.security-daily-date\.el-date-editor\s*\{[^}]*width:\s*112px/s)
     expect(css).toMatch(/\.filter-seg--compact\s*\{[^}]*height:\s*30px/s)
-    expect(css).toMatch(/\.filter-seg--compact button\s*\{[^}]*padding:\s*0 8px[^}]*font-size:\s*10\.5px/s)
+    expect(css).toMatch(/\.filter-seg--compact button\s*\{[^}]*padding:\s*0 8px[^}]*font-size:\s*var\(--fs-xs\)/s)
     expect(css).toMatch(/\.security-daily-filter-go\s*\{[^}]*margin-left:\s*auto/s)
     // 检索条不再并入 reply-* 共享尺寸组；规则条仍与 user-rules 同组
     expect(css).not.toMatch(/\.callback-filter-bar,\s*\.security-daily-filter-bar/)

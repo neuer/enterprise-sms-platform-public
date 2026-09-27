@@ -898,7 +898,7 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   background: var(--surface);
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
 
