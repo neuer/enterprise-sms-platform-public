@@ -50,14 +50,11 @@ describe("青鸾 Console 深色监视台设计契约", () => {
     const app = source("src/App.vue")
     const routes = source("src/router/index.ts")
     const login = source("src/views/LoginView.vue")
-    const passwordChange = source("src/views/PasswordChangeView.vue")
 
     expect(app).toContain('class="brand-mark" aria-hidden="true">鸾')
-    // 登录门（登录 + 首次改密）使用 VI 品牌：白鹭短信 icon + 平台名
-    expect(login).toContain('class="login-mark"')
+    // 登录会话（含首次改密）使用 VI 品牌：完整白鹭剪影 + 平台名
+    expect(login).toContain("<LoginEgret />")
     expect(login).toContain("企业短信管理平台")
-    expect(passwordChange).toContain('class="login-mark"')
-    expect(passwordChange).toContain("企业短信管理平台")
     expect(app).toContain("SMS PLATFORM · XTC")
     // 侧栏导航由路由元数据派生（单一事实源），菜单语义断言落在路由表上
     expect(app).toContain("deriveNavigation")

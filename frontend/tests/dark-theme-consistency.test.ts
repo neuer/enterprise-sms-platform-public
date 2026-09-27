@@ -45,8 +45,8 @@ describe("深色主题一致性守卫（前端打磨回归）", () => {
   })
 
   it("工作区页面不自带 main 包装：骨架只由 App.vue 提供", () => {
-    // 登录与首次改密渲染在 public-shell 下，允许自带 <main class="login-screen">。
-    const publicViews = new Set(["LoginView.vue", "PasswordChangeView.vue"])
+    // 登录会话渲染在 public-shell 下，允许自带 <main class="login-screen">。
+    const publicViews = new Set(["LoginView.vue"])
     for (const file of readdirSync(resolve(process.cwd(), "src/views"), { recursive: true }).filter(
       (file): file is string => typeof file === "string" && file.endsWith(".vue"),
     )) {
@@ -66,9 +66,15 @@ describe("深色主题一致性守卫（前端打磨回归）", () => {
     }
   })
 
-  it("登录页成功提示具备样式定义", () => {
-    expect(source("src/views/LoginView.vue")).toContain('class="login-success"')
-    expect(source("src/styles/theme.css")).toMatch(/\.login-success\s*\{[^}]*color:/s)
+  it("登录会话随主题切换，成功与失败气泡在两套主题下都有配色", () => {
+    const theme = source("src/styles/theme.css")
+    expect(source("src/views/LoginView.vue")).toContain("item.tone ? `is-${item.tone}` : ''")
+    expect(theme).toMatch(/\.login-bubble\.is-ok\s*\{[^}]*color:\s*var\(--login-ok-ink\)/s)
+    expect(theme).toMatch(/\.login-bubble\.is-err\s*\{[^}]*color:\s*var\(--login-err-ink\)/s)
+    for (const token of ["--login-ok-ink", "--login-err-ink", "--egret-line"]) {
+      expect(theme).toMatch(new RegExp(`\\.public-shell\\s*\\{[^}]*${token}:`, "s"))
+      expect(theme).toMatch(new RegExp(`\\[data-theme="light"\\] \\.public-shell\\s*\\{[^}]*${token}:`, "s"))
+    }
   })
 
   it("路由存在未知路径回退", () => {

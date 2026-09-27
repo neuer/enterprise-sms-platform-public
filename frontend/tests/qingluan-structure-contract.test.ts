@@ -73,17 +73,26 @@ describe("登录页结构契约", () => {
   const login = source("src/views/LoginView.vue")
   const theme = source("src/styles/theme.css")
 
-  it("登录卡宽 min(100%, 400px)", () => {
-    expect(theme).toMatch(/\.login-card\s*\{[^}]*width:\s*min\(100%,\s*400px\)/s)
+  it("桌面左白鹭右 480px 会话窗口，860px 以下收起白鹭并由对话名片承载", () => {
+    expect(theme).toMatch(/\.login-screen\s*\{[^}]*grid-template-columns:\s*1fr 480px 8vw/s)
+    expect(theme).toMatch(/@media \(max-width: 860px\)\s*\{[^@]*\.login-hero\s*\{\s*display:\s*none/s)
+    expect(login).toContain('class="login-intro"')
+    expect(login).toContain('role="log"')
   })
 
-  it("认证源并排切换（radiogroup）存在，目录固定画出 local / AD", () => {
-    expect(login).toContain('class="provider-switch"')
-    expect(login).toContain('role="radiogroup"')
-    expect(login).toContain('aria-label="认证源"')
-    expect(login).toContain("provider-${provider.code}")
+  it("认证源以快捷回复显式选择，目录固定画出 local / AD，并记住上次显式选择", () => {
+    expect(login).toContain("`provider-${chip.action.code}`")
     expect(login).toContain('"本地账号"')
     expect(login).toContain('"AD 账号"')
+    expect(login).toContain("rememberLoginProvider(code)")
+    expect(login).toContain("recallLoginProvider()")
+  })
+
+  it("账号与密码同处一个表单且停放而非移除，密码气泡固定圆点不暴露长度", () => {
+    expect(login).toContain('autocomplete="username"')
+    expect(login).toMatch(/'new-password' : 'current-password'/)
+    expect(theme).toMatch(/\.login-field input\.is-parked\s*\{[^}]*opacity:\s*0/s)
+    expect(login).toContain('const SECRET_DOTS = "••••••••"')
   })
 })
 

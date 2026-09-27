@@ -11,7 +11,6 @@ import appRouter, { deriveNavigation } from "./router"
 import { useApprovalBadgeStore } from "./stores/approvalBadge"
 import { applyIncomingSessionSignal, redirectToLoginIfCleared, runAppLogout } from "./api/sessionNavigation"
 import { useSessionStore } from "./stores/session"
-import egretMarkUrl from "./assets/brand/login-egret-watermark.png"
 
 // 日常改密弹窗只在认证壳内点开：异步加载，登录首屏不背 ElDialog/ElForm 的组件代码。
 const DailyPasswordChangeDialog = defineAsyncComponent(() => import("./components/DailyPasswordChangeDialog.vue"))
@@ -200,72 +199,6 @@ async function handlePasswordChanged(): Promise<void> {
       <el-button @click="reloadResources">重新加载页面</el-button>
     </div>
     <div v-if="publicRoute" class="public-shell">
-      <!-- 身份门背景：光带（桌面纵贯曲线 / 移动端上半弧光）+ 白鹭水印 -->
-      <svg class="login-flow login-flow-desktop" viewBox="0 0 1440 900" preserveAspectRatio="none" aria-hidden="true">
-        <defs>
-          <linearGradient id="loginFlow" x1="0" y1="1" x2="1" y2="0">
-            <stop offset="0" stop-color="#E0CA76" stop-opacity="0" />
-            <stop offset=".2" stop-color="#E0CA76" stop-opacity=".9" />
-            <stop offset=".6" stop-color="#E0CA76" stop-opacity=".75" />
-            <stop offset="1" stop-color="#E0CA76" stop-opacity="0" />
-          </linearGradient>
-          <filter id="loginFlowBlurA" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="32" />
-          </filter>
-          <filter id="loginFlowBlurB" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur stdDeviation="12" />
-          </filter>
-        </defs>
-        <path
-          d="M -30 845 C 170 795, 280 700, 420 620 C 560 540, 720 455, 920 355 C 1075 270, 1210 155, 1470 45"
-          fill="none"
-          stroke="url(#loginFlow)"
-          stroke-width="210"
-          opacity=".1"
-          filter="url(#loginFlowBlurA)"
-        />
-        <path
-          d="M -30 845 C 170 795, 280 700, 420 620 C 560 540, 720 455, 920 355 C 1075 270, 1210 155, 1470 45"
-          fill="none"
-          stroke="url(#loginFlow)"
-          stroke-width="72"
-          opacity=".12"
-          filter="url(#loginFlowBlurB)"
-        />
-      </svg>
-      <svg class="login-flow login-flow-mobile" viewBox="0 0 390 844" preserveAspectRatio="none" aria-hidden="true">
-        <defs>
-          <linearGradient id="loginFlowM" x1="0" y1="1" x2="1" y2="0">
-            <stop offset="0" stop-color="#E0CA76" stop-opacity="0" />
-            <stop offset=".3" stop-color="#E0CA76" stop-opacity=".9" />
-            <stop offset=".7" stop-color="#E0CA76" stop-opacity=".65" />
-            <stop offset="1" stop-color="#E0CA76" stop-opacity="0" />
-          </linearGradient>
-          <filter id="loginFlowBlurC" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="26" />
-          </filter>
-          <filter id="loginFlowBlurD" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="10" />
-          </filter>
-        </defs>
-        <path
-          d="M -20 430 C 80 400, 150 340, 210 270 C 270 200, 320 120, 420 60"
-          fill="none"
-          stroke="url(#loginFlowM)"
-          stroke-width="140"
-          opacity=".1"
-          filter="url(#loginFlowBlurC)"
-        />
-        <path
-          d="M -20 430 C 80 400, 150 340, 210 270 C 270 200, 320 120, 420 60"
-          fill="none"
-          stroke="url(#loginFlowM)"
-          stroke-width="48"
-          opacity=".12"
-          filter="url(#loginFlowBlurD)"
-        />
-      </svg>
-      <img class="login-wm" :src="egretMarkUrl" alt="" aria-hidden="true" />
       <router-view />
     </div>
     <div v-else :class="['app-shell', { 'navigation-open': navigationOpen }]">
