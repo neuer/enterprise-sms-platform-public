@@ -72,7 +72,7 @@
 }
 
 /* 筛选条时间范围（批次/号码搜索/上行回复/运维/审计）同构：统一 YYYY-MM-DD HH:mm 显示，
-   272px 恰好容纳 11px mono 的完整起止值；字号与字体由 theme.css 的日期选择器单点承载。 */
+   272px 恰好容纳 11px mono 的完整起止值；字号与字体由 workspace/element.css 的日期选择器单点承载。 */
 .batch-filter-dates,
 .message-filter-dates,
 .reply-filter-dates,

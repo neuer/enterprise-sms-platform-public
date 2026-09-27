@@ -38,24 +38,38 @@ describe("Element 懒加载样式级联契约", () => {
     )
   })
 
-  it("深色重混的 tag / alert / message / 分页 / 描边主按钮覆写带 :root 前缀，压过后加载的组件样式", () => {
-    const selectors = cssRules(themeCss).flatMap((rule) => rule.selectors)
-    const unprefixed = selectors.filter((selector) =>
-      /^\.el-(?:tag|alert|message)\b|^\.el-pagination$|^\.el-button--primary\.is-plain|^\.el-date-editor \./.test(
-        selector,
+  it("懒加载组件覆写只在排在 el-*.css 之后的 workspace/element.css，theme.css 不再以 :root 提权", () => {
+    const themeSelectors = cssRules(themeCss).flatMap((rule) => rule.selectors)
+    expect(themeSelectors.filter((selector) => selector.startsWith(":root "))).toEqual([])
+    expect(
+      themeSelectors.filter((selector) =>
+        /\.el-(?:tag|alert|pagination|date-editor|range-|picker)|qingluan-date-popper/.test(selector),
       ),
+    ).toEqual([])
+    // 入口组件（按钮、toast）的样式先于 theme.css 加载，覆写留在入口
+    expect(themeSelectors).toContain(".el-message--success")
+    expect(themeSelectors).toContain(".el-button--primary.is-plain")
+
+    const workspaceEntry = read("src/styles/workspace.css")
+    expect(workspaceEntry.indexOf("./workspace/element.css")).toBeLessThan(
+      workspaceEntry.indexOf("./workspace/base.css"),
     )
-    expect(unprefixed).toEqual([])
+    const elementSelectors = cssRules(read("src/styles/workspace/element.css")).flatMap((rule) => rule.selectors)
+    expect(elementSelectors.filter((selector) => selector.startsWith(":root"))).toEqual([])
     for (const required of [
-      ":root .el-tag.el-tag--success",
-      ":root .el-tag.el-tag--danger",
-      ":root .el-tag.el-tag--dark.el-tag--danger",
-      ":root .el-alert--error",
-      ":root .el-message--success",
-      ":root .el-pagination",
+      ".el-tag.el-tag--success",
+      ".el-tag.el-tag--danger",
+      ".el-tag.el-tag--dark.el-tag--danger",
+      ".el-alert--error",
+      ".el-pagination",
+      ".el-date-editor .el-range-input",
     ]) {
-      expect(selectors).toContain(required)
+      expect(elementSelectors).toContain(required)
     }
+    // 实心危险标签的压暗底白字在明亮模式下同样生效：明亮重混对 el-tag--dark 让出
+    expect(read("src/styles/workspace/overrides-light.css")).toContain(
+      '[data-theme="light"] .el-tag.el-tag--danger:not(.el-tag--dark)',
+    )
   })
 
   it("语义色派生阶按面板色重混，toast 与标签不再使用 Element 预混的近白底", () => {

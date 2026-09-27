@@ -23,7 +23,7 @@
 | --verm | #E46A4F | danger、失败 |
 | --chart-blue | #6F9BCF | 图表 notice 系列：slate 色相族的图表亮变体（ECharts canvas 读不到 CSS 变量，经 lib/chartTheme.ts 读取 --chart-* 令牌） |
 
-上表为默认深色令牌。主题由 `frontend/src/lib/theme.ts` 设置根元素 `data-theme`；`frontend/src/styles/theme.css` 提供深色默认值和明亮覆写，`color-scheme` 随主题切换。页面、浮层、输入、禁用态、遮罩和文字层级复用当前主题 token，避免硬编码背景绕过主题。工作区规则与加载顺序见第 8 节。
+上表为默认深色令牌。主题由 `frontend/src/lib/theme.ts` 设置根元素 `data-theme`；`frontend/src/styles/theme.css` 提供深色默认值和明亮令牌覆写，`color-scheme` 随主题切换。页面、浮层、输入、禁用态、遮罩和文字层级复用当前主题 token，避免硬编码背景绕过主题。工作区规则与加载顺序见第 8 节。
 
 **类别三色是硬约定**：verify=verdi、notice=slate、market=amber，出现在类别标签左竖条、统计分段条、图表系列色，任何页面不得混用其他色相表达类别。图表系列按色相族执行：verify 用 --chart-green（深色值同 --verdi-l）、market 用 --chart-amber（深色值同 --amber），notice 允许使用其亮变体 --chart-blue（深色 #6F9BCF）。
 
@@ -100,11 +100,11 @@
 - 手机号展示统一 `<PhoneMask>` 组件（默认 mask）；授权解密统一 `<PhoneReveal>` 组件（「授权查看」入口，成功提示记审计，明文只存组件易失状态）
 - 状态用 `el-tag` 色彩语义：queued/sending=info、completed/delivered=success、failed/rejected=danger、pending_approval/scheduled=warning、balance_blocked/uncertain=danger 深色
 - 图表 ECharts；时间显示本地 +08:00 `YYYY-MM-DD HH:mm:ss`；全站中文文案；空态/加载用 Element 内置组件，不引第三方 UI 库
-- 前端共享单点：时间格式化 `src/lib/time.ts`；数值展示 `src/lib/format.ts`（formatPercent / formatNumber 固定 zh-CN 千分位，禁用 toLocaleString）；手机号正则/掩码 `src/lib/phone.ts`；类别/角色/状态/厂商审核文案与默认分页 `src/lib/labels.ts`；请求基建 `src/api/client.ts`（`auth.ts` 为 pre-auth 例外）；剪贴板 `src/lib/clipboard.ts`；错误文案提取 `src/lib/error.ts`（errorText，ESLint 拦截内联回潮）；确认对话框 `src/lib/confirm.ts`（confirmAuditedAction 审计两段式 / confirmAction 纯文本，内部吞 cancel/close 返回布尔）；Blob 下载 `src/lib/download.ts`（saveBlob）；导出任务流 `src/composables/useExportTask.ts`（创建→轮询→step-up 下载）；ECharts 装配 `src/composables/useChart.ts`；统一轮询 `src/composables/usePolling.ts`；批量录入大文本防抖解析 `src/composables/useDebouncedEntries.ts`；壳样式只在 `workspace.css` 聚合入口（由 `element-workspace.ts` 随首个非公开路由懒加载引入，视图不重复 import，且保持在该模块 el-* 样式之前），规则本体按主题分片在 `src/styles/workspace/`（@import 顺序即级联顺序，`overrides-light.css` 明亮覆写层必须末位；新增壳样式进对应分片，禁止另起新文件或页面级拷贝），`theme.css` 只留 token、登录页与 Element 覆写。新增同关注点逻辑一律进单点，禁止页面级拷贝
+- 前端共享单点：时间格式化 `src/lib/time.ts`；数值展示 `src/lib/format.ts`（formatPercent / formatNumber 固定 zh-CN 千分位，禁用 toLocaleString）；手机号正则/掩码 `src/lib/phone.ts`；类别/角色/状态/厂商审核文案与默认分页 `src/lib/labels.ts`；请求基建 `src/api/client.ts`（`auth.ts` 为 pre-auth 例外）；剪贴板 `src/lib/clipboard.ts`；错误文案提取 `src/lib/error.ts`（errorText，ESLint 拦截内联回潮）；确认对话框 `src/lib/confirm.ts`（confirmAuditedAction 审计两段式 / confirmAction 纯文本，内部吞 cancel/close 返回布尔）；Blob 下载 `src/lib/download.ts`（saveBlob）；导出任务流 `src/composables/useExportTask.ts`（创建→轮询→step-up 下载）；ECharts 装配 `src/composables/useChart.ts`；统一轮询 `src/composables/usePolling.ts`；批量录入大文本防抖解析 `src/composables/useDebouncedEntries.ts`；壳样式只在 `workspace.css` 聚合入口（由 `element-workspace.ts` 随首个非公开路由懒加载引入，视图不重复 import，且保持在该模块 el-* 样式之后），规则本体按主题分片在 `src/styles/workspace/`（@import 顺序即级联顺序，`overrides-light.css` 明亮覆写层必须末位；新增壳样式进对应分片，禁止另起新文件或页面级拷贝），`theme.css` 只留 token、登录页与入口组件的 Element 覆写。新增同关注点逻辑一律进单点，禁止页面级拷贝
 - 模板/签名由 `src/composables/useMobileLayout.ts` 统一读取 760px 断点，仅挂载桌面表格或移动卡片之一；筛选、详情和未提交编辑状态保留在页面层。
 - 同类只读查询通过 `src/composables/useLatestRead.ts` 在替换和卸载时取消旧请求，API 包装贯穿 AbortSignal，继续保留代际 token 防乱序；取消不显示错误提示，真实错误仍可见，写操作不接入该取消通道。
 - 顶栏余额仅管理员在非仪表盘页按 60s 读取 `/reports/balance` 轻量投影；仪表盘路由复用其 10s 快照广播，页面隐藏暂停。未知或失败时显示暂不可用，其他角色不发余额请求。
-- Element 级联：`element-workspace.ts` 先引入工作区 el-*.css、最后引入 `workspace.css`，workspace 分片的同特异性覆写因此胜出；入口 `theme.css` 排在这些懒加载样式之前，对工作区组件的覆写必须提权。`theme.css` 中日期选择器、tag/alert/message/pagination/plain 主按钮的重混规则加 `:root` 前缀，明亮版用 `[data-theme="light"]` 同特异性后置覆盖。文字绿色一律用 `--verdi-text`（`--verdi` 仅作填充色，暗色底上不达 AA）。`tests/element-cascade-contract.test.ts` 为门禁
+- Element 级联：`element-workspace.ts` 先引入工作区 el-*.css、最后引入 `workspace.css`，workspace 分片的同特异性覆写因此胜出；入口 `theme.css` 排在这些懒加载样式之前，只放入口组件（按钮、输入框、toast）的覆写；懒加载组件（日期选择器、tag/alert、分页）的重混规则在 `workspace/element.css`（聚合入口首位），不加 `:root` 提权，明亮版在 `overrides-light.css`，其中危险色重混以 `:not(.el-tag--dark)` 让出实心危险标签。文字绿色一律用 `--verdi-text`（`--verdi` 仅作填充色，暗色底上不达 AA）。`tests/element-cascade-contract.test.ts` 为门禁
 - 组件样式归口：共享组件样式优先收进 workspace 分片（CategoryTag/StatusTag/EmptyState 在 `shared.css`）；`BillingSegments`/`ChannelMonitor`/`DailyPasswordChangeDialog` 使用组件内 scoped 块属允许；`VendorTestConsole` 因 el-dialog teleport 到 body，使用带 vendor- 前缀的非 scoped 块，为列明例外
 - API 契约类型：`src/api/types.gen.ts` 由 `npm run gen:api-types` 从根 `openapi.yaml` 生成（openapi-typescript），CI frontend job 对生成产物做 `git diff --exit-code` 零漂移门禁，禁止手改；`src/api/` 手写 interface 逐步迁移为生成类型引用（范例见 `webMessages.ts` 的 SendResult）
 

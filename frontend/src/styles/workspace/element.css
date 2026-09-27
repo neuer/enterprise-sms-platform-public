@@ -1,0 +1,452 @@
+/* 懒加载 Element 组件（日期选择器、标签、提示条、分页）的主题覆写：随 workspace.css 排在全部
+   el-*.css 之后，同特异性即可压过组件默认值，无需 :root 提权。入口组件（按钮、输入框、toast）
+   先于 theme.css 加载，其覆写留在 theme.css。 */
+/* 日期选择器：沿用平台的台账密度，以单色层级替代 Element Plus 默认蓝色。 */
+.el-date-editor.el-input .el-input__wrapper,
+.el-date-editor.el-range-editor {
+  color: var(--tx);
+  background: var(--card);
+  border-radius: var(--el-border-radius-base);
+  box-shadow: 0 0 0 1px var(--line-2) inset;
+  transition:
+    box-shadow 120ms ease,
+    background-color 120ms ease;
+}
+
+.el-date-editor.el-input .el-input__wrapper:hover,
+.el-date-editor.el-range-editor:hover {
+  background: color-mix(in srgb, var(--card) 94%, var(--verdi));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--verdi) 58%, var(--line-2)) inset;
+}
+
+.el-date-editor.el-input .el-input__wrapper.is-focus,
+.el-date-editor.el-range-editor.is-active {
+  background: var(--card);
+  box-shadow:
+    0 0 0 1px var(--verdi) inset,
+    0 0 0 3px color-mix(in srgb, var(--verdi) 12%, transparent);
+}
+
+/* 区间输入统一 11px mono，筛选条区间宽度见 workspace/shared.css 的 --filter-range-width。 */
+.el-date-editor .el-input__inner,
+.el-date-editor .el-range-input,
+.el-date-editor .el-range-separator {
+  color: var(--tx);
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.el-date-editor .el-range-input,
+.el-date-editor .el-range-separator {
+  font-size: 11px;
+}
+
+/* Element 默认两枚输入各占 39%、分隔符吃剩余；改为输入均分剩余宽度，分隔符只占自身。 */
+.el-date-editor .el-range-input {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+}
+
+.el-date-editor .el-range-separator {
+  flex: none;
+  padding: 0 4px;
+}
+
+.el-date-editor .el-input__inner::placeholder,
+.el-date-editor .el-range-input::placeholder {
+  color: var(--tx-3);
+  font-family: inherit;
+}
+
+.el-date-editor .el-input__icon,
+.el-date-editor .el-range__icon,
+.el-date-editor .el-range__close-icon {
+  color: var(--tx-3);
+}
+
+.el-date-editor:hover .el-input__icon,
+.el-date-editor.is-active .el-range__icon {
+  color: var(--verdi-text);
+}
+
+.el-picker__popper.qingluan-date-popper {
+  --el-color-primary: var(--verdi);
+  --el-color-primary-light-3: color-mix(in srgb, var(--verdi) 70%, var(--card));
+  --el-color-primary-light-5: color-mix(in srgb, var(--verdi) 48%, var(--card));
+  --el-color-primary-light-7: color-mix(in srgb, var(--verdi) 28%, var(--card));
+  --el-color-primary-light-8: color-mix(in srgb, var(--verdi) 18%, var(--card));
+  --el-color-primary-light-9: color-mix(in srgb, var(--verdi) 10%, var(--card));
+  --el-bg-color-overlay: var(--card);
+  --el-fill-color-light: var(--surface-soft);
+  --el-text-color-primary: var(--tx);
+  --el-text-color-regular: var(--tx-2);
+  --el-text-color-secondary: var(--tx-3);
+  --el-border-color-light: var(--line);
+  padding: 0;
+  overflow: hidden;
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  box-shadow:
+    0 18px 44px rgb(18 38 30 / 14%),
+    0 3px 10px rgb(18 38 30 / 8%);
+}
+
+.el-picker__popper.qingluan-date-popper .el-popper__arrow::before {
+  background: var(--card);
+  border-color: var(--line-2);
+}
+
+.qingluan-date-popper .el-picker-panel,
+.qingluan-date-popper .el-date-picker,
+.qingluan-date-popper .el-date-range-picker,
+.qingluan-date-popper .el-time-panel {
+  color: var(--tx);
+  background: var(--card);
+  border: 0;
+  box-shadow: none;
+}
+
+.qingluan-date-popper .el-date-picker__header,
+.qingluan-date-popper .el-date-range-picker__header {
+  min-height: 52px;
+  margin: 0;
+  padding: 14px 16px 11px;
+  border-bottom: 1px solid var(--line);
+}
+
+.qingluan-date-popper .el-date-picker__header-label,
+.qingluan-date-popper .el-date-range-picker__header-label {
+  color: var(--tx);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.qingluan-date-popper .el-picker-panel__icon-btn {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  margin-top: -2px;
+  place-items: center;
+  color: var(--tx-3);
+  border-radius: 5px;
+}
+
+.qingluan-date-popper .el-picker-panel__icon-btn:hover,
+.qingluan-date-popper .el-date-picker__header-label:hover,
+.qingluan-date-popper .el-date-range-picker__header-label:hover {
+  color: var(--verdi-text);
+  background: var(--surface-soft);
+}
+
+.qingluan-date-popper .el-picker-panel__content {
+  margin: 0;
+  padding: 10px 14px 14px;
+}
+
+.qingluan-date-popper .el-date-range-picker__content.is-left {
+  border-right-color: var(--line);
+}
+
+.qingluan-date-popper .el-date-table,
+.qingluan-date-popper .el-month-table,
+.qingluan-date-popper .el-year-table,
+.qingluan-date-popper .el-time-spinner {
+  color: var(--tx-2);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.qingluan-date-popper .el-date-table th {
+  height: 34px;
+  padding: 0;
+  color: var(--tx-3);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  border-bottom: 1px solid var(--line);
+}
+
+.qingluan-date-popper .el-date-table td {
+  height: 38px;
+  padding: 2px 0;
+}
+
+.qingluan-date-popper .el-date-table-cell {
+  height: 34px;
+  padding: 3px 0;
+}
+
+.qingluan-date-popper .el-date-table-cell__text {
+  width: 28px;
+  height: 28px;
+  color: var(--tx-2);
+  line-height: 28px;
+  border-radius: 5px;
+}
+
+.qingluan-date-popper .el-date-table td.available:hover .el-date-table-cell__text,
+.qingluan-date-popper .el-month-table td:not(.disabled) .cell:hover,
+.qingluan-date-popper .el-year-table td:not(.disabled) .cell:hover {
+  color: var(--verdi-text);
+  background: var(--surface-soft);
+}
+
+.qingluan-date-popper .el-date-table td.today .el-date-table-cell__text {
+  color: var(--verdi-text);
+  font-weight: 650;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--verdi) 58%, transparent) inset;
+}
+
+.qingluan-date-popper .el-date-table td.in-range .el-date-table-cell {
+  background-color: color-mix(in srgb, var(--verdi) 10%, var(--card));
+}
+
+.qingluan-date-popper .el-date-table td.start-date .el-date-table-cell {
+  border-radius: 6px 0 0 6px;
+}
+
+.qingluan-date-popper .el-date-table td.end-date .el-date-table-cell {
+  border-radius: 0 6px 6px 0;
+}
+
+.qingluan-date-popper .el-date-table td.current:not(.disabled) .el-date-table-cell__text,
+.qingluan-date-popper .el-date-table td.start-date .el-date-table-cell__text,
+.qingluan-date-popper .el-date-table td.end-date .el-date-table-cell__text {
+  color: var(--on-accent);
+  font-weight: 650;
+  background: var(--verdi);
+  box-shadow: none;
+}
+
+.qingluan-date-popper .el-date-table td.disabled .el-date-table-cell {
+  background: transparent;
+}
+
+.qingluan-date-popper .el-date-table td.disabled .el-date-table-cell__text,
+.qingluan-date-popper .el-date-table td.prev-month .el-date-table-cell__text,
+.qingluan-date-popper .el-date-table td.next-month .el-date-table-cell__text {
+  color: color-mix(in srgb, var(--tx-3) 46%, var(--card));
+}
+
+.qingluan-date-popper .el-month-table td .cell,
+.qingluan-date-popper .el-year-table td .cell {
+  color: var(--tx-2);
+  border-radius: 5px;
+}
+
+.qingluan-date-popper .el-month-table td.current:not(.disabled) .cell,
+.qingluan-date-popper .el-year-table td.current:not(.disabled) .cell {
+  color: var(--verdi-text);
+  font-weight: 650;
+  background: var(--surface-soft);
+}
+
+.qingluan-date-popper .el-date-picker__time-header,
+.qingluan-date-popper .el-date-range-picker__time-header {
+  padding: 10px 12px;
+  background: var(--surface-soft);
+  border-bottom: 1px solid var(--line);
+}
+
+.qingluan-date-popper .el-date-picker__time-wrap .el-input__wrapper,
+.qingluan-date-popper .el-date-range-picker__time-picker-wrap .el-input__wrapper {
+  background: var(--card);
+  border-radius: 5px;
+  box-shadow: 0 0 0 1px var(--line-2) inset;
+}
+
+.qingluan-date-popper .el-time-panel__content::before,
+.qingluan-date-popper .el-time-panel__content::after {
+  border-color: var(--line);
+}
+
+.qingluan-date-popper .el-time-spinner__item:hover:not(.is-disabled):not(.is-active) {
+  color: var(--verdi-text);
+  background: var(--surface-soft);
+}
+
+.qingluan-date-popper .el-time-spinner__item.is-active:not(.is-disabled) {
+  color: var(--verdi-text);
+  font-weight: 650;
+}
+
+.qingluan-date-popper .el-picker-panel__footer,
+.qingluan-date-popper .el-time-panel__footer {
+  padding: 10px 12px;
+  background: var(--surface-soft);
+  border-top: 1px solid var(--line);
+}
+
+.qingluan-date-popper .el-picker-panel__link-btn,
+.qingluan-date-popper .el-time-panel__btn.confirm {
+  color: var(--verdi-text);
+  font-weight: 650;
+}
+
+.qingluan-date-popper .el-picker-panel__shortcut {
+  color: var(--tx-2);
+}
+
+.qingluan-date-popper .el-picker-panel__shortcut:hover {
+  color: var(--verdi-text);
+  background: var(--surface-soft);
+}
+
+@media (max-width: 640px) {
+  .qingluan-date-popper.el-picker__popper {
+    position: fixed !important;
+    inset: 8px 8px auto !important;
+    width: auto !important;
+    height: auto !important;
+    max-width: none;
+    max-height: calc(100vh - 16px);
+    margin: 0 !important;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-color: var(--line-2) transparent;
+    scrollbar-width: thin;
+    transform: none !important;
+  }
+
+  .qingluan-date-popper.el-picker__popper > .el-popper__arrow {
+    display: none;
+  }
+
+  .qingluan-date-popper .el-date-range-picker {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .qingluan-date-popper .el-picker-panel__body {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .qingluan-date-popper .el-date-range-picker__content {
+    display: block;
+    float: none;
+    width: 100%;
+  }
+
+  .qingluan-date-popper .el-date-range-picker__time-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 12px minmax(0, 1fr);
+    gap: 6px;
+    align-items: center;
+    width: 100%;
+    padding: 10px;
+  }
+
+  .qingluan-date-popper .el-date-range-picker__editors-wrap {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .qingluan-date-popper .el-date-range-picker__time-picker-wrap {
+    display: block;
+    width: 100%;
+    padding: 0;
+  }
+
+  .qingluan-date-popper .el-date-range-picker__editor {
+    width: 100%;
+  }
+
+  .qingluan-date-popper .el-picker-panel__footer {
+    position: sticky;
+    z-index: 2;
+    bottom: 0;
+  }
+
+  .qingluan-date-popper .el-date-range-picker__content.is-left {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .qingluan-date-popper .el-picker-panel__content {
+    padding-inline: 10px;
+  }
+
+  .qingluan-date-popper .el-date-table td {
+    height: 40px;
+  }
+}
+
+/* el-tag / el-alert 默认浅色效果按暗色面板重混：Element Plus 的 light-9 底色接近纯白，
+   在深色界面里是刺眼的亮块且前景被冲淡；这里改成深底浅色文字，保留原有色调语义。
+   明亮模式的亮底深字版本在 overrides-light.css。 */
+.el-tag.el-tag--primary,
+.el-tag.el-tag--success {
+  --el-tag-bg-color: color-mix(in srgb, var(--verdi) 18%, var(--panel));
+  --el-tag-border-color: color-mix(in srgb, var(--verdi) 42%, var(--panel));
+  --el-tag-text-color: var(--verdi-text);
+}
+
+.el-tag.el-tag--warning {
+  --el-tag-bg-color: color-mix(in srgb, var(--amber) 16%, var(--panel));
+  --el-tag-border-color: color-mix(in srgb, var(--amber) 40%, var(--panel));
+  --el-tag-text-color: var(--amber);
+}
+
+.el-tag.el-tag--danger,
+.el-tag.el-tag--error {
+  --el-tag-bg-color: color-mix(in srgb, var(--verm) 16%, var(--panel));
+  --el-tag-border-color: color-mix(in srgb, var(--verm) 40%, var(--panel));
+  --el-tag-text-color: color-mix(in srgb, var(--verm) 68%, #ffffff);
+}
+
+.el-tag.el-tag--info {
+  --el-tag-bg-color: color-mix(in srgb, var(--tx-2) 8%, var(--panel));
+  --el-tag-border-color: color-mix(in srgb, var(--tx-2) 26%, var(--panel));
+  --el-tag-text-color: var(--tx-2);
+}
+
+/* 实心危险标签（严重告警 / 死信 / 需人工介入）：不参与上方浅底重混；白字压在 --verm 上仅 3.2:1，
+   底色压暗到 dark-2 达 AA。选择器多一个类压过上方重混；明亮版的危险色重混以 :not(.el-tag--dark) 让出。 */
+.el-tag.el-tag--dark.el-tag--danger {
+  --el-tag-bg-color: var(--el-color-danger-dark-2);
+  --el-tag-border-color: var(--el-color-danger-dark-2);
+  --el-tag-text-color: #ffffff;
+}
+
+.el-alert--primary,
+.el-alert--success {
+  --el-alert-bg-color: color-mix(in srgb, var(--verdi) 12%, var(--panel));
+}
+
+.el-alert--warning {
+  --el-alert-bg-color: color-mix(in srgb, var(--amber) 12%, var(--panel));
+}
+
+.el-alert--error {
+  --el-alert-bg-color: color-mix(in srgb, var(--verm) 12%, var(--panel));
+}
+
+.el-alert--info {
+  --el-alert-bg-color: var(--panel-2);
+}
+
+.el-alert--primary.is-light,
+.el-alert--primary.is-light .el-alert__description,
+.el-alert--success.is-light,
+.el-alert--success.is-light .el-alert__description {
+  color: var(--verdi-text);
+}
+
+.el-alert--error.is-light,
+.el-alert--error.is-light .el-alert__description {
+  color: color-mix(in srgb, var(--verm) 68%, #ffffff);
+}
+
+/* 分页当前页与悬停：品牌绿 --verdi 作文字在深色面板上仅 3:1，改走文字级绿。 */
+.el-pagination {
+  --el-pagination-hover-color: var(--verdi-text);
+}

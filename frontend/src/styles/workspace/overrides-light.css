@@ -144,3 +144,60 @@
 [data-theme="light"] .cat-tag.market {
   background: color-mix(in srgb, var(--amber) 7%, transparent);
 }
+
+/* el-tag / el-alert：element.css 的深色重混按暗色面板调优，亮色模式恢复亮底深字版本。
+   实心危险标签（el-tag--dark）不参与重混，保留 element.css 的压暗底白字。 */
+[data-theme="light"] .el-tag.el-tag--primary,
+[data-theme="light"] .el-tag.el-tag--success {
+  --el-tag-bg-color: color-mix(in srgb, var(--verdi) 9%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--verdi) 32%, #ffffff);
+  --el-tag-text-color: var(--verdi-text);
+}
+
+[data-theme="light"] .el-tag.el-tag--warning {
+  --el-tag-bg-color: color-mix(in srgb, var(--amber) 11%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--amber) 34%, #ffffff);
+  --el-tag-text-color: var(--amber);
+}
+
+[data-theme="light"] .el-tag.el-tag--danger:not(.el-tag--dark),
+[data-theme="light"] .el-tag.el-tag--error {
+  --el-tag-bg-color: color-mix(in srgb, var(--verm) 9%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--verm) 32%, #ffffff);
+  --el-tag-text-color: var(--verm);
+}
+
+[data-theme="light"] .el-tag.el-tag--info {
+  --el-tag-bg-color: color-mix(in srgb, var(--tx-2) 8%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--tx-2) 22%, #ffffff);
+  --el-tag-text-color: var(--tx-2);
+}
+
+[data-theme="light"] .el-alert--primary,
+[data-theme="light"] .el-alert--success {
+  --el-alert-bg-color: color-mix(in srgb, var(--verdi) 8%, #ffffff);
+}
+
+[data-theme="light"] .el-alert--warning {
+  --el-alert-bg-color: color-mix(in srgb, var(--amber) 9%, #ffffff);
+}
+
+[data-theme="light"] .el-alert--error {
+  --el-alert-bg-color: color-mix(in srgb, var(--verm) 8%, #ffffff);
+}
+
+[data-theme="light"] .el-alert--info {
+  --el-alert-bg-color: var(--panel-2);
+}
+
+[data-theme="light"] .el-alert--primary.is-light,
+[data-theme="light"] .el-alert--primary.is-light .el-alert__description,
+[data-theme="light"] .el-alert--success.is-light,
+[data-theme="light"] .el-alert--success.is-light .el-alert__description {
+  color: var(--verdi-text);
+}
+
+[data-theme="light"] .el-alert--error.is-light,
+[data-theme="light"] .el-alert--error.is-light .el-alert__description {
+  color: var(--verm);
+}

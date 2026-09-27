@@ -47,7 +47,7 @@ describe("跨页面一致性契约", () => {
     expect(offenders).toEqual([])
   })
 
-  it("筛选条时间范围共用同一宽度，字号由 theme.css 日期选择器单点承载", () => {
+  it("筛选条时间范围共用同一宽度，字号由 workspace/element.css 日期选择器单点承载", () => {
     const workspace = readWorkspaceCss().replace(/\/\*[\s\S]*?\*\//g, "")
     expect(workspace).toMatch(
       /\.batch-filter-dates,\s*\.message-filter-dates,\s*\.reply-filter-dates,\s*\.ops-dates,\s*\.audit-dates\s*\{\s*--el-date-editor-datetimerange-width:\s*272px;/,
