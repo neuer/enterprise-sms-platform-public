@@ -22,7 +22,7 @@ import EmptyState from "../components/EmptyState.vue"
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { useExportTask } from "../composables/useExportTask"
 import { CHART_DIM_VARS } from "../lib/chartTheme"
-import { formatPercent } from "../lib/format"
+import { formatNumber, formatPercent } from "../lib/format"
 import { CATEGORY_OPTIONS, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { daysAgoDateKey, shanghaiDateKey } from "../lib/time"
 import { useSessionStore } from "../stores/session"
@@ -295,7 +295,7 @@ onMounted(() => void load())
     </div>
     <div class="report-fld">
       <span>类别</span>
-      <el-select v-model="category" class="report-pill-select">
+      <el-select v-model="category" class="report-pill-select" aria-label="类别">
         <el-option label="全部类别" value="all" />
         <el-option v-for="option in CATEGORY_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
       </el-select>
@@ -329,7 +329,7 @@ onMounted(() => void load())
       <span class="export-id"
         >导出明细 <code>#{{ exportTask.id.slice(0, 8) }}</code></span
       >
-      <strong v-if="exportTask.row_count !== null">{{ exportTask.row_count.toLocaleString() }} 行</strong>
+      <strong v-if="exportTask.row_count !== null">{{ formatNumber(exportTask.row_count) }} 行</strong>
       <span class="export-mode">{{ exportTask.decrypted ? "明文导出 · 已记审计" : "掩码导出 · 不含明文手机号" }}</span>
       <small v-if="exportTask.expires_at">保留至 {{ exportTask.expires_at.slice(0, 10) }}</small>
       <el-button v-if="exportTask.download_url" link type="primary" class="export-download" @click="download"
@@ -345,16 +345,16 @@ onMounted(() => void load())
     <section class="report-kpis" aria-label="区间关键指标">
       <el-card shadow="never" class="report-kpi">
         <span>消息数</span>
-        <strong>{{ result.summary.total.toLocaleString() }}</strong>
+        <strong>{{ formatNumber(result.summary.total) }}</strong>
         <small>{{ result.start }} — {{ result.end }}{{ rangeDays === null ? "" : ` · ${rangeDays} 天` }}</small>
         <p class="kpi-foot">
-          {{ averageLabel }} {{ periodAverage === null ? "—" : periodAverage.toLocaleString() }} · 峰值
-          {{ periodPeak === null ? "—" : `${periodPeak[0].slice(5)}（${periodPeak[1].toLocaleString()}）` }}
+          {{ averageLabel }} {{ periodAverage === null ? "—" : formatNumber(periodAverage) }} · 峰值
+          {{ periodPeak === null ? "—" : `${periodPeak[0].slice(5)}（${formatNumber(periodPeak[1])}）` }}
         </p>
       </el-card>
       <el-card shadow="never" class="report-kpi">
         <span>计费条</span>
-        <strong>{{ result.summary.total_segments.toLocaleString() }}</strong>
+        <strong>{{ formatNumber(result.summary.total_segments) }}</strong>
         <small>最终内容计费口径 · 与厂商账单对账</small>
         <p class="kpi-foot">条 / 消息 {{ segmentsPerMessage }}</p>
       </el-card>
@@ -363,30 +363,30 @@ onMounted(() => void load())
         <strong>{{ formatRate(result.summary.success_rate) }}</strong>
         <small>送达 /（送达 + 失败），未知不入分母</small>
         <div class="kpi-kv"
-          ><span>送达</span><b>{{ result.summary.delivered.toLocaleString() }}</b></div
+          ><span>送达</span><b>{{ formatNumber(result.summary.delivered) }}</b></div
         >
         <div class="kpi-kv"
-          ><span>失败</span><b class="neg">{{ result.summary.failed.toLocaleString() }}</b></div
+          ><span>失败</span><b class="neg">{{ formatNumber(result.summary.failed) }}</b></div
         >
       </el-card>
       <el-card shadow="never" class="report-kpi">
         <span>结果构成</span>
-        <strong>{{ result.summary.unknown.toLocaleString() }}<small class="strong-note">未知 · 待终态</small></strong>
+        <strong>{{ formatNumber(result.summary.unknown) }}<small class="strong-note">未知 · 待终态</small></strong>
         <div class="compose-strip" aria-label="结果构成">
           <i
             class="d"
             :style="{ width: composeWidth(result.summary.delivered) }"
-            :title="`送达 ${result.summary.delivered.toLocaleString()}`"
+            :title="`送达 ${formatNumber(result.summary.delivered)}`"
           ></i
           ><i
             class="f"
             :style="{ width: composeWidth(result.summary.failed) }"
-            :title="`失败 ${result.summary.failed.toLocaleString()}`"
+            :title="`失败 ${formatNumber(result.summary.failed)}`"
           ></i
           ><i
             class="u"
             :style="{ width: composeWidth(result.summary.unknown) }"
-            :title="`未知 ${result.summary.unknown.toLocaleString()}`"
+            :title="`未知 ${formatNumber(result.summary.unknown)}`"
           ></i>
         </div>
         <div class="kpi-kv compose-shares"
@@ -448,11 +448,11 @@ onMounted(() => void load())
               ><i :style="{ width: rankWidth(dim[result.metric]), background: dimColor(index) }"></i
             ></div>
             <span class="rank-num">
-              <b>{{ dim[result.metric].toLocaleString() }}</b>
+              <b>{{ formatNumber(dim[result.metric]) }}</b>
               <small>
                 {{ shareOf(dim[result.metric], result.summary[result.metric]) }} ·
                 {{ result.metric === "total" ? "计费条" : "消息数" }}
-                {{ (result.metric === "total" ? dim.total_segments : dim.total).toLocaleString() }}
+                {{ formatNumber(result.metric === "total" ? dim.total_segments : dim.total) }}
               </small>
             </span>
             <span class="rate-chip" :class="rateClass(dim.success_rate)">{{ formatRate(dim.success_rate) }}</span>
@@ -474,9 +474,9 @@ onMounted(() => void load())
         </div>
       </template>
       <el-table
+        v-loading="loading"
         :data="pagedItems"
         class="report-table"
-        :loading="loading"
         :row-key="reportRowKey"
         :default-sort="{ prop: 'period_start', order: 'descending' }"
         @sort-change="onSortChange"
@@ -484,19 +484,19 @@ onMounted(() => void load())
         <el-table-column prop="period_start" label="周期" width="120" sortable="custom" />
         <el-table-column prop="dim_label" :label="dimLabel" min-width="140" />
         <el-table-column prop="total" label="消息数" width="100" align="right" sortable="custom"
-          ><template #default="{ row }">{{ row.total.toLocaleString() }}</template></el-table-column
+          ><template #default="{ row }">{{ formatNumber(row.total) }}</template></el-table-column
         >
         <el-table-column prop="total_segments" label="计费条" width="100" align="right" sortable="custom"
-          ><template #default="{ row }">{{ row.total_segments.toLocaleString() }}</template></el-table-column
+          ><template #default="{ row }">{{ formatNumber(row.total_segments) }}</template></el-table-column
         >
         <el-table-column prop="delivered" label="送达" width="90" align="right"
-          ><template #default="{ row }">{{ row.delivered.toLocaleString() }}</template></el-table-column
+          ><template #default="{ row }">{{ formatNumber(row.delivered) }}</template></el-table-column
         >
         <el-table-column prop="failed" label="失败" width="80" align="right"
-          ><template #default="{ row }">{{ row.failed.toLocaleString() }}</template></el-table-column
+          ><template #default="{ row }">{{ formatNumber(row.failed) }}</template></el-table-column
         >
         <el-table-column prop="unknown" label="未知" width="80" align="right"
-          ><template #default="{ row }">{{ row.unknown.toLocaleString() }}</template></el-table-column
+          ><template #default="{ row }">{{ formatNumber(row.unknown) }}</template></el-table-column
         >
         <el-table-column prop="success_rate" label="成功率" width="110" align="right" sortable="custom"
           ><template #default="{ row }"

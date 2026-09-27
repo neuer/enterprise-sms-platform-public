@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatNumber } from "../lib/format"
 import { BarChart } from "echarts/charts"
 import { GridComponent, TooltipComponent } from "echarts/components"
 import * as echarts from "echarts/core"
@@ -45,7 +46,7 @@ const { render } = useChart(root, (chart) => {
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
-        valueFormatter: (value: unknown) => Number(value).toLocaleString(),
+        valueFormatter: (value: unknown) => formatNumber(Number(value)),
         ...theme.tooltip,
       },
       xAxis: {
@@ -64,7 +65,7 @@ const { render } = useChart(root, (chart) => {
       yAxis: {
         type: "value",
         minInterval: 1,
-        axisLabel: { color: theme.text, fontSize: 10, formatter: (value: number) => value.toLocaleString() },
+        axisLabel: { color: theme.text, fontSize: 10, formatter: (value: number) => formatNumber(value) },
         splitLine: { lineStyle: { color: theme.splitLine, type: "dashed" } },
       },
       series: props.trend.series.map((dim, index) => ({

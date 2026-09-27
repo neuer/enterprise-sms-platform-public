@@ -27,7 +27,7 @@
 .apps-table.el-table,
 .apps-table {
   --el-table-header-bg-color: var(--panel-2);
-  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.03);
+  --el-table-row-hover-bg-color: var(--row-hover);
 }
 .apps-table .el-table__row.apps-row-disabled {
   opacity: 0.55;

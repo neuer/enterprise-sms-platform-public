@@ -73,6 +73,8 @@
   --surface-strong: var(--sink);
   --ink-soft: var(--tx-2);
   --muted: var(--tx-3);
+  /* 表格行悬停必须不透明：固定列叠在横向滚动内容之上，半透明会透出底下的单元格。 */
+  --row-hover: color-mix(in srgb, var(--panel) 96%, var(--tx-hi));
   --sans: "Noto Sans SC Variable", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui, sans-serif;
   --serif: "Noto Serif SC Variable", "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
   --mono: "IBM Plex Mono", monospace;
@@ -107,6 +109,7 @@
   --el-text-color-primary: var(--tx);
   --el-text-color-regular: var(--tx-2);
   --el-text-color-secondary: var(--tx-3);
+  --el-text-color-placeholder: var(--tx-3);
   --el-border-color: var(--line-2);
   --el-border-color-light: var(--line);
   --el-border-color-lighter: var(--hair-2);

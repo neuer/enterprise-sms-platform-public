@@ -1,3 +1,4 @@
+import { formatNumber } from "./format"
 import type { ApprovalListItem } from "../api/approvals"
 import { CATEGORY_LABELS } from "./labels"
 
@@ -14,5 +15,5 @@ export function triggerRule(item: ApprovalListItem): string {
 }
 
 export function formatSegments(value: number | null): string {
-  return value === null ? "—" : `${value.toLocaleString()} 计费条`
+  return value === null ? "—" : `${formatNumber(value)} 计费条`
 }

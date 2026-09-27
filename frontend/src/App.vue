@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatNumber } from "./lib/format"
 import { ElConfigProvider, ElMessage } from "element-plus"
 import zhCn from "element-plus/es/locale/lang/zh-cn"
 import { computed, defineAsyncComponent, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from "vue"
@@ -36,7 +37,7 @@ const dashboardRoute = computed(() => route.path === "/dashboard")
 const approvalRoute = computed(() => route.path === "/approvals")
 const approverRole = computed(() => session.canDecrypt)
 const balanceLabel = computed(() =>
-  currentBalance.value === null ? "厂商余额暂无数据" : `厂商余额 ${currentBalance.value.toLocaleString()} 计费条`,
+  currentBalance.value === null ? "厂商余额暂无数据" : `厂商余额 ${formatNumber(currentBalance.value)} 计费条`,
 )
 // 侧栏导航派生自路由元数据（router/index.ts 的 meta.nav/group/title/roles），
 // 菜单与路由守卫共用单一事实源，新增页面只改路由表。
@@ -272,7 +273,7 @@ async function handlePasswordChanged(): Promise<void> {
               >{{ themeMode === "light" ? "☾ 深色" : "☀ 明亮" }}</button
             >
             <span class="balance" :aria-label="balanceLabel"
-              >余额 <strong>{{ currentBalance?.toLocaleString() ?? "—" }}</strong></span
+              >余额 <strong>{{ formatNumber(currentBalance) }}</strong></span
             >
             <span class="operator-name"
               >{{ session.displayName }} <small>{{ session.roleLabel }}</small></span

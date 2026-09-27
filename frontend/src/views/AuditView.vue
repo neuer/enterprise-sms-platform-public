@@ -238,6 +238,7 @@ onMounted(() => {
         v-model="filters.action"
         class="audit-action"
         data-testid="audit-action"
+        aria-label="动作"
         filterable
         clearable
         allow-create

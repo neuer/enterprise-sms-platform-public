@@ -192,7 +192,7 @@ main {
   --el-table-bg-color: var(--panel);
   --el-table-tr-bg-color: var(--panel);
   --el-table-header-bg-color: var(--panel-2);
-  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.03);
+  --el-table-row-hover-bg-color: var(--row-hover);
   --el-table-border-color: var(--hair-2);
   --el-table-text-color: var(--tx);
   --el-table-header-text-color: var(--tx-3);
@@ -214,12 +214,12 @@ main {
 .sign-table.el-table,
 .sign-table {
   --el-table-header-bg-color: var(--panel-2);
-  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.03);
+  --el-table-row-hover-bg-color: var(--row-hover);
 }
 .template-table.el-table,
 .template-table {
   --el-table-header-bg-color: var(--panel-2);
-  --el-table-row-hover-bg-color: rgba(255, 255, 255, 0.03);
+  --el-table-row-hover-bg-color: var(--row-hover);
 }
 .el-input__wrapper,
 .el-select__wrapper,
@@ -438,9 +438,6 @@ main {
 .approval-table td {
   color: var(--tx-2);
   border-bottom-color: var(--hair-2);
-}
-.approval-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.03);
 }
 .approval-batch-cell code {
   color: var(--tx);
