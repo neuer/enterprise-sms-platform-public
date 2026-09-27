@@ -187,7 +187,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("<FilterSeg")
     expect(view).toContain("接口全量返回 · 前端过滤")
     expect(view).toContain("共 {{ filtered.length }} 个签名")
-    expect(view).toContain("读：operator / approver / admin · 写：admin")
+    expect(view).toContain('读：{{ roleNames(["operator", "approver", "admin"]) }} · 写：{{ roleNames(["admin"]) }}')
     expect(view).toContain("签名已删除 · 本次操作已记入审计")
     expect(view).toContain("sign-content-block")
     expect(view).toContain("sign-fact-grid")
@@ -211,7 +211,9 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("接口全量返回 · 前端过滤")
     expect(view).toContain("未送审（历史数据）")
     expect(view).toContain("共 {{ filtered.length }} 个模板")
-    expect(view).toContain("读：operator / approver / admin · 写：operator / admin")
+    expect(view).toContain(
+      '读：{{ roleNames(["operator", "approver", "admin"]) }} · 写：{{ roleNames(["operator", "admin"]) }}',
+    )
     expect(view).toContain("模板已删除 · 本次操作已记入审计")
     expect(view).toContain("template-content-block")
     expect(view).toContain("template-fact-grid")
@@ -241,7 +243,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(view).toContain("已随停用吊销")
     expect(view).toContain("keyGraceHours")
     expect(view).toContain("共 {{ filtered.length }} 个应用")
-    expect(view).toContain("读写：admin · 今日消耗来自 stat_daily 联查")
+    expect(view).toContain('读写：{{ roleNames(["admin"]) }} · 今日消耗取自每日统计汇总')
     expect(view).not.toContain("app-card-grid")
     expect(view).not.toContain("managed-app-card")
     expect(view).not.toContain("<el-segmented")

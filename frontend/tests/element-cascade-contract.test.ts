@@ -2,7 +2,6 @@ import { readdirSync, readFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 
 import { documentTitle } from "../src/router"
-import { readWorkspaceCss } from "./workspace-css"
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 
@@ -23,38 +22,28 @@ function cssRules(css: string): Array<{ selectors: string[]; body: string }> {
   }))
 }
 
-const workspaceCss = readWorkspaceCss()
 const themeCss = read("src/styles/theme.css")
 const templates = [...listFiles("src/views", ".vue"), ...listFiles("src/components", ".vue")].map(read).join("\n")
 
 describe("Element 懒加载样式级联契约", () => {
-  it("el-select / el-date-picker 上的定宽不写成单类选择器（会被后加载的 Element 默认宽度覆盖）", () => {
-    // workspace.css 须排在 element-workspace.ts 的 el-*.css 之前；el-select 的 width:100% 与
-    // el-date-editor 的 220px 都在其后加载，同为单类时页面宽度失效，须写成 .el-select.X 等复合形式。
-    const classes = new Set(
-      [...templates.matchAll(/<el-(?:select|date-picker)\b[^>]*?\sclass="([^"]+)"/g)].flatMap((match) =>
-        match[1].split(/\s+/),
-      ),
+  it("workspace.css 排在工作区全部 el-*.css 之后，其同特异性覆写压过 Element 默认值", () => {
+    const source = read("src/element-workspace.ts")
+    const imports = [...source.matchAll(/^import "([^"]+\.css)"$/gm)].map((match) => match[1])
+    expect(imports.at(-1)).toBe("./styles/workspace.css")
+    expect(imports.filter((path) => path.startsWith("element-plus/")).length).toBeGreaterThan(20)
+    // 入口 main.ts 只带公开壳最小集；工作区组件样式不得回流到 theme.css 之前以外的位置。
+    const main = read("src/main.ts")
+    expect(main.indexOf('import "./styles/theme.css"')).toBeGreaterThan(
+      main.lastIndexOf('import "element-plus/theme-chalk/'),
     )
-    expect(classes.size).toBeGreaterThan(0)
-    const offenders: string[] = []
-    for (const rule of cssRules(workspaceCss)) {
-      const widths = [
-        ...rule.body.matchAll(/(?:^|[;\s])(width|--el-select-width|--el-date-editor-width)\s*:\s*([^;]+)/g),
-      ]
-      if (!widths.some((declaration) => declaration[2].trim() !== "100%")) continue
-      for (const selector of rule.selectors) {
-        const single = /^\.([\w-]+)$/.exec(selector)
-        if (single && classes.has(single[1])) offenders.push(selector)
-      }
-    }
-    expect(offenders).toEqual([])
   })
 
   it("深色重混的 tag / alert / message / 分页 / 描边主按钮覆写带 :root 前缀，压过后加载的组件样式", () => {
     const selectors = cssRules(themeCss).flatMap((rule) => rule.selectors)
     const unprefixed = selectors.filter((selector) =>
-      /^\.el-(?:tag|alert|message)\b|^\.el-pagination$|^\.el-button--primary\.is-plain/.test(selector),
+      /^\.el-(?:tag|alert|message)\b|^\.el-pagination$|^\.el-button--primary\.is-plain|^\.el-date-editor \./.test(
+        selector,
+      ),
     )
     expect(unprefixed).toEqual([])
     for (const required of [

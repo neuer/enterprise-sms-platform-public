@@ -104,10 +104,6 @@
   min-height: 30px;
   padding: 0 9px;
 }
-.security-daily-date .el-input__inner {
-  font-family: var(--mono);
-  font-size: 11px;
-}
 /* 安全/生成/投递状态 seg 已并入 FilterSeg 单点，紧凑尺寸由 .filter-seg--compact 变体承载。 */
 .security-daily-filter-go {
   display: flex;
@@ -115,9 +111,6 @@
   gap: 7px;
   align-items: center;
   margin-left: auto;
-}
-.security-daily-filter-go .el-button {
-  font-size: 11.5px;
 }
 .security-daily-privacy {
   display: flex;

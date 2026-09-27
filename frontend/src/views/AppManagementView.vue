@@ -32,7 +32,7 @@ import { copyText } from "../lib/clipboard"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction, captureCurrent } = useConfirmActions()
 import { formatPercent } from "../lib/format"
-import { CATEGORY_LABELS, type MessageCategory } from "../lib/labels"
+import { CATEGORY_LABELS, roleNames, type MessageCategory } from "../lib/labels"
 import { formatDateTime, shanghaiDateKey } from "../lib/time"
 import { errorText } from "../lib/error"
 
@@ -788,7 +788,7 @@ onMounted(() => {
     </el-table>
     <footer class="apps-foot">
       <span>共 {{ filtered.length }} 个应用 · 启用 {{ enabledCount }} · 停用 {{ disabledCount }}</span>
-      <span class="apps-foot-role">读写：admin · 今日消耗来自 stat_daily 联查</span>
+      <span class="apps-foot-role">读写：{{ roleNames(["admin"]) }} · 今日消耗取自每日统计汇总</span>
     </footer>
   </section>
 

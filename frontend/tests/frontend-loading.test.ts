@@ -49,10 +49,10 @@ describe("前端加载边界", () => {
     expect(mainSource).not.toContain("workspace.css")
     expect(appSource).not.toContain("workspace.css")
     // 登录壳不背工作区样式：workspace.css 随首个非公开路由前的守卫动态加载，
-    // 且必须位于 element-workspace 的 el-* 样式之前（维持搬家前的级联顺序）。
+    // 且必须位于 element-workspace 的全部 el-* 样式之后，同特异性覆写才能胜出。
     expect(workspaceElementSource).toContain('import "./styles/workspace.css"')
-    expect(workspaceElementSource.indexOf('import "./styles/workspace.css"')).toBeLessThan(
-      workspaceElementSource.indexOf('import "element-plus/'),
+    expect(workspaceElementSource.indexOf('import "./styles/workspace.css"')).toBeGreaterThan(
+      workspaceElementSource.lastIndexOf('import "element-plus/theme-chalk/'),
     )
 
     for (const view of lazyViews) {

@@ -505,6 +505,9 @@ onMounted(() => void load())
             }}</span></template
           ></el-table-column
         >
+        <template #empty
+          ><EmptyState title="暂无明细数据" description="调整日期、类别或分组方式后重新查询。"
+        /></template>
       </el-table>
       <!-- 分页常驻（§7.8e/8f 同型限制已退役）：空结果时分页器以 0 总数正常展示 -->
       <ListPagination

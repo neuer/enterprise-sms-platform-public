@@ -1,8 +1,3 @@
-// 工作区壳样式随本模块懒加载：登录/公开页只带 theme.css（登录壳样式本就在
-// theme.css 一侧），进入首个非公开路由前由 main.ts 守卫加载本模块。
-// 本 import 保持在 el-* 样式之前，维持搬家前的级联顺序不变。
-import "./styles/workspace.css"
-
 import "element-plus/theme-chalk/el-alert.css"
 import "element-plus/theme-chalk/el-card.css"
 import "element-plus/theme-chalk/el-checkbox.css"
@@ -29,6 +24,12 @@ import "element-plus/theme-chalk/el-tag.css"
 import "element-plus/theme-chalk/el-time-picker.css"
 import "element-plus/theme-chalk/el-tooltip.css"
 import "element-plus/theme-chalk/el-upload.css"
+
+// 工作区壳样式随本模块懒加载：登录/公开页只带 theme.css（登录壳样式本就在
+// theme.css 一侧），进入首个非公开路由前由 main.ts 守卫加载本模块。
+// 必须排在全部 el-*.css 之后：工作区对 el-card / el-table / el-tag 等的同特异性覆写
+// 依赖后到者胜出，放在前面会被 Element 默认值静默吃掉。
+import "./styles/workspace.css"
 
 import {
   ElAlert,

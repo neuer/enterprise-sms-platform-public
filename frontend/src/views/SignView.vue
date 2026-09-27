@@ -25,7 +25,7 @@ import { useConfirmActions } from "../lib/confirm"
 import { vRowActivate } from "../lib/directives"
 const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
-import { VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
+import { roleNames, VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
 import { useSessionStore } from "../stores/session"
 
 const EDITOR_FOOTNOTE = "提交后进入厂商人工审核，期间不可修改或删除；审核结果由轮询同步，也可在列表手动同步。"
@@ -451,7 +451,9 @@ onMounted(load)
     </div>
     <footer class="sign-foot">
       <span>共 {{ filtered.length }} 个签名</span>
-      <span class="sign-foot-role">读：operator / approver / admin · 写：admin</span>
+      <span class="sign-foot-role"
+        >读：{{ roleNames(["operator", "approver", "admin"]) }} · 写：{{ roleNames(["admin"]) }}</span
+      >
     </footer>
   </section>
 

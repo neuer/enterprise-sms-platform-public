@@ -174,7 +174,7 @@ describe("签名管理", () => {
     expect(wrapper.findAll(".sign-table .el-table__row")).toHaveLength(1)
     expect(wrapper.get(".sign-table").text()).toContain("优惠早知道")
     expect(wrapper.get(".sign-foot").text()).toContain("共 1 个签名")
-    expect(wrapper.get(".sign-foot-role").text()).toContain("写：admin")
+    expect(wrapper.get(".sign-foot-role").text()).toContain(`读：操作员 / 审批人 / 系统管理员 · 写：系统管理员`)
     vi.unstubAllGlobals()
   })
 

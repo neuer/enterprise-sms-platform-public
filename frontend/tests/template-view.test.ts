@@ -175,7 +175,9 @@ describe("模板管理", () => {
     expect(wrapper.findAll(".template-table .el-table__row")).toHaveLength(1)
     expect(wrapper.get(".template-table").text()).toContain("未送审（历史数据）")
     expect(wrapper.get(".template-foot").text()).toContain("共 1 个模板")
-    expect(wrapper.get(".template-foot-role").text()).toContain("读：operator / approver / admin")
+    expect(wrapper.get(".template-foot-role").text()).toContain(
+      `读：操作员 / 审批人 / 系统管理员 · 写：操作员 / 系统管理员`,
+    )
     vi.unstubAllGlobals()
   })
 

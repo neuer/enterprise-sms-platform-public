@@ -25,7 +25,7 @@ import { useMobileLayout } from "../composables/useMobileLayout"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
-import { VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
+import { roleNames, VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
 import { useSessionStore } from "../stores/session"
 const DEFAULT_MAX_LEN = 10
 const EDITOR_FOOTNOTE = "提交后进入厂商人工审核，期间不可编辑；审核结果由轮询同步，也可在列表手动同步。"
@@ -453,7 +453,9 @@ onMounted(load)
     </div>
     <footer class="template-foot">
       <span>共 {{ filtered.length }} 个模板</span>
-      <span class="template-foot-role">读：operator / approver / admin · 写：operator / admin</span>
+      <span class="template-foot-role"
+        >读：{{ roleNames(["operator", "approver", "admin"]) }} · 写：{{ roleNames(["operator", "admin"]) }}</span
+      >
     </footer>
   </section>
 

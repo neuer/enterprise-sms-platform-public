@@ -360,7 +360,7 @@
   gap: 16px;
 }
 
-.panel-title div {
+.panel-title > div:not(.filter-seg) {
   display: grid;
 }
 
