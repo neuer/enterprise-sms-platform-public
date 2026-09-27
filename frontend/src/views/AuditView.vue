@@ -274,6 +274,7 @@ onMounted(() => {
         data-testid="audit-time-range"
         type="datetimerange"
         :shortcuts="timeShortcuts"
+        format="YYYY-MM-DD HH:mm"
         popper-class="qingluan-date-popper"
         start-placeholder="开始时间"
         end-placeholder="结束时间"

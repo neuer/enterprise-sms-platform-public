@@ -71,25 +71,23 @@
   letter-spacing: 0.06em;
 }
 
-/* 运维中心告警/无主报告与审计日志时间范围同上行回复同构：mono 范围输入。 */
+/* 筛选条时间范围（批次/号码搜索/上行回复/运维/审计）同构：统一 YYYY-MM-DD HH:mm 显示，
+   272px 恰好容纳 11px mono 的完整起止值；字号与字体由 theme.css 的日期选择器单点承载。 */
+.batch-filter-dates,
+.message-filter-dates,
 .reply-filter-dates,
 .ops-dates,
 .audit-dates {
-  --el-date-editor-datetimerange-width: 244px;
+  --el-date-editor-datetimerange-width: 272px;
 }
 
+.batch-filter-dates.el-date-editor.el-input__wrapper,
+.message-filter-dates.el-date-editor.el-input__wrapper,
 .reply-filter-dates.el-date-editor.el-input__wrapper,
 .ops-dates.el-date-editor.el-input__wrapper,
 .audit-dates.el-date-editor.el-input__wrapper {
-  padding-right: 8px;
-  padding-left: 8px;
-}
-
-.reply-filter-dates .el-range-input,
-.ops-dates .el-range-input,
-.audit-dates .el-range-input {
-  font-family: var(--mono);
-  font-size: 11px;
+  padding-right: 6px;
+  padding-left: 6px;
 }
 
 /* 分段筛选控件 FilterSeg 的唯一样式（组件见 src/components/FilterSeg.vue，模板手抄即缺陷）。

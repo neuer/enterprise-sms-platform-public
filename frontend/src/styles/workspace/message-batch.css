@@ -94,7 +94,7 @@
 .batch-filter-bar {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 12px;
+  gap: 8px 10px;
   align-items: center;
   padding: 8px 14px;
   margin-bottom: 12px;
@@ -114,34 +114,14 @@
 }
 /* 单行筛选条：批次号与时间允许收缩兜底——窗口变窄先挤输入框，仍不轻易折行 */
 .batch-filter-search {
-  width: 124px;
+  width: 112px;
   flex: 0 1 auto;
   min-width: 96px;
 }
-/* 宽度必须走 EP 主题变量：.el-date-editor.el-input__wrapper 以 (0,2,0) 优先级
-   消费 --el-date-editor-width，普通 width 覆盖会输掉级联（真机实为 400px） */
+/* 宽度与字号同其余筛选条时间范围，见 shared.css。 */
 .batch-filter-dates {
-  --el-date-editor-datetimerange-width: 244px;
   flex: 0 1 auto;
   min-width: 218px;
-}
-.batch-filter-dates.el-date-editor.el-input__wrapper {
-  padding-right: 4px;
-  padding-left: 4px;
-}
-.batch-filter-dates .el-range-input {
-  width: 41%;
-  font-family: var(--mono);
-  font-size: 10.5px;
-  letter-spacing: -0.02em;
-}
-.batch-filter-dates .el-range-separator {
-  padding: 0 3px;
-  font-size: 10.5px;
-}
-.batch-filter-dates .el-range__icon {
-  margin-right: 2px;
-  font-size: 12px;
 }
 .batch-dirty {
   color: var(--amber);
@@ -541,20 +521,6 @@
 .message-filter-phone .el-input__inner {
   font-family: var(--mono);
   letter-spacing: 0.06em;
-}
-
-.message-filter-dates {
-  --el-date-editor-datetimerange-width: 244px;
-}
-
-.message-filter-dates.el-date-editor.el-input__wrapper {
-  padding-right: 8px;
-  padding-left: 8px;
-}
-
-.message-filter-dates .el-range-input {
-  font-family: var(--mono);
-  font-size: 11px;
 }
 
 .message-phone-error {

@@ -77,12 +77,6 @@
   font-weight: 400;
 }
 
-.send-editor .el-textarea__inner,
-.send-editor .el-select__wrapper,
-.send-editor .el-input__wrapper {
-  border-radius: 8px;
-}
-
 .send-editor .el-textarea__inner {
   padding: 9px 12px;
   font-size: 12.5px;

@@ -473,11 +473,11 @@ onMounted(() => void refresh())
       >
     </div>
     <div class="security-daily-heading-actions">
-      <el-button plain :loading="configLoading" @click="openConfiguration">配置邮件</el-button>
-      <el-button plain :disabled="!overview?.enabled" :loading="generationLoading" @click="generateReport"
+      <el-button :loading="configLoading" @click="openConfiguration">配置邮件</el-button>
+      <el-button :disabled="!overview?.enabled" :loading="generationLoading" @click="generateReport"
         >立即生成</el-button
       >
-      <el-button type="primary" plain :loading="loading" @click="refresh">刷新</el-button>
+      <el-button :loading="loading" @click="refresh">刷新</el-button>
     </div>
   </section>
 

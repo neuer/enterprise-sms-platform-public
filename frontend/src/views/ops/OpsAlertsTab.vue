@@ -347,6 +347,7 @@ onMounted(() => currentAlertPolling.start())
               v-model="alertRange"
               class="ops-dates"
               type="datetimerange"
+              format="YYYY-MM-DD HH:mm"
               popper-class="qingluan-date-popper"
               range-separator="至"
               start-placeholder="开始时间"

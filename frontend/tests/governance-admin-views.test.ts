@@ -229,7 +229,7 @@ describe("管理员治理页面", () => {
     expect(wrapper.find(".app-card-grid").exists()).toBe(false)
     expect(wrapper.find(".managed-app-card").exists()).toBe(false)
     expect(wrapper.text()).toContain("共 1 个应用 · 启用 1 · 停用 0")
-    expect(wrapper.text()).toContain("读写：admin · 今日消耗来自 stat_daily 联查")
+    expect(wrapper.text()).toContain("读写：系统管理员 · 今日消耗取自每日统计汇总")
     expect(wrapper.get("[data-testid='new-app']").text()).toContain("新建应用")
     // 行内只留「详情」，轮换/作废/停用全部收进详情抽屉
     expect(wrapper.find("[data-testid='rotate-key-1']").exists()).toBe(false)

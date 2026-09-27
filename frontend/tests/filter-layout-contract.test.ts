@@ -260,7 +260,9 @@ describe("全站筛选布局契约", () => {
     expect(signView).toContain("<FilterSeg")
     expect(signView).toContain("接口全量返回 · 前端过滤")
     expect(signView).toContain("共 {{ filtered.length }} 个签名")
-    expect(signView).toContain("读：operator / approver / admin · 写：admin")
+    expect(signView).toContain(
+      '读：{{ roleNames(["operator", "approver", "admin"]) }} · 写：{{ roleNames(["admin"]) }}',
+    )
     expect(signView).toContain("不可编辑/删除")
     expect(signView).not.toContain("filter-toolbar")
     expect(signView).not.toContain("filter-grid")
@@ -278,7 +280,9 @@ describe("全站筛选布局契约", () => {
     expect(templateView).toContain("接口全量返回 · 前端过滤")
     expect(templateView).toContain("未送审（历史数据）")
     expect(templateView).toContain("共 {{ filtered.length }} 个模板")
-    expect(templateView).toContain("读：operator / approver / admin · 写：operator / admin")
+    expect(templateView).toContain(
+      '读：{{ roleNames(["operator", "approver", "admin"]) }} · 写：{{ roleNames(["operator", "admin"]) }}',
+    )
     expect(templateView).not.toContain("filter-toolbar")
     expect(templateView).not.toContain("filter-grid")
     expect(templateView).not.toContain("<el-segmented")

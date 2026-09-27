@@ -1177,7 +1177,7 @@ button:focus-visible {
 .el-date-editor.el-range-editor {
   color: var(--tx);
   background: var(--card);
-  border-radius: 6px;
+  border-radius: var(--el-border-radius-base);
   box-shadow: 0 0 0 1px var(--line-2) inset;
   transition:
     box-shadow 120ms ease,
@@ -1198,24 +1198,43 @@ button:focus-visible {
     0 0 0 3px color-mix(in srgb, var(--verdi) 12%, transparent);
 }
 
-.el-date-editor .el-input__inner,
-.el-date-editor .el-range-input,
-.el-date-editor .el-range-separator {
+/* :root 前缀：本文件在入口加载，排在懒加载的日期选择器样式之前，同特异性会输。
+   区间输入统一 11px mono，筛选条区间宽度见 workspace/shared.css 的 --filter-range-width。 */
+:root .el-date-editor .el-input__inner,
+:root .el-date-editor .el-range-input,
+:root .el-date-editor .el-range-separator {
   color: var(--tx);
   font-family: var(--mono);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
-.el-date-editor .el-input__inner::placeholder,
-.el-date-editor .el-range-input::placeholder {
+:root .el-date-editor .el-range-input,
+:root .el-date-editor .el-range-separator {
+  font-size: 11px;
+}
+
+/* Element 默认两枚输入各占 39%、分隔符吃剩余；改为输入均分剩余宽度，分隔符只占自身。 */
+:root .el-date-editor .el-range-input {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+}
+
+:root .el-date-editor .el-range-separator {
+  flex: none;
+  padding: 0 4px;
+}
+
+:root .el-date-editor .el-input__inner::placeholder,
+:root .el-date-editor .el-range-input::placeholder {
   color: var(--tx-3);
   font-family: inherit;
 }
 
-.el-date-editor .el-input__icon,
-.el-date-editor .el-range__icon,
-.el-date-editor .el-range__close-icon {
+:root .el-date-editor .el-input__icon,
+:root .el-date-editor .el-range__icon,
+:root .el-date-editor .el-range__close-icon {
   color: var(--tx-3);
 }
 

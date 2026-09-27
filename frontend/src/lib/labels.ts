@@ -19,6 +19,11 @@ export const ROLE_LABELS: Record<string, string> = {
   viewer: "只读用户",
 }
 
+/** 权限提示中的角色列表统一走中文标签，按传入顺序以「 / 」连接。 */
+export function roleNames(roles: readonly string[]): string {
+  return roles.map((role) => ROLE_LABELS[role] ?? role).join(" / ")
+}
+
 export const DEFAULT_PAGE_SIZE = 20
 
 /**
