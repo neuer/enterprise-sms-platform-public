@@ -1,18 +1,14 @@
 <script setup lang="ts">
 import { ElMessage } from "element-plus"
-import { computed, onBeforeUnmount, onMounted, ref } from "vue"
+import { computed, onMounted, ref } from "vue"
 
 import {
-  activateVendorTest,
   disableVendorTestRecipient,
   getVendorTestOperation,
   getVendorTestStatus,
   getVendorTestUat,
-  issueVendorTestStepUp,
   listVendorTestRecipients,
   pauseVendorTest,
-  refreshVendorTestRecipientIndex,
-  resetVendorTest,
   resumeVendorTest,
   type VendorTestOperation,
   type VendorTestRecipient,
@@ -24,14 +20,15 @@ import PhoneMask from "./PhoneMask.vue"
 import EmptyState from "./EmptyState.vue"
 import LoadErrorAlert from "./LoadErrorAlert.vue"
 import VendorCredentialDialog from "./VendorCredentialDialog.vue"
+import VendorTestIndexRefreshDialog from "./VendorTestIndexRefreshDialog.vue"
 import VendorTestRecipientDialog from "./VendorTestRecipientDialog.vue"
+import VendorTestStepUpDialog from "./VendorTestStepUpDialog.vue"
 import VendorTestUatPanel from "./VendorTestUatPanel.vue"
 import { usePolling } from "../composables/usePolling"
 import { useLatestRead } from "../composables/useLatestRead"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAction } = useConfirmActions()
 import { errorText } from "../lib/error"
-import { PHONE_RE } from "../lib/phone"
 import { formatDateTime } from "../lib/time"
 
 const loading = ref(false)
@@ -45,14 +42,8 @@ const operationRestoring = ref(false)
 const operationCompletionRefreshing = ref(false)
 const credentialDialog = ref(false)
 const recipientDialog = ref(false)
-const refreshVisible = ref(false)
-const refreshRecipient = ref<VendorTestRecipient | null>(null)
-const refreshPhone = ref("")
-const refreshBusy = ref(false)
-const stepUpVisible = ref(false)
-const stepUpPassword = ref("")
-const resetConfirmation = ref("")
-const stepUpAction = ref<"activate" | "reset_configuration" | "resume_critical" | null>(null)
+const refreshDialog = ref<InstanceType<typeof VendorTestIndexRefreshDialog> | null>(null)
+const stepUpDialog = ref<InstanceType<typeof VendorTestStepUpDialog> | null>(null)
 const controlBusy = ref(false)
 // 三条读通道各自只保留最新请求；作用域销毁自动取消，替代手写 generation/disposed 守卫。
 const loadRead = useLatestRead()
@@ -71,7 +62,6 @@ const RETRY_INTERVAL_MS = 1_600
 const RETRY_MAX_ATTEMPTS = 30
 
 const OPERATION_SESSION_KEY = "sms-platform:vendor-test:operation:v1"
-const RESET_CONFIRMATION = "切回Mock"
 const OPERATION_TYPES = new Set<VendorTestOperation["operation_type"]>([
   "install_credentials",
   "rotate_credentials",
@@ -373,61 +363,12 @@ async function requestActivation(): Promise<void> {
     }))
   )
     return
-  stepUpAction.value = "activate"
-  stepUpVisible.value = true
-}
-
-function clearStepUpSecrets(): void {
-  stepUpPassword.value = ""
-  resetConfirmation.value = ""
-}
-
-function clearStepUp(): void {
-  clearStepUpSecrets()
-  stepUpAction.value = null
-}
-
-function closeStepUp(): void {
-  clearStepUpSecrets()
-  stepUpVisible.value = false
+  stepUpDialog.value?.open("activate")
 }
 
 function requestReset(): void {
   if (!resetAvailable.value || operationBusy.value || controlBusy.value) return
-  clearStepUp()
-  stepUpAction.value = "reset_configuration"
-  stepUpVisible.value = true
-}
-
-async function submitStepUp(): Promise<void> {
-  if (controlBusy.value) return
-  const action = stepUpAction.value
-  if (!action || !stepUpPassword.value) {
-    ElMessage.warning("请输入当前账号密码")
-    return
-  }
-  if (action === "reset_configuration" && resetConfirmation.value !== RESET_CONFIRMATION) {
-    ElMessage.warning(`请输入精确短语“${RESET_CONFIRMATION}”`)
-    clearStepUpSecrets()
-    return
-  }
-  controlBusy.value = true
-  try {
-    const token = await issueVendorTestStepUp(action, stepUpPassword.value)
-    const operation =
-      action === "activate"
-        ? await activateVendorTest(token.token)
-        : action === "reset_configuration"
-          ? await resetVendorTest(token.token)
-          : await resumeVendorTest(token.token)
-    stepUpVisible.value = false
-    trackOperation(operation)
-  } catch (error) {
-    ElMessage.error(errorText(error, "二次认证操作失败"))
-  } finally {
-    clearStepUpSecrets()
-    controlBusy.value = false
-  }
+  stepUpDialog.value?.open("reset_configuration")
 }
 
 async function pause(): Promise<void> {
@@ -466,8 +407,7 @@ async function resume(): Promise<void> {
       }))
     )
       return
-    stepUpAction.value = "resume_critical"
-    stepUpVisible.value = true
+    stepUpDialog.value?.open("resume_critical")
     return
   }
   if (
@@ -515,43 +455,16 @@ async function disableRecipient(recipient: VendorTestRecipient): Promise<void> {
 }
 
 function openIndexRefresh(recipient: VendorTestRecipient): void {
-  refreshRecipient.value = recipient
-  refreshPhone.value = ""
-  refreshVisible.value = true
+  refreshDialog.value?.open(recipient)
 }
 
-function clearIndexRefresh(): void {
-  refreshPhone.value = ""
-  refreshRecipient.value = null
-}
-
-async function submitIndexRefresh(): Promise<void> {
-  const recipient = refreshRecipient.value
-  const phone = refreshPhone.value
-  if (!recipient || !PHONE_RE.test(phone)) {
-    ElMessage.warning("请输入 11 位测试手机号")
-    return
-  }
-  refreshBusy.value = true
-  try {
-    const refreshed = await refreshVendorTestRecipientIndex(recipient.id, phone)
-    recipients.value = recipients.value.map((item) => (item.id === refreshed.id ? refreshed : item))
-    refreshVisible.value = false
-    ElMessage.success("号码索引已覆盖当前全部密钥版本")
-  } catch (error) {
-    ElMessage.error(errorText(error, "号码索引刷新失败"))
-  } finally {
-    refreshPhone.value = ""
-    refreshBusy.value = false
-  }
+function recipientRefreshed(refreshed: VendorTestRecipient): void {
+  recipients.value = recipients.value.map((item) => (item.id === refreshed.id ? refreshed : item))
 }
 
 onMounted(() => {
   if (rememberedOperation()) restorePolling.start()
   void load()
-})
-onBeforeUnmount(() => {
-  clearStepUp()
 })
 </script>
 
@@ -739,157 +652,18 @@ onBeforeUnmount(() => {
     <VendorCredentialDialog v-model="credentialDialog" :operation="credentialOperation" @operation="trackOperation" />
     <VendorTestRecipientDialog v-model="recipientDialog" @added="recipientAdded" />
 
-    <el-dialog
-      v-model="refreshVisible"
-      title="刷新号码索引"
-      width="min(440px, 92vw)"
-      destroy-on-close
-      append-to-body
-      @closed="clearIndexRefresh"
-    >
-      <div v-if="refreshVisible" class="vendor-sensitive-form">
-        <p>
-          数据密钥轮换后，请重新输入
-          <PhoneMask v-if="refreshRecipient" :value="refreshRecipient.phone_mask" /> 对应的同一号码。 系统只重建跨版本
-          HMAC 索引，不解密或回显历史号码。
-        </p>
-        <el-input
-          v-model="refreshPhone"
-          data-testid="vendor-refresh-phone"
-          inputmode="numeric"
-          maxlength="11"
-          autocomplete="off"
-          spellcheck="false"
-          placeholder="请输入同一测试手机号"
-          @keyup.enter="submitIndexRefresh"
-        />
-      </div>
-      <template #footer>
-        <el-button :disabled="refreshBusy" @click="refreshVisible = false">保留现状</el-button>
-        <el-button data-testid="vendor-refresh-submit" type="primary" :loading="refreshBusy" @click="submitIndexRefresh"
-          >确认刷新</el-button
-        >
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="stepUpVisible"
-      :title="
-        stepUpAction === 'activate'
-          ? '二次认证激活'
-          : stepUpAction === 'reset_configuration'
-            ? '切回 Mock'
-            : '二次认证恢复'
-      "
-      width="440px"
-      destroy-on-close
-      append-to-body
-      class="vendor-step-up-dialog"
-      :close-on-click-modal="!controlBusy"
-      :close-on-press-escape="!controlBusy"
-      :show-close="!controlBusy"
-      @close="clearStepUpSecrets"
-      @closed="clearStepUp"
-    >
-      <div v-if="stepUpVisible" class="vendor-sensitive-form">
-        <el-alert
-          v-if="stepUpAction === 'reset_configuration'"
-          id="vendor-reset-consequences"
-          title="仅影响测试环境的厂商连接，操作不可撤销"
-          type="error"
-          :closable="false"
-          show-icon
-        >
-          <p>
-            测试环境将停止真实发送与厂商状态/回复拉取，切回本机 Mock，并删除测试环境的正式厂商凭据
-            全部版本。生产环境的配置、凭据、服务和数据不受影响。
-          </p>
-          <p>
-            保留全部加密测试号码及其索引，也保留管理员、短信业务数据、审计记录、当日 UAT 用量、 uncertain
-            占额、数据库、Docker volume 和运行态目录；切换前已发送、待回执、uncertain
-            或被错误环境消费的历史状态不会自动修复。这不是系统初始化。
-          </p>
-        </el-alert>
-        <p>请输入当前登录账号密码。认证令牌五分钟内单次有效，不写入浏览器存储。</p>
-        <el-form label-position="top" @submit.prevent="submitStepUp">
-          <el-form-item label="当前 Provider 密码" required>
-            <el-input
-              v-model="stepUpPassword"
-              :data-testid="
-                stepUpAction === 'reset_configuration' ? 'vendor-reset-password' : 'vendor-step-up-password'
-              "
-              type="password"
-              autocomplete="current-password"
-              spellcheck="false"
-              show-password
-            />
-          </el-form-item>
-          <el-form-item
-            v-if="stepUpAction === 'reset_configuration'"
-            :label="`输入“${RESET_CONFIRMATION}”确认`"
-            required
-          >
-            <el-input
-              v-model="resetConfirmation"
-              data-testid="vendor-reset-confirmation"
-              autocomplete="off"
-              spellcheck="false"
-              aria-describedby="vendor-reset-consequences"
-            />
-          </el-form-item>
-        </el-form>
-      </div>
-      <template #footer>
-        <el-button
-          :data-testid="stepUpAction === 'reset_configuration' ? 'vendor-reset-cancel' : undefined"
-          :disabled="controlBusy"
-          @click="closeStepUp"
-          >{{ stepUpAction === "reset_configuration" ? "保留现状" : "继续检查" }}</el-button
-        >
-        <el-button
-          :data-testid="stepUpAction === 'reset_configuration' ? 'vendor-reset-submit' : undefined"
-          :type="stepUpAction === 'reset_configuration' ? 'danger' : 'primary'"
-          :loading="controlBusy"
-          @click="submitStepUp"
-        >
-          {{
-            stepUpAction === "activate"
-              ? "验证并激活"
-              : stepUpAction === "reset_configuration"
-                ? "验证并切回 Mock"
-                : "验证并恢复"
-          }}
-        </el-button>
-      </template>
-    </el-dialog>
+    <VendorTestIndexRefreshDialog ref="refreshDialog" @refreshed="recipientRefreshed" />
+    <VendorTestStepUpDialog ref="stepUpDialog" v-model:busy="controlBusy" @operation="trackOperation" />
   </section>
 </template>
 
 <!--
-  本样式块刻意非 scoped：下方的 el-dialog 经 teleport/append-to-body 挂载到 <body>，
-  不在本组件的 scoped DOM 子树内，scoped 选择器无法命中。所有类名均以 vendor- 前缀
-  隔离，避免污染全局命名空间；样式本身仅作用于联调对话框与操作指引。
+  本样式块刻意非 scoped，与二次认证对话框的样式块共用 vendor- 前缀隔离全局命名空间；
+  样式本身仅作用于切回触发按钮与操作指引。
 -->
 <style>
-.vendor-step-up-dialog {
-  max-width: calc(100vw - 32px);
-}
-
-.vendor-step-up-dialog .el-input__wrapper,
-.vendor-step-up-dialog .el-dialog__footer .el-button,
 .vendor-reset-trigger {
   min-height: 44px;
-}
-
-.vendor-step-up-dialog .el-dialog__footer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.vendor-step-up-dialog .el-dialog__footer .el-button + .el-button {
-  margin-left: 0;
 }
 
 .vendor-operation-guidance {
@@ -898,18 +672,11 @@ onBeforeUnmount(() => {
   padding: 10px 12px;
   background: var(--surface);
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
 }
 
 .vendor-operation-guidance.is-danger {
   color: var(--verm);
-}
-
-@media (max-width: 360px) {
-  .vendor-step-up-dialog .el-dialog__footer .el-button {
-    flex: 1 1 100%;
-    margin-left: 0;
-  }
 }
 </style>

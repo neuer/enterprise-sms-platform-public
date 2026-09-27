@@ -5,7 +5,8 @@ import { afterEach, beforeEach, vi } from "vitest"
 
 import type { VendorTestStatus } from "../src/api/admin"
 import VendorTestConsole from "../src/components/VendorTestConsole.vue"
-import vendorTestConsoleSource from "../src/components/VendorTestConsole.vue?raw"
+import VendorTestStepUpDialog from "../src/components/VendorTestStepUpDialog.vue"
+import vendorTestStepUpSource from "../src/components/VendorTestStepUpDialog.vue?raw"
 
 const baseStatus: VendorTestStatus = {
   mode: "inactive",
@@ -1537,7 +1538,7 @@ describe("系统配置页真实联调控制台", () => {
     const wrapper = mountConsole()
     await flushPromises()
     const setupState = (
-      wrapper.vm.$ as unknown as {
+      wrapper.findComponent(VendorTestStepUpDialog).vm.$ as unknown as {
         setupState: {
           stepUpPassword: string
           resetConfirmation: string
@@ -1703,11 +1704,11 @@ describe("系统配置页真实联调控制台", () => {
   })
 
   it("保留 step-up dialog 移动端宽度与触控 CSS 契约", () => {
-    expect(vendorTestConsoleSource).toContain('width="440px"')
-    expect(vendorTestConsoleSource).toContain("max-width: calc(100vw - 32px)")
-    expect(vendorTestConsoleSource).toContain("min-height: 44px")
-    expect(vendorTestConsoleSource).toContain("@media (max-width: 360px)")
-    expect(vendorTestConsoleSource).toContain("flex: 1 1 100%")
+    expect(vendorTestStepUpSource).toContain('width="440px"')
+    expect(vendorTestStepUpSource).toContain("max-width: calc(100vw - 32px)")
+    expect(vendorTestStepUpSource).toContain("min-height: 44px")
+    expect(vendorTestStepUpSource).toContain("@media (max-width: 360px)")
+    expect(vendorTestStepUpSource).toContain("flex: 1 1 100%")
   })
 
   it("切回操作 pending 与失败状态提示保持 fail-closed", async () => {

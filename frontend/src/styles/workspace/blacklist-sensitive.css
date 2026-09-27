@@ -24,7 +24,7 @@
   gap: 8px;
   align-items: center;
   color: var(--tx-hi);
-  font-size: 13.5px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 
@@ -37,7 +37,7 @@
 .apps-drawer-head code {
   display: block;
   color: var(--tx-3);
-  font: 11px var(--mono);
+  font: var(--fs-sm) var(--mono);
 }
 
 .sign-content-block,
@@ -53,7 +53,7 @@
 .sign-content-block > span,
 .template-content-block > span {
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   letter-spacing: 0.12em;
 }
 
@@ -61,7 +61,7 @@
 .template-content-block p {
   margin: 0;
   color: var(--tx-hi);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.8;
 }
 
@@ -78,7 +78,7 @@
 .callback-fact-grid dt,
 .template-fact-grid dt {
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .sign-fact-grid dd,
@@ -86,13 +86,13 @@
 .template-fact-grid dd {
   margin: 1px 0 0;
   color: var(--tx);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 
 .sign-name-item i {
   margin-left: 6px;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-style: normal;
 }
 
@@ -106,7 +106,7 @@
   padding-top: 8px;
   border-top: 1px solid var(--hair-2);
   color: var(--tx-3);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .sign-trail,
@@ -126,7 +126,7 @@
 .sign-preview-text {
   color: var(--tx);
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
 }
 
 .sign-proof-hint,
@@ -134,7 +134,7 @@
   display: block;
   margin-top: 6px;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .sign-apps {
@@ -148,7 +148,7 @@
   padding: 2px 10px;
   color: var(--tx);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   background: var(--sink);
   border: 1px solid var(--hair);
   border-radius: 5px;
@@ -156,7 +156,7 @@
 
 .sign-apps-note {
   color: var(--tx-3);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .sign-detail-actions,
@@ -173,7 +173,7 @@
 .sign-detail-actions .why {
   width: 100%;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .sign-form,
@@ -204,7 +204,7 @@
 .callback-editor-foot small {
   max-width: 320px;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 /* 敏感词页面专属：短词密排词条墙（替代整行表格），删除 × 常驻弱化、悬停朱红。 */
@@ -213,17 +213,6 @@
   align-items: flex-end;
   gap: 12px;
   flex: none;
-}
-
-.sensitive-policy {
-  display: grid;
-  gap: 5px;
-}
-
-.sensitive-policy > span {
-  color: var(--tx-3);
-  font-size: 10.5px;
-  white-space: nowrap;
 }
 
 .sensitive-wall {
@@ -241,7 +230,7 @@
   min-width: 0;
   padding: 7px 8px 7px 12px;
   color: var(--tx);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   background: var(--sink);
   border: 1px solid var(--hair);
   border-radius: 7px;
@@ -257,7 +246,7 @@
   flex: none;
   padding: 3px 5px;
   color: var(--tx-3);
-  font: 11px/1 var(--mono);
+  font: var(--fs-sm)/1 var(--mono);
   background: none;
   border: 0;
   border-radius: 4px;
@@ -271,7 +260,7 @@
 
 .sensitive-tile:hover .sensitive-tile-del,
 .sensitive-tile-del:focus-visible {
-  color: #ef9b89;
+  color: var(--verm-text);
 }
 
 /* 黑名单/敏感词页面专属：检索条/分页并入 reply-* 共享组，抽屉骨架并入 sign-* 共享组。 */
@@ -288,14 +277,14 @@
 .sensitive-field-hint {
   margin-left: 6px;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-style: normal;
 }
 
 .blacklist-phones .el-textarea__inner,
 .sensitive-words .el-textarea__inner {
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-md);
   line-height: 1.9;
 }
 
@@ -313,14 +302,14 @@
 .user-chip {
   padding: 2px 10px;
   color: var(--tx-2);
-  font: 10.5px var(--mono);
+  font: var(--fs-xs) var(--mono);
   background: var(--sink);
   border: 1px solid var(--hair);
   border-radius: 5px;
 }
 
 /* 预检 chips：ok 文字改用亮底自适应的 --verdi-text，两边框按深色令牌同值就地令牌化；
-   bad 文字 #ef9b89 保留深色值，亮色覆写见文件末尾明亮模式区块。 */
+   bad 文字走 --verm-text，随主题取值。 */
 .blacklist-chip-ok,
 .sensitive-chip-ok,
 .user-chip-ok {
@@ -331,7 +320,7 @@
 .blacklist-chip-bad,
 .sensitive-chip-bad,
 .user-chip-bad {
-  color: #ef9b89;
+  color: var(--verm-text);
   border-color: color-mix(in srgb, var(--verm) 45%, transparent);
 }
 
@@ -340,7 +329,7 @@
 .user-parse-error {
   margin: -6px 0 12px;
   color: var(--verm);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 @media (max-width: 760px) {
@@ -374,7 +363,7 @@
   .blacklist-mobile-list header span,
   .blacklist-mobile-list footer time {
     color: var(--muted);
-    font-size: 10px;
+    font-size: var(--fs-2xs);
   }
 
   .sign-mobile-list dd {
@@ -450,7 +439,7 @@
   .template-mobile-list > article > .template-inline-content {
     display: block;
     margin-top: 10px;
-    font-size: 12px;
+    font-size: var(--fs-md);
   }
 
   .template-mobile-list > article > .cell-sub {
@@ -473,7 +462,7 @@
 
   .template-mobile-list dt {
     color: var(--muted);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
   }
 
   .template-mobile-list dd {
@@ -560,8 +549,8 @@
     width: 36px;
     height: 36px;
     margin-left: auto;
-    color: #b9c3bd;
-    font-size: 24px;
+    color: var(--tx);
+    font-size: var(--fs-display);
     font-weight: 300;
   }
 
@@ -709,7 +698,7 @@
     display: block;
     margin-bottom: 2px;
     color: var(--tx-3);
-    font-size: 9.5px;
+    font-size: var(--fs-2xs);
     content: attr(data-label);
   }
 

@@ -1,18 +1,17 @@
 <script setup lang="ts">
 import { CATEGORY_OPTIONS } from "../lib/labels"
-import { useApprovedResources } from "../composables/useApprovedResources"
 import ApiDemoDialog from "../components/ApiDemoDialog.vue"
+import AppDetailDrawer from "../components/AppDetailDrawer.vue"
+import AppEditorDrawer from "../components/AppEditorDrawer.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
-import { computed, h, onMounted, reactive, ref } from "vue"
+import { computed, h, onMounted, ref } from "vue"
 
 import {
   createApp,
   disableApp,
-  estimateWorstCaseCapacity,
   getApp,
   listApps,
-  parseFrequencyOverride,
   revokeOldAppKey,
   rotateAppKey,
   rotateCallbackSecret,
@@ -23,16 +22,21 @@ import {
 import { listConfigs } from "../api/admin"
 import { getReport, type ReportRow } from "../api/reports"
 import { useLatestRead } from "../composables/useLatestRead"
-import { listSigns } from "../api/signs"
 import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
+import {
+  callbackDisplay,
+  graceHoursLeft,
+  quotaPercent as quotaPercentOf,
+  quotaTone as quotaToneOf,
+} from "../lib/appDisplay"
 import { copyText } from "../lib/clipboard"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction, captureCurrent } = useConfirmActions()
-import { formatNumber, formatPercent } from "../lib/format"
-import { CATEGORY_LABELS, roleNames, type MessageCategory } from "../lib/labels"
+import { formatNumber } from "../lib/format"
+import { roleNames, type MessageCategory } from "../lib/labels"
 import { formatDateTime, shanghaiDateKey } from "../lib/time"
 import { errorText } from "../lib/error"
 
@@ -59,7 +63,7 @@ const statusFilter = ref<"all" | "1" | "0">("all")
 const detailId = ref<number | null>(null)
 const detailOpen = ref(false)
 const drawerOpen = ref(false)
-const editingId = ref<number | null>(null)
+const editorDrawer = ref<InstanceType<typeof AppEditorDrawer> | null>(null)
 const secretOpen = ref(false)
 const secretTitle = ref("")
 const secretValue = ref("")
@@ -76,64 +80,6 @@ const dailyUsage = ref<Map<string, ReportRow>>(new Map())
 const usageRead = useLatestRead()
 const listRead = useLatestRead()
 const usageUnavailable = ref(true)
-/** 已通过厂商审核的签名清单；加载失败不阻塞表单，下拉显示不可用并可重试。 */
-
-const form = reactive({
-  name: "",
-  dept: "",
-  allowed_categories: ["notice"] as MessageCategory[],
-  default_sign: "",
-  daily_quota: 0,
-  rate_limit_per_min: 60,
-  recipient_limit_per_min: 10000,
-  segment_limit_per_min: 10000,
-  max_in_flight_chunks: 200,
-  allow_market_api_bulk: false,
-  blacklist_check: true,
-  freq_override: "",
-  allowed_ips: "",
-  ip_allowlist_exempt_until: "",
-  unlimited_quota_exempt_until: "",
-  admission_exempt_note: "",
-  callback_url: "",
-  callback_report_enabled: false,
-  status: 1 as 0 | 1,
-})
-
-/** 频控覆盖输入失焦前的内联校验；保存时仍由 payload() 兜底。 */
-const freqOverrideError = computed(() => {
-  if (!form.freq_override.trim()) return ""
-  try {
-    parseFrequencyOverride(form.freq_override)
-    return ""
-  } catch (error) {
-    return errorText(error, "频控覆盖 JSON 无效")
-  }
-})
-
-function resetForm(): void {
-  Object.assign(form, {
-    name: "",
-    dept: "",
-    allowed_categories: ["notice"],
-    default_sign: "",
-    daily_quota: 0,
-    rate_limit_per_min: 60,
-    recipient_limit_per_min: 10000,
-    segment_limit_per_min: 10000,
-    max_in_flight_chunks: 200,
-    allow_market_api_bulk: false,
-    blacklist_check: true,
-    freq_override: "",
-    allowed_ips: "",
-    ip_allowlist_exempt_until: "",
-    unlimited_quota_exempt_until: "",
-    admission_exempt_note: "",
-    callback_url: "",
-    callback_report_enabled: false,
-    status: 1,
-  })
-}
 
 /** 接口全量返回，关键词（名称/部门）、类别与状态过滤均为前端推导，不新增查询参数。 */
 const filtered = computed(() => {
@@ -180,60 +126,13 @@ function rateOf(app: ManagedApp): number | null {
   return dailyUsage.value.get(String(app.id))?.success_rate ?? null
 }
 
-/** 配额占用百分比；配额 0（不限量）或用量不可用时不渲染进度条。 */
 function quotaPercent(app: ManagedApp): number | null {
-  const consumed = consumedOf(app)
-  if (consumed === null || app.daily_quota <= 0) return null
-  return Math.min(100, (consumed / app.daily_quota) * 100)
+  return quotaPercentOf(consumedOf(app), app.daily_quota)
 }
 
-/** 进度条色阶：>80% 琥珀、≥100% 朱红，其余 verdi。 */
 function quotaTone(app: ManagedApp): "" | "warn" | "over" {
-  const percent = quotaPercent(app)
-  if (percent === null) return ""
-  if (percent >= 100) return "over"
-  if (percent > 80) return "warn"
-  return ""
+  return quotaToneOf(quotaPercent(app))
 }
-
-/** 旧 Key 宽限剩余小时（向上取整，下限 0）；无宽限期旧 Key 返回 null。 */
-function graceHoursLeft(app: ManagedApp): number | null {
-  if (!app.old_key_expires_at) return null
-  const ms = Date.parse(app.old_key_expires_at) - Date.now()
-  // 静态检查禁词 Math.ceil（防计费公式重实现误判）；floor((ms+3599999)/1h) 等价向上取整
-  return Math.max(0, Math.floor((ms + 3_599_999) / 3_600_000))
-}
-
-/** 回调列只展示 host+path，完整 URL 收进 title。 */
-function callbackDisplay(url: string): string {
-  try {
-    const parsed = new URL(url)
-    return `${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`
-  } catch {
-    return url
-  }
-}
-
-function categoriesText(app: ManagedApp): string {
-  return app.allowed_categories.map((category) => CATEGORY_LABELS[category]).join(" · ")
-}
-
-function freqOverrideText(item: ManagedApp): string {
-  const override = item.freq_override
-  if (!override) return "未覆盖"
-  const parts: string[] = []
-  if (override.verify_per_minute) parts.push(`验证码 ${override.verify_per_minute}/分`)
-  if (override.verify_per_day) parts.push(`验证码 ${override.verify_per_day}/日`)
-  if (override.market_per_day) parts.push(`营销 ${override.market_per_day}/日`)
-  return parts.join(" · ") || "未覆盖"
-}
-
-const detailRateText = computed(() => {
-  const current = detail.value
-  if (!current) return "—"
-  const rate = rateOf(current)
-  return rate === null ? "—" : `${formatPercent(rate)}（送达 /（送达 + 失败），未知不入分母）`
-})
 
 const demoOpen = ref(false)
 const demoApp = ref<ManagedApp | null>(null)
@@ -325,38 +224,13 @@ async function loadKeyGraceHours(): Promise<void> {
   }
 }
 
-const {
-  approved: approvedSigns,
-  loading: signsLoading,
-  unavailable: signsUnavailable,
-  load: loadApprovedSigns,
-} = useApprovedResources(listSigns, (error) => ElMessage.error(errorText(error, "已通过签名清单加载失败")))
-
-/** 当前默认签名不在已通过清单时补一个遗留项，避免下拉显示原始值或被静默清空。 */
-const legacySign = computed(() => {
-  const value = form.default_sign.trim()
-  if (!value) return null
-  return approvedSigns.value.some((item) => item.name === value) ? null : value
-})
-
 function openCreate(): void {
-  editingId.value = null
-  resetForm()
+  editorDrawer.value?.prepare(null)
   drawerOpen.value = true
 }
 
 function openEdit(item: ManagedApp): void {
-  editingId.value = item.id
-  Object.assign(form, {
-    ...item,
-    default_sign: item.default_sign || "",
-    allowed_ips: item.allowed_ips.join("\n"),
-    ip_allowlist_exempt_until: item.ip_allowlist_exempt_until || "",
-    unlimited_quota_exempt_until: item.unlimited_quota_exempt_until || "",
-    admission_exempt_note: item.admission_exempt_note || "",
-    callback_url: item.callback_url || "",
-    freq_override: item.freq_override ? JSON.stringify(item.freq_override) : "",
-  })
+  editorDrawer.value?.prepare(item)
   drawerOpen.value = true
 }
 
@@ -372,39 +246,6 @@ function editFromDetail(): void {
   openEdit(current)
   detailOpen.value = false
 }
-
-function parseAllowedIps(input: string): string[] {
-  return input
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-}
-
-function payload(): AppPayload {
-  const override = parseFrequencyOverride(form.freq_override)
-  return {
-    dept: form.dept.trim(),
-    allowed_categories: form.allowed_categories,
-    default_sign: form.default_sign.trim() || null,
-    daily_quota: form.daily_quota,
-    rate_limit_per_min: form.rate_limit_per_min,
-    recipient_limit_per_min: form.recipient_limit_per_min,
-    segment_limit_per_min: form.segment_limit_per_min,
-    max_in_flight_chunks: form.max_in_flight_chunks,
-    allow_market_api_bulk: form.allow_market_api_bulk,
-    blacklist_check: form.blacklist_check,
-    freq_override: override,
-    callback_url: form.callback_url.trim() || null,
-    allowed_ips: parseAllowedIps(form.allowed_ips),
-    ip_allowlist_exempt_until: form.ip_allowlist_exempt_until.trim() || null,
-    unlimited_quota_exempt_until: form.unlimited_quota_exempt_until.trim() || null,
-    admission_exempt_note: form.admission_exempt_note.trim() || null,
-    callback_report_enabled: form.callback_report_enabled,
-    status: form.status,
-  }
-}
-
-const worstCase = computed(() => estimateWorstCaseCapacity(form))
 
 function reveal(title: string, value: string, hint = "请立即保存；关闭后平台不会再次展示。") {
   secretTitle.value = title
@@ -441,21 +282,14 @@ async function copySecret(): Promise<void> {
   }
 }
 
-async function save(): Promise<void> {
-  if (!form.name.trim() || !form.dept.trim() || !form.allowed_categories.length) {
-    ElMessage.warning("请填写应用名、部门并选择至少一个类别")
-    return
-  }
-  const targetId = editingId.value
+async function save(body: AppPayload, name: string, targetId: number | null): Promise<void> {
   const creating = targetId === null
   if (creating && secretOperation.value !== null) return
   if (creating) secretOperation.value = "create-app"
   let secretRevealed = false
   saving.value = true
   try {
-    const body = payload()
     if (creating) {
-      const name = form.name.trim()
       const result = await createApp({ ...body, name })
       const credentials = result.callback_secret
         ? `API Key: ${result.api_key}\nCallback Secret: ${result.callback_secret}`
@@ -646,7 +480,6 @@ onMounted(() => {
   void load()
   void loadDailyUsage()
   void loadKeyGraceHours()
-  void loadApprovedSigns()
 })
 </script>
 
@@ -792,329 +625,27 @@ onMounted(() => {
     </footer>
   </section>
 
-  <el-drawer v-model="detailOpen" class="apps-drawer apps-detail-drawer" size="min(560px, 92vw)" :teleported="false">
-    <template #header>
-      <div v-if="detail" class="apps-drawer-head">
-        <div class="apps-drawer-title">
-          <el-tag :type="detail.status ? 'success' : 'info'">{{ detail.status ? "启用" : "停用" }}</el-tag>
-          <b>{{ detail.name }}</b>
-        </div>
-        <code>#{{ detail.id }} · {{ detail.dept }} · 创建于 {{ formatDateTime(detail.created_at) }}</code>
-      </div>
-    </template>
-    <template v-if="detail">
-      <section class="app-sec">
-        <h3>运行概览 · 今日<small>统计口径 services/stats.py</small></h3>
-        <div class="apps-hero">
-          <div class="apps-hero-nums">
-            <template v-if="!usageUnavailable">
-              <b>{{ formatNumber(consumedOf(detail) ?? 0) }}</b>
-              <span
-                >/ {{ detail.daily_quota === 0 ? "不限量" : formatNumber(detail.daily_quota) }} 计费条 · 成功率
-                {{ detailRateText }}</span
-              >
-            </template>
-            <template v-else>
-              <b>—</b>
-              <span>今日用量统计暂不可用</span>
-            </template>
-          </div>
-          <span v-if="quotaPercent(detail) !== null" class="apps-quota-bar">
-            <i :class="quotaTone(detail)" :style="{ width: `${quotaPercent(detail)}%` }"></i>
-          </span>
-        </div>
-        <dl class="apps-fact-grid">
-          <div
-            ><dt>每分钟限流</dt><dd class="apps-mono">{{ formatNumber(detail.rate_limit_per_min) }} 次</dd></div
-          >
-          <div
-            ><dt>频控覆盖</dt><dd>{{ freqOverrideText(detail) }}</dd></div
-          >
-        </dl>
-      </section>
+  <AppDetailDrawer
+    v-model="detailOpen"
+    :app="detail"
+    :consumed="detail ? consumedOf(detail) : null"
+    :rate="detail ? rateOf(detail) : null"
+    :usage-unavailable="usageUnavailable"
+    :rotating-key-id="rotatingKeyId"
+    :revoking-key-id="revokingKeyId"
+    :rotating-callback-id="rotatingCallbackId"
+    :status-busy-id="statusBusyId"
+    :secret-busy="secretOperation !== null"
+    @edit="editFromDetail"
+    @demo="openDemo"
+    @rotate-key="rotateKey"
+    @revoke-key="revokeKey"
+    @rotate-callback="rotateCallback"
+    @disable="disable"
+    @enable="enable"
+  />
 
-      <section class="app-sec">
-        <h3>密钥与回调<small>明文仅创建/轮换当次展示</small></h3>
-        <div class="apps-key-line">
-          <code v-if="detail.status === 1">{{ detail.api_key_prefix }}••••</code>
-          <code v-else>已随停用吊销</code>
-          <small>当前 API Key</small>
-          <span class="apps-key-act">
-            <el-button
-              v-if="detail.status === 1"
-              :data-testid="`rotate-key-${detail.id}`"
-              link
-              type="primary"
-              :loading="rotatingKeyId === detail.id"
-              :disabled="secretOperation !== null"
-              @click="rotateKey(detail)"
-              >轮换 Key</el-button
-            >
-          </span>
-        </div>
-        <div v-if="detail.old_key_prefix && detail.old_key_expires_at" class="apps-key-grace">
-          <code>{{ detail.old_key_prefix }}••••</code>
-          <small
-            >旧 Key 宽限期至 {{ formatDateTime(detail.old_key_expires_at) }}（余
-            {{ graceHoursLeft(detail) }}h），到期自动失效</small
-          >
-          <span class="apps-key-act">
-            <el-button
-              :data-testid="`revoke-old-key-${detail.id}`"
-              link
-              type="danger"
-              :loading="revokingKeyId === detail.id"
-              :disabled="revokingKeyId !== null"
-              @click="revokeKey(detail)"
-              >立即作废</el-button
-            >
-          </span>
-        </div>
-        <dl class="apps-fact-grid">
-          <div class="full">
-            <dt>回调 URL（内网白名单校验 · 生产仅 HTTPS）</dt>
-            <dd class="apps-mono">{{ detail.callback_url || "未配置" }}</dd>
-          </div>
-          <div>
-            <dt>明细回调</dt>
-            <dd>{{ detail.callback_url ? (detail.callback_report_enabled ? "开启" : "关闭") : "—" }}</dd>
-          </div>
-          <div>
-            <dt>回调密钥</dt>
-            <dd>
-              {{ detail.callback_secret_configured ? "已配置" : "未配置" }}
-              <el-button
-                :data-testid="`rotate-callback-${detail.id}`"
-                link
-                type="primary"
-                :loading="rotatingCallbackId === detail.id"
-                :disabled="secretOperation !== null"
-                @click="rotateCallback(detail)"
-                >轮换回调密钥</el-button
-              >
-            </dd>
-          </div>
-        </dl>
-      </section>
-
-      <section class="app-sec">
-        <h3>策略</h3>
-        <dl class="apps-fact-grid">
-          <div
-            ><dt>允许类别</dt><dd>{{ categoriesText(detail) }}</dd></div
-          >
-          <div
-            ><dt>默认签名</dt><dd>{{ detail.default_sign ? `【${detail.default_sign}】` : "未设置" }}</dd></div
-          >
-          <div
-            ><dt>黑名单检查</dt><dd>{{ detail.blacklist_check ? "开启" : "关闭" }}</dd></div
-          >
-          <div
-            ><dt>营销 API 大批量</dt><dd>{{ detail.allow_market_api_bulk ? "已预授权" : "未预授权" }}</dd></div
-          >
-          <div>
-            <dt>来源 IP 白名单</dt>
-            <dd class="apps-mono">{{
-              detail.allowed_ips.length ? `${detail.allowed_ips.length} 条 CIDR` : "全网放行"
-            }}</dd>
-          </div>
-        </dl>
-      </section>
-    </template>
-    <template #footer>
-      <div v-if="detail" class="apps-drawer-foot">
-        <el-button :data-testid="`edit-app-${detail.id}`" @click="editFromDetail">编辑配置</el-button>
-        <el-button :data-testid="`demo-script-${detail.id}`" @click="openDemo(detail)">接入示例</el-button>
-        <span class="apps-foot-sp"></span>
-        <el-button
-          v-if="detail.status"
-          :data-testid="`disable-app-${detail.id}`"
-          type="danger"
-          :loading="statusBusyId === detail.id"
-          :disabled="statusBusyId !== null"
-          @click="disable(detail)"
-          >停用应用</el-button
-        >
-        <el-button
-          v-else
-          :data-testid="`enable-app-${detail.id}`"
-          type="success"
-          :loading="statusBusyId === detail.id"
-          :disabled="statusBusyId !== null"
-          @click="enable(detail)"
-          >启用应用</el-button
-        >
-      </div>
-    </template>
-  </el-drawer>
-
-  <el-drawer v-model="drawerOpen" class="apps-drawer apps-editor-drawer" size="min(560px, 92vw)" :teleported="false">
-    <template #header>
-      <div class="apps-drawer-head">
-        <div class="apps-drawer-title">{{ editingId === null ? "新建应用" : "编辑应用" }}</div>
-        <code>{{
-          editingId === null
-            ? "创建成功后 API Key 与回调密钥仅展示一次，请立即保存"
-            : `正在编辑「${form.name}」· 应用名创建后不可修改`
-        }}</code>
-      </div>
-    </template>
-    <el-form label-position="top" @submit.prevent="save">
-      <section class="apps-form-sec">
-        <h3>基本信息</h3>
-        <el-form-item label="应用名" required>
-          <el-input v-model="form.name" :disabled="editingId !== null" maxlength="64" autocomplete="off" />
-          <small class="field-rule">1–64 字符，全局唯一，创建后不可修改。</small>
-        </el-form-item>
-        <el-form-item label="部门" required>
-          <el-input v-model="form.dept" maxlength="128" />
-          <small class="field-rule">1–128 字符，用于部门级日配额归集。</small>
-        </el-form-item>
-        <el-form-item label="允许类别" required>
-          <el-checkbox-group v-model="form.allowed_categories">
-            <el-checkbox value="verify">验证码</el-checkbox>
-            <el-checkbox value="notice">通知</el-checkbox>
-            <el-checkbox value="market">营销</el-checkbox>
-          </el-checkbox-group>
-          <small class="field-rule"
-            >默认仅通知。验证码/营销须显式勾选；未授权类别的发送请求返回 403 CATEGORY_NOT_ALLOWED。</small
-          >
-        </el-form-item>
-        <el-form-item label="默认签名">
-          <el-select
-            v-model="form.default_sign"
-            data-testid="default-sign-select"
-            clearable
-            filterable
-            :loading="signsLoading"
-            :placeholder="approvedSigns.length ? '从已通过签名中选择' : '暂无已通过签名'"
-            class="apps-form-select"
-          >
-            <el-option v-for="sign in approvedSigns" :key="sign.id" :value="sign.name" :label="`【${sign.name}】`" />
-            <el-option v-if="legacySign" :value="legacySign" :label="`【${legacySign}】（未通过审核的遗留值）`" />
-          </el-select>
-          <small class="field-rule"
-            >仅可选择签名管理中厂商状态为「已通过」的签名；请求未指定签名时使用，请求内显式签名优先。清空表示不设置。</small
-          >
-          <small v-if="signsUnavailable" class="field-rule">
-            签名清单加载失败，<el-button link type="primary" data-testid="signs-retry" @click="loadApprovedSigns"
-              >重试</el-button
-            >；保存前请确认可选范围。
-          </small>
-        </el-form-item>
-      </section>
-
-      <section class="apps-form-sec">
-        <h3>配额与策略</h3>
-        <div class="apps-form-2col">
-          <el-form-item label="日配额（计费条）">
-            <el-input-number v-model="form.daily_quota" :min="0" :max="100000000" />
-            <small class="field-rule">0 = 不限量，最大 100,000,000。</small>
-          </el-form-item>
-          <el-form-item label="每分钟限流">
-            <el-input-number v-model="form.rate_limit_per_min" :min="1" :max="60000" />
-            <small class="field-rule">1–60,000 次请求/分钟。</small>
-          </el-form-item>
-        </div>
-        <div class="apps-form-2col">
-          <el-form-item label="每分钟号码上限">
-            <el-input-number v-model="form.recipient_limit_per_min" :min="1" :max="100000000" />
-          </el-form-item>
-          <el-form-item label="每分钟计费条上限">
-            <el-input-number v-model="form.segment_limit_per_min" :min="1" :max="100000000" />
-          </el-form-item>
-        </div>
-        <div class="apps-form-2col">
-          <el-form-item label="在途分片上限">
-            <el-input-number v-model="form.max_in_flight_chunks" :min="1" :max="100000" />
-          </el-form-item>
-          <el-form-item label="营销 API 大批量预授权">
-            <el-switch v-model="form.allow_market_api_bulk" />
-            <small class="field-rule">关闭时，API 营销达到审批阈值将被 403 拒绝，不会转入人工审批。</small>
-          </el-form-item>
-        </div>
-        <div class="apps-form-alert" data-testid="worst-case-capacity">
-          最坏能力：每分钟最多 {{ formatNumber(worstCase.recipientsPerMin) }} 个号码、
-          {{ formatNumber(worstCase.segmentsPerMin) }} 计费条；每日
-          {{
-            worstCase.dailySegments === null
-              ? "不限量（生产须豁免）"
-              : `${formatNumber(worstCase.dailySegments)} 计费条`
-          }}。 单请求最多 10,000 号码，1×10,000 与 100×100 按同一成本计入。
-        </div>
-        <div v-if="form.daily_quota === 0" class="apps-form-alert">
-          日配额为 0 表示不限量。生产保存必须填写未过期豁免与原因，否则无法保存。
-        </div>
-        <el-form-item label="黑名单检查">
-          <el-switch v-model="form.blacklist_check" />
-          <small class="field-rule">关闭后该应用号码不执行黑名单剔除。</small>
-        </el-form-item>
-        <el-form-item label="频控覆盖 JSON" :error="freqOverrideError || undefined">
-          <el-input
-            v-model="form.freq_override"
-            data-testid="freq-override"
-            type="textarea"
-            placeholder='例如 {"verify_per_minute":2,"verify_per_day":20,"market_per_day":1}'
-          />
-          <small class="field-rule"
-            >留空用系统默认；仅 verify_per_minute（1–100）/ verify_per_day（1–10,000）/
-            market_per_day（1–1,000），值为正整数。</small
-          >
-        </el-form-item>
-      </section>
-
-      <section class="apps-form-sec">
-        <h3>安全与回调</h3>
-        <el-form-item label="来源 IP 白名单（每行一个 IP/CIDR，最多 50 条）">
-          <div v-if="!form.allowed_ips.trim()" class="apps-form-alert apps-form-alert--verm">
-            白名单为空表示全网放行。生产环境必须填写 CIDR，或提供未过期豁免与原因。
-          </div>
-          <el-input
-            v-model="form.allowed_ips"
-            data-testid="allowed-ips-input"
-            type="textarea"
-            placeholder="203.0.113.0/24"
-          />
-          <small class="field-rule">单 IP 自动归一化为 /32；留空仅开发/测试或已登记豁免可用，保存时校验格式。</small>
-        </el-form-item>
-        <el-form-item label="豁免到期（空白名单 / 无限配额）">
-          <el-input
-            v-model="form.ip_allowlist_exempt_until"
-            placeholder="空白名单豁免 ISO8601，如 2026-09-10T08:00:00+08:00"
-          />
-          <el-input
-            v-model="form.unlimited_quota_exempt_until"
-            placeholder="无限配额豁免 ISO8601"
-            class="apps-form-stacked"
-          />
-          <el-input
-            v-model="form.admission_exempt_note"
-            maxlength="200"
-            placeholder="豁免原因（生产必填）"
-            class="apps-form-stacked"
-          />
-        </el-form-item>
-        <el-form-item label="回调 URL">
-          <el-input v-model="form.callback_url" placeholder="https://" />
-          <small class="field-rule">须落在内网 CIDR 白名单，生产仅 HTTPS；留空表示不推送回调。</small>
-        </el-form-item>
-        <el-form-item label="明细回调">
-          <el-switch v-model="form.callback_report_enabled" />
-          <small class="field-rule">按消息粒度推送明细回调，开启前需先配置回调 URL。</small>
-        </el-form-item>
-      </section>
-    </el-form>
-    <template #footer>
-      <div class="apps-drawer-foot">
-        <small class="apps-form-audit">保存即记审计（{{ editingId === null ? "app_create" : "app_update" }}）</small>
-        <span class="apps-foot-sp"></span>
-        <el-button @click="drawerOpen = false">取消</el-button>
-        <el-button data-testid="save-app" type="primary" :loading="saving" @click="save">{{
-          editingId === null ? "创建应用" : "保存"
-        }}</el-button>
-      </div>
-    </template>
-  </el-drawer>
+  <AppEditorDrawer ref="editorDrawer" v-model="drawerOpen" :saving="saving" @save="save" />
 
   <el-dialog
     v-model="secretOpen"

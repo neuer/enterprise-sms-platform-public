@@ -149,7 +149,7 @@ async function submit(): Promise<void> {
 .daily-password-error {
   margin: -4px 0 0;
   color: var(--el-color-danger);
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 .daily-password-native-submit {

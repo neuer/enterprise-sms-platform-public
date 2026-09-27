@@ -12,7 +12,7 @@
   border-radius: 7px;
   color: var(--tx-2);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   white-space: nowrap;
 }
 
@@ -49,12 +49,6 @@
   gap: 8px;
 }
 
-.report-fld > span {
-  color: var(--tx-3);
-  font-size: 10.5px;
-  white-space: nowrap;
-}
-
 /* 周期/维度 seg 已并入 FilterSeg 单点（shared.css）。 */
 
 /* 复合提权：el-select.css 后加载，单类会被 .el-select 自身的 --el-select-width: 100% 覆盖。 */
@@ -82,14 +76,14 @@
 .report-dirty-hint {
   margin: -8px 4px 12px;
   color: var(--amber);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 /* 当日口径提示：常驻中性细字，不用琥珀（非告警语义） */
 .report-freshness-hint {
   margin: -8px 4px 12px;
   color: var(--tx-3);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 /* 导出状态条：内联跟随筛选条，仅有任务时出现 */
@@ -102,7 +96,7 @@
   background: linear-gradient(180deg, var(--panel), var(--panel-2));
   border: 1px solid var(--hair);
   border-radius: 10px;
-  font-size: 11.5px;
+  font-size: var(--fs-md);
   color: var(--tx-2);
 }
 
@@ -114,7 +108,7 @@
   background: color-mix(in srgb, var(--amber) 14%, transparent);
   color: var(--amber);
   font-family: var(--mono);
-  font-size: 9.5px;
+  font-size: var(--fs-2xs);
   line-height: 1.8;
 }
 
@@ -139,7 +133,7 @@
 }
 
 .export-strip .export-mode {
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   color: var(--tx-3);
   border: 1px dashed var(--line);
   border-radius: 5px;
@@ -164,13 +158,13 @@
 .report-kpi .el-card__body > span {
   display: block;
   color: var(--tx-2);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
 }
 
 .report-kpi .el-card__body > small {
   display: block;
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .report-kpi strong {
@@ -178,7 +172,7 @@
   margin: 1px 0 0;
   color: var(--tx-hi);
   font-family: var(--mono);
-  font-size: 26px;
+  font-size: var(--fs-display);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -186,14 +180,14 @@
 .report-kpi .strong-note {
   display: inline;
   margin-left: 7px;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   font-weight: 400;
 }
 
 .report-kpi .kpi-foot {
   margin: 8px 0 0;
   color: var(--tx-2);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .report-kpi .kpi-kv {
@@ -201,7 +195,7 @@
   justify-content: space-between;
   margin-top: 6px;
   color: var(--tx-2);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .report-kpi .kpi-kv b {
@@ -279,7 +273,7 @@
   margin-left: auto;
   color: var(--tx-3);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-style: normal;
 }
 
@@ -308,7 +302,7 @@
 .rank-name {
   overflow: hidden;
   color: var(--tx);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -334,14 +328,14 @@
 .rank-num b {
   display: block;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: var(--fs-md);
   font-variant-numeric: tabular-nums;
 }
 
 .rank-num small {
   display: block;
   color: var(--tx-3);
-  font-size: 9.5px;
+  font-size: var(--fs-2xs);
 }
 
 .rate-chip {
@@ -349,7 +343,7 @@
   padding: 0 7px;
   border-radius: 5px;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   line-height: 1.8;
   white-space: nowrap;
 }
@@ -373,7 +367,7 @@
 .rank-note {
   margin: 10px 0 0;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .report-pager {
@@ -472,7 +466,7 @@
 
   .report-mobile-list dt {
     color: var(--tx-3);
-    font-size: 9px;
+    font-size: var(--fs-2xs);
   }
 
   .report-mobile-list dd {
@@ -482,6 +476,6 @@
   .report-mobile-list p {
     margin: 0;
     color: var(--tx-2);
-    font-size: 10px;
+    font-size: var(--fs-2xs);
   }
 }

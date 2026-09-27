@@ -21,9 +21,10 @@
 | --slate | #4574A3 | notice 类 |
 | --amber | #D8A35C | market 类、warning |
 | --verm | #E46A4F | danger、失败 |
+| --verdi-text / --verm-text / --slate-text | #71C4AD / #EF9B89 / #6F9BCF | 文字级绿 / 朱红 / 蓝：面板上作前景色时用这组，明亮主题自动取深色本色（均 AA）；不得再写死柔和色值再到明亮层打补丁 |
 | --chart-blue | #6F9BCF | 图表 notice 系列：slate 色相族的图表亮变体（ECharts canvas 读不到 CSS 变量，经 lib/chartTheme.ts 读取 --chart-* 令牌） |
 
-上表为默认深色令牌。主题由 `frontend/src/lib/theme.ts` 设置根元素 `data-theme`；`frontend/src/styles/theme.css` 提供深色默认值和明亮覆写，`color-scheme` 随主题切换。页面、浮层、输入、禁用态、遮罩和文字层级复用当前主题 token，避免硬编码背景绕过主题。工作区规则与加载顺序见第 8 节。
+上表为默认深色令牌。主题由 `frontend/src/lib/theme.ts` 设置根元素 `data-theme`；`frontend/src/styles/theme.css` 提供深色默认值和明亮令牌覆写，`color-scheme` 随主题切换。页面、浮层、输入、禁用态、遮罩和文字层级复用当前主题 token，避免硬编码背景绕过主题。工作区规则与加载顺序见第 8 节。
 
 **类别三色是硬约定**：verify=verdi、notice=slate、market=amber，出现在类别标签左竖条、统计分段条、图表系列色，任何页面不得混用其他色相表达类别。图表系列按色相族执行：verify 用 --chart-green（深色值同 --verdi-l）、market 用 --chart-amber（深色值同 --amber），notice 允许使用其亮变体 --chart-blue（深色 #6F9BCF）。
 
@@ -34,6 +35,17 @@
 | 界面/正文 | Noto Sans SC Variable（自包含 npm 包 @fontsource-variable/noto-sans-sc，规则 36）, PingFang SC, HarmonyOS Sans SC, Microsoft YaHei, system-ui, sans-serif | 基准 13px/1.6；H1 19px/600；表格 12.5px |
 | **数据字** | IBM Plex Mono（@fontsource 本地 latin woff2，400/500/600）, monospace | 批次号、customId、手机号、金额/条数/百分比、时间戳；一律 `font-variant-numeric: tabular-nums` |
 | 品牌字 | Noto Serif SC Variable（固定品牌文案子集静态实例 400/600）, Noto Serif SC, Source Han Serif SC, Songti SC, serif | 仅三处：侧栏「青鸾」印章字与品牌名、登录会话名片「青鸾」（.login-intro-name）。其余禁用衬线 |
+
+字号只取 `theme.css` 的档位令牌，样式里不写 px 字号（登录页 `clamp()` 流式标题除外；ECharts canvas 读不到 CSS 变量，坐标轴沿用 10px）：
+
+| Token | 值 | 典型用途 |
+|---|---|---|
+| --fs-2xs | 10px | 最小可读字号：徽记、mono 元信息、导航分组标题 |
+| --fs-xs / --fs-sm | 10.5px / 11px | 表头、mono 辅文 / eyebrow、副文、筛选标签 |
+| --fs-md / --fs-base / --fs-body | 12px / 12.5px / 13px | 控件与次级正文 / 表格正文 / 全局基准 |
+| --fs-lg / --fs-xl / --fs-2xl | 14px / 16px / 18px | 强调正文 / 卡片标题、登录输入 / 区块标题与指标 |
+| --fs-h1 / --fs-3xl | 19px / 20px | 页面 H1 / 大号指标 |
+| --fs-display / --fs-hero | 26px / 32px | 抽屉 hero 数字 / 仪表盘余额等主数字 |
 
 ### 2.3 形状与层次
 
@@ -100,15 +112,16 @@
 - 手机号展示统一 `<PhoneMask>` 组件（默认 mask）；授权解密统一 `<PhoneReveal>` 组件（「授权查看」入口，成功提示记审计，明文只存组件易失状态）
 - 状态用 `el-tag` 色彩语义：queued/sending=info、completed/delivered=success、failed/rejected=danger、pending_approval/scheduled=warning、balance_blocked/uncertain=danger 深色
 - 图表 ECharts；时间显示本地 +08:00 `YYYY-MM-DD HH:mm:ss`；全站中文文案；空态/加载用 Element 内置组件，不引第三方 UI 库
-- 前端共享单点：时间格式化 `src/lib/time.ts`；数值展示 `src/lib/format.ts`（formatPercent / formatNumber 固定 zh-CN 千分位，禁用 toLocaleString）；手机号正则/掩码 `src/lib/phone.ts`；类别/角色/状态/厂商审核文案与默认分页 `src/lib/labels.ts`；请求基建 `src/api/client.ts`（`auth.ts` 为 pre-auth 例外）；剪贴板 `src/lib/clipboard.ts`；错误文案提取 `src/lib/error.ts`（errorText，ESLint 拦截内联回潮）；确认对话框 `src/lib/confirm.ts`（confirmAuditedAction 审计两段式 / confirmAction 纯文本，内部吞 cancel/close 返回布尔）；Blob 下载 `src/lib/download.ts`（saveBlob）；导出任务流 `src/composables/useExportTask.ts`（创建→轮询→step-up 下载）；ECharts 装配 `src/composables/useChart.ts`；统一轮询 `src/composables/usePolling.ts`；批量录入大文本防抖解析 `src/composables/useDebouncedEntries.ts`；壳样式只在 `workspace.css` 聚合入口（由 `element-workspace.ts` 随首个非公开路由懒加载引入，视图不重复 import，且保持在该模块 el-* 样式之前），规则本体按主题分片在 `src/styles/workspace/`（@import 顺序即级联顺序，`overrides-light.css` 明亮覆写层必须末位；新增壳样式进对应分片，禁止另起新文件或页面级拷贝），`theme.css` 只留 token、登录页与 Element 覆写。新增同关注点逻辑一律进单点，禁止页面级拷贝
+- 前端共享单点：时间格式化 `src/lib/time.ts`；数值展示 `src/lib/format.ts`（formatPercent / formatNumber 固定 zh-CN 千分位，禁用 toLocaleString）；手机号正则/掩码 `src/lib/phone.ts`；类别/角色/状态/厂商审核文案与默认分页 `src/lib/labels.ts`；请求基建 `src/api/client.ts`（`auth.ts` 为 pre-auth 例外）；剪贴板 `src/lib/clipboard.ts`；错误文案提取 `src/lib/error.ts`（errorText，ESLint 拦截内联回潮）；确认对话框 `src/lib/confirm.ts`（confirmAuditedAction 审计两段式 / confirmAction 纯文本，内部吞 cancel/close 返回布尔）；Blob 下载 `src/lib/download.ts`（saveBlob）；导出任务流 `src/composables/useExportTask.ts`（创建→轮询→step-up 下载）；ECharts 装配 `src/composables/useChart.ts`；统一轮询 `src/composables/usePolling.ts`；批量录入大文本防抖解析 `src/composables/useDebouncedEntries.ts`；壳样式只在 `workspace.css` 聚合入口（由 `element-workspace.ts` 随首个非公开路由懒加载引入，视图不重复 import，且保持在该模块 el-* 样式之后），规则本体按主题分片在 `src/styles/workspace/`（@import 顺序即级联顺序，`overrides-light.css` 明亮覆写层必须末位；新增壳样式进对应分片，禁止另起新文件或页面级拷贝），`theme.css` 只留 token、登录页与入口组件的 Element 覆写。新增同关注点逻辑一律进单点，禁止页面级拷贝
 - 模板/签名由 `src/composables/useMobileLayout.ts` 统一读取 760px 断点，仅挂载桌面表格或移动卡片之一；筛选、详情和未提交编辑状态保留在页面层。
 - 同类只读查询通过 `src/composables/useLatestRead.ts` 在替换和卸载时取消旧请求，API 包装贯穿 AbortSignal，继续保留代际 token 防乱序；取消不显示错误提示，真实错误仍可见，写操作不接入该取消通道。
 - 顶栏余额仅管理员在非仪表盘页按 60s 读取 `/reports/balance` 轻量投影；仪表盘路由复用其 10s 快照广播，页面隐藏暂停。未知或失败时显示暂不可用，其他角色不发余额请求。
-- Element 级联：`element-workspace.ts` 先引入工作区 el-*.css、最后引入 `workspace.css`，workspace 分片的同特异性覆写因此胜出；入口 `theme.css` 排在这些懒加载样式之前，对工作区组件的覆写必须提权。`theme.css` 中日期选择器、tag/alert/message/pagination/plain 主按钮的重混规则加 `:root` 前缀，明亮版用 `[data-theme="light"]` 同特异性后置覆盖。文字绿色一律用 `--verdi-text`（`--verdi` 仅作填充色，暗色底上不达 AA）。`tests/element-cascade-contract.test.ts` 为门禁
-- 组件样式归口：共享组件样式优先收进 workspace 分片（CategoryTag/StatusTag/EmptyState 在 `shared.css`）；`BillingSegments`/`ChannelMonitor`/`DailyPasswordChangeDialog` 使用组件内 scoped 块属允许；`VendorTestConsole` 因 el-dialog teleport 到 body，使用带 vendor- 前缀的非 scoped 块，为列明例外
+- Element 级联：`element-workspace.ts` 先引入工作区 el-*.css、最后引入 `workspace.css`，workspace 分片的同特异性覆写因此胜出；入口 `theme.css` 排在这些懒加载样式之前，只放入口组件（按钮、输入框、toast）的覆写；懒加载组件（日期选择器、tag/alert、分页）的重混规则在 `workspace/element.css`（聚合入口首位），不加 `:root` 提权，明亮版在 `overrides-light.css`，其中危险色重混以 `:not(.el-tag--dark)` 让出实心危险标签。文字绿色一律用 `--verdi-text`（`--verdi` 仅作填充色，暗色底上不达 AA）。`tests/element-cascade-contract.test.ts` 为门禁
+- 组件样式归口：共享组件样式优先收进 workspace 分片（CategoryTag/StatusTag/EmptyState 在 `shared.css`）；`BillingSegments`/`ChannelMonitor`/`DailyPasswordChangeDialog` 使用组件内 scoped 块属允许；`VendorTestConsole` 与其 `VendorTestStepUpDialog` 因 el-dialog teleport 到 body，使用带 vendor- 前缀的非 scoped 块，为列明例外
 - API 契约类型：`src/api/types.gen.ts` 由 `npm run gen:api-types` 从根 `openapi.yaml` 生成（openapi-typescript），CI frontend job 对生成产物做 `git diff --exit-code` 零漂移门禁，禁止手改；`src/api/` 手写 interface 逐步迁移为生成类型引用（范例见 `webMessages.ts` 的 SendResult）
 
 - 列表共用 `FilterSeg`、`ListPagination` 和 `usePagedList`；分页加载沿用 `useLatestRead` 的取消与迟到结果守卫，切换上下文时调用 `cancel()`。计费分段使用独立的 `BillingSegments`。
 - 加载失败错误条统一 `src/components/LoadErrorAlert.vue`（错误标题 + 内联重试按钮，类名透传保留页面间距类），列表/快照加载失败不允许裸 el-alert 无重试入口；行内详情触发器键盘激活统一 `src/lib/directives.ts` 的 `v-row-activate`（Enter/Space 触发并阻断冒泡防穿透 row-click），不再手写 `@keydown.enter/space.stop.prevent` 对
 - 已审核签名与模板读取复用 `useApprovedResources`，签名/模板管理列表复用 `useVendorResourceList`；权限展示使用 session 能力 getter，服务端授权仍为最终边界。
 - 运维各页签放在 `views/ops/`，各自拥有查询和操作状态；首次访问后保留筛选，隐藏时取消读取。队列摘要与控制由 `useOpsQueue` 单点提供。API 示例和安全日报配置分别由 `ApiDemoDialog`、`SecurityDailyConfigDialog` 承载；配置密钥随关闭清空。模板预览、审批文案、日期范围、手机号提示和状态选项复用 `lib/` 对应工具。
+- 大页面的抽屉与对话框拆为页面自有组件，DOM、类名与 data-testid 不变，样式仍归 workspace 分片：应用管理 `AppDetailDrawer`（只展示并发出操作意图，密钥轮换/作废/启停用确认、在途守卫与一次性凭据仍在页面）/ `AppEditorDrawer`（持有表单与签名下拉，校验后交出载荷）；用户与角色 `UserCreateDrawer` / `UserRoleDrawer` / `UserPasswordResetDrawer`（临时密码只存组件草稿，随提交与关闭清空）；真实联调 `VendorTestStepUpDialog` / `VendorTestIndexRefreshDialog`（密码、确认短语与重输号码只在组件内，关闭起点与卸载即清空）；人工发送右栏预检卡 `SendPrecheckCards`（纯展示）。打开前由页面调用组件暴露的 `prepare`/`open` 同步回填，不依赖 v-model 回写时序（Element 关闭动画结束才回写 false）。展示函数进 `lib/appDisplay.ts`、`lib/localAccount.ts`。结构契约经 `tests/view-source.ts` 跟随这些组件读取模板。

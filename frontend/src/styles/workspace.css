@@ -3,6 +3,7 @@
  * 新增壳样式进 styles/workspace/ 对应分片；新页面族在下方按页面位置插入新分片。
  * overrides-light.css 是明亮模式覆写层，必须保持在末位。
  */
+@import "./workspace/element.css";
 @import "./workspace/base.css";
 @import "./workspace/shared.css";
 @import "./workspace/dashboard.css";

@@ -47,7 +47,7 @@ describe("跨页面一致性契约", () => {
     expect(offenders).toEqual([])
   })
 
-  it("筛选条时间范围共用同一宽度，字号由 theme.css 日期选择器单点承载", () => {
+  it("筛选条时间范围共用同一宽度，字号由 workspace/element.css 日期选择器单点承载", () => {
     const workspace = readWorkspaceCss().replace(/\/\*[\s\S]*?\*\//g, "")
     expect(workspace).toMatch(
       /\.batch-filter-dates,\s*\.message-filter-dates,\s*\.reply-filter-dates,\s*\.ops-dates,\s*\.audit-dates\s*\{\s*--el-date-editor-datetimerange-width:\s*272px;/,
@@ -109,6 +109,55 @@ describe("跨页面一致性契约", () => {
     const workspace = readWorkspaceCss()
     expect(workspace).toContain(".config-savebar > span {")
     expect(workspace).not.toMatch(/\.config-savebar span\b/)
+  })
+
+  it("字号只取 --fs-* 档位令牌，不再散写 px（登录页 clamp 流式标题除外）", () => {
+    const theme = read("src/styles/theme.css")
+    const scale = [...theme.matchAll(/--fs-[\w-]+:\s*([\d.]+)px;/g)].map((match) => Number(match[1]))
+    expect(scale).toEqual([10, 10.5, 11, 12, 12.5, 13, 14, 16, 18, 19, 20, 26, 32])
+    const styles = [
+      ...listFiles("src/styles", ".css").map((path) => ({ path, css: read(path) })),
+      ...[...listFiles("src/components", ".vue"), ...listFiles("src/views", ".vue")].map((path) => ({
+        path,
+        css: read(path).split("<style").slice(1).join("<style"),
+      })),
+    ]
+    const offenders = styles.flatMap(({ path, css }) =>
+      [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/font(?:-size)?:[^;{}]*?\b[\d.]+px[^;{}]*;/g)]
+        .map((match) => match[0])
+        .filter((declaration) => !declaration.includes("clamp("))
+        .map((declaration) => `${path}: ${declaration}`),
+    )
+    expect(offenders).toEqual([])
+  })
+
+  it("font 简写不混用 inherit（整条声明会失效），继承字体族改写为 font-family: inherit", () => {
+    const css = [readWorkspaceCss(), read("src/styles/theme.css")].join("\n")
+    expect(css).not.toMatch(/font:[^;]*\S\s+inherit;/)
+  })
+
+  it("筛选字段标签只在 shared.css 共享组定义一次，不按页复制", () => {
+    const shards = listFiles("src/styles/workspace", ".css").map((path) => ({ path, css: read(path) }))
+    const labelRules = shards.flatMap(({ path, css }) =>
+      [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]*-fld > span[^{}]*)\{([^{}]*)\}/g)]
+        .filter((match) => /white-space:\s*nowrap/.test(match[2]))
+        .map(() => path),
+    )
+    expect(labelRules).toEqual(["src/styles/workspace/shared.css"])
+  })
+
+  it("按深色调优的朱红 / 蓝文字色只以令牌定义，随主题取值，不再逐条打明亮补丁", () => {
+    const theme = read("src/styles/theme.css")
+    for (const token of ["--verm-text", "--slate-text", "--shadow-drawer"]) {
+      expect(theme.match(new RegExp(`${token}:`, "g"))?.length, token).toBe(2)
+    }
+    const styles = [
+      ...listFiles("src/styles/workspace", ".css").map(read),
+      ...[...listFiles("src/components", ".vue"), ...listFiles("src/views", ".vue")].map(read),
+    ].join("\n")
+    expect(styles).not.toMatch(/#(?:ef9b89|f0a08c|d66b6b|93b6e0|6f9bcf)\b/i)
+    expect(styles).not.toContain("rgba(255, 255, 255, 0.05)")
+    expect(read("src/styles/workspace/overrides-light.css")).not.toMatch(/\.nav-link:hover|\.batch-note|\.el-drawer\b/)
   })
 
   it("计数千分位只经 lib/format.ts 的 formatNumber，不随浏览器语言变化", () => {

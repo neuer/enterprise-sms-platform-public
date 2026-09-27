@@ -9,7 +9,7 @@
   align-items: center;
   padding: 5px 11px;
   color: var(--tx-2);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   background: var(--panel-2);
   border: 1px solid var(--hair);
   border-radius: 7px;
@@ -60,26 +60,26 @@
 .form-index {
   color: var(--tx-3);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   letter-spacing: 0.1em;
 }
 
 .form-panel h2 {
   margin: 0;
   color: var(--tx-hi);
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 600;
 }
 
 .form-panel > header small {
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 400;
 }
 
 .send-editor .el-textarea__inner {
   padding: 9px 12px;
-  font-size: 12.5px;
+  font-size: var(--fs-base);
 }
 
 .category-switch {
@@ -118,7 +118,7 @@
 }
 
 .category-switch button:hover:not(:disabled) {
-  border-color: rgba(255, 255, 255, 0.18);
+  border-color: color-mix(in srgb, var(--tx-hi) 18%, transparent);
 }
 
 /* 类别卡选中渐变：rgba(69,116,163)/rgba(216,163,92) 即深色 --slate/--amber，就地令牌化等价。 */
@@ -135,22 +135,21 @@
 .category-switch b {
   display: block;
   color: var(--tx-hi);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
 .cat-tag {
   margin-left: 8px;
   padding: 0 7px;
-  font: 10px/1.9 var(--mono);
+  font: var(--fs-2xs)/1.9 var(--mono);
   vertical-align: 1px;
   border-radius: 4px;
 }
 
-/* 类别小徽章：底色按深色 --slate/--amber 同值就地令牌化；
-   notice 文字 #6f9bcf 保留深色值，亮色覆写见文件末尾明亮模式区块。 */
+/* 类别小徽章：底色按深色 --slate/--amber 同值就地令牌化；notice 文字走 --slate-text，随主题取值。 */
 .cat-tag.notice {
-  color: #6f9bcf;
+  color: var(--slate-text);
   background: color-mix(in srgb, var(--slate) 20%, transparent);
 }
 
@@ -163,7 +162,7 @@
   display: block;
   margin-top: 2px;
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   line-height: 1.5;
 }
 
@@ -185,14 +184,14 @@
 
 .consent-panel b {
   color: var(--tx-hi);
-  font-size: 12px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 
 .consent-panel p {
   margin: 2px 0 0;
   color: var(--tx-2);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .upload-zone,
@@ -223,7 +222,7 @@
 
 .upload-zone .el-upload-dragger span {
   color: var(--tx-2);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .phone-stats {
@@ -234,7 +233,7 @@
   margin-top: 8px;
   padding: 8px 12px;
   color: var(--tx-2);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
   background: var(--panel-2);
   border: 1px solid var(--hair-2);
   border-radius: 8px;
@@ -262,7 +261,7 @@
 .text-action {
   padding: 0;
   color: var(--verdi-l);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   background: none;
   border: 0;
   cursor: pointer;
@@ -298,12 +297,12 @@
 .import-ready .cell span {
   display: block;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .import-ready .cell b {
   color: var(--tx-hi);
-  font: 15px var(--mono);
+  font: var(--fs-xl) var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -314,7 +313,7 @@
 .import-meta {
   margin: 10px 0 0;
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .import-processing {
@@ -326,12 +325,12 @@
 .import-processing p {
   margin: 0;
   color: var(--tx-2);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 
 .import-processing small {
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .import-spinner {
@@ -353,7 +352,7 @@
 .mobiles-invalid-hint {
   margin: 8px 0 0;
   color: var(--verm);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 
 .tpl-params {
@@ -381,7 +380,7 @@
   gap: 8px;
   align-items: flex-start;
   color: var(--tx);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 
 .opt input {
@@ -392,7 +391,7 @@
 .opt small {
   display: block;
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .opt-row .el-date-editor {
@@ -403,7 +402,7 @@
 .test-limit-hint {
   margin: 8px 0 0;
   color: var(--amber);
-  font-size: 12px;
+  font-size: var(--fs-md);
 }
 
 .template-render-preview {
@@ -416,22 +415,22 @@
 
 .template-render-preview span {
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   letter-spacing: 0.08em;
 }
 
 .template-render-preview p {
   margin: 3px 0 0;
   color: var(--tx);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/* 模板变量高亮：底色按深色 --slate 同值令牌化；文字 #6f9bcf 保留深色值，亮色覆写见文件末尾。 */
+/* 模板变量高亮：底色按深色 --slate 同值令牌化；文字走 --slate-text，随主题取值。 */
 .template-render-preview em {
   padding: 0 3px;
-  color: #6f9bcf;
+  color: var(--slate-text);
   font-style: normal;
   background: color-mix(in srgb, var(--slate) 20%, transparent);
   border-radius: 3px;
@@ -449,7 +448,7 @@
 .preview-state {
   color: var(--tx-3);
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .preview-state.stale {
@@ -459,7 +458,7 @@
 .preview-error {
   margin: 0;
   color: var(--verm);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
 }
 
 .rail-card {
@@ -475,13 +474,13 @@
   align-items: baseline;
   margin-bottom: 9px;
   color: var(--tx-hi);
-  font-size: 12px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 
 .rail-card > header small {
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 400;
 }
 
@@ -489,7 +488,7 @@
   margin: 0;
   padding: 10px 12px;
   color: var(--tx-hi);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.7;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -515,7 +514,7 @@
   justify-content: space-between;
   margin-top: 7px;
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .final-meta .legend {
@@ -553,13 +552,13 @@
 
 .audience-meter strong {
   color: var(--tx-hi);
-  font: 600 26px/1.1 var(--mono);
+  font: 600 var(--fs-display)/1.1 var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
 .audience-meter span {
   color: var(--tx-3);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .removed {
@@ -568,7 +567,7 @@
   margin-top: 8px;
   padding-top: 8px;
   color: var(--tx-2);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   border-top: 1px solid var(--hair-2);
 }
 
@@ -590,27 +589,27 @@
 
 .cost-line .fx {
   color: var(--tx-2);
-  font: 11.5px var(--mono);
+  font: var(--fs-md) var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
 .cost-line strong {
   color: var(--tx-hi);
-  font: 600 20px/1 var(--mono);
+  font: 600 var(--fs-3xl)/1 var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
 .cost-line strong small {
   margin-left: 4px;
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   font-weight: 400;
 }
 
 .boundary {
   margin: 5px 0 0;
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .quota-row {
@@ -618,7 +617,7 @@
   justify-content: space-between;
   margin-bottom: 5px;
   color: var(--tx-2);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .quota-row b {
@@ -656,14 +655,14 @@
   justify-content: space-between;
   margin-top: 5px;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .quota-degraded p {
   margin: 0;
   padding: 8px 10px;
   color: var(--tx-2);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   background: var(--panel-2);
   border: 1px solid var(--hair-2);
   border-radius: 8px;
@@ -711,7 +710,7 @@
   background: var(--verdi-l);
 }
 
-/* #6f9bcf 与 --chart-blue 在亮/暗两套主题下同值：直接引用令牌。 */
+/* 风险提示蓝点与图表 notice 系列同色：直接引用 --chart-blue。 */
 .risk-line.info::before {
   background: var(--chart-blue);
 }
@@ -719,7 +718,7 @@
 .risk-line b {
   display: block;
   color: var(--tx-hi);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
   font-weight: 500;
 }
 
@@ -727,7 +726,7 @@
   display: block;
   margin-top: 1px;
   color: var(--tx-2);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 /* 提交结果面板：底渐变/边框即深色 --verdi/--verdi-l 同值，就地令牌化。 */
@@ -745,7 +744,7 @@
   gap: 8px;
   align-items: center;
   color: var(--tx-hi);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   font-weight: 600;
 }
 
@@ -770,7 +769,7 @@
 .batch-row code {
   overflow: hidden;
   color: var(--tx-hi);
-  font: 12px var(--mono);
+  font: var(--fs-md) var(--mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -780,7 +779,7 @@
   margin-left: auto;
   padding: 2px 8px;
   color: var(--verdi-l);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   background: none;
   border: 1px solid var(--hair);
   border-radius: 5px;
@@ -790,7 +789,7 @@
 .result-line {
   margin: 0;
   color: var(--tx);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
 }
 
 .result-stats {
@@ -798,7 +797,7 @@
   gap: 13px;
   margin: 0;
   color: var(--tx-2);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .result-stats b {
@@ -824,7 +823,7 @@
 .send-submit.el-button {
   width: 100%;
   height: 40px;
-  font-size: 13.5px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   border-radius: 9px;
 }
@@ -849,6 +848,6 @@
 .submit-foot {
   margin: 7px 0 0;
   color: var(--tx-3);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
   text-align: center;
 }

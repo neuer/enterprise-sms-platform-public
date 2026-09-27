@@ -2,18 +2,6 @@
 /* 模板/签名两页查询栏同构：sign-filter-bar/sign-fld/sign-keyword/sign-filter-note
    与 template-* 共用以下规则（移动端见 760px 媒体块），按页复制即缺陷；
    厂商状态 seg 已并入 FilterSeg 单点（shared.css）。 */
-.template-fld,
-.sign-fld {
-  display: grid;
-  gap: 5px;
-}
-
-.template-fld > span,
-.sign-fld > span {
-  color: var(--tx-3);
-  font-size: 10.5px;
-  white-space: nowrap;
-}
 
 .template-keyword,
 .sign-keyword,
@@ -46,7 +34,7 @@
 .muted {
   color: var(--tx-3);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .template-mobile-list {
@@ -55,7 +43,7 @@
 
 .template-inline-content {
   color: var(--tx);
-  font-size: 12.5px;
+  font-size: var(--fs-base);
   line-height: 1.75;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -69,7 +57,7 @@
   padding: 0 5px;
   color: var(--verdi-l);
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
   border: 1px solid color-mix(in srgb, var(--verdi-l) 45%, transparent);
   border-radius: 4px;
@@ -77,7 +65,7 @@
 
 .var-chip i {
   color: var(--tx-3);
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   font-style: normal;
 }
 
@@ -108,19 +96,19 @@
 
 .template-spec-head b {
   color: var(--tx-hi);
-  font-size: 12px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 
 .template-spec-head span {
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .template-content-item i {
   margin-left: 6px;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-style: normal;
 }
 
@@ -156,14 +144,14 @@
 .trail-txt b {
   display: block;
   color: var(--tx-hi);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
   font-weight: 600;
   white-space: nowrap;
 }
 
 .trail-txt small {
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   white-space: nowrap;
 }
 
@@ -186,13 +174,13 @@
 .template-vendor-preview {
   color: var(--tx);
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-md);
 }
 
 .template-detail-actions .why {
   width: 100%;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .template-form {
@@ -214,13 +202,13 @@
 .variable-note {
   margin-left: auto;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .variable-empty {
   margin: 0;
   color: var(--tx-3);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 
 .template-editor-preview {
@@ -237,7 +225,7 @@
 .template-editor-foot small {
   max-width: 320px;
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .sign-heading {
@@ -276,12 +264,12 @@
   align-items: center;
   padding: 10px 16px;
   color: var(--tx-3);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   border-top: 1px solid var(--hair-2);
 }
 
 .sign-foot-role {
   margin-left: auto;
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }

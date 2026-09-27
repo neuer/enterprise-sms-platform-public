@@ -110,7 +110,7 @@ function displayNumber(value: number | null): string {
   align-items: center;
   color: var(--verdi-text);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.16em;
 }
@@ -141,7 +141,7 @@ function displayNumber(value: number | null): string {
 .monitor-qps span {
   color: var(--verdi-text);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 500;
 }
 
@@ -152,12 +152,12 @@ function displayNumber(value: number | null): string {
 .monitor-lane strong,
 .monitor-qps strong {
   color: var(--tx-hi);
-  font-size: 16px;
+  font-size: var(--fs-xl);
   font-weight: 600;
 }
 
 .monitor-qps strong {
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 .monitor-track {
@@ -211,7 +211,7 @@ function displayNumber(value: number | null): string {
 
 .chan-time {
   color: var(--tx-3);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   white-space: nowrap;
 }
 
@@ -219,7 +219,7 @@ function displayNumber(value: number | null): string {
   grid-column: 1 / -1;
   margin: 0;
   color: var(--tx-2);
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
 }
 
 .monitor-stale {

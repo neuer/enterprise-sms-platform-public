@@ -15,7 +15,7 @@ body {
   padding: 4px 0;
   color: var(--tx-2);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--fs-sm);
   background: transparent;
   border: 0;
   cursor: pointer;
@@ -69,21 +69,21 @@ button:focus-visible {
   height: 34px;
   place-items: center;
   font-family: var(--serif);
-  font-size: 18px;
+  font-size: var(--fs-2xl);
   border-radius: 50%;
 }
 
 .brand strong {
   display: block;
   font-family: var(--serif);
-  font-size: 17px;
+  font-size: var(--fs-2xl);
   font-weight: 600;
   letter-spacing: 0.12em;
 }
 
 .nav-section h2 {
   margin: 0 10px 5px;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   font-weight: 600;
   letter-spacing: 0.18em;
 }
@@ -105,7 +105,7 @@ button:focus-visible {
   width: 20px;
   height: 20px;
   place-items: center;
-  font-size: 10px;
+  font-size: var(--fs-2xs);
   border: 1px solid var(--line-2);
   border-radius: 5px;
 }
@@ -114,7 +114,7 @@ button:focus-visible {
   margin-left: auto;
   padding: 1px 6px;
   color: var(--amber);
-  font: 600 10px/1.6 var(--mono);
+  font: 600 var(--fs-2xs)/1.6 var(--mono);
   background: color-mix(in srgb, var(--amber) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
   border-radius: 999px;
@@ -124,7 +124,7 @@ button:focus-visible {
   margin: auto 8px 0;
   padding-top: 20px;
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 
 .navigation-toggle,

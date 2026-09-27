@@ -54,7 +54,7 @@
 }
 .vendor-test-state-mark span {
   color: var(--muted);
-  font: 8px/1 var(--mono);
+  font: var(--fs-2xs)/1 var(--mono);
   letter-spacing: 0.14em;
 }
 .vendor-test-status h2 {
@@ -66,7 +66,7 @@
   max-width: 46ch;
   margin: 8px 0 0;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 .vendor-test-status dl {
   display: grid;
@@ -83,7 +83,7 @@
 }
 .vendor-test-status dt {
   color: var(--muted);
-  font: 8px/1 var(--mono);
+  font: var(--fs-2xs)/1 var(--mono);
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
@@ -91,7 +91,7 @@
   margin: 6px 0 0;
   overflow-wrap: anywhere;
   color: var(--ink);
-  font: 10px/1.4 var(--mono);
+  font: var(--fs-2xs)/1.4 var(--mono);
   font-variant-numeric: tabular-nums;
 }
 .vendor-safety-line {
@@ -108,7 +108,7 @@
   align-items: center;
   gap: 7px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .vendor-safety-line i {
   width: 5px;
@@ -142,12 +142,12 @@
 .vendor-control-panel > header h3,
 .vendor-uat-panel > header h3 {
   margin: 1px 0 0;
-  font-size: 16px;
+  font-size: var(--fs-xl);
 }
 .vendor-control-panel > header > span,
 .vendor-uat-panel > header > span {
   color: var(--muted);
-  font: 9px/1.4 var(--mono);
+  font: var(--fs-2xs)/1.4 var(--mono);
 }
 .vendor-readiness-list {
   display: grid;
@@ -167,7 +167,7 @@
 }
 .vendor-readiness-list > div > span {
   color: var(--muted);
-  font: 9px/1 var(--mono);
+  font: var(--fs-2xs)/1 var(--mono);
 }
 .vendor-readiness-list > div.ready > span {
   color: var(--verdi-text);
@@ -178,11 +178,11 @@
   min-width: 0;
 }
 .vendor-readiness-list strong {
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 .vendor-readiness-list small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--fs-2xs);
   line-height: 1.45;
 }
 .vendor-test-actions {
@@ -206,7 +206,7 @@
 }
 .vendor-recipient-panel > header small {
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--fs-2xs);
 }
 .vendor-recipient-list {
   display: grid;
@@ -232,12 +232,12 @@
   min-width: 0;
 }
 .vendor-recipient-list article strong {
-  font-size: 11px;
+  font-size: var(--fs-sm);
 }
 .vendor-recipient-list .phone-mask,
 .vendor-recipient-list code {
   color: var(--ink-soft);
-  font: 10px/1.4 var(--mono);
+  font: var(--fs-2xs)/1.4 var(--mono);
   font-variant-numeric: tabular-nums;
 }
 .vendor-uat-panel > .el-alert {
@@ -277,7 +277,7 @@
   width: 100%;
   margin-top: 6px;
   color: var(--muted);
-  font-size: 9px;
+  font-size: var(--fs-2xs);
 }
 .vendor-billing-preview {
   display: grid;
@@ -291,7 +291,7 @@
 }
 .vendor-billing-preview span {
   color: var(--muted);
-  font: 9px/1 var(--mono);
+  font: var(--fs-2xs)/1 var(--mono);
   letter-spacing: 0.08em;
 }
 .vendor-billing-preview strong {
@@ -300,7 +300,7 @@
 .vendor-billing-preview small {
   grid-column: 1 / -1;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--fs-2xs);
 }
 .vendor-billing-preview.ready {
   border-color: color-mix(in srgb, var(--verdi), var(--line) 55%);
@@ -329,13 +329,13 @@
 }
 .vendor-operation-strip span {
   color: var(--muted);
-  font: 8px/1 var(--mono);
+  font: var(--fs-2xs)/1 var(--mono);
   letter-spacing: 0.08em;
 }
 .vendor-operation-strip code {
   overflow: hidden;
   color: var(--ink-soft);
-  font: 9px/1.4 var(--mono);
+  font: var(--fs-2xs)/1.4 var(--mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -371,7 +371,7 @@
 .vendor-sensitive-note {
   margin: 0;
   color: var(--ink-soft);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   line-height: 1.65;
 }
 .vendor-sensitive-note {
