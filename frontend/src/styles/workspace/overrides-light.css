@@ -68,18 +68,9 @@
 }
 
 /* 透明白高光（rgba(255,255,255,…)）在亮底上不可见，统一换成 rgba(21,32,26,…) 深色纱：
-   类别卡悬停描边、表格行悬停、徽章/进度轨底色。 */
+   类别卡悬停描边、徽章/进度轨底色。表格行悬停走 --row-hover 令牌，随主题自动取色。 */
 [data-theme="light"] .category-switch button:hover:not(:disabled) {
   border-color: rgba(21, 32, 26, 0.2);
-}
-[data-theme="light"] .el-table,
-[data-theme="light"] .sign-table,
-[data-theme="light"] .template-table,
-[data-theme="light"] .apps-table {
-  --el-table-row-hover-bg-color: rgba(21, 32, 26, 0.04);
-}
-[data-theme="light"] .approval-table tbody tr:hover {
-  background: rgba(21, 32, 26, 0.04);
 }
 [data-theme="light"] .message-badge-tag,
 [data-theme="light"] .apps-key-tag {

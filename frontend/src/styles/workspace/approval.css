@@ -340,7 +340,7 @@
 }
 
 .approval-table tbody tr:hover {
-  background: color-mix(in srgb, var(--verdi) 5%, var(--card));
+  background: var(--row-hover);
 }
 
 .approval-batch-cell {

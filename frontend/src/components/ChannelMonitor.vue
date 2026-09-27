@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatNumber } from "../lib/format"
 import { computed } from "vue"
 
 import { formatDateTime, formatHms } from "../lib/time"
@@ -47,7 +48,7 @@ const qpsTitle = computed(() => {
 })
 
 function displayNumber(value: number | null): string {
-  return value === null ? "—" : value.toLocaleString()
+  return value === null ? "—" : formatNumber(value)
 }
 </script>
 
@@ -76,7 +77,7 @@ function displayNumber(value: number | null): string {
         <span>QPS TOKEN</span>
         <strong class="num">{{ qpsUsed ?? "—" }} / {{ qpsRate ?? "—" }}</strong>
       </div>
-      <div class="token-grid" aria-label="QPS 令牌占用">
+      <div class="token-grid" aria-hidden="true">
         <i v-for="index in 5" :key="index" :class="{ used: !stale && index <= usedTokens }"></i>
       </div>
     </article>

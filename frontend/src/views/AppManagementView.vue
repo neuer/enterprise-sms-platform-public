@@ -31,7 +31,7 @@ import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { copyText } from "../lib/clipboard"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction, captureCurrent } = useConfirmActions()
-import { formatPercent } from "../lib/format"
+import { formatNumber, formatPercent } from "../lib/format"
 import { CATEGORY_LABELS, roleNames, type MessageCategory } from "../lib/labels"
 import { formatDateTime, shanghaiDateKey } from "../lib/time"
 import { errorText } from "../lib/error"
@@ -720,8 +720,8 @@ onMounted(() => {
         <template #default="{ row }">
           <div v-if="consumedOf(row) !== null" class="apps-quota-cell">
             <span class="apps-quota-num">
-              {{ (consumedOf(row) ?? 0).toLocaleString() }}
-              <small>/ {{ row.daily_quota === 0 ? "不限量" : row.daily_quota.toLocaleString() }}</small>
+              {{ formatNumber(consumedOf(row) ?? 0) }}
+              <small>/ {{ row.daily_quota === 0 ? "不限量" : formatNumber(row.daily_quota) }}</small>
             </span>
             <span v-if="quotaPercent(row) !== null" class="apps-quota-bar">
               <i :class="quotaTone(row)" :style="{ width: `${quotaPercent(row)}%` }"></i>
@@ -732,7 +732,7 @@ onMounted(() => {
       </el-table-column>
       <el-table-column label="限流/分" width="90">
         <template #default="{ row }">
-          <span class="apps-mono">{{ row.rate_limit_per_min.toLocaleString() }}</span>
+          <span class="apps-mono">{{ formatNumber(row.rate_limit_per_min) }}</span>
         </template>
       </el-table-column>
       <el-table-column label="密钥" min-width="200">
@@ -762,7 +762,7 @@ onMounted(() => {
           <span v-else class="apps-cell-none">未配置</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="80">
+      <el-table-column label="状态" width="80" fixed="right">
         <template #default="{ row }">
           <el-tag :type="row.status ? 'success' : 'info'">{{ row.status ? "启用" : "停用" }}</el-tag>
         </template>
@@ -808,9 +808,9 @@ onMounted(() => {
         <div class="apps-hero">
           <div class="apps-hero-nums">
             <template v-if="!usageUnavailable">
-              <b>{{ (consumedOf(detail) ?? 0).toLocaleString() }}</b>
+              <b>{{ formatNumber(consumedOf(detail) ?? 0) }}</b>
               <span
-                >/ {{ detail.daily_quota === 0 ? "不限量" : detail.daily_quota.toLocaleString() }} 计费条 · 成功率
+                >/ {{ detail.daily_quota === 0 ? "不限量" : formatNumber(detail.daily_quota) }} 计费条 · 成功率
                 {{ detailRateText }}</span
               >
             </template>
@@ -825,7 +825,7 @@ onMounted(() => {
         </div>
         <dl class="apps-fact-grid">
           <div
-            ><dt>每分钟限流</dt><dd class="apps-mono">{{ detail.rate_limit_per_min.toLocaleString() }} 次</dd></div
+            ><dt>每分钟限流</dt><dd class="apps-mono">{{ formatNumber(detail.rate_limit_per_min) }} 次</dd></div
           >
           <div
             ><dt>频控覆盖</dt><dd>{{ freqOverrideText(detail) }}</dd></div
@@ -1034,12 +1034,12 @@ onMounted(() => {
           </el-form-item>
         </div>
         <div class="apps-form-alert" data-testid="worst-case-capacity">
-          最坏能力：每分钟最多 {{ worstCase.recipientsPerMin.toLocaleString() }} 个号码、
-          {{ worstCase.segmentsPerMin.toLocaleString() }} 计费条；每日
+          最坏能力：每分钟最多 {{ formatNumber(worstCase.recipientsPerMin) }} 个号码、
+          {{ formatNumber(worstCase.segmentsPerMin) }} 计费条；每日
           {{
             worstCase.dailySegments === null
               ? "不限量（生产须豁免）"
-              : `${worstCase.dailySegments.toLocaleString()} 计费条`
+              : `${formatNumber(worstCase.dailySegments)} 计费条`
           }}。 单请求最多 10,000 号码，1×10,000 与 100×100 按同一成本计入。
         </div>
         <div v-if="form.daily_quota === 0" class="apps-form-alert">

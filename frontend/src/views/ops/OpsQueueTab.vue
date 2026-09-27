@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatNumber } from "../../lib/format"
 import { toRefs, watch } from "vue"
 
 import LoadErrorAlert from "../../components/LoadErrorAlert.vue"
@@ -43,8 +44,8 @@ watch(
             ></article
           ><article
             ><span>余额</span
-            ><strong>{{ queue.balance === null ? "无快照" : `余额 ${queue.balance.toLocaleString()}` }}</strong
-            ><small>阈值 {{ queue.threshold.toLocaleString() }}</small></article
+            ><strong>{{ queue.balance === null ? "无快照" : `余额 ${formatNumber(queue.balance)}` }}</strong
+            ><small>阈值 {{ formatNumber(queue.threshold) }}</small></article
           ></div
         ><p v-if="queue.vendor_test_realtime_code || queue.vendor_test_bulk_code" class="vendor-test-pause-note"
           >真实联调安全暂停独立于双队列断路器，发送链路已关闭；请前往「系统参数 → 真实联调」页签完成处置与认证恢复。</p

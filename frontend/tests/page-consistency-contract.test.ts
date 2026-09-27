@@ -67,4 +67,54 @@ describe("跨页面一致性契约", () => {
     expect(workspace).not.toMatch(/\.panel-title div\s*\{/)
     expect(workspace).toContain(".panel-title > div:not(.filter-seg)")
   })
+
+  it("表格行悬停统一走不透明的 --row-hover 令牌，固定列不透出横向滚动内容", () => {
+    const theme = read("src/styles/theme.css")
+    expect(theme).toMatch(/--row-hover:\s*color-mix\(in srgb, var\(--panel\) \d+%, var\(--tx-hi\)\);/)
+    const workspace = readWorkspaceCss().replace(/\/\*[\s\S]*?\*\//g, "")
+    const hoverValues = [
+      ...[...workspace.matchAll(/--el-table-row-hover-bg-color:\s*([^;]+);/g)].map((m) => m[1]),
+      ...[...workspace.matchAll(/tr:hover\s*\{[^}]*background:\s*([^;]+);/g)].map((m) => m[1]),
+    ]
+    expect(hoverValues.length).toBeGreaterThan(0)
+    expect(hoverValues.filter((value) => value.trim() !== "var(--row-hover)")).toEqual([])
+  })
+
+  it("el-table 加载态用 v-loading 指令，el-table 没有 loading prop", () => {
+    const offenders = views.filter(({ source }) => /<el-table\b[^>]*\s:loading=/.test(source))
+    expect(offenders.map(({ path }) => path)).toEqual([])
+  })
+
+  it("窄屏下状态列固定在右侧，不被横向滚动挤出视口", () => {
+    for (const path of ["src/views/BatchView.vue", "src/views/AppManagementView.vue"]) {
+      expect(read(path)).toMatch(/<el-table-column label="状态" width="\d+" fixed="right">/)
+    }
+  })
+
+  it("el-select 占位色接入主题令牌，不沿用 Element 默认浅灰", () => {
+    expect(read("src/styles/theme.css")).toContain("--el-text-color-placeholder: var(--tx-3);")
+  })
+
+  it("无可见标签的筛选控件带 aria-label，装饰性令牌格对读屏隐藏", () => {
+    expect(read("src/views/ReportView.vue")).toContain('class="report-pill-select" aria-label="类别"')
+    expect(read("src/views/SendView.vue")).toContain('aria-label="签名"')
+    expect(read("src/views/CallbackView.vue")).toContain('aria-label="应用"')
+    expect(read("src/views/AuditView.vue")).toContain('aria-label="动作"')
+    const config = read("src/views/ConfigView.vue")
+    expect(config.match(/:aria-label="item\.key"/g)?.length).toBe(3)
+    expect(read("src/components/ChannelMonitor.vue")).toContain('<div class="token-grid" aria-hidden="true">')
+  })
+
+  it("配置保存条的计数文字样式只作用于直接子 span，不染到主按钮内部文字", () => {
+    const workspace = readWorkspaceCss()
+    expect(workspace).toContain(".config-savebar > span {")
+    expect(workspace).not.toMatch(/\.config-savebar span\b/)
+  })
+
+  it("计数千分位只经 lib/format.ts 的 formatNumber，不随浏览器语言变化", () => {
+    const offenders = [...listFiles("src", ".vue"), ...listFiles("src", ".ts")].filter(
+      (path) => !path.endsWith("lib/format.ts") && /\.toLocaleString\(/.test(read(path)),
+    )
+    expect(offenders).toEqual([])
+  })
 })

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatNumber } from "../lib/format"
 import { categoryLabel, triggerRule, formatSegments } from "../lib/approvalText"
 import { ElMessage } from "element-plus"
 import { computed, onMounted, ref } from "vue"
@@ -479,7 +480,7 @@ onMounted(() => {
         </div>
         <div>
           <dt>受理号码</dt>
-          <dd>{{ selected.total.toLocaleString() }}</dd>
+          <dd>{{ formatNumber(selected.total) }}</dd>
         </div>
         <div>
           <dt>预计计费</dt>

@@ -407,14 +407,14 @@
   box-shadow: 0 10px 30px rgb(15 31 24 / 10%);
   backdrop-filter: blur(12px);
 }
-.config-savebar span {
+.config-savebar > span {
   color: var(--muted);
   font: 10px/1 var(--mono);
 }
-.config-savebar span b {
+.config-savebar > span b {
   color: var(--muted);
   font-weight: 400;
 }
-.config-savebar span b.is-pending {
+.config-savebar > span b.is-pending {
   color: var(--amber);
 }

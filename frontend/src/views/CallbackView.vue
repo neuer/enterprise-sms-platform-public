@@ -220,6 +220,7 @@ onMounted(() => {
         clearable
         filterable
         data-testid="callback-app-filter"
+        aria-label="应用"
         @change="search"
       >
         <el-option v-for="app in apps" :key="app.id" :label="app.name" :value="app.id" />

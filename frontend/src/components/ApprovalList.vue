@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatNumber } from "../lib/format"
 import { triggerRule, formatSegments } from "../lib/approvalText"
 
 import { computed, ref } from "vue"
@@ -182,7 +183,7 @@ function confirmQuick(item: ApprovalListItem): void {
             </div>
             <p class="approval-row-facts">
               {{ item.applicant }} · {{ item.dept }} <em>·</em>{{ formatDateTime(item.created_at) }} 提交 <em>·</em>受众
-              <b>{{ item.total.toLocaleString() }}</b> 号码 <em>·</em>预计计费
+              <b>{{ formatNumber(item.total) }}</b> 号码 <em>·</em>预计计费
               <b>{{ formatSegments(item.estimated_segments) }}</b>
             </p>
             <p class="approval-row-rule">触发规则 {{ triggerRule(item) }}</p>
@@ -329,7 +330,7 @@ function confirmQuick(item: ApprovalListItem): void {
             <td data-label="类别"><CategoryTag :category="item.category" /></td>
             <td data-label="申请人">{{ item.applicant }}</td>
             <td data-label="部门">{{ item.dept }}</td>
-            <td data-label="受众">{{ item.total.toLocaleString() }}</td>
+            <td data-label="受众">{{ formatNumber(item.total) }}</td>
             <td data-label="状态"><StatusTag :status="item.status" /></td>
             <td data-label="审批人 / 决策时间">
               <span class="approval-decider">

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatNumber } from "../lib/format"
 import { newIdempotencyKey } from "../lib/idempotency"
 import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 
@@ -157,7 +158,7 @@ const sendDisabled = computed(
 const scheduledAtValue = computed(() => (form.scheduleEnabled && form.scheduledAt ? form.scheduledAt : ""))
 
 const submitLabel = computed(() => {
-  const cost = preview.value ? ` · ${preview.value.quota_cost.toLocaleString()} 计费条` : ""
+  const cost = preview.value ? ` · ${formatNumber(preview.value.quota_cost)} 计费条` : ""
   if (preview.value?.approval_required) return `提交审批${cost}`
   if (form.scheduleEnabled || preview.value?.deferred_reason === "market_window") return `安排发送${cost}`
   return `立即发送${cost}`
@@ -718,16 +719,16 @@ onBeforeUnmount(() => {
           />
           <div v-if="pastedMobiles.length" class="phone-stats" data-testid="phone-stats">
             <span
-              >共 <b>{{ pastedMobiles.length.toLocaleString() }}</b></span
+              >共 <b>{{ formatNumber(pastedMobiles.length) }}</b></span
             >
             <span
-              >去重后 <b>{{ dedupedCount.toLocaleString() }}</b></span
+              >去重后 <b>{{ formatNumber(dedupedCount) }}</b></span
             >
             <span class="bad"
-              >格式无效 <b>{{ invalidMobiles.length.toLocaleString() }}</b></span
+              >格式无效 <b>{{ formatNumber(invalidMobiles.length) }}</b></span
             >
             <span
-              >重复 <b>{{ duplicateCount.toLocaleString() }}</b></span
+              >重复 <b>{{ formatNumber(duplicateCount) }}</b></span
             >
             <span class="act">
               <button v-if="duplicateCount > 0" :disabled="busy" type="button" @click="removeDuplicates"
@@ -741,7 +742,7 @@ onBeforeUnmount(() => {
             }}」；请修正后再提交。
           </p>
           <p v-if="recipientLimitExceeded" class="mobiles-invalid-hint" data-testid="recipient-limit-hint">
-            超出单次 50,000 个号码上限（当前 {{ recipientCount.toLocaleString() }} 个）；请删减或分批提交。
+            超出单次 50,000 个号码上限（当前 {{ formatNumber(recipientCount) }} 个）；请删减或分批提交。
           </p>
         </template>
         <div v-else class="upload-zone">
@@ -774,16 +775,16 @@ onBeforeUnmount(() => {
           <div v-if="importState === 'ready' && imported" class="import-box" data-testid="import-ready">
             <div class="import-ready">
               <div class="cell"
-                ><span>有效</span><b>{{ imported.valid.toLocaleString() }}</b></div
+                ><span>有效</span><b>{{ formatNumber(imported.valid) }}</b></div
               >
               <div class="cell" :class="{ bad: imported.invalid > 0 }"
-                ><span>格式无效</span><b>{{ imported.invalid.toLocaleString() }}</b></div
+                ><span>格式无效</span><b>{{ formatNumber(imported.invalid) }}</b></div
               >
               <div class="cell" :class="{ bad: imported.duplicate > 0 }"
-                ><span>重复</span><b>{{ imported.duplicate.toLocaleString() }}</b></div
+                ><span>重复</span><b>{{ formatNumber(imported.duplicate) }}</b></div
               >
               <div class="cell" :class="{ bad: imported.blacklisted > 0 }"
-                ><span>黑名单</span><b>{{ imported.blacklisted.toLocaleString() }}</b></div
+                ><span>黑名单</span><b>{{ formatNumber(imported.blacklisted) }}</b></div
               >
               <div class="act">
                 <button
@@ -873,6 +874,7 @@ onBeforeUnmount(() => {
           <el-select
             v-model="form.signName"
             data-testid="sign-select"
+            aria-label="签名"
             clearable
             placeholder="不指定 · 用应用默认签名"
             :disabled="busy"
@@ -922,7 +924,7 @@ onBeforeUnmount(() => {
         </p>
         <p v-if="testLimitExceeded" class="test-limit-hint" data-testid="test-limit-hint">
           测试发送最多 {{ testSendMax }} 个号码，当前
-          {{ recipientCount.toLocaleString() }} 个；请删减号码，或取消测试发送按正式批次提交。
+          {{ formatNumber(recipientCount) }} 个；请删减号码，或取消测试发送按正式批次提交。
         </p>
       </section>
     </div>
@@ -949,15 +951,15 @@ onBeforeUnmount(() => {
       <section class="rail-card">
         <header>受众</header>
         <div class="audience-meter">
-          <strong data-testid="recipient-count">{{ audienceCount.toLocaleString() }}</strong>
+          <strong data-testid="recipient-count">{{ formatNumber(audienceCount) }}</strong>
           <span>受理号码（去重与黑名单剔除后）</span>
         </div>
         <div class="removed" data-testid="audience-removed">
           <span
-            >重复 <b>{{ removedDuplicate.toLocaleString() }}</b></span
+            >重复 <b>{{ formatNumber(removedDuplicate) }}</b></span
           >
           <span v-if="removedBlacklist !== null"
-            >黑名单 <b>{{ removedBlacklist.toLocaleString() }}</b></span
+            >黑名单 <b>{{ formatNumber(removedBlacklist) }}</b></span
           >
           <span v-else>黑名单 <small>受理时判定</small></span>
           <span>频控 <small>受理时判定</small></span>
@@ -968,8 +970,8 @@ onBeforeUnmount(() => {
         <header>计费 <small>services/billing.py 单点口径</small></header>
         <BillingSegments :parts="preview.segment_parts" :next-hint="nextSegmentHint" />
         <div class="cost-line">
-          <span class="fx">{{ previewCount.toLocaleString() }} 号码 × {{ preview.est_segments }} 计费条 =</span>
-          <strong>{{ preview.quota_cost.toLocaleString() }}<small>计费条</small></strong>
+          <span class="fx">{{ formatNumber(previewCount) }} 号码 × {{ preview.est_segments }} 计费条 =</span>
+          <strong>{{ formatNumber(preview.quota_cost) }}<small>计费条</small></strong>
         </div>
         <p class="boundary"
           >第 {{ preview.segment_parts.length }} 段已用 {{ preview.segment_parts.at(-1)?.used }}/{{
@@ -985,8 +987,8 @@ onBeforeUnmount(() => {
           <span>今日已用 / 上限</span>
           <b>{{
             preview.quota.limit > 0
-              ? `${preview.quota.used.toLocaleString()} / ${preview.quota.limit.toLocaleString()}`
-              : `${preview.quota.used.toLocaleString()} / 不限`
+              ? `${formatNumber(preview.quota.used)} / ${formatNumber(preview.quota.limit)}`
+              : `${formatNumber(preview.quota.used)} / 不限`
           }}</b>
         </div>
         <template v-if="preview.quota.limit > 0">
@@ -995,14 +997,14 @@ onBeforeUnmount(() => {
             ><i class="this" :style="{ width: `${quotaThisPct}%` }"></i
           ></div>
           <div class="quota-foot">
-            <span>斜纹 = 本批预扣 {{ preview.quota_cost.toLocaleString() }}</span>
+            <span>斜纹 = 本批预扣 {{ formatNumber(preview.quota_cost) }}</span>
             <span
-              >提交后 {{ (preview.quota.used + preview.quota_cost).toLocaleString() }} /
-              {{ preview.quota.limit.toLocaleString() }}（{{ quotaAfterPct }}%）</span
+              >提交后 {{ formatNumber(preview.quota.used + preview.quota_cost) }} /
+              {{ formatNumber(preview.quota.limit) }}（{{ quotaAfterPct }}%）</span
             >
           </div>
         </template>
-        <p v-else class="quota-foot">上限不限；本批预扣 {{ preview.quota_cost.toLocaleString() }} 计费条</p>
+        <p v-else class="quota-foot">上限不限；本批预扣 {{ formatNumber(preview.quota_cost) }} 计费条</p>
       </section>
       <section v-else-if="preview" class="rail-card quota-degraded">
         <header>部门日配额</header>
@@ -1044,13 +1046,13 @@ onBeforeUnmount(() => {
         <p class="result-line">{{ sendSuccessText(sendResult) }}。</p>
         <div class="result-stats">
           <span
-            >受理 <b>{{ sendResult.accepted.toLocaleString() }}</b></span
+            >受理 <b>{{ formatNumber(sendResult.accepted) }}</b></span
           >
           <span
-            >剔除 <b>{{ removedTotal(sendResult).toLocaleString() }}</b></span
+            >剔除 <b>{{ formatNumber(removedTotal(sendResult)) }}</b></span
           >
           <span
-            >预扣 <b>{{ sendResult.quota_cost.toLocaleString() }}</b> 计费条</span
+            >预扣 <b>{{ formatNumber(sendResult.quota_cost) }}</b> 计费条</span
           >
         </div>
         <div class="result-acts">

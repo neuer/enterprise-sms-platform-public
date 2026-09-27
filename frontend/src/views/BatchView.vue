@@ -35,7 +35,7 @@ import {
 } from "../lib/labels"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
-import { formatPercent } from "../lib/format"
+import { formatNumber, formatPercent } from "../lib/format"
 import { formatDateTime, formatDateTimeMinute, toApiDateTime } from "../lib/time"
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
@@ -579,9 +579,9 @@ watch(moreOpen, (open) => {
         <template #default="{ row }">
           <div class="compose-nums">
             <span
-              ><b>{{ row.delivered.toLocaleString() }}</b> / {{ row.total.toLocaleString() }}</span
+              ><b>{{ formatNumber(row.delivered) }}</b> / {{ formatNumber(row.total) }}</span
             >
-            <span v-if="row.failed > 0" class="is-failed">失败 {{ row.failed.toLocaleString() }}</span>
+            <span v-if="row.failed > 0" class="is-failed">失败 {{ formatNumber(row.failed) }}</span>
             <span v-else-if="row.status === 'scheduled' || row.status === 'pending_approval'" class="compose-hint">{{
               row.status === "scheduled" ? "待进入流水线" : "待审批"
             }}</span>
@@ -596,7 +596,7 @@ watch(moreOpen, (open) => {
           </div>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="112">
+      <el-table-column label="状态" width="112" fixed="right">
         <template #default="{ row }">
           <StatusTag :status="row.status" />
           <small v-if="row.deferred_reason === 'market_window'" class="cell-deferred">窗外转定时</small>
@@ -604,7 +604,7 @@ watch(moreOpen, (open) => {
       </el-table-column>
       <el-table-column label="计费条" width="90" align="right">
         <template #default="{ row }"
-          ><span class="mono-value">{{ row.quota_cost.toLocaleString() }}</span></template
+          ><span class="mono-value">{{ formatNumber(row.quota_cost) }}</span></template
         >
       </el-table-column>
       <el-table-column label="操作" width="92" fixed="right">
@@ -702,7 +702,7 @@ watch(moreOpen, (open) => {
           :disabled="!canResendFailed || resending"
           data-testid="resend-failed"
           @click="resendFailed"
-          >重发失败（{{ selected.failed.toLocaleString() }}）</el-button
+          >重发失败（{{ formatNumber(selected.failed) }}）</el-button
         >
         <p class="batch-actions-why"
           >取消 / 改期仅「已排期」批次可用（服务端 409 为最终裁决）；API 批次须通过所属应用 API 重发。Web
@@ -721,19 +721,19 @@ watch(moreOpen, (open) => {
         </div>
         <div class="batch-hero-nums">
           <div
-            ><span>待处理</span><b>{{ composeOf(selected).pending.toLocaleString() }}</b
+            ><span>待处理</span><b>{{ formatNumber(composeOf(selected).pending) }}</b
             ><small>{{
               selected.total > 0 ? formatPercent(composeOf(selected).pending / selected.total) : "—"
             }}</small></div
           >
           <div
-            ><span>已提交</span><b>{{ composeOf(selected).sent.toLocaleString() }}</b
+            ><span>已提交</span><b>{{ formatNumber(composeOf(selected).sent) }}</b
             ><small>{{
               selected.total > 0 ? formatPercent(composeOf(selected).sent / selected.total) : "—"
             }}</small></div
           >
           <div
-            ><span>送达</span><b>{{ composeOf(selected).delivered.toLocaleString() }}</b
+            ><span>送达</span><b>{{ formatNumber(composeOf(selected).delivered) }}</b
             ><small>{{
               selected.total > 0 ? formatPercent(composeOf(selected).delivered / selected.total) : "—"
             }}</small></div
@@ -741,37 +741,36 @@ watch(moreOpen, (open) => {
           <div
             ><span>失败</span
             ><b :class="{ 'is-failed': composeOf(selected).failed > 0 }">{{
-              composeOf(selected).failed.toLocaleString()
+              formatNumber(composeOf(selected).failed)
             }}</b
             ><small>{{
               selected.total > 0 ? formatPercent(composeOf(selected).failed / selected.total) : "—"
             }}</small></div
           >
           <div
-            ><span>未知</span><b>{{ composeOf(selected).unknown.toLocaleString() }}</b
+            ><span>未知</span><b>{{ formatNumber(composeOf(selected).unknown) }}</b
             ><small>{{
               selected.total > 0 ? formatPercent(composeOf(selected).unknown / selected.total) : "—"
             }}</small></div
           >
           <div
-            ><span>其他</span><b>{{ composeOf(selected).other.toLocaleString() }}</b
+            ><span>其他</span><b>{{ formatNumber(composeOf(selected).other) }}</b
             ><small>{{
               selected.total > 0 ? formatPercent(composeOf(selected).other / selected.total) : "—"
             }}</small></div
           >
         </div>
         <p class="batch-hero-quotas"
-          >受理 <b>{{ selected.total.toLocaleString() }}</b> · 计费条
-          <b>{{ selected.quota_cost.toLocaleString() }}</b> · 单条 <b>{{ selected.segments }}</b> 条 · 频控剔除
-          <b>{{ selected.removed_freq_limit.toLocaleString() }}</b></p
+          >受理 <b>{{ formatNumber(selected.total) }}</b> · 计费条 <b>{{ formatNumber(selected.quota_cost) }}</b> · 单条
+          <b>{{ selected.segments }}</b> 条 · 频控剔除 <b>{{ formatNumber(selected.removed_freq_limit) }}</b></p
         >
       </section>
 
       <p v-if="selected.status === 'sending' && activeOf(selected) > 0" class="batch-note"
-        >仍有 {{ activeOf(selected).toLocaleString() }} 条未终态（待处理
-        {{ composeOf(selected).pending.toLocaleString() }} + 已提交
+        >仍有 {{ formatNumber(activeOf(selected)) }} 条未终态（待处理 {{ formatNumber(composeOf(selected).pending) }} +
+        已提交
         {{
-          composeOf(selected).sent.toLocaleString()
+          formatNumber(composeOf(selected).sent)
         }}），批次保持发送中，直至提交完成、结果核对、回执到达或报告超时。构成非成功率。</p
       >
       <p v-if="selected.deferred_reason === 'market_window'" class="batch-note is-warn"

@@ -11,7 +11,7 @@ import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePolling } from "../composables/usePolling"
 import { useLatestRead } from "../composables/useLatestRead"
 import { jobDescription } from "../lib/jobDescriptions"
-import { formatPercent } from "../lib/format"
+import { formatNumber, formatPercent } from "../lib/format"
 import { CATEGORY_LABELS } from "../lib/labels"
 import { formatDateTime, formatHm, formatHms } from "../lib/time"
 import { errorText } from "../lib/error"
@@ -28,7 +28,7 @@ const totalSegments = computed(
 const operations = computed(() => snapshot.value?.operations)
 const balanceThreshold = computed(() => operations.value?.balance_alert_threshold ?? null)
 const balanceThresholdLabel = computed(() =>
-  balanceThreshold.value === null ? "告警阈值暂不可用" : `告警阈值 ${balanceThreshold.value.toLocaleString()}`,
+  balanceThreshold.value === null ? "告警阈值暂不可用" : `告警阈值 ${formatNumber(balanceThreshold.value)}`,
 )
 const stalledJobs = computed(() => operations.value?.jobs.filter((item) => item.stalled) ?? [])
 const healthyJobCount = computed(() => (operations.value?.jobs.length ?? 0) - stalledJobs.value.length)
@@ -61,7 +61,7 @@ const balanceRunwayLabel = computed(() => {
   const stats = balanceStats.value
   if (stats === null) return "近 14 日消耗速率暂不可估算"
   const runway = stats.runway === null ? "" : ` · 预计可用约 ${stats.runway} 天`
-  return `日均消耗 ≈ ${Math.round(stats.daily).toLocaleString()}${runway}`
+  return `日均消耗 ≈ ${formatNumber(Math.round(stats.daily))}${runway}`
 })
 
 function channelMonitorError(reason: DashboardChannelMonitor["degraded_reason"]): string {
@@ -155,8 +155,8 @@ onMounted(refreshPolling.start)
         <el-card shadow="never" class="metric-card primary">
           <span>今日消息</span>
           <span class="kpi-go">→ 报表</span>
-          <strong>{{ totalMessages.toLocaleString() }}</strong>
-          <small>{{ totalSegments.toLocaleString() }} 计费条</small>
+          <strong>{{ formatNumber(totalMessages) }}</strong>
+          <small>{{ formatNumber(totalSegments) }} 计费条</small>
           <div class="category-strip" aria-label="分类消息量">
             <span
               v-for="item in snapshot.categories"
@@ -190,7 +190,7 @@ onMounted(refreshPolling.start)
         <el-card shadow="never" class="metric-card warning">
           <span>待审批</span>
           <span class="kpi-go">→ 审批</span>
-          <strong>{{ snapshot.pending_approvals.toLocaleString() }}</strong>
+          <strong>{{ formatNumber(snapshot.pending_approvals) }}</strong>
           <small>当前权限范围</small><p>及时处理避免发送窗口顺延</p>
         </el-card>
       </router-link>
@@ -207,7 +207,7 @@ onMounted(refreshPolling.start)
         >
           <span>厂商余额</span>
           <span class="kpi-go">→ 余额</span>
-          <strong>{{ operations.current_balance?.toLocaleString() ?? "—" }}</strong>
+          <strong>{{ formatNumber(operations.current_balance) }}</strong>
           <small>计费条 · {{ balanceThresholdLabel }}</small>
           <p class="balance-runway">{{ balanceRunwayLabel }}</p>
         </el-card>
@@ -239,17 +239,15 @@ onMounted(refreshPolling.start)
         >
         <template v-if="operations.balances.length">
           <div class="balance-summary">
-            <strong class="balance-now"
-              >{{ operations.current_balance?.toLocaleString() ?? "—" }}<small>计费条</small></strong
-            >
+            <strong class="balance-now">{{ formatNumber(operations.current_balance) }}<small>计费条</small></strong>
             <BalanceChart :points="operations.balances" />
             <div class="balance-meta">
               <div
-                ><span>告警阈值</span><b>{{ balanceThreshold?.toLocaleString() ?? "—" }}</b></div
+                ><span>告警阈值</span><b>{{ formatNumber(balanceThreshold) }}</b></div
               >
               <div
                 ><span>日均消耗（14 日）</span
-                ><b>{{ balanceStats ? `≈ ${Math.round(balanceStats.daily).toLocaleString()}` : "—" }}</b></div
+                ><b>{{ balanceStats ? `≈ ${formatNumber(Math.round(balanceStats.daily))}` : "—" }}</b></div
               >
               <div
                 ><span>预计可用</span

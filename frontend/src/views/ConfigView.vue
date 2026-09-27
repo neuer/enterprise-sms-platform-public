@@ -743,6 +743,7 @@ onMounted(() => {
               v-if="item.value_type === 'bool'"
               v-model="values[item.key]"
               :data-testid="`config-${item.key}`"
+              :aria-label="item.key"
               @change="mark(item.key)"
               ><el-option label="开启 · true" value="true" /><el-option label="关闭 · false" value="false"
             /></el-select>
@@ -750,6 +751,7 @@ onMounted(() => {
               v-else-if="item.value_type === 'int'"
               :model-value="values[item.key] === '' ? undefined : Number(values[item.key])"
               :data-testid="`config-${item.key}`"
+              :aria-label="item.key"
               :min="item.min_value ?? 1"
               :max="item.max_value ?? undefined"
               :step="1"
@@ -761,6 +763,7 @@ onMounted(() => {
               v-else
               v-model="values[item.key]"
               :data-testid="`config-${item.key}`"
+              :aria-label="item.key"
               :type="item.sensitive ? 'password' : 'text'"
               :show-password="item.sensitive"
               :placeholder="

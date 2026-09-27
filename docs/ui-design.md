@@ -56,7 +56,7 @@
 | `<BillingSegments>` | 计费分段可视化：满段实心 verdi 块、末段斜纹块（title 显示 n/67 字）、恒显 1 个灰色 ghost 块提示下一段边界；数据只来自 /billing 预估接口 |
 | `<ChannelMonitor>` | 常驻仪表盘运行健康区的签名组件（整块链接跳 /ops?tab=queue）：LIVE 脉冲点 + 实时(verdi)/批量(amber)两条通道（16px 队列数字 + 6px 深度轨，宽度过渡 900ms）+ 5 枚 14px QPS 令牌点（占用=verdi 实心渐变）+「最近更新」时间戳；stale 态整体降饱和、LIVE 转灰显「数据暂不可用」、隐藏未知值并附降级原因与最近成功快照时间 |
 | 结果构成条 | 批次列表与 560 抽屉共用六段条（待处理 tx-3 / 待回执 slate / 送达 verdi / 失败 verm / 未知 amber / 其他中性灰）；各段直接使用服务端消息状态计数，禁止用总数减法反推。列表 5px、抽屉 9px。明示占受理总数份额，不是成功率；禁止 donut |
-| 表格 | 行高 40、th 10.5px 字距 0.08em、正文 12.5px（`.el-table` 基准，单元格内自带字号的 strong/small/mono 不受影响）、panel 背景与 hair 分隔；hover 只提高一层亮度；数字列右对齐 mono；行点击开 Drawer（560px），不整页跳转 |
+| 表格 | 行高 40、th 10.5px 字距 0.08em、正文 12.5px（`.el-table` 基准，单元格内自带字号的 strong/small/mono 不受影响）、panel 背景与 hair 分隔；hover 只提高一层亮度，统一取不透明令牌 `--row-hover`（固定列叠在横向滚动内容之上，禁止半透明）；窄屏会横向滚动的列表把状态/操作列 `fixed="right"`；加载态用 `v-loading` 指令（el-table 没有 loading prop）；数字列右对齐 mono；行点击开 Drawer（560px），不整页跳转 |
 | 空态 | 两行文案：一行结论粗体 + 一行"这里会出现什么/下一步"，不放插画 |
 
 ## 5. 文案基调
@@ -65,7 +65,7 @@
 
 ## 6. 动效与可达性
 
-过渡白名单制：Drawer 滑入走 Element 默认时长（约 300ms，未覆写）、交互 hover 120ms（侧栏导航、发送页类别卡、日期输入框）、switch 走 Element 默认（未覆写）、信道条深度轨宽度 900ms（ChannelMonitor.vue）、LIVE 常驻脉冲 monitor-pulse 2.4s、页签激活下划线 140ms（config.css）、移动端侧栏抽屉 180ms（blacklist-sensitive.css）、号码导入解析 spinner send-spin 0.9s（send.css）；入场动画仅登录会话窗一处（identity-gate-enter 480ms，theme.css；白鹭情绪动作属登录页例外），无环形加载堆叠。`prefers-reduced-motion` 全关。焦点样式 2px verdi 外描边全站保留；表格行可键盘 Enter 开 Drawer。
+过渡白名单制：Drawer 滑入走 Element 默认时长（约 300ms，未覆写）、交互 hover 120ms（侧栏导航、发送页类别卡、日期输入框）、switch 走 Element 默认（未覆写）、信道条深度轨宽度 900ms（ChannelMonitor.vue）、LIVE 常驻脉冲 monitor-pulse 2.4s、页签激活下划线 140ms（config.css）、移动端侧栏抽屉 180ms（blacklist-sensitive.css）、号码导入解析 spinner send-spin 0.9s（send.css）；入场动画仅登录会话窗一处（identity-gate-enter 480ms，theme.css；白鹭情绪动作属登录页例外），无环形加载堆叠。`prefers-reduced-motion` 全关。焦点样式 2px verdi 外描边全站保留；表格行可键盘 Enter 开 Drawer。无可见 label 的 el-select/el-input 必须带 `aria-label`；纯装饰且数值已在相邻文字出现的图形 `aria-hidden`；占位文字走 `--el-text-color-placeholder: var(--tx-3)`，不用 Element 默认浅灰。
 
 ## 7. 页面基准（与原型逐屏对应）
 
@@ -100,7 +100,7 @@
 - 手机号展示统一 `<PhoneMask>` 组件（默认 mask）；授权解密统一 `<PhoneReveal>` 组件（「授权查看」入口，成功提示记审计，明文只存组件易失状态）
 - 状态用 `el-tag` 色彩语义：queued/sending=info、completed/delivered=success、failed/rejected=danger、pending_approval/scheduled=warning、balance_blocked/uncertain=danger 深色
 - 图表 ECharts；时间显示本地 +08:00 `YYYY-MM-DD HH:mm:ss`；全站中文文案；空态/加载用 Element 内置组件，不引第三方 UI 库
-- 前端共享单点：时间格式化 `src/lib/time.ts`；手机号正则/掩码 `src/lib/phone.ts`；类别/角色/状态/厂商审核文案与默认分页 `src/lib/labels.ts`；请求基建 `src/api/client.ts`（`auth.ts` 为 pre-auth 例外）；剪贴板 `src/lib/clipboard.ts`；错误文案提取 `src/lib/error.ts`（errorText，ESLint 拦截内联回潮）；确认对话框 `src/lib/confirm.ts`（confirmAuditedAction 审计两段式 / confirmAction 纯文本，内部吞 cancel/close 返回布尔）；Blob 下载 `src/lib/download.ts`（saveBlob）；导出任务流 `src/composables/useExportTask.ts`（创建→轮询→step-up 下载）；ECharts 装配 `src/composables/useChart.ts`；统一轮询 `src/composables/usePolling.ts`；批量录入大文本防抖解析 `src/composables/useDebouncedEntries.ts`；壳样式只在 `workspace.css` 聚合入口（由 `element-workspace.ts` 随首个非公开路由懒加载引入，视图不重复 import，且保持在该模块 el-* 样式之前），规则本体按主题分片在 `src/styles/workspace/`（@import 顺序即级联顺序，`overrides-light.css` 明亮覆写层必须末位；新增壳样式进对应分片，禁止另起新文件或页面级拷贝），`theme.css` 只留 token、登录页与 Element 覆写。新增同关注点逻辑一律进单点，禁止页面级拷贝
+- 前端共享单点：时间格式化 `src/lib/time.ts`；数值展示 `src/lib/format.ts`（formatPercent / formatNumber 固定 zh-CN 千分位，禁用 toLocaleString）；手机号正则/掩码 `src/lib/phone.ts`；类别/角色/状态/厂商审核文案与默认分页 `src/lib/labels.ts`；请求基建 `src/api/client.ts`（`auth.ts` 为 pre-auth 例外）；剪贴板 `src/lib/clipboard.ts`；错误文案提取 `src/lib/error.ts`（errorText，ESLint 拦截内联回潮）；确认对话框 `src/lib/confirm.ts`（confirmAuditedAction 审计两段式 / confirmAction 纯文本，内部吞 cancel/close 返回布尔）；Blob 下载 `src/lib/download.ts`（saveBlob）；导出任务流 `src/composables/useExportTask.ts`（创建→轮询→step-up 下载）；ECharts 装配 `src/composables/useChart.ts`；统一轮询 `src/composables/usePolling.ts`；批量录入大文本防抖解析 `src/composables/useDebouncedEntries.ts`；壳样式只在 `workspace.css` 聚合入口（由 `element-workspace.ts` 随首个非公开路由懒加载引入，视图不重复 import，且保持在该模块 el-* 样式之前），规则本体按主题分片在 `src/styles/workspace/`（@import 顺序即级联顺序，`overrides-light.css` 明亮覆写层必须末位；新增壳样式进对应分片，禁止另起新文件或页面级拷贝），`theme.css` 只留 token、登录页与 Element 覆写。新增同关注点逻辑一律进单点，禁止页面级拷贝
 - 模板/签名由 `src/composables/useMobileLayout.ts` 统一读取 760px 断点，仅挂载桌面表格或移动卡片之一；筛选、详情和未提交编辑状态保留在页面层。
 - 同类只读查询通过 `src/composables/useLatestRead.ts` 在替换和卸载时取消旧请求，API 包装贯穿 AbortSignal，继续保留代际 token 防乱序；取消不显示错误提示，真实错误仍可见，写操作不接入该取消通道。
 - 顶栏余额仅管理员在非仪表盘页按 60s 读取 `/reports/balance` 轻量投影；仪表盘路由复用其 10s 快照广播，页面隐藏暂停。未知或失败时显示暂不可用，其他角色不发余额请求。
