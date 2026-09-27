@@ -10,6 +10,7 @@ import { listUsers, revokeUserSessions, updateUserStatus, type ManagedUser, type
 import EmptyState from "../components/EmptyState.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
+import MobileFilterToggle from "../components/MobileFilterToggle.vue"
 import UserCreateDrawer from "../components/UserCreateDrawer.vue"
 import UserPasswordResetDrawer from "../components/UserPasswordResetDrawer.vue"
 import UserRoleDrawer from "../components/UserRoleDrawer.vue"
@@ -40,6 +41,7 @@ const filters = reactive({
   status: "" as 0 | 1 | "",
   pageSize: DEFAULT_PAGE_SIZE,
 })
+const filtersCollapsed = ref(true)
 const passwordPolicy = ref<PasswordPolicy>({
   min_length: 12,
   max_length: 128,
@@ -259,8 +261,12 @@ onMounted(() => {
     <el-button data-testid="create-local-user" type="primary" @click="openCreate">创建本地账号</el-button>
   </section>
 
-  <form class="user-filter-bar" @submit.prevent="search">
-    <label class="user-fld">
+  <form
+    class="user-filter-bar filter-collapsible"
+    :class="{ 'is-collapsed': filtersCollapsed }"
+    @submit.prevent="search"
+  >
+    <label class="user-fld filter-keep">
       <span>关键词</span>
       <el-input
         v-model="filters.keyword"
@@ -305,7 +311,11 @@ onMounted(() => {
         @update:model-value="setStatus"
       />
     </div>
-    <div class="user-filter-go">
+    <MobileFilterToggle
+      v-model:collapsed="filtersCollapsed"
+      :active-count="[filters.providerCode, filters.role, filters.status].filter((value) => value !== '').length"
+    />
+    <div class="user-filter-go filter-keep">
       <el-button data-testid="user-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="user-reset" @click="resetFilters">重置</el-button>
     </div>

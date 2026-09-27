@@ -774,6 +774,15 @@
   .query-table {
     display: none;
   }
+  /* 手机卡片本身带边框与底色，外层台账面板退为透明，避免卡片套卡片 */
+  .batch-ledger {
+    padding: 0;
+    background: none;
+    border: 0;
+  }
+  .batch-ledger .query-mobile-list {
+    padding: 0;
+  }
   .query-mobile-list p {
     color: var(--ink-soft);
   }

@@ -13,6 +13,7 @@ import {
 import EmptyState from "../components/EmptyState.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
+import MobileFilterToggle from "../components/MobileFilterToggle.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { usePagedList } from "../composables/usePagedList"
@@ -36,6 +37,7 @@ const filters = reactive({
   event: "" as CallbackEvent | "",
   batchNo: "",
 })
+const filtersCollapsed = ref(true)
 
 const statusMeta: Record<CallbackStatus, { label: string; type: "warning" | "success" | "danger" | "info" }> = {
   pending: { label: "待投递", type: "info" },
@@ -188,8 +190,12 @@ onMounted(() => {
     </div>
   </section>
 
-  <form class="callback-filter-bar" @submit.prevent="search">
-    <div class="callback-fld">
+  <form
+    class="callback-filter-bar filter-collapsible"
+    :class="{ 'is-collapsed': filtersCollapsed }"
+    @submit.prevent="search"
+  >
+    <div class="callback-fld filter-keep">
       <span>投递状态</span>
       <FilterSeg
         :model-value="filters.status"
@@ -238,7 +244,11 @@ onMounted(() => {
         @clear="search"
       />
     </label>
-    <div class="callback-filter-go">
+    <MobileFilterToggle
+      v-model:collapsed="filtersCollapsed"
+      :active-count="(filters.event ? 1 : 0) + (filters.appId === null ? 0 : 1) + (filters.batchNo.trim() ? 1 : 0)"
+    />
+    <div class="callback-filter-go filter-keep">
       <el-button data-testid="callback-search" type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="callback-reset" @click="resetFilters">重置</el-button>
     </div>

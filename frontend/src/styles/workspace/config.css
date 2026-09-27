@@ -11,6 +11,7 @@
   margin-top: -8px;
   border-bottom: 1px solid var(--line-2);
   overflow-x: auto;
+  overflow-y: hidden;
 }
 .config-tabs button,
 .ops-tabs button {
@@ -420,4 +421,39 @@
 }
 .config-savebar > span b.is-pending {
   color: var(--amber);
+}
+
+/* 手机：分组筛选换行而不是被 overflow 截断；分组标题整行作为展开/收起的命中区。 */
+@media (max-width: 760px) {
+  .config-filter-bar .filter-seg {
+    flex-wrap: wrap;
+    height: auto;
+  }
+
+  .config-filter-bar .filter-seg button {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  .config-group-title {
+    padding: 0;
+  }
+
+  .config-group-toggle {
+    display: flex;
+    flex: 1;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 48px;
+    padding: 0 16px;
+    color: inherit;
+    font: inherit;
+    background: none;
+    border: 0;
+    cursor: pointer;
+  }
+
+  .config-savebar {
+    padding: 8px 10px;
+  }
 }

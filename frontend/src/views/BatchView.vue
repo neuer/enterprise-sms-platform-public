@@ -14,6 +14,7 @@ import CategoryTag from "../components/CategoryTag.vue"
 import EmptyState from "../components/EmptyState.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
+import MobileFilterToggle from "../components/MobileFilterToggle.vue"
 import StatusTag from "../components/StatusTag.vue"
 import { listApps, type ManagedApp } from "../api/apps"
 import {
@@ -183,6 +184,10 @@ const moreActiveCount = computed(
     (isAdmin.value && dept.value.trim() !== "" ? 1 : 0),
 )
 const moreActive = computed(() => moreActiveCount.value > 0)
+const filtersCollapsed = ref(true)
+const collapsedActiveCount = computed(
+  () => (category.value ? 1 : 0) + (channel.value ? 1 : 0) + (range.value ? 1 : 0) + moreActiveCount.value,
+)
 
 const batchRead = useLatestRead()
 const deepLinkRead = useLatestRead()
@@ -430,8 +435,12 @@ watch(moreOpen, (open) => {
     <span class="batch-scope"><i></i>当前口径 · {{ session.roleLabel }}</span>
   </section>
 
-  <form class="batch-filter batch-filter-bar" @submit.prevent="search">
-    <div class="batch-fld">
+  <form
+    class="batch-filter batch-filter-bar filter-collapsible"
+    :class="{ 'is-collapsed': filtersCollapsed }"
+    @submit.prevent="search"
+  >
+    <div class="batch-fld filter-keep">
       <span>批次号</span>
       <el-input v-model="batchNo" class="batch-filter-search" placeholder="模糊匹配批次号" clearable maxlength="64" />
     </div>
@@ -501,7 +510,8 @@ watch(moreOpen, (open) => {
         </div>
       </el-popover>
     </div>
-    <div class="batch-filter-actions">
+    <MobileFilterToggle v-model:collapsed="filtersCollapsed" :active-count="collapsedActiveCount" />
+    <div class="batch-filter-actions filter-keep">
       <span v-if="filtersDirty" class="batch-dirty" data-testid="batch-filters-dirty">● 条件已变更</span>
       <el-button type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button @click="reset">重置</el-button>

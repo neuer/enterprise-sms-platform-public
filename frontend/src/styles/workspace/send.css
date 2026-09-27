@@ -851,3 +851,30 @@
   font-size: var(--fs-xs);
   text-align: center;
 }
+
+/* 手机吸底确认条（确认栏进入视口即隐藏，不与真实提交按钮重叠）。 */
+.send-jumpbar {
+  position: fixed;
+  z-index: 9;
+  right: 12px;
+  bottom: 12px;
+  left: 12px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 8px 8px 14px;
+  color: var(--tx-2);
+  font-size: var(--fs-md);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 25%);
+  backdrop-filter: blur(12px);
+}
+
+.send-jumpbar b {
+  color: var(--tx-hi);
+  font-family: var(--mono);
+  font-weight: 600;
+}

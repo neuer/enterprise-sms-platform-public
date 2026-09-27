@@ -32,7 +32,7 @@
 
 | 角色 | 字体栈 | 规则 |
 |---|---|---|
-| 界面/正文 | Noto Sans SC Variable（自包含 npm 包 @fontsource-variable/noto-sans-sc，规则 36）, PingFang SC, HarmonyOS Sans SC, Microsoft YaHei, system-ui, sans-serif | 基准 13px/1.6；H1 19px/600；表格 12.5px |
+| 界面/正文 | Noto Sans SC Variable（由 @fontsource-variable/noto-sans-sc 分片按界面字符裁剪为可变子集，`uv run scripts/subset_fonts.py sans` 生成，规则 36；清单外字符回退后续系统字体）, PingFang SC, HarmonyOS Sans SC, Microsoft YaHei, system-ui, sans-serif | 基准 13px/1.6；H1 19px/600；表格 12.5px |
 | **数据字** | IBM Plex Mono（@fontsource 本地 latin woff2，400/500/600）, monospace | 批次号、customId、手机号、金额/条数/百分比、时间戳；一律 `font-variant-numeric: tabular-nums` |
 | 品牌字 | Noto Serif SC Variable（固定品牌文案子集静态实例 400/600）, Noto Serif SC, Source Han Serif SC, Songti SC, serif | 仅三处：侧栏「青鸾」印章字与品牌名、登录会话名片「青鸾」（.login-intro-name）。其余禁用衬线 |
 

@@ -207,6 +207,51 @@
   font-size: var(--fs-2xs);
 }
 
+/* 抽屉页脚手机排布（含模板页 template-editor-foot）：注记独占一行，按钮组等宽铺满拇指区；
+   不拆行时按钮会在内层 div 中折行，叠加 Element 的相邻按钮 margin-left 形成阶梯错位。 */
+@media (max-width: 760px) {
+  .template-editor-foot,
+  .sign-editor-foot,
+  .blacklist-editor-foot,
+  .sensitive-editor-foot,
+  .user-editor-foot,
+  .callback-editor-foot {
+    flex-direction: column;
+    gap: 10px;
+    align-items: stretch;
+  }
+
+  .template-editor-foot small,
+  .sign-editor-foot small,
+  .blacklist-editor-foot small,
+  .sensitive-editor-foot small,
+  .user-editor-foot small,
+  .callback-editor-foot small {
+    max-width: none;
+    text-align: left;
+  }
+
+  .template-editor-foot > div,
+  .sign-editor-foot > div,
+  .blacklist-editor-foot > div,
+  .sensitive-editor-foot > div,
+  .user-editor-foot > div,
+  .callback-editor-foot > div {
+    display: flex;
+    gap: 8px;
+  }
+
+  .template-editor-foot > div .el-button,
+  .sign-editor-foot > div .el-button,
+  .blacklist-editor-foot > div .el-button,
+  .sensitive-editor-foot > div .el-button,
+  .user-editor-foot > div .el-button,
+  .callback-editor-foot > div .el-button {
+    flex: 1;
+    margin-left: 0;
+  }
+}
+
 /* 敏感词页面专属：短词密排词条墙（替代整行表格），删除 × 常驻弱化、悬停朱红。 */
 .sensitive-head-ops {
   display: flex;
@@ -616,13 +661,19 @@
     display: none;
   }
 
+  /* 单列排布：页头尾部的徽标/按钮若按行内元素排在段落后，其竖向内边距会盖住上一行正文。 */
   .page-heading {
-    display: block;
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-start;
   }
 
-  .page-heading time {
-    display: block;
-    margin-top: 12px;
+  .page-heading > div {
+    align-self: stretch;
+  }
+
+  .page-heading > :not(div) {
+    align-self: flex-start;
   }
 
   .security-note {

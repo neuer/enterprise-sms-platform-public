@@ -181,7 +181,7 @@ describe("全站筛选布局契约", () => {
     expect(securityDailyView).not.toContain("card-heading")
     // 查询/重置与筛选条件同处一行 form，说明细字在条外下一行
     expect(securityDailyView).toMatch(
-      /<form class="security-daily-filter-bar"[\s\S]*<div class="security-daily-filter-go">[\s\S]*<\/form>\s*<p class="security-daily-privacy"\s*>/,
+      /<form\s+class="security-daily-filter-bar[^"]*"[\s\S]*<div class="security-daily-filter-go[^"]*">[\s\S]*<\/form>\s*<p class="security-daily-privacy"\s*>/,
     )
     // 页级紧凑条专属样式：标签内联、日期 112px、seg 30px、按钮 margin-left:auto
     expect(css).toMatch(/\.security-daily-filter-bar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/s)

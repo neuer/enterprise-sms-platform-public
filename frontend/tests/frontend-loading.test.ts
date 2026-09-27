@@ -86,8 +86,9 @@ describe("前端加载边界", () => {
       expect(match, `聚合入口只允许引入 styles/workspace/ 分片：${line}`).not.toBeNull()
       expect(existsSync(resolve(process.cwd(), "src/styles", match![1])), `${line} 目标分片缺失`).toBe(true)
     }
-    // 明亮模式覆写层必须保持在末位（级联依赖顺序）
-    expect(imports.at(-1)).toContain("overrides-light.css")
+    // 只放尺寸的触屏命中区 touch.css 在末位，明亮模式覆写层紧随其前（级联依赖顺序）
+    expect(imports.at(-1)).toContain("touch.css")
+    expect(imports.at(-2)).toContain("overrides-light.css")
     // 聚合入口内联展开后仍含壳骨架与覆写层规则（防空切片/漏引入）
     const full = readWorkspaceCss()
     expect(full).toContain(".app-shell")

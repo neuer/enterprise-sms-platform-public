@@ -11,6 +11,7 @@ import EmptyState from "../components/EmptyState.vue"
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import ListPagination from "../components/ListPagination.vue"
+import MobileFilterToggle from "../components/MobileFilterToggle.vue"
 import PhoneMask from "../components/PhoneMask.vue"
 import PhoneReveal from "../components/PhoneReveal.vue"
 import StatusTag from "../components/StatusTag.vue"
@@ -32,6 +33,7 @@ import { useSessionStore } from "../stores/session"
 const session = useSessionStore()
 const phone = ref("")
 const range = ref<[Date, Date] | null>(null)
+const filtersCollapsed = ref(true)
 const category = ref("")
 const status = ref("")
 const mode = ref<"list" | "timeline">("list")
@@ -217,8 +219,12 @@ async function revealSearched(): Promise<string> {
     </div>
   </section>
 
-  <form class="message-search message-filter-bar" @submit.prevent="search">
-    <label class="message-fld">
+  <form
+    class="message-search message-filter-bar filter-collapsible"
+    :class="{ 'is-collapsed': filtersCollapsed }"
+    @submit.prevent="search"
+  >
+    <label class="message-fld filter-keep">
       <span>手机号精确查询</span>
       <el-input
         v-model="phone"
@@ -257,7 +263,11 @@ async function revealSearched(): Promise<string> {
         @update:model-value="switchMode"
       />
     </div>
-    <div class="message-filter-go">
+    <MobileFilterToggle
+      v-model:collapsed="filtersCollapsed"
+      :active-count="(range ? 1 : 0) + (mode === 'list' ? 0 : 1)"
+    />
+    <div class="message-filter-go filter-keep">
       <el-button type="primary" native-type="submit" :loading="loading">查询</el-button>
       <el-button data-testid="message-reset" @click="reset">重置</el-button>
     </div>

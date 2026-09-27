@@ -383,7 +383,7 @@ describe("青鸾 Console 17 屏结构保真", () => {
     expect(workspace).toMatch(/\.security-daily-facts > div\s*\{[^}]*min-width:\s*150px/s)
     // 标签内联 + 查询/重置同行 + 说明细字在条下一行
     expect(view).toMatch(
-      /<form class="security-daily-filter-bar"[\s\S]*<div class="security-daily-filter-go">[\s\S]*<\/form>\s*<p class="security-daily-privacy"\s*>/,
+      /<form\s+class="security-daily-filter-bar[^"]*"[\s\S]*<div class="security-daily-filter-go[^"]*">[\s\S]*<\/form>\s*<p class="security-daily-privacy"\s*>/,
     )
     expect(workspace).toMatch(/\.security-daily-filter-bar\s*\{[^}]*display:\s*flex[^}]*flex-wrap:\s*wrap/s)
     expect(workspace).toMatch(/\.security-daily-fld\s*\{[^}]*display:\s*flex[^}]*align-items:\s*center/s)

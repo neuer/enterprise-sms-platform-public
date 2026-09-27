@@ -6,6 +6,7 @@ import { useLatestRead } from "../composables/useLatestRead"
 import { usePagedList } from "../composables/usePagedList"
 import ListPagination from "../components/ListPagination.vue"
 import FilterSeg from "../components/FilterSeg.vue"
+import MobileFilterToggle from "../components/MobileFilterToggle.vue"
 import { ElMessage } from "element-plus"
 import { computed, nextTick, onMounted, reactive, ref, toRef, watch } from "vue"
 
@@ -143,6 +144,7 @@ const filters = reactive({
   page: 1,
   pageSize: DEFAULT_PAGE_SIZE,
 })
+const filtersCollapsed = ref(true)
 
 const selectedPayload = computed<SecurityDailyPayload | null>(() => selected.value?.payload ?? null)
 const coverageGaps = computed(
@@ -519,7 +521,11 @@ onMounted(() => void refresh())
   </section>
 
   <div>
-    <form class="security-daily-filter-bar" @submit.prevent="search">
+    <form
+      class="security-daily-filter-bar filter-collapsible"
+      :class="{ 'is-collapsed': filtersCollapsed }"
+      @submit.prevent="search"
+    >
       <div class="security-daily-fld">
         <span>报告日期</span>
         <div class="security-daily-dates">
@@ -545,7 +551,7 @@ onMounted(() => void refresh())
           />
         </div>
       </div>
-      <div class="security-daily-fld">
+      <div class="security-daily-fld filter-keep">
         <span>安全状态</span>
         <FilterSeg
           :model-value="filters.status"
@@ -581,7 +587,15 @@ onMounted(() => void refresh())
           @update:model-value="setDeliveryStatus"
         />
       </div>
-      <div class="security-daily-filter-go">
+      <MobileFilterToggle
+        v-model:collapsed="filtersCollapsed"
+        :active-count="
+          (filters.dateFrom || filters.dateTo ? 1 : 0) +
+          (filters.generationStatus ? 1 : 0) +
+          (filters.deliveryStatus ? 1 : 0)
+        "
+      />
+      <div class="security-daily-filter-go filter-keep">
         <el-button data-testid="security-daily-search" type="primary" native-type="submit" :loading="loading"
           >查询</el-button
         >

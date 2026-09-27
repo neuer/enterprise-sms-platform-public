@@ -32,6 +32,7 @@ import SendPrecheckCards, { type FinalContentParts, type RiskLine } from "../com
 import EmptyState from "../components/EmptyState.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { useLatestRead } from "../composables/useLatestRead"
+import { useMobileLayout } from "../composables/useMobileLayout"
 import { copyText } from "../lib/clipboard"
 import { saveBlob } from "../lib/download"
 import { PHONE_RE } from "../lib/phone"
@@ -156,6 +157,25 @@ const sendDisabled = computed(
     (form.scheduleEnabled && (!form.scheduledAt || !Number.isFinite(Date.parse(form.scheduledAt)))),
 )
 const scheduledAtValue = computed(() => (form.scheduleEnabled && form.scheduledAt ? form.scheduledAt : ""))
+
+// 手机单列时确认栏排在四步表单之后；确认栏进入视口前以吸底条提示号码与计费条，并一键滚到确认栏。
+const isMobile = useMobileLayout()
+const rail = ref<HTMLElement | null>(null)
+const railInView = ref(false)
+let railObserver: IntersectionObserver | undefined
+
+onMounted(() => {
+  if (typeof IntersectionObserver === "undefined" || !rail.value) return
+  railObserver = new IntersectionObserver(([entry]) => {
+    railInView.value = entry.isIntersecting
+  })
+  railObserver.observe(rail.value)
+})
+onBeforeUnmount(() => railObserver?.disconnect())
+
+function scrollToRail(): void {
+  rail.value?.scrollIntoView({ behavior: "smooth", block: "start" })
+}
 
 const submitLabel = computed(() => {
   const cost = preview.value ? ` · ${formatNumber(preview.value.quota_cost)} 计费条` : ""
@@ -899,7 +919,7 @@ onBeforeUnmount(() => {
       </section>
     </div>
 
-    <aside class="send-preview precheck send-rail" aria-label="发送确认">
+    <aside ref="rail" class="send-preview precheck send-rail" aria-label="发送确认">
       <span v-if="previewLoading" class="preview-state">更新中…</span>
       <span v-else-if="previewStale" class="preview-state stale">已过期</span>
 
@@ -977,5 +997,13 @@ onBeforeUnmount(() => {
       </div>
       <p v-else class="submit-foot">提交即生成批次并预扣配额 · 24h 幂等键防重复下发</p>
     </aside>
+    <div v-if="isMobile && !sendResult && !railInView" class="send-jumpbar" data-testid="send-jumpbar">
+      <span
+        ><b>{{ formatNumber(recipientCount) }}</b> 个号码<template v-if="preview">
+          · <b>{{ formatNumber(preview.quota_cost) }}</b> 计费条</template
+        ></span
+      >
+      <el-button type="primary" @click="scrollToRail">确认并提交</el-button>
+    </div>
   </div>
 </template>

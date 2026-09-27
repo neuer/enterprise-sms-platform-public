@@ -192,6 +192,8 @@ main {
   --el-table-border-color: var(--hair-2);
   --el-table-text-color: var(--tx);
   --el-table-header-text-color: var(--tx-3);
+  --el-table-fixed-right-column: inset -12px 0 10px -10px var(--table-fixed-shadow);
+  --el-table-fixed-left-column: inset 12px 0 10px -10px var(--table-fixed-shadow);
   background: transparent;
   font-size: var(--fs-base);
 }

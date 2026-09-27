@@ -78,7 +78,8 @@
   --sans: "Noto Sans SC Variable", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", system-ui, sans-serif;
   --serif: "Noto Serif SC Variable", "Noto Serif SC", "Source Han Serif SC", "Songti SC", serif;
   --mono: "IBM Plex Mono", monospace;
-  /* 字号档位：样式只取这组令牌（登录页 clamp 流式标题除外）；10px 是最小可读字号。 */
+  /* 字号档位：样式只取这组令牌（登录页 clamp 流式标题除外）；10px 是桌面最小可读字号，
+     760px 以下最小两档抬到 11px（见本文件 :where(small) 之后的媒体查询）。 */
   --fs-2xs: 10px;
   --fs-xs: 10.5px;
   --fs-sm: 11px;
@@ -98,6 +99,8 @@
   --verm-text: #ef9b89;
   --slate-text: #6f9bcf;
   --shadow-drawer: -16px 0 48px rgba(0, 0, 0, 0.4);
+  /* 表格横向滚动时固定列的投影：提示其下还有被遮住的列 */
+  --table-fixed-shadow: rgba(0, 0, 0, 0.6);
   /* accent（verdi）底色上的文字色 */
   --on-accent: #eafff7;
   /* ECharts canvas 读不到 CSS 变量，图表经 lib/chartTheme.ts 读取这组 --chart-* 令牌 */
@@ -214,6 +217,7 @@
   --verm-text: var(--verm);
   --slate-text: var(--slate);
   --shadow-drawer: -16px 0 48px rgba(21, 32, 26, 0.18);
+  --table-fixed-shadow: rgba(21, 32, 26, 0.2);
   --on-accent: #f2faf6;
   --el-fill-color: #e6ece6;
   --el-fill-color-lighter: #f1f5f1;
@@ -250,6 +254,20 @@ body {
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* 浏览器默认 font-size: smaller 会按父级缩成 9.17px / 10.83px 等档外尺寸；零优先级兜底，
+   各处显式声明仍然生效。 */
+:where(small) {
+  font-size: var(--fs-sm);
+}
+
+/* 手机与平板上 10 / 10.5px 的中文注记难以辨认：最小两档抬到 --fs-sm（11px）。 */
+@media (pointer: coarse), (max-width: 760px) {
+  :root {
+    --fs-2xs: var(--fs-sm);
+    --fs-xs: var(--fs-sm);
+  }
 }
 
 a:focus-visible,
@@ -1196,7 +1214,7 @@ button:focus-visible {
   }
 }
 
-/* 触屏命中区：入口只管公开壳组件（按钮、输入框）；工作区组件的同一约束在 workspace/audit.css。 */
+/* 触屏命中区：入口只管公开壳组件（按钮、输入框）；工作区组件的同一约束在 workspace/touch.css。 */
 @media (pointer: coarse), (max-width: 760px) {
   .el-button,
   .el-input__wrapper {

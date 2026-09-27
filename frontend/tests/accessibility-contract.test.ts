@@ -79,6 +79,24 @@ describe("无障碍样式契约", () => {
     expect(css).toMatch(/\.vendor-test-actions \.el-button[^}]*min-height:\s*44px/s)
   })
 
+  it("触屏命中区单点 touch.css 末位导入，后续分片无法以同优先级压回紧凑尺寸", () => {
+    const entry = readFileSync(resolve(process.cwd(), "src/styles/workspace.css"), "utf8")
+    const imports = [...entry.matchAll(/@import "([^"]+)"/g)].map(([, path]) => path)
+    expect(imports.at(-1)).toBe("./workspace/touch.css")
+    const touch = readFileSync(resolve(process.cwd(), "src/styles/workspace/touch.css"), "utf8")
+    for (const selector of [
+      ".nav-link",
+      ".filter-seg button",
+      ".el-drawer__close-btn",
+      ".security-daily-date .el-input__wrapper",
+    ]) {
+      expect(touch).toContain(selector)
+    }
+    expect(css).not.toMatch(
+      /@media \(max-width: 760px\)[^@]*\.security-daily-fld \.filter-seg button[^}]*min-height:\s*30px/s,
+    )
+  })
+
   it("真实联调控制台在窄屏退化为单列且保留全部安全操作", () => {
     expect(css).toMatch(/@media \(max-width: 760px\)[\s\S]*\.vendor-test-layout[^}]*grid-template-columns:\s*1fr/s)
     expect(css).toMatch(/@media \(max-width: 760px\)[\s\S]*\.vendor-test-actions[^}]*grid-template-columns:\s*1fr/s)

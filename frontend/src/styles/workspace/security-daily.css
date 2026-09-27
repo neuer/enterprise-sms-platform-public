@@ -470,9 +470,5 @@
     flex-wrap: wrap;
     width: 100%;
     height: auto;
-    min-height: 30px;
-  }
-  .security-daily-fld .filter-seg button {
-    min-height: 30px;
   }
 }
