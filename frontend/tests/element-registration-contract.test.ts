@@ -73,7 +73,8 @@ const FULL_REGISTRY = [
   "ElUpload",
 ]
 
-// 公开壳（App.vue + LoginView + PasswordChangeView）模板实际用到的最小组件集。
+// 公开壳最小组件集：App.vue 用 ElButton/ElConfigProvider；ElInput 的样式须先于 theme.css
+// 加载（theme.css 含 .el-input 覆写），移入工作区分片会改变级联顺序，故留在入口。
 const ENTRY_REGISTRY = ["ElButton", "ElConfigProvider", "ElInput"]
 
 const vueFiles = [...listVueFiles("src/views"), ...listVueFiles("src/components"), "src/App.vue"]

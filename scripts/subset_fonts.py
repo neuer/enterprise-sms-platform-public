@@ -6,7 +6,7 @@
 
 用法：``uv run scripts/subset_fonts.py``（PEP 723 内联依赖由 uv 自动解析）。
 
-serif 字体只渲染固定品牌文案（登录/改密品牌名、首次改密标题、侧栏"青鸾"），
+serif 字体只渲染固定品牌文案（登录会话名片与侧栏的"青鸾"），
 字符清单见 frontend/src/assets/fonts/serif-subset-glyphs.txt，漂移由
 frontend/tests/serif-subset-contract.test.ts 拦截。
 
@@ -33,8 +33,8 @@ GLYPH_MANIFEST: Final = FONT_DIR / "serif-subset-glyphs.txt"
 SOURCE_DIR: Final = (
     ROOT / "frontend" / "node_modules" / "@fontsource-variable" / "noto-serif-sc" / "files"
 )
-# .brand-mark（App.vue）继承正文 400，其余使用点（login-brand-name/mode-title/
-# brand strong）均为 600。
+# .brand-mark（App.vue）继承正文 400，其余使用点（login-intro-name/brand strong）
+# 均为 600。
 WEIGHTS: Final = (400, 600)
 # fontTools.merge 无法处理含 VarStore 的表；品牌文案全是表意文字，无标点
 # 压缩（halt）与基线对齐需求，丢弃 GPOS/BASE 不影响渲染。

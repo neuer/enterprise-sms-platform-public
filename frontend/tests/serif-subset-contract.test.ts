@@ -14,23 +14,13 @@ const manifestChars = new Set(
     .replace(/\s/g, ""),
 )
 
-// serif（var(--serif)）只渲染固定品牌文案，使用点共四处五段。每条提取规则
+// serif（var(--serif)）只渲染固定品牌文案，使用点共三处。每条提取规则
 // 必须命中且文本非空——模板结构变化导致提取不到也算漂移，强制同步清单。
 const SERIF_TEXT_SOURCES: Array<{ file: string; pattern: RegExp; note: string }> = [
   {
     file: "src/views/LoginView.vue",
-    pattern: /class="login-brand-name"[^>]*>([^<]+)</,
-    note: ".login-brand-name 登录品牌名",
-  },
-  {
-    file: "src/views/PasswordChangeView.vue",
-    pattern: /class="login-brand-name"[^>]*>([^<]+)</,
-    note: ".login-brand-name 改密品牌名",
-  },
-  {
-    file: "src/views/PasswordChangeView.vue",
-    pattern: /class="mode-title"[^>]*>([^<]+)</,
-    note: ".mode-title 首次改密标题",
+    pattern: /class="login-intro-name"[^>]*>([^<]+)</,
+    note: ".login-intro-name 登录会话名片",
   },
   {
     file: "src/App.vue",

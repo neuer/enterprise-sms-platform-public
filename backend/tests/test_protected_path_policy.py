@@ -50,7 +50,6 @@ ISSUE_427_BACKEND_CRITICAL_PATHS = (
 )
 ISSUE_427_FRONTEND_SECURITY_VIEWS = (
     "frontend/src/views/LoginView.vue",
-    "frontend/src/views/PasswordChangeView.vue",
     "frontend/src/views/AppManagementView.vue",
     "frontend/src/views/ApprovalView.vue",
     "frontend/src/views/ConfigView.vue",

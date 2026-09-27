@@ -3,13 +3,7 @@
 # frontend/tests/serif-subset-contract.test.ts 会强制清单与模板一致。
 # 以 # 开头的行是注释；其余行的每个非空白字符都计入子集。
 
-# src/views/LoginView.vue — .login-brand-name 登录品牌名
-# src/views/PasswordChangeView.vue — .login-brand-name 改密品牌名
-企业短信管理平台
-
-# src/views/PasswordChangeView.vue — .mode-title 首次改密标题
-设置新密码
-
+# src/views/LoginView.vue — .login-intro-name 登录会话名片
 # src/App.vue — .brand-mark 侧栏圆形印章字 / .brand strong 侧栏品牌名
 鸾
 青鸾
