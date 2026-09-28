@@ -179,3 +179,12 @@
     margin-left: 8px;
   }
 }
+.user-heading .eyebrow {
+  color: var(--tx-3);
+  font-weight: 400;
+}
+.user-heading p:not(.eyebrow) {
+  margin-top: 1px;
+  color: var(--tx-3);
+  font-size: var(--fs-sm);
+}

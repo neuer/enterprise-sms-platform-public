@@ -838,100 +838,26 @@
   }
 }
 
-.topbar {
-  position: sticky;
-  z-index: 10;
-  top: 0;
-  display: grid;
-  grid-template-columns: minmax(160px, 1fr) auto;
-  align-items: center;
-  height: 52px;
-  padding: 0 24px;
-  background: color-mix(in srgb, var(--paper) 94%, transparent);
-  border-bottom: 1px solid var(--line);
-}
-
-.breadcrumb {
-  margin: 0;
-  color: var(--tx-2);
-}
-
-.breadcrumb b {
-  margin: 0 7px;
-  color: var(--line-2);
-}
-
-.access-only-banner {
-  margin: 0;
-  padding: 8px 24px;
-  color: var(--amber);
-  font-size: var(--fs-md);
-  line-height: 1.5;
-  background: color-mix(in srgb, var(--amber) 10%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--amber) 28%, transparent);
-}
-
-.operator {
-  display: flex;
-  gap: 20px;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.balance {
-  color: var(--tx-3);
-  font-size: var(--fs-sm);
-}
-
-.balance strong {
-  margin-left: 4px;
-  color: var(--tx);
-  font-family: var(--mono);
-  font-size: var(--fs-md);
-}
-
-.operator-name {
-  display: grid;
-  line-height: 1.25;
-}
-
-.operator-name small {
-  color: var(--tx-3);
-  font-size: var(--fs-2xs);
-}
-
-main {
-  max-width: 1440px;
-  min-height: calc(100vh - 52px);
-  margin: 0 auto;
-  padding: 20px 26px;
-}
-
 .page-heading {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  margin-bottom: 26px;
 }
 
 .eyebrow {
   margin: 0 0 3px;
-  color: var(--verdi-text);
   font-family: var(--mono);
   font-size: var(--fs-2xs);
   font-weight: 600;
-  letter-spacing: 0.12em;
 }
 
 .page-heading h1 {
   margin: 0;
-  font-size: clamp(19px, 2vw, 23px);
   line-height: 1.35;
 }
 
 .page-heading p:not(.eyebrow) {
   margin: 4px 0 0;
-  color: var(--tx-2);
 }
 
 .page-heading time {
@@ -1002,14 +928,12 @@ main {
 }
 
 .empty-state strong {
-  color: var(--ink);
   font-size: var(--fs-lg);
 }
 
 .empty-state p {
   max-width: 38ch;
   margin: 5px auto 0;
-  color: var(--tx-2);
   font-size: var(--fs-md);
 }
 
@@ -1654,4 +1578,35 @@ main {
 .empty-state p {
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+.page-heading {
+  margin-bottom: 18px;
+}
+.page-heading h1 {
+  color: var(--tx-hi);
+  font-size: var(--fs-h1);
+  font-weight: 600;
+}
+.page-heading p:not(.eyebrow) {
+  color: var(--tx-2);
+  font-size: var(--fs-base);
+}
+.eyebrow {
+  color: var(--verdi-text);
+  letter-spacing: 0.16em;
+}
+.reply-heading .eyebrow {
+  color: var(--tx-3);
+  font-weight: 400;
+}
+.reply-heading p:not(.eyebrow) {
+  margin-top: 1px;
+  color: var(--tx-3);
+  font-size: var(--fs-sm);
+}
+.empty-state strong {
+  color: var(--tx-2);
+}
+.empty-state p {
+  color: var(--tx-2);
 }

@@ -1,6 +1,6 @@
 /* 审批中心：筛选段 / 待审队列 / 已办表格 / 抽屉与决策。 */
 .approval-heading {
-  margin-bottom: 14px;
+  margin-bottom: 18px;
 }
 
 .approval-head-side {
@@ -12,22 +12,15 @@
 
 .approval-counts-pill {
   padding: 5px 12px;
-  color: var(--tx-hi);
   font-family: var(--mono);
   font-size: var(--fs-sm);
-  background: color-mix(in srgb, var(--verdi) 18%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--verdi-l) 40%, var(--hair));
   border-radius: 7px;
 }
 
 /* #71c4ad 即深色 --verdi-text（亮底文字绿）：直接引用令牌。 */
 .approval-counts-pill b {
-  color: var(--verdi-text);
   font-size: var(--fs-body);
-}
-
-.approval-counts-pill .is-hot {
-  color: var(--verm);
 }
 
 .approval-role {
@@ -35,10 +28,8 @@
   gap: 7px;
   align-items: center;
   padding: 5px 11px;
-  color: var(--tx-2);
   font-family: var(--mono);
   font-size: var(--fs-xs);
-  background: var(--panel);
   border: 1px solid var(--hair);
   border-radius: 7px;
 }
@@ -57,7 +48,6 @@
   align-items: center;
   padding: 11px 14px;
   margin-bottom: 14px;
-  background: var(--panel);
   border: 1px solid var(--hair);
   border-radius: 12px;
 }
@@ -108,7 +98,6 @@
 }
 
 .approval-poll-hint {
-  color: var(--tx-3);
   font-family: var(--mono);
   font-size: var(--fs-2xs);
   white-space: nowrap;
@@ -148,18 +137,8 @@
   align-items: center;
   min-width: 0;
   padding: 14px 18px;
-  background: var(--panel);
   border: 1px solid var(--hair);
   border-radius: 12px;
-}
-
-.approval-row.is-urgent {
-  background: linear-gradient(90deg, color-mix(in srgb, var(--verm) 7%, var(--card)), var(--card) 34%);
-  border-color: color-mix(in srgb, var(--verm) 45%, var(--line));
-}
-
-.approval-row.is-soon {
-  border-color: color-mix(in srgb, var(--amber) 45%, var(--line));
 }
 
 .approval-row.is-mine {
@@ -173,22 +152,12 @@
 }
 
 .approval-cd b {
-  color: var(--tx);
   font: 600 var(--fs-lg) var(--mono);
   font-variant-numeric: tabular-nums;
 }
 
 .approval-cd span {
-  color: var(--tx-3);
   font-size: var(--fs-2xs);
-}
-
-.approval-row.is-urgent .approval-cd b {
-  color: var(--verm);
-}
-
-.approval-row.is-soon .approval-cd b {
-  color: var(--amber);
 }
 
 .approval-row-main {
@@ -206,14 +175,12 @@
 }
 
 .approval-batch-no {
-  color: var(--tx-hi);
   font: var(--fs-md) var(--mono);
   overflow-wrap: anywhere;
 }
 
 .approval-sched-chip {
   padding: 1px 7px;
-  color: var(--tx-3);
   font: var(--fs-2xs)/1.7 var(--mono);
   white-space: nowrap;
   border: 1px solid var(--line);
@@ -222,14 +189,12 @@
 
 .approval-row-facts {
   margin: 0;
-  color: var(--tx);
   font-size: var(--fs-md);
   overflow-wrap: anywhere;
 }
 
 .approval-row-facts em {
   margin: 0 0.35em;
-  color: var(--tx-3);
   font-style: normal;
 }
 
@@ -240,7 +205,6 @@
 
 .approval-row-rule {
   margin: 0;
-  color: var(--tx-3);
   font-size: var(--fs-sm);
 }
 
@@ -254,7 +218,6 @@
 
 .approval-expand {
   padding: 0;
-  color: var(--verdi-l);
   font-size: var(--fs-md);
   white-space: nowrap;
   background: none;
@@ -268,7 +231,6 @@
 
 .approval-avoid-note {
   padding: 5px 11px;
-  color: var(--tx-3);
   font-size: var(--fs-sm);
   border: 1px dashed var(--line-2);
   border-radius: 7px;
@@ -287,7 +249,6 @@
 
 .approval-quick-tip {
   margin: 0;
-  color: var(--tx-3);
   font-size: var(--fs-2xs);
 }
 
@@ -310,19 +271,16 @@
 
 .approval-table th {
   padding: 9px 12px;
-  color: var(--tx-3);
   font-size: var(--fs-xs);
   font-weight: 400;
   letter-spacing: 0.06em;
   text-align: left;
   white-space: nowrap;
-  background: var(--surface-soft);
   border-bottom: 1px solid var(--line);
 }
 
 .approval-table td {
   padding: 10px 12px;
-  color: var(--tx-2);
   vertical-align: top;
   border-bottom: 1px solid var(--line);
 }
@@ -340,13 +298,13 @@
 }
 
 .approval-batch-cell code {
-  color: var(--tx);
   font: var(--fs-sm) var(--mono);
 }
 
-.approval-batch-cell small,
 .approval-decider small {
-  color: var(--tx-3);
+  font-size: var(--fs-2xs);
+}
+.approval-batch-cell small {
   font-size: var(--fs-2xs);
 }
 
@@ -355,13 +313,11 @@
 }
 
 .approval-decider b {
-  color: var(--tx);
   font-size: var(--fs-md);
   font-weight: 400;
 }
 
 .approval-dest {
-  color: var(--tx);
   font-size: var(--fs-md);
 }
 
@@ -370,7 +326,6 @@
   max-width: 230px;
   margin-top: 2px;
   overflow: hidden;
-  color: var(--tx-3);
   font-size: var(--fs-2xs);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -383,7 +338,6 @@
   align-items: center;
   min-height: 0;
   padding: 12px 4px 0;
-  color: var(--tx-3);
   font: var(--fs-sm)/1.5 var(--mono);
   border-top: 0;
 }
@@ -426,7 +380,6 @@
 }
 
 .approval-drawer-sub {
-  color: var(--tx-3);
   font-size: var(--fs-xs);
 }
 
@@ -441,24 +394,30 @@
   grid-column: 1 / -1;
 }
 
-.approval-facts dt,
-.approval-proof span,
 .reason-proof span {
-  color: var(--tx-3);
+  font-size: var(--fs-xs);
+}
+.approval-proof span {
+  font-size: var(--fs-xs);
+}
+.approval-facts dt {
   font-size: var(--fs-xs);
 }
 
 .approval-facts dd {
   margin: 1px 0 0;
-  color: var(--tx);
   font-size: var(--fs-md);
 }
 
-.approval-proof,
 .reason-proof {
   margin-top: 0;
   padding: 12px 14px;
-  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 10px;
+}
+.approval-proof {
+  margin-top: 0;
+  padding: 12px 14px;
   border: 1px solid var(--hair);
   border-radius: 10px;
 }
@@ -482,7 +441,6 @@
 
 .approval-content-head em {
   padding: 1px 6px;
-  color: var(--slate);
   font: var(--fs-2xs)/1.6 var(--mono);
   font-style: normal;
   white-space: nowrap;
@@ -492,23 +450,19 @@
 
 .approval-content-body {
   min-height: 60px;
-  color: var(--tx-hi);
   font-size: var(--fs-base);
   line-height: 1.8;
 }
 
 .approval-proof-meta {
   margin-top: 8px;
-  color: var(--tx-3);
   font-size: var(--fs-xs);
 }
 
 .approval-outcome {
   margin: 0;
   padding: 7px 11px;
-  color: var(--tx-2);
   font-size: var(--fs-sm);
-  background: color-mix(in srgb, var(--verdi) 12%, var(--panel-2));
   border: 1px solid color-mix(in srgb, var(--verdi-l) 35%, var(--hair));
   border-radius: 7px;
 }
@@ -518,7 +472,6 @@
   gap: 10px;
   margin-top: 18px;
   padding: 12px 14px;
-  background: var(--panel-2);
   border: 1px solid var(--hair);
   border-radius: 10px;
 }
@@ -526,7 +479,6 @@
 .approval-decide-hint {
   display: flex;
   justify-content: space-between;
-  color: var(--tx-3);
   font-size: var(--fs-2xs);
 }
 
@@ -645,4 +597,166 @@
   .approval-facts {
     grid-template-columns: 1fr;
   }
+}
+.approval-heading .eyebrow {
+  color: var(--tx-3);
+  font-weight: 400;
+}
+.approval-heading p:not(.eyebrow) {
+  margin-top: 1px;
+  color: var(--tx-3);
+  font-size: var(--fs-sm);
+}
+.approval-counts-pill {
+  color: var(--tx-hi);
+  background: color-mix(in srgb, var(--verdi) 18%, transparent);
+  border-color: color-mix(in srgb, var(--verdi-l) 40%, transparent);
+}
+.approval-counts-pill b {
+  color: var(--verdi-text);
+}
+.approval-counts-pill .is-hot {
+  color: var(--verm);
+}
+.approval-role {
+  color: var(--tx-2);
+  background: var(--panel);
+  border-color: var(--hair);
+}
+.approval-filter-bar {
+  background: var(--panel);
+  border-color: var(--hair);
+}
+.approval-poll-hint {
+  color: var(--tx-3);
+}
+.approval-list-foot {
+  color: var(--tx-3);
+}
+.approval-poll-status {
+  color: var(--tx-3);
+}
+.approval-row {
+  background: var(--panel);
+  border-color: var(--hair);
+}
+.approval-row.is-urgent {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--verm) 7%, transparent), var(--panel) 34%);
+  border-color: color-mix(in srgb, var(--verm) 45%, transparent);
+}
+.approval-row.is-soon {
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+}
+.approval-cd b {
+  color: var(--tx-hi);
+}
+.approval-cd span {
+  color: var(--tx-3);
+}
+.approval-row.is-urgent .approval-cd b {
+  color: var(--verm);
+}
+.approval-row.is-soon .approval-cd b {
+  color: var(--amber);
+}
+.approval-batch-no {
+  color: var(--tx-hi);
+}
+.approval-sched-chip {
+  color: var(--tx-2);
+  border-color: var(--hair);
+}
+.approval-row-facts {
+  color: var(--tx);
+}
+.approval-row-facts em {
+  color: var(--tx-3);
+}
+.approval-row-rule {
+  color: var(--tx-3);
+}
+.approval-expand {
+  color: var(--verdi-l);
+}
+.approval-avoid-note {
+  color: var(--tx-3);
+  border-color: var(--hair);
+}
+.approval-quick-title {
+  color: var(--tx-hi);
+}
+.approval-quick-tip {
+  color: var(--tx-3);
+}
+.approval-table th {
+  color: var(--tx-3);
+  background: var(--panel-2);
+  border-bottom-color: var(--hair);
+}
+.approval-table td {
+  color: var(--tx-2);
+  border-bottom-color: var(--hair-2);
+}
+.approval-batch-cell code {
+  color: var(--tx);
+}
+.approval-batch-cell small {
+  color: var(--tx-3);
+}
+.approval-decider small {
+  color: var(--tx-3);
+}
+.approval-decider b {
+  color: var(--tx);
+}
+.approval-dest {
+  color: var(--tx);
+}
+.approval-dest small {
+  color: var(--tx-3);
+}
+.approval-decide-box {
+  background: var(--panel-2);
+  border-color: var(--hair);
+}
+.approval-decide-hint {
+  color: var(--tx-3);
+}
+.approval-outcome {
+  color: var(--tx-2);
+  background: color-mix(in srgb, var(--verdi) 12%, transparent);
+  border-color: color-mix(in srgb, var(--verdi-l) 35%, transparent);
+}
+.approval-facts dt {
+  color: var(--tx-3);
+}
+.approval-proof span {
+  color: var(--tx-3);
+}
+.reason-proof span {
+  color: var(--tx-3);
+}
+.approval-proof-meta {
+  color: var(--tx-3);
+}
+.approval-drawer-sub {
+  color: var(--tx-3);
+}
+.approval-facts dd {
+  color: var(--tx);
+}
+.approval-proof {
+  background: var(--sink);
+  border-color: var(--hair);
+}
+.reason-proof {
+  background: var(--sink);
+  border-color: var(--hair);
+}
+.approval-content-body {
+  color: var(--tx-hi);
+}
+.approval-content-head em {
+  color: var(--slate-text);
+  border-color: color-mix(in srgb, var(--chart-blue) 40%, transparent);
 }

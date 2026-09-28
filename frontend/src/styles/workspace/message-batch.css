@@ -62,7 +62,7 @@
 
 /* 批次列表方案 A 铬：独立胶囊筛选 + 账本卡 + 松散抽屉事实 */
 .batch-heading {
-  margin-bottom: 14px;
+  margin-bottom: 18px;
 }
 .batch-scope {
   display: inline-flex;
@@ -820,4 +820,22 @@
     min-width: 0;
     max-width: 100%;
   }
+}
+.batch-heading .eyebrow {
+  color: var(--tx-3);
+  font-weight: 400;
+}
+.message-heading .eyebrow {
+  color: var(--tx-3);
+  font-weight: 400;
+}
+.batch-heading p:not(.eyebrow) {
+  margin-top: 1px;
+  color: var(--tx-3);
+  font-size: var(--fs-sm);
+}
+.message-heading p:not(.eyebrow) {
+  margin-top: 1px;
+  color: var(--tx-3);
+  font-size: var(--fs-sm);
 }

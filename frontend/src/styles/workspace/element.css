@@ -382,7 +382,7 @@
 
 /* el-tag / el-alert 默认浅色效果按暗色面板重混：Element Plus 的 light-9 底色接近纯白，
    在深色界面里是刺眼的亮块且前景被冲淡；这里改成深底浅色文字，保留原有色调语义。
-   明亮模式的亮底深字版本在 overrides-light.css。 */
+   明亮模式的亮底深字版本在本文件后部。 */
 .el-tag.el-tag--primary,
 .el-tag.el-tag--success {
   --el-tag-bg-color: color-mix(in srgb, var(--verdi) 18%, var(--panel));
@@ -501,4 +501,194 @@
     line-height: 1.5;
     white-space: normal;
   }
+}
+
+/* Element 组件级深色覆写（element 层，排在上方懒加载覆写之后）：与 Element 同层，
+   靠特异性与先后比较，Element 自身的 :hover / .is-* 状态规则照常胜出。 */
+.el-card,
+.el-dialog,
+.el-drawer,
+.el-message-box {
+  color: var(--tx);
+  background: var(--panel);
+  border-color: var(--hair);
+}
+
+.el-card {
+  border-radius: 11px;
+}
+.el-card__header {
+  border-bottom-color: var(--hair);
+}
+.el-table {
+  --el-table-bg-color: var(--panel);
+  --el-table-tr-bg-color: var(--panel);
+  --el-table-header-bg-color: var(--panel-2);
+  --el-table-row-hover-bg-color: var(--row-hover);
+  --el-table-border-color: var(--hair-2);
+  --el-table-text-color: var(--tx);
+  --el-table-header-text-color: var(--tx-3);
+  --el-table-fixed-right-column: inset -12px 0 10px -10px var(--table-fixed-shadow);
+  --el-table-fixed-left-column: inset 12px 0 10px -10px var(--table-fixed-shadow);
+  background: transparent;
+  font-size: var(--fs-base);
+}
+
+.el-table th.el-table__cell {
+  color: var(--tx-3);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  letter-spacing: 0.08em;
+}
+.el-table td.el-table__cell {
+  border-bottom-color: var(--hair-2);
+}
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner,
+.el-input-number,
+.el-upload-dragger {
+  color: var(--tx);
+  background: var(--sink);
+  box-shadow: 0 0 0 1px var(--hair) inset;
+}
+.el-input__inner,
+.el-textarea__inner {
+  color: var(--tx);
+}
+.el-input__inner::placeholder,
+.el-textarea__inner::placeholder {
+  color: var(--tx-3);
+}
+.el-button {
+  border-radius: 7px;
+}
+.el-button--primary {
+  --el-button-bg-color: var(--verdi);
+  --el-button-border-color: var(--verdi);
+  --el-button-text-color: var(--on-accent);
+}
+.el-button--default {
+  --el-button-bg-color: #1b2621;
+  --el-button-border-color: var(--hair);
+  --el-button-text-color: var(--tx);
+}
+.el-date-editor.el-input .el-input__wrapper,
+.el-date-editor.el-range-editor {
+  color: var(--tx);
+  background: var(--sink);
+  box-shadow: 0 0 0 1px var(--hair) inset;
+}
+.el-button--primary.is-disabled,
+.el-button--primary.is-disabled:hover {
+  color: var(--tx-3);
+  background: var(--el-disabled-bg-color);
+  border-color: var(--el-disabled-border-color);
+}
+.el-segmented {
+  --el-segmented-bg-color: var(--sink);
+  --el-segmented-item-selected-bg-color: var(--panel);
+}
+.el-tag {
+  border-radius: 5px;
+}
+.el-overlay {
+  background: var(--el-mask-color);
+}
+.el-drawer {
+  box-shadow: var(--shadow-drawer);
+}
+.el-drawer__header {
+  color: var(--tx-hi);
+  border-bottom: 1px solid var(--hair);
+}
+
+/* 小号正文和文字操作改用可达 WCAG AA 的前景层。 */
+.el-table {
+  --el-table-header-text-color: var(--tx-2);
+}
+
+.el-table th.el-table__cell {
+  color: var(--tx-2);
+}
+
+.el-input__inner::placeholder,
+.el-textarea__inner::placeholder {
+  color: var(--tx-2);
+}
+
+.el-button.is-link.el-button--primary {
+  --el-button-text-color: var(--verdi-l);
+  /* #71c4ad 即深色 --verdi-text：引用令牌后亮色悬停自动取亮底文字绿。 */
+  --el-button-hover-link-text-color: var(--verdi-text);
+  --el-button-active-color: var(--verdi-l);
+}
+
+.el-button.is-link.el-button--danger {
+  /* 与 --tx-hi 混色：深色下悬停提亮、亮色下悬停加深，不走 Element 的 light-5 变淡。 */
+  --el-button-hover-link-text-color: color-mix(in srgb, var(--verm) 70%, var(--tx-hi));
+  --el-button-active-color: var(--verm);
+}
+
+.el-tabs__item.is-active {
+  color: var(--verdi-l);
+}
+
+/* Element 组件级明亮覆写（element 层，排在上方深色覆写之后）：与 Element 同层，
+   靠特异性与先后比较，Element 自身的 :hover / .is-* 状态规则照常胜出。 */
+[data-theme="light"] .el-button--default {
+  --el-button-bg-color: var(--panel);
+  --el-button-border-color: var(--hair);
+  --el-button-text-color: var(--tx);
+}
+[data-theme="light"] .el-button--primary.is-disabled,
+[data-theme="light"] .el-button--primary.is-disabled:hover {
+  color: var(--tx-3);
+  background: var(--el-disabled-bg-color);
+  border-color: var(--el-disabled-border-color);
+}
+[data-theme="light"] .el-overlay {
+  background: var(--el-mask-color);
+}
+
+/* inline-prompt 开关关闭态：Element 的白色提示字压在浅灰轨道上几乎不可见，改用次级正文色。 */
+[data-theme="light"] .el-switch:not(.is-checked) .el-switch__inner-wrapper {
+  color: var(--tx-2);
+}
+
+/* el-tag / el-alert：element.css 的深色重混按暗色面板调优，亮色模式恢复亮底深字版本。
+   实心危险标签（el-tag--dark）不参与重混，保留 element.css 的压暗底白字。 */
+[data-theme="light"] .el-tag.el-tag--primary,
+[data-theme="light"] .el-tag.el-tag--success {
+  --el-tag-bg-color: color-mix(in srgb, var(--verdi) 9%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--verdi) 32%, #ffffff);
+}
+
+[data-theme="light"] .el-tag.el-tag--warning {
+  --el-tag-bg-color: color-mix(in srgb, var(--amber) 11%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--amber) 34%, #ffffff);
+}
+
+[data-theme="light"] .el-tag.el-tag--danger:not(.el-tag--dark),
+[data-theme="light"] .el-tag.el-tag--error {
+  --el-tag-bg-color: color-mix(in srgb, var(--verm) 9%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--verm) 32%, #ffffff);
+}
+
+[data-theme="light"] .el-tag.el-tag--info {
+  --el-tag-bg-color: color-mix(in srgb, var(--tx-2) 8%, #ffffff);
+  --el-tag-border-color: color-mix(in srgb, var(--tx-2) 22%, #ffffff);
+}
+
+[data-theme="light"] .el-alert--primary,
+[data-theme="light"] .el-alert--success {
+  --el-alert-bg-color: color-mix(in srgb, var(--verdi) 8%, #ffffff);
+}
+
+[data-theme="light"] .el-alert--warning {
+  --el-alert-bg-color: color-mix(in srgb, var(--amber) 9%, #ffffff);
+}
+
+[data-theme="light"] .el-alert--error {
+  --el-alert-bg-color: color-mix(in srgb, var(--verm) 8%, #ffffff);
 }

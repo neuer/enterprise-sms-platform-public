@@ -1,15 +1,15 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { readThemeCss, readWorkspaceCss } from "./workspace-css"
+import { readThemeCss } from "./workspace-css"
 
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 
 describe("深色主题一致性守卫（前端打磨回归）", () => {
   it("深色层收编按卡片定制的浅色表头变量", () => {
-    const workspace = readWorkspaceCss()
-    const darkLayer = workspace.slice(workspace.indexOf("青鸾 Console 深色监视台"))
-    expect(darkLayer).toMatch(/\.sign-table(?:\.el-table)?\s*\{[^}]*--el-table-header-bg-color:\s*var\(--panel-2\)/s)
+    const tables = source("src/styles/workspace/template-sign.css")
+    expect(tables).toMatch(/\.sign-table(?:\.el-table)?\s*\{[^}]*--el-table-header-bg-color:\s*var\(--panel-2\)/s)
+    expect(tables).toMatch(/\.template-table(?:\.el-table)?\s*\{[^}]*--el-table-header-bg-color:\s*var\(--panel-2\)/s)
   })
 
   it("图表配色经 chartTheme 单点读取 --chart-* 令牌，不残留硬编码色值", () => {

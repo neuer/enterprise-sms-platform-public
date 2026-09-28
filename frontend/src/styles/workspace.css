@@ -3,8 +3,6 @@
  * 也不看导入先后；同一层内仍按本文件顺序。新增壳样式进 styles/workspace/ 对应分片并标明层。
  */
 @import "./workspace/element.css" layer(element);
-@import "./workspace/element-dark.css" layer(element);
-@import "./workspace/element-light.css" layer(element);
 @import "./workspace/base.css" layer(shell);
 @import "./workspace/shared.css" layer(pages);
 @import "./workspace/dashboard.css" layer(pages);
@@ -19,8 +17,8 @@
 @import "./workspace/config.css" layer(pages);
 @import "./workspace/vendor.css" layer(pages);
 @import "./workspace/audit.css" layer(pages);
-@import "./workspace/console-dark.css" layer(pages);
 @import "./workspace/apps.css" layer(pages);
 @import "./workspace/security-daily.css" layer(pages);
+@import "./workspace/contrast.css" layer(pages);
 @import "./workspace/overrides-light.css" layer(theme-light);
 @import "./workspace/touch.css" layer(touch);

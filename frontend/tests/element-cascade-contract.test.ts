@@ -65,9 +65,8 @@ describe("Element 懒加载样式级联契约", () => {
     expect(themeSelectors).toContain(".el-button--primary.is-plain")
 
     const workspaceEntry = read("src/styles/workspace.css")
-    for (const part of ["element", "element-dark", "element-light"]) {
-      expect(workspaceEntry).toContain(`@import "./workspace/${part}.css" layer(element);`)
-    }
+    expect(workspaceEntry).toContain(`@import "./workspace/element.css" layer(element);`)
+    expect(workspaceEntry).not.toMatch(/element-(?:dark|light)\.css/)
     const elementSelectors = cssRules(read("src/styles/workspace/element.css")).flatMap((rule) => rule.selectors)
     expect(elementSelectors.filter((selector) => selector.startsWith(":root"))).toEqual([])
     for (const required of [
@@ -81,7 +80,7 @@ describe("Element 懒加载样式级联契约", () => {
       expect(elementSelectors).toContain(required)
     }
     // 实心危险标签的压暗底白字在明亮模式下同样生效：明亮重混对 el-tag--dark 让出
-    expect(read("src/styles/workspace/element-light.css")).toContain(
+    expect(read("src/styles/workspace/element.css")).toContain(
       '[data-theme="light"] .el-tag.el-tag--danger:not(.el-tag--dark)',
     )
   })

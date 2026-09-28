@@ -1,5 +1,5 @@
 /* 明亮模式覆写（theme-light 层）：只覆写钉死深色值、无法靠令牌/color-mix 自动跟随的壳层与业务页规则；
-   Element 组件级的明亮覆写在 element-light.css（element 层）。
+   Element 组件级的明亮覆写在 element.css 后部（element 层）。
    登录页在明亮模式下保持深色（theme.css 的 .public-shell 令牌钉回），属于有意保留。 */
 /* 侧边栏在明亮模式下同样转亮，仅品牌章保留深绿渐变 */
 [data-theme="light"] .sidebar {

@@ -1,0 +1,5 @@
+/* 工作区内的小号正文、时间与定义项用次级正文色，压过各页同特异性的 color，保证 WCAG AA。
+   必须排在 pages 层最后：提前则会被各页同特异性的颜色盖掉。 */
+.workspace :is(small, time, dt) {
+  color: var(--tx-2);
+}

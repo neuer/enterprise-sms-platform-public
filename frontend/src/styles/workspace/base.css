@@ -10,14 +10,12 @@
   cursor: pointer;
 }
 
-.logout-button:hover,
 .toolbar-action:hover {
   color: var(--verdi-text);
 }
 
 .app-shell {
   display: grid;
-  grid-template-columns: 216px minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -27,52 +25,35 @@
   display: flex;
   flex-direction: column;
   height: 100vh;
-  padding: 18px 14px 14px;
   overflow-y: auto;
-  background: var(--sink);
-  border-right: 1px solid var(--hair);
 }
 
 .brand {
   display: flex;
-  gap: 11px;
   align-items: center;
-  padding: 2px 8px 20px;
-  border-bottom: 1px solid var(--hair);
 }
 
 .brand-mark {
   display: grid;
-  width: 34px;
-  height: 34px;
   place-items: center;
   font-family: var(--serif);
   font-size: var(--fs-2xl);
-  border-radius: 50%;
 }
 
 .brand strong {
   display: block;
   font-family: var(--serif);
-  font-size: var(--fs-2xl);
-  font-weight: 600;
-  letter-spacing: 0.12em;
 }
 
 .nav-section h2 {
-  margin: 0 10px 5px;
-  font-size: var(--fs-2xs);
   font-weight: 600;
-  letter-spacing: 0.18em;
 }
 
 .nav-link {
   display: flex;
   gap: 10px;
   align-items: center;
-  min-height: 36px;
   padding: 0 10px;
-  border-radius: 6px;
   transition:
     color 120ms ease,
     background-color 120ms ease;
@@ -109,4 +90,313 @@
 .navigation-close,
 .navigation-backdrop {
   display: none;
+}
+/* 顶栏与主内容区。 */
+.topbar {
+  position: sticky;
+  z-index: 10;
+  top: 0;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) auto;
+  align-items: center;
+}
+
+.breadcrumb {
+  margin: 0;
+}
+
+.breadcrumb b {
+  margin: 0 7px;
+}
+
+.access-only-banner {
+  margin: 0;
+  padding: 8px 24px;
+  color: var(--amber);
+  font-size: var(--fs-md);
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--amber) 28%, transparent);
+}
+
+.operator {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.balance {
+  font-size: var(--fs-sm);
+}
+
+.balance strong {
+  margin-left: 4px;
+  font-family: var(--mono);
+  font-size: var(--fs-md);
+}
+
+.operator-name {
+  display: grid;
+  line-height: 1.25;
+}
+
+.operator-name small {
+  font-size: var(--fs-2xs);
+}
+
+main {
+  margin: 0 auto;
+}
+
+@media (max-width: 959px) {
+  .sidebar {
+    position: fixed;
+    z-index: 31;
+    inset: 0 auto 0 0;
+    width: min(288px, 86vw);
+    padding: 18px 14px 14px;
+    transform: translateX(-101%);
+    visibility: hidden;
+    transition:
+      transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+      visibility 0s linear 180ms;
+  }
+
+  .brand {
+    justify-content: flex-start;
+  }
+
+  .navigation-open .sidebar {
+    transform: translateX(0);
+    visibility: visible;
+    box-shadow: 18px 0 48px color-mix(in srgb, var(--sink) 60%, transparent);
+    transition-delay: 0s;
+  }
+
+  .navigation-toggle {
+    display: grid;
+    place-items: center;
+    color: var(--tx);
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+  }
+  .navigation-close {
+    display: grid;
+    place-items: center;
+    background: transparent;
+    border: 0;
+    cursor: pointer;
+  }
+
+  .navigation-toggle {
+    width: 36px;
+    height: 36px;
+    padding: 9px;
+    gap: 4px;
+  }
+
+  .navigation-toggle span {
+    display: block;
+    width: 17px;
+    height: 1px;
+    background: currentColor;
+  }
+
+  .navigation-close {
+    width: 36px;
+    height: 36px;
+    margin-left: auto;
+    color: var(--tx);
+    font-size: var(--fs-display);
+    font-weight: 300;
+  }
+
+  .navigation-backdrop {
+    position: fixed;
+    z-index: 30;
+    inset: 0;
+    display: block;
+    background: var(--el-mask-color);
+    border: 0;
+    opacity: 0;
+    pointer-events: none;
+    visibility: hidden;
+    transition:
+      opacity 180ms ease-out,
+      visibility 0s linear 180ms;
+  }
+
+  .navigation-open .navigation-backdrop {
+    opacity: 1;
+    pointer-events: auto;
+    visibility: visible;
+    transition-delay: 0s;
+  }
+
+  .topbar {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 10px;
+  }
+
+  .balance {
+    display: none;
+  }
+
+  .breadcrumb {
+    overflow: hidden;
+    color: var(--tx);
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .breadcrumb span,
+  .breadcrumb b {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .topbar {
+    padding-inline: 12px;
+  }
+
+  .operator-name {
+    display: none;
+  }
+}
+
+/* 青鸾深色主视觉：侧栏、顶栏与工作区表面。同特异性时以这里为准，写在前面的基础骨架之后。 */
+.app-shell {
+  grid-template-columns: 216px minmax(0, 1fr);
+  background: var(--bg);
+}
+
+.sidebar {
+  padding: 0 10px 12px;
+  color: var(--tx);
+  background: var(--sink);
+  border-right: 1px solid var(--hair);
+  scrollbar-color: #2a352f transparent;
+}
+
+.brand {
+  gap: 11px;
+  min-height: 64px;
+  padding: 12px 8px;
+  border-bottom: 1px solid var(--hair);
+}
+
+.brand-mark {
+  width: 36px;
+  height: 36px;
+  color: #eaf1ed;
+  background: linear-gradient(145deg, #128268, #0a5a49);
+  border: 0;
+  border-radius: 10px;
+}
+
+.brand strong {
+  color: var(--tx-hi);
+  font-size: var(--fs-2xl);
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+.brand small {
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.12em;
+}
+
+.nav-section {
+  margin-top: 13px;
+}
+.nav-section h2 {
+  margin: 0 10px 4px;
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.18em;
+}
+.nav-link {
+  min-height: 34px;
+  color: var(--tx-2);
+  border-radius: 6px;
+}
+.nav-link:hover {
+  color: var(--tx);
+  background: color-mix(in srgb, var(--tx-hi) 4%, transparent);
+}
+.nav-link.active {
+  color: var(--tx-hi);
+  background: rgba(18, 130, 104, 0.22);
+  box-shadow: inset 2px 0 var(--verdi-l);
+}
+.nav-marker {
+  border-color: transparent;
+}
+.nav-link.active .nav-marker {
+  color: var(--verdi-text);
+  border-color: transparent;
+}
+.sidebar-foot {
+  border-top: 1px solid var(--hair);
+}
+
+.workspace {
+  min-width: 0;
+  background: var(--bg);
+}
+.topbar {
+  height: 56px;
+  padding: 0 24px;
+  background: color-mix(in srgb, var(--paper) 94%, transparent);
+  border-bottom: 1px solid var(--hair);
+}
+.breadcrumb {
+  color: var(--tx);
+  font-size: var(--fs-base);
+}
+.operator {
+  gap: 20px;
+}
+.balance {
+  color: var(--tx-3);
+  font-family: var(--mono);
+}
+.balance strong {
+  color: var(--tx-hi);
+}
+.operator-name {
+  color: var(--tx);
+}
+.logout-button:hover {
+  color: var(--verdi-text);
+}
+
+main {
+  max-width: 1440px;
+  min-height: calc(100vh - 56px);
+  padding: 20px 26px;
+}
+.brand small,
+.nav-section h2,
+.nav-marker,
+.sidebar-foot,
+.breadcrumb span,
+.breadcrumb b,
+.operator-name small {
+  color: var(--tx-2);
+}
+
+@media (max-width: 959px) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  main {
+    padding: 16px;
+  }
 }
