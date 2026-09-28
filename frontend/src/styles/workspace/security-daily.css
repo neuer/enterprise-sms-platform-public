@@ -1,5 +1,5 @@
 /* 安全日报：概览横条 / 七格事实 / 紧凑检索条。 */
-/* 安全日报：页头对齐/结果面板/分页/空态/确认框/规则条仍并入 reply-*、user-rules 与 sign-* 共享组，
+/* 安全日报：页头对齐/结果面板/分页/空态/确认框/规则条仍并入 shared.css 的 reply-*、规则条与抽屉骨架共享组，
    按页复制即缺陷；本区为页级专属样式——概览（状态横条 + 七格事实横排带）、紧凑单行检索条
    （标签内联、查询/重置同行、说明细字在条下一行；单行优先、视口不足允许折行兜底）与详情抽屉/预览。 */
 .security-daily-heading-actions {
@@ -89,8 +89,7 @@
   display: flex;
   gap: 5px;
 }
-/* 复合提权：el-date-picker 样式后加载，其 .el-date-editor.el-input 默认 220px 会压过单类宽度。 */
-.security-daily-date.el-date-editor {
+.security-daily-date {
   --el-date-editor-width: 112px;
   width: 112px;
 }
@@ -395,33 +394,6 @@
   main {
     padding: 16px;
   }
-  .send-workbench {
-    grid-template-columns: 1fr;
-  }
-  .category-switch {
-    grid-template-columns: 1fr;
-  }
-  .circuit-banner {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-  .circuit-actions {
-    width: 100%;
-    margin-left: 56px;
-  }
-  .apps-form-2col {
-    grid-template-columns: 1fr;
-  }
-  .apps-filter-bar {
-    align-items: flex-start;
-  }
-  .apps-keyword {
-    width: 100%;
-  }
-  .apps-filter-note {
-    width: 100%;
-    margin-left: 0;
-  }
 }
 
 @media (max-width: 760px) {
@@ -430,7 +402,7 @@
     width: 100%;
     min-width: 0;
   }
-  .security-daily-date.el-date-editor {
+  .security-daily-date {
     --el-date-editor-width: 100%;
     flex: 1;
     width: 0;

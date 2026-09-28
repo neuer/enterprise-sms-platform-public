@@ -1,6 +1,6 @@
-/* 懒加载 Element 组件（日期选择器、标签、提示条、分页）的主题覆写：随 workspace.css 排在全部
-   el-*.css 之后，同特异性即可压过组件默认值，无需 :root 提权。入口组件（按钮、输入框、toast）
-   先于 theme.css 加载，其覆写留在 theme.css。 */
+/* 懒加载 Element 组件（日期选择器、标签、提示条、分页）的主题覆写：与 Element 同在 element 层，
+   排在全部 el-*.css 之后，同特异性即可压过组件默认值，无需 :root 提权。入口组件（按钮、输入框、
+   toast）的覆写在 theme/element-theme.css。 */
 /* 日期选择器：沿用平台的台账密度，以单色层级替代 Element Plus 默认蓝色。 */
 .el-date-editor.el-input .el-input__wrapper,
 .el-date-editor.el-range-editor {

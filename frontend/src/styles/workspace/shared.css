@@ -648,9 +648,9 @@
   color: var(--el-color-danger);
 }
 
-/* 复合提权压过后加载的 .el-select { width: 100% }；只在宽屏生效，窄屏沿用上方 840px 组的铺满规则。 */
+/* 只在宽屏生效，窄屏沿用上方 840px 组的铺满规则。 */
 @media (min-width: 841px) {
-  .el-select.callback-app-select {
+  .callback-app-select {
     width: 168px;
   }
 }
@@ -746,13 +746,11 @@
   .query-mobile-list header,
   .query-mobile-list footer,
   .user-mobile-list header,
-  .user-mobile-list footer,
   .sign-mobile-list header,
   .sign-mobile-list footer,
   .blacklist-mobile-list header,
   .blacklist-mobile-list footer,
-  .template-mobile-list header,
-  .template-mobile-list footer {
+  .template-mobile-list header {
     display: flex;
     flex-wrap: wrap;
     gap: 8px 10px;
@@ -766,7 +764,6 @@
   .query-mobile-list p,
   .user-mobile-list p,
   .sign-mobile-list p,
-  .blacklist-mobile-list p,
   .template-mobile-list p {
     margin: 0;
   }
@@ -1044,4 +1041,617 @@ main {
     min-width: 0;
     max-width: 100%;
   }
+}
+
+/* 跨页组件：趋势图例与面板标题（仪表盘、报表共用）。 */
+.trend-legend {
+  display: flex;
+  flex-shrink: 0;
+  gap: 16px;
+  margin-top: 10px;
+  color: var(--tx-2);
+  font-size: var(--fs-xs);
+}
+
+.trend-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  vertical-align: -1px;
+  border-radius: 2px;
+}
+
+.trend-legend .verify {
+  background: var(--chart-green);
+}
+
+.trend-legend .notice {
+  background: var(--chart-blue);
+}
+
+.trend-legend .market {
+  background: var(--chart-amber);
+}
+
+.panel-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.panel-title > div:not(.filter-seg) {
+  display: grid;
+}
+
+.panel-title strong {
+  color: var(--ink);
+  font-size: var(--fs-body);
+}
+
+.panel-title small,
+.panel-title > span {
+  color: var(--tx-3);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+}
+
+@media (max-width: 560px) {
+  .panel-title {
+    align-items: flex-start;
+  }
+}
+
+/* 模板渲染预览：发送页与厂商联调 UAT 面板共用。 */
+.template-render-preview {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--sink);
+  border: 1px solid var(--hair-2);
+  border-radius: 8px;
+}
+
+.template-render-preview span {
+  color: var(--tx-3);
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.08em;
+}
+
+.template-render-preview p {
+  margin: 3px 0 0;
+  color: var(--tx);
+  font-size: var(--fs-base);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 模板变量高亮：底色按深色 --slate 同值令牌化；文字走 --slate-text，随主题取值。 */
+.template-render-preview em {
+  padding: 0 3px;
+  color: var(--slate-text);
+  font-style: normal;
+  background: color-mix(in srgb, var(--slate) 20%, transparent);
+  border-radius: 3px;
+}
+
+/* 查询栏关键字输入框各页同宽；各页窄屏改为整行宽度，见各页分片的媒体块。 */
+.template-keyword,
+.sign-keyword,
+.blacklist-keyword,
+.user-keyword,
+.config-keyword,
+.ops-keyword,
+.callback-keyword {
+  width: 220px;
+}
+
+.muted {
+  color: var(--tx-3);
+  font-family: var(--mono);
+  font-size: var(--fs-2xs);
+}
+
+.cell-sub-mono,
+.mono-id {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.sign-table .el-table__row,
+.security-daily-table .el-table__row {
+  cursor: pointer;
+}
+
+/* 抽屉骨架（头部 / 事实格 / 表单 / 编辑器底栏）与导入预检 chips：各页并入同一组，按页复制即缺陷。 */
+.sign-drawer-head,
+.blacklist-drawer-head,
+.sensitive-drawer-head,
+.user-drawer-head,
+.callback-drawer-head,
+.template-drawer-head,
+.apps-drawer-head {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding-right: 8px;
+}
+
+.sign-drawer-title,
+.blacklist-drawer-title,
+.sensitive-drawer-title,
+.user-drawer-title,
+.callback-drawer-title,
+.template-drawer-title,
+.apps-drawer-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--tx-hi);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.sign-drawer-head code,
+.blacklist-drawer-head code,
+.sensitive-drawer-head code,
+.user-drawer-head code,
+.callback-drawer-head code,
+.template-drawer-head code,
+.apps-drawer-head code {
+  display: block;
+  color: var(--tx-3);
+  font: var(--fs-sm) var(--mono);
+}
+
+.sign-fact-grid,
+.callback-fact-grid,
+.template-fact-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px 18px;
+  margin: 16px 0 0;
+}
+
+.sign-fact-grid dt,
+.callback-fact-grid dt,
+.template-fact-grid dt {
+  color: var(--tx-3);
+  font-size: var(--fs-xs);
+}
+
+.sign-fact-grid dd,
+.callback-fact-grid dd,
+.template-fact-grid dd {
+  margin: 1px 0 0;
+  color: var(--tx);
+  font-size: var(--fs-md);
+}
+
+/* 审计确认对话框（lib/confirm.ts confirmAuditedAction 固定结构）：后果段 + 审计提示段 */
+.confirm-dialog p {
+  margin: 0;
+}
+
+.confirm-audit-note {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hair-2);
+  color: var(--tx-3);
+  font-size: var(--fs-sm);
+}
+
+.sign-form,
+.blacklist-form,
+.user-form {
+  padding-right: 4px;
+}
+
+.template-editor-foot,
+.sign-editor-foot,
+.blacklist-editor-foot,
+.sensitive-editor-foot,
+.user-editor-foot,
+.callback-editor-foot {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.template-editor-foot small,
+.sign-editor-foot small,
+.blacklist-editor-foot small,
+.sensitive-editor-foot small,
+.user-editor-foot small,
+.callback-editor-foot small {
+  max-width: 320px;
+  color: var(--tx-3);
+  font-size: var(--fs-2xs);
+}
+
+@media (max-width: 760px) {
+  /* 抽屉页脚手机排布（含模板页 template-editor-foot）：注记独占一行，按钮组等宽铺满拇指区；
+   不拆行时按钮会在内层 div 中折行，叠加 Element 的相邻按钮 margin-left 形成阶梯错位。 */
+  .template-editor-foot,
+  .sign-editor-foot,
+  .blacklist-editor-foot,
+  .sensitive-editor-foot,
+  .user-editor-foot,
+  .callback-editor-foot {
+    flex-direction: column;
+    gap: 10px;
+    align-items: stretch;
+  }
+
+  .template-editor-foot small,
+  .sign-editor-foot small,
+  .blacklist-editor-foot small,
+  .sensitive-editor-foot small,
+  .user-editor-foot small,
+  .callback-editor-foot small {
+    max-width: none;
+    text-align: left;
+  }
+
+  .template-editor-foot > div,
+  .sign-editor-foot > div,
+  .blacklist-editor-foot > div,
+  .sensitive-editor-foot > div,
+  .user-editor-foot > div,
+  .callback-editor-foot > div {
+    display: flex;
+    gap: 8px;
+  }
+
+  .template-editor-foot > div .el-button,
+  .sign-editor-foot > div .el-button,
+  .blacklist-editor-foot > div .el-button,
+  .sensitive-editor-foot > div .el-button,
+  .user-editor-foot > div .el-button,
+  .callback-editor-foot > div .el-button {
+    flex: 1;
+    margin-left: 0;
+  }
+}
+
+.blacklist-parse,
+.sensitive-parse,
+.user-parse {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -8px 0 14px;
+}
+
+.blacklist-chip,
+.sensitive-chip,
+.user-chip {
+  padding: 2px 10px;
+  color: var(--tx-2);
+  font: var(--fs-xs) var(--mono);
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 5px;
+}
+
+/* 预检 chips：ok 文字改用亮底自适应的 --verdi-text，两边框按深色令牌同值就地令牌化；
+   bad 文字走 --verm-text，随主题取值。 */
+.blacklist-chip-ok,
+.sensitive-chip-ok,
+.user-chip-ok {
+  color: var(--verdi-text);
+  border-color: color-mix(in srgb, var(--verdi-l) 40%, transparent);
+}
+
+.blacklist-chip-bad,
+.sensitive-chip-bad,
+.user-chip-bad {
+  color: var(--verm-text);
+  border-color: color-mix(in srgb, var(--verm) 45%, transparent);
+}
+
+.blacklist-parse-error,
+.sensitive-parse-error,
+.user-parse-error {
+  margin: -6px 0 12px;
+  color: var(--verm);
+  font-size: var(--fs-sm);
+}
+
+@media (max-width: 760px) {
+  .approval-rows,
+  .sign-mobile-list,
+  .blacklist-mobile-list,
+  .user-mobile-list {
+    min-height: 120px;
+  }
+
+  .sign-table,
+  .blacklist-table {
+    display: none;
+  }
+
+  .sign-mobile-list dt,
+  .blacklist-mobile-list header span,
+  .blacklist-mobile-list footer time {
+    color: var(--muted);
+    font-size: var(--fs-2xs);
+  }
+
+  .sign-mobile-list footer,
+  .blacklist-mobile-list footer {
+    justify-content: flex-end;
+    padding-top: 8px;
+    border-top: 1px solid var(--line);
+  }
+}
+
+@media (max-width: 640px) {
+  /* 单列排布：页头尾部的徽标/按钮若按行内元素排在段落后，其竖向内边距会盖住上一行正文。 */
+  .page-heading {
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-start;
+  }
+
+  .page-heading > div {
+    align-self: stretch;
+  }
+
+  .page-heading > :not(div) {
+    align-self: flex-start;
+  }
+}
+
+.cell-sub {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+/* 批次列表与审计日志共享「更多筛选」气泡触发器与内容格：低频字段折叠 + 激活角标计数，按页复制即缺陷。 */
+.batch-more-trigger {
+  padding: 3px 10px;
+  color: var(--tx);
+  font: inherit;
+  font-size: var(--fs-sm);
+  white-space: nowrap;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.batch-more-trigger.is-more-active,
+.audit-more-trigger.is-more-active {
+  color: var(--verdi-l);
+  border-color: var(--verdi-l);
+}
+
+.batch-more-count,
+.audit-more-count {
+  margin-left: 4px;
+  padding: 0 4px;
+  color: var(--verdi-l);
+  font: 600 var(--fs-2xs)/1.6 var(--mono);
+  background: color-mix(in srgb, var(--verdi) 20%, transparent);
+  border-radius: 4px;
+}
+
+.batch-more,
+.audit-more {
+  display: grid;
+  gap: 8px;
+}
+
+.batch-more label,
+.audit-more label {
+  color: var(--tx-3);
+  font-size: var(--fs-sm);
+}
+
+.batch-more label:not(:first-child),
+.audit-more label:not(:first-child) {
+  margin-top: 6px;
+}
+
+.batch-more .el-select,
+.batch-more .el-input,
+.audit-more .el-select,
+.audit-more .el-input {
+  width: 100%;
+}
+
+/* 规则条：user-rules / config-rules / ops-rules / callback-rules / security-daily-rules / audit-rules 同构，共用本组。 */
+.user-rules,
+.config-rules,
+.ops-rules,
+.callback-rules,
+.security-daily-rules,
+.audit-rules {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  margin-bottom: 14px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border: 1px solid var(--hair);
+  border-radius: 12px;
+}
+
+.user-rules > div,
+.config-rules > div,
+.ops-rules > div,
+.callback-rules > div,
+.security-daily-rules > div,
+.audit-rules > div {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.user-rules span,
+.config-rules span,
+.ops-rules span,
+.callback-rules span,
+.security-daily-rules span,
+.audit-rules span {
+  flex: none;
+  color: var(--tx-3);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+}
+
+.user-rules p,
+.config-rules p,
+.ops-rules p,
+.callback-rules p,
+.security-daily-rules p,
+.audit-rules p {
+  margin: 0;
+  color: var(--tx-2);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.user-alert,
+.ops-alert,
+.callback-alert,
+.security-daily-alert,
+.audit-alert {
+  margin-bottom: 14px;
+}
+
+.user-empty-action,
+.callback-empty-action,
+.security-daily-empty-action {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  min-height: 260px;
+  align-content: center;
+}
+
+.role-subject,
+.callback-subject {
+  display: grid;
+  gap: 2px;
+  margin: -4px 0 18px;
+  padding: 11px 14px;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 8px;
+}
+
+.role-subject span,
+.callback-subject span {
+  color: var(--tx-hi);
+  font-size: var(--fs-body);
+  font-weight: 600;
+}
+
+.role-subject code,
+.callback-subject code {
+  color: var(--tx-2);
+  font: var(--fs-sm) var(--mono);
+}
+
+.role-subject small,
+.callback-subject small {
+  color: var(--tx-3);
+  font-size: var(--fs-xs);
+}
+
+/* field-rule 同时服务应用管理抽屉表单。 */
+.field-rule {
+  display: block;
+  margin-top: 7px;
+  color: var(--tx-3);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+@media (max-width: 760px) {
+  .user-rules > div,
+  .config-rules > div,
+  .ops-rules > div,
+  .callback-rules > div,
+  .security-daily-rules > div,
+  .audit-rules > div {
+    width: 100%;
+  }
+}
+
+/* 页签条：系统参数 config-tabs 与运维中心 ops-tabs 同构（自定义页签条 + 键盘左右切换 + 横向溢出滚动）。 */
+.config-tabs,
+.ops-tabs {
+  display: flex;
+  gap: 22px;
+  min-height: 46px;
+  margin-top: -8px;
+  border-bottom: 1px solid var(--line-2);
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.config-tabs button,
+.ops-tabs button {
+  position: relative;
+  flex: none;
+  min-height: 44px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.config-tabs button::after,
+.ops-tabs button::after {
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: transparent;
+  content: "";
+  transform: scaleX(0.25);
+  transition:
+    background-color 140ms cubic-bezier(0.25, 1, 0.5, 1),
+    transform 140ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.config-tabs button:hover,
+.ops-tabs button:hover {
+  color: var(--ink);
+}
+
+.config-tabs button.active,
+.ops-tabs button.active {
+  color: var(--verdi-text);
+}
+
+.config-tabs button.active::after,
+.ops-tabs button.active::after {
+  background: var(--verdi);
+  transform: scaleX(1);
+}
+
+.config-tabs button:focus-visible,
+.ops-tabs button:focus-visible {
+  outline: 2px solid var(--verdi);
+  outline-offset: 3px;
+}
+
+/* 空状态说明文字允许在任意位置折行，长标识不撑破容器。 */
+.empty-state p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }

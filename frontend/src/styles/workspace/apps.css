@@ -339,3 +339,22 @@
 .demo-dialog .el-tabs__item {
   font-size: var(--fs-body);
 }
+
+@media (max-width: 760px) {
+  .apps-form-2col {
+    grid-template-columns: 1fr;
+  }
+
+  .apps-filter-bar {
+    align-items: flex-start;
+  }
+
+  .apps-keyword {
+    width: 100%;
+  }
+
+  .apps-filter-note {
+    width: 100%;
+    margin-left: 0;
+  }
+}
