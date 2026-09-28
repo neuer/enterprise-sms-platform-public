@@ -478,3 +478,12 @@
     font-size: var(--fs-2xs);
   }
 }
+.report-heading .eyebrow {
+  color: var(--tx-3);
+  font-weight: 400;
+}
+.report-heading p:not(.eyebrow) {
+  margin-top: 1px;
+  color: var(--tx-3);
+  font-size: var(--fs-sm);
+}

@@ -171,12 +171,8 @@ const PAGE_VIEWS: Record<string, string[]> = {
   "src/styles/workspace/security-daily.css": ["SecurityDailyView"],
 }
 const SHARED_PAGES_CSS = "src/styles/workspace/shared.css"
-const CONSOLE_DARK_CSS = "src/styles/workspace/console-dark.css"
-/** 壳规则（侧栏、顶栏、main、小字对比度）仍留在页面分片中的存量，只减不增。 */
-const SHELL_RULES_IN_PAGES: Record<string, number> = {
-  "src/styles/workspace/blacklist-sensitive.css": 18,
-  "src/styles/workspace/security-daily.css": 10,
-}
+/** 工作区对比度修正必须排在 pages 层最后，否则盖不住各页同特异性的 color。 */
+const CONTRAST_CSS = "src/styles/workspace/contrast.css"
 
 type CssRule = { media: string; selector: string; properties: string[] }
 
@@ -269,13 +265,20 @@ describe("页面分片归属契约", () => {
 
   it("pages 层每个分片都登记了所属页面", () => {
     expect(pageFiles[0], "shared.css 须是 pages 层第一个分片").toBe(SHARED_PAGES_CSS)
-    expect(pageFiles.filter((path) => path !== SHARED_PAGES_CSS && path !== CONSOLE_DARK_CSS).sort()).toEqual(
+    expect(pageFiles.at(-1), "contrast.css 须是 pages 层最后一个分片").toBe(CONTRAST_CSS)
+    expect(pageFiles.filter((path) => path !== SHARED_PAGES_CSS && path !== CONTRAST_CSS).sort()).toEqual(
       Object.keys(PAGE_VIEWS).sort(),
     )
   })
 
+  it("contrast.css 只保留工作区小号文字的对比度修正", () => {
+    const rules = cssRules(read(CONTRAST_CSS))
+    expect(rules.map((rule) => rule.selector)).toEqual([".workspace :is(small, time, dt)"])
+    expect(rules[0].properties).toEqual(["color"])
+    expect(read(CONTRAST_CSS)).toMatch(/color:\s*var\(--tx-2\)/)
+  })
+
   it("页面分片的每个选择器都锚定到本页独有的类；跨页规则放 shared.css", () => {
-    const shellCounts: Record<string, number> = {}
     for (const [path, views] of Object.entries(PAGE_VIEWS)) {
       const own = new Set(views)
       const offenders: string[] = []
@@ -284,23 +287,18 @@ describe("页面分片归属契约", () => {
           .map((name) => [name, usage(name)] as const)
           .filter(([, pages]) => pages.size)
         if (known.some(([, pages]) => !pages.has("*") && [...pages].every((page) => own.has(page)))) continue
-        if (isShellSelector(selector)) {
-          shellCounts[path] = (shellCounts[path] ?? 0) + 1
-          continue
-        }
         const elsewhere = [...new Set(known.flatMap(([, pages]) => [...pages].filter((page) => !own.has(page))))]
-        offenders.push(`${media} ${selector} → ${elsewhere.length ? elsewhere.join("/") : "全站"}`.trim())
+        const where = isShellSelector(selector) ? "壳层 base.css" : elsewhere.length ? elsewhere.join("/") : "全站"
+        offenders.push(`${media} ${selector} → ${where}`.trim())
       }
       expect(offenders, `${path} 含不属于本页的规则`).toEqual([])
     }
-    expect(shellCounts).toEqual(SHELL_RULES_IN_PAGES)
   })
 
   it("页面分片之间不重复声明同一选择器的同一属性，胜负不依赖导入先后", () => {
     const owners = new Map<string, Set<string>>()
-    for (const path of pageFiles.filter((file) => file !== CONSOLE_DARK_CSS)) {
+    for (const path of pageFiles) {
       for (const { media, selector, properties } of cssRules(read(path))) {
-        if (isShellSelector(selector)) continue
         for (const property of properties) {
           const key = `${media} ${selector} { ${property} }`.trim()
           owners.set(key, (owners.get(key) ?? new Set()).add(path))

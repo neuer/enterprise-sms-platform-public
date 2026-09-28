@@ -123,11 +123,12 @@ describe("青鸾 Console 深色监视台设计契约", () => {
   })
 
   it("移动断点晚于深色桌面覆盖并恢复单栏工作区", () => {
-    const workspace = readWorkspaceCss()
-    const darkLayer = workspace.indexOf("青鸾 Console 深色监视台")
-    const mobileLayer = workspace.lastIndexOf("@media (max-width: 959px)")
-
-    expect(mobileLayer).toBeGreaterThan(darkLayer)
-    expect(workspace.slice(mobileLayer)).toMatch(/\.app-shell\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s)
+    const shell = source("src/styles/workspace/base.css")
+    const desktop = shell.search(/\.app-shell\s*\{[^}]*grid-template-columns:\s*216px/)
+    const mobile = shell.search(
+      /@media \(max-width: 959px\)\s*\{[^}]*\.app-shell\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    )
+    expect(desktop).toBeGreaterThanOrEqual(0)
+    expect(mobile).toBeGreaterThan(desktop)
   })
 })

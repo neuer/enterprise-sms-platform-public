@@ -372,29 +372,6 @@
     gap: 5px;
   }
 }
-/* 交接令牌保留原值；小号正文和文字操作改用可达 WCAG AA 的前景层。 */
-.brand small,
-.nav-section h2,
-.nav-marker,
-.sidebar-foot,
-.workspace :is(small, time, dt),
-.breadcrumb span,
-.breadcrumb b,
-.operator-name small {
-  color: var(--tx-2);
-}
-
-@media (max-width: 959px) {
-  .app-shell {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-@media (max-width: 760px) {
-  main {
-    padding: 16px;
-  }
-}
 
 @media (max-width: 760px) {
   .security-daily-fld,

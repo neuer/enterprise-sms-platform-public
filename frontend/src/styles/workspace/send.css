@@ -884,3 +884,15 @@
     grid-template-columns: 1fr;
   }
 }
+.page-heading.send-heading {
+  margin-bottom: 14px;
+}
+.send-heading .eyebrow {
+  color: var(--tx-3);
+  font-weight: 400;
+}
+.send-heading p:not(.eyebrow) {
+  margin-top: 1px;
+  color: var(--tx-3);
+  font-size: var(--fs-sm);
+}

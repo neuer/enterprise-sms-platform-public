@@ -96,120 +96,12 @@
     grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
   }
 }
-
-@media (max-width: 959px) {
-  .app-shell {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .sidebar {
-    position: fixed;
-    z-index: 31;
-    inset: 0 auto 0 0;
-    width: min(288px, 86vw);
-    padding: 18px 14px 14px;
-    transform: translateX(-101%);
-    visibility: hidden;
-    transition:
-      transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
-      visibility 0s linear 180ms;
-  }
-
-  .brand {
-    justify-content: flex-start;
-  }
-
-  .navigation-open .sidebar {
-    transform: translateX(0);
-    visibility: visible;
-    box-shadow: 18px 0 48px color-mix(in srgb, var(--sink) 60%, transparent);
-    transition-delay: 0s;
-  }
-
-  .navigation-toggle,
-  .navigation-close {
-    display: grid;
-    place-items: center;
-    color: var(--tx);
-    background: transparent;
-    border: 0;
-    cursor: pointer;
-  }
-
-  .navigation-toggle {
-    width: 36px;
-    height: 36px;
-    padding: 9px;
-    gap: 4px;
-  }
-
-  .navigation-toggle span {
-    display: block;
-    width: 17px;
-    height: 1px;
-    background: currentColor;
-  }
-
-  .navigation-close {
-    width: 36px;
-    height: 36px;
-    margin-left: auto;
-    color: var(--tx);
-    font-size: var(--fs-display);
-    font-weight: 300;
-  }
-
-  .navigation-backdrop {
-    position: fixed;
-    z-index: 30;
-    inset: 0;
-    display: block;
-    background: var(--el-mask-color);
-    border: 0;
-    opacity: 0;
-    pointer-events: none;
-    visibility: hidden;
-    transition:
-      opacity 180ms ease-out,
-      visibility 0s linear 180ms;
-  }
-
-  .navigation-open .navigation-backdrop {
-    opacity: 1;
-    pointer-events: auto;
-    visibility: visible;
-    transition-delay: 0s;
-  }
-
-  .topbar {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 10px;
-  }
-
-  .balance {
-    display: none;
-  }
-
-  .breadcrumb {
-    overflow: hidden;
-    color: var(--tx);
-    font-weight: 600;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .breadcrumb span,
-  .breadcrumb b {
-    display: none;
-  }
+.blacklist-heading .eyebrow {
+  color: var(--tx-3);
+  font-weight: 400;
 }
-
-@media (max-width: 640px) {
-  .topbar {
-    padding-inline: 12px;
-  }
-
-  .operator-name {
-    display: none;
-  }
+.blacklist-heading p:not(.eyebrow) {
+  margin-top: 1px;
+  color: var(--tx-3);
+  font-size: var(--fs-sm);
 }
