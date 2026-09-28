@@ -662,21 +662,23 @@ onMounted(() => {
   样式本身仅作用于切回触发按钮与操作指引。
 -->
 <style>
-.vendor-reset-trigger {
-  min-height: 44px;
-}
+@layer components {
+  .vendor-reset-trigger {
+    min-height: 44px;
+  }
 
-.vendor-operation-guidance {
-  grid-column: 1 / -1;
-  margin: 0;
-  padding: 10px 12px;
-  background: var(--surface);
-  color: var(--ink-soft);
-  font-size: var(--fs-sm);
-  line-height: 1.6;
-}
+  .vendor-operation-guidance {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 10px 12px;
+    background: var(--surface);
+    color: var(--ink-soft);
+    font-size: var(--fs-sm);
+    line-height: 1.6;
+  }
 
-.vendor-operation-guidance.is-danger {
-  color: var(--verm);
+  .vendor-operation-guidance.is-danger {
+    color: var(--verm);
+  }
 }
 </style>

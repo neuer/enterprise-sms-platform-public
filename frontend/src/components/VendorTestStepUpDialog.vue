@@ -183,30 +183,32 @@ defineExpose({ open })
   不在本组件的 scoped DOM 子树内，scoped 选择器无法命中。类名以 vendor- 前缀隔离。
 -->
 <style>
-.vendor-step-up-dialog {
-  max-width: calc(100vw - 32px);
-}
+@layer components {
+  .vendor-step-up-dialog {
+    max-width: calc(100vw - 32px);
+  }
 
-.vendor-step-up-dialog .el-input__wrapper,
-.vendor-step-up-dialog .el-dialog__footer .el-button {
-  min-height: 44px;
-}
-
-.vendor-step-up-dialog .el-dialog__footer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.vendor-step-up-dialog .el-dialog__footer .el-button + .el-button {
-  margin-left: 0;
-}
-
-@media (max-width: 360px) {
+  .vendor-step-up-dialog .el-input__wrapper,
   .vendor-step-up-dialog .el-dialog__footer .el-button {
-    flex: 1 1 100%;
+    min-height: 44px;
+  }
+
+  .vendor-step-up-dialog .el-dialog__footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+  }
+
+  .vendor-step-up-dialog .el-dialog__footer .el-button + .el-button {
     margin-left: 0;
+  }
+
+  @media (max-width: 360px) {
+    .vendor-step-up-dialog .el-dialog__footer .el-button {
+      flex: 1 1 100%;
+      margin-left: 0;
+    }
   }
 }
 </style>

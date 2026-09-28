@@ -385,36 +385,6 @@
   color: var(--tx-2);
 }
 
-.el-table {
-  --el-table-header-text-color: var(--tx-2);
-}
-
-.el-table th.el-table__cell {
-  color: var(--tx-2);
-}
-
-.el-input__inner::placeholder,
-.el-textarea__inner::placeholder {
-  color: var(--tx-2);
-}
-
-.el-button.is-link.el-button--primary {
-  --el-button-text-color: var(--verdi-l);
-  /* #71c4ad 即深色 --verdi-text：引用令牌后亮色悬停自动取亮底文字绿。 */
-  --el-button-hover-link-text-color: var(--verdi-text);
-  --el-button-active-color: var(--verdi-l);
-}
-
-.el-button.is-link.el-button--danger {
-  /* 与 --tx-hi 混色：深色下悬停提亮、亮色下悬停加深，不走 Element 的 light-5 变淡。 */
-  --el-button-hover-link-text-color: color-mix(in srgb, var(--verm) 70%, var(--tx-hi));
-  --el-button-active-color: var(--verm);
-}
-
-.el-tabs__item.is-active {
-  color: var(--verdi-l);
-}
-
 @media (max-width: 959px) {
   .app-shell {
     grid-template-columns: minmax(0, 1fr);

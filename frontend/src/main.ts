@@ -1,10 +1,6 @@
+import "./styles/layers.css"
 import "./styles/fonts-sans.css"
-import "element-plus/theme-chalk/base.css"
-import "element-plus/theme-chalk/el-button.css"
-import "element-plus/theme-chalk/el-config-provider.css"
-import "element-plus/theme-chalk/el-icon.css"
-import "element-plus/theme-chalk/el-input.css"
-import "element-plus/theme-chalk/el-message.css"
+import "./styles/element-entry.css"
 import "./styles/theme.css"
 
 import { ElButton, ElConfigProvider, ElInput } from "element-plus"

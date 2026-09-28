@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { readWorkspaceCss } from "./workspace-css"
+import { readThemeCss, readWorkspaceCss } from "./workspace-css"
 
-const themePath = resolve(process.cwd(), "src/styles/theme.css")
-const css = [readFileSync(themePath, "utf8"), readWorkspaceCss()].join("\n")
+const css = [readThemeCss(), readWorkspaceCss()].join("\n")
 const datePickerViews = [
   "BatchView.vue",
   "ReportView.vue",
@@ -79,10 +78,11 @@ describe("无障碍样式契约", () => {
     expect(css).toMatch(/\.vendor-test-actions \.el-button[^}]*min-height:\s*44px/s)
   })
 
-  it("触屏命中区单点 touch.css 末位导入，后续分片无法以同优先级压回紧凑尺寸", () => {
+  it("触屏命中区单点 touch.css 进最高的 touch 层，页面规则无论特异性都压不回紧凑尺寸", () => {
     const entry = readFileSync(resolve(process.cwd(), "src/styles/workspace.css"), "utf8")
-    const imports = [...entry.matchAll(/@import "([^"]+)"/g)].map(([, path]) => path)
-    expect(imports.at(-1)).toBe("./workspace/touch.css")
+    expect(entry).toContain('@import "./workspace/touch.css" layer(touch);')
+    const layers = readFileSync(resolve(process.cwd(), "src/styles/layers.css"), "utf8")
+    expect(/@layer ([^;]+);/.exec(layers)![1].split(",").at(-1)!.trim()).toBe("touch")
     const touch = readFileSync(resolve(process.cwd(), "src/styles/workspace/touch.css"), "utf8")
     for (const selector of [
       ".nav-link",

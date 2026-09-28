@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { readWorkspaceCss } from "./workspace-css"
+import { readThemeCss, readWorkspaceCss } from "./workspace-css"
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 
@@ -69,7 +69,7 @@ describe("跨页面一致性契约", () => {
   })
 
   it("表格行悬停统一走不透明的 --row-hover 令牌，固定列不透出横向滚动内容", () => {
-    const theme = read("src/styles/theme.css")
+    const theme = readThemeCss()
     expect(theme).toMatch(/--row-hover:\s*color-mix\(in srgb, var\(--panel\) \d+%, var\(--tx-hi\)\);/)
     const workspace = readWorkspaceCss().replace(/\/\*[\s\S]*?\*\//g, "")
     const hoverValues = [
@@ -92,7 +92,7 @@ describe("跨页面一致性契约", () => {
   })
 
   it("el-select 占位色接入主题令牌，不沿用 Element 默认浅灰", () => {
-    expect(read("src/styles/theme.css")).toContain("--el-text-color-placeholder: var(--tx-3);")
+    expect(readThemeCss()).toContain("--el-text-color-placeholder: var(--tx-3);")
   })
 
   it("无可见标签的筛选控件带 aria-label，装饰性令牌格对读屏隐藏", () => {
@@ -112,7 +112,7 @@ describe("跨页面一致性契约", () => {
   })
 
   it("字号只取 --fs-* 档位令牌，不再散写 px（登录页 clamp 流式标题除外）", () => {
-    const theme = read("src/styles/theme.css")
+    const theme = readThemeCss()
     const scale = [...theme.matchAll(/--fs-[\w-]+:\s*([\d.]+)px;/g)].map((match) => Number(match[1]))
     expect(scale).toEqual([10, 10.5, 11, 12, 12.5, 13, 14, 16, 18, 19, 20, 26, 32])
     const styles = [
@@ -132,7 +132,7 @@ describe("跨页面一致性契约", () => {
   })
 
   it("font 简写不混用 inherit（整条声明会失效），继承字体族改写为 font-family: inherit", () => {
-    const css = [readWorkspaceCss(), read("src/styles/theme.css")].join("\n")
+    const css = [readWorkspaceCss(), readThemeCss()].join("\n")
     expect(css).not.toMatch(/font:[^;]*\S\s+inherit;/)
   })
 
@@ -147,7 +147,7 @@ describe("跨页面一致性契约", () => {
   })
 
   it("按深色调优的朱红 / 蓝文字色只以令牌定义，随主题取值，不再逐条打明亮补丁", () => {
-    const theme = read("src/styles/theme.css")
+    const theme = readThemeCss()
     for (const token of ["--verm-text", "--slate-text", "--shadow-drawer"]) {
       expect(theme.match(new RegExp(`${token}:`, "g"))?.length, token).toBe(2)
     }

@@ -5,7 +5,7 @@ import appSource from "../src/App.vue?raw"
 import { existsSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { readWorkspaceCss } from "./workspace-css"
+import { readThemeCss, readWorkspaceCss } from "./workspace-css"
 
 const lazyViews = [
   "DashboardView",
@@ -48,12 +48,10 @@ describe("前端加载边界", () => {
     expect(mainSource).toContain('import "./styles/theme.css"')
     expect(mainSource).not.toContain("workspace.css")
     expect(appSource).not.toContain("workspace.css")
-    // 登录壳不背工作区样式：workspace.css 随首个非公开路由前的守卫动态加载，
-    // 且必须位于 element-workspace 的全部 el-* 样式之后，同特异性覆写才能胜出。
+    // 登录壳不背工作区样式：workspace.css 随首个非公开路由前的守卫动态加载；
+    // 组件库样式与工作区样式各自进层，级联结果不依赖两者的导入先后。
+    expect(workspaceElementSource).toContain('import "./styles/element-workspace.css"')
     expect(workspaceElementSource).toContain('import "./styles/workspace.css"')
-    expect(workspaceElementSource.indexOf('import "./styles/workspace.css"')).toBeGreaterThan(
-      workspaceElementSource.lastIndexOf('import "element-plus/theme-chalk/'),
-    )
 
     for (const view of lazyViews) {
       const source = readFileSync(resolve(process.cwd(), `src/views/${view}.vue`), "utf8")
@@ -70,9 +68,9 @@ describe("前端加载边界", () => {
     }
   })
 
-  it("workspace.css 拆分为纯 @import 聚合入口，分片齐全且明亮覆写层在末位", () => {
+  it("workspace.css 是纯 @import 聚合入口，每个分片都声明所属层", () => {
     const entry = readFileSync(resolve(process.cwd(), "src/styles/workspace.css"), "utf8")
-    // 除注释与空行外只允许 @import 行（顺序即级联顺序）
+    // 除注释与空行外只允许 @import 行
     const lines = entry
       .replaceAll(/\/\*[\s\S]*?\*\//g, "")
       .split("\n")
@@ -82,13 +80,12 @@ describe("前端加载边界", () => {
     expect(lines.length).toBe(imports.length)
     expect(imports.length).toBeGreaterThan(10)
     for (const line of imports) {
-      const match = /^@import "(\.\/workspace\/[^"]+)";$/.exec(line)
-      expect(match, `聚合入口只允许引入 styles/workspace/ 分片：${line}`).not.toBeNull()
+      const match = /^@import "(\.\/workspace\/[^"]+)" layer\([\w-]+\);$/.exec(line)
+      expect(match, `聚合入口只允许带 layer() 引入 styles/workspace/ 分片：${line}`).not.toBeNull()
       expect(existsSync(resolve(process.cwd(), "src/styles", match![1])), `${line} 目标分片缺失`).toBe(true)
     }
-    // 只放尺寸的触屏命中区 touch.css 在末位，明亮模式覆写层紧随其前（级联依赖顺序）
-    expect(imports.at(-1)).toContain("touch.css")
-    expect(imports.at(-2)).toContain("overrides-light.css")
+    expect(imports).toContain('@import "./workspace/touch.css" layer(touch);')
+    expect(imports).toContain('@import "./workspace/overrides-light.css" layer(theme-light);')
     // 聚合入口内联展开后仍含壳骨架与覆写层规则（防空切片/漏引入）
     const full = readWorkspaceCss()
     expect(full).toContain(".app-shell")
@@ -96,7 +93,7 @@ describe("前端加载边界", () => {
   })
 
   it("基础主题不再携带路由页面的大段样式", () => {
-    const theme = readFileSync(resolve(process.cwd(), "src/styles/theme.css"), "utf8")
+    const theme = readThemeCss()
     for (const selector of [".dashboard-metrics", ".send-workbench", ".ops-panel", ".query-table-card"]) {
       expect(theme).not.toContain(selector)
     }
@@ -110,8 +107,9 @@ describe("前端加载边界", () => {
 
   it("日期选择器按需加载完整的面板和时间结构样式", () => {
     // 工作区组件样式随 element-workspace.ts 在首个非公开路由前一次性加载
-    expect(workspaceElementSource).toContain('import "element-plus/theme-chalk/el-date-picker-panel.css"')
-    expect(workspaceElementSource).toContain('import "element-plus/theme-chalk/el-time-picker.css"')
+    const elementCss = readFileSync(resolve(process.cwd(), "src/styles/element-workspace.css"), "utf8")
+    expect(elementCss).toContain('@import "element-plus/theme-chalk/el-date-picker-panel.css" layer(element);')
+    expect(elementCss).toContain('@import "element-plus/theme-chalk/el-time-picker.css" layer(element);')
   })
 
   it("Element Plus 组件使用平台统一的简体中文区域配置", () => {

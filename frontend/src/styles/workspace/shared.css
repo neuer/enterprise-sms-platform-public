@@ -271,6 +271,10 @@
   font-size: var(--fs-sm);
 }
 
+.audit-session-toggle .el-checkbox__input.is-checked + .el-checkbox__label {
+  color: var(--el-color-primary);
+}
+
 .reply-privacy,
 .blacklist-privacy,
 .sensitive-filter-note,
@@ -352,7 +356,10 @@
   border-radius: 12px;
 }
 
-.reply-table .el-table__header th {
+/* 固定列须保留 Element 的不透明表头底，横向滚动时才不会透出下层内容。 */
+.reply-table
+  .el-table__header
+  th:not(.el-table-fixed-column--left, .el-table-fixed-column--right, .el-table__fixed-right-patch) {
   background: color-mix(in srgb, var(--paper) 78%, var(--verdi) 2%);
 }
 
@@ -1007,15 +1014,6 @@ main {
   margin: 5px auto 0;
   color: var(--tx-2);
   font-size: var(--fs-md);
-}
-
-/* Element Plus 表格空态槽自带 line-height:60px 与 50% 宽度，
-   会让 EmptyState 换行文案出现巨大行距；统一归一化。
-   须以 .el-table 前缀提权：el-table.css 在本样式之后加载，
-   同优先级下会后发制人。 */
-.el-table .el-table__empty-text {
-  width: auto;
-  line-height: 1.6;
 }
 
 @media (max-width: 760px) {

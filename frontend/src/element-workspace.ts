@@ -1,34 +1,7 @@
-import "element-plus/theme-chalk/el-alert.css"
-import "element-plus/theme-chalk/el-card.css"
-import "element-plus/theme-chalk/el-checkbox.css"
-import "element-plus/theme-chalk/el-date-picker-panel.css"
-import "element-plus/theme-chalk/el-descriptions.css"
-import "element-plus/theme-chalk/el-dialog.css"
-import "element-plus/theme-chalk/el-drawer.css"
-import "element-plus/theme-chalk/el-form.css"
-import "element-plus/theme-chalk/el-input-number.css"
-import "element-plus/theme-chalk/el-loading.css"
-import "element-plus/theme-chalk/el-message-box.css"
-import "element-plus/theme-chalk/el-overlay.css"
-import "element-plus/theme-chalk/el-pagination.css"
-import "element-plus/theme-chalk/el-popover.css"
-import "element-plus/theme-chalk/el-popper.css"
-import "element-plus/theme-chalk/el-scrollbar.css"
-import "element-plus/theme-chalk/el-segmented.css"
-import "element-plus/theme-chalk/el-select.css"
-import "element-plus/theme-chalk/el-skeleton.css"
-import "element-plus/theme-chalk/el-switch.css"
-import "element-plus/theme-chalk/el-table.css"
-import "element-plus/theme-chalk/el-tabs.css"
-import "element-plus/theme-chalk/el-tag.css"
-import "element-plus/theme-chalk/el-time-picker.css"
-import "element-plus/theme-chalk/el-tooltip.css"
-import "element-plus/theme-chalk/el-upload.css"
-
-// 工作区壳样式随本模块懒加载：登录/公开页只带 theme.css（登录壳样式本就在
-// theme.css 一侧），进入首个非公开路由前由 main.ts 守卫加载本模块。
-// 必须排在全部 el-*.css 之后：工作区对 el-card / el-table / el-tag 等的同特异性覆写
-// 依赖后到者胜出，放在前面会被 Element 默认值静默吃掉。
+// 工作区样式随本模块懒加载：登录/公开页只带入口样式，进入首个非公开路由前由 main.ts
+// 守卫加载本模块。两份样式各自进层（element 层 / 壳与页面各层），层顺序由入口的
+// styles/layers.css 先行声明，懒加载到达的先后不影响级联结果。
+import "./styles/element-workspace.css"
 import "./styles/workspace.css"
 
 import {

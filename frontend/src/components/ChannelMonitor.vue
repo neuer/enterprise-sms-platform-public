@@ -92,185 +92,187 @@ function displayNumber(value: number | null): string {
 </template>
 
 <style scoped>
-.channel-monitor {
-  display: grid;
-  grid-template-columns: auto 1fr 1fr 190px auto;
-  gap: 16px 24px;
-  align-items: center;
-  padding: 13px 20px;
-  color: var(--tx);
-  background: linear-gradient(180deg, var(--panel), var(--panel-2));
-  border: 1px solid var(--hair);
-  border-radius: 12px;
-}
-
-.monitor-live {
-  display: inline-flex;
-  gap: 7px;
-  align-items: center;
-  color: var(--verdi-text);
-  font-family: var(--mono);
-  font-size: var(--fs-2xs);
-  font-weight: 600;
-  letter-spacing: 0.16em;
-}
-
-.monitor-live i {
-  width: 7px;
-  height: 7px;
-  background: var(--verdi-l);
-  border-radius: 50%;
-  /* 光晕即 --verdi-l 60%：引用令牌随主题切换，避免硬编码深色 rgba。 */
-  box-shadow: 0 0 8px color-mix(in srgb, var(--verdi-l) 60%, transparent);
-  animation: monitor-pulse 2.4s infinite;
-}
-
-.monitor-lane,
-.monitor-qps {
-  min-width: 0;
-}
-
-.monitor-lane {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: 8px;
-  align-items: center;
-}
-
-.monitor-lane span,
-.monitor-qps span {
-  color: var(--verdi-text);
-  font-family: var(--mono);
-  font-size: var(--fs-2xs);
-  font-weight: 500;
-}
-
-.monitor-lane.bulk span {
-  color: var(--amber);
-}
-
-.monitor-lane strong,
-.monitor-qps strong {
-  color: var(--tx-hi);
-  font-size: var(--fs-xl);
-  font-weight: 600;
-}
-
-.monitor-qps strong {
-  font-size: var(--fs-body);
-}
-
-.monitor-track {
-  grid-column: 1 / -1;
-  height: 6px;
-  margin-top: 5px;
-  overflow: hidden;
-  background: var(--sink);
-  border: 1px solid var(--hair-2);
-  border-radius: 3px;
-}
-
-.monitor-track i {
-  display: block;
-  height: 100%;
-  background: linear-gradient(90deg, var(--verdi), var(--verdi-l));
-  transition: width 900ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.monitor-lane.bulk .monitor-track i {
-  /* 渐变起点为 --amber 压深色阶：color-mix 派生，亮/暗主题各自随 --amber 取值。 */
-  background: linear-gradient(90deg, color-mix(in srgb, var(--amber) 55%, #000000), var(--amber));
-}
-
-.monitor-qps > div:first-child {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.token-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 5px;
-  margin-top: 5px;
-}
-
-.token-grid i {
-  height: 14px;
-  background: var(--sink);
-  border: 1px solid var(--hair-2);
-  border-radius: 4px;
-}
-
-.token-grid i.used {
-  /* 占用格与光晕引用品牌绿色阶令牌：亮底时 --verdi-l 自动向深取，对比随主题保持。 */
-  background: linear-gradient(180deg, var(--verdi-l), var(--verdi));
-  box-shadow: 0 0 10px color-mix(in srgb, var(--verdi-l) 35%, transparent);
-}
-
-.chan-time {
-  color: var(--tx-3);
-  font-size: var(--fs-2xs);
-  white-space: nowrap;
-}
-
-.monitor-degraded {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: var(--tx-2);
-  font-size: var(--fs-xs);
-}
-
-.monitor-stale {
-  filter: saturate(0.36);
-}
-
-.monitor-stale .monitor-live {
-  color: var(--tx-2);
-}
-
-.monitor-stale .monitor-live i {
-  background: var(--tx-3);
-  box-shadow: none;
-  animation: none;
-}
-
-.num {
-  font-family: var(--mono);
-  font-variant-numeric: tabular-nums;
-}
-
-@keyframes monitor-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.35;
-  }
-}
-
-@media (max-width: 1080px) {
+@layer components {
   .channel-monitor {
-    grid-template-columns: auto 1fr 1fr;
+    display: grid;
+    grid-template-columns: auto 1fr 1fr 190px auto;
+    gap: 16px 24px;
+    align-items: center;
+    padding: 13px 20px;
+    color: var(--tx);
+    background: linear-gradient(180deg, var(--panel), var(--panel-2));
+    border: 1px solid var(--hair);
+    border-radius: 12px;
   }
 
-  .monitor-qps,
-  .chan-time {
+  .monitor-live {
+    display: inline-flex;
+    gap: 7px;
+    align-items: center;
+    color: var(--verdi-text);
+    font-family: var(--mono);
+    font-size: var(--fs-2xs);
+    font-weight: 600;
+    letter-spacing: 0.16em;
+  }
+
+  .monitor-live i {
+    width: 7px;
+    height: 7px;
+    background: var(--verdi-l);
+    border-radius: 50%;
+    /* 光晕即 --verdi-l 60%：引用令牌随主题切换，避免硬编码深色 rgba。 */
+    box-shadow: 0 0 8px color-mix(in srgb, var(--verdi-l) 60%, transparent);
+    animation: monitor-pulse 2.4s infinite;
+  }
+
+  .monitor-lane,
+  .monitor-qps {
+    min-width: 0;
+  }
+
+  .monitor-lane {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 8px;
+    align-items: center;
+  }
+
+  .monitor-lane span,
+  .monitor-qps span {
+    color: var(--verdi-text);
+    font-family: var(--mono);
+    font-size: var(--fs-2xs);
+    font-weight: 500;
+  }
+
+  .monitor-lane.bulk span {
+    color: var(--amber);
+  }
+
+  .monitor-lane strong,
+  .monitor-qps strong {
+    color: var(--tx-hi);
+    font-size: var(--fs-xl);
+    font-weight: 600;
+  }
+
+  .monitor-qps strong {
+    font-size: var(--fs-body);
+  }
+
+  .monitor-track {
     grid-column: 1 / -1;
+    height: 6px;
+    margin-top: 5px;
+    overflow: hidden;
+    background: var(--sink);
+    border: 1px solid var(--hair-2);
+    border-radius: 3px;
   }
-}
 
-@media (max-width: 680px) {
-  .channel-monitor {
-    grid-template-columns: 1fr;
-    padding: 14px 16px;
+  .monitor-track i {
+    display: block;
+    height: 100%;
+    background: linear-gradient(90deg, var(--verdi), var(--verdi-l));
+    transition: width 900ms cubic-bezier(0.4, 0, 0.2, 1);
   }
 
-  .monitor-qps,
+  .monitor-lane.bulk .monitor-track i {
+    /* 渐变起点为 --amber 压深色阶：color-mix 派生，亮/暗主题各自随 --amber 取值。 */
+    background: linear-gradient(90deg, color-mix(in srgb, var(--amber) 55%, #000000), var(--amber));
+  }
+
+  .monitor-qps > div:first-child {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .token-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 5px;
+    margin-top: 5px;
+  }
+
+  .token-grid i {
+    height: 14px;
+    background: var(--sink);
+    border: 1px solid var(--hair-2);
+    border-radius: 4px;
+  }
+
+  .token-grid i.used {
+    /* 占用格与光晕引用品牌绿色阶令牌：亮底时 --verdi-l 自动向深取，对比随主题保持。 */
+    background: linear-gradient(180deg, var(--verdi-l), var(--verdi));
+    box-shadow: 0 0 10px color-mix(in srgb, var(--verdi-l) 35%, transparent);
+  }
+
   .chan-time {
-    grid-column: auto;
+    color: var(--tx-3);
+    font-size: var(--fs-2xs);
+    white-space: nowrap;
+  }
+
+  .monitor-degraded {
+    grid-column: 1 / -1;
+    margin: 0;
+    color: var(--tx-2);
+    font-size: var(--fs-xs);
+  }
+
+  .monitor-stale {
+    filter: saturate(0.36);
+  }
+
+  .monitor-stale .monitor-live {
+    color: var(--tx-2);
+  }
+
+  .monitor-stale .monitor-live i {
+    background: var(--tx-3);
+    box-shadow: none;
+    animation: none;
+  }
+
+  .num {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  @keyframes monitor-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.35;
+    }
+  }
+
+  @media (max-width: 1080px) {
+    .channel-monitor {
+      grid-template-columns: auto 1fr 1fr;
+    }
+
+    .monitor-qps,
+    .chan-time {
+      grid-column: 1 / -1;
+    }
+  }
+
+  @media (max-width: 680px) {
+    .channel-monitor {
+      grid-template-columns: 1fr;
+      padding: 14px 16px;
+    }
+
+    .monitor-qps,
+    .chan-time {
+      grid-column: auto;
+    }
   }
 }
 </style>

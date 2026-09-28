@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
-import { readWorkspaceCss } from "./workspace-css"
+import { readThemeCss, readWorkspaceCss } from "./workspace-css"
 
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 
@@ -71,7 +71,7 @@ describe("行点击开 Drawer 结构契约（el-table @row-click）", () => {
 
 describe("登录页结构契约", () => {
   const login = source("src/views/LoginView.vue")
-  const theme = source("src/styles/theme.css")
+  const theme = readThemeCss()
 
   it("桌面左白鹭右 480px 会话窗口，860px 以下收起白鹭并由对话名片承载", () => {
     expect(theme).toMatch(/\.login-screen\s*\{[^}]*grid-template-columns:\s*1fr 480px 8vw/s)
@@ -99,7 +99,7 @@ describe("登录页结构契约", () => {
 describe("动效白名单防回退（规范 §6）", () => {
   it("信道条深度轨 900ms / 登录卡入场 480ms / reduced-motion 全关", () => {
     const monitor = source("src/components/ChannelMonitor.vue")
-    const theme = source("src/styles/theme.css")
+    const theme = readThemeCss()
     const workspace = readWorkspaceCss()
     const styles = `${theme}\n${workspace}`
 

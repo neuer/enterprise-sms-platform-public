@@ -1,21 +1,6 @@
-/* 明亮模式覆写层：只覆写钉死深色值、无法靠令牌/color-mix 自动跟随的规则——必须保持在聚合入口末位。 */
-/* ===== 明亮模式覆写 =====
-   深色是默认主题；此处只覆写钉死深色值、无法靠令牌/color-mix 自动跟随的规则（壳层 + 全部业务页）。
+/* 明亮模式覆写（theme-light 层）：只覆写钉死深色值、无法靠令牌/color-mix 自动跟随的壳层与业务页规则；
+   Element 组件级的明亮覆写在 element-light.css（element 层）。
    登录页在明亮模式下保持深色（theme.css 的 .public-shell 令牌钉回），属于有意保留。 */
-[data-theme="light"] .el-button--default {
-  --el-button-bg-color: var(--panel);
-  --el-button-border-color: var(--hair);
-  --el-button-text-color: var(--tx);
-}
-[data-theme="light"] .el-button--primary.is-disabled,
-[data-theme="light"] .el-button--primary.is-disabled:hover {
-  color: var(--tx-3);
-  background: var(--el-disabled-bg-color);
-  border-color: var(--el-disabled-border-color);
-}
-[data-theme="light"] .el-overlay {
-  background: var(--el-mask-color);
-}
 /* 侧边栏在明亮模式下同样转亮，仅品牌章保留深绿渐变 */
 [data-theme="light"] .sidebar {
   color: var(--tx);
@@ -62,49 +47,13 @@
   );
 }
 
-/* inline-prompt 开关关闭态：Element 的白色提示字压在浅灰轨道上几乎不可见，改用次级正文色。 */
-[data-theme="light"] .el-switch:not(.is-checked) .el-switch__inner-wrapper {
-  color: var(--tx-2);
-}
-
 /* MARKET 小徽章 10px：亮底上琥珀着色减半，保证文字 AA。 */
 [data-theme="light"] .cat-tag.market {
   background: color-mix(in srgb, var(--amber) 7%, transparent);
 }
 
-/* el-tag / el-alert：element.css 的深色重混按暗色面板调优，亮色模式恢复亮底深字版本。
-   实心危险标签（el-tag--dark）不参与重混，保留 element.css 的压暗底白字。 */
-[data-theme="light"] .el-tag.el-tag--primary,
-[data-theme="light"] .el-tag.el-tag--success {
-  --el-tag-bg-color: color-mix(in srgb, var(--verdi) 9%, #ffffff);
-  --el-tag-border-color: color-mix(in srgb, var(--verdi) 32%, #ffffff);
-}
-
-[data-theme="light"] .el-tag.el-tag--warning {
-  --el-tag-bg-color: color-mix(in srgb, var(--amber) 11%, #ffffff);
-  --el-tag-border-color: color-mix(in srgb, var(--amber) 34%, #ffffff);
-}
-
-[data-theme="light"] .el-tag.el-tag--danger:not(.el-tag--dark),
-[data-theme="light"] .el-tag.el-tag--error {
-  --el-tag-bg-color: color-mix(in srgb, var(--verm) 9%, #ffffff);
-  --el-tag-border-color: color-mix(in srgb, var(--verm) 32%, #ffffff);
-}
-
-[data-theme="light"] .el-tag.el-tag--info {
-  --el-tag-bg-color: color-mix(in srgb, var(--tx-2) 8%, #ffffff);
-  --el-tag-border-color: color-mix(in srgb, var(--tx-2) 22%, #ffffff);
-}
-
-[data-theme="light"] .el-alert--primary,
-[data-theme="light"] .el-alert--success {
-  --el-alert-bg-color: color-mix(in srgb, var(--verdi) 8%, #ffffff);
-}
-
-[data-theme="light"] .el-alert--warning {
-  --el-alert-bg-color: color-mix(in srgb, var(--amber) 9%, #ffffff);
-}
-
-[data-theme="light"] .el-alert--error {
-  --el-alert-bg-color: color-mix(in srgb, var(--verm) 8%, #ffffff);
+[data-theme="light"] .send-submit.el-button--primary.is-disabled,
+[data-theme="light"] .send-submit.el-button--primary.is-disabled:hover {
+  background: var(--el-disabled-bg-color);
+  border-color: var(--el-disabled-border-color);
 }

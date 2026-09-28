@@ -3,6 +3,8 @@ import { resolve } from "node:path"
 
 import { documentTitle } from "../src/router"
 
+import { readThemeCss } from "./workspace-css"
+
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
 
 function listFiles(dir: string, ext: string): string[] {
@@ -22,23 +24,35 @@ function cssRules(css: string): Array<{ selectors: string[]; body: string }> {
   }))
 }
 
-const themeCss = read("src/styles/theme.css")
+const themeCss = readThemeCss()
 const templates = [...listFiles("src/views", ".vue"), ...listFiles("src/components", ".vue")].map(read).join("\n")
 
 describe("Element 懒加载样式级联契约", () => {
-  it("workspace.css 排在工作区全部 el-*.css 之后，其同特异性覆写压过 Element 默认值", () => {
-    const source = read("src/element-workspace.ts")
-    const imports = [...source.matchAll(/^import "([^"]+\.css)"$/gm)].map((match) => match[1])
-    expect(imports.at(-1)).toBe("./styles/workspace.css")
-    expect(imports.filter((path) => path.startsWith("element-plus/")).length).toBeGreaterThan(20)
-    // 入口 main.ts 只带公开壳最小集；工作区组件样式不得回流到 theme.css 之前以外的位置。
+  it("Element 样式只经 layer(element) 聚合入口导入，层顺序先于一切样式声明", () => {
     const main = read("src/main.ts")
-    expect(main.indexOf('import "./styles/theme.css"')).toBeGreaterThan(
-      main.lastIndexOf('import "element-plus/theme-chalk/'),
-    )
+    expect([...main.matchAll(/^import "([^"]+\.css)"$/gm)].map((match) => match[1])).toEqual([
+      "./styles/layers.css",
+      "./styles/fonts-sans.css",
+      "./styles/element-entry.css",
+      "./styles/theme.css",
+    ])
+    for (const path of [...listFiles("src", ".ts"), ...listFiles("src", ".vue")]) {
+      expect(read(path), `${path} 直接导入 Element 样式会落在层外、压过全部覆写`).not.toContain("theme-chalk/")
+    }
+    const lazy = [...read("src/styles/element-workspace.css").matchAll(/^@import "([^"]+)" layer\(element\);$/gm)]
+    expect(lazy.length).toBeGreaterThan(20)
+    for (const entry of ["src/styles/element-entry.css", "src/styles/element-workspace.css"]) {
+      const lines = read(entry)
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .split("\n")
+        .filter((line) => line.trim())
+      expect(
+        lines.every((line) => /^@import "element-plus\/theme-chalk\/[\w.-]+\.css" layer\(element\);$/.test(line)),
+      ).toBe(true)
+    }
   })
 
-  it("懒加载组件覆写只在排在 el-*.css 之后的 workspace/element.css，theme.css 不再以 :root 提权", () => {
+  it("懒加载组件覆写与 Element 同在 element 层，theme.css 不再以 :root 提权", () => {
     const themeSelectors = cssRules(themeCss).flatMap((rule) => rule.selectors)
     expect(themeSelectors.filter((selector) => selector.startsWith(":root "))).toEqual([])
     expect(
@@ -51,9 +65,9 @@ describe("Element 懒加载样式级联契约", () => {
     expect(themeSelectors).toContain(".el-button--primary.is-plain")
 
     const workspaceEntry = read("src/styles/workspace.css")
-    expect(workspaceEntry.indexOf("./workspace/element.css")).toBeLessThan(
-      workspaceEntry.indexOf("./workspace/base.css"),
-    )
+    for (const part of ["element", "element-dark", "element-light"]) {
+      expect(workspaceEntry).toContain(`@import "./workspace/${part}.css" layer(element);`)
+    }
     const elementSelectors = cssRules(read("src/styles/workspace/element.css")).flatMap((rule) => rule.selectors)
     expect(elementSelectors.filter((selector) => selector.startsWith(":root"))).toEqual([])
     for (const required of [
@@ -67,7 +81,7 @@ describe("Element 懒加载样式级联契约", () => {
       expect(elementSelectors).toContain(required)
     }
     // 实心危险标签的压暗底白字在明亮模式下同样生效：明亮重混对 el-tag--dark 让出
-    expect(read("src/styles/workspace/overrides-light.css")).toContain(
+    expect(read("src/styles/workspace/element-light.css")).toContain(
       '[data-theme="light"] .el-tag.el-tag--danger:not(.el-tag--dark)',
     )
   })
