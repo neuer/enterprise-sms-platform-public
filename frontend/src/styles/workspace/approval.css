@@ -88,8 +88,7 @@
   background: color-mix(in srgb, var(--verm) 25%, transparent);
 }
 
-/* el-select.css 在工作区样式之后加载，单类宽度会被 .el-select { width: 100% } 覆盖，须复合提权。 */
-.el-select.approval-pill-select {
+.approval-pill-select {
   width: 112px;
 }
 
@@ -377,32 +376,6 @@
   white-space: nowrap;
 }
 
-.table-row-detail {
-  max-width: 100%;
-  padding: 3px 2px;
-  color: var(--tx);
-  font: inherit;
-  text-align: left;
-  background: transparent;
-  border: 0;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.table-row-detail:hover {
-  color: var(--verdi-text);
-}
-
-.template-name {
-  overflow: hidden;
-  color: var(--tx-hi);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border-bottom: 1px dashed color-mix(in srgb, var(--verdi-l) 40%, transparent);
-  border-radius: 0;
-}
-
 .approval-list-foot {
   display: flex;
   flex-wrap: wrap;
@@ -563,10 +536,6 @@
   justify-content: flex-end;
 }
 
-.template-heading {
-  margin-bottom: 18px;
-}
-
 /* 窄屏筛选条：标签在上、控件铺满，状态 seg 放不下时组内横向滚动，按钮取 44px 触控高度。 */
 @media (max-width: 760px) {
   .approval-fld {
@@ -580,7 +549,7 @@
     max-width: 100%;
     overflow-x: auto;
   }
-  .approval-fld .el-select.approval-pill-select,
+  .approval-fld .approval-pill-select,
   .approval-fld .el-input,
   .approval-fld .el-input.approval-q-input {
     width: 100%;
@@ -592,5 +561,88 @@
   .approval-filter-go .el-button {
     flex: 1;
     min-height: 44px;
+  }
+}
+
+@media (max-width: 640px) {
+  .approval-head-side {
+    justify-content: flex-start;
+    margin-top: 12px;
+  }
+
+  .approval-filter-bar {
+    align-items: flex-start;
+  }
+
+  .approval-rows {
+    padding: 12px;
+  }
+
+  .approval-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+  }
+
+  .approval-cd {
+    flex-direction: row;
+    gap: 8px;
+    align-items: baseline;
+  }
+
+  .approval-row-actions {
+    justify-content: flex-start;
+  }
+
+  .approval-rows.is-table {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .approval-table,
+  .approval-table tbody,
+  .approval-table tr,
+  .approval-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .approval-table thead {
+    display: none;
+  }
+
+  .approval-table tr {
+    min-width: 0;
+    padding: 12px 14px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+
+  .approval-table td {
+    padding: 4px 0;
+    border: 0;
+  }
+
+  .approval-table td::before {
+    display: block;
+    margin-bottom: 2px;
+    color: var(--tx-3);
+    font-size: var(--fs-2xs);
+    content: attr(data-label);
+  }
+
+  .approval-table .approval-open-cell::before {
+    content: none;
+  }
+
+  .approval-dest small {
+    max-width: none;
+    white-space: normal;
+  }
+
+  .approval-facts {
+    grid-template-columns: 1fr;
   }
 }

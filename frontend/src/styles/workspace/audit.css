@@ -14,9 +14,9 @@
 .audit-keyword {
   width: 220px;
 }
-/* 复合提权压过后加载的 .el-select { width: 100% }；窄屏沿用 shared.css 840px 组的铺满规则。 */
+/* 窄屏沿用 shared.css 840px 组的铺满规则。 */
 @media (min-width: 841px) {
-  .el-select.audit-action {
+  .audit-action {
     width: 190px;
   }
 }
@@ -29,7 +29,14 @@
 .audit-more-trigger {
   height: 32px;
   padding: 0 12px;
+  color: var(--tx);
+  font: inherit;
   font-size: var(--fs-md);
+  white-space: nowrap;
+  background: var(--sink);
+  border: 1px solid var(--hair);
+  border-radius: 7px;
+  cursor: pointer;
 }
 .audit-more .el-input__inner {
   font-family: var(--mono);
@@ -129,107 +136,6 @@
 }
 
 @media (max-width: 760px) {
-  .config-heading {
-    align-items: stretch;
-  }
-  .config-tabs {
-    gap: 18px;
-    overflow-x: auto;
-  }
-  .config-tabs button {
-    flex: 0 0 auto;
-  }
-  .provider-panel-head {
-    align-items: flex-start;
-  }
-  .provider-panel-head > span {
-    max-width: 140px;
-    text-align: right;
-  }
-  .provider-local-row {
-    align-items: flex-start;
-  }
-  .provider-fixed-state {
-    flex: 0 0 auto;
-  }
-  .provider-ad-header {
-    align-items: flex-start;
-  }
-  .provider-version-state {
-    font-size: var(--fs-2xs);
-  }
-  .provider-field-grid {
-    grid-template-columns: 1fr;
-  }
-  .provider-actions .el-button {
-    flex: 1 1 calc(50% - 8px);
-    margin: 0;
-  }
-  .role-mapping-panel > header {
-    align-items: flex-start;
-  }
-  .role-mapping-row {
-    grid-template-columns: minmax(0, 1fr) 116px;
-  }
-  .role-mapping-row .el-button {
-    grid-column: 1 / -1;
-    justify-self: end;
-  }
-  .role-mapping-panel footer .el-button {
-    width: 100%;
-  }
-  .config-grid {
-    grid-template-columns: 1fr;
-  }
-  .config-item p {
-    min-height: 0;
-  }
-  .config-savebar {
-    bottom: 8px;
-  }
-  .vendor-test-status {
-    grid-template-columns: auto minmax(0, 1fr);
-    align-items: start;
-    padding: 16px;
-  }
-  .vendor-test-status dl {
-    grid-column: 1 / -1;
-    grid-template-columns: 1fr;
-    width: 100%;
-  }
-  .vendor-safety-line {
-    display: grid;
-    grid-template-columns: 1fr;
-  }
-  .vendor-test-layout {
-    grid-template-columns: 1fr;
-  }
-  .vendor-test-actions {
-    grid-template-columns: 1fr;
-  }
-  .vendor-readiness-list {
-    grid-template-columns: 1fr;
-  }
-  .vendor-uat-grid {
-    grid-template-columns: 1fr;
-  }
-  .vendor-operation-strip {
-    grid-template-columns: 1fr;
-  }
-  .vendor-recipient-list article {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-  .vendor-recipient-list article > .el-button {
-    grid-column: 1 / -1;
-    justify-self: start;
-  }
-  .vendor-uat-actions {
-    display: grid;
-    grid-template-columns: 1fr;
-  }
-  .vendor-uat-actions .el-button {
-    width: 100%;
-  }
   .audit-heading {
     align-items: stretch;
   }
@@ -272,25 +178,5 @@
   }
   .audit-diff-value--after::before {
     content: "AFTER";
-  }
-}
-
-.empty-state p {
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-@media (max-width: 640px) {
-  main {
-    padding-inline: 14px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
   }
 }

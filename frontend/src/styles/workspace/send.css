@@ -409,37 +409,6 @@
   font-size: var(--fs-md);
 }
 
-.template-render-preview {
-  margin-top: 10px;
-  padding: 10px 12px;
-  background: var(--sink);
-  border: 1px solid var(--hair-2);
-  border-radius: 8px;
-}
-
-.template-render-preview span {
-  color: var(--tx-3);
-  font-size: var(--fs-2xs);
-  letter-spacing: 0.08em;
-}
-
-.template-render-preview p {
-  margin: 3px 0 0;
-  color: var(--tx);
-  font-size: var(--fs-base);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-/* 模板变量高亮：底色按深色 --slate 同值令牌化；文字走 --slate-text，随主题取值。 */
-.template-render-preview em {
-  padding: 0 3px;
-  color: var(--slate-text);
-  font-style: normal;
-  background: color-mix(in srgb, var(--slate) 20%, transparent);
-  border-radius: 3px;
-}
-
 .send-preview,
 .send-rail {
   position: sticky;
@@ -881,4 +850,37 @@
   color: var(--tx-hi);
   font-family: var(--mono);
   font-weight: 600;
+}
+
+@media (max-width: 959px) {
+  .send-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .send-preview {
+    position: static;
+  }
+}
+
+@media (max-width: 760px) {
+  .category-switch {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .security-note {
+    margin-top: 12px;
+  }
+
+  .send-workbench,
+  .send-editor,
+  .form-panel {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .inline-fields {
+    grid-template-columns: 1fr;
+  }
 }

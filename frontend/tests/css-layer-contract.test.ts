@@ -129,8 +129,6 @@ describe("级联层契约", () => {
       "src/styles/theme/reset.css": 4,
       // 窄屏抽屉/弹窗宽度压内联样式、分页跳页与日期弹层定位压组件内联定位。
       "src/styles/workspace/element.css": 9,
-      "src/styles/workspace/audit.css": 2,
-      "src/styles/workspace/vendor.css": 1,
     }
     const actual: Record<string, number> = {}
     for (const path of [...listFiles("src/styles", ".css"), ...listFiles("src", ".vue")]) {
@@ -152,5 +150,166 @@ describe("级联层契约", () => {
         path,
       ).toEqual([])
     }
+  })
+})
+
+/** pages 层页面分片 → 使用它的路由视图；shared.css 承载跨页共享组。 */
+const PAGE_VIEWS: Record<string, string[]> = {
+  "src/styles/workspace/dashboard.css": ["DashboardView"],
+  "src/styles/workspace/report.css": ["ReportView"],
+  "src/styles/workspace/send.css": ["SendView"],
+  "src/styles/workspace/approval.css": ["ApprovalView"],
+  "src/styles/workspace/template-sign.css": ["TemplateView", "SignView"],
+  "src/styles/workspace/blacklist-sensitive.css": ["BlacklistView", "SensitiveWordView"],
+  "src/styles/workspace/message-batch.css": ["BatchView", "MessageView"],
+  "src/styles/workspace/user.css": ["UserView"],
+  "src/styles/workspace/ops.css": ["OpsView"],
+  "src/styles/workspace/config.css": ["ConfigView"],
+  "src/styles/workspace/vendor.css": ["ConfigView"],
+  "src/styles/workspace/audit.css": ["AuditView"],
+  "src/styles/workspace/apps.css": ["AppManagementView"],
+  "src/styles/workspace/security-daily.css": ["SecurityDailyView"],
+}
+const SHARED_PAGES_CSS = "src/styles/workspace/shared.css"
+const CONSOLE_DARK_CSS = "src/styles/workspace/console-dark.css"
+/** 壳规则（侧栏、顶栏、main、小字对比度）仍留在页面分片中的存量，只减不增。 */
+const SHELL_RULES_IN_PAGES: Record<string, number> = {
+  "src/styles/workspace/blacklist-sensitive.css": 18,
+  "src/styles/workspace/security-daily.css": 10,
+}
+
+type CssRule = { media: string; selector: string; properties: string[] }
+
+/** 展开为「媒体条件 + 单个选择器 + 属性列表」；@keyframes 步进不计入。 */
+function cssRules(css: string): CssRule[] {
+  const rules: CssRule[] = []
+  const stack: string[] = []
+  let buffer = ""
+  for (const char of stripComments(css)) {
+    if (char === "{") {
+      stack.push(buffer.trim())
+      buffer = ""
+    } else if (char === "}") {
+      const prelude = stack.pop() ?? ""
+      const media = stack.filter((item) => item.startsWith("@media")).join(" & ")
+      if (prelude && !prelude.startsWith("@") && !stack.some((item) => item.startsWith("@keyframes"))) {
+        const properties = [...buffer.matchAll(/([\w-]+)\s*:/g)].map((match) => match[1])
+        for (const selector of splitTopLevel(prelude))
+          rules.push({ media, selector: selector.replace(/\s+/g, " "), properties })
+      }
+      buffer = ""
+    } else if (char === ";" && !stack.length) {
+      buffer = ""
+    } else {
+      buffer += char
+    }
+  }
+  return rules
+}
+
+const baseName = (path: string) => path.replace(/^.*\//, "").replace(/\.vue$/, "")
+
+const words = (text: string, hyphenOnly: boolean) =>
+  [...text.matchAll(/'([^'\\\n]*)'|"([^"\\\n]*)"|`([^`]*)`/g)]
+    .flatMap((match) => (match[1] ?? match[2] ?? match[3]).match(/(?<![\w-])[a-zA-Z][\w-]*[a-zA-Z0-9](?![\w-])/g) ?? [])
+    .filter((word) => !hyphenOnly || word.includes("-"))
+
+/** 可能作为类名出现的词：模板里的引号串全部计入；脚本里只取带连字符的词，避免撞上普通单词。 */
+function vueClassWords(text: string): string[] {
+  const template = /<template>([\s\S]*)<\/template>/.exec(text)?.[1] ?? ""
+  return [...words(template, false), ...words(text.replace(template, ""), true)]
+}
+
+/** 类名 → 使用它的路由视图；由 App.vue、公共脚本等非页面位置产出的记为 "*"。 */
+function classUsage(): (className: string) => Set<string> {
+  const vueFiles = new Map(listFiles("src", ".vue").map((path) => [baseName(path), path]))
+  const routes = [...new Set([...read("src/router/index.ts").matchAll(/views\/(\w+)\.vue/g)].map((match) => match[1]))]
+  const pagesOf = new Map<string, Set<string>>()
+  for (const route of routes) {
+    const stack = [route]
+    const seen = new Set<string>()
+    while (stack.length) {
+      const name = stack.pop()!
+      if (seen.has(name)) continue
+      seen.add(name)
+      pagesOf.set(name, (pagesOf.get(name) ?? new Set()).add(route))
+      for (const [, imported] of read(vueFiles.get(name)!).matchAll(/["']([^"']+\.vue)["']/g)) {
+        if (vueFiles.has(baseName(imported))) stack.push(baseName(imported))
+      }
+    }
+  }
+  const usage = new Map<string, Set<string>>()
+  const add = (word: string, pages: Set<string>) => {
+    const entry = usage.get(word) ?? new Set<string>()
+    pages.forEach((page) => entry.add(page))
+    usage.set(word, entry)
+  }
+  for (const [name, path] of vueFiles) {
+    for (const word of vueClassWords(read(path))) add(word, pagesOf.get(name) ?? new Set(["*"]))
+  }
+  for (const path of listFiles("src", ".ts").filter((file) => !/^src\/(api|router)\//.test(file))) {
+    for (const word of words(read(path), true)) add(word, new Set(["*"]))
+  }
+  return (className) => usage.get(className) ?? new Set()
+}
+
+/** 参与归属判定的类：去掉 :not() 内的类与 Element 的 el-/is- 类。 */
+function ownClasses(selector: string): string[] {
+  const outer = selector.replace(/:not\((?:[^()]|\([^()]*\))*\)/g, "")
+  return (outer.match(/\.[a-zA-Z][\w-]*/g) ?? [])
+    .map((token) => token.slice(1))
+    .filter((name) => !/^(el|is)-/.test(name))
+}
+
+describe("页面分片归属契约", () => {
+  const usage = classUsage()
+  const shellClasses = new Set(vueClassWords(read("src/App.vue")))
+  const isShellSelector = (selector: string) => ownClasses(selector).every((name) => shellClasses.has(name))
+  const pageFiles = [...partLayers()].filter(([, layer]) => layer === "pages").map(([path]) => path)
+
+  it("pages 层每个分片都登记了所属页面", () => {
+    expect(pageFiles[0], "shared.css 须是 pages 层第一个分片").toBe(SHARED_PAGES_CSS)
+    expect(pageFiles.filter((path) => path !== SHARED_PAGES_CSS && path !== CONSOLE_DARK_CSS).sort()).toEqual(
+      Object.keys(PAGE_VIEWS).sort(),
+    )
+  })
+
+  it("页面分片的每个选择器都锚定到本页独有的类；跨页规则放 shared.css", () => {
+    const shellCounts: Record<string, number> = {}
+    for (const [path, views] of Object.entries(PAGE_VIEWS)) {
+      const own = new Set(views)
+      const offenders: string[] = []
+      for (const { media, selector } of cssRules(read(path))) {
+        const known = ownClasses(selector)
+          .map((name) => [name, usage(name)] as const)
+          .filter(([, pages]) => pages.size)
+        if (known.some(([, pages]) => !pages.has("*") && [...pages].every((page) => own.has(page)))) continue
+        if (isShellSelector(selector)) {
+          shellCounts[path] = (shellCounts[path] ?? 0) + 1
+          continue
+        }
+        const elsewhere = [...new Set(known.flatMap(([, pages]) => [...pages].filter((page) => !own.has(page))))]
+        offenders.push(`${media} ${selector} → ${elsewhere.length ? elsewhere.join("/") : "全站"}`.trim())
+      }
+      expect(offenders, `${path} 含不属于本页的规则`).toEqual([])
+    }
+    expect(shellCounts).toEqual(SHELL_RULES_IN_PAGES)
+  })
+
+  it("页面分片之间不重复声明同一选择器的同一属性，胜负不依赖导入先后", () => {
+    const owners = new Map<string, Set<string>>()
+    for (const path of pageFiles.filter((file) => file !== CONSOLE_DARK_CSS)) {
+      for (const { media, selector, properties } of cssRules(read(path))) {
+        if (isShellSelector(selector)) continue
+        for (const property of properties) {
+          const key = `${media} ${selector} { ${property} }`.trim()
+          owners.set(key, (owners.get(key) ?? new Set()).add(path))
+        }
+      }
+    }
+    const duplicated = [...owners]
+      .filter(([, paths]) => paths.size > 1)
+      .map(([key, paths]) => `${key}: ${[...paths].join(", ")}`)
+    expect(duplicated).toEqual([])
   })
 })

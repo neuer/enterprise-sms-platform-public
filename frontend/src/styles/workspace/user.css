@@ -1,67 +1,4 @@
 /* 用户与角色：统一身份台账 / 编辑器底栏 / 身份徽标。 */
-/* 用户与角色：统一身份台账同时呈现本地凭据与外部目录身份（admin 专属）。
-   检索条/分页/抽屉头/确认框/编辑器底栏/预检 chips 已并入 reply-* 与 sign-* 共享组，按页复制即缺陷；
-   本区只保留规则条、台账单元格与移动端卡片的页级专属样式；
-   config-rules / ops-rules / callback-rules / security-daily-rules / audit-rules 与 user-rules 同构，共用本组规则。 */
-.user-rules,
-.config-rules,
-.ops-rules,
-.callback-rules,
-.security-daily-rules,
-.audit-rules {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 28px;
-  margin-bottom: 14px;
-  padding: 10px 16px;
-  background: var(--panel);
-  border: 1px solid var(--hair);
-  border-radius: 12px;
-}
-
-.user-rules > div,
-.config-rules > div,
-.ops-rules > div,
-.callback-rules > div,
-.security-daily-rules > div,
-.audit-rules > div {
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  min-width: 0;
-}
-
-.user-rules span,
-.config-rules span,
-.ops-rules span,
-.callback-rules span,
-.security-daily-rules span,
-.audit-rules span {
-  flex: none;
-  color: var(--tx-3);
-  font-size: var(--fs-xs);
-  white-space: nowrap;
-}
-
-.user-rules p,
-.config-rules p,
-.ops-rules p,
-.callback-rules p,
-.security-daily-rules p,
-.audit-rules p {
-  margin: 0;
-  color: var(--tx-2);
-  font-size: var(--fs-sm);
-  line-height: 1.6;
-}
-
-.user-alert,
-.ops-alert,
-.callback-alert,
-.security-daily-alert,
-.audit-alert {
-  margin-bottom: 14px;
-}
 
 .user-name {
   display: block;
@@ -161,57 +98,8 @@
   margin-left: 0;
 }
 
-.user-empty-action,
-.callback-empty-action,
-.security-daily-empty-action {
-  display: grid;
-  justify-items: center;
-  gap: 12px;
-  min-height: 260px;
-  align-content: center;
-}
-
-.role-subject,
-.callback-subject {
-  display: grid;
-  gap: 2px;
-  margin: -4px 0 18px;
-  padding: 11px 14px;
-  background: var(--sink);
-  border: 1px solid var(--hair);
-  border-radius: 8px;
-}
-
-.role-subject span,
-.callback-subject span {
-  color: var(--tx-hi);
-  font-size: var(--fs-body);
-  font-weight: 600;
-}
-
-.role-subject code,
-.callback-subject code {
-  color: var(--tx-2);
-  font: var(--fs-sm) var(--mono);
-}
-
-.role-subject small,
-.callback-subject small {
-  color: var(--tx-3);
-  font-size: var(--fs-xs);
-}
-
 .user-drawer .el-select {
   width: 100%;
-}
-
-/* field-rule 同时服务应用管理抽屉表单。 */
-.field-rule {
-  display: block;
-  margin-top: 7px;
-  color: var(--tx-3);
-  font-size: var(--fs-sm);
-  line-height: 1.6;
 }
 
 .local-role-note {
@@ -253,14 +141,7 @@
   .user-heading {
     align-items: stretch;
   }
-  .user-rules > div,
-  .config-rules > div,
-  .ops-rules > div,
-  .callback-rules > div,
-  .security-daily-rules > div,
-  .audit-rules > div {
-    width: 100%;
-  }
+
   .user-table {
     display: none;
   }
@@ -274,7 +155,11 @@
     color: var(--tx-2);
   }
   .user-mobile-list footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 10px;
     align-items: flex-end;
+    justify-content: space-between;
     margin-top: 14px;
     padding-top: 10px;
     border-top: 1px solid var(--hair-2);

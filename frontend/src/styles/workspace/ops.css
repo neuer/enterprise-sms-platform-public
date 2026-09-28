@@ -302,3 +302,66 @@
     width: 100%;
   }
 }
+
+.job-description {
+  margin: 3px 0 4px;
+  color: var(--tx-2);
+  font-size: var(--fs-2xs);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* 熔断横幅：深色渐变底与浅文字保留深色值（亮色覆写见 overrides-light.css）；边框/图标底按深色令牌同值就地令牌化。 */
+.circuit-banner {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+  color: #f0e2cb;
+  background: linear-gradient(180deg, #241d12, #1b160f);
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+  border-radius: 12px;
+}
+.circuit-banner.recovered {
+  color: #d9eee7;
+  background: linear-gradient(180deg, #162b23, #13221c);
+  border-color: color-mix(in srgb, var(--verdi-l) 45%, transparent);
+}
+.circuit-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  place-items: center;
+  color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
+  border-radius: 10px;
+}
+.circuit-banner strong {
+  display: block;
+  font-size: var(--fs-lg);
+}
+.circuit-banner p {
+  margin: 2px 0 0;
+  color: var(--tx-2);
+  font-size: var(--fs-md);
+}
+.circuit-actions {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  margin-left: auto;
+}
+
+@media (max-width: 760px) {
+  .circuit-banner {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .circuit-actions {
+    width: 100%;
+    margin-left: 56px;
+  }
+}

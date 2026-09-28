@@ -262,36 +262,6 @@
   min-height: 158px;
 }
 
-.trend-legend {
-  display: flex;
-  flex-shrink: 0;
-  gap: 16px;
-  margin-top: 10px;
-  color: var(--tx-2);
-  font-size: var(--fs-xs);
-}
-
-.trend-legend i {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  margin-right: 5px;
-  vertical-align: -1px;
-  border-radius: 2px;
-}
-
-.trend-legend .verify {
-  background: var(--chart-green);
-}
-
-.trend-legend .notice {
-  background: var(--chart-blue);
-}
-
-.trend-legend .market {
-  background: var(--chart-amber);
-}
-
 .balance-summary {
   display: flex;
   flex: 1;
@@ -351,29 +321,6 @@
 
 .balance-meta b.warn {
   color: var(--amber);
-}
-
-.panel-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.panel-title > div:not(.filter-seg) {
-  display: grid;
-}
-
-.panel-title strong {
-  color: var(--ink);
-  font-size: var(--fs-body);
-}
-
-.panel-title small,
-.panel-title > span {
-  color: var(--tx-3);
-  font-family: var(--mono);
-  font-size: var(--fs-2xs);
 }
 
 .alert-list {
@@ -545,14 +492,6 @@
   font-size: var(--fs-xs);
 }
 
-.job-description {
-  margin: 3px 0 4px;
-  color: var(--tx-2);
-  font-size: var(--fs-2xs);
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
 .dashboard-loading {
   min-height: 480px;
 }
@@ -584,9 +523,5 @@
 
   .metric-card .el-card__body {
     min-height: 138px;
-  }
-
-  .panel-title {
-    align-items: flex-start;
   }
 }
