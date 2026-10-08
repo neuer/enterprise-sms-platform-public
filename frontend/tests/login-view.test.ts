@@ -542,3 +542,109 @@ describe("首次登录在对话内改密", () => {
     expect(wrapper.get("[data-testid='login-password']").attributes("placeholder")).toBe("发送密码")
   })
 })
+
+describe("会话进度与白鹭反应", () => {
+  let mounted: VueWrapper | null = null
+
+  beforeEach(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+    resetAccessSessionModule()
+    vi.unstubAllGlobals()
+  })
+
+  afterEach(() => {
+    mounted?.unmount()
+    mounted = null
+    vi.useRealTimers()
+  })
+
+  function steps(wrapper: VueWrapper): string[] {
+    return wrapper.findAll("[data-testid='login-progress'] li").map((li) => `${li.text()}:${li.classes().join(",")}`)
+  }
+
+  function tag(wrapper: VueWrapper): string {
+    return wrapper.get("[data-testid='login-field-tag']").text()
+  }
+
+  it("进度条与输入框标签跟随步骤，标签只说明要发送什么、不含输入内容", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response([localProvider, adProvider]))
+      .mockResolvedValueOnce(response({ code: "AUTH_FAILED", message: "账号或密码错误", detail: null }, 401))
+    vi.stubGlobal("fetch", fetch)
+    const { wrapper } = await mountLogin()
+    mounted = wrapper
+
+    expect(steps(wrapper)).toEqual(["登录方式:is-current", "账号:is-todo", "密码:is-todo"])
+    expect(wrapper.get("[data-testid='login-progress'] li.is-current").attributes("aria-current")).toBe("step")
+    expect(tag(wrapper)).toBe("等待选择")
+
+    await choose(wrapper, "ad")
+    expect(steps(wrapper)).toEqual(["登录方式:is-done", "账号:is-current", "密码:is-todo"])
+    expect(tag(wrapper)).toBe("企业 AD 账号")
+
+    await send(wrapper, "login-username", "zhang.san")
+    expect(steps(wrapper)).toEqual(["登录方式:is-done", "账号:is-done", "密码:is-current"])
+    expect(tag(wrapper)).toBe("密码")
+    expect(wrapper.get("[data-testid='login-field-tag']").attributes("aria-hidden")).toBe("true")
+
+    await wrapper.get("[data-testid='login-password']").setValue("Wrong#Password1")
+    expect(tag(wrapper)).toBe("密码")
+    expect(wrapper.get("[data-testid='login-field-tag']").classes()).toContain("is-secret")
+    await wrapper.get("form").trigger("submit")
+    await flushPromises()
+    expect(wrapper.html()).not.toContain("Wrong#Password1")
+    expect(steps(wrapper)).toEqual(["登录方式:is-done", "账号:is-done", "密码:is-current"])
+  })
+
+  it("首次改密时进度条追加「设置新密码」，标签改为新密码", async () => {
+    localStorage.setItem("sms-login-provider", "local")
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response([localProvider]))
+      .mockResolvedValueOnce(changeRequired())
+      .mockResolvedValueOnce(policy())
+    vi.stubGlobal("fetch", fetch)
+    const { wrapper } = await mountLogin()
+    mounted = wrapper
+    await send(wrapper, "login-username", "admin")
+    await send(wrapper, "login-password", "Temp@Password123")
+
+    expect(steps(wrapper)).toEqual(["登录方式:is-done", "账号:is-done", "密码:is-done", "设置新密码:is-current"])
+    expect(tag(wrapper)).toBe("新密码")
+  })
+
+  it("只在输入账号时点头，输入密码不随按键产生任何动作", async () => {
+    localStorage.setItem("sms-login-provider", "local")
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(response([localProvider])))
+    const { wrapper } = await mountLogin()
+    mounted = wrapper
+    const pose = () => wrapper.get(".login-pose").classes()
+
+    await wrapper.get("[data-testid='login-username']").setValue("a")
+    expect(pose()).toContain("is-nod-1")
+    await wrapper.get("[data-testid='login-username']").setValue("ad")
+    expect(pose()).toContain("is-nod-2")
+
+    await send(wrapper, "login-username", "admin")
+    expect(wrapper.get("main").attributes("data-mood")).toBe("shy")
+    await wrapper.get("[data-testid='login-password']").setValue("x")
+    await wrapper.get("[data-testid='login-password']").setValue("xy")
+    expect(pose().filter((name) => name.startsWith("is-nod"))).toEqual([])
+  })
+
+  it("待命台词首句随本地时段变化", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] })
+    vi.setSystemTime(new Date(2026, 9, 8, 23, 30))
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider])))
+    const { wrapper } = await mountLogin()
+    mounted = wrapper
+
+    expect(wrapper.get("main").attributes("data-mood")).toBe("idle")
+    expect(wrapper.findAll(".login-say span").map((line) => line.text())).toEqual([
+      "夜深了，还有消息要发？",
+      "先登录吧",
+    ])
+  })
+})
