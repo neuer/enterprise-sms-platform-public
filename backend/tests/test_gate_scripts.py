@@ -409,6 +409,11 @@ def test_g2_gate_does_not_execute_performance_loads() -> None:
     )
 
 
+def test_g2_does_not_invoke_shared_test_vendor_scale() -> None:
+    all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
+    assert "perf_vendor_scale.py" not in all_gate
+
+
 def test_release_gate_is_pinned_fail_closed_and_scans_all_release_images() -> None:
     release = (ROOT / "scripts/verify_release.sh").read_text(encoding="utf-8")
 

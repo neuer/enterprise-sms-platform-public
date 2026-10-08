@@ -123,3 +123,37 @@ PERF_KEYS_FILE=../deploy/secrets/dev-apikeys.txt \
 - 完成数恰好 100000，HTTP 失败率为 0，受理 P95<2000ms；停止后按三阶段脚本的 480s 口径确认排空。
 - 出现手机号/密钥日志、uncertain 非预期增长、数据库磁盘告急、worker 循环重启或真实外呼时立即停止并按安全事件处理。
 - 报告记录 commit、镜像 digest、开始/结束时间、总量、分类别量、P50/P95/P99、失败码、资源峰值、排空时间和整改项；执行结果保持 `[HANDOVER]`，终局写入 HANDOVER.md。
+
+## 共享测试机 Mock 量级压测
+
+`scripts/perf_vendor_scale.py` 只用于共享测试环境、且必须 Mock-only。它按厂商「200 次/s、单次 10 万号」的量级做有界阶梯，但遵守平台已批准合同：`vendor_qps` 最高 200，`vendor_batch_size` 最高 1000，全程短信行增量硬顶 200000。QPS 与 1000 号/片分开打满，禁止同时拉到 200 QPS 且 1000 号/Send。不替代 24h Locust，不进入 G2，不当生产容量证据。
+
+阶段：
+
+1. 受理形状：8 个未来预约 notice，每批 10000 号；P95&lt;3s；随后走正式 cancel。`vendor_qps` 保持 5。
+2. 厂商 QPS：临时 `vendor_qps=200`、`reserved_realtime_qps=40`，单号即时发送，20→50→100→200 各 20s。平台 Send 不得超过 200/s；worker 先饱和记为容量发现，不事后放宽阈值。
+3. 大分片：`vendor_batch_size=1000`、`vendor_qps=20`，60 个 1000 号即时批次。Mock 单次 Send 号码数不得超过 1000。
+4. 排空 480s 后恢复 `vendor_qps=5`、`reserved_realtime_qps=2`、`vendor_batch_size=500`，并 `POST /_mock/state` reset。取消后的行仍计入 200000 顶，默认留存 12 个月。
+
+开跑前：`vendor-test` 不得为 `controlled` 或 `blocked`；`--mock-base` 只能是 `http://127.0.0.1` / `localhost` / `mock-vendor`；无未排空 queued/sending；独占窗口。主体只用 notice，不用 verify，夜间不用 market。不激活真实联调，不改 `VENDOR_BASE_URL`，不跑 `verify_all.sh` / `compose down -v`。
+
+本机 Compose 排空：
+
+```bash
+uv run --project backend python scripts/perf_vendor_scale.py \
+  --base http://localhost:8000 \
+  --mock-base http://127.0.0.1:9028 \
+  --keys deploy/secrets/dev-apikeys.txt \
+  --drain-via compose
+```
+
+共享测试机排空走 `--drain-via sms-compose`（在测试机本机）或 `--drain-via ssh`（目标只从 `.env.test-update` 读取）。没有 seed `app-oa` 时用 `--provision-notice-app --sign-name <已批准签名>` 创建高配额 notice 应用，结束后停用。无 Web 管理员会话时用 `--config-via sql --drain-via sms-compose`。若 A 已消耗行预算、只需续跑后续阶段，用 `--phases c`（或 `b,c`），仍计入同一 200000 行硬顶。证据只归档阶段计数、分位延迟、Mock Send/s、最大分片号码数、排空秒数与恢复后的 5/2/500，不归档 body、手机号、JWT 或 API Key。失败路径必须先排空再 `reset` Mock：先 reset 会丢掉未拉回执，批次会停在 `sending`。
+
+### 共享机 Mock 实测（不当生产容量证据）
+
+在 `origin/main`（`e983a80`）、`VENDOR_MOCK=1`、`vendor-test=inactive`、磁盘约 37% 的共享测试机上跑过一轮。全程 Mock HTTP，未改 `VENDOR_BASE_URL`，未激活真实联调。增量约 14.1 万行（A 8 万预约取消 + B 约 0.14 万单号 + C 6 万），低于 20 万顶。
+
+- A：8×10000 notice 预约未来，正式 cancel 8/8。`vendor_qps` 保持 5。
+- B：临时 `200/40` 后第一档 20 RPS 单号受理 `P50=1.447s P95=2.013s`（门限 `&lt;2.000s`），fail-closed。不放宽阈值。
+- C：`--phases c`，`vendor_qps=20`、`vendor_batch_size=1000`；Mock `send_calls=60`，单次号码数 min=max=1000。60×1000 回执一次 `GetReport` 会超过平台 4MiB 拉取上限且 consume-on-read，480s 排空会失败；需分波回执。`uncertain=0`，未见 1006 循环。
+- 终态：`vendor_qps=5`、`reserved_realtime_qps=2`、`vendor_batch_size=500`；`queued/sending=0`；Redis `realtime/bulk/callback` 均为 0；`healthz/readyz` 正常。压测应用已停用。取消行按 12 个月留存，不清库。
