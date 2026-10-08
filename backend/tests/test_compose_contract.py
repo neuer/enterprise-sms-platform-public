@@ -98,7 +98,7 @@ def test_outbox_dispatcher_retries_broker_without_startup_coupling() -> None:
     }
     assert service["secrets"] == [
         {"source": "db_scheduler_password", "target": "db_scheduler_password"},
-        {"source": "redis_broker_client_password", "target": "redis_broker_password"},
+        {"source": "redis_broker_dispatcher_client_password", "target": "redis_broker_password"},
     ]
     assert "redis" not in service["depends_on"]
     assert "db_owner_password" not in service.get("secrets", [])
@@ -169,3 +169,30 @@ def test_api_healthcheck_uses_bounded_dependency_readiness() -> None:
     ]
     assert healthcheck["timeout"] == "3s"
     assert healthcheck["start_period"] == "30s"
+
+
+def test_broker_secrets_are_per_service_and_never_mount_derivation_seed() -> None:
+    compose = _compose()
+    roles = {"worker-realtime": "realtime", "worker-report": "report", "worker-bulk": "bulk",
+             "worker-callback": "callback", "beat": "beat", "outbox-dispatcher": "dispatcher"}
+    sources = set()
+    for name, role in roles.items():
+        service = compose["services"][name]
+        assert service["environment"]["REDIS_BROKER_ROLE"] == role
+        credentials = [item["source"] for item in service["secrets"]
+                       if item["target"] == "redis_broker_password"]
+        assert credentials == [f"redis_broker_{role}_client_password"]
+        path = compose["secrets"][credentials[0]]["file"]
+        assert path.endswith(f"/backend/redis_broker_{role}_password")
+        sources.update(credentials)
+        assert all(item["target"] != "redis_broker_users.acl" for item in service["secrets"])
+        if name.startswith("worker-"):
+            for flag in ("--without-gossip", "--without-mingle", "--without-heartbeat"):
+                assert flag in service["command"]
+    assert len(sources) == len(roles)
+    for name, service in compose["services"].items():
+        for item in service.get("secrets", []):
+            if isinstance(item, dict) and item["source"] in {
+                "redis_broker_server_password", "redis_broker_users_acl"
+            }:
+                assert name == "redis"

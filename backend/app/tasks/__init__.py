@@ -13,6 +13,7 @@ from celery.signals import (
     worker_process_init,
     worker_process_shutdown,
 )
+from kombu import Exchange, Queue  # type: ignore[import-untyped]
 from kombu.exceptions import (  # type: ignore[import-untyped]
     OperationalError as BrokerOperationalError,
 )
@@ -20,6 +21,7 @@ from redis.exceptions import RedisError
 from sqlalchemy.exc import OperationalError as DatabaseOperationalError
 
 from app.core.bounded_executor import close_bounded_executor
+from app.core.broker_authorization import WORKER_QUEUES, BrokerTask, broker_transport_options
 from app.core.correlation import (
     TASK_HEADER,
     bind_correlation_id,
@@ -58,6 +60,7 @@ TASK_MODULES = (
     "app.tasks.usage_projection",
     "app.tasks.imports",
     "app.tasks.security_daily",
+    "app.tasks.worker_probe",
 )
 broker_url = (
     settings.redis_broker_url
@@ -65,11 +68,14 @@ broker_url = (
     else None
 )
 redis_ssl_options = settings.redis_tls_options if broker_url is not None else None
-app = Celery("sms_platform", broker=broker_url, backend=broker_url)
+app = Celery("sms_platform", broker=broker_url, backend=broker_url, task_cls=BrokerTask)
 app.conf.update(
     timezone="Asia/Shanghai",
     enable_utc=True,
     task_serializer="json",
+    # 调度/发送结果以 PostgreSQL 事实为准；生产者不订阅结果命名空间。
+    task_ignore_result=True,
+    task_store_errors_even_if_ignored=False,
     accept_content=["json"],
     result_serializer="json",
     imports=TASK_MODULES,
@@ -84,7 +90,20 @@ app.conf.update(
     task_routes={
         "app.tasks.poll_report": {"queue": "realtime-report"},
     },
-    broker_transport_options={"visibility_timeout": 3600},
+    broker_transport_options=broker_transport_options(settings.redis_broker_role),
+    result_backend_transport_options={
+        "global_keyprefix": f"result:{settings.redis_broker_role or 'unconfigured'}:",
+    },
+    task_queues=tuple(
+        Queue(name, Exchange(name), routing_key=name) for name in WORKER_QUEUES.values()
+    ),
+    task_default_queue="realtime",
+    task_default_exchange="realtime",
+    task_default_routing_key="realtime",
+    task_create_missing_queues=False,
+    worker_enable_remote_control=False,
+    worker_send_task_events=False,
+    task_send_sent_event=False,
     broker_use_ssl=redis_ssl_options or False,
     redis_backend_use_ssl=redis_ssl_options,
 )

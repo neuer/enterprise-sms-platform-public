@@ -144,11 +144,7 @@ def _service_image_name(service: str) -> str:
 
 
 def _write_private_json(path: Path, value: object) -> None:
-    if (
-        path.name == "manifest.json"
-        and type(value) is dict
-        and type(value.get("evidence")) is dict
-    ):
+    if path.name == "manifest.json" and type(value) is dict and type(value.get("evidence")) is dict:
         report_name = value["evidence"].get("release_gate")
         report_path = path.parent / str(report_name)
         if report_path.is_file():
@@ -174,9 +170,7 @@ def _write_bound_release_report(
     report: dict[str, Any],
 ) -> None:
     _write_private_json(path, report)
-    manifest["evidence"]["release_gate_sha256"] = hashlib.sha256(
-        path.read_bytes()
-    ).hexdigest()
+    manifest["evidence"]["release_gate_sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _release_report(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -188,9 +182,7 @@ def _release_report(manifest: dict[str, Any]) -> dict[str, Any]:
         "git_sha": commit,
         "schema_revision": manifest["migration"]["target"],
         "openapi_sha256": "9" * 64,
-        "workflow_repository": (
-            "example/enterprise-sms-platform" if production else "local"
-        ),
+        "workflow_repository": ("example/enterprise-sms-platform" if production else "local"),
         "workflow_run_id": 123 if production else 0,
         "workflow_run_attempt": 1 if production else 0,
         "sbom_sha256": {name: "8" * 64 for name in IMAGE_NAMES},
@@ -211,9 +203,7 @@ def _release_report(manifest: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "image_id": manifest["images"][name]["id"],
                 "repo_digests": (
-                    [manifest["images"][name]["ref"]]
-                    if production and not offline
-                    else []
+                    [manifest["images"][name]["ref"]] if production and not offline else []
                 ),
                 "scan_report_sha256": "f" * 64,
                 "scan_passed": True,
@@ -324,8 +314,7 @@ RESTORE_CRYPTO_COVERAGE_FIELDS = (
 
 def _restore_crypto_probe_receipt() -> dict[str, Any]:
     coverage = {
-        label: {"rows": 0, "key_versions_verified": 0}
-        for label in RESTORE_CRYPTO_COVERAGE_FIELDS
+        label: {"rows": 0, "key_versions_verified": 0} for label in RESTORE_CRYPTO_COVERAGE_FIELDS
     }
     coverage["raw_vendor_log.payload_enc"] = {
         "rows": 30,
@@ -547,9 +536,7 @@ def _offline_bundle(
     bundle.chmod(0o700)
     app_version = "1.6.0"
     if migration_changed or migration_pair is not None:
-        migration_from, schema_revision = (
-            migration_pair or OFFLINE_EXPAND_MIGRATION
-        )
+        migration_from, schema_revision = migration_pair or OFFLINE_EXPAND_MIGRATION
     else:
         migration_from, schema_revision = ("0012_baseline", "0012_baseline")
     migration_changed = migration_from != schema_revision
@@ -588,8 +575,11 @@ def _offline_bundle(
             "from": migration_from,
             "target": schema_revision,
             "compatibility": (
-                "cold_cutover" if migration_pair == ONE_TIME_COLD_CUTOVER
-                else "expand" if migration_changed else "none"
+                "cold_cutover"
+                if migration_pair == ONE_TIME_COLD_CUTOVER
+                else "expand"
+                if migration_changed
+                else "none"
             ),
         },
         "evidence": {
@@ -796,8 +786,7 @@ def _platform(
         )
         if migration_target != migration_from:
             (versions / "0002_target.py").write_text(
-                f'revision = "{migration_target}"\n'
-                f'down_revision = "{migration_from}"\n',
+                f'revision = "{migration_target}"\ndown_revision = "{migration_from}"\n',
                 encoding="utf-8",
             )
     keys = {
@@ -877,10 +866,11 @@ class FakeRunner:
         self.fail_beat_schedule_mount_inspection = False
         self.recreate_count = 0
         self.unhealthy_service: str | None = None
-        self.missing_worker_ping: str | None = None
+        self.missing_worker_probe: str | None = None
         self.worker_queue_overrides: dict[str, str] = {}
         self.after_action: Any = None
-        self.after_ping: Any = None
+        self.after_probe: Any = None
+        self.probe_reply_mutation: Any = None
         self.volume_inventory = ""
         self.recovery_watermark: dict[str, object] = {
             "batch_queued": 2,
@@ -927,9 +917,7 @@ class FakeRunner:
                 "env": env,
                 "user": user,
                 "group": group,
-                "extra_groups": (
-                    None if extra_groups is None else tuple(extra_groups)
-                ),
+                "extra_groups": (None if extra_groups is None else tuple(extra_groups)),
             }
         )
         if command[:4] == ["git", "-C", str(cwd or command[2]), "status"]:
@@ -955,17 +943,13 @@ class FakeRunner:
             if self.fail_offline_load_number == self.offline_load_count:
                 return subprocess.CompletedProcess(command, 1, "", "injected")
             archive_name = Path(command[-1]).stem
-            self.loaded_offline_image_ids.add(
-                self.manifest["images"][archive_name]["id"]
-            )
+            self.loaded_offline_image_ids.add(self.manifest["images"][archive_name]["id"])
             return self._result(command)
         if command[:3] == ["docker", "image", "inspect"]:
             ref = command[-1]
             if command[-2] == release_manager_module._OFFLINE_IMAGE_INSPECT_FORMAT:
                 name = next(
-                    name
-                    for name in IMAGE_NAMES
-                    if self.manifest["images"][name]["id"] == ref
+                    name for name in IMAGE_NAMES if self.manifest["images"][name]["id"] == ref
                 )
                 if ref not in self.loaded_offline_image_ids:
                     return subprocess.CompletedProcess(command, 1, "", "No such image")
@@ -1094,62 +1078,34 @@ class FakeRunner:
             ]:
                 self.recovery_crypto_probe_calls += 1
                 return self._result(command, json.dumps(self.recovery_crypto_probe) + "\n")
-            if command[-8:] == [
-                "exec",
-                "-T",
-                "worker-realtime",
-                "celery",
-                "-A",
-                "app.tasks",
-                "inspect",
-                "ping",
-            ]:
-                raise AssertionError("Celery ping must use a fixed timeout and JSON output")
-            if command[-11:] == [
-                "exec",
-                "-T",
-                "worker-realtime",
-                "celery",
-                "-A",
-                "app.tasks",
-                "inspect",
-                "ping",
-                "--timeout",
-                "10",
-                "--json",
-            ]:
-                if self.after_ping is not None:
-                    self.after_ping()
-                replies = {
-                    f"celery@{self.service_hostnames[service]}": {"ok": "pong"}
-                    for service in WORKER_SERVICES
-                    if service != self.missing_worker_ping
+            if "app.core.worker_probe" in command:
+                index = command.index("exec")
+                service = command[index + 2]
+                assert command[index : index + 6] == [
+                    "exec",
+                    "-T",
+                    service,
+                    "python",
+                    "-m",
+                    "app.core.worker_probe",
+                ]
+                if self.after_probe is not None:
+                    self.after_probe()
+                if service == self.missing_worker_probe:
+                    return subprocess.CompletedProcess(command, 1, stdout="", stderr="probe failed")
+                queue = self.worker_queue_overrides.get(service, WORKER_QUEUES[service])
+                reply = {
+                    "schema_version": 1,
+                    "nonce": command[command.index("--nonce") + 1],
+                    "worker": f"celery@{self.service_hostnames[service]}",
+                    "queue": queue,
+                    "exchange": queue,
+                    "routing_key": queue,
+                    "active_queues": [queue],
                 }
-                return self._result(command, json.dumps(replies) + "\n")
-            if command[-11:] == [
-                "exec",
-                "-T",
-                "worker-realtime",
-                "celery",
-                "-A",
-                "app.tasks",
-                "inspect",
-                "active_queues",
-                "--timeout",
-                "10",
-                "--json",
-            ]:
-                replies = {}
-                for service, configured_queue in WORKER_QUEUES.items():
-                    queue = self.worker_queue_overrides.get(service, configured_queue)
-                    replies[f"celery@{self.service_hostnames[service]}"] = [
-                        {
-                            "name": queue,
-                            "routing_key": queue,
-                            "exchange": {"name": queue},
-                        }
-                    ]
-                return self._result(command, json.dumps(replies) + "\n")
+                if self.probe_reply_mutation is not None:
+                    self.probe_reply_mutation(reply)
+                return self._result(command, json.dumps(reply) + "\n")
             action = next(
                 (value for value in ("stop", "up", "run") if value in command),
                 None,
@@ -1181,8 +1137,7 @@ class FakeRunner:
                         self.service_running[service] = True
                         if (
                             self.unhealthy_service == service
-                            and env[keys[image_name]]
-                            != self.manifest["images"][image_name]["ref"]
+                            and env[keys[image_name]] != self.manifest["images"][image_name]["ref"]
                         ):
                             self.unhealthy_service = None
                         self.recreate_count += 1
@@ -1386,9 +1341,9 @@ def _recovery_evidence(
         },
     )
     snapshot_sha256 = hashlib.sha256(snapshot_manifest.read_bytes()).hexdigest()
-    checksum_lines = [
-        f"{item['sha256']}  {item['name']}" for item in files.values()
-    ] + [f"{snapshot_sha256}  manifest.json"]
+    checksum_lines = [f"{item['sha256']}  {item['name']}" for item in files.values()] + [
+        f"{snapshot_sha256}  manifest.json"
+    ]
     checksums = snapshot_dir / "SHA256SUMS"
     checksums.write_text("\n".join(checksum_lines) + "\n", encoding="ascii")
     checksums.chmod(0o600)
@@ -1586,9 +1541,7 @@ def _forward_candidate_bundle(
         manifest["images"][name]["archive_sha256"] = None
         manifest["images"][name]["changed"] = False
     web = manifest["images"]["web"]
-    web["ref"] = direct_previous_ref or (
-        "registry.example.com/sms/web@sha256:" + "5" * 64
-    )
+    web["ref"] = direct_previous_ref or ("registry.example.com/sms/web@sha256:" + "5" * 64)
     web["id"] = direct_previous_id or ("sha256:" + "f" * 64)
     web["changed"] = True
     if downgrade:
@@ -1697,8 +1650,7 @@ def test_prepare_copies_closed_bundle_and_records_safe_prepared_snapshot(
         for command in runner.calls
     )
     assert not any(
-        command[-5:] == ["exec", "-T", "api", "alembic", "current"]
-        for command in runner.calls
+        command[-5:] == ["exec", "-T", "api", "alembic", "current"] for command in runner.calls
     )
 
 
@@ -1733,9 +1685,7 @@ def test_production_reads_compose_and_migration_graph_only_from_control_root(
     compose = manager._compose()
     assert compose[compose.index("--env-file") + 1] == str(manager.environment_file)
     compose_files = [
-        Path(compose[index + 1])
-        for index, value in enumerate(compose)
-        if value == "-f"
+        Path(compose[index + 1]) for index, value in enumerate(compose) if value == "-f"
     ]
     assert compose_files
     assert all(path.is_relative_to(manager.control_root) for path in compose_files)
@@ -1751,9 +1701,7 @@ def test_production_reads_compose_and_migration_graph_only_from_control_root(
 
     control_revision = next(
         path
-        for path in (manager.control_root / "backend" / "migrations" / "versions").glob(
-            "*.py"
-        )
+        for path in (manager.control_root / "backend" / "migrations" / "versions").glob("*.py")
         if loaded.migration_target in path.read_text(encoding="utf-8")
     )
     control_revision.write_text("this is not valid Python", encoding="utf-8")
@@ -1993,11 +1941,7 @@ def test_production_offline_import_uses_frozen_archives_and_fixed_commands(
     manager.prepare(manifest_path)
 
     artifacts = release_root / manifest["release_id"] / "artifacts"
-    loads = [
-        command
-        for command in runner.calls
-        if command[:3] == ["docker", "image", "load"]
-    ]
+    loads = [command for command in runner.calls if command[:3] == ["docker", "image", "load"]]
     assert loads == [
         [
             "docker",
@@ -2021,8 +1965,7 @@ def test_production_offline_import_uses_frozen_archives_and_fixed_commands(
     signature_commands = [
         command
         for command in runner.calls
-        if command[:3]
-        == [str(release_manager_module._OPENSSL), "pkeyutl", "-verify"]
+        if command[:3] == [str(release_manager_module._OPENSSL), "pkeyutl", "-verify"]
     ]
     assert signature_commands == [
         [
@@ -2045,19 +1988,25 @@ def test_production_offline_import_uses_frozen_archives_and_fixed_commands(
         .read_text(encoding="utf-8")
         .splitlines()
     ]
-    assert sum(
-        event["kind"] == "intent"
-        and event["step"] == "external_command"
-        and event["details"].get("check") == "production offline image load"
-        for event in events
-    ) == 4
-    assert sum(
-        event["kind"] == "observation"
-        and event["step"] == "external_command"
-        and event["details"].get("check") == "production offline image load"
-        and event["details"].get("passed") is True
-        for event in events
-    ) == 4
+    assert (
+        sum(
+            event["kind"] == "intent"
+            and event["step"] == "external_command"
+            and event["details"].get("check") == "production offline image load"
+            for event in events
+        )
+        == 4
+    )
+    assert (
+        sum(
+            event["kind"] == "observation"
+            and event["step"] == "external_command"
+            and event["details"].get("check") == "production offline image load"
+            and event["details"].get("passed") is True
+            for event in events
+        )
+        == 4
+    )
     assert manager.status(manifest["release_id"])["state"] == "prepared"
 
 
@@ -2077,9 +2026,7 @@ def test_production_offline_validates_all_four_archives_before_any_load(
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
         manager.prepare(manifest_path)
 
-    assert not any(
-        command[:3] == ["docker", "image", "load"] for command in runner.calls
-    )
+    assert not any(command[:3] == ["docker", "image", "load"] for command in runner.calls)
     assert manager.environment_file.read_bytes() == original_env
 
 
@@ -2090,15 +2037,11 @@ def test_production_offline_import_is_idempotent_for_verified_raw_ids(
     manifest_path, manifest, current_refs = _offline_bundle(tmp_path)
     _configure_offline_trust(tmp_path, monkeypatch)
     manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
-    runner.loaded_offline_image_ids = {
-        manifest["images"][name]["id"] for name in IMAGE_NAMES
-    }
+    runner.loaded_offline_image_ids = {manifest["images"][name]["id"] for name in IMAGE_NAMES}
 
     manager.prepare(manifest_path)
 
-    assert not any(
-        command[:3] == ["docker", "image", "load"] for command in runner.calls
-    )
+    assert not any(command[:3] == ["docker", "image", "load"] for command in runner.calls)
     inspections = [
         command
         for command in runner.calls
@@ -2121,11 +2064,7 @@ def test_production_offline_partial_load_failure_never_mutates_runtime_or_prunes
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
         manager.prepare(manifest_path)
 
-    loads = [
-        command
-        for command in runner.calls
-        if command[:3] == ["docker", "image", "load"]
-    ]
+    loads = [command for command in runner.calls if command[:3] == ["docker", "image", "load"]]
     assert len(loads) == 2
     assert manager.environment_file.read_bytes() == original_env
     assert not any(
@@ -2137,7 +2076,8 @@ def test_production_offline_partial_load_failure_never_mutates_runtime_or_prunes
 
 
 def test_one_time_cold_cutover_can_activate(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
     _configure_offline_trust(tmp_path, monkeypatch)
@@ -2147,8 +2087,7 @@ def test_one_time_cold_cutover_can_activate(
     assert runner.migration_head == ONE_TIME_COLD_CUTOVER[1]
     policy_index = next(i for i, command in enumerate(runner.calls) if "cold-cutover" in command)
     migrate_index = next(
-        i for i, command in enumerate(runner.calls)
-        if command[-3:] == ["run", "--rm", "migrate"]
+        i for i, command in enumerate(runner.calls) if command[-3:] == ["run", "--rm", "migrate"]
     )
     assert policy_index > migrate_index
     assert manager.status(manifest["release_id"])["state"] == "succeeded"
@@ -2157,7 +2096,10 @@ def test_one_time_cold_cutover_can_activate(
 @pytest.mark.parametrize("phase", ["run_migrate", "recreate_backend", "verify"])
 @pytest.mark.parametrize("stop_fails", [False, True])
 def test_cold_cutover_failure_never_restores_old_application(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, stop_fails: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    stop_fails: bool,
 ) -> None:
     path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
     _configure_offline_trust(tmp_path, monkeypatch)
@@ -2171,9 +2113,11 @@ def test_cold_cutover_failure_never_restores_old_application(
         runner.fail_action = "stop"
     with pytest.raises(ReleaseManagerError, match="recovery_required"):
         manager._compensate(
-            store, load_manifest(path),
+            store,
+            load_manifest(path),
             release_manager_module._ActivationStepError(
-                release_manager_module.ReleaseStepKind(phase), ambiguous=True,
+                release_manager_module.ReleaseStepKind(phase),
+                ambiguous=True,
             ),
         )
     assert manager.environment_file.read_bytes() == before
@@ -2185,7 +2129,8 @@ def test_cold_cutover_failure_never_restores_old_application(
 
 
 def test_cold_cutover_interrupted_activation_refuses_automatic_resume(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
     _configure_offline_trust(tmp_path, monkeypatch)
@@ -2203,7 +2148,10 @@ def test_cold_cutover_interrupted_activation_refuses_automatic_resume(
 @pytest.mark.parametrize("operation", ["resume", "rollback"])
 @pytest.mark.parametrize("rolling_back", [False, True])
 def test_cold_cutover_containment_precedes_forward_git_and_rollback_probes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str, rolling_back: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    rolling_back: bool,
 ) -> None:
     path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
     _configure_offline_trust(tmp_path, monkeypatch)
@@ -2413,10 +2361,7 @@ def test_production_offline_expand_migrate_failure_uses_observed_head(
     expected_refs = current_refs.copy()
     if observed_head == manifest["migration"]["target"]:
         expected_refs.update(
-            {
-                name: manifest["images"][name]["ref"]
-                for name in ("postgres", "redis")
-            }
+            {name: manifest["images"][name]["ref"] for name in ("postgres", "redis")}
         )
     assert manager._root_env_refs() == expected_refs
     assert runner.runtime_refs == expected_refs
@@ -2441,12 +2386,7 @@ def test_production_offline_expand_backend_failure_retains_schema_and_data(
         manager.activate(manifest["release_id"])
 
     expected_refs = current_refs.copy()
-    expected_refs.update(
-        {
-            name: manifest["images"][name]["ref"]
-            for name in ("postgres", "redis")
-        }
-    )
+    expected_refs.update({name: manifest["images"][name]["ref"] for name in ("postgres", "redis")})
     state = manager.status(manifest["release_id"])
     assert state["state"] == "rolled_back"
     assert state["residual_changes"] == [
@@ -2488,12 +2428,7 @@ def test_production_offline_expand_explicit_rollback_retains_schema_and_data(
         resumed.rollback(manifest["release_id"])
 
     expected_refs = current_refs.copy()
-    expected_refs.update(
-        {
-            name: manifest["images"][name]["ref"]
-            for name in ("postgres", "redis")
-        }
-    )
+    expected_refs.update({name: manifest["images"][name]["ref"] for name in ("postgres", "redis")})
     state = resumed.status(manifest["release_id"])
     assert state["state"] == "rolled_back"
     assert state["residual_changes"] == [
@@ -2521,9 +2456,7 @@ def test_production_offline_signature_failure_precedes_every_docker_command(
     assert not any(command[0] == "docker" for command in runner.calls)
     assert manager.environment_file.read_bytes() == original_env
     release_dir = release_root / manifest["release_id"]
-    assert {
-        path.name for path in (release_dir / "artifacts").iterdir()
-    } == {"manifest.sig"}
+    assert {path.name for path in (release_dir / "artifacts").iterdir()} == {"manifest.sig"}
     assert (release_dir / "manifest.json").read_bytes() == manifest_path.read_bytes()
     assert manager.status(manifest["release_id"])["state"] == "failed"
 
@@ -2565,9 +2498,7 @@ def test_production_offline_v2_condition_evidence_checks_hash_and_size(
     elif binding_failure == "data_size":
         manifest["evidence"]["data_images"]["size"] += 1
     elif binding_failure == "backup_record_hash":
-        manifest["evidence"]["backup_restore_change"]["record"]["sha256"] = (
-            "0" * 64
-        )
+        manifest["evidence"]["backup_restore_change"]["record"]["sha256"] = "0" * 64
     else:
         manifest["evidence"]["backup_restore_change"]["restore_report"]["size"] += 1
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -2578,9 +2509,7 @@ def test_production_offline_v2_condition_evidence_checks_hash_and_size(
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
         manager.prepare(manifest_path)
 
-    assert not any(
-        command[:3] == ["docker", "image", "load"] for command in runner.calls
-    )
+    assert not any(command[:3] == ["docker", "image", "load"] for command in runner.calls)
     assert manager.environment_file.read_bytes() == original_env
 
 
@@ -2661,9 +2590,7 @@ def test_production_offline_requires_bound_nonlocal_candidate_evidence(
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
         manager.prepare(manifest_path)
 
-    assert not any(
-        command[:3] == ["docker", "image", "load"] for command in runner.calls
-    )
+    assert not any(command[:3] == ["docker", "image", "load"] for command in runner.calls)
 
 
 def test_production_offline_index_must_cross_bind_every_manifest_archive(
@@ -2686,9 +2613,7 @@ def test_production_offline_index_must_cross_bind_every_manifest_archive(
     with pytest.raises(ReleaseManagerError, match="prepare failed"):
         manager.prepare(manifest_path)
 
-    assert not any(
-        command[:3] == ["docker", "image", "load"] for command in runner.calls
-    )
+    assert not any(command[:3] == ["docker", "image", "load"] for command in runner.calls)
 
 
 def test_production_bootstrap_freezes_archive_larger_than_json_limit_streaming(
@@ -2719,9 +2644,10 @@ def test_production_bootstrap_freezes_archive_larger_than_json_limit_streaming(
 
     frozen = store.release_dir / "artifacts" / "api.tar"
     assert frozen.stat().st_size == (manifest_path.parent / "api.tar").stat().st_size
-    assert hashlib.sha256(frozen.read_bytes()).hexdigest() == manifest["images"]["api"][
-        "archive_sha256"
-    ]
+    assert (
+        hashlib.sha256(frozen.read_bytes()).hexdigest()
+        == manifest["images"]["api"]["archive_sha256"]
+    )
 
 
 def test_target_image_mismatch_fails_without_lifecycle_mutation(tmp_path: Path) -> None:
@@ -2808,9 +2734,7 @@ def test_production_postgres_change_accepts_bound_approval_and_restore_report(
 
     assert manager.status(manifest["release_id"])["state"] == "prepared"
     assert not any(command[:2] == ["docker", "load"] for command in runner.calls)
-    assert not any(
-        command[:3] == ["docker", "image", "load"] for command in runner.calls
-    )
+    assert not any(command[:3] == ["docker", "image", "load"] for command in runner.calls)
     assert not any(command[0] == str(release_manager_module._OPENSSL) for command in runner.calls)
     assert not any("pull" in command for command in runner.calls)
 
@@ -2969,9 +2893,7 @@ def test_production_backup_contract_rejects_any_unbound_or_unsafe_evidence(
     elif mutation == "report_checks":
         report["checks"]["role_flags"] = "6|true"
     elif mutation == "crypto_receipt":
-        report["crypto_probe_receipts"]["pre_migration"]["counts"][
-            "encrypted_rows"
-        ] += 1
+        report["crypto_probe_receipts"]["pre_migration"]["counts"]["encrypted_rows"] += 1
     else:
         report["table_counts"]["extra"] = 0
     _write_private_json(report_path, report)
@@ -3271,10 +3193,7 @@ def test_production_activation_recreates_never_build_from_control_snapshot(
 
     up_commands = [command for command in runner.calls if "up" in command]
     assert up_commands
-    assert all(
-        command[command.index("up") + 1] == "--no-build"
-        for command in up_commands
-    )
+    assert all(command[command.index("up") + 1] == "--no-build" for command in up_commands)
 
 
 def test_configure_activation_atomically_updates_all_refs_and_preserves_env_metadata(
@@ -3459,7 +3378,7 @@ def test_final_verification_rechecks_declared_migration_target(tmp_path: Path) -
     def drift_migration_after_worker_probe() -> None:
         runner.migration_head = manifest["migration"]["from"]
 
-    runner.after_ping = drift_migration_after_worker_probe
+    runner.after_probe = drift_migration_after_worker_probe
 
     with pytest.raises(ReleaseManagerError, match="recovery_required"):
         manager.activate(manifest["release_id"])
@@ -3499,8 +3418,7 @@ def test_final_runtime_verification_binds_images_containers_health_and_workers(
     assert [
         command
         for command in runner.calls
-        if command[:3] == ["docker", "inspect", "--format"]
-        and "range .Mounts" in command[-2]
+        if command[:3] == ["docker", "inspect", "--format"] and "range .Mounts" in command[-2]
     ] == [
         [
             "docker",
@@ -3512,40 +3430,21 @@ def test_final_runtime_verification_binds_images_containers_health_and_workers(
             runner.service_container_ids["beat"],
         ]
     ]
-    assert (
-        compose
-        + [
-            "exec",
-            "-T",
-            "worker-realtime",
-            "celery",
-            "-A",
-            "app.tasks",
-            "inspect",
-            "ping",
-            "--timeout",
-            "10",
-            "--json",
-        ]
-        in runner.calls
-    )
-    assert (
-        compose
-        + [
-            "exec",
-            "-T",
-            "worker-realtime",
-            "celery",
-            "-A",
-            "app.tasks",
-            "inspect",
-            "active_queues",
-            "--timeout",
-            "10",
-            "--json",
-        ]
-        in runner.calls
-    )
+    probes = [command for command in runner.calls if "app.core.worker_probe" in command]
+    assert len(probes) == len(WORKER_QUEUES)
+    assert {command[command.index("exec") + 2] for command in probes} == set(WORKER_QUEUES)
+    nonces = set()
+    for command in probes:
+        service = command[command.index("exec") + 2]
+        assert command[command.index("--queue") + 1] == WORKER_QUEUES[service]
+        assert command[command.index("--hostname") + 1] == (
+            f"celery@{runner.service_hostnames[service]}"
+        )
+        nonce = command[command.index("--nonce") + 1]
+        assert len(nonce) == 32 and int(nonce, 16) >= 0
+        nonces.add(nonce)
+    assert len(nonces) == len(WORKER_QUEUES)
+    assert not any("celery" in command and "inspect" in command for command in runner.calls)
     events = [
         json.loads(line)
         for line in (release_root / manifest["release_id"] / "events.jsonl")
@@ -3736,14 +3635,14 @@ def test_final_web_health_failure_uses_existing_stateless_compensation(
     )
 
 
-def test_missing_worker_ping_uses_existing_stateless_compensation(tmp_path: Path) -> None:
+def test_missing_worker_probe_uses_existing_stateless_compensation(tmp_path: Path) -> None:
     manifest_path, manifest, current_refs = _bundle_for_changes(tmp_path, {"web"})
     manifest["migration"]["target"] = manifest["migration"]["from"]
     manifest["migration"]["compatibility"] = "none"
     _write_private_json(manifest_path, manifest)
     manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
     manager.prepare(manifest_path)
-    runner.missing_worker_ping = "worker-callback"
+    runner.missing_worker_probe = "worker-callback"
     runner.calls.clear()
 
     with pytest.raises(ReleaseManagerError, match="rolled_back"):
@@ -3753,7 +3652,7 @@ def test_missing_worker_ping_uses_existing_stateless_compensation(tmp_path: Path
     events = (manager.release_root / manifest["release_id"] / "events.jsonl").read_text(
         encoding="utf-8"
     )
-    assert '"reason":"worker_ping_membership"' in events
+    assert '"reason":"worker_probe_command"' in events
 
 
 def test_wrong_worker_queue_binding_uses_existing_stateless_compensation(
@@ -3775,10 +3674,10 @@ def test_wrong_worker_queue_binding_uses_existing_stateless_compensation(
     events = (manager.release_root / manifest["release_id"] / "events.jsonl").read_text(
         encoding="utf-8"
     )
-    assert '"reason":"worker_active_queues_binding"' in events
+    assert '"reason":"worker_probe_binding"' in events
 
 
-def test_service_failure_during_worker_ping_is_detected_before_success(
+def test_service_failure_during_worker_probe_is_detected_before_success(
     tmp_path: Path,
 ) -> None:
     manifest_path, manifest, current_refs = _bundle_for_changes(tmp_path, {"web"})
@@ -3788,10 +3687,10 @@ def test_service_failure_during_worker_ping_is_detected_before_success(
     manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
     manager.prepare(manifest_path)
 
-    def stop_web_after_ping() -> None:
+    def stop_web_after_probe() -> None:
         runner.unhealthy_service = "web"
 
-    runner.after_ping = stop_web_after_ping
+    runner.after_probe = stop_web_after_probe
     with pytest.raises(ReleaseManagerError, match="rolled_back"):
         manager.activate(manifest["release_id"])
 
@@ -3799,7 +3698,7 @@ def test_service_failure_during_worker_ping_is_detected_before_success(
     events = (manager.release_root / manifest["release_id"] / "events.jsonl").read_text(
         encoding="utf-8"
     )
-    assert '"reason":"post_ping_service_health"' in events
+    assert '"reason":"post_probe_service_health"' in events
 
 
 def test_unselected_container_identity_drift_requires_manual_recovery(tmp_path: Path) -> None:
@@ -4368,22 +4267,8 @@ def test_resume_finalizes_sigkill_style_missing_success_observation_from_runtime
     manager.resume(manifest["release_id"])
 
     assert manager.status(manifest["release_id"])["state"] == "succeeded"
-    assert (
-        manager._compose()
-        + [
-            "exec",
-            "-T",
-            "worker-realtime",
-            "celery",
-            "-A",
-            "app.tasks",
-            "inspect",
-            "ping",
-            "--timeout",
-            "10",
-            "--json",
-        ]
-        in runner.calls
+    assert len([command for command in runner.calls if "app.core.worker_probe" in command]) == len(
+        WORKER_QUEUES
     )
     assert not any(
         action in command for command in runner.calls for action in ("stop", "up", "run")
@@ -4536,8 +4421,7 @@ def test_sigkill_after_data_action_reconciles_stopped_backend_and_target_data(
 
     assert not any("up" in command and command[-1] == "postgres" for command in runner.calls)
     assert any(
-        "up" in command
-        and command[-3:] == ["redis", "redis-auth", "redis-control"]
+        "up" in command and command[-3:] == ["redis", "redis-auth", "redis-control"]
         for command in runner.calls
     )
     assert resumed.status(manifest["release_id"])["state"] == "succeeded"
@@ -4704,9 +4588,7 @@ def test_explicit_rollback_recovers_effect_missing_its_completed_observation(
     expected_state = "recovery_required" if post_compensation_drift else "rolled_back"
     assert resumed.status(manifest["release_id"])["state"] == expected_state
     expected_ref = (
-        manifest["images"]["web"]["ref"]
-        if post_compensation_drift
-        else current_refs["web"]
+        manifest["images"]["web"]["ref"] if post_compensation_drift else current_refs["web"]
     )
     assert runner.runtime_refs["web"] == expected_ref
     assert any("up" in command and command[-1] == "web" for command in runner.calls)
@@ -4945,9 +4827,7 @@ def test_standard_prepare_cannot_bypass_forward_rollback_with_historical_image(
     tmp_path: Path,
 ) -> None:
     manager, runner, _, source, _ = _succeeded_production_release(tmp_path)
-    snapshot = manager._read_snapshot(
-        ReleaseStore(manager.release_root, source["release_id"])
-    )
+    snapshot = manager._read_snapshot(ReleaseStore(manager.release_root, source["release_id"]))
     candidate_root = tmp_path / "candidate-bundle"
     candidate_root.mkdir()
     candidate_path, candidate = _forward_candidate_bundle(
@@ -5081,8 +4961,7 @@ def test_production_bootstrap_is_empty_host_only_idempotent_and_seals_release(
     bootstrap_up_commands = [command for command in runner.calls if "up" in command]
     assert bootstrap_up_commands
     assert all(
-        command[command.index("up") + 1] == "--no-build"
-        for command in bootstrap_up_commands
+        command[command.index("up") + 1] == "--no-build" for command in bootstrap_up_commands
     )
     assert runner.migration_head == manifest["migration"]["target"]
     first_calls = list(runner.calls)
@@ -5112,8 +4991,7 @@ def test_production_start_gate_rechecks_offline_image_platform_and_labels(
     runner.calls.clear()
     web_id = manifest["images"]["web"]["id"]
     runner.offline_identity_override["web"] = (
-        f"{web_id}|linux/arm64|1.6.0|{COMMIT}|"
-        f"{manifest['migration']['target']}"
+        f"{web_id}|linux/arm64|1.6.0|{COMMIT}|{manifest['migration']['target']}"
     )
 
     with pytest.raises(ReleaseManagerError, match="identity is invalid"):
@@ -5136,8 +5014,7 @@ def test_offline_bootstrap_writes_target_ids_after_import_from_stage_only_env(
     manifest_path, manifest, _ = _offline_bundle(tmp_path, changed=set())
     _configure_offline_trust(tmp_path, monkeypatch)
     staged_refs = {
-        name: "sha256:" + marker * 64
-        for name, marker in zip(IMAGE_NAMES, "1234", strict=True)
+        name: "sha256:" + marker * 64 for name, marker in zip(IMAGE_NAMES, "1234", strict=True)
     }
     manager, runner, root, release_root = _manager(tmp_path, manifest, staged_refs)
     runner.service_running = {service: False for service in RUNTIME_SERVICES}
@@ -5232,8 +5109,7 @@ def test_unfinished_bootstrap_blocks_generic_release_mutations(
     assert bootstrap_state["status"] == "failed"
     assert bootstrap_state["phase"] == "contained"
     assert all(
-        runner.service_running[service] is False
-        for service in ("web", *_QUIESCE_TEST_SERVICES)
+        runner.service_running[service] is False for service in ("web", *_QUIESCE_TEST_SERVICES)
     )
     restarted = _restart_production_manager(manager, runner)
     runner.calls.clear()
@@ -5275,14 +5151,11 @@ def test_production_bootstrap_fails_closed_on_existing_volume_and_after_failure(
     assert any("stop" in command for command in runner.calls)
     events = [
         json.loads(line)
-        for line in (
-            release_root / manifest["release_id"] / "events.jsonl"
-        ).read_text(encoding="utf-8").splitlines()
+        for line in (release_root / manifest["release_id"] / "events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
     ]
-    assert any(
-        event["kind"] == "intent" and event["step"] == "env_replace"
-        for event in events
-    )
+    assert any(event["kind"] == "intent" and event["step"] == "env_replace" for event in events)
     assert any(
         event["kind"] == "observation"
         and event["step"] == "env_replace"
@@ -5400,16 +5273,8 @@ def test_recovery_adoption_seals_nonempty_verified_baseline_and_survives_reboot(
     assert release_state["verified_migration_head"] == manifest["migration"]["target"]
     recovery_up_commands = [command for command in runner.calls if "up" in command]
     assert recovery_up_commands
-    assert all(
-        command[command.index("up") + 1] == "--no-build"
-        for command in recovery_up_commands
-    )
-    watermark_path = (
-        release_root
-        / manifest["release_id"]
-        / "artifacts"
-        / "recovery-watermark.json"
-    )
+    assert all(command[command.index("up") + 1] == "--no-build" for command in recovery_up_commands)
+    watermark_path = release_root / manifest["release_id"] / "artifacts" / "recovery-watermark.json"
     assert watermark_path.is_file()
 
     restarted = _restart_production_manager(manager, runner)
@@ -5914,9 +5779,7 @@ def test_production_compose_overlays_are_strict_and_development_stays_base_only(
         refs,
     )
     development_files = [
-        Path(value).name
-        for value in development_manager._compose()
-        if value.endswith(".yml")
+        Path(value).name for value in development_manager._compose() if value.endswith(".yml")
     ]
     assert development_files == ["docker-compose.yml"]
 
@@ -5929,9 +5792,7 @@ def test_production_compose_overlays_are_strict_and_development_stays_base_only(
         production_refs,
     )
     production_files = [
-        Path(value).name
-        for value in production_manager._compose()
-        if value.endswith(".yml")
+        Path(value).name for value in production_manager._compose() if value.endswith(".yml")
     ]
     assert production_files == [
         "docker-compose.yml",
@@ -5949,9 +5810,7 @@ def test_production_compose_overlays_are_strict_and_development_stays_base_only(
         encoding="utf-8",
     )
     production_files = [
-        Path(value).name
-        for value in production_manager._compose()
-        if value.endswith(".yml")
+        Path(value).name for value in production_manager._compose() if value.endswith(".yml")
     ]
     assert production_files == [
         "docker-compose.yml",
@@ -5965,9 +5824,7 @@ def test_production_compose_overlays_are_strict_and_development_stays_base_only(
         production_runner,
     )
     managed_files = [
-        Path(value).name
-        for value in managed_manager._compose()
-        if value.endswith(".yml")
+        Path(value).name for value in managed_manager._compose() if value.endswith(".yml")
     ]
     assert managed_files == [
         "docker-compose.yml",
@@ -6019,9 +5876,7 @@ def test_release_mutations_reject_persisted_production_topology_drift(
             encoding="utf-8",
         )
     elif drift == "compose_file":
-        (
-            manager.control_root / "deploy" / "docker-compose.production-restart.yml"
-        ).write_text(
+        (manager.control_root / "deploy" / "docker-compose.production-restart.yml").write_text(
             "services: {api: {restart: unless-stopped}}\n",
             encoding="utf-8",
         )
@@ -6034,8 +5889,7 @@ def test_release_mutations_reject_persisted_production_topology_drift(
     else:
         env_path = manager.environment_file
         env_path.write_text(
-            env_path.read_text(encoding="utf-8")
-            + f"SMS_WEB_IMAGE={refs['web']}\n",
+            env_path.read_text(encoding="utf-8") + f"SMS_WEB_IMAGE={refs['web']}\n",
             encoding="utf-8",
         )
     restarted = manager
@@ -6269,9 +6123,7 @@ def test_recovery_main_rejects_unapproved_sensitive_result_fields_without_leak(
 
     monkeypatch.setattr(release_manager_module, "ReleaseManager", StubManager)
 
-    return_code = release_manager_module.main(
-        _recovery_cli_arguments("adopt-recovery")
-    )
+    return_code = release_manager_module.main(_recovery_cli_arguments("adopt-recovery"))
     captured = capsys.readouterr()
 
     assert return_code == 1
@@ -6314,9 +6166,7 @@ def test_recovery_main_rejects_sensitive_values_in_public_fields_without_leak(
 
     monkeypatch.setattr(release_manager_module, "ReleaseManager", StubManager)
 
-    return_code = release_manager_module.main(
-        _recovery_cli_arguments("adopt-recovery")
-    )
+    return_code = release_manager_module.main(_recovery_cli_arguments("adopt-recovery"))
     captured = capsys.readouterr()
 
     assert return_code == 1
@@ -6872,7 +6722,9 @@ def test_cli_rejects_invalid_release_root_before_constructing_manager(
 
 @pytest.mark.parametrize("failure", ["command", "journal"])
 def test_cold_cutover_legacy_policy_failure_contains_application(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
 ) -> None:
     path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
     _configure_offline_trust(tmp_path, monkeypatch)
@@ -6882,7 +6734,8 @@ def test_cold_cutover_legacy_policy_failure_contains_application(
     original_observation = ReleaseStore.record_observation
 
     def fail_policy_command(
-        command: Sequence[str], **kwargs: Any,
+        command: Sequence[str],
+        **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
         if failure == "command" and "cold-cutover" in command:
             return subprocess.CompletedProcess(list(command), 1, "", "policy conflict")
@@ -6904,7 +6757,10 @@ def test_cold_cutover_legacy_policy_failure_contains_application(
 @pytest.mark.parametrize("phase", ["prepare", "activate"])
 @pytest.mark.parametrize("result", ["1\n", "", "garbled\n"])
 def test_cold_cutover_rejects_incompatible_admission_before_stopping(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, result: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    result: str,
 ) -> None:
     path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
     _configure_offline_trust(tmp_path, monkeypatch)
@@ -6916,7 +6772,8 @@ def test_cold_cutover_rejects_incompatible_admission_before_stopping(
     original_run = runner.run
 
     def admission_result(
-        command: Sequence[str], **kwargs: Any,
+        command: Sequence[str],
+        **kwargs: Any,
     ) -> subprocess.CompletedProcess[str]:
         if "cold-cutover-admission" in command:
             return subprocess.CompletedProcess(list(command), 0, result, "")
@@ -6930,3 +6787,19 @@ def test_cold_cutover_rejects_incompatible_admission_before_stopping(
             manager.activate(manifest["release_id"])
     assert manager.environment_file.read_bytes() == before
     assert not any("stop" in call or "up" in call or "run" in call for call in runner.calls)
+
+
+@pytest.mark.parametrize(
+    "field", ["nonce", "worker", "active_queues", "queue", "exchange", "routing_key"]
+)
+def test_forged_worker_probe_binding_rolls_back(tmp_path: Path, field: str) -> None:
+    manifest_path, manifest, current_refs = _bundle_for_changes(tmp_path, {"web"})
+    manifest["migration"]["target"] = manifest["migration"]["from"]
+    manifest["migration"]["compatibility"] = "none"
+    _write_private_json(manifest_path, manifest)
+    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
+    manager.prepare(manifest_path)
+    runner.probe_reply_mutation = lambda reply: reply.update({field: "wrong-binding"})
+    with pytest.raises(ReleaseManagerError, match="rolled_back"):
+        manager.activate(manifest["release_id"])
+    assert manager.status(manifest["release_id"])["state"] == "rolled_back"

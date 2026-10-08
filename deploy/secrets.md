@@ -28,10 +28,10 @@
 
 | 运行目录 | 文件 owner | 精确内容 | Compose 消费者 |
 |---|---:|---|---|
-| `current/backend/` | UID 10001 | 厂商两项、AES/HMAC、主体与 API/realtime/bulk 四个审计 HMAC、企微公私钥对、JWT、LDAP、metrics 抓取 token、七个 `db_<role>_password`、三个 Redis ACL 密码 | 由 Compose 按职责最小挂载；企微私钥只挂 callback，自治审计 key 只挂对应生产者域 |
+| `current/backend/` | UID 10001 | 厂商两项、AES/HMAC、主体与 API/realtime/bulk 四个审计 HMAC、企微公私钥对、JWT、LDAP、metrics 抓取 token、七个 `db_<role>_password`、auth/control 密码与六件 broker 职责派生密码 | 由 Compose 按职责最小挂载；企微私钥只挂 callback，自治审计 key 只挂对应生产者域 |
 | `current/postgres/` | UID 70 | `db_owner_password`、七个 `db_<role>_password` | postgres 只消费 owner；db-role-provision 消费全部 DB 密码 |
 | `current/migrate/` | UID 10001 | `db_owner_password`、`audit_context_key`、三个 `audit_system_<domain>_context_key` | migrate 将四个审计 key 写入 owner-only 验证表 |
-| `current/redis/` | UID 999/GID 1000 | 三个 Redis ACL 密码、Redis TLS 服务端私钥 | redis broker、redis-auth、redis-control；TLS 私钥绝不复制到 backend |
+| `current/redis/` | UID 999/GID 1000 | 三个域根凭据、broker 职责 ACL 哈希文件、Redis TLS 服务端私钥 | redis broker、redis-auth、redis-control；TLS 私钥绝不复制到 backend |
 
 generation 与四个服务目录均只允许 root 遍历。Compose 的 source 可以使用内部别名，但容器内 target 始终保持 `/run/secrets/<权威名称>`；运行态后端绝不能看到 `db_owner_password`，API 绝不能看到 broker 密码，worker-callback 绝不能看到 auth 密码。旧 generation 至少保留到新容器健康确认，只有受控清理才可删除。
 
@@ -62,7 +62,7 @@ generation 与四个服务目录均只允许 root 遍历。Compose 的 source �
 | `db_export_password` | 独立高熵 export 角色密码 | db-role-provision、api、bulk worker | 重跑 provision 并重建使用方 |
 | `db_scheduler_password` | 独立高熵 scheduler 角色密码 | db-role-provision、beat、outbox-dispatcher | 重跑 provision 并重建使用方 |
 | `db_metrics_password` | 独立高熵只读 metrics 角色密码 | db-role-provision、api | 重跑 provision 并重建 api |
-| `redis_broker_password` | 独立 32–128 字符高熵 ACL 密码 | redis broker、worker、beat、outbox-dispatcher | 原子替换后用 `rotate backend` 同窗重建 broker 与消费者 |
+| `redis_broker_password` | 独立 32–128 字符高熵派生根种子 | 仅宿主准备器和 redis broker；六件派生值分别挂 worker/beat/dispatcher | 首次更换旧共享值，按 redis-ha.md 全停切换服务端 ACL 和全部客户端 |
 | `redis_auth_password` | 与 broker/control 不同的高熵 ACL 密码 | redis-auth、仅 api | 原子替换后重建 redis-auth 与 api；旧密码不得回退到其他域 |
 | `redis_control_password` | 与 broker/auth 不同的高熵 ACL 密码 | redis-control、api、worker、beat | 原子替换后重建 redis-control 与消费者；从 PostgreSQL 事实重建投影 |
 | `redis_tls_server_key` | 内部 PKI 为 `redis`、`redis-auth`、`redis-control` 三个 SAN 签发证书所对应的无口令 PKCS#8 PEM 私钥 | 仅三个 Redis 服务端；客户端只挂 CA | 与 `/etc/sms-platform/redis-tls/server.pem` 同窗更新；先在预生产验证证书链、三个主机名和私钥配对，再重建三个 Redis，绝不复制到 backend runtime 目录 |
@@ -132,6 +132,21 @@ sudo /usr/local/sbin/sms-compose config --quiet
 1. 创建变更单，写 secret 名、影响服务、窗口与回退人，不写 secret 值。
 2. 对需要先改上游的凭据（DB、LDAP、厂商）先完成双值/维护窗协调。
 3. 以 `0600` 临时文件写新值，`mv` 原子替换权威源；不修改 Compose secret 名。数据库密码必须先按 `dba.md` 修改数据库角色，再替换权威源文件。
-4. 非数据库、非 Redis TLS 的后端凭据执行 `sudo /usr/local/sbin/sms-compose rotate backend`；包装器在共享 lifecycle flock 内覆盖完整轮换，记录严格校验的旧 generation metadata，准备新 generation，并以固定 120 秒上限强制重建和等待全部后端服务。新服务失败时会原子回切旧 generation、再次强制重建并等待旧服务恢复，最终仍失败退出；恢复失败会明确报错。成功和失败路径都保留旧 generation，因为 PostgreSQL 未重建且仍可能引用它。数据库凭据严格使用 `dba.md` 的受控服务集合。`rotate backend` 必须拒绝 CA、server certificate 或 `redis_tls_server_key` 任一变化；TLS 轮换只允许按 `redis-ha.md` 停全栈、整套替换/预检、失败整套恢复，禁止依赖只回退私钥 generation 的自动恢复。成功后检查 `/livez`、`/readyz`、`/metrics`、登录/厂商/数据库只读探针与结构化日志。
+4. broker 职责首次切换及根种子轮换优先按 `redis-ha.md` 的全停流程执行；不得混跑。其余非数据库、非 Redis TLS 的后端凭据执行 `sudo /usr/local/sbin/sms-compose rotate backend`；包装器在共享 lifecycle flock 内覆盖完整轮换，记录严格校验的旧 generation metadata，准备新 generation，并以固定 120 秒上限强制重建和等待全部后端服务。新服务失败时会原子回切旧 generation、再次强制重建并等待旧服务恢复，最终仍失败退出；恢复失败会明确报错。成功和失败路径都保留旧 generation，因为 PostgreSQL 未重建且仍可能引用它。数据库凭据严格使用 `dba.md` 的受控服务集合。`rotate backend` 必须拒绝 CA、server certificate 或 `redis_tls_server_key` 任一变化；TLS 轮换只允许按 `redis-ha.md` 停全栈、整套替换/预检、失败整套恢复，禁止依赖只回退私钥 generation 的自动恢复。成功后检查 `/livez`、`/readyz`、`/metrics`、登录/厂商/数据库只读探针与结构化日志。
 5. 确认新值稳定后按上游流程吊销旧值；数据 keyring 旧版本须待重加密完成后才能删除。
 6. 归档时间、执行人和验证结果，不归档内容；包装器失败恢复完成后仍须按变更单恢复旧权威文件，并再次验证同一服务集合。只有全栈停止或全部容器重建，并确认 `docker compose ps --all -q` 无容器且无挂载引用后，才允许受控清理旧 generation；不得因代码回退删除数据库卷、权威运行 secret 或仍被容器使用的 generation。
+
+
+## Broker 职责凭据（第二批安全加固）
+
+canonical inventory 保持 26 件；`redis_broker_password` 仅作为宿主/Redis 服务端派生根种子，
+不再进入 backend。`prepare_runtime_secrets.py` 每次准备/轮换生成六件独立运行密码：
+`redis_broker_realtime_password`、`redis_broker_report_password`、`redis_broker_bulk_password`、
+`redis_broker_callback_password`、`redis_broker_beat_password`、`redis_broker_dispatcher_password`。
+各容器只挂载其职责对应的一件，容器内兼容 target 仍为 `/run/secrets/redis_broker_password`。
+不得将根种子、派生值或 ACL 密码哈希打印到日志、工单或 API。
+
+服务端生成 `redis/redis_broker_users.acl`（仅哈希），backend runtime inventory 不包含根种子。
+域分离 HMAC 只在宿主执行；worker 得到自己的一件派生值不能推导根种子或其他角色密码。
+首次切换必须更换旧共享根种子，并按 `redis-ha.md` 的完整停机、原子 generation、托管 ACL
+安装及跨职责拒绝验收执行；只更新代码不等于生产隔离已经生效，不支持混跑。

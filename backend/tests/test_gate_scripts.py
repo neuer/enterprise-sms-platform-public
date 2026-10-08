@@ -660,13 +660,13 @@ def test_redis_domain_smoke_enforces_acl_and_secret_boundaries() -> None:
         "~freq:*",
         "~idem:*",
         "~queue:paused:*",
-        "~realtime",
-        "~bulk",
-        "~callback",
-        "~*.reply.celery.pidbox*",
     ):
         assert key_rule in entrypoint
-    assert "scoped Celery pidbox reply key" in smoke
+    assert "redis_broker_users.acl" in entrypoint
+    assert "broker remote control unexpectedly enabled" in smoke
+    assert "broker consumer escaped its queue capability" in smoke
+    assert "broker_runtime_material" in smoke
+    assert "pidbox" not in entrypoint
     assert " ~* &*" not in entrypoint
     assert "+@all" not in entrypoint
     assert "user default off" in entrypoint
