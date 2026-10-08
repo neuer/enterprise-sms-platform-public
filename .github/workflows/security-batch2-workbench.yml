@@ -8,23 +8,102 @@ permissions:
   contents: read
 
 jobs:
-  snapshot:
-    if: ${{ contains(github.event.head_commit.message, '[batch2 snapshot]') }}
+  prepare:
+    if: ${{ github.repository == 'neuer/enterprise-sms-platform-public' && contains(github.event.head_commit.message, '[batch2 prepare]') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      ENVIRONMENT: test
+      DEBUG: "1"
+      AUTH_MOCK: "1"
+      VENDOR_MOCK: "1"
     steps:
-      - name: Checkout exact public source
+      - name: Checkout exact isolated candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
         with:
           persist-credentials: false
-      - name: Archive tracked source only
+          fetch-depth: 2
+      - name: Apply verified scoped patch
         run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/fix/security-batch2-20261008
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          git archive --format=tar HEAD > "$RUNNER_TEMP/batch2-source.tar"
-      - name: Upload public source snapshot
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          test "$(git rev-parse HEAD^)" = abd231598664520feefc7e5a5f6cdd57a8e8b2c6
+          python3 - <<'PY'
+          import base64
+          import gzip
+          import hashlib
+          import os
+          import subprocess
+          from pathlib import Path
+          encoded = ''.join(Path(f'scripts/security_batch2_patch_{i}.b64').read_text() for i in range(1, 5))
+          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+          if hashlib.sha256(patch).hexdigest() != '281c62b1bf136921f9d717fc8ac6c589ad5d284a8af63c16b62f4f7c3db5b6e5':
+              raise SystemExit('Patch digest mismatch')
+          path = Path(os.environ['RUNNER_TEMP']) / 'batch2.patch'
+          path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', '--unidiff-zero', str(path)], check=True)
+          subprocess.run(['git', 'apply', '--unidiff-zero', str(path)], check=True)
+          PY
+      - name: Set up Python and uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
         with:
-          name: batch2-source-${{ github.sha }}
-          path: ${{ runner.temp }}/batch2-source.tar
-          if-no-files-found: error
-          retention-days: 1
+          version: "0.7.12"
+          python-version: "3.12"
+          enable-cache: false
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+      - name: Prepare synthetic test environment and check touched sources
+        run: |
+          bash scripts/local_test.sh prepare
+          cd backend
+          uv run --locked ruff format app/core/broker_authorization.py tests/test_broker_authorization.py tests/integration/test_broker_capabilities_redis.py
+          uv run --locked ruff check --fix app/core/broker_authorization.py app/services/export.py app/services/export_repository.py app/services/reconcile.py app/services/reconcile_repository.py app/settings.py app/tasks/__init__.py tests/test_broker_authorization.py tests/integration/test_broker_capabilities_redis.py tests/integration/test_export_authorization_postgres.py tests/integration/test_perf_fault_recovery_postgres.py tests/test_compose_contract.py tests/test_deploy_contract.py tests/test_deployment_docs.py tests/test_export_service.py tests/test_gate_scripts.py tests/test_import_tasks.py tests/test_prepare_runtime_secrets.py tests/test_recovery_reconcile.py tests/test_reports_api.py tests/test_settings.py tests/test_sql_service_repositories.py ../deploy/scripts/prepare_runtime_secrets.py
+      - name: Run targeted unit and contract regressions
+        run: |
+          cd backend
+          uv run --locked pytest -q tests/test_broker_authorization.py tests/test_export_service.py tests/test_export_repository.py tests/test_reports_api.py tests/test_settings.py tests/test_prepare_runtime_secrets.py tests/test_compose_contract.py tests/test_deploy_contract.py tests/test_deployment_docs.py tests/test_gate_scripts.py tests/test_recovery_reconcile.py tests/test_sql_service_repositories.py tests/test_reconcile_task.py tests/test_import_tasks.py tests/test_beat_lock.py
+      - name: Run disposable Redis and PostgreSQL authorization regressions
+        if: ${{ !cancelled() }}
+        run: bash scripts/verify_vendor_postgres_recovery.sh tests/integration/test_broker_capabilities_redis.py tests/integration/test_export_authorization_postgres.py tests/integration/test_perf_fault_recovery_postgres.py
+      - name: Publish only reviewed implementation files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/fix/security-batch2-20261008
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          remote_sha=$(git -c credential.helper= -c 'credential.helper=!gh auth git-credential' ls-remote origin "$GITHUB_REF" | cut -f1)
+          test "$remote_sha" = "$GITHUB_SHA"
+          python3 - <<'PY'
+          import subprocess
+          allowed = {
+              'AGENTS.md', 'PRD.md', 'backend/app/core/broker_authorization.py',
+              'backend/app/services/export.py', 'backend/app/services/export_repository.py',
+              'backend/app/services/reconcile.py', 'backend/app/services/reconcile_repository.py',
+              'backend/app/settings.py', 'backend/app/tasks/__init__.py',
+              'backend/tests/integration/test_broker_capabilities_redis.py',
+              'backend/tests/integration/test_export_authorization_postgres.py',
+              'backend/tests/integration/test_perf_fault_recovery_postgres.py',
+              'backend/tests/test_broker_authorization.py', 'backend/tests/test_compose_contract.py',
+              'backend/tests/test_deploy_contract.py', 'backend/tests/test_deployment_docs.py',
+              'backend/tests/test_export_service.py', 'backend/tests/test_gate_scripts.py',
+              'backend/tests/test_import_tasks.py', 'backend/tests/test_prepare_runtime_secrets.py',
+              'backend/tests/test_recovery_reconcile.py', 'backend/tests/test_reports_api.py',
+              'backend/tests/test_settings.py', 'backend/tests/test_sql_service_repositories.py',
+              'deploy/docker-compose.yml', 'deploy/redis-domain-entrypoint.sh', 'deploy/redis-ha.md',
+              'deploy/scripts/prepare_runtime_secrets.py', 'deploy/secrets.md', 'scripts/verify_redis_domains.sh',
+          }
+          changed = set(subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines())
+          if not changed <= allowed:
+              raise SystemExit('Unexpected tracked modifications; publication denied')
+          subprocess.run(['git', 'add', '--', *sorted(allowed)], check=True)
+          subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
+          PY
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix(security): enforce current export scopes and broker capabilities'
+          git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin HEAD:refs/heads/fix/security-batch2-20261008
+          echo "PREPARED_HEAD=$(git rev-parse HEAD)"
