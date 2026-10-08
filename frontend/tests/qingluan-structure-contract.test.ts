@@ -73,9 +73,12 @@ describe("登录页结构契约", () => {
   const login = source("src/views/LoginView.vue")
   const theme = readThemeCss()
 
-  it("桌面左白鹭右 480px 会话窗口，860px 以下收起白鹭并由对话名片承载", () => {
+  it("桌面左白鹭右 480px 会话窗口，860px 以下白鹭收成会话上方一条，矮屏再让出并由对话名片承载", () => {
     expect(theme).toMatch(/\.login-screen\s*\{[^}]*grid-template-columns:\s*1fr 480px 8vw/s)
-    expect(theme).toMatch(/@media \(max-width: 860px\)\s*\{[^@]*\.login-hero\s*\{\s*display:\s*none/s)
+    expect(theme).toMatch(/@media \(max-width: 860px\)\s*\{[^@]*\.login-hero\s*\{[^}]*display:\s*flex/s)
+    expect(theme).toMatch(
+      /@media \(max-width: 860px\) and \(max-height: 600px\)\s*\{[^@]*\.login-hero\s*\{\s*display:\s*none/s,
+    )
     expect(login).toContain('class="login-intro"')
     expect(login).toContain('role="log"')
   })

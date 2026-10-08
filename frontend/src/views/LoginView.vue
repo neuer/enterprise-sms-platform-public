@@ -77,6 +77,36 @@ const DEFAULT_POLICY: PasswordPolicy = {
   forbid_username: true,
   description: "12–128 位，至少包含大小写字母、数字、特殊字符中的三类，不能包含用户名；服务端检查常见或泄露密码",
 }
+/** 会话顶部进度条：「设置新密码」一段只在首次改密会话内出现。 */
+const PROGRESS_LABELS = ["登录方式", "账号", "密码"]
+const CHANGE_LABEL = "设置新密码"
+const CHANGE_STEPS: Step[] = ["new-password", "confirm-password", "changing"]
+const PROGRESS_INDEX: Record<Step, number> = {
+  loading: 0,
+  blocked: 0,
+  choose: 0,
+  account: 1,
+  password: 2,
+  verifying: 2,
+  "new-password": 3,
+  "confirm-password": 3,
+  changing: 3,
+  done: 3,
+}
+/** 输入框左侧标签：只说明当前要发送什么，不反映输入内容。 */
+const FIELD_TAG: Record<Step, string> = {
+  loading: "连接中",
+  blocked: "等待重试",
+  choose: "等待选择",
+  account: "账号",
+  password: "密码",
+  verifying: "密码",
+  "new-password": "新密码",
+  "confirm-password": "确认新密码",
+  changing: "新密码",
+  done: "已验证",
+}
+const SECRET_TAG_STEPS: Step[] = ["password", "verifying", "new-password", "confirm-password", "changing"]
 const CLASS_PATTERNS = [/[a-z]/, /[A-Z]/, /\d/, /[^A-Za-z0-9]/]
 const CN_DIGITS = ["零", "一", "二", "三", "四"]
 const INPUT_STEPS: Step[] = ["account", "password", "new-password", "confirm-password"]
@@ -92,6 +122,14 @@ const PLACEHOLDER: Record<Step, string> = {
   "confirm-password": "再次发送新密码",
   changing: "正在提交…",
   done: "正在进入工作台…",
+}
+
+/** 待命台词首句随浏览器本地时段变化，只读本地时钟，不涉及会话数据。 */
+function greetingFor(hour: number): string {
+  if (hour >= 6 && hour < 11) return "早，有新消息要发？"
+  if (hour >= 18 && hour < 22) return "晚上好，还有消息要发？"
+  if (hour >= 22 || hour < 6) return "夜深了，还有消息要发？"
+  return SAY.idle[0]
 }
 
 const router = useRouter()
@@ -112,7 +150,11 @@ const password = ref("")
 const capsLock = ref(false)
 const policy = ref<PasswordPolicy>(DEFAULT_POLICY)
 const ruleState = ref<boolean[]>([])
-const openedAt = formatHm(new Date())
+const openedOn = new Date()
+const openedAt = formatHm(openedOn)
+const idleLines = [greetingFor(openedOn.getHours()), ...SAY.idle.slice(1)]
+/** 账号输入时白鹭点头：1/2 交替以重启动画；密码步不点头，不随按键给出任何可见反馈。 */
+const nod = ref<0 | 1 | 2>(0)
 const threadRef = ref<HTMLElement | null>(null)
 const usernameInput = ref<HTMLInputElement | null>(null)
 const passwordInput = ref<HTMLInputElement | null>(null)
@@ -135,7 +177,20 @@ const fieldLabel = computed(() =>
     : PLACEHOLDER[step.value],
 )
 const statusText = computed(() => (typing.value ? "正在输入…" : netWarn.value ? "连接不稳定" : "在线"))
-const sayLines = computed(() => SAY[mood.value])
+const sayLines = computed(() => (mood.value === "idle" ? idleLines : SAY[mood.value]))
+const poseClass = computed(() => (mood.value === "listen" && nod.value ? `is-nod-${nod.value}` : ""))
+const progress = computed(() => {
+  const labels = CHANGE_STEPS.includes(step.value) ? [...PROGRESS_LABELS, CHANGE_LABEL] : PROGRESS_LABELS
+  const at = step.value === "done" ? labels.length : PROGRESS_INDEX[step.value]
+  return labels.map((label, index) => ({
+    label,
+    state: index < at ? "done" : index === at ? "current" : "todo",
+  }))
+})
+const fieldTag = computed(() =>
+  step.value === "account" && providerCode.value ? PROVIDER_CATALOG[providerCode.value].ask : FIELD_TAG[step.value],
+)
+const secretTag = computed(() => SECRET_TAG_STEPS.includes(step.value))
 const rules = computed(() => {
   const { min_length: min, max_length: max, required_character_classes: classes, forbid_username } = policy.value
   const list = [
@@ -413,6 +468,11 @@ function onPasswordInput(): void {
   if (INPUT_STEPS.includes(step.value) && step.value !== "account") mood.value = "shy"
 }
 
+function onAccountInput(): void {
+  mood.value = "listen"
+  nod.value = nod.value === 1 ? 2 : 1
+}
+
 function onPasswordKey(event: KeyboardEvent): void {
   capsLock.value = event.getModifierState?.("CapsLock") ?? false
 }
@@ -608,6 +668,7 @@ onBeforeUnmount(() => {
       </defs>
     </svg>
     <h1 class="sr-only">企业短信管理平台登录</h1>
+    <i class="login-sky" aria-hidden="true"></i>
 
     <section class="login-hero" aria-hidden="true">
       <div class="login-stage">
@@ -615,10 +676,20 @@ onBeforeUnmount(() => {
           <span v-for="(line, index) in sayLines" :key="`${mood}-${index}`">{{ line }}</span>
         </div>
         <div class="login-bird">
-          <div class="login-pose">
+          <div :class="['login-pose', poseClass]">
             <span class="login-flip"><LoginEgret /></span>
+            <svg class="login-letter" viewBox="0 0 40 28" focusable="false">
+              <rect x="1" y="1" width="38" height="26" rx="3" />
+              <path d="M2 3l18 13L38 3" />
+              <circle cx="20" cy="16" r="3.4" />
+            </svg>
           </div>
         </div>
+        <svg class="login-letter is-dropped" viewBox="0 0 40 28" focusable="false">
+          <rect x="1" y="1" width="38" height="26" rx="3" />
+          <path d="M2 3l18 13L38 3" />
+          <circle cx="20" cy="16" r="3.4" />
+        </svg>
         <i class="login-floor"></i>
       </div>
       <p class="login-legal">仅限授权人员访问 · 连续失败将临时锁定</p>
@@ -647,6 +718,17 @@ onBeforeUnmount(() => {
           </svg>
         </button>
       </header>
+
+      <ol class="login-steps" aria-label="登录进度" data-testid="login-progress">
+        <li
+          v-for="item in progress"
+          :key="item.label"
+          :class="`is-${item.state}`"
+          :aria-current="item.state === 'current' ? 'step' : undefined"
+        >
+          {{ item.label }}
+        </li>
+      </ol>
 
       <div
         ref="threadRef"
@@ -758,6 +840,13 @@ onBeforeUnmount(() => {
       <form class="login-composer" autocomplete="on" @submit.prevent="submit">
         <label class="login-field">
           <span id="login-field-label" class="sr-only">{{ fieldLabel }}</span>
+          <span
+            :class="['login-field-tag', { 'is-secret': secretTag }]"
+            aria-hidden="true"
+            data-testid="login-field-tag"
+          >
+            {{ fieldTag }}
+          </span>
           <input
             ref="usernameInput"
             v-model="username"
@@ -771,7 +860,7 @@ onBeforeUnmount(() => {
             :tabindex="secretStep ? -1 : 0"
             :placeholder="fieldLabel"
             :disabled="composerOff"
-            @input="mood = 'listen'"
+            @input="onAccountInput"
           />
           <input
             ref="passwordInput"

@@ -249,7 +249,7 @@
   font-display: swap;
   font-weight: 100 900;
   src: url("../assets/fonts/sans/noto-sans-sc-113-subset.woff2") format("woff2-variations");
-  unicode-range: U+26, U+3c, U+d7, U+4e4e, U+5012, U+51b2, U+51b7, U+5220, U+5237, U+523b, U+526f, U+53e5, U+53f3, U+5438, U+552f, U+5706, U+5b88, U+5c01, U+5c04, U+5c3e, U+5c4f, U+5cf0, U+5de6, U+5de8, U+5ef6, U+5f39, U+5fd8, U+6263, U+6267, U+6298, U+62a2, U+62ec, U+6377, U+6388-6389, U+63a2, U+63d2, U+654f, U+65cf, U+65e7, U+6682, U+66f2, U+672b, U+6811, U+6863, U+6982, U+6dfb, U+6f6e, U+76d6, U+7840, U+786c, U+79d2, U+7a33, U+7a3f, U+7a97, U+7ade, U+7b26, U+7e41, U+7f3a, U+80dc, U+811a, U+8131, U+8349, U+83dc, U+8bef, U+8dd1, U+8df3, U+8f6e, U+8ff9, U+900f, U+9014, U+9057, U+9488, U+955c, U+9644, U+964d, U+96f6, U+9732, U+9759, U+9760, U+987a, U+989c, U+9910, U+9f50;
+  unicode-range: U+26, U+3c, U+d7, U+4e4e, U+5012, U+51b2, U+51b7, U+5220, U+5237, U+523b, U+526f, U+53e5, U+53f3, U+5438, U+552f, U+5706, U+5b88, U+5c01, U+5c04, U+5c3e, U+5c4f, U+5cf0, U+5de6, U+5de8, U+5ef6, U+5f39, U+5fd8, U+6263, U+6267, U+6298, U+62a2, U+62ec, U+6377, U+6388-6389, U+63a2, U+63d2, U+654f, U+65e7, U+6682, U+66f2, U+672b, U+6811, U+6863, U+6982, U+6dfb, U+6f6e, U+76d6, U+7840, U+786c, U+79d2, U+7a33, U+7a3f, U+7a97, U+7ade, U+7b26, U+7e41, U+7f3a, U+80dc, U+811a, U+8131, U+8349, U+83dc, U+8bef, U+8dd1, U+8df3, U+8f6e, U+8ff9, U+900f, U+9014, U+9057, U+9488, U+955c, U+9644, U+964d, U+96f6, U+9732, U+9759, U+9760, U+987a, U+989c, U+9910, U+9f50;
 }
 
 @font-face {
@@ -258,7 +258,7 @@
   font-display: swap;
   font-weight: 100 900;
   src: url("../assets/fonts/sans/noto-sans-sc-114-subset.woff2") format("woff2-variations");
-  unicode-range: U+7e, U+2026, U+4e03, U+4e25, U+4e34, U+4e45, U+4eae, U+4f24, U+4f59, U+4f9d, U+5047, U+505c, U+51cf, U+5374, U+5382, U+538b, U+53e6, U+5426, U+542b, U+542f, U+5757, U+57df, U+5a01, U+5ba1, U+5ba3, U+5c42, U+5dee, U+5e8f, U+5ea7, U+5f02, U+5f52, U+6279, U+62ff, U+63cf, U+64cd, U+653b, U+65e9, U+665a, U+66b4, U+677e, U+67b6, U+680f, U+68c0, U+6b7b, U+6bcd, U+6c38, U+6c47, U+6d3e, U+6d4f, U+6fc0, U+73ed, U+7565, U+76ae, U+76d1, U+7834, U+7981, U+7a7f, U+7a81, U+7d27, U+7eaf, U+7eb3, U+7ec7, U+7ee7, U+7eff, U+7ffb, U+805a, U+82e5, U+84dd, U+8865, U+8b66, U+8d1f, U+8ddf, U+8f93, U+8ff0, U+8ffd, U+9000, U+949f, U+9648, U+9669, U+969c, U+987b, U+989d, U+9c9c;
+  unicode-range: U+7e, U+2026, U+4e03, U+4e25, U+4e34, U+4e45, U+4eae, U+4f24, U+4f59, U+4f9d, U+5047, U+505c, U+51cf, U+5374, U+5382, U+538b, U+53e6, U+5426, U+542b, U+542f, U+5757, U+57df, U+591c, U+5a01, U+5ba1, U+5ba3, U+5c42, U+5dee, U+5e8f, U+5ea7, U+5f02, U+5f52, U+6279, U+62ff, U+63cf, U+64cd, U+653b, U+65e9, U+665a, U+66b4, U+677e, U+67b6, U+680f, U+68c0, U+6b7b, U+6bcd, U+6c38, U+6c47, U+6d3e, U+6d4f, U+6fc0, U+73ed, U+7565, U+76ae, U+76d1, U+7834, U+7981, U+7a7f, U+7a81, U+7d27, U+7eaf, U+7eb3, U+7ec7, U+7ee7, U+7eff, U+7ffb, U+805a, U+82e5, U+84dd, U+8865, U+8b66, U+8d1f, U+8ddf, U+8f93, U+8ff0, U+8ffd, U+9000, U+949f, U+9648, U+9669, U+969c, U+987b, U+989d, U+9c9c;
 }
 
 @font-face {
@@ -267,7 +267,7 @@
   font-display: swap;
   font-weight: 100 900;
   src: url("../assets/fonts/sans/noto-sans-sc-115-subset.woff2") format("woff2-variations");
-  unicode-range: U+25, U+4e14, U+4e49, U+4ec5, U+4efd, U+4f4f, U+4f8b, U+5019, U+5145, U+516d, U+5178, U+5199, U+51b3, U+5207, U+5212, U+5219, U+521d, U+52bf, U+5343, U+5347, U+534a, U+536b, U+53f2, U+5403, U+542c, U+547d, U+54cd, U+56f4, U+5747, U+5883, U+589e, U+5931, U+5957, U+5a92, U+5b83, U+5ba4, U+5c14, U+5c1a, U+5c3d, U+5c40, U+5c45, U+5c5e, U+5e72, U+5e95, U+5f80, U+5f85, U+5fd7, U+626b, U+627f, U+62c9, U+6309, U+63a7, U+6545, U+65ad, U+666e, U+667a, U+677f, U+6781, U+6790, U+6821, U+6838-6839, U+6b62, U+6bb5, U+6d4b, U+6ee1, U+6f14, U+72b6, U+72ec, U+7387, U+7533, U+753b, U+76d8, U+7701, U+773c, U+77ed, U+79bb, U+79c1, U+79ef, U+79fb, U+7b56, U+7b97, U+7d20, U+7ec8, U+7edd, U+7eed, U+80cc, U+8303, U+843d, U+89c9, U+89d2, U+8ba2, U+8bbf, U+8bc9, U+8bcd, U+8be6, U+8c61, U+8d26, U+8d8a, U+8f7b, U+8f83, U+8f91, U+8fb9, U+8fd4, U+8fdc, U+9002, U+9519, U+95ed, U+961f, U+9632, U+968f-9690, U+96be, U+9876, U+9884, U+98de, U+9988, U+9ec4, U+ff1b;
+  unicode-range: U+25, U+4e14, U+4e49, U+4ec5, U+4efd, U+4f4f, U+4f8b, U+5019, U+5145, U+516d, U+5178, U+5199, U+51b3, U+5207, U+5212, U+5219, U+521d, U+52bf, U+5343, U+5347, U+534a, U+536b, U+53f2, U+5403, U+542c, U+547d, U+54cd, U+56f4, U+5747, U+5883, U+589e, U+5931, U+5957, U+5a92, U+5b83, U+5ba4, U+5c14, U+5c1a, U+5c3d, U+5c40, U+5c5e, U+5e72, U+5e95, U+5f80, U+5f85, U+5fd7, U+626b, U+627f, U+62c9, U+6309, U+63a7, U+6545, U+65ad, U+666e, U+667a, U+677f, U+6781, U+6790, U+6821, U+6838-6839, U+6b62, U+6bb5, U+6d4b, U+6ee1, U+6f14, U+72b6, U+72ec, U+7387, U+7533, U+753b, U+76d8, U+7701, U+773c, U+77ed, U+79bb, U+79c1, U+79ef, U+79fb, U+7b56, U+7b97, U+7d20, U+7ec8, U+7edd, U+7eed, U+80cc, U+8303, U+843d, U+89c9, U+89d2, U+8ba2, U+8bbf, U+8bc9, U+8bcd, U+8be6, U+8c61, U+8d26, U+8d8a, U+8f7b, U+8f83, U+8f91, U+8fb9, U+8fd4, U+8fdc, U+9002, U+9519, U+95ed, U+961f, U+9632, U+968f-9690, U+96be, U+9876, U+9884, U+98de, U+9988, U+9ec4, U+ff1b;
 }
 
 @font-face {
