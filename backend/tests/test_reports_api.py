@@ -298,3 +298,25 @@ def test_masked_download_keeps_real_step_up_dependency_for_all_readers(
     )
     assert response.status_code == 200, response.text
     assert any(call[0] == "download" for call in service.calls)
+
+
+@pytest.mark.parametrize("decrypted", [False, True])
+def test_revoked_scope_cannot_query_step_up_or_download(
+    monkeypatch: pytest.MonkeyPatch, decrypted: bool,
+) -> None:
+    from app.services.export import ExportNotFound
+
+    client, service, step_up = make_client(role="approver", decrypted=decrypted)
+
+    async def not_accessible(*args: object, **kwargs: object) -> ExportTaskInfo:
+        raise ExportNotFound("export is outside current scope")
+
+    monkeypatch.setattr(service, "get", not_accessible)
+    headers = {"Authorization": "Bearer new-session", "X-Export-Step-Up": "previous-step-up"}
+    base = f"/api/v1/web/reports/export/{PUBLIC_ID}"
+    assert client.get(base, headers=headers).status_code == 404
+    assert client.post(base + "/step-up", headers=headers,
+                       json={"password": "synthetic-password"}).status_code == 404
+    assert client.get(base + "/download", headers=headers).status_code == 404
+    assert step_up.issues == [] and step_up.consumes == []
+    assert not any(call[0] == "download" for call in service.calls)

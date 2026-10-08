@@ -39,13 +39,34 @@ password_for() {
   printf 'redis-domain-probe-%s-%s-0123456789' "$1" "$suffix"
 }
 
+client_password_for() {
+  if [[ "$1" == broker ]]; then
+    password_for broker | python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from prepare_runtime_secrets import broker_runtime_material
+sys.stdout.buffer.write(broker_runtime_material(sys.stdin.buffer.read())["redis_broker_callback_password"])
+' "$ROOT/deploy/scripts"
+  else
+    password_for "$1"
+  fi
+}
+
+username_for() {
+  if [[ "$1" == broker ]]; then
+    printf sms_broker_callback
+  else
+    printf 'sms_%s' "$1"
+  fi
+}
+
 container_for() {
   printf 'sms-redis-domain-%s-%s' "$1" "$suffix"
 }
 
 allowed_key_for() {
   case "$1" in
-    broker) printf 'realtime' ;;
+    broker) printf 'result:callback:probe' ;;
     auth) printf 'auth:probe' ;;
     control) printf 'quota:probe' ;;
   esac
@@ -78,6 +99,22 @@ for domain in "${domains[@]}"; do
       chown 999:1000 /run/secrets/redis_${domain}_password
       chmod 0400 /run/secrets/redis_${domain}_password
     "
+  if [[ "$domain" == broker ]]; then
+    password_for broker | python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from prepare_runtime_secrets import broker_runtime_material, BROKER_ACL_NAME
+sys.stdout.buffer.write(broker_runtime_material(sys.stdin.buffer.read())[BROKER_ACL_NAME])
+' "$ROOT/deploy/scripts" | docker run --rm -i \
+      --user 0:0 --entrypoint sh \
+      --mount "type=volume,source=${secret_volume},target=/run/secrets" \
+      "$image" -ec '
+        umask 077
+        cat > /run/secrets/redis_broker_users.acl
+        chown 999:1000 /run/secrets/redis_broker_users.acl
+        chmod 0400 /run/secrets/redis_broker_users.acl
+      '
+  fi
   docker run -d \
     --name "$container" \
     --mount "type=volume,source=${secret_volume},target=/run/secrets,readonly" \
@@ -105,54 +142,57 @@ for domain in "${domains[@]}"; do
     exit 1
   fi
 
-  password="$(password_for "$domain")"
+  password="$(client_password_for "$domain")"
+  username="$(username_for "$domain")"
   marker="isolated-${domain}"
   allowed_key="$(allowed_key_for "$domain")"
   forbidden_key="$(forbidden_key_for "$domain")"
   printf '%s\n' "$password" | docker exec -i "$container" \
-    redis-cli --user "sms_${domain}" --askpass -e SET "$allowed_key" "$marker" \
+    redis-cli --user "$username" --askpass -e SET "$allowed_key" "$marker" \
     >/dev/null
   observed="$(
     printf '%s\n' "$password" | docker exec -i "$container" \
-      redis-cli --user "sms_${domain}" --askpass --raw -e GET "$allowed_key"
+      redis-cli --user "$username" --askpass --raw -e GET "$allowed_key"
   )"
   if [[ "$observed" != "$marker" ]]; then
     echo "Redis domain returned an unexpected isolation marker" >&2
     exit 1
   fi
   if [[ "$domain" == broker ]]; then
-    celery_reply_key="probe.reply.celery.pidbox-${suffix}"
-    printf '%s\n' "$password" | docker exec -i "$container" \
-      redis-cli --user "sms_${domain}" --askpass -e SET "$celery_reply_key" "$marker" \
-      >/dev/null
-    observed="$(
-      printf '%s\n' "$password" | docker exec -i "$container" \
-        redis-cli --user "sms_${domain}" --askpass --raw -e GET "$celery_reply_key"
-    )"
-    if [[ "$observed" != "$marker" ]]; then
-      echo "Redis broker rejected a scoped Celery pidbox reply key" >&2
+    for forbidden in realtime realtime-report bulk unacked:realtime; do
+      if printf '%s\n' "$password" | docker exec -i "$container" \
+        redis-cli --user "$username" --askpass -e LPUSH "$forbidden" denied \
+        >/dev/null 2>&1; then
+        echo "broker consumer escaped its queue capability" >&2
+        exit 1
+      fi
+    done
+    if printf '%s\n' "$password" | docker exec -i "$container" \
+      redis-cli --user "$username" --askpass -e PUBLISH celery.pidbox denied \
+      >/dev/null 2>&1; then
+      echo "broker remote control unexpectedly enabled" >&2
       exit 1
     fi
   fi
   if printf '%s\n' "$password" | docker exec -i "$container" \
-    redis-cli --user "sms_${domain}" --askpass -e SET "$forbidden_key" denied \
+    redis-cli --user "$username" --askpass -e SET "$forbidden_key" denied \
     >/dev/null 2>&1; then
     echo "Redis ACL unexpectedly allowed a cross-domain key" >&2
     exit 1
   fi
   if printf '%s\n' "$password" | docker exec -i "$container" \
-    redis-cli --user "sms_${domain}" --askpass -e KEYS '*' >/dev/null 2>&1; then
+    redis-cli --user "$username" --askpass -e KEYS '*' >/dev/null 2>&1; then
     echo "Redis ACL unexpectedly allowed key enumeration" >&2
     exit 1
   fi
   if printf '%s\n' "$password" | docker exec -i "$container" \
-    redis-cli --user "sms_${domain}" --askpass -e FLUSHALL >/dev/null 2>&1; then
+    redis-cli --user "$username" --askpass -e FLUSHALL >/dev/null 2>&1; then
     echo "Redis ACL unexpectedly allowed a dangerous command" >&2
     exit 1
   fi
   for dangerous_client_subcommand in PAUSE KILL UNBLOCK; do
     if printf '%s\n' "$password" | docker exec -i "$container" \
-      redis-cli --user "sms_${domain}" --askpass -e CLIENT \
+      redis-cli --user "$username" --askpass -e CLIENT \
       "$dangerous_client_subcommand" 1 >/dev/null 2>&1; then
       echo "Redis ACL unexpectedly allowed a dangerous CLIENT subcommand" >&2
       exit 1
@@ -167,7 +207,8 @@ done
 
 for domain in "${domains[@]}"; do
   container="$(container_for "$domain")"
-  password="$(password_for "$domain")"
+  password="$(client_password_for "$domain")"
+  username="$(username_for "$domain")"
   allowed_key="$(allowed_key_for "$domain")"
   marker="isolated-${domain}"
   docker restart "$container" >/dev/null
@@ -179,7 +220,7 @@ for domain in "${domains[@]}"; do
   done
   observed="$(
     printf '%s\n' "$password" | docker exec -i "$container" \
-      redis-cli --user "sms_${domain}" --askpass --raw -e GET "$allowed_key"
+      redis-cli --user "$username" --askpass --raw -e GET "$allowed_key"
   )"
   if [[ "$observed" != "$marker" ]]; then
     echo "Redis AOF restart did not preserve the domain marker" >&2
@@ -188,12 +229,12 @@ for domain in "${domains[@]}"; do
 done
 
 for source_domain in "${domains[@]}"; do
-  password="$(password_for "$source_domain")"
+  password="$(client_password_for "$source_domain")"
   for target_domain in "${domains[@]}"; do
     [[ "$source_domain" == "$target_domain" ]] && continue
     target_container="$(container_for "$target_domain")"
     if printf '%s\n' "$password" | docker exec -i "$target_container" \
-      redis-cli --user "sms_${target_domain}" --askpass -e PING >/dev/null 2>&1; then
+      redis-cli --user "$(username_for "$target_domain")" --askpass -e PING >/dev/null 2>&1; then
       echo "Redis ACL unexpectedly accepted a credential from another domain" >&2
       exit 1
     fi

@@ -9,7 +9,7 @@
 
 生产必须显式设置 `REDIS_HA_MODE=managed` 或
 `REDIS_HA_MODE=isolated-standalone`。两种生产模式都要求
-broker/auth/control 使用三个不同 host:port 端点、三个独立 ACL 密码和 TLS 主机名校验。
+broker/auth/control 使用三个不同 host:port 端点、三个独立域根凭据（broker 再派生六个独立职责凭据）和 TLS 主机名校验。
 `sms-compose` 与 `deploy/scripts/redis_ha_preflight.py` 会拒绝把 standalone 标成生产 HA。
 
 ### 关键控制事实 fencing
@@ -61,7 +61,7 @@ CA、certificate、canonical private key，运行整套预检后通过普通受�
 
 | 故障域 | 客户端 ACL 用户 | 数据 | 允许消费者 | 故障语义 |
 |---|---|---|---|---|
-| broker | `sms_broker` | Celery 队列与结果 | workers、beat、outbox-dispatcher | PostgreSQL Outbox 保留待发布事件；不得改变认证判断 |
+| broker | `sms_broker_<role>`，按下表隔离 | Celery 队列、按职责隔离的确认与结果 | 对应职责 worker、beat、dispatcher | PostgreSQL Outbox 保留待发布事件；不得改变认证判断 |
 | auth | `sms_auth` | 登录限流、会话撤销、step-up、锁定/封禁 Transition 信封 | api | 不可用时登录、JWT 校验和高风险操作 fail closed |
 | control | `sms_control` | 配额/频控/幂等/业务锁/运行投影 | api、workers、beat | PostgreSQL 事实账本不丢；恢复后重建投影 |
 
@@ -91,7 +91,56 @@ hypervisor 路径、宿主内核、电源和维护窗口，三者共享 Redis VM
 托管 PostgreSQL、KMS、跨机房备份或独立 Redis HA，任何静态配置、单元测试或 AOF 文件存在
 都不能证明上述目标已经实现。
 
-API 容器不挂载 `redis_broker_password`，worker-callback 不挂载 `redis_auth_password`。三个 Redis 服务关闭 default 用户，且不用 `~*` 或 `+@all`：broker 只允许 Celery 的 `realtime`、`realtime-report`、`bulk`、`callback` 四个业务队列及 `_kombu`/Celery 内部键，auth 只允许 `auth:*`、`export:step-up:*`、`vendor-test:step-up:*`，control 只允许已登记的配额、频控、幂等、锁和投影前缀。应用 ACL 不允许 `KEYS`，并拒绝 `ACL`、`CONFIG`、`FLUSHALL`、`FLUSHDB`、`MODULE`、`REPLICAOF`、`SHUTDOWN` 及 `CLIENT PAUSE/KILL/UNBLOCK` 等管理命令；broker 只开放 Celery/redis-py 建连必需的 `CLIENT ID/GETNAME/SETNAME/SETINFO/GETREDIR` 子命令。管理账号不进入应用 Compose；托管平台管理操作只能走受控运维身份和双人审批。
+API 容器不挂载 broker 凭据，worker-callback 不挂载 auth 凭据。default 用户关闭；
+auth 仅允许 `auth:*`、`export:step-up:*`、`vendor-test:step-up:*`，control 仅允许已登记业务前缀。
+broker 不再开放共享 `unacked`、通配队列或 pidbox，详细边界如下。所有职责禁止 `KEYS`、`ACL`、
+`CONFIG`、`FLUSHALL`、`FLUSHDB`、`MODULE`、`REPLICAOF`、`SHUTDOWN` 和 `CLIENT PAUSE/KILL/UNBLOCK`。
+管理账号不进入应用 Compose；托管管理只走受控运维身份和双人审批。
+
+## Broker 职责隔离与首次切换
+
+| 职责 / ACL 用户后缀 | 客户端 | 消费及同队列重投 | 跨队列生产 | 确认/结果 |
+|---|---|---|---|---|
+| realtime | worker-realtime | realtime | 禁止 | 仅 realtime 空间 |
+| report | worker-report | realtime-report | 禁止 | 仅 report 空间 |
+| bulk | worker-bulk | bulk | 禁止 | 仅 bulk 空间 |
+| callback | worker-callback | callback | 禁止 | 仅 callback 空间 |
+| beat | beat | 禁止 | 固定四队列入队及声明 | 无 |
+| dispatcher | outbox-dispatcher | 禁止 | 固定四队列入队及声明 | 无 |
+
+完整用户名为 `sms_broker_<role>`，职责由 `REDIS_BROKER_ROLE` 与 `SMS_COMPONENT` 的固定匹配
+确定，不相信消息自报主体。每个消费者只可访问精确队列、对应 `_kombu.binding.<queue>`、
+`unacked:<role>`、`unacked_index:<role>`、`unacked_mutex:<role>` 及 `result:<role>:*`。
+禁用隐式 priority 后缀（业务优先级仍由 realtime/bulk 调度）、remote control、gossip、mingle 和
+Celery 事件广播；数据库业务心跳不受影响。没有 `realtime*` 这种会误覆盖 realtime-report 的规则。
+同队列重投与独立确认空间必须由真实 Redis/Kombu 恢复测试验证。
+
+消费端 `BrokerTask.before_start` 再核对任务白名单、目标队列、人工任务包装器的嵌套目标；
+拒绝 canvas 回调/链。拒绝不重入毒消息队列。任务签名/任务名不能替代 PostgreSQL 权威状态、
+执行租约、当前权限和发送 CAS。恢复器将批次/分片恢复原子登记到 Outbox，再由 dispatcher
+投递；不得给 realtime 追加 bulk 写权限来兼容旧恢复路径。
+
+`redis_broker_password` 为高熵 canonical 根种子，只供宿主准备器和 Redis 服务端。准备器按
+`HMAC-SHA256(seed, "sms-platform:broker-acl:v1:<role>")` 派生六个客户端密码，分别进入独立
+只读挂载；backend 不再生成根种子副本。服务端 `redis_broker_users.acl` 只包含密码哈希。
+原用户名 `sms_broker` 仅保留受限 PING/LLEN/EVAL 队列长度监测，旧应用不能用它消费或投递。
+**首次启用前必须轮换 canonical 根种子**，不能从可能已经暴露的旧共享密码派生新角色。
+
+首次切换/职责 ACL 轮换必须安排停止入口与发送、停止 beat/dispatcher 并排空活跃调用的完整
+停机窗口，不支持旧共享身份与新职责身份混跑。保存受控配置与 PostgreSQL 恢复点后，轮换
+canonical seed，通过现有运行凭据准备器重新生成 generation；同时安装对应服务端 ACL 与
+所有客户端挂载。托管 Redis 使用受控管理身份安装相同用户、哈希与 selector 规则，须支持
+Redis 7 的 ACL selector；不支持则 No-Go，禁止降级到共享密码或放宽 `~*`。先验证 TLS、职责
+间拒绝矩阵，再在目标 SHA 的完整门禁通过后按正式发布流程启动。本文不授权实际切换。
+
+旧共享 unacked 不复制到新职责空间，不直接重放旧 Celery 消息；停止旧消费者后仅从
+PostgreSQL Outbox 和受控恢复器恢复 pending/到期 retrying 等可恢复事实。submitted、uncertain
+和 unknown_terminal 不因切换重新发送。切换失败保持停服/失败关闭，按现有回退方案成套恢复
+应用与 ACL/客户端 generation；不得混用新代码和旧宽权限 ACL。此变更不改变数据库 schema。
+
+此隔离降低 broker 凭据泄露造成的跨职责投递、确认篡改和控制面访问风险，不隔离宿主/root
+或 Redis 管理账号失陷，不替代数据库角色权限。被攻陷进程仍拥有本职责凭据和既有 DB 权限，
+不得声称“单 worker 失陷完全无影响”。
 
 基础 Compose 中的三个单节点服务仍只用于 development/test 和镜像契约验证；生产
 `isolated-standalone` 必须由正式入口叠加专用 TLS/持久化合同，不能只启动基础 Compose。
@@ -201,3 +250,20 @@ ready 并释放屏障。普通投影写入不发布 ready，中间失败保持�
 必含：时间线、`platform_recovery_elapsed`、RPO 结论、Outbox backlog、
 projection drift、admission state、重建 Owner 数量。禁止 secret、手机号、
 API Key、短信正文。
+
+Celery 默认不存储或订阅任务结果（`task_ignore_result=true`）；调度与执行状态仍以
+PostgreSQL/job_run/Outbox 为准。beat 不因发送周期任务而获得结果键或订阅权限。
+
+
+### 无远程控制的发布健康验证
+
+职责隔离启用后，发布验收不再使用 `celery inspect ping/active_queues`，也不得为了
+通过健康检查而开放 pidbox、远程控制或跨职责 ACL。宿主发布控制器逐一进入既有四个
+worker 容器，使用各自凭据向其固定队列发送无业务副作用的 `app.tasks.worker_probe`。
+响应必须来自实际消费任务进程，并匹配随机挑战、容器主机名及唯一消费队列、exchange、
+routing key；探测前后继续核验容器身份、镜像和健康状态。未消费、超时、错误队列或
+响应绑定不符均不能发布成功，仍走原有回滚/人工恢复状态机。
+
+探测不读取或修改业务数据库，不调用厂商，不使用 Celery 结果订阅；响应仅包含固定运行
+元数据及随机挑战，使用本职责 `result:<role>:` 命名空间，30 秒过期，并在客户端退出时
+清理。它是发布时的消费可用性验证，不替代日常任务心跳和外部监控。

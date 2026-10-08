@@ -7,6 +7,9 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine
+from app.services.category import queue_for_category
+from app.services.outbox import OutboxEventSpec
+from app.services.outbox_repository import enqueue_outbox
 from app.services.reconcile import RecoveryWork
 from app.settings import Settings, get_settings
 from app.vendor.zhihui import VENDOR_TIMEOUT_S
@@ -162,7 +165,7 @@ class SqlRecoveryRepository:
                 from app.services.send_inflight import reconcile_in_flight_reservations
 
                 await reconcile_in_flight_reservations(connection)
-                return [
+                work = [
                     RecoveryWork("batch", str(row["batch_no"]), None, str(row["category"]))
                     for row in batches.mappings()
                 ] + [
@@ -174,5 +177,34 @@ class SqlRecoveryRepository:
                     )
                     for row in chunks.mappings()
                 ]
+                # 恢复器不能持有其他队列的投递能力；跨队列恢复在同一事实事务
+                # 登记 Outbox，由独立 dispatcher 投递，消费时仍重验状态/CAS。
+                for item in work:
+                    lane = queue_for_category(item.category)
+                    if item.kind == "chunk" and item.chunk_id is not None:
+                        await SqlChunkStore._enqueue_chunk_ready(connection, [item.chunk_id], lane)
+                    elif item.kind == "batch":
+                        dedup_key = f"batch.ready:{item.batch_no}"
+                        await enqueue_outbox(
+                            connection,
+                            OutboxEventSpec(
+                                event_type="batch.ready", aggregate_type="sms_batch",
+                                aggregate_id=item.batch_no,
+                                task_name="app.tasks.send.process_batch",
+                                queue=lane, args=(item.batch_no,), dedup_key=dedup_key,
+                            ),
+                        )
+                        await connection.execute(
+                            text("""
+                            UPDATE outbox_event SET state='pending',next_attempt_at=now(),
+                              attempts=0,failure_count=0,lease_id=NULL,lease_expires_at=NULL,
+                              last_error=NULL,completed_at=NULL,updated_at=now()
+                            WHERE dedup_key=:dedup_key AND event_type='batch.ready'
+                              AND state IN ('completed','dead')
+                            """),
+                            {"dedup_key": dedup_key},
+                        )
+                return [RecoveryWork(item.kind, item.batch_no, item.chunk_id,
+                                     item.category, outbox_persisted=True) for item in work]
         finally:
             await engine.dispose()

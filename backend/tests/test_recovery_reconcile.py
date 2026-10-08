@@ -32,3 +32,14 @@ async def test_recovery_requeues_only_repository_selected_fact_source_work() -> 
         ("batch", "batch-1", "realtime"),
         ("chunk", 9, "bulk"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_persisted_recovery_does_not_publish_across_worker_capabilities() -> None:
+    class PersistedRepository:
+        async def stalled(self) -> list[RecoveryWork]:
+            return [RecoveryWork("chunk", "batch", 9, "market", outbox_persisted=True)]
+
+    publisher = FakePublisher()
+    assert await RecoveryReconciler(PersistedRepository(), publisher).run_once() == 1
+    assert publisher.calls == []

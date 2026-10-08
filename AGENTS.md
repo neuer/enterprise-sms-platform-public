@@ -73,6 +73,12 @@
 40. **显式运行时与认证边界**：必须设置 `ENVIRONMENT=development|test|production`，且与 DEBUG/Mock 组合不一致时启动失败；生产关闭 Swagger、ReDoc 与 OpenAPI。API client 与 Web user 路由必须分别声明 API Key/Bearer dependency，禁止以路径前缀或 Header 组合猜测认证类型；新增受保护路由遗漏 dependency 必须由契约测试阻断。QPS、导入大小/行数、超时与锁定时间必须有上界及跨字段约束
 41. **Redis 故障域与 ACL**：broker、auth、control 必须使用不同 endpoint tuple、独立 ACL 密码、进程/容器、AOF 与数据目录。生产默认 `managed`；单 VM `isolated-standalone` 仅在正式风险批准且业务接受整机故障最长停服 12 小时后启用，不能声称高可用。TLS/CA/主机名校验、容量、持久化、外部告警和最小权限完整合同见 [deploy/redis-ha.md](deploy/redis-ha.md)。API 不得获得 broker secret，worker-callback 不得获得 auth secret；auth 故障 fail closed，broker 失败由 PostgreSQL Outbox 保留事实，control 只从 PostgreSQL 重建。
 
+42. **历史导出与 Broker 职责边界**：approver 的本人历史导出也必须匹配当前非空部门，
+角色/部门变更不得因历史创建权恢复跨部门或全局下载。broker 根种子仅宿主/服务端可读；
+worker/beat/dispatcher 使用按职责派生且独立挂载的 ACL 凭据，禁止共享 unacked/pidbox 或
+跨职责入队。消费入口固定白名单及数据库状态复核必须保留；跨队列恢复通过 Outbox。
+生产首次启用要求更换旧共享根种子、全停切换与真实职责拒绝矩阵，见 deploy/redis-ha.md。
+
 ## 工作方式
 
 - 编码与提交使用本任务独立分支/worktree；本任务已有独立工作树时继续复用，新任务从共享主工作树开始时新建。只读任务无需新建。不得覆盖、暂存、搬走或清理其他会话的修改和未跟踪文件。
