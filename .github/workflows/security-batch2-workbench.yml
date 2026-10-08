@@ -25,12 +25,13 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 2
-      - name: Apply verified scoped patch
+      - name: Apply verified scoped patches
+        id: apply
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/fix/security-batch2-20261008
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git rev-parse HEAD^)" = abd231598664520feefc7e5a5f6cdd57a8e8b2c6
+          test "$(git rev-parse HEAD^)" = 1d867fa6dc7841ea9e87a8292eb55c4786fdc44f
           python3 - <<'PY'
           import base64
           import gzip
@@ -39,13 +40,18 @@ jobs:
           import subprocess
           from pathlib import Path
           encoded = ''.join(Path(f'scripts/security_batch2_patch_{i}.b64').read_text() for i in range(1, 5))
-          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
-          if hashlib.sha256(patch).hexdigest() != '281c62b1bf136921f9d717fc8ac6c589ad5d284a8af63c16b62f4f7c3db5b6e5':
-              raise SystemExit('Patch digest mismatch')
-          path = Path(os.environ['RUNNER_TEMP']) / 'batch2.patch'
-          path.write_bytes(patch)
-          subprocess.run(['git', 'apply', '--check', '--unidiff-zero', str(path)], check=True)
-          subprocess.run(['git', 'apply', '--unidiff-zero', str(path)], check=True)
+          patches = [
+              (encoded, '281c62b1bf136921f9d717fc8ac6c589ad5d284a8af63c16b62f4f7c3db5b6e5'),
+              (Path('scripts/security_batch2_followup.b64').read_text(), 'ebe18417c7d347d72756e9707c03c2f62722ee6950db91763f759399b4ca028e'),
+          ]
+          for encoded, expected in patches:
+              patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+              if hashlib.sha256(patch).hexdigest() != expected:
+                  raise SystemExit('Patch digest mismatch')
+              path = Path(os.environ['RUNNER_TEMP']) / 'batch2.patch'
+              path.write_bytes(patch)
+              subprocess.run(['git', 'apply', '--check', '--unidiff-zero', str(path)], check=True)
+              subprocess.run(['git', 'apply', '--unidiff-zero', str(path)], check=True)
           PY
       - name: Set up Python and uv
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990
@@ -64,13 +70,15 @@ jobs:
           uv run --locked ruff format app/core/broker_authorization.py tests/test_broker_authorization.py tests/integration/test_broker_capabilities_redis.py
           uv run --locked ruff check --fix app/core/broker_authorization.py app/services/export.py app/services/export_repository.py app/services/reconcile.py app/services/reconcile_repository.py app/settings.py app/tasks/__init__.py tests/test_broker_authorization.py tests/integration/test_broker_capabilities_redis.py tests/integration/test_export_authorization_postgres.py tests/integration/test_perf_fault_recovery_postgres.py tests/test_compose_contract.py tests/test_deploy_contract.py tests/test_deployment_docs.py tests/test_export_service.py tests/test_gate_scripts.py tests/test_import_tasks.py tests/test_prepare_runtime_secrets.py tests/test_recovery_reconcile.py tests/test_reports_api.py tests/test_settings.py tests/test_sql_service_repositories.py ../deploy/scripts/prepare_runtime_secrets.py
       - name: Run targeted unit and contract regressions
+        if: ${{ !cancelled() && steps.apply.outcome == 'success' }}
         run: |
           cd backend
           uv run --locked pytest -q tests/test_broker_authorization.py tests/test_export_service.py tests/test_export_repository.py tests/test_reports_api.py tests/test_settings.py tests/test_prepare_runtime_secrets.py tests/test_compose_contract.py tests/test_deploy_contract.py tests/test_deployment_docs.py tests/test_gate_scripts.py tests/test_recovery_reconcile.py tests/test_sql_service_repositories.py tests/test_reconcile_task.py tests/test_import_tasks.py tests/test_beat_lock.py
       - name: Run disposable Redis and PostgreSQL authorization regressions
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.apply.outcome == 'success' }}
         run: bash scripts/verify_vendor_postgres_recovery.sh tests/integration/test_broker_capabilities_redis.py tests/integration/test_export_authorization_postgres.py tests/integration/test_perf_fault_recovery_postgres.py
-      - name: Publish only reviewed implementation files
+      - name: Publish scoped work in progress for final CI
+        if: ${{ !cancelled() && steps.apply.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -104,6 +112,6 @@ jobs:
           subprocess.run(['git', 'add', '--', *sorted(allowed)], check=True)
           subprocess.run(['git', 'diff', '--cached', '--check'], check=True)
           PY
-          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix(security): enforce current export scopes and broker capabilities'
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix(security): batch-two implementation pending final CI acceptance'
           git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push origin HEAD:refs/heads/fix/security-batch2-20261008
           echo "PREPARED_HEAD=$(git rev-parse HEAD)"
