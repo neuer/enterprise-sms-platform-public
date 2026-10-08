@@ -22,7 +22,7 @@ from app.core.broker_authorization import (
 pytestmark = pytest.mark.authorization
 
 
-@pytest.mark.parametrize("role,task", product(WORKER_QUEUES, TASK_ROLES))
+@pytest.mark.parametrize("role,task", list(product(WORKER_QUEUES, TASK_ROLES)))
 def test_worker_task_matrix(role: str, task: str) -> None:
     args = (
         next(
