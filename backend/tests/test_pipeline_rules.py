@@ -107,6 +107,7 @@ def test_phone_text_masker_only_replaces_standalone_mobile_numbers(
     expected: str,
 ) -> None:
     assert mask_phone_text(content) == expected
+    assert len(mask_phone_text(content)) == len(content)
 
 
 def test_phone_in_send_content_is_preserved_only_for_send_and_masked_for_persistence() -> None:
