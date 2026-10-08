@@ -4,114 +4,54 @@ on:
     branches: [chore/codeql-triage-pr782-20261008]
     paths: [.github/workflows/codeql-triage-pr782.yml]
 permissions:
-  contents: write
+  contents: read
   pull-requests: read
-  security-events: write
+  security-events: read
 jobs:
-  triage:
+  inspect-alerts:
     if: github.repository == 'neuer/enterprise-sms-platform-public'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Validate exact reviewed alerts and record false-positive decisions
+      - name: Read only exact alert lifecycle metadata
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
           import json
           import os
-          import sys
           import urllib.error
           import urllib.request
-          from urllib.parse import quote
-
           repository = 'neuer/enterprise-sms-platform-public'
           expected_head = '6e18f147e3787d36d3d91170a9792ccad54a82ae'
-          branch = 'chore/codeql-triage-pr782-20261008'
           assert os.environ['GITHUB_REPOSITORY'] == repository
-          assert os.environ['GITHUB_REF'] == 'refs/heads/' + branch
-          token = os.environ['GH_TOKEN']
-          base = 'https://api.github.com/repos/' + repository + '/'
-          def api(path, method='GET', payload=None):
-              data = None if payload is None else json.dumps(payload).encode()
-              request = urllib.request.Request(base + path, data=data, method=method, headers={
-                  'Authorization': 'Bearer ' + token,
-                  'Accept': 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-                  'Content-Type': 'application/json',
-              })
+          assert os.environ['GITHUB_REF'] == 'refs/heads/chore/codeql-triage-pr782-20261008'
+          def api(path):
+              request = urllib.request.Request(
+                  'https://api.github.com/repos/' + repository + '/' + path,
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json',
+                           'X-GitHub-Api-Version': '2022-11-28'})
               try:
                   with urllib.request.urlopen(request, timeout=30) as response:
-                      value = response.read(4 * 1024 * 1024)
-                  return json.loads(value) if value else None
+                      return json.load(response)
               except urllib.error.HTTPError as error:
-                  raise RuntimeError('GitHub API request failed with HTTP ' + str(error.code)) from None
-
+                  raise RuntimeError('GitHub read failed with HTTP ' + str(error.code)) from None
           pr = api('pulls/782')
           assert pr['state'] == 'open' and pr['head']['sha'] == expected_head
-          source = api('contents/deploy/scripts/prepare_runtime_secrets.py?ref=' + expected_head)
-          assert source['sha'] == '4386614616087b2789ee5a1b027212b0ed30fff4'
-          selected = []
-          for number, line in ((33, 704), (34, 716)):
+          for number, line in ((33,704),(34,716)):
               alert = api('code-scanning/alerts/' + str(number))
               assert alert['number'] == number
               assert alert['rule']['id'] == 'py/weak-sensitive-data-hashing'
               assert alert['tool']['name'] == 'CodeQL'
               instances = api('code-scanning/alerts/' + str(number) + '/instances?per_page=100')
-              assert any(
-                  item['location']['path'] == 'deploy/scripts/prepare_runtime_secrets.py'
-                  and item['location']['start_line'] == line
-                  and item.get('commit_sha') in {expected_head, pr.get('merge_commit_sha')}
-                  and item.get('ref') in {
-                      'refs/heads/fix/security-batch2-20261008',
-                      'refs/pull/782/head', 'refs/pull/782/merge',
-                  }
-                  for item in instances
-              ), 'Alert no longer matches the reviewed PR source'
-              assert alert['state'] == 'open' or (
-                  alert['state'] == 'dismissed' and alert['dismissed_reason'] == 'false positive'
-              ), 'Unexpected alert state; no changes made'
-              selected.append(number)
-          reason = (
-              'PR #782: Redis ACL #<hash> requires SHA-256, not a human-password KDF. '
-              'Inputs are high-entropy host seeds / domain-separated HMAC machine credentials. '
-              'See https://redis.io/docs/latest/management/security/acl/ and PR review rationale. Rules unchanged.'
-          )
-          results = []
-          for number in selected:
-              result = api('code-scanning/alerts/' + str(number), 'PATCH', {
-                  'state': 'dismissed', 'dismissed_reason': 'false positive',
-                  'dismissed_comment': reason,
-              })
-              assert result['state'] == 'dismissed'
-              assert result['dismissed_reason'] == 'false positive'
-              assert result['dismissed_comment'] == reason
-              result = api('code-scanning/alerts/' + str(number))
-              assert result['state'] == 'dismissed' and result['dismissed_reason'] == 'false positive'
-              results.append({'alert': number, 'state': result['state'], 'reason': result['dismissed_reason']})
-          print(json.dumps({'pr': 782, 'head': expected_head, 'decisions': results}, sort_keys=True))
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-              summary.write('PR #782 exact Redis ACL protocol triage completed; only alerts 33 and 34.\n')
-              summary.write('CodeQL rules and severity thresholds unchanged. Production entropy/rotation preconditions remain required.\n')
-          PY
-      - name: Remove only the unchanged temporary helper branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 - <<'PY'
-          import json
-          import os
-          import urllib.request
-          from urllib.parse import quote
-          branch = 'chore/codeql-triage-pr782-20261008'
-          assert os.environ['GITHUB_REF'] == 'refs/heads/' + branch
-          base = 'https://api.github.com/repos/neuer/enterprise-sms-platform-public/'
-          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28'}
-          with urllib.request.urlopen(urllib.request.Request(base + 'git/ref/heads/' + quote(branch, safe=''), headers=headers), timeout=30) as response:
-              ref = json.load(response)
-          assert ref['object']['sha'] == os.environ['GITHUB_SHA'], 'Helper branch changed; keep it intact'
-          request = urllib.request.Request(base + 'git/refs/heads/' + quote(branch, safe=''), method='DELETE', headers=headers)
-          with urllib.request.urlopen(request, timeout=30) as response:
-              assert response.status == 204
-          print('Removed unchanged temporary helper branch; PR 782 branch and main were not modified.')
+              matches = [{key: item.get(key) for key in ('ref','commit_sha','state','analysis_key','category')}
+                         for item in instances
+                         if item['location']['path'] == 'deploy/scripts/prepare_runtime_secrets.py'
+                         and item['location']['start_line'] == line]
+              record = {key: alert.get(key) for key in ('number','state','dismissed_reason','dismissed_at','fixed_at')}
+              record['instances'] = matches
+              record['current_head'] = expected_head
+              print(json.dumps(record, sort_keys=True))
+          print('Read-only lifecycle inspection; no alert, source, check or policy changes.')
           PY
