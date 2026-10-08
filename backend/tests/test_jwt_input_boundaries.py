@@ -1,4 +1,5 @@
 """Bound malformed JWT input before library parsing; retain normal auth semantics."""
+
 from __future__ import annotations
 
 import base64
@@ -26,21 +27,33 @@ def token_with_header(header: object) -> str:
 
 
 @pytest.mark.authorization
-@pytest.mark.parametrize("token", ["", "not-a-token", "....", "a" * 8193,
-                                      "a" * 1025 + ".e30.AA", "非ASCII.e30.AA",
-                                      "!!!!.e30.AA", token_with_header([]),
-                                      token_with_header({"alg": "none", "kid": "1"}),
-                                      token_with_header({"alg": "HS256", "kid": []})])
+@pytest.mark.parametrize(
+    "token",
+    [
+        "",
+        "not-a-token",
+        "....",
+        "a" * 8193,
+        "a" * 1025 + ".e30.AA",
+        "非ASCII.e30.AA",
+        "!!!!.e30.AA",
+        token_with_header([]),
+        token_with_header({"alg": "none", "kid": "1"}),
+        token_with_header({"alg": "HS256", "kid": []}),
+    ],
+)
 def test_invalid_inputs_are_credentials_errors(service: JwtService, token: str) -> None:
     with pytest.raises(InvalidCredentials):
         service._decode(token)
 
 
 def test_oversize_input_does_not_reach_parser(
-    service: JwtService, monkeypatch: pytest.MonkeyPatch,
+    service: JwtService,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def unexpected(_: str) -> dict[str, object]:
         raise AssertionError("untrusted oversized token reached parser")
+
     monkeypatch.setattr(jwt, "get_unverified_header", unexpected)
     with pytest.raises(InvalidCredentials):
         service._decode("x" * 8193)
@@ -55,12 +68,17 @@ def test_nested_header_is_rejected_without_uncaught_recursion(service: JwtServic
 
 @pytest.mark.parametrize("entry", ["get_unverified_header", "decode"])
 def test_library_recursion_is_converted_at_decode_boundary(
-    service: JwtService, monkeypatch: pytest.MonkeyPatch, entry: str,
+    service: JwtService,
+    monkeypatch: pytest.MonkeyPatch,
+    entry: str,
 ) -> None:
-    token = service.issue_password_change(account_id=1, identity_id=2,
-                                          provider_code="local", login_name="test-user")
+    token = service.issue_password_change(
+        account_id=1, identity_id=2, provider_code="local", login_name="test-user"
+    )
+
     def fail(*args: object, **kwargs: object) -> dict[str, object]:
         raise RecursionError("untrusted parser detail")
+
     monkeypatch.setattr(jwt, entry, fail)
     with pytest.raises(InvalidCredentials) as caught:
         service._decode(token)
@@ -68,17 +86,24 @@ def test_library_recursion_is_converted_at_decode_boundary(
 
 
 def test_valid_token_still_decodes(service: JwtService) -> None:
-    token = service.issue_password_change(account_id=1, identity_id=2,
-                                          provider_code="local", login_name="test-user")
+    token = service.issue_password_change(
+        account_id=1, identity_id=2, provider_code="local", login_name="test-user"
+    )
     assert service._decode(token)["identity_id"] == 2
 
 
 @pytest.mark.parametrize("change", ["signature", "issuer", "audience", "expiry"])
 def test_signature_and_claim_failures_remain_rejected(service: JwtService, change: str) -> None:
     now = datetime.now(UTC)
-    payload = {"sub": "1", "token_type": "password_change", "jti": "test-only",
-               "iat": now.timestamp(), "exp": int((now + timedelta(minutes=1)).timestamp()),
-               "iss": JWT_ISSUER, "aud": JWT_AUDIENCE}
+    payload = {
+        "sub": "1",
+        "token_type": "password_change",
+        "jti": "test-only",
+        "iat": now.timestamp(),
+        "exp": int((now + timedelta(minutes=1)).timestamp()),
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
+    }
     if change == "issuer":
         payload["iss"] = "other"
     elif change == "audience":

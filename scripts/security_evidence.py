@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Publish aggregate scan evidence; never copy secret matches, snippets or paths."""
+
 from __future__ import annotations
 
 import argparse
@@ -11,8 +12,7 @@ from pathlib import Path
 from typing import Any
 
 TRIVY_IMAGE = (
-    "aquasec/trivy:0.70.0@sha256:"
-    "be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e"
+    "aquasec/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462af68d310f9f4bca710961a41e"
 )
 MAX_REPORT_BYTES = 32 * 1024 * 1024
 SEVERITIES = ("UNKNOWN", "LOW", "MEDIUM", "HIGH", "CRITICAL")
@@ -105,8 +105,13 @@ def _database_metadata(path: Path) -> dict[str, object] | None:
 
 
 def build_evidence(
-    *, raw_path: Path, status_path: Path, db_path: Path,
-    sha: str, run_id: str, attempt: str,
+    *,
+    raw_path: Path,
+    status_path: Path,
+    db_path: Path,
+    sha: str,
+    run_id: str,
+    attempt: str,
 ) -> dict[str, Any]:
     if re.fullmatch(r"[0-9a-f]{40}", sha) is None:
         raise ValueError("invalid candidate binding")
@@ -136,8 +141,10 @@ def build_evidence(
         "created_at": datetime.now(UTC).isoformat(),
         "scanner": {"image": TRIVY_IMAGE, "version": "0.70.0", "database": database},
         "scope": {
-            "target": "repository", "scanners": ["vuln", "misconfig", "secret", "license"],
-            "severity": ["HIGH", "CRITICAL"], "include_dev_dependencies": False,
+            "target": "repository",
+            "scanners": ["vuln", "misconfig", "secret", "license"],
+            "severity": ["HIGH", "CRITICAL"],
+            "include_dev_dependencies": False,
         },
         "publication": "aggregate-only; no matches, snippets, raw paths, tokens or secret hashes",
         **result,
@@ -155,23 +162,33 @@ def main() -> int:
     try:
         if args.check is not None:
             result = _read_json(args.check)
-            return 0 if (
-                isinstance(result, dict) and result.get("outcome") == "passed"
-                and result.get("candidate_sha") == os.environ.get("GITHUB_SHA")
-                and result.get("run_id") == int(os.environ["GITHUB_RUN_ID"])
-                and result.get("run_attempt") == int(os.environ["GITHUB_RUN_ATTEMPT"])
-                and result.get("report_valid") is True
-                and result.get("scanner_exit_code") == 0
-            ) else 1
+            return (
+                0
+                if (
+                    isinstance(result, dict)
+                    and result.get("outcome") == "passed"
+                    and result.get("candidate_sha") == os.environ.get("GITHUB_SHA")
+                    and result.get("run_id") == int(os.environ["GITHUB_RUN_ID"])
+                    and result.get("run_attempt") == int(os.environ["GITHUB_RUN_ATTEMPT"])
+                    and result.get("report_valid") is True
+                    and result.get("scanner_exit_code") == 0
+                )
+                else 1
+            )
         if None in (args.raw, args.status_file, args.db_metadata, args.output):
             raise ValueError("missing input")
         result = build_evidence(
-            raw_path=args.raw, status_path=args.status_file, db_path=args.db_metadata,
-            sha=os.environ["GITHUB_SHA"], run_id=os.environ["GITHUB_RUN_ID"],
+            raw_path=args.raw,
+            status_path=args.status_file,
+            db_path=args.db_metadata,
+            sha=os.environ["GITHUB_SHA"],
+            run_id=os.environ["GITHUB_RUN_ID"],
             attempt=os.environ["GITHUB_RUN_ATTEMPT"],
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        args.output.write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         return 0
     except (OSError, ValueError, TypeError, KeyError, RecursionError, OverflowError):
         print("Security evidence unavailable; release gate remains closed.")
