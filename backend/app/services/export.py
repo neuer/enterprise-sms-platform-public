@@ -192,6 +192,8 @@ class ExportService:
         _validate_range(filters.start, filters.end_exclusive)
         if role != "admin" and filters.dept is not None and filters.dept != dept:
             raise ExportForbidden("不能导出其他部门数据")
+        if role != "admin" and not dept.strip():
+            raise ExportForbidden("当前部门范围不可确认")
         scope_dept = filters.dept if role == "admin" else dept
         phone_hmacs = (
             tuple(self.crypto.hmac_candidates(filters.phone).values())

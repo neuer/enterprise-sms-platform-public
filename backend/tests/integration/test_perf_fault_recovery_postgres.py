@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 
+from app.core.correlation import correlation_scope
 from app.services import reconcile_repository, runtime_heartbeat
 from app.services.outbox import (
     OutboxClaim,
@@ -193,3 +194,45 @@ async def test_same_outbox_event_recovers_after_broker_failure_and_executes_once
     assert completed["state"] == "completed" and completed["lease_id"] is None
     assert completed["remark"] == (original["remark"] or "") + "."
     assert completed["batch_status"] == original["batch_status"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.authorization
+async def test_cross_lane_recovery_is_persisted_without_worker_broker_publication(
+    split_env: Any, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """批量恢复经实际 Outbox 入库；重复巡检不触及跨职责 broker。"""
+    from app.services.reconcile import RecoveryReconciler
+
+    engine = split_env
+    app_id = await _insert_app(engine, uuid4().hex[:16], limit=8)
+    _, chunk_id, _ = await _seed_parent(engine, app_id=app_id, limit=8, status="pending")
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("UPDATE sms_batch SET category='market',updated_at=now()-interval '10 minutes' "
+                 "WHERE id=(SELECT batch_id FROM sms_chunk WHERE id=:id)"),
+            {"id": chunk_id},
+        )
+    monkeypatch.setattr(reconcile_repository, "database_engine", lambda *_a, **_kw: engine)
+    repository = SqlRecoveryRepository(cast(Any, SimpleNamespace(database_url=engine.url)))
+
+    class DeniedPublisher:
+        async def enqueue(self, *args: Any) -> None:
+            raise AssertionError("recovery must use Outbox, not a cross-role broker credential")
+
+        async def enqueue_chunk(self, *args: Any) -> None:
+            raise AssertionError("recovery must use Outbox, not a cross-role broker credential")
+
+    for _ in range(2):
+        with correlation_scope(uuid4()):
+            assert await RecoveryReconciler(repository, DeniedPublisher()).run_once() >= 1
+    async with engine.connect() as connection:
+        rows = (await connection.execute(
+            text("SELECT task_name,queue,args,state FROM outbox_event WHERE dedup_key=:key"),
+            {"key": f"chunk.ready:{chunk_id}"},
+        )).mappings().all()
+    assert len(rows) == 1
+    assert rows[0]["queue"] == "bulk" and rows[0]["args"] == [chunk_id]
+    assert rows[0]["task_name"] == "app.tasks.send.process_chunk"
+    assert rows[0]["state"] == "pending"
+    assert await _chunk_status(engine, chunk_id) == "pending"

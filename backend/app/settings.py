@@ -112,6 +112,9 @@ class Settings(BaseSettings):
     db_scheduler_password_file: Path = Path("/run/secrets/db_scheduler_password")
     db_metrics_password_file: Path = Path("/run/secrets/db_metrics_password")
     redis_ha_mode: Literal["standalone", "isolated-standalone", "managed"] = "standalone"
+    redis_broker_role: Literal[
+        "", "realtime", "report", "bulk", "callback", "beat", "dispatcher"
+    ] = ""
     redis_broker_host: str = "redis"
     redis_broker_port: int = 6379
     redis_broker_db: int = 0
@@ -568,8 +571,18 @@ class Settings(BaseSettings):
             "background",
         }:
             raise RuntimeError("this component is not authorized for the Redis broker")
+        role = self.redis_broker_role
+        allowed = {
+            "worker": {"realtime", "report", "bulk", "callback"},
+            "beat": {"beat"},
+            "background": {"dispatcher"},
+        }
+        if self.sms_component in allowed and role not in allowed[self.sms_component]:
+            raise RuntimeError("Redis broker role does not match the component")
+        if role and self.sms_component not in allowed:
+            raise RuntimeError("this component is not authorized for the Redis broker")
         return self._redis_url(
-            username="sms_broker",
+            username=f"sms_broker_{role}" if role else "sms_broker",
             host=self.redis_broker_host,
             port=self.redis_broker_port,
             database=self.redis_broker_db,

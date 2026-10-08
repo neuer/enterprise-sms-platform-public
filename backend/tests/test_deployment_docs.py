@@ -62,7 +62,13 @@ COMPOSE_INTERNAL_SECRET_ALIASES = {
     "redis_broker_server_password",
     "redis_auth_server_password",
     "redis_control_server_password",
-    "redis_broker_client_password",
+    "redis_broker_users_acl",
+    "redis_broker_realtime_client_password",
+    "redis_broker_report_client_password",
+    "redis_broker_bulk_client_password",
+    "redis_broker_callback_client_password",
+    "redis_broker_beat_client_password",
+    "redis_broker_dispatcher_client_password",
     "redis_auth_client_password",
     "redis_control_client_password",
 }
@@ -111,6 +117,9 @@ def test_compose_and_secret_runbook_cover_exact_production_secrets() -> None:
     )
     assert {Path(item["file"]).name for item in compose_secrets.values()} == (
         PRODUCTION_SECRETS | CONDITIONAL_PRODUCTION_SECRETS
+        | {f"redis_broker_{role}_password" for role in
+           ("realtime", "report", "bulk", "callback", "beat", "dispatcher")}
+        | {"redis_broker_users.acl"}
     )
 
     runbook = read_required("secrets.md")

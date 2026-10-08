@@ -34,8 +34,8 @@ esac
 case "$domain" in
   broker)
     maxmemory='384mb'
-    key_rules='~realtime ~realtime* ~bulk ~bulk* ~callback ~callback* ~celery* ~_kombu* ~unacked ~unacked_index ~unacked_mutex ~*.reply.celery.pidbox*'
-    command_rules='+ping +client|id +client|getname +client|setname +client|setinfo +client|getredir +get +set +setex +psetex +del +exists +expire +pexpire +ttl +pttl +incr +decr +mget +mset +lpush +rpush +lpop +rpop +llen +brpop +rpoplpush +brpoplpush +zadd +zrem +zrange +zrevrange +zrangebyscore +zrevrangebyscore +zremrangebyscore +zscore +hget +hset +hdel +hgetall +hkeys +sadd +srem +smembers +publish +subscribe +psubscribe +unsubscribe +punsubscribe +eval +evalsha +script|load +multi +exec +discard +watch +unwatch'
+    # Broker users and hashes are generated from the host-only seed.
+    # No consumer receives the seed or the ACL file.
     ;;
   auth)
     maxmemory='192mb'
@@ -52,11 +52,20 @@ esac
 acl_file="/run/redis/users.acl"
 umask 077
 mkdir -p /run/redis
-{
-  printf 'user default off\n'
-  printf 'user %s on >%s %s &* %s\n' \
-    "$username" "$password" "$key_rules" "$command_rules"
-} >"$acl_file"
+if [ "$domain" = broker ]; then
+  broker_acl='/run/secrets/redis_broker_users.acl'
+  if [ ! -f "$broker_acl" ] || [ -L "$broker_acl" ] || [ ! -s "$broker_acl" ]; then
+    echo "broker role ACL is unavailable" >&2
+    exit 1
+  fi
+  cat "$broker_acl" >"$acl_file"
+else
+  {
+    printf 'user default off\n'
+    printf 'user %s on >%s %s &* %s\n' \
+      "$username" "$password" "$key_rules" "$command_rules"
+  } >"$acl_file"
+fi
 unset password key_rules command_rules
 
 set -- \

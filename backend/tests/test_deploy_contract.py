@@ -338,11 +338,13 @@ def test_compose_uses_locking_beat_entrypoint_and_fixed_queues() -> None:
     services = compose["services"]
     assert (
         services["worker-realtime"]["command"]
-        == "celery -A app.tasks worker -Q realtime -c 2 -l info"
+        == "celery -A app.tasks worker -Q realtime -c 2 -l info "
+        "--without-gossip --without-mingle --without-heartbeat"
     )
     assert (
         services["worker-report"]["command"]
-        == "celery -A app.tasks worker -Q realtime-report -c 1 -l info"
+        == "celery -A app.tasks worker -Q realtime-report -c 1 -l info "
+        "--without-gossip --without-mingle --without-heartbeat"
     )
     assert services["worker-report"]["cpus"] == 1.0
     assert services["worker-report"]["mem_limit"] == "768m"
@@ -350,10 +352,14 @@ def test_compose_uses_locking_beat_entrypoint_and_fixed_queues() -> None:
     assert "group_add" not in services["worker-report"]
     assert services["worker-report"]["environment"]["DB_WORKER_POOL_SIZE"] == "2"
     assert services["worker-report"]["environment"]["DB_WORKER_MAX_OVERFLOW"] == "0"
-    assert services["worker-bulk"]["command"] == "celery -A app.tasks worker -Q bulk -c 2 -l info"
+    assert services["worker-bulk"]["command"] == (
+        "celery -A app.tasks worker -Q bulk -c 2 -l info "
+        "--without-gossip --without-mingle --without-heartbeat"
+    )
     assert (
         services["worker-callback"]["command"]
-        == "celery -A app.tasks worker -Q callback -c 2 -l info"
+        == "celery -A app.tasks worker -Q callback -c 2 -l info "
+        "--without-gossip --without-mingle --without-heartbeat"
     )
     assert services["beat"]["command"] == "python -m app.tasks.beat"
     assert services["outbox-dispatcher"]["command"] == "python -m app.outbox_dispatcher"

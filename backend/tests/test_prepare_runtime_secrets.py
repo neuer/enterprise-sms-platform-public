@@ -200,7 +200,12 @@ def test_prepare_creates_service_specific_0400_copies(
         "db_export_password",
         "db_scheduler_password",
         "db_metrics_password",
-        "redis_broker_password",
+        "redis_broker_realtime_password",
+        "redis_broker_report_password",
+        "redis_broker_bulk_password",
+        "redis_broker_callback_password",
+        "redis_broker_beat_password",
+        "redis_broker_dispatcher_password",
         "redis_auth_password",
         "redis_control_password",
     }
@@ -222,12 +227,14 @@ def test_prepare_creates_service_specific_0400_copies(
         "audit_system_bulk_context_key",
     }
     assert {path.name for path in (current / "redis").iterdir()} == {
+        "redis_broker_users.acl",
         "redis_broker_password",
         "redis_auth_password",
         "redis_control_password",
         "redis_tls_server_key",
     }
     assert not (current / "backend" / "redis_tls_server_key").exists()
+    assert not (current / "backend" / "redis_broker_password").exists()
     assert (current / "backend" / "api_key_legacy_hmac_pepper").read_bytes() == (
         module.LEGACY_API_KEY_PEPPER_TOMBSTONE
     )
@@ -1083,3 +1090,21 @@ def test_verify_only_current_generation_rejects_stale_runtime_copies(
 
     module.cleanup(runtime_root=runtime, remove_all=False)
     assert module.verify_only_current_generation(runtime_root=runtime) is None
+
+
+def test_broker_material_is_domain_separated_and_has_no_plaintext_in_acl(
+    module: ModuleType,
+) -> None:
+    seed = b"synthetic-broker-seed-not-a-real-credential-0001"
+    values = module.broker_runtime_material(seed)
+    passwords = [values[f"redis_broker_{role}_password"] for role in module.BROKER_ROLES]
+    assert len(set(passwords)) == 6
+    assert all(len(value) == 64 for value in passwords)
+    assert module.broker_runtime_material(seed + b"\r\n") == values
+    assert module.broker_runtime_material(seed + b"2") != values
+    acl = values[module.BROKER_ACL_NAME]
+    assert seed not in acl
+    assert all(value not in acl for value in passwords)
+    assert b"~*" not in acl and b"+@all" not in acl and b"&*" not in acl
+    with pytest.raises(module.RuntimeSecretsError):
+        module.broker_runtime_material(b"too-short")

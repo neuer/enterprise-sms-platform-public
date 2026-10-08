@@ -9,6 +9,7 @@ import binascii
 import contextlib
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -55,12 +56,17 @@ VENDOR_REVOCATION_TOMBSTONE = b"!"
 CONDITIONAL_SECRET_NAMES = frozenset({"api_key_legacy_hmac_pepper"})
 LEGACY_API_KEY_PEPPER_NAME = "api_key_legacy_hmac_pepper"
 LEGACY_API_KEY_PEPPER_TOMBSTONE = VENDOR_REVOCATION_TOMBSTONE
+BROKER_ROLES = ("realtime", "report", "bulk", "callback", "beat", "dispatcher")
+BROKER_DERIVED_SECRET_NAMES = frozenset(f"redis_broker_{role}_password" for role in BROKER_ROLES)
+BROKER_ACL_NAME = "redis_broker_users.acl"
 BACKEND_SECRET_NAMES = (
     CANONICAL_SECRET_NAMES
     | CONDITIONAL_SECRET_NAMES
+    | BROKER_DERIVED_SECRET_NAMES
 ) - {
     "db_owner_password",
     "redis_tls_server_key",
+    "redis_broker_password",
 }
 POSTGRES_SECRET_NAMES = frozenset(
     {
@@ -85,6 +91,7 @@ MIGRATE_SECRET_NAMES = frozenset(
 )
 REDIS_SECRET_NAMES = frozenset(
     {
+        BROKER_ACL_NAME,
         "redis_broker_password",
         "redis_auth_password",
         "redis_control_password",
@@ -673,6 +680,59 @@ def _verify_service_inventory(generation: Path) -> None:
             raise RuntimeSecretsError(f"runtime {service} inventory violates policy")
 
 
+def broker_runtime_material(seed: bytes) -> dict[str, bytes]:
+    """从仅宿主持有的高熵种子派生职责凭据；ACL 只保存 SHA-256 校验值。"""
+
+    seed = seed.rstrip(b"\r\n")
+    if _SERVICE_PASSWORD_PATTERN.fullmatch(seed) is None:
+        raise RuntimeSecretsError("broker derivation seed has invalid format")
+    queues = {"realtime": "realtime", "report": "realtime-report",
+              "bulk": "bulk", "callback": "callback"}
+    queue_names = tuple(queues.values())
+    common = (
+        "+ping +client|id +client|getname +client|setname +client|setinfo "
+        "+client|getredir +multi +exec +discard"
+    )
+    consumer_commands = (
+        "+get +set +setex +psetex +del +exists +expire +pexpire +ttl +pttl "
+        "+mget +lpush +rpush +lpop +rpop +llen +brpop "
+        "+zadd +zrem +zrange +zrevrange +zrangebyscore +zrevrangebyscore "
+        "+zremrangebyscore +zscore +hget +hset +hdel +hgetall +hkeys "
+        "+sadd +srem +smembers +publish +subscribe +psubscribe +unsubscribe "
+        "+punsubscribe +eval +evalsha +script|load +watch +unwatch"
+    )
+    monitor_hash = hashlib.sha256(seed).hexdigest()
+    lines = [
+        "user default off",
+        "user sms_broker on #" + monitor_hash + " resetkeys resetchannels -@all "
+        + " ".join("~" + name for name in queue_names) + " +ping +llen +eval",
+    ]
+    values: dict[str, bytes] = {}
+    for role in BROKER_ROLES:
+        password = hmac.new(
+            seed, f"sms-platform:broker-acl:v1:{role}".encode("ascii"), hashlib.sha256
+        ).hexdigest().encode("ascii")
+        values[f"redis_broker_{role}_password"] = password
+        prefix = (f"user sms_broker_{role} on #" + hashlib.sha256(password).hexdigest()
+                  + " resetkeys resetchannels -@all " + common)
+        if role in queues:
+            queue = queues[role]
+            key_rules = (
+                f"~{queue} ~_kombu.binding.{queue} "
+                f"~unacked:{role} ~unacked_index:{role} ~unacked_mutex:{role} "
+                f"~result:{role}:* &result:{role}:*"
+            )
+            lines.append(prefix + " " + key_rules + " " + consumer_commands)
+        else:
+            # 调度器和 Outbox 只写队列，不读取消息、结果或任何消费者的 unacked。
+            enqueue = " ".join("~" + name for name in queue_names)
+            bindings = " ".join("~_kombu.binding." + name for name in queue_names)
+            lines.append(prefix + f" ({enqueue} +lpush +llen +exists) "
+                         + f"({bindings} +sadd +srem +smembers +exists)")
+    values[BROKER_ACL_NAME] = ("\n".join(lines) + "\n").encode("ascii")
+    return values
+
+
 def _materialize_generation(
     *,
     runtime_root: Path,
@@ -682,6 +742,7 @@ def _materialize_generation(
     redis_tls_public_metadata: bytes | None = None,
     redis_tls_public_metadata_owner: tuple[int, int] = (0, 0),
 ) -> None:
+    values = {**values, **broker_runtime_material(values["redis_broker_password"])}
     generations_root = runtime_root / "generations"
     _ensure_directory(generations_root, 0o700, "generation root")
     old_target = _relative_current_target(runtime_root)
