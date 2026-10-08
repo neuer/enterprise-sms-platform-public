@@ -10,8 +10,11 @@ from app.tasks import celery_app
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
-    name=PROBE_TASK, bind=True, ignore_result=True,
-    soft_time_limit=3, time_limit=5,
+    name=PROBE_TASK,
+    bind=True,
+    ignore_result=True,
+    soft_time_limit=3,
+    time_limit=5,
 )
 def worker_probe(self: Any, nonce: str) -> None:
     """保留 BrokerTask 前置授权，仅响应本职责队列的随机挑战。"""

@@ -52,13 +52,21 @@ def test_bound_probe_response_and_ephemeral_cleanup(queue: str) -> None:
     name, options = app.sent[0]
     assert name == module.PROBE_TASK
     assert options == {
-        "args": (NONCE,), "queue": queue, "exchange": queue, "routing_key": queue,
-        "expires": 30, "ignore_result": True, "retry": False, "delivery_mode": 1,
+        "args": (NONCE,),
+        "queue": queue,
+        "exchange": queue,
+        "routing_key": queue,
+        "expires": 30,
+        "ignore_result": True,
+        "retry": False,
+        "delivery_mode": 1,
     }
     assert len(client.deleted) == 2 and client.deleted[0] == client.deleted[1]
 
 
-@pytest.mark.parametrize("field", ["nonce", "worker", "active_queues", "queue", "exchange", "routing_key"])
+@pytest.mark.parametrize(
+    "field", ["nonce", "worker", "active_queues", "queue", "exchange", "routing_key"]
+)
 def test_wrong_response_is_rejected_and_cleaned(field: str) -> None:
     reply = module.expected_reply("callback", NONCE, HOSTNAME)
     reply[field] = "mismatched"
@@ -97,16 +105,32 @@ def test_broker_failure_is_not_a_success() -> None:
     assert len(client.deleted) == 2
 
 
-@pytest.mark.parametrize("role,queue", [("realtime", "realtime"), ("report", "realtime-report"), ("bulk", "bulk"), ("callback", "callback")])
+@pytest.mark.parametrize(
+    "role,queue",
+    [
+        ("realtime", "realtime"),
+        ("report", "realtime-report"),
+        ("bulk", "bulk"),
+        ("callback", "callback"),
+    ],
+)
 def test_consumer_response_proves_its_own_queue(role: str, queue: str) -> None:
     client = FakeClient()
     app = fake_app(client)
-    app.amqp = SimpleNamespace(queues=SimpleNamespace(consume_from={
-        queue: SimpleNamespace(routing_key=queue, exchange=SimpleNamespace(name=queue)),
-    }))
-    task = SimpleNamespace(app=app, request=SimpleNamespace(
-        hostname=HOSTNAME, delivery_info={"routing_key": queue},
-    ))
+    app.amqp = SimpleNamespace(
+        queues=SimpleNamespace(
+            consume_from={
+                queue: SimpleNamespace(routing_key=queue, exchange=SimpleNamespace(name=queue)),
+            }
+        )
+    )
+    task = SimpleNamespace(
+        app=app,
+        request=SimpleNamespace(
+            hostname=HOSTNAME,
+            delivery_info={"routing_key": queue},
+        ),
+    )
     module.consume_probe(task, NONCE, role)
     key, ttl, value = client.writes[0]
     assert key.endswith(NONCE.encode()) and ttl == 30
@@ -119,9 +143,13 @@ def test_consumer_rejects_misbinding_without_writing(kind: str) -> None:
     app = fake_app(client)
     queue = SimpleNamespace(routing_key="callback", exchange=SimpleNamespace(name="callback"))
     app.amqp = SimpleNamespace(queues=SimpleNamespace(consume_from={"callback": queue}))
-    task = SimpleNamespace(app=app, request=SimpleNamespace(
-        hostname=HOSTNAME, delivery_info={"routing_key": "callback"},
-    ))
+    task = SimpleNamespace(
+        app=app,
+        request=SimpleNamespace(
+            hostname=HOSTNAME,
+            delivery_info={"routing_key": "callback"},
+        ),
+    )
     if kind == "extra_queue":
         app.amqp.queues.consume_from["bulk"] = queue
     elif kind == "exchange":
@@ -135,10 +163,14 @@ def test_consumer_rejects_misbinding_without_writing(kind: str) -> None:
     assert not client.writes
 
 
-@pytest.mark.parametrize("queue,nonce,hostname", [
-    ("unknown", NONCE, HOSTNAME), ("callback", "bad", HOSTNAME),
-    ("callback", NONCE, "not-a-celery-node"),
-])
+@pytest.mark.parametrize(
+    "queue,nonce,hostname",
+    [
+        ("unknown", NONCE, HOSTNAME),
+        ("callback", "bad", HOSTNAME),
+        ("callback", NONCE, "not-a-celery-node"),
+    ],
+)
 def test_invalid_bindings_never_publish(queue: str, nonce: str, hostname: str) -> None:
     app = fake_app(FakeClient())
     with pytest.raises(ValueError):
@@ -148,23 +180,44 @@ def test_invalid_bindings_never_publish(queue: str, nonce: str, hostname: str) -
 
 @pytest.mark.parametrize("mode", ["success", "wrong_role", "connection_error"])
 def test_cli_prints_only_validated_status_and_restores_logging(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    mode: str,
 ) -> None:
     from app import settings as settings_module
     from app import tasks
 
     previous = module.logging.root.manager.disable
-    monkeypatch.setattr(module.sys, "argv", [
-        "probe", "--queue", "callback", "--nonce", NONCE, "--hostname", HOSTNAME,
-    ])
-    monkeypatch.setattr(settings_module, "get_settings", lambda: SimpleNamespace(
-        sms_component="worker", redis_broker_role="bulk" if mode == "wrong_role" else "callback",
-    ))
-    app = fake_app(FakeClient(json.dumps(module.expected_reply("callback", NONCE, HOSTNAME)).encode()))
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "probe",
+            "--queue",
+            "callback",
+            "--nonce",
+            NONCE,
+            "--hostname",
+            HOSTNAME,
+        ],
+    )
+    monkeypatch.setattr(
+        settings_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            sms_component="worker",
+            redis_broker_role="bulk" if mode == "wrong_role" else "callback",
+        ),
+    )
+    app = fake_app(
+        FakeClient(json.dumps(module.expected_reply("callback", NONCE, HOSTNAME)).encode())
+    )
     app.conf = SimpleNamespace(update=lambda **_: None, broker_transport_options={})
     if mode == "connection_error":
+
         def fail(*_args: object, **_kwargs: object) -> None:
             raise RuntimeError("synthetic credential that must not be printed")
+
         app.send_task = fail
     monkeypatch.setattr(tasks, "celery_app", app)
     assert module.main() == (0 if mode == "success" else 1)

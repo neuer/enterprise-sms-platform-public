@@ -800,6 +800,8 @@ async def test_recovery_repository_selects_only_recoverable_work(
             FakeResult(),
             FakeResult(),
             FakeResult(),
+            FakeResult(rowcount=1),  # re-arm batch.ready
+            FakeResult(rowcount=1),  # re-arm chunk.ready
         ]
     )
     engine = FakeEngine(connection)
@@ -853,6 +855,16 @@ async def test_recovery_repository_selects_only_recoverable_work(
     assert "submitted" not in enqueue_sql
     assert "uncertain" not in enqueue_sql
     assert "unknown_terminal" not in enqueue_sql
+    assert not connection.results
+    rearmed = [
+        (sql, params) for sql, params in connection.calls if "UPDATE outbox_event SET" in sql
+    ]
+    assert [params["dedup_key"] for _, params in rearmed] == [
+        "batch.ready:batch-1",
+        "chunk.ready:8",
+    ]
+    assert all("state IN ('completed','dead')" in sql for sql, _ in rearmed)
+    assert all("lease_id=NULL" in sql and "lease_expires_at=NULL" in sql for sql, _ in rearmed)
     assert engine.disposed
 
 
@@ -1114,7 +1126,10 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
     assert "WHEN b.status='completed_unknown' THEN 'completed_unknown'" in connection.calls[9][0]
     assert "GROUP BY" not in connection.calls[9][0]
     assert connection.calls[9][1] == {
-        "batch_id": 3, "delta": 0, "delivered_delta": 1, "failed_delta": 0,
+        "batch_id": 3,
+        "delta": 0,
+        "delivered_delta": 1,
+        "failed_delta": 0,
         "active_delta": -1,
     }
     assert "SELECT status FROM sms_batch" in connection.calls[10][0]

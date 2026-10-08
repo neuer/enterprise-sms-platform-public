@@ -27,8 +27,12 @@ def expected_reply(queue: str, nonce: str, hostname: str) -> dict[str, object]:
     ):
         raise ValueError("invalid worker probe binding")
     return {
-        "schema_version": 1, "nonce": nonce, "worker": hostname,
-        "queue": queue, "exchange": queue, "routing_key": queue,
+        "schema_version": 1,
+        "nonce": nonce,
+        "worker": hostname,
+        "queue": queue,
+        "exchange": queue,
+        "routing_key": queue,
         "active_queues": [queue],
     }
 
@@ -76,8 +80,15 @@ def run_probe(app: Any, queue: str, nonce: str, hostname: str) -> dict[str, obje
         # 不使用 AsyncResult/get 或控制广播，避免结果订阅和额外队列能力。
         client.delete(key)
         app.send_task(
-            PROBE_TASK, args=(nonce,), queue=queue, exchange=queue, routing_key=queue,
-            expires=PROBE_TTL_SECONDS, ignore_result=True, retry=False, delivery_mode=1,
+            PROBE_TASK,
+            args=(nonce,),
+            queue=queue,
+            exchange=queue,
+            routing_key=queue,
+            expires=PROBE_TTL_SECONDS,
+            ignore_result=True,
+            retry=False,
+            delivery_mode=1,
         )
         while time.monotonic() < deadline:
             raw = client.get(key)
@@ -108,9 +119,10 @@ def main() -> int:
         from app.tasks import celery_app
 
         settings = get_settings()
-        if settings.sms_component != "worker" or WORKER_QUEUES.get(
-            settings.redis_broker_role
-        ) != args.queue:
+        if (
+            settings.sms_component != "worker"
+            or WORKER_QUEUES.get(settings.redis_broker_role) != args.queue
+        ):
             raise ValueError("worker probe capability mismatch")
         # 只限制探测进程的连接等待；不修改运行中 worker 的配置或任何 ACL。
         celery_app.conf.update(
@@ -120,7 +132,8 @@ def main() -> int:
             result_backend_always_retry=False,
         )
         celery_app.conf.broker_transport_options.update(
-            socket_connect_timeout=3, socket_timeout=3,
+            socket_connect_timeout=3,
+            socket_timeout=3,
         )
         result = run_probe(celery_app, args.queue, args.nonce, args.hostname)
     except Exception:

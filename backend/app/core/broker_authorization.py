@@ -59,6 +59,7 @@ TASK_ROLES: dict[str, frozenset[str]] = {
         ),
         frozenset({"callback"}),
     ),
+    "app.tasks.worker_probe": frozenset(WORKER_QUEUES),
     "app.tasks.poll_report": frozenset({"report"}),
     "app.tasks.send.process_batch": frozenset({"realtime", "bulk"}),
     "app.tasks.send.process_chunk": frozenset({"realtime", "bulk"}),
