@@ -328,3 +328,17 @@ def test_persisted_export_filters_cannot_bypass_metadata_validation() -> None:
     for field in ("status", "batch_no", "scope_dept"):
         with pytest.raises(ValueError):
             ExportFilterSet.from_safe_json({"dataset": "message", field: "13800138000"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["approver", "operator", "viewer"])
+@pytest.mark.parametrize("dept", ["", "   "])
+async def test_non_admin_empty_scope_never_creates_export(role: str, dept: str) -> None:
+    repository = FakeRepository()
+    service = ExportService(repository, crypto(), retention_days=7)
+    with pytest.raises(ExportForbidden):
+        await service.create(
+            ExportRequestFilters(), decrypted=False,
+            principal=principal(1, "synthetic-user", role, dept),
+        )
+    assert repository.calls == []

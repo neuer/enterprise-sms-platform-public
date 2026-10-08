@@ -14,6 +14,7 @@ class RecoveryWork:
     batch_no: str
     chunk_id: int | None
     category: str
+    outbox_persisted: bool = False
 
 
 class RecoveryRepository(Protocol):
@@ -34,6 +35,8 @@ class RecoveryReconciler:
     async def run_once(self) -> int:
         work = await self.repository.stalled()
         for item in work:
+            if item.outbox_persisted:
+                continue
             queue = queue_for_category(item.category)
             if item.kind == "batch":
                 await self.publisher.enqueue(item.batch_no, queue)

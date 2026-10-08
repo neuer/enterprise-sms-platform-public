@@ -28,18 +28,14 @@ EXPORT_ACCESS_PREDICATE = """
                             :actor_role='admin'
                             OR (
                               :actor_role='approver'
-                              AND (
-                                creator_account_id=:actor_account_id
-                                OR (
-                                  scope_dept IS NOT NULL
-                                  AND scope_dept=CAST(:actor_dept AS varchar(128))
-                                )
-                              )
+                              AND NULLIF(btrim(scope_dept),'') IS NOT NULL
+                              AND scope_dept=CAST(:actor_dept AS varchar(128))
                             )
                             OR (
                               :actor_role IN ('operator','viewer')
                               AND creator_account_id=:actor_account_id
                               AND scope_dept IS NOT NULL
+                              AND NULLIF(btrim(scope_dept),'') IS NOT NULL
                               AND scope_dept=CAST(:actor_dept AS varchar(128))
                             )
                           )

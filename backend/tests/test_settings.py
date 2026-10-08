@@ -546,6 +546,7 @@ def test_production_redis_domains_require_verified_tls(
         environment="production",
         trusted_hosts="testserver,sms.example.test",
         sms_component="worker",
+        redis_broker_role="realtime",
         debug=False,
         auth_mock=False,
         vendor_mock=False,
@@ -574,7 +575,7 @@ def test_production_redis_domains_require_verified_tls(
         else ("redis", "redis-auth", "redis-control")
     )
     assert settings.redis_broker_url == (
-        f"rediss://sms_broker:broker-pass@{expected_hosts[0]}:6379/0" + expected_query
+        f"rediss://sms_broker_realtime:broker-pass@{expected_hosts[0]}:6379/0" + expected_query
     )
     assert settings.redis_auth_url == (
         f"rediss://sms_auth:auth-pass@{expected_hosts[1]}:6379/0" + expected_query
@@ -718,6 +719,7 @@ def test_production_isolated_standalone_fails_closed_without_secret(
         environment="production",
         trusted_hosts="testserver,sms.example.test",
         sms_component="worker",
+        redis_broker_role="realtime",
         debug=False,
         auth_mock=False,
         vendor_mock=False,
@@ -850,6 +852,7 @@ def test_runtime_credentials_are_read_from_configured_files(tmp_path: Path) -> N
         _env_file=None,
         environment="test",
         sms_component="worker",
+        redis_broker_role="realtime",
         debug=True,
         auth_mock=True,
         vendor_mock=True,
@@ -1066,3 +1069,16 @@ def test_auth_session_policy_windows_require_refresh_less_than_staleness() -> No
     assert settings.auth_session_policy_refresh_interval_s == 5.0
     assert settings.auth_session_policy_max_staleness_s == 15.0
     assert settings.auth_session_policy_reconcile_timeout_s == 2.0
+
+
+@pytest.mark.parametrize("component,role", [
+    ("worker", ""), ("worker", "dispatcher"), ("beat", "callback"),
+    ("background", "realtime"), ("api", "dispatcher"),
+])
+def test_broker_roles_fail_closed_before_secret_read(component: str, role: str) -> None:
+    settings = load_settings_module().Settings(
+        _env_file=None, environment="test", debug=True, auth_mock=True,
+        vendor_mock=True, sms_component=component, redis_broker_role=role,
+    )
+    with pytest.raises(RuntimeError):
+        _ = settings.redis_broker_url

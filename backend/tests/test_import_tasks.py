@@ -86,6 +86,7 @@ def test_production_celery_redis_transport_requires_verified_tls(
         {
             "ENVIRONMENT": "production",
             "SMS_COMPONENT": "worker",
+            "REDIS_BROKER_ROLE": "realtime",
             "DEBUG": "0",
             "AUTH_MOCK": "0",
             "VENDOR_MOCK": "0",
