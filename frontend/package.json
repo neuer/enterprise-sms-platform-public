@@ -23,7 +23,7 @@
     "echarts": "6.1.0",
     "element-plus": "2.14.3",
     "pinia": "3.0.4",
-    "vue": "3.5.39",
+    "vue": "3.5.43",
     "vue-router": "5.1.0"
   },
   "devDependencies": {
@@ -46,12 +46,13 @@
     "vue-tsc": "3.3.7"
   },
   "overrides": {
-    "brace-expansion": "5.0.9",
+    "brace-expansion": "5.0.12",
     "minimatch": "10.2.6",
     "postcss": "8.5.23",
-    "undici": "7.29.0",
+    "undici": "7.30.0",
     "@redocly/openapi-core": {
       "js-yaml": "4.3.2"
-    }
+    },
+    "source-map-js": "1.2.2"
   }
 }

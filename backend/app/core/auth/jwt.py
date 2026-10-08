@@ -1123,9 +1123,17 @@ class JwtService:
         *,
         allow_expired: bool = False,
     ) -> dict[str, Any]:
+        # Bound attacker-controlled input before Base64/JSON parsing.
+        if (
+            not isinstance(token, str)
+            or not 1 <= len(token) <= 8192
+            or not token.isascii()
+            or len(token.partition(".")[0]) > 1024
+        ):
+            raise InvalidCredentials("无效或已吊销的令牌")
         try:
             header = jwt.get_unverified_header(token)
-        except jwt.PyJWTError:
+        except (jwt.PyJWTError, RecursionError):
             raise InvalidCredentials("无效或已吊销的令牌") from None
         kid = header.get("kid")
         if kid is None:
@@ -1153,7 +1161,7 @@ class JwtService:
                     "verify_iss": False,
                 },
             )
-        except jwt.PyJWTError:
+        except (jwt.PyJWTError, RecursionError):
             raise InvalidCredentials("无效或已吊销的令牌") from None
         if payload.get("iss") != JWT_ISSUER or payload.get("aud") != JWT_AUDIENCE:
             raise InvalidCredentials("无效或已吊销的令牌")
