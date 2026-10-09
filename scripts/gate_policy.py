@@ -33,7 +33,11 @@ ORDINARY_ROOT_DOCS = frozenset({"README.md", "CONTRIBUTING.md"})
 # 拆分时必须在此登记新文件；check_invariants 会拒绝未登记的同前缀新文件。
 SPLIT_MODULE_PARTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
-        "services/pipeline.py": (),
+        "services/pipeline.py": (
+            "services/pipeline_admission.py",
+            "services/pipeline_contracts.py",
+            "services/pipeline_idempotency.py",
+        ),
         "services/usage_ledger.py": (),
         "tasks/send_repository.py": (
             "tasks/send_repository_attempt.py",
