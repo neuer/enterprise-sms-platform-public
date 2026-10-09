@@ -3,22 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-import hmac
-import json
 import logging
 import re
 import sys
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from math import ceil
-from typing import Any, Literal, Protocol
+from typing import Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from app.core.apikey import ApiAppContext
 from app.core.auth.accounts import (
-    ActorPrincipal,
     ApplicationPrincipal,
     SecurityPrincipal,
     UncertainEffectPrincipal,
@@ -28,7 +25,7 @@ from app.core.sensitive_text import reject_phone_business_id, reject_phone_in_te
 from app.services.app_ratelimit import ApplicationRateLimiter
 from app.services.approval import requires_approval
 from app.services.billing import calculate_segments
-from app.services.category import CategoryPolicy, coerce_market_dispatch, policy_for_category
+from app.services.category import coerce_market_dispatch, policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
 from app.services.freq import FrequencyLimits
 from app.services.idempotency import (
@@ -38,96 +35,76 @@ from app.services.idempotency import (
     IdempotencyCoordinationTimeout,
     IdempotencyFingerprint,
     IdempotencyScope,
-    uncertain_resend_biz_id,
     usage_request_key,
 )
 from app.services.masking import mask_phone_text, mask_verify_otp
+from app.services.pipeline_contracts import (
+    AcceptancePreauthorization,
+    AcceptCommitConflict,
+    AcceptCommitUnknown,
+    AllFiltered,
+    BatchCommand,
+    BatchResponse,
+    ConsentRequired,
+    FailedSourceReference,
+    FrequencyPort,
+    IdempotencyClaimLost,
+    IdempotencyPort,
+    InFlightLimitExceeded,
+    InFlightQueryUnavailable,
+    InvalidContent,
+    MarketApiBulkForbidden,
+    PipelineConfig,
+    PipelineStore,
+    QueuePublisher,
+    QuotaExemptionExpired,
+    QuotaPort,
+    RecipientGuard,
+    SendAdmissionPort,
+    SendRequest,
+    SensitiveWord,
+    SignPort,
+    StoredBatch,
+    TemplatePort,
+    UsageLedgerPort,
+    VendorTestConsoleOnly,
+)
+from app.services.pipeline_idempotency import AcceptanceIdempotencyMixin
 from app.services.send_inflight import InFlightInvariantViolation as InFlightInvariantViolation
-from app.services.uncertain_source import UncertainSourceProof
 from app.services.usage_ledger import FrequencyDecisionItem
-from app.services.usage_subject import UsageSubject
-from app.settings import get_settings
+
+# 契约与准入/幂等步骤已拆到 pipeline_* 模块；调用方继续从这里导入。
+__all__ = [
+    "AcceptancePreauthorization",
+    "AcceptCommitConflict",
+    "AcceptCommitUnknown",
+    "AllFiltered",
+    "ApiAppContext",
+    "BatchCommand",
+    "BatchResponse",
+    "ConsentRequired",
+    "FailedSourceReference",
+    "IdempotencyClaimLost",
+    "IdempotencyConflict",
+    "InFlightInvariantViolation",
+    "InFlightLimitExceeded",
+    "InFlightQueryUnavailable",
+    "InvalidContent",
+    "MarketApiBulkForbidden",
+    "PipelineConfig",
+    "prepare_content",
+    "PreparedContent",
+    "QuotaExemptionExpired",
+    "SendPipeline",
+    "SendRequest",
+    "SensitiveWord",
+    "StoredBatch",
+    "VendorTestConsoleOnly",
+]
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 LOGGER = logging.getLogger(__name__)
-CLAIM_CLEANUP_TIMEOUT_S = 2.0
 PHONE_NUMBER = re.compile(r"^1\d{10}$")
-
-
-def _same_digest(left: str, right: str) -> bool:
-    if len(left) != len(right):
-        return False
-    return hmac.compare_digest(left, right)
-
-
-def _canonical_scheduled_at(value: datetime | None) -> str | None:
-    """把定时时刻归一为 UTC 瞬时，避免 +08:00 / Z 两种写法打出不同指纹。"""
-
-    if value is None:
-        return None
-    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
-
-
-class ConsentRequired(ValueError):
-    """Web 营销未确认用户同意，对应 CONSENT_REQUIRED/422。"""
-
-
-class InvalidContent(ValueError):
-    """最终下发内容不满足长度约束。"""
-
-
-class AllFiltered(ValueError):
-    """号码经过去重/黑名单/频控后为空，对应 ALL_FILTERED/422。"""
-
-
-class SensitiveWord(ValueError):
-    """内容命中阻断敏感词，对应 SENSITIVE_WORD/422。"""
-
-
-class IdempotencyClaimLost(RuntimeError):
-    """幂等临时租约丢失；当前请求必须在进入后续副作用前终止。"""
-
-
-class VendorTestConsoleOnly(PermissionError):
-    """受控真实模式只允许系统配置页的单号码 UAT 入口。"""
-
-
-class MarketApiBulkForbidden(PermissionError):
-    """API 营销大批量未预授权，对应 FORBIDDEN/403。"""
-
-
-class InFlightLimitExceeded(RuntimeError):
-    """单应用在途分片已达上限，对应 RATE_LIMITED/429。"""
-
-
-class InFlightQueryUnavailable(RuntimeError):
-    """在途分片查询失败，必须失败关闭。"""
-
-
-class AcceptCommitUnknown(RuntimeError):
-    """COMMIT 结果无法确认，对应 DEPENDENCY_UNAVAILABLE/503。"""
-
-
-class AcceptCommitConflict(RuntimeError):
-    """reservation 已绑定不一致批次，对应 STATE_CONFLICT/409。"""
-
-
-class QuotaExemptionExpired(RuntimeError):
-    """无限额度豁免已到期，不得把 daily_quota=0 继续当作无限。"""
-
-
-class SendAdmissionPort(Protocol):
-    """新发送积压准入；幂等重放不得调用。"""
-
-    async def authorize(
-        self,
-        *,
-        category: str,
-        channel: str,
-        recipient_count: int,
-        estimated_segments: int | None = None,
-        estimated_chunks: int | None = None,
-    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,365 +149,11 @@ def prepare_content(
     return PreparedContent(send_content, persisted, segments)
 
 
-@dataclass(frozen=True, slots=True)
-class FailedSourceReference:
-    """失败重发的原消息快照，只携带稳定引用和不可逆号码索引。"""
-
-    message_id: int
-    created_at: datetime
-    phone_hmac: str
-    key_version: int
-
-
-@dataclass(frozen=True, slots=True)
-class SendRequest:
-    category: str
-    mobiles: Sequence[str]
-    content: str | None = None
-    template_id: int | None = None
-    template_params: Sequence[str] | None = None
-    sign_name: str | None = None
-    scheduled_at: datetime | None = None
-    biz_id: str | None = None
-    channel: str = "api"
-    consent_confirmed: bool = False
-    actor: ActorPrincipal | None = None
-    is_test: bool = False
-    remark: str | None = None
-    resend_of: str | None = None
-    resend_dept: str | None = None
-    failed_sources: tuple[FailedSourceReference, ...] = ()
-    protected_mobiles: Sequence[ProtectedPhone] = ()
-    protected_hmac_candidates: Sequence[tuple[int, str]] = ()
-    vendor_test_uat: bool = False
-    import_reservation_id: UUID | None = None
-    usage_subject: UsageSubject | None = None
-    uncertain_source_proof: UncertainSourceProof | None = field(default=None, repr=False)
-
-
-@dataclass(frozen=True, slots=True)
-class AcceptancePreauthorization:
-    """号码解析前已消费的应用限流与类别授权结果。"""
-
-    app_id: int
-    category: str
-    policy: CategoryPolicy
-
-
-@dataclass(frozen=True, slots=True)
-class PipelineConfig:
-    unsubscribe_suffix: str = "回T退订"
-    unsubscribe_auto_append: bool = True
-    verify_otp_mask: bool = True
-    verify_per_minute: int = 1
-    verify_per_day: int = 10
-    market_per_day: int = 1
-    dept_daily_quota: int = 0
-    market_window: str = "08:00-21:00"
-    sensitive_hit_action: str = "block"
-    approval_threshold: int = 100
-    market_approval_threshold: int = 50
-    approval_expire_hours: int = 24
-    test_send_max: int = 5
-    max_schedule_ahead_days: int = 90
-    vendor_batch_size: int = 500
-
-
-@dataclass(frozen=True, slots=True)
-class BatchCommand:
-    batch_no: str
-    app_id: int | None
-    dept: str
-    category: str
-    channel: str
-    display_content_enc: bytes
-    send_content_enc: bytes
-    sign_name: str | None
-    template_id: int | None
-    biz_id: str | None
-    segments: int
-    quota_cost: int
-    status: str
-    deferred_reason: str | None
-    scheduled_at: datetime | None
-    removed_duplicate: int
-    removed_blacklist: int
-    removed_freq: int
-    principal: ActorPrincipal
-    approval_expire_hours: int
-    approval_threshold: int | None
-    is_test: bool
-    consent_confirmed: bool
-    remark: str | None
-    resend_of: str | None
-    usage_reservation_id: UUID | None
-    import_reservation_id: UUID | None
-    messages: tuple[ProtectedPhone, ...]
-    scope_kind: str
-    scope_id: str
-    failed_sources: tuple[FailedSourceReference, ...] = ()
-    request_hash: str | None = None
-    request_hash_key_version: int | None = None
-    inflight_reservation_id: int | None = None
-    inflight_reservation_generation: int | None = None
-    idempotency_claim_token: str | None = None
-    idempotency_claim_generation: int | None = None
-    uncertain_source_proof: UncertainSourceProof | None = field(default=None, repr=False)
-
-
-@dataclass(frozen=True, slots=True)
-class StoredBatch:
-    batch_no: str
-    idempotent: bool
-    outbox_persisted: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class BatchResponse:
-    batch_no: str
-    idempotent: bool
-    accepted: int
-    removed_duplicate: int
-    removed_blacklist: int
-    removed_freq_limit: int
-    est_segments: int
-    quota_cost: int
-    status: str
-    deferred_reason: str | None
-    scheduled_at: datetime | None
-    idempotency_expires_at: datetime | None = None
-
-
-class PipelineStore(Protocol):
-    async def response_for(self, batch_no: str) -> BatchResponse: ...
-
-    async def blacklisted(self, phone_hmacs: set[str]) -> set[str]: ...
-
-    async def sensitive_hits(self, content: str) -> list[str]: ...
-
-    async def audit_sensitive_hit(self, app_id: int, hit_count: int) -> None: ...
-
-    async def save(self, command: BatchCommand) -> StoredBatch: ...
-
-    async def count_in_flight_chunks(self, app_id: int) -> int: ...
-
-    async def reserve_in_flight_chunks(
-        self,
-        app_id: int,
-        estimated: int,
-        limit: int,
-    ) -> object: ...
-
-    async def release_in_flight_reservation(
-        self,
-        reservation_id: int,
-        generation: int,
-        reason: str,
-    ) -> bool: ...
-
-    async def release_unbound_acceptance_reservation(
-        self,
-        reservation_id: int,
-        generation: int,
-        app_id: int,
-    ) -> bool: ...
-
-    async def resolve_ambiguous_acceptance_commit(
-        self,
-        *,
-        reservation_id: int,
-        generation: int,
-        app_id: int,
-        scope_kind: str,
-        scope_id: str,
-        biz_id: str,
-        request_hash: str,
-    ) -> object: ...
-
-
-class IdempotencyPort(Protocol):
-    def claim_key(self, scope: IdempotencyScope, biz_id: str) -> str: ...
-
-    def frequency_result_key(self, scope: IdempotencyScope, biz_id: str) -> str: ...
-
-    def quota_result_key(self, scope: IdempotencyScope, biz_id: str, date_key: str) -> str: ...
-
-    async def request_fingerprint(
-        self, scope: IdempotencyScope, biz_id: str
-    ) -> IdempotencyFingerprint | None: ...
-
-    async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None: ...
-
-    async def remember(self, scope: IdempotencyScope, biz_id: str, batch_no: str) -> None: ...
-
-    async def claim(
-        self,
-        scope: IdempotencyScope,
-        biz_id: str,
-        *,
-        fingerprint: str = "",
-    ) -> str | None: ...
-
-    async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None: ...
-
-    async def release(self, scope: IdempotencyScope, biz_id: str, token: str) -> None: ...
-
-    async def renew(self, scope: IdempotencyScope, biz_id: str, token: str) -> bool: ...
-
-    async def heartbeat(
-        self,
-        scope: IdempotencyScope,
-        biz_id: str,
-        token: str,
-        lost: asyncio.Event,
-    ) -> None: ...
-
-
-class FrequencyPort(Protocol):
-    async def allow(
-        self,
-        category: str,
-        *,
-        app_id: int,
-        phone_hmac: str,
-        limits: FrequencyLimits,
-        claim_key: str | None = None,
-        claim_token: str | None = None,
-        result_key: str | None = None,
-    ) -> bool: ...
-
-
-class QuotaPort(Protocol):
-    async def reserve(
-        self,
-        *,
-        app_id: int,
-        dept: str,
-        category: str,
-        date_key: str,
-        cost: int,
-        app_limit: int,
-        dept_limit: int,
-        ttl_s: int,
-        claim_key: str | None = None,
-        claim_token: str | None = None,
-        reservation_key: str | None = None,
-    ) -> Any: ...
-
-    async def refund(
-        self,
-        *,
-        app_id: int,
-        dept: str,
-        category: str,
-        date_key: str,
-        cost: int,
-    ) -> Any: ...
-
-    async def refund_reservation(
-        self,
-        *,
-        app_id: int,
-        dept: str,
-        category: str,
-        date_key: str,
-        cost: int,
-        reservation_key: str,
-    ) -> Any: ...
-
-
-class UsageLedgerPort(Protocol):
-    async def start_reservation(
-        self,
-        *,
-        request_key: str,
-        app_id: int,
-        dept: str,
-        category: str,
-        now: datetime | None = None,
-        subject_kind: str = "api_app",
-    ) -> Any: ...
-
-    async def allow_frequency(
-        self,
-        reservation_id: UUID,
-        category: str,
-        *,
-        app_id: int,
-        phone_hmac: str,
-        hmac_aliases: dict[int, str],
-        limits: FrequencyLimits,
-        now: datetime | None = None,
-    ) -> bool: ...
-
-    async def allow_frequency_many(
-        self,
-        reservation_id: UUID,
-        category: str,
-        *,
-        app_id: int,
-        items: Sequence[Any],
-        limits: FrequencyLimits,
-        now: datetime | None = None,
-    ) -> list[bool]: ...
-
-    async def reserve_quota(
-        self,
-        reservation_id: UUID,
-        *,
-        app_id: int,
-        dept: str,
-        category: str,
-        date_key: str,
-        cost: int,
-        app_limit: int,
-        dept_limit: int,
-        expires_at: datetime,
-    ) -> None: ...
-
-    async def request_release(
-        self,
-        reservation_id: UUID,
-        *,
-        event_id: str,
-    ) -> bool: ...
-
-    async def request_unlinked_release(
-        self,
-        reservation_id: UUID,
-        *,
-        event_id: str,
-    ) -> bool: ...
-
-
-class QueuePublisher(Protocol):
-    async def enqueue(self, batch_no: str, queue: str) -> None: ...
-
-
-class TemplatePort(Protocol):
-    async def render(
-        self,
-        template_id: int,
-        params: Sequence[str],
-        dept: str,
-    ) -> str: ...
-
-
-class SignPort(Protocol):
-    async def resolve(self, name: str) -> str: ...
-
-
-class RecipientGuard(Protocol):
-    """发送受理边界的号码准入检查，不暴露 HMAC 实现。"""
-
-    def require_allowed(self, phones: Sequence[str]) -> None: ...
-
-
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-class SendPipeline:
+class SendPipeline(AcceptanceIdempotencyMixin):
     """按规范固定顺序编排同步受理，持久化和外部状态由端口实现。"""
 
     def __init__(
@@ -640,182 +263,6 @@ class SendPipeline:
             request.scheduled_at,
         )
 
-    def _request_hash(
-        self,
-        request: SendRequest,
-        app: ApiAppContext,
-        policy: CategoryPolicy,
-        *,
-        key_version: int | None = None,
-        normalize: bool = True,
-    ) -> str:
-        """生成版本化请求 HMAC，覆盖会改变真实短信副作用与作用域的字段。"""
-
-        actor = request.actor
-        actor_document: dict[str, object] | None
-        if isinstance(actor, SecurityPrincipal):
-            actor_document = {
-                "kind": "human",
-                "account_id": actor.account_id,
-                "identity_id": actor.identity_id,
-            }
-        elif isinstance(actor, ApplicationPrincipal):
-            actor_document = {"kind": "app", "app_id": actor.app_id}
-        elif isinstance(actor, UncertainEffectPrincipal):
-            actor_document = {
-                "kind": "uncertain-effect",
-                "resolution_id": actor.resolution_id,
-                "proposer_account_id": actor.proposer_account_id,
-                "confirmer_account_id": actor.confirmer_account_id,
-                "effect_generation": actor.effect_generation,
-            }
-        else:
-            actor_document = None
-        fingerprint_key_version = self.crypto.active_version if key_version is None else key_version
-        protected_aliases = dict(request.protected_hmac_candidates)
-        protected_identity: dict[str, object] | None = None
-        if request.protected_mobiles:
-            try:
-                protected_digest = protected_aliases[fingerprint_key_version]
-            except KeyError:
-                raise ValueError("加密测试号码缺少幂等指纹版本") from None
-            protected_identity = {
-                "key_version": fingerprint_key_version,
-                "digest": protected_digest,
-            }
-        document = {
-            "app_id": app.app_id,
-            "dept": app.dept,
-            "actor": actor_document,
-            "channel": request.channel,
-            "category": request.category,
-            "content": request.content,
-            "template_id": request.template_id,
-            "template_params": list(request.template_params or ()),
-            "sign_name": request.sign_name or app.default_sign,
-            "scheduled_at": _canonical_scheduled_at(request.scheduled_at)
-            if normalize
-            else (request.scheduled_at.isoformat() if request.scheduled_at is not None else None),
-            "consent_confirmed": request.consent_confirmed,
-            "is_test": request.is_test,
-            "mobiles": (
-                sorted(set(request.mobiles or ())) if normalize else list(request.mobiles or ())
-            ),
-            "protected_phone_identity": protected_identity,
-            "vendor_test_uat": request.vendor_test_uat,
-            "resend_of": request.resend_of,
-            "resend_dept": request.resend_dept,
-            "usage_subject": (
-                request.usage_subject.fingerprint()
-                if request.usage_subject is not None
-                else None
-            ),
-            "policy": {
-                "queue": policy.queue,
-                "blacklist_required": policy.blacklist_required,
-            },
-        }
-        canonical = json.dumps(
-            document,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        return self.crypto.idempotency_fingerprint(
-            canonical,
-            key_version=key_version,
-        )
-
-    async def acceptance_fingerprint(
-        self, app: ApiAppContext, request: SendRequest
-    ) -> tuple[str, int]:
-        """提供与受理幂等记录一致的版本化指纹，供受控恢复绑定。"""
-
-        version = self.crypto.active_version
-        if request.biz_id:
-            scope = self._idempotency_scope(request, app)
-            stored = await self.idempotency.request_fingerprint(scope, request.biz_id)
-            if stored is not None:
-                version = stored.key_version
-        policy = self._resolve_policy(app, request, None)
-        return self._request_hash(request, app, policy, key_version=version), version
-
-    @staticmethod
-    def _resolve_policy(
-        app: ApiAppContext,
-        request: SendRequest,
-        preauthorization: AcceptancePreauthorization | None,
-    ) -> CategoryPolicy:
-        expected = policy_for_category(
-            request.category,
-            app.allowed_categories,
-            notice_blacklist=app.blacklist_check,
-        )
-        if preauthorization is None:
-            return expected
-        if (
-            preauthorization.app_id != app.app_id
-            or preauthorization.category != request.category
-            or preauthorization.policy != expected
-        ):
-            raise ValueError("应用预授权合同无效")
-        return preauthorization.policy
-
-    @staticmethod
-    def _idempotency_scope(
-        request: SendRequest,
-        app: ApiAppContext,
-    ) -> IdempotencyScope:
-        """稳定幂等主体：API=app，Web=稳定账号/身份复合作用域。"""
-
-        if isinstance(request.actor, UncertainEffectPrincipal):
-            actor = request.actor
-            if request.biz_id != uncertain_resend_biz_id(
-                actor.resolution_id, actor.effect_generation
-            ):
-                raise ValueError("system resend principal is not forgeable")
-            if request.resend_of is not None or request.usage_subject is None:
-                raise ValueError("system resend requires its own usage subject")
-            if request.usage_subject.app_id != app.app_id:
-                raise ValueError("system resend usage app mismatch")
-            return IdempotencyScope("uncertain-resend", str(actor.resolution_id))
-        if request.resend_of is not None:
-            web_actor = isinstance(request.actor, SecurityPrincipal) and request.channel == "web"
-            api_actor = (
-                isinstance(request.actor, ApplicationPrincipal)
-                and request.channel == "api"
-                and request.actor.app_id == app.app_id
-                and app.app_id > 0
-            )
-            if not (web_actor or api_actor):
-                raise ValueError("失败重发必须绑定稳定授权主体")
-            return IdempotencyScope("resend", request.resend_of)
-        if request.channel == "web":
-            if isinstance(request.actor, UncertainEffectPrincipal):
-                raise ValueError("system resend principal is not forgeable")
-            if not isinstance(request.actor, SecurityPrincipal):
-                raise ValueError("Web 发送必须绑定稳定账号")
-            return IdempotencyScope(
-                "account",
-                f"{request.actor.account_id}:{request.actor.identity_id}",
-            )
-        return IdempotencyScope("app", str(app.app_id))
-
-    async def _claim_owner(
-        self,
-        scope: IdempotencyScope,
-        biz_id: str,
-        fingerprint: str,
-    ) -> str | None:
-        try:
-            return await self.idempotency.claim(
-                scope,
-                biz_id,
-                fingerprint=fingerprint,
-            )
-        except TypeError:
-            return await self.idempotency.claim(scope, biz_id)
-
     def _validate_schedule(self, request: SendRequest) -> None:
         if request.is_test and request.scheduled_at is not None:
             raise ValueError("测试发送不支持定时投递")
@@ -829,300 +276,6 @@ class SendPipeline:
         horizon = now + timedelta(days=self.config.max_schedule_ahead_days)
         if request.scheduled_at > horizon:
             raise ValueError(f"scheduled_at 不能超过 {self.config.max_schedule_ahead_days} 天")
-
-    async def _ensure_same_request(
-        self,
-        scope: IdempotencyScope,
-        biz_id: str,
-        request: SendRequest,
-        app: ApiAppContext,
-        policy: CategoryPolicy,
-        *,
-        computed: IdempotencyFingerprint | None = None,
-    ) -> None:
-        """用记录绑定的 HMAC 版本复算；旧记录无指纹时沿用原幂等行为。"""
-
-        stored = await self.idempotency.request_fingerprint(scope, biz_id)
-        if stored is None:
-            raise IdempotencyConflict("同一幂等键缺少请求指纹，拒绝复用，请更换 biz_id")
-        try:
-            request_hash = (
-                computed.digest
-                if computed is not None and computed.key_version == stored.key_version
-                else self._request_hash(request, app, policy, key_version=stored.key_version)
-            )
-            if _same_digest(stored.digest, request_hash):
-                return
-            legacy_hash = self._request_hash(
-                request,
-                app,
-                policy,
-                key_version=stored.key_version,
-                normalize=False,
-            )
-        except ValueError:
-            # 记录绑定的 HMAC 版本已在轮换中退役：无法证明是同一请求。
-            # 若按 400 参数错误返回，调用方最自然的反应是换 biz_id 重发，
-            # 恰好击穿幂等要防的重复下发；因此按幂等冲突 409 处理。
-            raise IdempotencyConflict(
-                "同一幂等键的请求指纹版本已退役，无法验证同请求；"
-                "请先查询原批次状态，勿直接更换 biz_id 重发"
-            ) from None
-        if _same_digest(stored.digest, legacy_hash):
-            return
-        raise IdempotencyConflict("同一幂等键已用于不同请求，请更换 biz_id 或复用原请求")
-
-    async def _resolve_acceptance_commit(
-        self,
-        *,
-        app: ApiAppContext,
-        request: SendRequest,
-        command: BatchCommand,
-        idem_scope: IdempotencyScope | None,
-        inflight: Any,
-        preauthorization: AcceptancePreauthorization | None,
-    ) -> Any:
-        """用数据库 reservation 事实解析 COMMIT 边界；无解析器时回退查找。"""
-
-        from app.services.send_inflight import AcceptCommitResolution
-
-        resolver = getattr(self.store, "resolve_ambiguous_acceptance_commit", None)
-        reservation_id = getattr(inflight, "id", None)
-        generation = getattr(inflight, "generation", None)
-        if resolver is not None and reservation_id is not None and generation is not None:
-            scope = idem_scope or IdempotencyScope(
-                command.scope_kind,
-                command.scope_id,
-            )
-            try:
-                return await resolver(
-                    reservation_id=int(reservation_id),
-                    generation=int(generation),
-                    app_id=app.app_id,
-                    scope_kind=scope.kind,
-                    scope_id=scope.id,
-                    biz_id=command.biz_id or "",
-                    request_hash=command.request_hash or "",
-                )
-            except Exception:
-                return AcceptCommitResolution("UNKNOWN")
-        if request.biz_id and idem_scope is not None:
-            try:
-                existing = await self.idempotency.lookup(idem_scope, request.biz_id)
-            except Exception:
-                if reservation_id is None:
-                    return AcceptCommitResolution("UNBOUND")
-                return AcceptCommitResolution("UNKNOWN")
-            if existing is not None:
-                try:
-                    policy = self._resolve_policy(app, request, preauthorization)
-                    await self._ensure_same_request(
-                        idem_scope,
-                        request.biz_id,
-                        request,
-                        app,
-                        policy,
-                    )
-                except IdempotencyConflict:
-                    return AcceptCommitResolution("UNBOUND")
-                return AcceptCommitResolution(
-                    "BOUND_TO_EXPECTED_BATCH",
-                    batch_no=existing,
-                )
-        return AcceptCommitResolution("UNBOUND")
-
-    @staticmethod
-    def _is_system_resend(request: SendRequest) -> bool:
-        return isinstance(request.actor, UncertainEffectPrincipal)
-
-    @staticmethod
-    def _usage_app_id(app: ApiAppContext, request: SendRequest) -> int:
-        if request.usage_subject is not None:
-            return request.usage_subject.app_id
-        return app.app_id
-
-    @staticmethod
-    def _usage_dept(app: ApiAppContext, request: SendRequest) -> str:
-        if request.usage_subject is not None:
-            return request.usage_subject.dept
-        return app.dept
-
-    @staticmethod
-    def _usage_subject_kind(request: SendRequest) -> str:
-        if request.usage_subject is not None:
-            return request.usage_subject.kind
-        return "api_app"
-
-    @staticmethod
-    def _validate_usage_subject(request: SendRequest) -> None:
-        if request.usage_subject is None:
-            if isinstance(request.actor, UncertainEffectPrincipal):
-                raise ValueError("system resend requires usage subject")
-            return
-        if not isinstance(request.actor, UncertainEffectPrincipal):
-            raise ValueError("usage subject is not forgeable")
-        actor = request.actor
-        usage = request.usage_subject
-        if (
-            request.biz_id != uncertain_resend_biz_id(actor.resolution_id, actor.effect_generation)
-            or usage.resolution_id != actor.resolution_id
-            or usage.effect_generation != actor.effect_generation
-            or usage.dept != actor.dept
-            or usage.category != request.category
-        ):
-            raise ValueError("system resend principal is not forgeable")
-
-    @staticmethod
-    def _quota_clock(now: datetime) -> tuple[str, int]:
-        local = now.astimezone(SHANGHAI)
-        next_day = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        return local.strftime("%Y%m%d"), max(1, int((next_day - local).total_seconds()))
-
-    async def _authorize_new_send(
-        self,
-        request: SendRequest,
-        *,
-        estimated_segments: int | None = None,
-        estimated_chunks: int | None = None,
-    ) -> None:
-        if self.admission_guard is None:
-            return
-        recipient_count = (
-            len(request.protected_mobiles) if request.protected_mobiles else len(request.mobiles)
-        )
-        await self.admission_guard.authorize(
-            category=request.category,
-            channel=request.channel,
-            recipient_count=max(1, recipient_count),
-            estimated_segments=estimated_segments,
-            estimated_chunks=estimated_chunks,
-        )
-
-    async def _consume_request_limit(
-        self,
-        app: ApiAppContext,
-        request: SendRequest,
-        preauthorization: AcceptancePreauthorization | None,
-    ) -> None:
-        if (
-            (request.channel != "web" or self._is_system_resend(request))
-            and preauthorization is None
-            and self.acceptance_limiter is not None
-        ):
-            await self.acceptance_limiter.check(
-                app_id=app.app_id,
-                limit_per_minute=app.rate_limit_per_min,
-            )
-
-    async def _consume_replay_limit(self, app: ApiAppContext) -> None:
-        limiter = self.acceptance_limiter
-        if limiter is None:
-            return
-        replay = getattr(limiter, "check_replay", None)
-        if replay is not None:
-            await replay(app_id=app.app_id, limit_per_minute=app.rate_limit_per_min)
-
-    async def _consume_send_cost(
-        self,
-        app: ApiAppContext,
-        request: SendRequest,
-        *,
-        recipient_count: int,
-        segment_count: int,
-    ) -> None:
-        if (
-            request.channel == "web" and not self._is_system_resend(request)
-        ) or self.acceptance_limiter is None:
-            return
-        consume = getattr(self.acceptance_limiter, "consume_send_cost", None)
-        if consume is None:
-            return
-        await consume(
-            app_id=app.app_id,
-            recipient_count=recipient_count,
-            segment_count=segment_count,
-            recipient_limit=app.recipient_limit_per_min,
-            segment_limit=app.segment_limit_per_min,
-        )
-
-    def _enforce_quota_exemption(self, app: ApiAppContext, request: SendRequest) -> None:
-        if request.channel == "web" and not self._is_system_resend(request):
-            return
-        if app.daily_quota != 0:
-            return
-        if get_settings().environment != "production":
-            return
-        until = app.unlimited_quota_exempt_until
-        if until is None or until.tzinfo is None or until <= datetime.now(UTC):
-            raise QuotaExemptionExpired("无限额度豁免已到期")
-
-    async def _enforce_in_flight(
-        self,
-        app: ApiAppContext,
-        request: SendRequest,
-        *,
-        recipient_count: int,
-    ) -> Any:
-        if request.channel == "web" and not self._is_system_resend(request):
-            return None
-        batch_size = max(1, int(getattr(self.config, "vendor_batch_size", 500) or 500))
-        estimated = max(1, ceil(recipient_count / batch_size))
-        reserve = getattr(self.store, "reserve_in_flight_chunks", None)
-        if reserve is not None:
-            try:
-                return await reserve(app.app_id, estimated, app.max_in_flight_chunks)
-            except InFlightLimitExceeded:
-                raise
-            except InFlightQueryUnavailable:
-                raise
-            except InFlightInvariantViolation:
-                raise
-            except Exception as exc:
-                raise InFlightQueryUnavailable("在途分片预留不可用") from exc
-        counter = getattr(self.store, "count_in_flight_chunks", None)
-        if counter is None:
-            return None
-        try:
-            current = await counter(app.app_id)
-        except InFlightQueryUnavailable:
-            raise
-        except Exception as exc:
-            raise InFlightQueryUnavailable("在途分片查询不可用") from exc
-        if current + estimated > app.max_in_flight_chunks:
-            raise InFlightLimitExceeded("应用在途分片已达上限")
-        return None
-
-    def _enforce_market_api_bulk(
-        self,
-        app: ApiAppContext,
-        request: SendRequest,
-        recipient_count: int,
-    ) -> None:
-        if (
-            request.channel == "api"
-            and request.category == "market"
-            and recipient_count >= self.config.market_approval_threshold
-            and not app.allow_market_api_bulk
-        ):
-            raise MarketApiBulkForbidden("营销大批量 API 发送未预授权")
-
-    def _with_uat_replay_identity(self, request: SendRequest) -> SendRequest:
-        """用内存 HMAC 复算 UAT 指纹，不依赖登记号码仍为 active。"""
-
-        if not request.vendor_test_uat or request.protected_mobiles or not request.mobiles:
-            return request
-        phone = request.mobiles[0]
-        protected = self.crypto.protect_phone(
-            phone,
-            table="vendor_test_recipient",
-            column="phone_enc",
-        )
-        return replace(
-            request,
-            mobiles=(),
-            protected_mobiles=(protected,),
-            protected_hmac_candidates=tuple(self.crypto.hmac_candidates(phone).items()),
-        )
 
     async def replay_if_present(
         self,
@@ -1347,37 +500,6 @@ class SendPipeline:
             cleanup.result()
             if cancelled and original_error is None:
                 raise asyncio.CancelledError
-
-    async def _cleanup_claim(
-        self,
-        heartbeat: asyncio.Task[None] | None,
-        scope: IdempotencyScope,
-        biz_id: str,
-        token: str,
-        app_id: int,
-    ) -> None:
-        """先有界停止自己的续租，再独立尝试权威 CAS 释放；保留业务异常。"""
-
-        if heartbeat is not None:
-            heartbeat.cancel()
-            try:
-                async with asyncio.timeout(CLAIM_CLEANUP_TIMEOUT_S):
-                    await heartbeat
-            except asyncio.CancelledError:
-                pass
-            except Exception as exc:
-                LOGGER.error(
-                    "idempotency heartbeat stop unavailable",
-                    extra={"app_id": app_id, "error_type": type(exc).__name__},
-                )
-        try:
-            async with asyncio.timeout(CLAIM_CLEANUP_TIMEOUT_S):
-                await self.idempotency.release(scope, biz_id, token)
-        except (Exception, asyncio.CancelledError) as exc:
-            LOGGER.error(
-                "idempotency claim release unavailable",
-                extra={"app_id": app_id, "error_type": type(exc).__name__},
-            )
 
     async def _accept_claimed(
         self,
