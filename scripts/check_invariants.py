@@ -898,9 +898,9 @@ def check_usage_ledger_invariants() -> None:
     require_fragments(
         APP / "services/pipeline.py",
         "UsageLedgerPort",
-        "usage_reservation_id=usage_reservation_id",
+        "usage_reservation_id=acceptance.usage_reservation_id",
         "hmac_aliases=frequency_aliases_by_active",
-        'await release_usage("idempotent-reuse")',
+        'await self._release_usage(acceptance, "idempotent-reuse")',
     )
     for relative in ("api/messages.py", "api/web_messages.py"):
         require_fragments(APP / relative, "UsageLedgerService(")
