@@ -8,6 +8,9 @@ import re
 import sys
 from pathlib import Path
 
+from call_order import first_reach_precedes
+from gate_policy import SPLIT_MODULE_PARTS, SPLIT_MODULE_UNRELATED, logical_module_files
+
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "backend" / "app"
 errors: list[str] = []
@@ -30,11 +33,22 @@ def dotted_name(node: ast.AST) -> str:
     return ""
 
 
+def read_logical_module(path: Path) -> str:
+    """读取逻辑模块全文：已登记拆分的入口按入口 + 拆出文件拼接。"""
+
+    if not path.is_relative_to(APP):
+        return path.read_text(encoding="utf-8")
+    entry = path.relative_to(APP).as_posix()
+    return "\n".join(
+        (APP / part).read_text(encoding="utf-8") for part in logical_module_files(entry)
+    )
+
+
 def require_fragments(path: Path, *fragments: str) -> str:
     """要求关键安全边界继续保留，返回源文本供顺序检查。"""
 
     try:
-        source = path.read_text(encoding="utf-8")
+        source = read_logical_module(path)
     except OSError:
         fail(path, "真实厂商受控联调关键文件缺失")
         return ""
@@ -42,6 +56,21 @@ def require_fragments(path: Path, *fragments: str) -> str:
         if fragment not in source:
             fail(path, f"真实厂商受控联调不变量缺失: {fragment}")
     return source
+
+
+def recipient_guard_precedes_phone_protection(entry: str) -> bool:
+    """受理编排中白名单校验必须先于任何会进入 run_bounded 号码保护的调用。"""
+
+    return first_reach_precedes(
+        ((APP / part).read_text(encoding="utf-8") for part in logical_module_files(entry)),
+        entry="_accept_claimed",
+        first=lambda call: (
+            dotted_name(call.func).endswith(".require_allowed")
+            and len(call.args) == 1
+            and dotted_name(call.args[0]) == "request.mobiles"
+        ),
+        then=lambda call: dotted_name(call.func) == "run_bounded",
+    )
 
 
 def literal_integer(path: Path, name: str) -> int | None:
@@ -134,9 +163,7 @@ def check_vendor_live_invariants() -> None:
         "require_allowed(request.mobiles)",
         "await run_bounded(",
     )
-    if pipeline and pipeline.index("require_allowed(request.mobiles)") > pipeline.index(
-        "await run_bounded("
-    ):
+    if pipeline and not recipient_guard_precedes_phone_protection("services/pipeline.py"):
         fail(APP / "services/pipeline.py", "白名单必须在手机号持久化准备前检查")
 
     worker = require_fragments(
@@ -1084,6 +1111,39 @@ def check_async_import_invariants() -> None:
     )
 
 
+def check_split_module_registry() -> None:
+    """拆分模块的登记表必须与磁盘一致，且拆出文件继承入口的 vendor-live 保护。"""
+
+    sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
+    from test_update_contract import protected_change_category  # noqa: E402
+
+    registry = ROOT / "scripts" / "gate_policy.py"
+    for entry, parts in SPLIT_MODULE_PARTS.items():
+        entry_path = APP / entry
+        if not entry_path.is_file():
+            fail(registry, f"拆分模块入口不存在: {entry}")
+            continue
+        prefix = f"{entry_path.stem}_"
+        for part in parts:
+            part_path = APP / part
+            if part_path.parent != entry_path.parent or not part_path.name.startswith(prefix):
+                fail(registry, f"拆出文件必须与入口同目录且以 {prefix} 开头: {part}")
+            if not part_path.is_file():
+                fail(registry, f"登记的拆出文件不存在: {part}")
+        registered = {entry, *parts, *SPLIT_MODULE_UNRELATED}
+        for sibling in sorted(entry_path.parent.glob(f"{prefix}*.py")):
+            relative = sibling.relative_to(APP).as_posix()
+            if relative not in registered:
+                fail(sibling, f"拆分文件未登记到 gate_policy.SPLIT_MODULE_PARTS[{entry!r}]")
+        if protected_change_category(f"backend/app/{entry}") == "vendor-live":
+            for part in parts:
+                if protected_change_category(f"backend/app/{part}") != "vendor-live":
+                    fail(
+                        ROOT / "deploy/scripts/test_update_contract.py",
+                        f"vendor-live 入口拆出的文件未进入 vendor-live 保护: {part}",
+                    )
+
+
 def check_protected_path_policy_invariants() -> None:
     """安全域 manifest 必须是分类与 CODEOWNERS 的同一来源。"""
 
@@ -1198,6 +1258,7 @@ def check_protected_path_policy_invariants() -> None:
 
 check_vendor_live_invariants()
 check_protected_path_policy_invariants()
+check_split_module_registry()
 check_outbox_invariants()
 check_usage_ledger_invariants()
 check_import_reservation_invariants()

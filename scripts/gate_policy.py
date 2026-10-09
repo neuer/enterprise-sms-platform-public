@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
+from types import MappingProxyType
 
 CRITICAL_MARKERS = ("property", "concurrency", "fault_injection", "authorization", "idempotency")
 ISOLATED_EXTRA_NODES = frozenset(
@@ -22,9 +24,27 @@ GATE_CONTRACT_TESTS = (
     "tests/test_gate_execution.py",
     "tests/test_gate_evidence.py",
     "tests/test_coverage_gates.py",
+    "tests/test_call_order.py",
     "tests/test_gate_scripts.py",
 )
 ORDINARY_ROOT_DOCS = frozenset({"README.md", "CONTRIBUTING.md"})
+# 按职责拆分的大模块：逻辑模块 = 入口文件 + 登记的拆出文件（相对 backend/app）。
+# 不变量片段、pipeline 覆盖率组与 vendor-live 受保护路径都按逻辑模块整体生效。
+# 拆分时必须在此登记新文件；check_invariants 会拒绝未登记的同前缀新文件。
+SPLIT_MODULE_PARTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "services/pipeline.py": (),
+        "services/usage_ledger.py": (),
+        "tasks/send_repository.py": (),
+    }
+)
+# 与入口同前缀、但早于拆分就独立存在的模块，不属于对应逻辑模块。
+SPLIT_MODULE_UNRELATED = frozenset({"services/pipeline_repository.py"})
+
+
+def logical_module_files(entry: str) -> tuple[str, ...]:
+    """返回逻辑模块的全部文件（相对 backend/app），入口在前。"""
+    return (entry, *SPLIT_MODULE_PARTS.get(entry, ()))
 
 
 def isolated_node(nodeid: str) -> bool:

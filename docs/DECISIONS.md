@@ -1639,3 +1639,19 @@
   变更覆盖全部 job，普通根文档使用廉价合同，未知路径仍失败关闭。
 - 原因：内容与执行证据比声明回执可靠；自动清单避免新增测试漏接，并行减少串行
   等待。性能专项、发布镜像安全门禁与测试更新/生产发布边界保持原合同。
+
+## D118 按职责拆分大模块的逻辑模块登记
+
+- 决策：`pipeline`、`usage_ledger`、`send_repository` 拆分后以“入口文件 + 登记的拆出文件”
+  作为逻辑模块，登记表唯一位于 `scripts/gate_policy.py` 的 `SPLIT_MODULE_PARTS`。
+  不变量片段按逻辑模块全文检查；`pipeline` 覆盖率组按逻辑模块计入 85% 门槛；
+  vendor-live 入口的拆出文件必须同样被 `test_update_contract` 判为 vendor-live。
+  与入口同前缀但未登记的新文件直接失败，早于拆分存在的 `pipeline_repository.py`
+  显式列为无关模块。
+- 决策：白名单先于号码保护的检查由“同文件文本先后”改为 `scripts/call_order.py`
+  的调用图判定：在 `_accept_claimed` 中，经 `self.x()` / 模块函数传递可达
+  `require_allowed(request.mobiles)` 的首个调用必须早于可达 `run_bounded` 的首个调用。
+- 原因：拆分会让文本片段和行号比较失效；按文件精确列名单会让拆出的文件静默落回
+  较低覆盖率门槛或普通快速更新。登记表让三处门禁一起扩展，只增不减。
+- 影响：`scripts/gate_policy.py`、`scripts/check_invariants.py`、
+  `scripts/check_coverage_gates.py`、`scripts/call_order.py` 及对应门禁测试。
