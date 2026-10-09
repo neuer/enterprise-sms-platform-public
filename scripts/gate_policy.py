@@ -34,7 +34,14 @@ ORDINARY_ROOT_DOCS = frozenset({"README.md", "CONTRIBUTING.md"})
 SPLIT_MODULE_PARTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
     {
         "services/pipeline.py": (),
-        "services/usage_ledger.py": (),
+        "services/usage_ledger.py": (
+            "services/usage_ledger_common.py",
+            "services/usage_ledger_frequency.py",
+            "services/usage_ledger_frequency_merge.py",
+            "services/usage_ledger_frequency_subjects.py",
+            "services/usage_ledger_projection.py",
+            "services/usage_ledger_release.py",
+        ),
         "tasks/send_repository.py": (),
     }
 )
