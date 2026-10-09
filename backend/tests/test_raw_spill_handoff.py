@@ -165,7 +165,7 @@ def test_terminal_byte_boundary_kill_yields_complete_or_truncated(tmp_path: Path
     complete = stream.path.read_bytes()
     stream_id = stream.stream_id
     stream.path.unlink()
-    tmp = store._stream_tmp("report", stream_id)
+    tmp = store._layout.stream_tmp("report", stream_id)
     expected = _payload_sha(raw)
     for size in range(before, len(complete) + 1):
         tmp.write_bytes(complete[:size])
