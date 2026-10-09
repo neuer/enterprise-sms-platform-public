@@ -3172,3 +3172,144 @@ async def test_uat_recovery_fingerprint_preserves_key_version_across_acceptance(
     await pipeline.accept(app, request, fingerprint_key_version=version)
     assert store.commands[0].request_hash == digest
     assert store.commands[0].request_hash_key_version == version
+
+
+class _UnboundAfterSaveStore(_ReservedFailingStore):
+    """落库失败且 reservation 未绑定；之后幂等记录才出现同 biz_id 批次。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.save_attempted = False
+        self.resolution = AcceptCommitResolution("UNBOUND")
+
+    async def save(self, command: Any) -> StoredBatch:
+        self.save_attempted = True
+        raise RuntimeError("database unavailable")
+
+
+class _LookupAfterSaveIdempotency(FakeIdempotency):
+    def __init__(self, store: _UnboundAfterSaveStore) -> None:
+        super().__init__()
+        self.store = store
+
+    async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+        self.lookup_calls.append((scope, biz_id))
+        return "committed-batch" if self.store.save_attempted else None
+
+
+def _unbound_after_save_pipeline(
+    usage_ledger: FakeUsageLedger | None,
+) -> tuple[SendPipeline, _UnboundAfterSaveStore, ApiAppContext, SendRequest]:
+    store = _UnboundAfterSaveStore()
+    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest("notice", ["13800138000"], content="通知", biz_id="unbound-hit")
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=_LookupAfterSaveIdempotency(store),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        usage_ledger=usage_ledger,
+    )
+    return pipeline, store, app, request
+
+
+@pytest.mark.asyncio
+async def test_unbound_commit_lookup_hit_reuses_batch_and_releases_new_usage() -> None:
+    ledger = FakeUsageLedger()
+    pipeline, store, app, request = _unbound_after_save_pipeline(ledger)
+    policy = policy_for_category(request.category, app.allowed_categories)
+    pipeline.idempotency.stored_request_hash = pipeline._request_hash(
+        request, app, policy, key_version=1
+    )
+
+    result = await pipeline.accept(app, request)
+
+    assert result.batch_no == "existing"
+    assert [event for _id, event in ledger.releases] == [
+        f"usage:{ledger.reservation_id}:idempotent-reuse"
+    ]
+    assert store.releases == [(41, 1, "acceptance-failed")]
+
+
+@pytest.mark.asyncio
+async def test_unbound_commit_lookup_hit_with_other_request_compensates_and_conflicts() -> None:
+    ledger = FakeUsageLedger()
+    pipeline, store, app, request = _unbound_after_save_pipeline(ledger)
+    policy = policy_for_category(request.category, app.allowed_categories)
+    stored_hash = pipeline._request_hash(request, app, policy, key_version=1)
+    original_fingerprint = pipeline.idempotency.request_fingerprint
+
+    async def changes_after_save(scope: IdempotencyScope, biz_id: str) -> Any:
+        if store.save_attempted:
+            return IdempotencyFingerprint("0" * 64, 1)
+        return await original_fingerprint(scope, biz_id)
+
+    pipeline.idempotency.stored_request_hash = stored_hash
+    pipeline.idempotency.request_fingerprint = changes_after_save  # type: ignore[method-assign]
+
+    with pytest.raises(IdempotencyConflict):
+        await pipeline.accept(app, request)
+
+    assert [event for _id, event in ledger.releases] == [
+        f"usage:{ledger.reservation_id}:acceptance-failed"
+    ]
+    assert store.releases == [(41, 1, "acceptance-failed")]
+
+
+@pytest.mark.asyncio
+async def test_idempotent_store_hit_without_ledger_refunds_unreused_quota() -> None:
+    store = IdempotentStore()
+    quota = FakeQuota()
+    app = ApiAppContext(1, "app", "研发部", frozenset({"notice"}))
+    request = SendRequest("notice", ["13800138000"], content="通知", biz_id="store-hit")
+    policy = policy_for_category(request.category, app.allowed_categories)
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=quota,
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    pipeline.idempotency.stored_request_hash = pipeline._request_hash(
+        request, app, policy, key_version=1
+    )
+
+    result = await pipeline.accept(app, request)
+
+    assert result.batch_no == "existing"
+    assert len(quota.reservations) == 1
+    assert len(quota.refunds) == 1
+    assert quota.refunds[0]["reservation_key"] == quota.reservations[0]["reservation_key"]
+
+
+@pytest.mark.asyncio
+async def test_usage_release_failure_is_logged_without_masking_original_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class BrokenReleaseLedger(FakeUsageLedger):
+        async def request_unlinked_release(self, reservation_id: UUID, *, event_id: str) -> bool:
+            raise ConnectionError("ledger down")
+
+    pipeline = SendPipeline(
+        store=FailingStore(),
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        frequency=FakeFrequency(),
+        quota=FakeQuota(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+        usage_ledger=BrokenReleaseLedger(),
+    )
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await pipeline.accept(
+            ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知"),
+        )
+
+    assert "usage reservation release fact unavailable" in caplog.text
