@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from gate_policy import CRITICAL_MARKERS
+from gate_policy import CRITICAL_MARKERS, logical_module_files
 
 THRESHOLDS: Mapping[str, float] = {
     "application": 75.0,
@@ -36,16 +36,18 @@ def _matches(group: str) -> Callable[[str], bool]:
             or path.startswith("app/services/auth_provider")
         )
     if group == "pipeline":
-        return lambda path: (
-            path
-            in {
-                "app/services/idempotency.py",
-                "app/services/pipeline.py",
-                "app/services/pipeline_repository.py",
-                "app/services/quota.py",
-                "app/services/usage_ledger.py",
-            }
-        )
+        # 发送受理与用量账本按逻辑模块计入：拆出的文件不得落回较低的 services 门槛。
+        pipeline_files = {
+            f"app/{relative}"
+            for relative in (
+                "services/idempotency.py",
+                *logical_module_files("services/pipeline.py"),
+                "services/pipeline_repository.py",
+                "services/quota.py",
+                *logical_module_files("services/usage_ledger.py"),
+            )
+        }
+        return lambda path: path in pipeline_files
     if group == "export":
         return lambda path: (
             path.startswith("app/services/export") or path.startswith("app/tasks/export")

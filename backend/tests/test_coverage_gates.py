@@ -52,3 +52,20 @@ def test_missing_region_or_partial_non_app_report_fails_closed() -> None:
 def test_high_percent_partial_app_inventory_is_rejected() -> None:
     with pytest.raises(CoverageGateError, match="file inventory"):
         evaluate_coverage(_report(), expected_files={"app/missing.py"})
+
+
+def test_registered_split_parts_stay_in_pipeline_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gate_policy
+
+    monkeypatch.setattr(
+        gate_policy,
+        "SPLIT_MODULE_PARTS",
+        {"services/pipeline.py": ("services/pipeline_contracts.py",)},
+    )
+    report = _report()
+    report["files"]["app/services/pipeline_contracts.py"] = _entry(100, 70)  # type: ignore[index]
+
+    with pytest.raises(CoverageGateError, match=r"pipeline=80.00%<85.00%"):
+        evaluate_coverage(report)
