@@ -1045,7 +1045,7 @@ async def test_expired_unlimited_quota_is_rejected_in_production(
     from app.services.pipeline import QuotaExemptionExpired
 
     monkeypatch.setattr(
-        "app.services.pipeline.get_settings",
+        "app.services.pipeline_admission.get_settings",
         lambda: SimpleNamespace(environment="production"),
     )
     store = FakeStore()
@@ -1079,7 +1079,7 @@ def test_web_channel_skips_expired_unlimited_quota_check(
     from datetime import UTC, datetime, timedelta
 
     monkeypatch.setattr(
-        "app.services.pipeline.get_settings",
+        "app.services.pipeline_admission.get_settings",
         lambda: SimpleNamespace(environment="production"),
     )
     pipeline = SendPipeline(
