@@ -509,11 +509,11 @@ def test_restore_does_not_drop_manifest_when_target_exists(tmp_path: Path) -> No
     write_spill(store, payload=b"keep-old")
     store.reclaim_idle("report", crypto_v2_only())
     man = next(tmp_path.glob(f"*{CIPHERQ_MANIFEST_SUFFIX}"))
-    entry = store._parse_cipherq_manifest(man)
+    entry = store._cipherq._parse_cipherq_manifest(man)
     assert entry is not None
     activity = tmp_path / entry.src_name
     activity.write_bytes(b"newer-same-name")
-    restored = store._restore_cipherq_locked(entry)
+    restored = store._cipherq._restore_cipherq_locked(entry)
     assert man.exists()
     assert activity.exists()
     assert activity.read_bytes() == b"newer-same-name"
@@ -620,6 +620,6 @@ def test_legacy_nine_key_manifest_still_parses(tmp_path: Path) -> None:
         "artifact_id": token,
     }
     man.write_text(json.dumps(document, separators=(",", ":"), sort_keys=True), encoding="utf-8")
-    parsed = store._parse_cipherq_manifest(man)
+    parsed = store._cipherq._parse_cipherq_manifest(man)
     assert parsed is not None
     assert parsed.token == token

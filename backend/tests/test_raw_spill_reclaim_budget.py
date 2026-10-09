@@ -102,13 +102,13 @@ def test_eight_gib_standin_reclaim_is_budgeted(tmp_path: Path) -> None:
     for index in range(8):
         _write_spill(store, payload + bytes([index]))
     inspected = {"n": 0}
-    original = store._inspect_spill_header_auth
+    original = store._reader.inspect_spill_header_auth
 
     def counted(path: Path, crypto_service: CryptoService) -> str | None:
         inspected["n"] += 1
         return original(path, crypto_service)
 
-    store._inspect_spill_header_auth = counted  # type: ignore[method-assign]
+    store._reader.inspect_spill_header_auth = counted  # type: ignore[method-assign]
     store.reclaim_idle("report", crypto())
     assert inspected["n"] <= 3
     assert store.pending_count() == 8
@@ -121,13 +121,13 @@ def test_reclaim_does_not_payload_read_foreign_source(
     _write_spill(store, b"report-header", source="report")
     _write_spill(store, b"Y" * 32_768, source="reply")
     payload_reads: list[str] = []
-    original = store._probe_payload_read
+    original = store._reader._probe_payload_read
 
     def tracked(name: str) -> None:
         payload_reads.append(name)
         original(name)
 
-    store._probe_payload_read = tracked  # type: ignore[method-assign]
+    store._reader._probe_payload_read = tracked  # type: ignore[method-assign]
     store.reclaim_idle("report", crypto())
     assert payload_reads == []
 
@@ -184,13 +184,13 @@ def test_one_inspect_per_artifact_under_budget(tmp_path: Path) -> None:
     for index in range(4):
         _write_spill(store, f"item-{index}".encode())
     seen: list[str] = []
-    original = store._inspect_spill_header_auth
+    original = store._reader.inspect_spill_header_auth
 
     def counted(path: Path, crypto_service: CryptoService) -> str | None:
         seen.append(path.name)
         return original(path, crypto_service)
 
-    store._inspect_spill_header_auth = counted  # type: ignore[method-assign]
+    store._reader.inspect_spill_header_auth = counted  # type: ignore[method-assign]
     store.reclaim_idle("report", crypto())
     assert len(seen) == len(set(seen))
     assert 1 <= len(seen) <= 2
@@ -203,13 +203,13 @@ async def test_concurrent_reclaim_serializes_one_inspect_per_artifact(
     store = RawSpillStore(tmp_path, header_only_min_age_s=0)
     _write_spill(store, b"shared-artifact")
     payload_reads: list[str] = []
-    original_probe = store._probe_payload_read
+    original_probe = store._reader._probe_payload_read
 
     def tracked(name: str) -> None:
         payload_reads.append(name)
         original_probe(name)
 
-    store._probe_payload_read = tracked  # type: ignore[method-assign]
+    store._reader._probe_payload_read = tracked  # type: ignore[method-assign]
     await asyncio.gather(
         asyncio.to_thread(store.reclaim_idle, "report", crypto()),
         asyncio.to_thread(store.reclaim_idle, "report", crypto()),
