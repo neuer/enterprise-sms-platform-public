@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.audit import audit_uuid_ref
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.runtime_resources import bind_connection_system_audit, database_engine
 from app.services.security_daily import (
@@ -332,7 +333,8 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         ),
                         {"position": position, "address": address},
                     )
-                operation_id = str(uuid4())
+                operation_uuid = uuid4()
+                operation_id = str(operation_uuid)
                 await self._upsert_publish_state(
                     connection,
                     config_version=next_version,
@@ -366,7 +368,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                                     "recipient_count": len(recipients),
                                     "config_version": next_version,
                                     "publish_state": publish_state,
-                                    "operation_id": operation_id,
+                                    "operation_ref": audit_uuid_ref(operation_uuid),
                                 },
                                 ensure_ascii=False,
                             ),
@@ -459,7 +461,11 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                                 {
                                     "config_version": config_version,
                                     "publish_state": "file_committed",
-                                    "operation_id": operation_id,
+                                    "operation_ref": (
+                                        audit_uuid_ref(UUID(operation_id))
+                                        if operation_id is not None
+                                        else None
+                                    ),
                                 },
                                 ensure_ascii=False,
                             ),
@@ -1151,7 +1157,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "object_id": report.report_date.isoformat(),
                         "after": json.dumps(
                             {
-                                "request_id": str(request_id),
+                                "delivery_ref": audit_uuid_ref(request_id),
                                 "status": "requested",
                                 "config_version": config_version,
                                 "delivery_generation": next_generation,
@@ -1294,7 +1300,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "object_id": result.report_date.isoformat(),
                         "after": json.dumps(
                             {
-                                "request_id": str(result.request_id),
+                                "delivery_ref": audit_uuid_ref(result.request_id),
                                 "state": result.state,
                                 "delivery_generation": int(
                                     request["delivery_generation"]
@@ -1350,7 +1356,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "request_id": request_id,
                         "error": message[:256],
                         "after": json.dumps(
-                            {"request_id": str(request_id), "state": "failed"},
+                            {"delivery_ref": audit_uuid_ref(request_id), "state": "failed"},
                             ensure_ascii=False,
                         ),
                     },
@@ -1400,7 +1406,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "request_id": request_id,
                         "error": message[:256],
                         "after": json.dumps(
-                            {"request_id": str(request_id), "state": "unknown"},
+                            {"delivery_ref": audit_uuid_ref(request_id), "state": "unknown"},
                             ensure_ascii=False,
                         ),
                     },

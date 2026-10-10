@@ -1655,3 +1655,19 @@
   较低覆盖率门槛或普通快速更新。登记表让三处门禁一起扩展，只增不减。
 - 影响：`scripts/gate_policy.py`、`scripts/check_invariants.py`、
   `scripts/check_coverage_gates.py`、`scripts/call_order.py` 及对应门禁测试。
+
+## D119 审计载荷不得原样写入 UUID 或随机 hex 引用
+
+- 决策：`ck_audit_payload_no_pii` 保持不变。UUID 与带随机 hex 的引用（如 checkpoint
+  的 12 位后缀）一律不原样写入 `before_val/after_val`：已写入 `object_id` 的直接从
+  载荷删除（真实联调 seal/step-up correlation、vendor test operation；auth transition
+  另行修复）；
+  checkpoint 原值留在 `vendor_test_operation`，审计只记 `checkpoint_recorded`。
+  `object_id` 另有所指、又需要跨行关联的，用 `app.core.audit.audit_uuid_ref`
+  把规范 UUID 的数字逐位映射到 `g-p`，例如安全日报的 `operation_ref` 与 `delivery_ref`。
+- 原因：随机 hex 中约 0.045% 会出现独立的「1 开头 11 位数字」，被约束判为手机号，
+  导致该行永久写入失败（终态卡住或审计被静默丢弃）。放宽约束会削弱手机号兜底。
+  数字映射保持 8-4-4-4-12 形状、一一对应，SQL 可用
+  `translate(request_id::text,'0123456789','ghijklmnop')` 直接关联；base32 也不含 `1`，
+  但无法在 SQL 内还原。`correlation_id` 列由触发器强制写入请求链路 ID，不能挪作他用。
+- 影响：旧审计行仍是 `request_id`/`operation_id` 原值键，查询历史时两种键都要覆盖。

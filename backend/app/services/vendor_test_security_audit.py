@@ -80,11 +80,9 @@ class SqlVendorTestSecurityAuditRepository:
             outcome=outcome,
             safe_code=safe_code,
         )
-        payload: dict[str, object] = {
-            "correlation_id": correlation_id,
-            "count": 1,
-            "outcome": outcome,
-        }
+        # correlation UUID 只写 object_id；抄进 after_val 时其 hex 片段约 0.045%
+        # 会被 ck_audit_payload_no_pii 判为手机号，导致该安全事件永久写不进审计。
+        payload: dict[str, object] = {"count": 1, "outcome": outcome}
         if safe_code is not None:
             payload["safe_code"] = safe_code
         engine = self._engine()
