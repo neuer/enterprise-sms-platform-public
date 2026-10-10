@@ -41,7 +41,12 @@ SPLIT_MODULE_PARTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "services/pipeline_idempotency.py",
         ),
         "services/usage_ledger.py": (),
-        "tasks/send_repository.py": (),
+        "tasks/send_repository.py": (
+            "tasks/send_repository_attempt.py",
+            "tasks/send_repository_failover.py",
+            "tasks/send_repository_payload.py",
+            "tasks/send_repository_split.py",
+        ),
     }
 )
 # 与入口同前缀、但早于拆分就独立存在的模块，不属于对应逻辑模块。
