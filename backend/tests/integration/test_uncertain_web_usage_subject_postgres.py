@@ -2276,7 +2276,7 @@ async def test_r10_fault_rolls_back_fact_projection_and_outbox(
     env: Any, monkeypatch: pytest.MonkeyPatch, phase: str,
 ) -> None:
     import app.services.uncertain_resolution as module
-    import app.services.usage_ledger as ledger_module
+    import app.services.usage_ledger_release as ledger_module
 
     case = await _r10_case(env, "failed")
     before = await _r10_snapshot(env, case)
@@ -2325,7 +2325,7 @@ async def test_r10_commit_reply_loss_and_expired_window_preserve_new_window(
 ) -> None:
     from datetime import UTC, datetime, timedelta
 
-    import app.services.usage_ledger as ledger_module
+    import app.services.usage_ledger_release as ledger_module
 
     case = await _r10_case(env, "failed")
     future = datetime.now(UTC) + timedelta(days=2)

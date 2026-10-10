@@ -96,24 +96,36 @@ def literal_integer(path: Path, name: str) -> int | None:
 
 
 def literal_string(path: Path, name: str) -> str | None:
-    """读取模块级字符串常量；禁止动态拼接。"""
+    """读取模块级字符串常量；禁止动态拼接。已登记拆分的入口在逻辑模块内唯一定义。"""
 
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (OSError, SyntaxError) as exc:
-        fail(path, f"无法读取字符串常量定义: {type(exc).__name__}")
-        return None
-    for node in tree.body:
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-            continue
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        value = node.value
-        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
-            if isinstance(value, ast.Constant) and type(value.value) is str:
-                return value.value
-            fail(path, f"{name} 必须是模块级字符串常量")
+    parts = (
+        [APP / part for part in logical_module_files(path.relative_to(APP).as_posix())]
+        if path.is_relative_to(APP)
+        else [path]
+    )
+    found: list[ast.expr | None] = []
+    for part in parts:
+        try:
+            tree = ast.parse(part.read_text(encoding="utf-8"), filename=str(part))
+        except (OSError, SyntaxError) as exc:
+            fail(path, f"无法读取字符串常量定义: {type(exc).__name__}")
             return None
-    fail(path, f"缺少字符串常量 {name}")
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id == name for target in targets):
+                found.append(node.value)
+    if not found:
+        fail(path, f"缺少字符串常量 {name}")
+        return None
+    if len(found) > 1:
+        fail(path, f"{name} 在逻辑模块内只能定义一次")
+        return None
+    value = found[0]
+    if isinstance(value, ast.Constant) and type(value.value) is str:
+        return value.value
+    fail(path, f"{name} 必须是模块级字符串常量")
     return None
 
 

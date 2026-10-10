@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from app.services.send_admission import SendAdmissionFacts, decide
-from app.services.usage_ledger import _ensure_frequency_subjects_many
+from app.services.usage_ledger_frequency_subjects import (
+    _ensure_frequency_subjects_many,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
