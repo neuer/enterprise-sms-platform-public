@@ -97,8 +97,8 @@ async def test_security_transition_is_idempotent_and_contains_no_login_or_secret
         "provider_code": "local",
         "remaining_ttl_seconds": 900,
         "result_code": "ACCOUNT_LOCKED",
-        "transition_id": TRANSITION_ID,
     }
+    assert TRANSITION_ID not in params["after"]
     assert "password" not in repr(connection.calls).casefold()
     assert "token" not in repr(connection.calls).casefold()
 
