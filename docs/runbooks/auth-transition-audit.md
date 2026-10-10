@@ -8,7 +8,9 @@
 3. 先确认 API 实际使用 `sms_auth`，不要把 `sms_accept` 加入认证动作白名单。
 4. 指标只看固定枚举标签的 `auth_transition_*`，禁止用用户名、IP 或 transition UUID
    检索日志或指标。
-5. 回滚不得删除 `audit_log(action, object_id)` 唯一约束。
+5. 回滚不得删除 `audit_log(action, object_id)` 唯一约束。transition UUID 只落
+   `object_id`，审计查询按 `object_id` 关联；`after_val` 不再重复该 UUID，避免其
+   hex 片段被 `ck_audit_payload_no_pii` 误判为手机号而永久写入失败。
 
 ## Envelope 与 Due 索引
 

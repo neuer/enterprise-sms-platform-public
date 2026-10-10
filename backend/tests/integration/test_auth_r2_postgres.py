@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import suppress
@@ -14,7 +15,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import URL, make_url
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.auth.backends import SessionStateUnavailable
@@ -35,7 +36,10 @@ from app.core.auth.service import (
     RedisKeyValue,
 )
 from app.core.auth.transition_sync import AuthTransitionReconciler
-from app.core.runtime_resources import close_runtime_resources
+from app.core.runtime_resources import (
+    bind_connection_system_audit,
+    close_runtime_resources,
+)
 from app.settings import Settings
 
 pytestmark = pytest.mark.skipif(
@@ -46,6 +50,9 @@ pytestmark = pytest.mark.skipif(
 SYSTEM_API_KEY = bytes.fromhex("33" * 32)
 TRANSITION_LOCK = "8a5a77a4-286f-4d81-9a64-5379e30df111"
 TRANSITION_BAN = "8a5a77a4-286f-4d81-9a64-5379e30df222"
+# 末段 hex 含独立的「1 开头 11 位数字」，与 ck_audit_payload_no_pii 的手机号模式碰撞。
+PHONE_SHAPED_LOCK = "00000000-0000-4000-8000-a12345678901"
+PHONE_SHAPED_BAN = "00000000-0000-4000-8000-b19876543210"
 
 
 @pytest.fixture
@@ -281,6 +288,103 @@ async def test_sms_auth_can_insert_auth_ip_banned(
             {"object_id": TRANSITION_BAN},
         )
     assert int(count) == 1
+
+
+@pytest.mark.asyncio
+async def test_phone_shaped_transition_uuid_is_rejected_inside_audit_payload(
+    auth_roles: tuple[AsyncEngine, URL, URL, Any],
+) -> None:
+    """对照：约束不放宽，旧载荷把该 UUID 抄进 after_val 必然被 CHECK 拒绝。"""
+
+    _owner, auth_url, _accept_url, _settings = auth_roles
+    legacy_payload = {
+        "count": 5,
+        "provider_code": "local",
+        "remaining_ttl_seconds": 900,
+        "result_code": "ACCOUNT_LOCKED",
+        "transition_id": PHONE_SHAPED_LOCK,
+    }
+    engine = create_async_engine(auth_url)
+    try:
+        async with engine.connect() as connection:
+            await connection.begin()
+            await bind_connection_system_audit(
+                connection,
+                actor_name="auth-system",
+                action="auth_account_locked",
+                producer_domain="api",
+            )
+            with pytest.raises(IntegrityError) as caught:
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,role,ip,action,object_type,
+                          object_id,after_val
+                        ) VALUES(
+                          'auth-system','system',NULL,CAST('10.8.0.8' AS inet),
+                          'auth_account_locked','auth_control',:object_id,
+                          CAST(:after AS jsonb)
+                        )
+                        """
+                    ),
+                    {
+                        "object_id": PHONE_SHAPED_LOCK,
+                        "after": json.dumps(
+                            legacy_payload, sort_keys=True, separators=(",", ":")
+                        ),
+                    },
+                )
+            await connection.rollback()
+    finally:
+        await engine.dispose()
+    assert "ck_audit_payload_no_pii" in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action", "transition_id", "result_code"),
+    [
+        ("auth_account_locked", PHONE_SHAPED_LOCK, "ACCOUNT_LOCKED"),
+        ("auth_ip_banned", PHONE_SHAPED_BAN, "RATE_LIMITED"),
+    ],
+)
+async def test_phone_shaped_transition_uuid_still_persists_correlatable_audit(
+    auth_roles: tuple[AsyncEngine, URL, URL, Any],
+    action: str,
+    transition_id: str,
+    result_code: str,
+) -> None:
+    """transition UUID 只落 object_id，碰撞手机号模式也不得让锁定/封禁审计失败关闭。"""
+
+    owner, _auth_url, _accept_url, settings = auth_roles
+    repository = SqlAuthSecurityEventRepository(cast(Settings, settings))
+    transition = _transition(
+        action=action, transition_id=transition_id, result_code=result_code
+    )
+    await repository.ensure_transition(transition)
+    await repository.ensure_transition(transition)
+    async with owner.connect() as connection:
+        rows = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT object_type,object_id,after_val FROM audit_log
+                    WHERE action=:action AND object_id=:object_id
+                    """
+                ),
+                {"action": action, "object_id": transition_id},
+            )
+        ).all()
+    assert len(rows) == 1
+    object_type, object_id, after_val = rows[0]
+    assert (object_type, object_id) == ("auth_control", transition_id)
+    assert after_val == {
+        "count": 5,
+        "provider_code": "local",
+        "remaining_ttl_seconds": 900,
+        "result_code": result_code,
+    }
 
 
 @pytest.mark.asyncio

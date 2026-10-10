@@ -144,12 +144,14 @@ class SqlAuthSecurityEventRepository:
         return str(user)
 
     async def ensure_transition(self, transition: AuthSecurityTransition) -> None:
+        # transition UUID 只写 object_id（幂等唯一索引与关联查询都基于它）。
+        # 不得再抄进 after_val：其末段 hex 约 0.04% 会形成独立的 1 开头 11 位
+        # 数字，被 ck_audit_payload_no_pii 判为手机号，导致同一转换永久写不进审计。
         payload = {
             "count": transition.count,
             "provider_code": transition.provider_code,
             "remaining_ttl_seconds": transition.remaining_ttl_seconds,
             "result_code": transition.result_code,
-            "transition_id": transition.transition_id,
         }
         engine = self._engine()
         observe_transition_created(transition.action)
