@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from app.services import usage_ledger as module
+from app.services import usage_ledger_projection as module
 from app.services.usage_ledger import ProjectionRow, UsageLedgerService, UsageProjectionUnavailable
 from tests.test_usage_ledger import ProjectionRedis
 

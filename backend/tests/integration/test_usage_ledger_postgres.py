@@ -18,25 +18,33 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.services.freq import FrequencyLimits
 from app.services.quota import QuotaExceeded
 from app.services.usage_ledger import (
-    _ACTIVE_RESERVATION_STATES,
     APPLY_PROJECTION_LUA,
-    APPLY_PROJECTIONS_LUA,
-    BEGIN_PROJECTION_REBUILD_LUA,
-    FREQUENCY_DECISION_CHUNK,
-    FREQUENCY_MERGE_FUTURE_DAY_SKEW,
-    FREQUENCY_MERGE_FUTURE_MINUTE_SKEW,
-    PUBLISH_PROJECTION_READY_LUA,
-    RENEW_PROJECTION_REBUILD_LUA,
     FrequencyDecisionItem,
     ProjectionRow,
     UsageLedgerService,
     UsageProjectionUnavailable,
     UsageReservationConflict,
-    _ensure_frequency_subject,
-    _lock_projection_keys,
     commit_usage_reservation,
     request_usage_release_for_batch,
     shanghai_day,
+)
+from app.services.usage_ledger_common import (
+    FREQUENCY_DECISION_CHUNK,
+)
+from app.services.usage_ledger_frequency_merge import (
+    _ACTIVE_RESERVATION_STATES,
+    FREQUENCY_MERGE_FUTURE_DAY_SKEW,
+    FREQUENCY_MERGE_FUTURE_MINUTE_SKEW,
+)
+from app.services.usage_ledger_frequency_subjects import (
+    _ensure_frequency_subject,
+)
+from app.services.usage_ledger_projection import (
+    APPLY_PROJECTIONS_LUA,
+    BEGIN_PROJECTION_REBUILD_LUA,
+    PUBLISH_PROJECTION_READY_LUA,
+    RENEW_PROJECTION_REBUILD_LUA,
+    _lock_projection_keys,
 )
 
 pytestmark = pytest.mark.skipif(
@@ -2785,7 +2793,10 @@ async def test_projection_writer_and_rebuild_locks_exclude_each_other_until_tran
 ) -> None:
     """真实 PG 两会话验证写者提交/回滚与重建 session lock 的双向边界。"""
 
-    from app.services.usage_ledger import PROJECTION_REBUILD_KEY, _lock_projection_writer
+    from app.services.usage_ledger_projection import (
+        PROJECTION_REBUILD_KEY,
+        _lock_projection_writer,
+    )
 
     engine = create_async_engine(make_url(os.environ["OUTBOX_POSTGRES_DSN"]))
     redis = ProjectionRedis()

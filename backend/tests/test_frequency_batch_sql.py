@@ -11,6 +11,8 @@ import pytest
 from app.services.usage_ledger import (
     FrequencyDecisionItem,
     UsageReservationConflict,
+)
+from app.services.usage_ledger_frequency_subjects import (
     _ensure_frequency_subject,
     _ensure_frequency_subjects_many,
 )
@@ -86,7 +88,7 @@ async def test_new_subjects_use_bounded_sql_and_do_not_call_per_number_ensure(
         return await original(connection, item)
 
     monkeypatch.setattr(
-        "app.services.usage_ledger._ensure_frequency_subject", wrapped
+        "app.services.usage_ledger_frequency_subjects._ensure_frequency_subject", wrapped
     )
 
     small = [decision_item(f"new-{index}") for index in range(20)]
