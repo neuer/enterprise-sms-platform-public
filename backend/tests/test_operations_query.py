@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from typing import Any, TypedDict
@@ -442,3 +443,44 @@ async def test_authorized_phone_audits_reference_only_in_same_transaction() -> N
     assert int(audit_params["identity_id"]) == 101
     assert audit_params["ip"] == "127.0.0.1"
     assert audit_params["action"] == "message_phone_decrypt"
+
+
+@pytest.mark.asyncio
+async def test_authorized_phone_audits_batch_no_with_phone_like_fragment() -> None:
+    """批次号 hex 内含独立 1 开头 11 位数字片段时，解密审计仍须成功写入。"""
+
+    repository = SqlOperationsQueryRepository()
+    protected = crypto().protect_phone("13800138000")
+    phoneish_batch_no = "0000000000000000000a12345678901b"
+    connection = FakeConnection(
+        [
+            FakeResult(
+                rows=[
+                    {
+                        "phone_enc": protected.phone_enc,
+                        "phone_hmac": protected.phone_hmac,
+                        "key_version": protected.key_version,
+                        "batch_no": phoneish_batch_no,
+                    }
+                ]
+            ),
+            FakeResult(),
+        ]
+    )
+    bind(repository, connection)
+    principal = SecurityPrincipal(11, 101, "approver-a", "平台部", "approver")
+
+    material = await repository.authorized_phone(
+        9,
+        scope=BatchAccessScope(dept="平台部"),
+        principal=principal,
+        ip="127.0.0.1",
+    )
+
+    assert material is not None
+    audit_params = connection.calls[1][1]
+    assert audit_params["action"] == "message_phone_decrypt"
+    assert json.loads(audit_params["after"]) == {
+        "count": 1,
+        "batch_no": phoneish_batch_no,
+    }

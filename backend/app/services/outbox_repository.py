@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.core.audit import AUDIT_BATCH_NO, validate_audit_payload
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import current_correlation_id
 from app.core.runtime_resources import database_engine
@@ -34,6 +35,29 @@ SAFE_ERROR = re.compile(r"^[A-Za-z][A-Za-z0-9_.]{0,63}$")
 
 def _safe_error(value: str) -> str:
     return value if SAFE_ERROR.fullmatch(value) else "OutboxError"
+
+
+def _retry_audit_payload(
+    principal: SecurityPrincipal,
+    *,
+    aggregate_type: str,
+    aggregate_id: str,
+) -> dict[str, Any]:
+    """构造 outbox_retry 审计载荷；聚合主键不重复写入，仅批次以顶层 batch_no 引用。
+
+    aggregate_id 可能是批次号或 UUID，其中的数字片段会命中手机号检测；
+    object_id 已是 event_id，原始聚合主键可经 outbox_event 关联取得。
+    """
+
+    after: dict[str, Any] = {
+        "actor_account_id": principal.account_id,
+        "actor_identity_id": principal.identity_id,
+        "aggregate_type": aggregate_type,
+    }
+    if aggregate_type == "sms_batch" and AUDIT_BATCH_NO.fullmatch(aggregate_id):
+        after["batch_no"] = aggregate_id
+    validate_audit_payload(after)
+    return after
 
 
 def _args(value: Any) -> tuple[str | int, ...]:
@@ -507,6 +531,11 @@ class SqlOutboxRepository:
             row = result.mappings().one_or_none()
             if row is None:
                 return False
+            after = _retry_audit_payload(
+                principal,
+                aggregate_type=str(row["aggregate_type"]),
+                aggregate_id=str(row["aggregate_id"]),
+            )
             await connection.execute(
                 text(
                     """
@@ -516,12 +545,7 @@ class SqlOutboxRepository:
                     ) VALUES(
                       :actor,'human',:account_id,:identity_id,:role,
                       'outbox_retry','outbox_event',:event_id,
-                      jsonb_build_object(
-                        'actor_account_id',CAST(:account_id AS bigint),
-                        'actor_identity_id',CAST(:identity_id AS bigint),
-                        'aggregate_type',CAST(:aggregate_type AS text),
-                        'aggregate_id',CAST(:aggregate_id AS text)
-                      )
+                      CAST(:after AS jsonb)
                     )
                     """
                 ),
@@ -531,8 +555,7 @@ class SqlOutboxRepository:
                     "identity_id": principal.identity_id,
                     "role": principal.role,
                     "event_id": str(event_id),
-                    "aggregate_type": str(row["aggregate_type"]),
-                    "aggregate_id": str(row["aggregate_id"]),
+                    "after": json.dumps(after, ensure_ascii=False),
                 },
             )
             return True

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -9,6 +10,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from app.core.auth.accounts import SecurityPrincipal
 from app.services import outbox_repository as outbox_repository_module
 from app.services.outbox import (
     OutboxClaim,
@@ -864,6 +866,9 @@ class _FakeResult:
     def __iter__(self) -> Iterator[dict[str, object]]:
         return iter(self.rows)
 
+    def one_or_none(self) -> dict[str, object] | None:
+        return self.rows[0] if self.rows else None
+
 
 class _FakeConnection:
     def __init__(self, results: list[_FakeResult]) -> None:
@@ -891,6 +896,9 @@ class _FakeEngine:
         self.connection = connection
 
     def connect(self) -> _FakeContext:
+        return _FakeContext(self.connection)
+
+    def begin(self) -> _FakeContext:
         return _FakeContext(self.connection)
 
 
@@ -962,3 +970,55 @@ async def test_list_events_rejects_invalid_page() -> None:
         await repository.list_events(None, 0, 20)
     with pytest.raises(ValueError, match="invalid outbox event page"):
         await repository.list_events(None, 1, 101)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("aggregate_type", "aggregate_id", "expected_batch_no"),
+    [
+        ("sms_batch", "0000000000000000000a12345678901b", "0000000000000000000a12345678901b"),
+        ("sms_batch", "BATCH-1", None),
+        ("usage_reservation", "c0a80101-0000-4000-8000-a12345678901", None),
+    ],
+)
+async def test_retry_dead_audit_references_batch_no_without_aggregate_id(
+    monkeypatch: pytest.MonkeyPatch,
+    aggregate_type: str,
+    aggregate_id: str,
+    expected_batch_no: str | None,
+) -> None:
+    """聚合主键含手机号外形片段时审计不得重复写入；批次只以顶层 batch_no 引用。"""
+
+    connection = _FakeConnection(
+        [
+            _FakeResult(
+                rows=[{"aggregate_type": aggregate_type, "aggregate_id": aggregate_id}]
+            ),
+            _FakeResult(),
+        ]
+    )
+    monkeypatch.setattr(
+        outbox_repository_module,
+        "database_engine",
+        lambda _database_url: _FakeEngine(connection),
+    )
+    settings = type("SettingsStub", (), {"database_url": "postgresql+asyncpg://test"})()
+    repository = SqlOutboxRepository(settings)
+    principal = SecurityPrincipal(11, 101, "admin-a", "平台部", "admin")
+
+    assert await repository.retry_dead(
+        UUID("c0a80101-0000-4000-8000-000000000135"),
+        principal=principal,
+    )
+
+    audit_sql, audit_params = connection.calls[1]
+    assert "'outbox_retry','outbox_event'" in audit_sql
+    expected: dict[str, object] = {
+        "actor_account_id": 11,
+        "actor_identity_id": 101,
+        "aggregate_type": aggregate_type,
+    }
+    if expected_batch_no is not None:
+        expected["batch_no"] = expected_batch_no
+    assert json.loads(audit_params["after"]) == expected
+    assert "aggregate_id" not in audit_params
