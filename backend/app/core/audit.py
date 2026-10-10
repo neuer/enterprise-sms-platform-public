@@ -22,6 +22,7 @@ FORBIDDEN_AUDIT_KEY = re.compile(
     r"body|request|request_body|content|ciphertext|encrypted)(?:$|_)",
     re.IGNORECASE,
 )
+AUDIT_BATCH_NO = re.compile(r"[0-9a-f]{32}")
 _AUDIT_REF_DIGITS = str.maketrans("0123456789", "ghijklmnop")
 
 
@@ -52,18 +53,34 @@ class AuditEvent:
     after: dict[str, Any] | None = None
 
 
-def validate_audit_payload(value: Any, *, key: str | None = None) -> None:
-    """递归拒绝手机号、逐号密文/HMAC、token、secret 与请求正文。"""
+def validate_audit_payload(value: Any) -> None:
+    """递归拒绝手机号、逐号密文/HMAC、token、secret 与请求正文。
 
+    与 ck_audit_payload_no_pii 对齐：仅顶层 batch_no 且为 32 位小写 hex 时
+    豁免手机号检测，避免批次号中的数字片段误判；嵌套或其它键不豁免。
+    """
+
+    if isinstance(value, dict):
+        batch_no = value.get("batch_no")
+        if isinstance(batch_no, str) and AUDIT_BATCH_NO.fullmatch(batch_no):
+            value = {
+                nested_key: nested_value
+                for nested_key, nested_value in value.items()
+                if nested_key != "batch_no"
+            }
+    _reject_sensitive(value, key=None)
+
+
+def _reject_sensitive(value: Any, *, key: str | None) -> None:
     if key is not None and FORBIDDEN_AUDIT_KEY.search(key):
         raise ValueError("audit payload contains a forbidden field")
     if isinstance(value, dict):
         for nested_key, nested_value in value.items():
-            validate_audit_payload(nested_value, key=str(nested_key))
+            _reject_sensitive(nested_value, key=str(nested_key))
         return
     if isinstance(value, (list, tuple)):
         for item in value:
-            validate_audit_payload(item, key=key)
+            _reject_sensitive(item, key=key)
         return
     if isinstance(value, str) and PHONE_IN_TEXT.search(value):
         raise ValueError("audit payload contains a phone number")

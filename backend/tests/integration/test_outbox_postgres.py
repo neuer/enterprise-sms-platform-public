@@ -469,3 +469,167 @@ async def test_chunk_ready_outbox_allows_phone_shaped_chunk_id() -> None:
         await cleanup()
         await engine.dispose()
         await close_runtime_resources()
+
+
+@pytest.mark.asyncio
+async def test_retry_dead_audit_accepts_phone_shaped_aggregate_ids() -> None:
+    """outbox 允许的手机号外形聚合主键不得让 outbox_retry 审计被 DB 约束永久拒绝。"""
+
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    repository = SqlOutboxRepository(cast(Any, SimpleNamespace(database_url=database_url)))
+    batch_no = "0000000000000000000a12345678901b"
+    chunk_id = 13_800_138_000
+    reservation_id = "c0a80101-0000-4000-8000-a12345678901"
+    specs = (
+        OutboxEventSpec(
+            event_type="batch.ready",
+            aggregate_type="sms_batch",
+            aggregate_id=batch_no,
+            task_name="app.tasks.send.process_batch",
+            queue="realtime",
+            args=(batch_no,),
+            dedup_key=f"batch.ready:{batch_no}",
+        ),
+        OutboxEventSpec(
+            event_type="chunk.ready",
+            aggregate_type="sms_chunk",
+            aggregate_id=str(chunk_id),
+            task_name="app.tasks.send.process_chunk",
+            queue="realtime",
+            args=(chunk_id,),
+            dedup_key=f"chunk.ready:{chunk_id}",
+        ),
+        OutboxEventSpec(
+            event_type="usage.release",
+            aggregate_type="usage_reservation",
+            aggregate_id=reservation_id,
+            task_name="app.tasks.outbox.release_usage",
+            queue="realtime",
+            args=(reservation_id,),
+            dedup_key=f"usage.release:{reservation_id}",
+        ),
+    )
+    dedup_keys = [spec.dedup_key for spec in specs]
+    login_name = f"outbox-retry-{uuid4().hex[:12]}"
+    account_id: int | None = None
+    identity_id: int | None = None
+
+    async def cleanup() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM audit_log
+                    WHERE action='outbox_retry'
+                      AND object_id IN (
+                        SELECT CAST(id AS text) FROM outbox_event
+                        WHERE dedup_key = ANY(:dedup_keys)
+                      )
+                    """
+                ),
+                {"dedup_keys": dedup_keys},
+            )
+            await connection.execute(
+                text("DELETE FROM outbox_event WHERE dedup_key = ANY(:dedup_keys)"),
+                {"dedup_keys": dedup_keys},
+            )
+            if identity_id is not None:
+                await connection.execute(
+                    text("DELETE FROM auth_identity WHERE id=:identity_id"),
+                    {"identity_id": identity_id},
+                )
+            if account_id is not None:
+                await connection.execute(
+                    text("DELETE FROM user_account WHERE id=:account_id"),
+                    {"account_id": account_id},
+                )
+
+    try:
+        await cleanup()
+        async with engine.begin() as connection:
+            provider_id = int(
+                (
+                    await connection.execute(
+                        text("SELECT id FROM auth_provider WHERE code='local'")
+                    )
+                ).scalar_one()
+            )
+            account_id = int(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO user_account(display_name,dept,role)
+                            VALUES(:login,'平台部','admin') RETURNING id
+                            """
+                        ),
+                        {"login": login_name},
+                    )
+                ).scalar_one()
+            )
+            identity_id = int(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO auth_identity(
+                              account_id,provider_id,login_name,
+                              normalized_login_name,external_subject
+                            ) VALUES(
+                              :account_id,:provider_id,:login,:login,:subject
+                            ) RETURNING id
+                            """
+                        ),
+                        {
+                            "account_id": account_id,
+                            "provider_id": provider_id,
+                            "login": login_name,
+                            "subject": f"local:{login_name}",
+                        },
+                    )
+                ).scalar_one()
+            )
+            event_ids = [await enqueue_outbox(connection, spec) for spec in specs]
+            # 同一事务内直接置 dead，避免同库其它用例的全局领取看到这些事件。
+            await connection.execute(
+                text(
+                    """
+                    UPDATE outbox_event SET state='dead',attempts=max_attempts
+                    WHERE id = ANY(:event_ids)
+                    """
+                ),
+                {"event_ids": event_ids},
+            )
+
+        principal = SecurityPrincipal(account_id, identity_id, login_name, "平台部", "admin")
+        with audit_principal_scope(principal), correlation_scope(uuid4()):
+            for event_id in event_ids:
+                assert await repository.retry_dead(event_id, principal=principal)
+
+        async with engine.connect() as connection:
+            rows = {
+                str(row["object_id"]): row["after_val"]
+                for row in (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT object_id,after_val FROM audit_log
+                            WHERE action='outbox_retry'
+                              AND object_id = ANY(:object_ids)
+                            """
+                        ),
+                        {"object_ids": [str(event_id) for event_id in event_ids]},
+                    )
+                ).mappings()
+            }
+        base = {"actor_account_id": account_id, "actor_identity_id": identity_id}
+        assert rows == {
+            str(event_ids[0]): {**base, "aggregate_type": "sms_batch", "batch_no": batch_no},
+            str(event_ids[1]): {**base, "aggregate_type": "sms_chunk"},
+            str(event_ids[2]): {**base, "aggregate_type": "usage_reservation"},
+        }
+    finally:
+        await cleanup()
+        await engine.dispose()
+        await close_runtime_resources()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.audit import AuditEvent, insert_audit
@@ -28,18 +29,23 @@ from app.services.admin_step_up import AdminIntent
 from app.services.app_repository import SqlAppRepository
 from app.services.auth_provider import ProviderTestResult
 from app.services.auth_provider_repository import SqlAuthProviderRepository
+from app.services.batch_query import BatchAccessScope
 from app.services.blacklist import BlacklistEntry
 from app.services.blacklist_repository import SqlBlacklistRepository
 from app.services.crypto import CryptoService
 from app.services.export import ExportFilterSet
 from app.services.export_repository import SqlExportRepository
 from app.services.export_step_up import ExportStepUpService
+from app.services.operations_query import SqlOperationsQueryRepository
 from app.services.sensitive_repository import SqlSensitiveWordRepository
 from app.services.sign_repository import SqlSignRepository
 from app.services.template_repository import SqlTemplateRepository
 from app.services.user_repository import SqlUserManagementRepository
 from tests.integration.audit_fixtures import live_audit_principal  # noqa: F401
-from tests.integration.test_ops_audit_postgres import accept_runtime  # noqa: F401
+from tests.integration.test_ops_audit_postgres import (  # noqa: F401
+    _insert_blocked_batch,
+    accept_runtime,
+)
 
 pytestmark = pytest.mark.skipif(
     "SECURITY_SESSION_POSTGRES_DSN" not in os.environ,
@@ -837,4 +843,152 @@ async def test_export_create_persists_real_audit_row() -> None:
                     text("DELETE FROM export_task WHERE public_id=CAST(:public_id AS uuid)"),
                     {"public_id": public_id},
                 )
+        await engine.dispose()
+
+
+PHONEISH_BATCH_NO = "0000000000000000000a12345678901b"
+
+
+@pytest.mark.asyncio
+async def test_message_phone_decrypt_audit_accepts_phone_like_batch_no() -> None:
+    """批次号 hex 含独立 1 开头 11 位数字片段时，解密审计经应用校验与 DB 约束均可落库。"""
+
+    database_url = make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"])
+    owner = create_async_engine(database_url)
+    crypto = CryptoService.from_secret_values(
+        base64.b64encode(b"a" * 32).decode(),
+        base64.b64encode(b"b" * 32).decode(),
+    )
+    protected = crypto.protect_phone("13900139000")
+    repository = SqlOperationsQueryRepository(
+        cast(Any, SimpleNamespace(database_url=database_url))
+    )
+    message_id: int | None = None
+    try:
+        await _insert_blocked_batch(owner, PHONEISH_BATCH_NO)
+        async with owner.begin() as connection:
+            message_id = int(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO sms_message(
+                              batch_id,phone_enc,phone_hmac,phone_mask,
+                              key_version,status,created_at
+                            )
+                            SELECT id,:enc,:hmac,:mask,:version,'sent',
+                              TIMESTAMPTZ '2026-07-15 10:00:00+08:00'
+                            FROM sms_batch WHERE batch_no=:batch_no
+                            RETURNING id
+                            """
+                        ),
+                        {
+                            "enc": protected.phone_enc,
+                            "hmac": protected.phone_hmac,
+                            "mask": protected.phone_mask,
+                            "version": protected.key_version,
+                            "batch_no": PHONEISH_BATCH_NO,
+                        },
+                    )
+                ).scalar_one()
+            )
+
+        material = await repository.authorized_phone(
+            message_id,
+            scope=BatchAccessScope(dept="平台部"),
+            principal=stable_admin(),
+            ip="127.0.0.1",
+        )
+
+        assert material is not None
+        async with owner.connect() as connection:
+            after_val = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT after_val FROM audit_log
+                        WHERE action='message_phone_decrypt'
+                          AND object_type='sms_message' AND object_id=:object_id
+                        """
+                    ),
+                    {"object_id": str(message_id)},
+                )
+            ).scalar_one()
+        assert after_val == {"count": 1, "batch_no": PHONEISH_BATCH_NO}
+    finally:
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    DELETE FROM sms_message WHERE batch_id IN (
+                      SELECT id FROM sms_batch WHERE batch_no=:batch_no
+                    )
+                    """
+                ),
+                {"batch_no": PHONEISH_BATCH_NO},
+            )
+            await connection.execute(
+                text("DELETE FROM sms_batch WHERE batch_no=:batch_no"),
+                {"batch_no": PHONEISH_BATCH_NO},
+            )
+        await owner.dispose()
+
+
+@pytest.mark.asyncio
+async def test_audit_batch_no_exemption_stays_top_level_only() -> None:
+    """应用校验与 ck_audit_payload_no_pii 都只豁免顶层 batch_no，其它位置仍拒绝。"""
+
+    engine = create_async_engine(make_url(os.environ["SECURITY_SESSION_POSTGRES_DSN"]))
+    principal = stable_admin()
+    try:
+        for payload in (
+            {"batch_ref": PHONEISH_BATCH_NO},
+            {"nested": {"batch_no": PHONEISH_BATCH_NO}},
+        ):
+            with pytest.raises(ValueError, match="phone number"):
+                async with engine.begin() as connection:
+                    await bind_connection_audit_subject(
+                        connection,
+                        subject_kind="human",
+                        actor_name=principal.login_name,
+                        account_id=principal.account_id,
+                        identity_id=principal.identity_id,
+                    )
+                    await insert_audit(
+                        connection,
+                        AuditEvent(
+                            principal=principal,
+                            action="batch_no_exemption_probe",
+                            after=payload,
+                        ),
+                    )
+            with pytest.raises(IntegrityError, match="ck_audit_payload_no_pii"):
+                async with engine.begin() as connection:
+                    await bind_connection_audit_subject(
+                        connection,
+                        subject_kind="human",
+                        actor_name=principal.login_name,
+                        account_id=principal.account_id,
+                        identity_id=principal.identity_id,
+                    )
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO audit_log(
+                              actor,actor_subject_kind,actor_account_id,
+                              actor_identity_id,action,after_val
+                            ) VALUES(
+                              :actor,'human',:account_id,:identity_id,
+                              'batch_no_exemption_probe',CAST(:after AS jsonb)
+                            )
+                            """
+                        ),
+                        {
+                            "actor": principal.login_name,
+                            "account_id": principal.account_id,
+                            "identity_id": principal.identity_id,
+                            "after": json.dumps(payload),
+                        },
+                    )
+    finally:
         await engine.dispose()

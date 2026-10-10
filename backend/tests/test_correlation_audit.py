@@ -122,6 +122,32 @@ def test_application_audit_guard_rejects_pii_secret_and_request_body(
         validate_audit_payload(payload)
 
 
+PHONEISH_BATCH_NO = "0000000000000000000a12345678901b"
+
+
+def test_application_audit_guard_exempts_only_top_level_hex_batch_no() -> None:
+    validate_audit_payload({"count": 1, "batch_no": PHONEISH_BATCH_NO})
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"batch_ref": PHONEISH_BATCH_NO},
+        {"nested": {"batch_no": PHONEISH_BATCH_NO}},
+        {"items": [{"batch_no": PHONEISH_BATCH_NO}]},
+        {"batch_no": PHONEISH_BATCH_NO.upper()},
+        {"batch_no": "13800138000"},
+        {"batch_no": "batch 13800138000"},
+        {"batch_no": PHONEISH_BATCH_NO, "note": "13800138000"},
+    ],
+)
+def test_application_audit_guard_keeps_phone_check_outside_batch_no_exemption(
+    payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError, match="audit payload contains a phone number"):
+        validate_audit_payload(payload)
+
+
 def test_application_audit_guard_allows_credential_change_required_flag() -> None:
     validate_audit_payload(
         {"provider_code": "local", "credential_change_required": True}
