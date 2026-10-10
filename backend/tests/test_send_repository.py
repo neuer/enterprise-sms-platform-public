@@ -11,6 +11,7 @@ from typing import Any, cast
 import pytest
 
 import app.tasks.send_repository as send_repository_module
+import app.tasks.send_repository_payload as send_repository_payload_module
 from app.services.pipeline import InFlightLimitExceeded
 from app.services.send_inflight import InFlightInvariantViolation
 from app.services.vendor_test_budget import SubmissionClaimStatus
@@ -408,7 +409,7 @@ async def test_live_payload_waits_for_recipient_maintenance_lock_before_any_read
         await release_lock.wait()
 
     monkeypatch.setattr(
-        send_repository_module,
+        send_repository_payload_module,
         "lock_vendor_test_recipient_maintenance",
         held_lock,
     )
