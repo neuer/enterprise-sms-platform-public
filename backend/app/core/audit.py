@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from functools import wraps
 from typing import Any, TypeVar, cast
+from uuid import UUID
 
 from sqlalchemy import text
 
@@ -21,6 +22,20 @@ FORBIDDEN_AUDIT_KEY = re.compile(
     r"body|request|request_body|content|ciphertext|encrypted)(?:$|_)",
     re.IGNORECASE,
 )
+_AUDIT_REF_DIGITS = str.maketrans("0123456789", "ghijklmnop")
+
+
+def audit_uuid_ref(value: UUID) -> str:
+    """把 UUID 编码成不含数字的审计载荷引用，供 object_id 之外的跨行关联。
+
+    规范 UUID 文本末段 12 位 hex 约 0.045% 会形成独立的「1 开头 11 位数字」，
+    被 ck_audit_payload_no_pii 判为手机号而让审计永久写入失败。
+    规范 UUID 只含 0-9、a-f 与连字符，把数字逐位映射到 g-p 后仍一一对应、保持
+    8-4-4-4-12 形状且不含任何数字。SQL 侧等价写法：
+    ``translate(<uuid>::text, '0123456789', 'ghijklmnop')``。
+    """
+
+    return str(value).translate(_AUDIT_REF_DIGITS)
 
 
 @dataclass(frozen=True, slots=True)

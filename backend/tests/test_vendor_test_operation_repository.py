@@ -149,10 +149,9 @@ async def test_reserve_start_inserts_requested_audit_with_safe_fields_only() -> 
     assert "request_body" not in insert_sql and "payload" not in insert_sql
     audit_sql, audit_params = connection.calls[4]
     assert "INSERT INTO audit_log" in audit_sql
-    assert json.loads(audit_params["after"]) == {
-        "count": 1,
-        "operation_id": OPERATION_ID,
-    }
+    assert audit_params["object_id"] == OPERATION_ID
+    assert json.loads(audit_params["after"]) == {"count": 1}
+    assert OPERATION_ID not in audit_params["after"]
     assert SENTINEL not in repr(connection.calls)
     assert "phone" not in repr(audit_params).lower()
 
@@ -352,10 +351,8 @@ async def test_fail_unclaimed_control_is_requested_only_cas_with_safe_audit() ->
         "safe_code": "CONTROL_OPERATION_NOT_FOUND",
     }
     _, audit_params = connection.calls[1]
-    assert json.loads(audit_params["after"]) == {
-        "count": 1,
-        "operation_id": OPERATION_ID,
-    }
+    assert audit_params["object_id"] == OPERATION_ID
+    assert json.loads(audit_params["after"]) == {"count": 1}
 
 
 @pytest.mark.asyncio
@@ -389,11 +386,34 @@ async def test_completion_updates_terminal_state_and_audits_only_safe_metadata()
     assert update_params["safe_code"] == "CONTROL_COMMAND_FAILED"
     audit_sql, audit_params = connection.calls[1]
     assert "INSERT INTO audit_log" in audit_sql
-    assert json.loads(audit_params["after"]) == {
-        "count": 1,
-        "operation_id": OPERATION_ID,
-    }
+    assert audit_params["object_id"] == OPERATION_ID
+    assert json.loads(audit_params["after"]) == {"count": 1}
     assert SENTINEL not in repr(connection.calls)
+
+
+@pytest.mark.asyncio
+async def test_completion_audit_marks_checkpoint_without_copying_its_reference() -> None:
+    """checkpoint 引用末段为随机 hex，可能形成手机号形状；审计只标记存在，原值按 object_id 回查。"""
+
+    checkpoint = "vendor-activation-20260717T090000Z-a12345678901"
+    completed_row = row(status="succeeded")
+    completed_row["checkpoint_id"] = checkpoint
+    repo, connection = repository([FakeResult([completed_row]), FakeResult()])
+
+    completed = await repo.complete(
+        OPERATION_ID,
+        status="succeeded",
+        safe_code=None,
+        checkpoint_id=checkpoint,
+    )
+
+    assert completed.checkpoint_id == checkpoint
+    _, update_params = connection.calls[0]
+    assert update_params["checkpoint_id"] == checkpoint
+    _, audit_params = connection.calls[1]
+    assert audit_params["object_id"] == OPERATION_ID
+    assert json.loads(audit_params["after"]) == {"checkpoint_recorded": True, "count": 1}
+    assert checkpoint not in audit_params["after"]
 
 
 @pytest.mark.asyncio
@@ -411,10 +431,10 @@ async def test_attach_uat_batch_updates_only_safe_reference_and_audits() -> None
     assert "UPDATE vendor_test_operation" in update_sql
     assert update_params == {"id": OPERATION_ID, "batch_no": "batch-uat"}
     _, audit_params = connection.calls[1]
+    assert audit_params["object_id"] == OPERATION_ID
     assert json.loads(audit_params["after"]) == {
         "batch_no": "batch-uat",
         "count": 1,
-        "operation_id": OPERATION_ID,
     }
 
 

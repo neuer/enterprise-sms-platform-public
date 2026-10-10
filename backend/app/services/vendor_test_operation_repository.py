@@ -875,14 +875,14 @@ class SqlVendorTestOperationRepository:
         action: str,
         record: VendorTestOperation,
     ) -> None:
-        payload: dict[str, object] = {
-            "count": 1,
-            "operation_id": record.operation_id,
-        }
+        # operation UUID 只写 object_id；checkpoint_id 末段是 12 位随机 hex，二者抄进
+        # after_val 时约 0.045% 会被 ck_audit_payload_no_pii 判为手机号，使终态审计
+        # 永久失败、operation 卡在 running。checkpoint 原值按 object_id 在本表回查。
+        payload: dict[str, object] = {"count": 1}
         if record.batch_no is not None:
             payload["batch_no"] = record.batch_no
         if record.checkpoint_id is not None:
-            payload["checkpoint_id"] = record.checkpoint_id
+            payload["checkpoint_recorded"] = True
         if record.vendor_code is not None:
             payload["vendor_code"] = record.vendor_code
         principal = current_audit_principal()

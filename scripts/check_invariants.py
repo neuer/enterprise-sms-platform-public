@@ -470,7 +470,7 @@ def check_vendor_live_invariants() -> None:
 
     audit_repository = require_fragments(
         APP / "services/vendor_test_operation_repository.py",
-        '"operation_id": record.operation_id',
+        '"object_id": record.operation_id',
         'payload["vendor_code"] = record.vendor_code',
     )
     audit_section = audit_repository.split("    async def _audit(", maxsplit=1)[-1]
@@ -485,6 +485,18 @@ def check_vendor_live_invariants() -> None:
             fail(
                 APP / "services/vendor_test_operation_repository.py",
                 "真实联调 operation 审计禁止敏感载荷",
+            )
+    # operation UUID 只落 object_id，checkpoint 原值留在 operation 行：二者含随机 hex，
+    # 写入载荷会偶发撞上 ck_audit_payload_no_pii 的手机号模式而使终态审计永久失败。
+    for forbidden_reference in (
+        'payload["operation_id',
+        'payload["checkpoint_id',
+        '"operation_id": record.operation_id',
+    ):
+        if forbidden_reference in audit_section.lower():
+            fail(
+                APP / "services/vendor_test_operation_repository.py",
+                "真实联调 operation 审计载荷不得原样写入 operation UUID 或 checkpoint",
             )
 
     require_fragments(

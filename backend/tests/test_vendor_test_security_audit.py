@@ -84,8 +84,8 @@ async def test_security_event_inserts_real_safe_audit_row(
     assert params["action"] == action
     assert params["object_id"] == CORRELATION_ID
     payload = json.loads(params["after"])
+    assert CORRELATION_ID not in params["after"]
     assert payload == {
-        "correlation_id": CORRELATION_ID,
         "count": 1,
         "outcome": outcome,
         **({"safe_code": safe_code} if safe_code is not None else {}),

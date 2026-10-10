@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.core.audit import AuditEvent, insert_audit, validate_audit_payload
+from app.core.audit import AuditEvent, audit_uuid_ref, insert_audit, validate_audit_payload
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import (
     CorrelationIdMiddleware,
@@ -225,3 +225,24 @@ async def test_outbox_claim_restores_durable_correlation_for_effect() -> None:
         )
         == 1
     )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "00000000-0000-4000-8000-a12345678901",
+        "c0a80101-1380-4138-8001-138001380000",
+        "ffffffff-ffff-4fff-bfff-ffffffffffff",
+    ],
+)
+def test_audit_uuid_ref_is_digit_free_one_to_one_and_passes_payload_guard(value: str) -> None:
+    """UUID 审计引用不含数字，可逐位还原，且不会被手机号守卫误判。"""
+
+    ref = audit_uuid_ref(UUID(value))
+
+    assert not any(character.isdigit() for character in ref)
+    assert [len(part) for part in ref.split("-")] == [8, 4, 4, 4, 12]
+    assert ref.translate(str.maketrans("ghijklmnop", "0123456789")) == value
+    validate_audit_payload({"delivery_ref": ref})
+    with pytest.raises(ValueError, match="phone number"):
+        validate_audit_payload({"delivery_id": "a12345678901"})

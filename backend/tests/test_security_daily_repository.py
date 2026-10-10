@@ -4,10 +4,11 @@ import json
 from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 
+from app.core.audit import audit_uuid_ref
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.security_daily import (
     DeliveryStatus,
@@ -357,6 +358,8 @@ async def test_superseded_request_result_cannot_overwrite_current_report(
     )
     assert audit["state"] == "sent"
     assert audit["delivery_generation"] == 1
+    assert audit["delivery_ref"] == audit_uuid_ref(request_id)
+    assert str(request_id) not in json.dumps(audit)
     assert "re_" not in json.dumps(audit)
     assert "@" not in json.dumps(audit)
 
@@ -437,7 +440,17 @@ async def test_update_configuration_audits_publish_phases_without_secrets() -> N
     encoded = json.dumps(audits)
     assert "re_secret_key" not in encoded
     assert "security-owner@example.com" not in encoded
-    assert all(item["operation_id"] for item in audits)
+    operation_id = next(
+        params["value"]
+        for sql, params in connection.calls
+        if "INSERT INTO sys_config" in sql
+        and params["key"] == "security_daily_config_operation_id"
+    )
+    assert [item["operation_ref"] for item in audits] == [
+        audit_uuid_ref(UUID(operation_id))
+    ] * 2
+    assert operation_id not in encoded
+    assert not any(character.isdigit() for character in audits[0]["operation_ref"])
     assert all("recipient_count" in item for item in audits)
 
 
@@ -458,7 +471,7 @@ async def test_mark_file_committed_audit_excludes_key_and_recipients(
     await repo.mark_configuration_publish_state(
         config_version=3,
         publish_state="file_committed",
-        operation_id="op-1",
+        operation_id="00000000-0000-4000-8000-a12345678901",
     )
 
     audits = [
@@ -470,7 +483,7 @@ async def test_mark_file_committed_audit_excludes_key_and_recipients(
         {
             "config_version": 3,
             "publish_state": "file_committed",
-            "operation_id": "op-1",
+            "operation_ref": "gggggggg-gggg-kggg-oggg-ahijklmnopgh",
         }
     ]
     encoded = json.dumps(connection.calls)
