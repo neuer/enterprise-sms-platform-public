@@ -14,9 +14,9 @@ from functools import lru_cache, wraps
 from typing import Any, ParamSpec, Protocol, TypeVar, cast
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.core.worker_runtime import run_worker_async
 from app.services.alert_repository import SqlAlertService
 from app.settings import Settings, get_settings
@@ -568,7 +568,7 @@ class SqlJobMonitorLease:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
-        self._engine: AsyncEngine | None = None
+        self._engine: ManagedAsyncEngine | None = None
         self._connection: AsyncConnection | None = None
         self._connection_context: AbstractAsyncContextManager[AsyncConnection] | None = None
 
@@ -577,10 +577,7 @@ class SqlJobMonitorLease:
             return True
 
         engine = database_engine(self.settings.database_url)
-        connection_context = cast(
-            AbstractAsyncContextManager[AsyncConnection],
-            engine.connect(),
-        )
+        connection_context = engine.connect()
         connection = await connection_context.__aenter__()
         try:
             result = await connection.execute(

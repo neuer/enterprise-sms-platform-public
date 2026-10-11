@@ -27,6 +27,7 @@ from app.tasks.send import (
     FinalizeReport,
     classify_finalize_conflict,
 )
+from app.tasks.send_repository_contracts import SendTransactionEngine
 from app.vendor.codes import DELAYED_RETRY_EXHAUSTED, DELAYED_RETRY_LIMIT
 from app.vendor.failover import (
     FIRST_INVOKE_CHUNK_STATES,
@@ -70,7 +71,7 @@ class VendorAttemptStoreMixin:
 
     if TYPE_CHECKING:
         # 由 SqlChunkStore 提供；运行时不定义桩，方法解析仍走 SqlChunkStore 的实现。
-        def _engine(self) -> Any: ...
+        def _engine(self) -> SendTransactionEngine: ...
 
         @staticmethod
         def lane_for(category: str) -> str: ...

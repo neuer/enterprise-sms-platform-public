@@ -35,7 +35,6 @@ from app.services.pipeline_contracts import (
     BatchResponse,
     ConsentRequired,
     FailedSourceReference,
-    FrequencyPort,
     IdempotencyClaimLost,
     IdempotencyPort,
     InFlightLimitExceeded,
@@ -46,7 +45,6 @@ from app.services.pipeline_contracts import (
     PipelineStore,
     QueuePublisher,
     QuotaExemptionExpired,
-    QuotaPort,
     RecipientGuard,
     SendAdmissionPort,
     SendRequest,
@@ -88,6 +86,7 @@ __all__ = [
     "VendorTestConsoleOnly",
 ]
 
+
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -101,8 +100,6 @@ class SendPipeline(AcceptanceCommitMixin):
         store: PipelineStore,
         idempotency: IdempotencyPort,
         crypto: CryptoService,
-        frequency: FrequencyPort,
-        quota: QuotaPort,
         publisher: QueuePublisher,
         config: PipelineConfig,
         templates: TemplatePort | None = None,
@@ -110,15 +107,15 @@ class SendPipeline(AcceptanceCommitMixin):
         recipient_guard: RecipientGuard | None = None,
         vendor_test_console_only: bool = False,
         acceptance_limiter: ApplicationRateLimiter | None = None,
-        usage_ledger: UsageLedgerPort | None = None,
+        usage_ledger: UsageLedgerPort,
         admission_guard: SendAdmissionPort | None = None,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
+        if usage_ledger is None:
+            raise TypeError("SendPipeline requires a PostgreSQL usage ledger")
         self.store = store
         self.idempotency = idempotency
         self.crypto = crypto
-        self.frequency = frequency
-        self.quota = quota
         self.publisher = publisher
         self.config = config
         self.templates = templates
@@ -337,7 +334,6 @@ class SendPipeline(AcceptanceCommitMixin):
                 claim_key=self.idempotency.claim_key(idem_scope, biz_id),
                 claim_token=fence_token,
                 claim_generation=viewed.generation if viewed is not None else 1,
-                frequency_result_key=self.idempotency.frequency_result_key(idem_scope, biz_id),
                 idem_scope=idem_scope,
                 request_hash=request_hash,
                 request_hash_key_version=request_hash_key_version,
@@ -368,7 +364,6 @@ class SendPipeline(AcceptanceCommitMixin):
         claim_key: str | None = None,
         claim_token: str | None = None,
         claim_generation: int | None = None,
-        frequency_result_key: str | None = None,
         idem_scope: IdempotencyScope | None = None,
         request_hash: str | None = None,
         request_hash_key_version: int | None = None,
@@ -386,7 +381,6 @@ class SendPipeline(AcceptanceCommitMixin):
             claim_key=claim_key,
             claim_token=claim_token,
             claim_generation=claim_generation,
-            frequency_result_key=frequency_result_key,
             idem_scope=idem_scope,
             request_hash=request_hash,
             request_hash_key_version=request_hash_key_version,
@@ -412,4 +406,3 @@ class SendPipeline(AcceptanceCommitMixin):
         finally:
             if acceptance.allow_unbound_release and not acceptance.inflight_bound:
                 await self._release_inflight(acceptance, "acceptance-failed")
-

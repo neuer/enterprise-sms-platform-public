@@ -30,10 +30,8 @@ from app.services.pipeline_contracts import (
     AcceptancePreauthorization,
     AllFiltered,
     ConsentRequired,
-    FrequencyPort,
     InvalidContent,
     QueuePublisher,
-    QuotaPort,
     RecipientGuard,
     SendRequest,
     SensitiveWord,
@@ -42,7 +40,7 @@ from app.services.pipeline_contracts import (
     UsageLedgerPort,
 )
 from app.services.pipeline_idempotency import AcceptanceIdempotencyMixin
-from app.services.usage_ledger import FrequencyDecisionItem
+from app.services.usage_ledger_common import FrequencyDecisionItem, shanghai_day
 
 # 与入口共用日志器名，日志路由与告警过滤保持不变。
 LOGGER = logging.getLogger("app.services.pipeline")
@@ -107,7 +105,6 @@ class _Acceptance:
     claim_key: str | None
     claim_token: str | None
     claim_generation: int | None
-    frequency_result_key: str | None
     idem_scope: IdempotencyScope | None
     request_hash: str | None
     request_hash_key_version: int | None
@@ -141,17 +138,14 @@ class _UsageWindow:
     limits: FrequencyLimits
     now: datetime
     date_key: str
-    ttl_s: int
+    expires_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
 class _QuotaHold:
-    """已预扣的额度；未走用量账本时用于补偿退还。"""
+    """用量账本已预留的计费条；失败只请求事实释放，不直接改 Redis。"""
 
     cost: int
-    date_key: str
-    reservation_key: str | None
-    reused: bool
 
 
 class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
@@ -161,10 +155,8 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
     templates: TemplatePort | None
     signs: SignPort | None
     recipient_guard: RecipientGuard | None
-    frequency: FrequencyPort
-    quota: QuotaPort
     publisher: QueuePublisher
-    usage_ledger: UsageLedgerPort | None
+    usage_ledger: UsageLedgerPort
 
     async def _render(self, request: SendRequest, dept: str) -> str:
         has_content = request.content is not None
@@ -334,7 +326,7 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
 
     async def _release_usage(self, acceptance: _Acceptance, reason: str) -> None:
         usage_reservation_id = acceptance.usage_reservation_id
-        if self.usage_ledger is None or usage_reservation_id is None:
+        if usage_reservation_id is None:
             return
         try:
             await self.usage_ledger.request_unlinked_release(
@@ -457,24 +449,31 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
             override=app.freq_override,
         )
         now = self.clock()
-        date_key, ttl_s = self._quota_clock(now)
-        if self.usage_ledger is not None:
-            request_key = (
-                usage_request_key(acceptance.idem_scope, request.biz_id, date_key)
-                if request.biz_id and acceptance.idem_scope is not None
-                else f"acceptance:{uuid4()}"
-            )
-            usage_reservation = await self.usage_ledger.start_reservation(
-                request_key=request_key,
-                app_id=self._usage_app_id(app, request),
-                dept=self._usage_dept(app, request),
-                category=request.category,
-                now=now,
-                subject_kind=self._usage_subject_kind(request),
-            )
-            acceptance.usage_reservation_id = UUID(str(usage_reservation.reservation_id))
-            acceptance.usage_reservation_reused = bool(getattr(usage_reservation, "reused", False))
-        return _UsageWindow(limits=limits, now=now, date_key=date_key, ttl_s=ttl_s)
+        date_key, _, expires_at = shanghai_day(now)
+        request_key = (
+            usage_request_key(acceptance.idem_scope, request.biz_id, date_key)
+            if request.biz_id and acceptance.idem_scope is not None
+            else f"acceptance:{uuid4()}"
+        )
+        reservation = await self.usage_ledger.start_reservation(
+            request_key=request_key,
+            app_id=self._usage_app_id(app, request),
+            dept=self._usage_dept(app, request),
+            category=request.category,
+            now=now,
+            subject_kind=self._usage_subject_kind(request),
+        )
+        if not isinstance(reservation.reservation_id, UUID) or type(reservation.reused) is not bool:
+            raise TypeError("usage ledger returned an invalid reservation")
+        acceptance.usage_reservation_id = reservation.reservation_id
+        acceptance.usage_reservation_reused = reservation.reused
+        return _UsageWindow(limits=limits, now=now, date_key=date_key, expires_at=expires_at)
+
+    @staticmethod
+    def _required_usage_reservation(acceptance: _Acceptance) -> UUID:
+        if acceptance.usage_reservation_id is None:
+            raise RuntimeError("usage ledger reservation is missing")
+        return acceptance.usage_reservation_id
 
     async def _apply_frequency(
         self,
@@ -489,11 +488,11 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
         after_blacklist = screened.after_blacklist
         frequency_hmac_by_active = screened.frequency_hmac_by_active
         frequency_aliases_by_active = screened.frequency_aliases_by_active
-        usage_reservation_id = acceptance.usage_reservation_id
+        usage_reservation_id = self._required_usage_reservation(acceptance)
         accepted: list[ProtectedPhone] = []
         try:
             await acceptance.check_ownership()
-            if request.category == "notice" and self.usage_ledger is not None:
+            if request.category == "notice":
                 # notice 无频控维度；保留前后副作用边界的 claim 校验。
                 accepted.extend(after_blacklist)
             else:
@@ -502,37 +501,20 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
                     if offset > 0:
                         await acceptance.check_ownership()
                     batch = after_blacklist[offset : offset + frequency_batch]
-                    if self.usage_ledger is not None and usage_reservation_id is not None:
-                        decisions = await self.usage_ledger.allow_frequency_many(
-                            usage_reservation_id,
-                            request.category,
-                            app_id=self._usage_app_id(app, request),
-                            items=tuple(
-                                FrequencyDecisionItem(
-                                    phone_hmac=frequency_hmac_by_active[item.phone_hmac],
-                                    hmac_aliases=frequency_aliases_by_active[item.phone_hmac],
-                                )
-                                for item in batch
-                            ),
-                            limits=window.limits,
-                            now=window.now,
-                        )
-                    else:
-                        decisions = []
-                        for index, item in enumerate(batch):
-                            if index > 0 and index % 25 == 0:
-                                await acceptance.check_ownership()
-                            decisions.append(
-                                await self.frequency.allow(
-                                    request.category,
-                                    app_id=self._usage_app_id(app, request),
-                                    phone_hmac=frequency_hmac_by_active[item.phone_hmac],
-                                    limits=window.limits,
-                                    claim_key=acceptance.claim_key,
-                                    claim_token=acceptance.claim_token,
-                                    result_key=acceptance.frequency_result_key,
-                                )
+                    decisions = await self.usage_ledger.allow_frequency_many(
+                        usage_reservation_id,
+                        request.category,
+                        app_id=self._usage_app_id(app, request),
+                        items=tuple(
+                            FrequencyDecisionItem(
+                                phone_hmac=frequency_hmac_by_active[item.phone_hmac],
+                                hmac_aliases=frequency_aliases_by_active[item.phone_hmac],
                             )
+                            for item in batch
+                        ),
+                        limits=window.limits,
+                        now=window.now,
+                    )
                     accepted.extend(
                         item for item, allowed in zip(batch, decisions, strict=True) if allowed
                     )
@@ -555,59 +537,25 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
 
         app = acceptance.app
         request = acceptance.request
-        idem_scope = acceptance.idem_scope
         quota_cost = prepared.segments * len(accepted)
-        if request.biz_id and idem_scope is not None:
-            quota_reservation_key = self.idempotency.quota_result_key(
-                idem_scope, request.biz_id, window.date_key
-            )
-        else:
-            quota_reservation_key = None
+        reservation_id = self._required_usage_reservation(acceptance)
         try:
             await acceptance.check_ownership()
-            if self.usage_ledger is not None and acceptance.usage_reservation_id is not None:
-                next_day = (window.now.astimezone(SHANGHAI) + timedelta(days=1)).replace(
-                    hour=0,
-                    minute=0,
-                    second=0,
-                    microsecond=0,
-                )
-                await self.usage_ledger.reserve_quota(
-                    acceptance.usage_reservation_id,
-                    app_id=self._usage_app_id(app, request),
-                    dept=self._usage_dept(app, request),
-                    category=request.category,
-                    date_key=window.date_key,
-                    cost=quota_cost,
-                    app_limit=app.daily_quota,
-                    dept_limit=self.config.dept_daily_quota,
-                    expires_at=next_day,
-                )
-                reservation_reused = acceptance.usage_reservation_reused
-            else:
-                reservation = await self.quota.reserve(
-                    app_id=self._usage_app_id(app, request),
-                    dept=self._usage_dept(app, request),
-                    category=request.category,
-                    date_key=window.date_key,
-                    cost=quota_cost,
-                    app_limit=app.daily_quota,
-                    dept_limit=self.config.dept_daily_quota,
-                    ttl_s=window.ttl_s,
-                    claim_key=acceptance.claim_key,
-                    claim_token=acceptance.claim_token,
-                    reservation_key=quota_reservation_key,
-                )
-                reservation_reused = bool(getattr(reservation, "reused", False))
+            await self.usage_ledger.reserve_quota(
+                reservation_id,
+                app_id=self._usage_app_id(app, request),
+                dept=self._usage_dept(app, request),
+                category=request.category,
+                date_key=window.date_key,
+                cost=quota_cost,
+                app_limit=app.daily_quota,
+                dept_limit=self.config.dept_daily_quota,
+                expires_at=window.expires_at,
+            )
         except Exception:
             await self._release_usage(acceptance, "acceptance-failed")
             raise
-        return _QuotaHold(
-            cost=quota_cost,
-            date_key=window.date_key,
-            reservation_key=quota_reservation_key,
-            reused=reservation_reused,
-        )
+        return _QuotaHold(cost=quota_cost)
 
     def _protect_plain_phones(
         self,

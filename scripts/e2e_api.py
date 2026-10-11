@@ -74,7 +74,16 @@ class RollbackStack:
             try:
                 callback()
             except Exception as error:  # 恢复必须继续执行其余动作
-                errors.append(type(error).__name__)
+                # 只保留固定 HTTP 状态，既能定位受保护清理失败，也不输出响应/凭据。
+                status = (
+                    re.search(
+                        r"(?:returned|failed|cleanup) HTTP ([1-5][0-9]{2})(?:$|\s)", str(error)
+                    )
+                    if isinstance(error, UatFailure) else None
+                )
+                errors.append(
+                    f"UatFailure:HTTP_{status.group(1)}" if status else type(error).__name__
+                )
         return tuple(errors)
 
 

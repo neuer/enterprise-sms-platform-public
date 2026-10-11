@@ -702,3 +702,18 @@ def test_authentication_uat_retry_budget_is_bounded(monkeypatch) -> None:
     monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
     assert suite._authentication_request("/api/v1/web/auth/login", payload={}) == busy
     assert delays == [30, 30] and len(http.calls) == 3
+
+
+def test_cleanup_reports_only_http_status_and_never_error_payload() -> None:
+    rollback = RollbackStack()
+
+    def http_failure() -> None:
+        raise UatFailure("UAT admin write reauthentication returned HTTP 429 private-response")
+
+    def unknown_failure() -> None:
+        raise RuntimeError("private-secret-response")
+
+    rollback.defer(http_failure)
+    rollback.defer(unknown_failure)
+    assert rollback.restore() == ("RuntimeError", "UatFailure:HTTP_429")
+    assert rollback.restore() == ()

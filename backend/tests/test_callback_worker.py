@@ -15,7 +15,6 @@ from app.services.callback_worker import (
     CallbackClaim,
     CallbackLeaseLost,
     CallbackWorker,
-    classify_callback_http_status,
 )
 
 EVENT_ID = UUID("10000000-0000-4000-8000-000000000009")
@@ -284,14 +283,6 @@ async def test_retryable_statuses_keep_retry_schedule(status: int) -> None:
 
 
 @pytest.mark.asyncio
-async def test_classify_callback_http_status_is_conservative() -> None:
-    assert classify_callback_http_status(200) == "success"
-    assert classify_callback_http_status(400) == "retryable"
-    assert classify_callback_http_status(429) == "retryable"
-    assert classify_callback_http_status(599) == "retryable"
-
-
-@pytest.mark.asyncio
 async def test_worker_uses_runtime_retry_schedule() -> None:
     repository = FakeRepository(claim(1))
 
@@ -336,3 +327,41 @@ async def test_heartbeat_loss_cancels_delivery_and_prevents_state_update() -> No
     assert delivery.cancelled
     assert ("heartbeat", 9) in repository.events
     assert all(name not in {"done", "retry", "dead"} for name, _ in repository.events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status", [200, 204, 299, 300, 400, 401, 403, 404, 410, 422, 429, 500, 503, 599],
+)
+@pytest.mark.parametrize("retry_count", range(6))
+async def test_actual_delivery_classification_drives_all_retry_and_terminal_states(
+    status: int, retry_count: int,
+) -> None:
+    """调用真实投递分类，避免仅验证与生产无关的分类 helper。"""
+    from app.services.callback import BatchFinishedData, CallbackDelivery, CallbackMaterial
+    from tests.test_callback_delivery import FakeRepository as MaterialRepository
+    from tests.test_callback_delivery import FakeTransport, FakeValidator, crypto, task
+
+    material = CallbackMaterial(
+        task("batch.finished", "synthetic-secret"),
+        batch=BatchFinishedData(
+            batch_no="b" * 32, biz_id=None, category="notice", status="completed",
+            total=1, delivered=0, failed=1, unknown=0, finished_at=datetime.now(UTC),
+        ),
+    )
+    transport = FakeTransport(status)
+    delivery = CallbackDelivery(MaterialRepository(material), crypto(), FakeValidator(), transport)
+    repository = FakeRepository(claim(retry_count))
+    alerts = FakeAlerts()
+    await CallbackWorker(repository, delivery, alerts).process(9)
+    assert len(transport.calls) == 1 and transport.calls[0]["follow_redirects"] is False
+    if 200 <= status < 300:
+        assert ("done", (9, status)) in repository.events
+        assert alerts.events == []
+    elif retry_count < 5:
+        expected = (9, retry_count, (60, 300, 900, 3600, 3600)[retry_count], status, None)
+        assert ("retry", expected) in repository.events
+        assert alerts.events == []
+    else:
+        assert ("dead", (9, 5, status, None)) in repository.events
+        assert len(alerts.events) == 1 and alerts.events[0]["level"] == "crit"

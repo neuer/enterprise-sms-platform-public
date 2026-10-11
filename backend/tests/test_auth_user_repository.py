@@ -152,57 +152,6 @@ async def test_local_login_projection_uses_provider_and_normalized_global_name()
 
 
 @pytest.mark.asyncio
-async def test_create_local_account_identity_credential_and_audit_are_one_transaction() -> None:
-    created_row = account_row(
-        account_id=9,
-        identity_id=19,
-        login_name="new.user",
-        normalized_login_name="new.user",
-        display_name="新用户",
-        role="viewer",
-        password_hash="$argon2id$v=19$new",
-    )
-    repo, connection, engine = repository(
-        [
-            FakeResult(scalar=1),
-            FakeResult(scalar=9),
-            FakeResult(scalar=19),
-            FakeResult(),
-            FakeResult(),
-            FakeResult([created_row]),
-        ]
-    )
-
-    account = await repo.create_local_account(
-        login_name="New.User",
-        display_name="新用户",
-        dept="业务一部",
-        role="viewer",
-        password_hash="$argon2id$v=19$new",
-        actor="admin",
-        ip="10.0.0.8",
-    )
-
-    assert account.account_id == 9 and account.identity_id == 19
-    provider_sql, _ = connection.calls[0]
-    assert "auth_provider" in provider_sql and "FOR SHARE" in provider_sql
-    identity_sql, identity_params = connection.calls[2]
-    assert "INSERT INTO auth_identity" in identity_sql
-    assert identity_params["login_name"] == "new.user"
-    assert identity_params["external_subject"] == "local:new.user"
-    credential_sql, credential_params = connection.calls[3]
-    assert "INSERT INTO local_credential" in credential_sql
-    assert "local_temporary_password_ttl_hours" in credential_sql
-    assert credential_params["password_hash"] == "$argon2id$v=19$new"
-    audit_sql, audit_params = connection.calls[4]
-    assert "local_account_create" in audit_sql
-    assert "'role',CAST(:target_role AS text)" in audit_sql
-    assert audit_params["object_id"] == "9"
-    assert "$argon2id" not in str(audit_params)
-    assert engine.disposed
-
-
-@pytest.mark.asyncio
 async def test_force_logout_targets_numeric_account_id_and_audits_same_id() -> None:
     repo, connection, engine = repository([FakeResult(), FakeResult(scalar=8), FakeResult()])
     actor = PlatformAccount(

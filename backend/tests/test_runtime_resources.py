@@ -342,3 +342,17 @@ def test_request_worker_and_metric_paths_cannot_create_private_engines() -> None
             offenders.append(path.relative_to(app_root).as_posix())
 
     assert offenders == []
+
+
+@pytest.mark.asyncio
+async def test_repository_dispose_is_noop_but_explicit_owner_close_releases_engine() -> None:
+    raw = FakeEngine()
+    managed = resources.ManagedAsyncEngine(raw, "api", resources.DEFAULT_BUDGETS["api"])
+    async with managed.begin():
+        pass
+    await managed.dispose()
+    assert raw.closed is False
+    async with managed.connect():
+        pass
+    await managed.close()
+    assert raw.closed is True

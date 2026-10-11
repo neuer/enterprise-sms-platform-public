@@ -40,7 +40,6 @@ from app.services.billing_preview import (
 from app.services.blacklist import RedisBlacklistCache
 from app.services.blacklist_repository import SqlBlacklistRepository
 from app.services.crypto import CryptoService
-from app.services.freq import FrequencyLimiter
 from app.services.idempotency import IdempotencyCoordinator
 from app.services.import_file import ImportFileCodec
 from app.services.import_repository import (
@@ -64,7 +63,6 @@ from app.services.pipeline import (
 )
 from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRenderer
 from app.services.queue import CeleryQueuePublisher
-from app.services.quota import QuotaService
 from app.services.runtime_policy import RuntimePolicy, SqlRuntimePolicyLoader
 from app.services.send_admission import get_send_admission_guard
 from app.services.sensitive_read_audit import (
@@ -299,7 +297,6 @@ async def get_import_parser(_actor: WriterActor) -> AsyncIterator[ImportParser]:
 
 
 
-
 def _query_scope(claims: JwtClaims, requested_dept: str | None = None) -> BatchAccessScope:
     if claims.role in {"approver", "admin"}:
         return (
@@ -342,8 +339,8 @@ async def _pipeline_for(claims: JwtClaims) -> AsyncIterator[SendPipeline]:
         store=store,
         idempotency=IdempotencyCoordinator(redis, store),
         crypto=crypto,
-        frequency=FrequencyLimiter(redis),
-        quota=QuotaService(redis),
+
+
         publisher=CeleryQueuePublisher(),
         templates=SqlTemplateRenderer(settings),
         signs=SignResolver(SqlSignRepository(settings)),

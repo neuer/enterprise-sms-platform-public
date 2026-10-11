@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from app.core.auth.accounts import PlatformAccount
@@ -62,11 +62,3 @@ class DirectoryIdentity:
     display_name: str
     dept: str
     groups: tuple[str, ...]
-
-
-class PasswordAuthProvider(Protocol):
-    async def authenticate(
-        self,
-        login_name: str,
-        password: str,
-    ) -> AuthenticatedIdentity: ...

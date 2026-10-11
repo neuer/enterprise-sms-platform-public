@@ -30,7 +30,7 @@ from app.services.batch_query import BatchAccessScope, BatchNotFound, BatchQuery
 from app.services.blacklist import BlacklistCacheUnavailable
 from app.services.category import CategoryNotAllowed
 from app.services.crypto import CryptoService, ProtectedPhone
-from app.services.freq import FrequencyFenceLost, FrequencyLimiter
+from app.services.freq import FrequencyFenceLost
 from app.services.idempotency import IdempotencyCoordinationTimeout, IdempotencyCoordinator
 from app.services.pipeline import (
     AcceptCommitConflict,
@@ -294,8 +294,8 @@ async def _pipeline(app: ApiAppContext) -> SendPipeline:
         store=store,
         idempotency=IdempotencyCoordinator(redis, store),
         crypto=crypto,
-        frequency=FrequencyLimiter(redis),
-        quota=QuotaService(redis),
+
+
         publisher=CeleryQueuePublisher(),
         templates=SqlTemplateRenderer(settings),
         signs=SignResolver(SqlSignRepository(settings)),

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from math import ceil
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -102,12 +102,6 @@ class SendAdmissionMixin:
             or usage.category != request.category
         ):
             raise ValueError("system resend principal is not forgeable")
-
-    @staticmethod
-    def _quota_clock(now: datetime) -> tuple[str, int]:
-        local = now.astimezone(SHANGHAI)
-        next_day = (local + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-        return local.strftime("%Y%m%d"), max(1, int((next_day - local).total_seconds()))
 
     async def _authorize_new_send(
         self,

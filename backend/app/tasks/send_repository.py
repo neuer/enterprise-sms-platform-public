@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import math
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from redis.asyncio import Redis
 from sqlalchemy import text
@@ -32,6 +32,11 @@ from app.settings import Settings, get_settings
 from app.tasks import celery_app
 from app.tasks.send import (
     ChunkPayload,
+)
+from app.tasks.send_repository_contracts import (
+    SendAttemptDependencies,
+    SendPayloadDependencies,
+    SendTransactionEngine,
 )
 from app.tasks.send_repository_failover import VendorFailoverMixin
 from app.tasks.send_repository_payload import ChunkPayloadMixin
@@ -79,7 +84,7 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
         self.registry = registry or default_vendor_registry()
         self.adapter_ids = frozenset(item.adapter for item in self.registry if item.adapter)
 
-    def _engine(self) -> Any:
+    def _engine(self) -> SendTransactionEngine:
         return database_engine(self.settings.database_url)
 
     @staticmethod
@@ -871,3 +876,10 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
 
 
 
+
+if TYPE_CHECKING:
+    def _assert_store_dependencies(store: SqlChunkStore) -> None:
+        """编译期确认组合类满足每个 Mixin 所需能力，不创建运行时替身。"""
+        payload: SendPayloadDependencies = store
+        attempt: SendAttemptDependencies = store
+        del payload, attempt

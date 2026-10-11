@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from app.core.auth.accounts import (
@@ -20,6 +20,7 @@ from app.services.idempotency import (
     IdempotencyScope,
 )
 from app.services.uncertain_source import UncertainSourceProof
+from app.services.usage_ledger_common import FrequencyDecisionItem, UsageReservation
 from app.services.usage_subject import UsageSubject
 
 
@@ -264,10 +265,6 @@ class PipelineStore(Protocol):
 class IdempotencyPort(Protocol):
     def claim_key(self, scope: IdempotencyScope, biz_id: str) -> str: ...
 
-    def frequency_result_key(self, scope: IdempotencyScope, biz_id: str) -> str: ...
-
-    def quota_result_key(self, scope: IdempotencyScope, biz_id: str, date_key: str) -> str: ...
-
     async def request_fingerprint(
         self, scope: IdempotencyScope, biz_id: str
     ) -> IdempotencyFingerprint | None: ...
@@ -299,59 +296,6 @@ class IdempotencyPort(Protocol):
     ) -> None: ...
 
 
-class FrequencyPort(Protocol):
-    async def allow(
-        self,
-        category: str,
-        *,
-        app_id: int,
-        phone_hmac: str,
-        limits: FrequencyLimits,
-        claim_key: str | None = None,
-        claim_token: str | None = None,
-        result_key: str | None = None,
-    ) -> bool: ...
-
-
-class QuotaPort(Protocol):
-    async def reserve(
-        self,
-        *,
-        app_id: int,
-        dept: str,
-        category: str,
-        date_key: str,
-        cost: int,
-        app_limit: int,
-        dept_limit: int,
-        ttl_s: int,
-        claim_key: str | None = None,
-        claim_token: str | None = None,
-        reservation_key: str | None = None,
-    ) -> Any: ...
-
-    async def refund(
-        self,
-        *,
-        app_id: int,
-        dept: str,
-        category: str,
-        date_key: str,
-        cost: int,
-    ) -> Any: ...
-
-    async def refund_reservation(
-        self,
-        *,
-        app_id: int,
-        dept: str,
-        category: str,
-        date_key: str,
-        cost: int,
-        reservation_key: str,
-    ) -> Any: ...
-
-
 class UsageLedgerPort(Protocol):
     async def start_reservation(
         self,
@@ -362,7 +306,7 @@ class UsageLedgerPort(Protocol):
         category: str,
         now: datetime | None = None,
         subject_kind: str = "api_app",
-    ) -> Any: ...
+    ) -> UsageReservation: ...
 
     async def allow_frequency(
         self,
@@ -382,7 +326,7 @@ class UsageLedgerPort(Protocol):
         category: str,
         *,
         app_id: int,
-        items: Sequence[Any],
+        items: Sequence[FrequencyDecisionItem],
         limits: FrequencyLimits,
         now: datetime | None = None,
     ) -> list[bool]: ...

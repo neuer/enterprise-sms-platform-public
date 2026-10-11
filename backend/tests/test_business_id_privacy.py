@@ -12,6 +12,7 @@ from app.core.sensitive_text import reject_phone_business_id
 from app.services.idempotency import IdempotencyCoordinator, IdempotencyScope
 from app.services.vendor_test_operation_repository import SqlVendorTestOperationRepository
 from tests import business_ids
+from tests.test_send_pipeline import FakeUsageLedger
 
 PHONE = "199" + "0" * 7 + "1"
 UNSAFE_HEX = PHONE + "a" * 21
@@ -108,9 +109,7 @@ async def test_direct_pipeline_rejects_before_idempotency_or_storage(
     from app.core.apikey import ApiAppContext
     from app.services.pipeline import PipelineConfig, SendPipeline, SendRequest
     from tests.test_send_pipeline import (
-        FakeFrequency,
         FakePublisher,
-        FakeQuota,
         FakeStore,
         crypto,
     )
@@ -120,12 +119,12 @@ async def test_direct_pipeline_rejects_before_idempotency_or_storage(
             pytest.fail(f"unsafe identifier reached idempotency: {name}")
 
     store = FakeStore()
-    pipeline = SendPipeline(
+    pipeline = SendPipeline(usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=NoIdempotencyIO(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
+
+
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )

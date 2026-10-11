@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -15,6 +15,7 @@ from app.settings import Settings
 from app.tasks.send import (
     ChunkPayload,
 )
+from app.tasks.send_repository_contracts import SendTransactionEngine
 
 
 class ChunkPayloadMixin:
@@ -25,7 +26,7 @@ class ChunkPayloadMixin:
 
     if TYPE_CHECKING:
         # 由 SqlChunkStore 提供；运行时不定义桩，方法解析仍走 SqlChunkStore 的实现。
-        def _engine(self) -> Any: ...
+        def _engine(self) -> SendTransactionEngine: ...
 
         @staticmethod
         def lane_for(category: str) -> str: ...

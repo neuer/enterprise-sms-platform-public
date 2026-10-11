@@ -166,3 +166,21 @@ async def test_connect_failure_is_bounded_and_same_pool_recovers() -> None:
                 asyncio.gather(*proxy_tasks, return_exceptions=True),
                 timeout=2,
             )
+
+
+@pytest.mark.asyncio
+async def test_real_prefork_workers_preserve_parent_and_close_independent_pools() -> None:
+    import sys
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-m", "tests.runtime_pool_process_probe",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        output, _stderr = await asyncio.wait_for(process.communicate(), timeout=50)
+        assert process.returncode == 0, "isolated prefork resource probe failed"
+        assert output.strip() == b"prefork-pools: isolated, bounded, parent-preserved, closed"
+    finally:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()

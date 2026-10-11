@@ -49,6 +49,7 @@ SPLIT_MODULE_PARTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "services/usage_ledger_release.py",
         ),
         "tasks/send_repository.py": (
+            "tasks/send_repository_contracts.py",
             "tasks/send_repository_attempt.py",
             "tasks/send_repository_failover.py",
             "tasks/send_repository_payload.py",

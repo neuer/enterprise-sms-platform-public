@@ -251,3 +251,18 @@ def test_bound_envelope_property_round_trip_domain_separation_and_tamper_detecti
             context,
             allow_legacy=False,
         )
+
+
+def test_packed_legacy_migration_remains_explicit_and_preserves_bound_context() -> None:
+    service = CryptoService.from_secret_values(b64(b"a"), b64(b"h"))
+    context = EncryptionContext("callback-secret", "app", "callback_secret_enc", "synthetic-app")
+    legacy = service.encrypt_packed_text_legacy("synthetic-secret")
+    with pytest.raises(ValueError, match="legacy"):
+        service.decrypt_bound_packed_text(legacy, context)
+    plaintext = service.decrypt_bound_packed_text_with_legacy_migration(legacy, context)
+    assert plaintext == "synthetic-secret"
+    migrated = service.encrypt_bound_packed_text(plaintext, context)
+    assert service.decrypt_bound_packed_text(migrated, context) == plaintext
+    other = EncryptionContext("callback-secret", "app", "callback_secret_enc", "other-app")
+    with pytest.raises(InvalidTag):
+        service.decrypt_bound_packed_text(migrated, other)

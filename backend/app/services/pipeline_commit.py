@@ -18,7 +18,6 @@ from app.services.approval import requires_approval
 from app.services.category import CategoryPolicy
 from app.services.crypto import EncryptionContext, ProtectedPhone
 from app.services.pipeline_acceptance import (
-    LOGGER,
     AcceptanceStagesMixin,
     PreparedContent,
     _Acceptance,
@@ -44,36 +43,6 @@ class _PersistedBatch:
 
 class AcceptanceCommitMixin(AcceptanceStagesMixin):
     """SendPipeline 受理的落库与收尾阶段。"""
-
-    async def _compensate_reservation(self, acceptance: _Acceptance, hold: _QuotaHold) -> None:
-        if self.usage_ledger is not None:
-            await self._release_usage(acceptance, "acceptance-failed")
-            return
-        app = acceptance.app
-        request = acceptance.request
-        try:
-            if hold.reservation_key is not None:
-                await self.quota.refund_reservation(
-                    app_id=self._usage_app_id(app, request),
-                    dept=self._usage_dept(app, request),
-                    category=request.category,
-                    date_key=hold.date_key,
-                    cost=hold.cost,
-                    reservation_key=hold.reservation_key,
-                )
-            else:
-                await self.quota.refund(
-                    app_id=self._usage_app_id(app, request),
-                    dept=self._usage_dept(app, request),
-                    category=request.category,
-                    date_key=hold.date_key,
-                    cost=hold.cost,
-                )
-        except Exception as exc:
-            LOGGER.error(
-                "quota reservation compensation unavailable",
-                extra={"app_id": app.app_id, "error_type": type(exc).__name__},
-            )
 
     async def _persist_batch(
         self,
@@ -138,6 +107,7 @@ class AcceptanceCommitMixin(AcceptanceStagesMixin):
                 raise ValueError("发送请求必须绑定稳定主体")
             batch_no = uuid4().hex
             claim_token = acceptance.claim_token
+            self._required_usage_reservation(acceptance)
             command = BatchCommand(
                 batch_no=batch_no,
                 app_id=(
@@ -237,7 +207,7 @@ class AcceptanceCommitMixin(AcceptanceStagesMixin):
                             request.biz_id,
                         )
                     except Exception:
-                        await self._compensate_reservation(acceptance, hold)
+                        await self._release_usage(acceptance, "acceptance-failed")
                         raise original from None
                     if existing is not None:
                         try:
@@ -254,12 +224,12 @@ class AcceptanceCommitMixin(AcceptanceStagesMixin):
                                 policy,
                             )
                         except Exception:
-                            await self._compensate_reservation(acceptance, hold)
+                            await self._release_usage(acceptance, "acceptance-failed")
                             raise
                         if not acceptance.usage_reservation_reused:
                             await self._release_usage(acceptance, "idempotent-reuse")
                         return await self.store.response_for(existing)
-            await self._compensate_reservation(acceptance, hold)
+            await self._release_usage(acceptance, "acceptance-failed")
             raise
         return _PersistedBatch(
             stored=stored,
@@ -298,11 +268,8 @@ class AcceptanceCommitMixin(AcceptanceStagesMixin):
                     )
                 return await self.store.response_for(stored.batch_no)
             finally:
-                if self.usage_ledger is not None:
-                    if not acceptance.usage_reservation_reused:
-                        await self._release_usage(acceptance, "idempotent-reuse")
-                elif not hold.reused:
-                    await self._compensate_reservation(acceptance, hold)
+                if not acceptance.usage_reservation_reused:
+                    await self._release_usage(acceptance, "idempotent-reuse")
         acceptance.inflight_bound = True
         acceptance.allow_unbound_release = False
         if request.biz_id:

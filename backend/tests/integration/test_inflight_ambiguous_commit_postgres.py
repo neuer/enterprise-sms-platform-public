@@ -40,6 +40,8 @@ from app.services.send_inflight import (
 )
 from scripts_support.maintain_partitions import maintain
 from tests.business_ids import new_business_id
+from tests.integration.test_uncertain_web_resend_postgres import BoundLedger
+from tests.integration.test_usage_ledger_postgres import ProjectionRedis
 
 pytestmark = pytest.mark.skipif(
     "OUTBOX_POSTGRES_DSN" not in os.environ or "AUTH_GUARD_REDIS_URL" not in os.environ,
@@ -81,20 +83,7 @@ class CommitAckLossStore(EngineBoundStore):
         raise OperationalError("simulated commit ack loss", {}, Exception("ack"))
 
 
-class FakeFrequency:
-    async def allow(self, category: str, **_values: Any) -> bool:
-        return True
 
-
-class FakeQuota:
-    async def reserve(self, **_values: Any) -> None:
-        return None
-
-    async def refund(self, **_values: Any) -> None:
-        return None
-
-    async def refund_reservation(self, **_values: Any) -> None:
-        return None
 
 
 class FakePublisher:
@@ -647,11 +636,12 @@ async def test_pipeline_commit_ack_loss_keeps_capacity(
     loss_store = CommitAckLossStore(engine, store.settings)
     coordinator = IdempotencyCoordinator(redis, loss_store)
     pipeline = SendPipeline(
+        usage_ledger=BoundLedger(ProjectionRedis(), store.settings, store._engine()),
         store=loss_store,
         idempotency=coordinator,
         crypto=_crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
+
+
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
