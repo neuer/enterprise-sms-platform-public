@@ -136,6 +136,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0121_audit_payload_shape",
         "0122_poll_lease_events",
         "0123_send_db_failure_events",
+        "0124_business_authorization_lock",
     ]
 
 

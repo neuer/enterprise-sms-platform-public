@@ -148,9 +148,36 @@ async def test_real_roles_commit_config_and_audit(config_context):
         principal=principal,
         ip="127.0.0.1",
     )
+
     current, audit_count = await snapshot(owner, principal)
     assert current[0] == "8"
     assert audit_count == 1
+
+
+@pytest.mark.asyncio
+async def test_business_authority_function_has_narrow_runtime_permissions(flow_owner):  # noqa: F811
+    """受限锁函数不授予业务角色身份表读取、写入或权限转授能力。"""
+    signature = "lock_business_authorization(bigint,bigint,bigint,text,text,text,text,text)"
+    roles = ("auth", "accept", "send", "callback", "export", "scheduler", "metrics")
+    async with flow_owner.connect() as connection:
+        for role in roles:
+            allowed = await connection.scalar(
+                text("SELECT has_function_privilege(:role, :signature, 'EXECUTE')"),
+                {"role": "sms_" + role, "signature": signature},
+            )
+            assert allowed is (role in {"accept", "export"})
+        for role in ("sms_accept", "sms_export"):
+            for table in ("user_account", "auth_identity", "auth_provider"):
+                for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                    assert not await connection.scalar(
+                        text("SELECT has_table_privilege(:role, :table, :privilege)"),
+                        {"role": role, "table": table, "privilege": privilege},
+                    )
+        function = (await connection.execute(text("""
+            SELECT prosecdef, proconfig FROM pg_proc WHERE oid=CAST(:signature AS regprocedure)
+        """), {"signature": signature})).one()
+        assert function.prosecdef is True
+        assert function.proconfig == ["search_path=pg_catalog"]
 
 
 @pytest.mark.asyncio

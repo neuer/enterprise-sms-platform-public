@@ -1,12 +1,13 @@
 """真实 auth/accept 角色的应用管理授权及版本边界。"""
 
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
 
-from app.core.auth.admin_authorization import AdminAuthorization
+from app.core.auth.admin_authorization import AdminAuthorization, hold_admin_authorization
 from app.core.auth.principal_context import audit_principal_scope
 from app.core.correlation import correlation_scope
 from app.core.errors import ApiError
@@ -69,6 +70,43 @@ async def app_snapshot(owner, principal, app_id):
             {"id": principal.account_id},
         )
         return tuple(app), audits
+
+
+@pytest.mark.asyncio
+async def test_authority_connection_loss_rolls_back_app_write(app_context, monkeypatch):
+    """隔离库故障注入：授权连接丢失不能留下业务或审计提交。"""
+    owner, principal, repo, app_id = app_context
+    current = await repo.get(app_id)
+    revision = current["updated_at"]
+    grant = app_grant(
+        principal, "app_disable", str(app_id), {"expected_updated_at": revision}
+    )
+    before = await app_snapshot(owner, principal, app_id)
+
+    @asynccontextmanager
+    async def disconnected_authority(*args, **kwargs):
+        async with hold_admin_authorization(*args, **kwargs) as connection:
+            pid = await connection.scalar(text("SELECT pg_backend_pid()"))
+            async with owner.begin() as fault:
+                assert await fault.scalar(
+                    text("SELECT pg_terminate_backend(:pid)"), {"pid": pid}
+                )
+            async with owner.begin() as revoke:
+                await revoke.execute(
+                    text("UPDATE user_account SET status=0 WHERE id=:id"),
+                    {"id": principal.account_id},
+                )
+            yield connection
+
+    monkeypatch.setattr(
+        "app.services.app_repository.hold_admin_authorization", disconnected_authority
+    )
+    with pytest.raises(ApiError):
+        await repo.disable(
+            app_id, authorization=grant, expected_updated_at=revision,
+            actor=principal.login_name, ip="127.0.0.1",
+        )
+    assert await app_snapshot(owner, principal, app_id) == before
 
 
 @pytest.mark.asyncio

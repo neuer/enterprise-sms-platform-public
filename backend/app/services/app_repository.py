@@ -161,8 +161,7 @@ class SqlAppRepository:
                 operation=operation,
                 target="new" if app_id is None else str(app_id),
                 parameters=parameters,
-            ),
-            self._engine().begin() as connection,
+            ) as connection,
         ):
             if app_id is not None:
                 if operation in {"app_update", "app_disable", "app_rotate_callback_secret"}:

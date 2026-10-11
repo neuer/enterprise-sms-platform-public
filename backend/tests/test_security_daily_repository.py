@@ -428,8 +428,9 @@ async def test_update_configuration_audits_publish_phases_without_secrets(monkey
     @asynccontextmanager
     async def accepted(_settings, authorization, **intent):
         # 本测试仅核对审计载荷；真实认证 SQL 锁另由集成测试覆盖。
+        intent.pop("engine")
         require_admin_intent(authorization, **intent)
-        yield None
+        yield connection
 
     monkeypatch.setattr("app.services.security_daily_repository.hold_admin_authorization", accepted)
     update = SecurityDailyConfigurationUpdate(

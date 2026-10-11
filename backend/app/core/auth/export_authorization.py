@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.errors import ApiError
 from app.core.runtime_resources import database_engine
-from app.services.admin_invariant import lock_admin_invariant
 from app.settings import Settings
 
 if TYPE_CHECKING:
@@ -35,30 +34,27 @@ class ExportDownloadAuthorization:
 @asynccontextmanager
 async def lock_export_authorization(
     settings: Settings, authorization: ExportDownloadAuthorization,
+    business_connection: AsyncConnection,
 ) -> AsyncIterator[AsyncConnection]:
-    """认证角色只持状态锁，导出角色提交审计后才释放；不持锁传输文件。"""
+    """业务事务持有授权锁；认证读取事务先退出，随后才允许提交审计。"""
 
     engine = database_engine(settings.database_url_for("auth"))
     principal = authorization.principal
     try:
+        valid = await business_connection.scalar(text("""
+            SELECT public.lock_business_authorization(
+                :account, :identity, :version, :provider, 'export', :role, :dept, :login
+            )
+        """), {
+            "account": principal.account_id, "identity": principal.identity_id,
+            "version": authorization.security_version, "provider": authorization.provider_code,
+            "role": principal.role, "dept": principal.dept, "login": principal.login_name,
+        })
+        if not valid:
+            raise ApiError(401, "UNAUTHORIZED", "授权状态已变化，请重新登录", None)
+        # 此连接只提供 JWT 最终复核读取；授权锁属于外层业务事务。
+        # 本连接退出失败时外层业务事务尚未提交，审计随之回滚。
         async with engine.begin() as connection:
-            await lock_admin_invariant(connection)
-            current = await connection.execute(text("""
-                SELECT ua.id FROM user_account ua
-                JOIN auth_identity ai ON ai.account_id=ua.id
-                JOIN auth_provider ap ON ap.id=ai.provider_id
-                WHERE ua.id=:account_id AND ai.id=:identity_id
-                  AND ua.security_version=:version AND ap.code=:provider
-                  AND ua.status=1 AND ai.status=1 AND ap.enabled=TRUE
-                  AND ua.role=:role AND ua.dept=:dept AND ai.login_name=:login
-                FOR SHARE OF ua,ai,ap
-            """), {
-                "account_id": principal.account_id, "identity_id": principal.identity_id,
-                "version": authorization.security_version, "provider": authorization.provider_code,
-                "role": principal.role, "dept": principal.dept, "login": principal.login_name,
-            })
-            if current.scalar_one_or_none() is None:
-                raise ApiError(401, "UNAUTHORIZED", "授权状态已变化，请重新登录", None)
             yield connection
     except SQLAlchemyError:
         raise ApiError(503, "AUTH_SESSION_UNAVAILABLE", "下载授权状态暂不可用", None) from None

@@ -334,8 +334,10 @@ class SqlExportRepository:
         engine = self._engine()
         try:
             async with (
-                lock_export_authorization(self.settings, authorization) as auth_connection,
                 engine.begin() as connection,
+                lock_export_authorization(
+                    self.settings, authorization, connection
+                ) as auth_connection,
             ):
                 row = await self._downloadable_row(
                     connection, public_id, principal=principal,

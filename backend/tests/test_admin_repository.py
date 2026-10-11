@@ -38,8 +38,10 @@ def isolated_authority_guard(monkeypatch):
 
     @asynccontextmanager
     async def accepted(settings, authorization, **intent):
+        engine = intent.pop("engine")
         require_admin_intent(authorization, **intent)
-        yield
+        async with engine.begin() as connection:
+            yield connection
 
     monkeypatch.setattr("app.services.admin_repository.hold_admin_authorization", accepted)
 

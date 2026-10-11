@@ -115,8 +115,8 @@ class SqlAdminRepository:
                     operation="config_update",
                     target="default",
                     parameters=parameters,
-                ),
-                engine.begin() as connection,
+                    engine=engine,
+                ) as connection,
             ):
                 await bind_connection_audit_subject(
                     connection,

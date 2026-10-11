@@ -130,21 +130,30 @@ async def hold_admin_authorization(
     operation: str,
     target: str,
     parameters: dict[str, Any],
+    engine: Any | None = None,
 ) -> AsyncIterator[AsyncConnection]:
-    """共享锁阻止撤权并兼容另一事务审计外键的 KEY SHARE，不扩充角色权限。"""
-    engine = database_engine(settings.database_url_for("auth"))
+    """授权锁、业务写入与审计共用业务角色事务，不授予身份表访问权限。"""
+    owns_engine = engine is None
+    engine = engine if engine is not None else database_engine(settings.database_url)
     try:
         async with engine.begin() as connection:
-            await lock_admin_authorization(
-                connection,
-                authorization,
-                operation=operation,
-                target=target,
-                parameters=parameters,
-                authority_lock="share",
+            require_admin_intent(
+                authorization, operation=operation, target=target, parameters=parameters
             )
+            valid = await connection.scalar(text("""
+                SELECT public.lock_business_authorization(
+                    :account, :identity, :version, :provider, 'admin',
+                    'admin', NULL, NULL
+                )
+            """), {
+                "account": authorization.account_id, "identity": authorization.identity_id,
+                "version": authorization.security_version, "provider": authorization.provider_code,
+            })
+            if not valid:
+                raise ApiError(401, "STEP_UP_REQUIRED", "管理员权限已变化，请重新登录并验证", None)
             yield connection
     except SQLAlchemyError:
         raise ApiError(503, "AUTH_SESSION_UNAVAILABLE", "管理操作授权暂不可用", None) from None
     finally:
-        await engine.dispose()
+        if owns_engine:
+            await engine.dispose()

@@ -123,3 +123,10 @@ PostgreSQL 16 中验证：
 `sms_send_db_failures` 是已保存事件的聚合计数，数据库故障期间无法保存的事件以
 `send_db_observation_unavailable` 日志标记缺口，不能用该计数证明没有失败。
 结果落库耗尽重试或其他失败使用 `send_db_failure` 告警；详情不含 SQL、参数或厂商响应。
+
+0124 为 `sms_accept`、`sms_export` 授予受限函数
+`lock_business_authorization(bigint,bigint,bigint,text,text,text,text,text)` 的 EXECUTE。
+该 SECURITY DEFINER 函数固定 `search_path=pg_catalog`，所有业务表显式使用 public，
+撤销 PUBLIC 执行权限；仅验证当前主体并在调用者业务事务中加锁、返回布尔结果。
+不授予身份表直接 SELECT/INSERT/UPDATE/DELETE，不返回凭据或身份记录。
+授权锁随业务事务一起提交或回滚，不能以另一个 auth 连接的生存状态代替此保证。
