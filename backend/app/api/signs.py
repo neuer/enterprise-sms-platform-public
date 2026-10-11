@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.auth import ERROR_RESPONSE
+from app.api.authorization import AdminActor, ReaderActor
 from app.core.audit import audited
-from app.core.auth.jwt import JwtClaims
-from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
+from app.core.correlation import REQUEST_ID_HEADER, current_correlation_id
 from app.core.errors import ApiError
 from app.services.ops_dispatch import (
     SignAdoptionConflict,
@@ -51,32 +51,25 @@ class SignModel(BaseModel):
     vendor_reject_reason: str | None
 
 
-def get_sign_service() -> SignManagementService:
+def get_sign_service(_actor: ReaderActor) -> SignManagementService:
     settings = get_settings()
     return SignManagementService(SqlSignRepository(settings))
 
 
-def get_sign_job_sender() -> SignSyncSender:
+def get_sign_write_service(
+    _actor: AdminActor,
+    service: Annotated[SignManagementService, Depends(get_sign_service)],
+) -> SignManagementService:
+    """先通过写入角色校验，再构造业务服务。"""
+    return service
+
+
+def get_sign_job_sender(_actor: AdminActor) -> SignSyncSender:
     return SignSyncSender(get_settings())
 
 
-def get_sign_adoption_sender() -> SignAdoptionSender:
+def get_sign_adoption_sender(_actor: AdminActor) -> SignAdoptionSender:
     return SignAdoptionSender(get_settings())
-
-
-async def _user(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-    *,
-    admin: bool,
-) -> JwtClaims:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    allowed = {"admin"} if admin else {"operator", "approver", "admin"}
-    if claims.role not in allowed:
-        raise ApiError(403, "FORBIDDEN", "当前角色无签名操作权限", None)
-    return claims
 
 
 def _model(record: SignRecord) -> SignModel:
@@ -84,6 +77,8 @@ def _model(record: SignRecord) -> SignModel:
 
 
 def _error(error: Exception) -> ApiError:
+    if isinstance(error, ApiError):
+        return error
     if isinstance(error, SignAdoptionConflict):
         return ApiError(409, "STATE_CONFLICT", str(error), None)
     if isinstance(error, SignAdoptionUnavailable):
@@ -99,16 +94,22 @@ def _error(error: Exception) -> ApiError:
         return ApiError(409, "STATE_CONFLICT", str(error), None)
     if isinstance(error, ValueError):
         return ApiError(400, "INVALID_PARAM", str(error), None)
-    return ApiError(500, "INTERNAL_ERROR", "服务内部错误", None)
+    correlation_id = current_correlation_id()
+    logging.getLogger(__name__).error(
+        "catalog operation failed",
+        extra={"error_type": type(error).__name__, "correlation_id": str(correlation_id)},
+    )
+    return ApiError(
+        500, "INTERNAL_ERROR", "服务内部错误", None,
+        headers={REQUEST_ID_HEADER: str(correlation_id)} if correlation_id is not None else None,
+    )
 
 
 @router.get("", response_model=list[SignModel])
 async def list_signs(
     service: Annotated[SignManagementService, Depends(get_sign_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    claims: ReaderActor,
 ) -> list[SignModel]:
-    await _user(facade, credentials, admin=False)
     return [_model(record) for record in await service.list_all()]
 
 
@@ -116,11 +117,9 @@ async def list_signs(
 @audited("sign_create")
 async def create_sign(
     payload: SignPayload,
-    service: Annotated[SignManagementService, Depends(get_sign_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    service: Annotated[SignManagementService, Depends(get_sign_write_service)],
+    claims: AdminActor,
 ) -> SignModel:
-    claims = await _user(facade, credentials, admin=True)
     try:
         return _model(await service.create(name=payload.name, actor=claims.username))
     except Exception as error:
@@ -131,10 +130,8 @@ async def create_sign(
 async def get_sign(
     id: int,
     service: Annotated[SignManagementService, Depends(get_sign_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    claims: ReaderActor,
 ) -> SignModel:
-    await _user(facade, credentials, admin=False)
     try:
         return _model(await service.get(id))
     except SignNotFound as error:
@@ -146,11 +143,9 @@ async def get_sign(
 async def update_sign(
     id: int,
     payload: SignPayload,
-    service: Annotated[SignManagementService, Depends(get_sign_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    service: Annotated[SignManagementService, Depends(get_sign_write_service)],
+    claims: AdminActor,
 ) -> SignModel:
-    claims = await _user(facade, credentials, admin=True)
     try:
         return _model(await service.update(id, name=payload.name, actor=claims.username))
     except Exception as error:
@@ -161,11 +156,9 @@ async def update_sign(
 @audited("sign_delete")
 async def delete_sign(
     id: int,
-    service: Annotated[SignManagementService, Depends(get_sign_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    service: Annotated[SignManagementService, Depends(get_sign_write_service)],
+    claims: AdminActor,
 ) -> Response:
-    claims = await _user(facade, credentials, admin=True)
     try:
         await service.delete(id, actor=claims.username)
     except Exception as error:
@@ -192,12 +185,10 @@ async def adopt_existing_sign(
     id: int,
     payload: SignAdoptionPayload,
     request: Request,
-    service: Annotated[SignManagementService, Depends(get_sign_service)],
+    service: Annotated[SignManagementService, Depends(get_sign_write_service)],
     sender: Annotated[SignAdoptionSender, Depends(get_sign_adoption_sender)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    claims: AdminActor,
 ) -> Response:
-    claims = await _user(facade, credentials, admin=True)
     try:
         current = await service.prepare_adoption(id, confirmed_name=payload.confirmed_name)
         await sender.send_sign(
@@ -221,12 +212,10 @@ async def adopt_existing_sign(
 async def sync_sign(
     id: int,
     request: Request,
-    service: Annotated[SignManagementService, Depends(get_sign_service)],
+    service: Annotated[SignManagementService, Depends(get_sign_write_service)],
     sender: Annotated[SignSyncSender, Depends(get_sign_job_sender)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    claims: AdminActor,
 ) -> Response:
-    claims = await _user(facade, credentials, admin=True)
     try:
         current = await service.get(id)
         if (

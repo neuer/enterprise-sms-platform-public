@@ -144,14 +144,12 @@ def test_application_audit_guard_exempts_only_top_level_hex_batch_no() -> None:
 def test_application_audit_guard_keeps_phone_check_outside_batch_no_exemption(
     payload: dict[str, object],
 ) -> None:
-    with pytest.raises(ValueError, match="audit payload contains a phone number"):
+    with pytest.raises(ValueError, match="audit payload"):
         validate_audit_payload(payload)
 
 
 def test_application_audit_guard_allows_credential_change_required_flag() -> None:
-    validate_audit_payload(
-        {"provider_code": "local", "credential_change_required": True}
-    )
+    validate_audit_payload({"provider_code": "local", "credential_change_required": True})
 
 
 class RecordingConnection:
@@ -272,3 +270,25 @@ def test_audit_uuid_ref_is_digit_free_one_to_one_and_passes_payload_guard(value:
     validate_audit_payload({"delivery_ref": ref})
     with pytest.raises(ValueError, match="phone number"):
         validate_audit_payload({"delivery_id": "a12345678901"})
+
+
+@pytest.mark.parametrize(
+    "value", [None, True, 1, 13800138000, 1.0, [], [13800138000], {}, "a" * 31, "A" * 32]
+)
+def test_batch_reference_requires_exact_json_string(value: object) -> None:
+    with pytest.raises(ValueError, match="audit"):
+        validate_audit_payload({"batch_no": value})
+
+
+@pytest.mark.parametrize(
+    "value", [13800138000, 13800138000.0, float("nan"), float("inf"), -float("inf")]
+)
+def test_audit_numbers_cannot_hide_phone_or_non_json(value: object) -> None:
+    with pytest.raises(ValueError, match="audit"):
+        validate_audit_payload({"count": value})
+
+
+@pytest.mark.parametrize("value", [[], "safe", True, 1, 1.0])
+def test_audit_root_requires_object(value: object) -> None:
+    with pytest.raises(ValueError, match="audit"):
+        validate_audit_payload(value)

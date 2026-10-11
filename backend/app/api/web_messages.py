@@ -25,7 +25,6 @@ from app.api.messages import UNAVAILABLE_RESPONSE, BatchModel, _error
 from app.core.apikey import ApiAppContext
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
-from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 from app.core.client_ip import trusted_client_ip
 from app.core.correlation import correlation_headers
@@ -253,11 +252,11 @@ class _ImportBlacklist:
         return await self.cache.matches(candidates, self.repository.all_hmacs)
 
 
-def get_import_repository() -> SqlImportRepository:
+def get_import_repository(_actor: WriterActor) -> SqlImportRepository:
     return SqlImportRepository()
 
 
-def get_pipeline_store() -> SqlPipelineStore:
+def get_pipeline_store(_actor: WriterActor) -> SqlPipelineStore:
     return SqlPipelineStore()
 
 
@@ -275,7 +274,7 @@ def get_operations_query_service(_actor: WebActor) -> OperationsQueryService:
     )
 
 
-def get_template_renderer() -> SqlTemplateRenderer:
+def get_template_renderer(_actor: WriterActor) -> SqlTemplateRenderer:
     return SqlTemplateRenderer()
 
 
@@ -283,7 +282,7 @@ def get_crypto_service(_actor: WriterActor) -> CryptoService:
     return CryptoService.from_settings(get_settings())
 
 
-def get_sign_resolver() -> SignResolver:
+def get_sign_resolver(_actor: WriterActor) -> SignResolver:
     return SignResolver(SqlSignRepository())
 
 
@@ -297,25 +296,8 @@ async def get_import_parser(_actor: WriterActor) -> AsyncIterator[ImportParser]:
     )
 
 
-async def _writer(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> JwtClaims:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    if claims.role not in {"operator", "admin"}:
-        raise ApiError(403, "FORBIDDEN", "仅操作员或管理员可发送短信", None)
-    return claims
 
 
-async def _reader(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> JwtClaims:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    return await facade.verify(credentials.credentials)
 
 
 def _query_scope(claims: JwtClaims, requested_dept: str | None = None) -> BatchAccessScope:
@@ -458,7 +440,7 @@ async def list_web_batches(
     request: Request,
     auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[BatchQueryService, Depends(get_batch_query_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     category: Annotated[Literal["verify", "notice", "market"] | None, Query()] = None,
     status: Annotated[str | None, Query(max_length=128)] = None,
@@ -472,7 +454,6 @@ async def list_web_batches(
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
-    claims = await _reader(facade, credentials)
     statuses = (
         tuple(part.strip() for part in status.split(",") if part.strip())
         if status
@@ -514,10 +495,9 @@ async def search_web_messages(
     payload: MessageSearchRequest,
     auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[OperationsQueryService, Depends(get_operations_query_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> MessageQueryPageModel:
-    claims = await _reader(facade, credentials)
     try:
         result = await service.search_messages(
             phone=payload.phone,
@@ -572,10 +552,9 @@ async def message_timeline(
     payload: MessageTimelineRequest,
     auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[OperationsQueryService, Depends(get_operations_query_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> TimelineModel:
-    claims = await _reader(facade, credentials)
     try:
         result = await service.timeline(
             phone=payload.phone,
@@ -626,10 +605,9 @@ async def decrypt_message_phone(
     request: Request,
     response: Response,
     service: Annotated[OperationsQueryService, Depends(get_operations_query_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> DecryptedPhoneModel:
-    claims = await _reader(facade, credentials)
     if claims.role not in {"approver", "admin"}:
         raise ApiError(403, "FORBIDDEN", "当前角色无手机号解密权限", None)
     try:
@@ -663,10 +641,9 @@ async def import_messages(
     request: Request,
     parser: Annotated[ImportParser, Depends(get_import_parser)],
     repository: Annotated[SqlImportRepository, Depends(get_import_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WriterActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ImportResponse:
-    claims = await _writer(facade, credentials)
     filename = Path(file.filename or "").name
     stored: StoredImport | None = None
     staged_file: str | None = None
@@ -777,10 +754,9 @@ async def import_messages(
 async def import_status(
     import_id: UUID,
     repository: Annotated[SqlImportRepository, Depends(get_import_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WriterActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ImportResponse:
-    claims = await _writer(facade, credentials)
     stored = await repository.get_status(
         str(import_id),
         principal=claims.principal,
@@ -798,10 +774,9 @@ async def import_status(
 async def download_invalid_file(
     import_id: UUID,
     repository: Annotated[SqlImportRepository, Depends(get_import_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WriterActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> FileResponse:
-    claims = await _writer(facade, credentials)
     path = await repository.invalid_file(
         str(import_id),
         principal=claims.principal,
@@ -826,10 +801,9 @@ async def billing_preview(
     store: Annotated[SqlPipelineStore, Depends(get_pipeline_store)],
     renderer: Annotated[SqlTemplateRenderer, Depends(get_template_renderer)],
     signs: Annotated[SignResolver, Depends(get_sign_resolver)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WriterActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> BillingPreview:
-    claims = await _writer(facade, credentials)
     try:
         content = await _render(payload, renderer, claims.dept)
         values = await store.load_config(claims.dept)
@@ -872,10 +846,9 @@ async def send_web_message(
     payload: WebSendRequest,
     repository: Annotated[SqlImportRepository, Depends(get_import_repository)],
     crypto: Annotated[CryptoService, Depends(get_crypto_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WriterActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> BatchResponse:
-    claims = await _writer(facade, credentials)
     reservation: ImportReservation | None = None
     release_reservation = True
     try:

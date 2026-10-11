@@ -411,7 +411,7 @@ async def test_authorized_phone_audits_reference_only_in_same_transaction() -> N
                             "phone_enc": protected.phone_enc,
                             "phone_hmac": protected.phone_hmac,
                             "key_version": protected.key_version,
-                        "batch_no": "BATCH-1",
+                        "batch_no": "a" * 32,
                     }
                 ]
             ),

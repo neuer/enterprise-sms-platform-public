@@ -12,10 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from redis.asyncio import Redis
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
-from app.api.authorization import WebActor, require_writer_actor
+from app.api.authorization import WebActor, WriterActor, require_writer_actor
 from app.core.audit import audited
-from app.core.auth.jwt import JwtClaims
-from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.blacklist import RedisBlacklistCache
@@ -72,24 +70,14 @@ async def get_reply_service(_actor: WebActor) -> AsyncIterator[ReplyQueryService
         await redis.aclose()
 
 
-async def _claims(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-    *,
-    write: bool,
-) -> JwtClaims:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    allowed = {"operator", "admin"} if write else {
-        "viewer",
-        "operator",
-        "approver",
-        "admin",
-    }
-    if claims.role not in allowed:
-        raise ApiError(403, "FORBIDDEN", "当前角色无回复操作权限", None)
-    return claims
+
+
+def get_reply_write_service(
+    _actor: WriterActor,
+    service: Annotated[ReplyQueryService, Depends(get_reply_service)],
+) -> ReplyQueryService:
+    """先验证写入角色，再创建回复服务。"""
+    return service
 
 
 @router.post("", response_model=ReplyPageModel, responses={400: ERROR_RESPONSE})
@@ -97,11 +85,10 @@ async def list_replies(
     request: Request,
     auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     service: Annotated[ReplyQueryService, Depends(get_reply_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     payload: ReplyListRequest,
 ) -> ReplyPageModel:
-    claims = await _claims(facade, credentials, write=False)
     body = payload
     try:
         result = await service.list_page(
@@ -147,11 +134,10 @@ async def list_replies(
 async def blacklist_reply(
     id: int,
     request: Request,
-    service: Annotated[ReplyQueryService, Depends(get_reply_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    service: Annotated[ReplyQueryService, Depends(get_reply_write_service)],
+    claims: WriterActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> Response:
-    claims = await _claims(facade, credentials, write=True)
     try:
         await service.optout(
             id,

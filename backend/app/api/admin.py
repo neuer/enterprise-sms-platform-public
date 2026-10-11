@@ -13,8 +13,7 @@ from pydantic import BaseModel, Field
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.authorization import AdminActor
 from app.core.audit import audited
-from app.core.auth.accounts import SecurityPrincipal
-from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.auth.runtime import get_auth_facade
 from app.core.auth.session_policy import AuthSessionPolicy
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
@@ -97,18 +96,6 @@ def get_admin_service(_actor: AdminActor) -> AdminService:
     )
 
 
-async def _admin(
-    request: Request,
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> tuple[SecurityPrincipal, str]:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    if claims.role != "admin":
-        raise ApiError(403, "FORBIDDEN", "仅管理员可访问审计与系统参数", None)
-    ip = trusted_client_ip(request)
-    return claims.principal, ip
 
 
 @router.get(
@@ -119,7 +106,7 @@ async def _admin(
 async def list_audit_logs(
     request: Request,
     service: Annotated[AdminService, Depends(get_admin_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     actor: Annotated[str | None, Query(max_length=64)] = None,
     actor_account_id: Annotated[int | None, Query(ge=1)] = None,
@@ -133,7 +120,6 @@ async def list_audit_logs(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> AuditPageModel:
-    await _admin(request, facade, credentials)
     try:
         items, total = await service.list_audits(
             AuditQuery(
@@ -168,10 +154,9 @@ async def list_audit_logs(
 async def list_audit_actions(
     request: Request,
     service: Annotated[AdminService, Depends(get_admin_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> list[str]:
-    await _admin(request, facade, credentials)
     return list(await service.list_audit_actions())
 
 
@@ -183,10 +168,9 @@ async def list_audit_actions(
 async def list_configs(
     request: Request,
     service: Annotated[AdminService, Depends(get_admin_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> list[ConfigModel]:
-    await _admin(request, facade, credentials)
     return [
         ConfigModel.model_validate(item, from_attributes=True)
         for item in await service.list_configs()
@@ -203,10 +187,10 @@ async def update_configs(
     payload: ConfigBatchUpdateModel,
     request: Request,
     service: Annotated[AdminService, Depends(get_admin_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> list[ConfigModel]:
-    principal, ip = await _admin(request, facade, credentials)
+    principal, ip = claims.principal, trusted_client_ip(request)
     try:
         values = await service.update_configs(
             tuple(ConfigUpdate(item.key, item.value) for item in payload.items),

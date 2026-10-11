@@ -13,7 +13,6 @@ from typing_extensions import TypedDict
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.authorization import AdminActor
 from app.core.audit import audited
-from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.app_management import (
@@ -182,22 +181,8 @@ async def get_app_management_service(_actor: AdminActor) -> AppManagementService
     )
 
 
-def _token(credentials: HTTPAuthorizationCredentials | None) -> str:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    return credentials.credentials
 
 
-async def _admin(
-    request: Request,
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> tuple[str, str]:
-    claims = await facade.verify(_token(credentials))
-    if claims.role != "admin":
-        raise ApiError(403, "FORBIDDEN", "仅管理员可管理应用", None)
-    ip = trusted_client_ip(request)
-    return claims.username, ip
 
 
 def _translate(error: Exception) -> ApiError:
@@ -216,13 +201,12 @@ def _translate(error: Exception) -> ApiError:
 async def list_apps(
     request: Request,
     service: Annotated[AppManagementService, Depends(get_app_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
 ) -> list[dict[str, Any]]:
-    await _admin(request, facade, credentials)
     return await service.list()
 
 
@@ -237,13 +221,13 @@ async def create_app(
     request: Request,
     response: Response,
     service: Annotated[AppManagementService, Depends(get_app_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
 ) -> dict[str, Any]:
-    actor, ip = await _admin(request, facade, credentials)
+    actor, ip = claims.username, trusted_client_ip(request)
     try:
         result = await service.create(
             AppCreate(
@@ -268,13 +252,12 @@ async def get_app(
     id: int,
     request: Request,
     service: Annotated[AppManagementService, Depends(get_app_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
 ) -> dict[str, Any]:
-    await _admin(request, facade, credentials)
     try:
         return await service.get(id)
     except AppNotFound as error:
@@ -297,13 +280,13 @@ async def update_app(
     payload: AppUpdateRequest,
     request: Request,
     service: Annotated[AppManagementService, Depends(get_app_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
 ) -> dict[str, Any]:
-    actor, ip = await _admin(request, facade, credentials)
+    actor, ip = claims.username, trusted_client_ip(request)
     try:
         return await service.update(
             id,
@@ -338,13 +321,13 @@ async def disable_app(
     id: int,
     request: Request,
     service: Annotated[AppManagementService, Depends(get_app_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
 ) -> Response:
-    actor, ip = await _admin(request, facade, credentials)
+    actor, ip = claims.username, trusted_client_ip(request)
     try:
         await service.disable(id, actor=actor, ip=ip)
     except (AppNotFound, CallbackAuthorityBusy) as error:
@@ -363,13 +346,13 @@ async def rotate_key(
     request: Request,
     response: Response,
     service: Annotated[AppManagementService, Depends(get_app_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
 ) -> dict[str, Any]:
-    actor, ip = await _admin(request, facade, credentials)
+    actor, ip = claims.username, trusted_client_ip(request)
     try:
         result = await service.rotate_key(id, actor=actor, ip=ip)
         _no_store(response)
@@ -388,13 +371,13 @@ async def revoke_old_key(
     id: int,
     request: Request,
     service: Annotated[AppManagementService, Depends(get_app_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
 ) -> Response:
-    actor, ip = await _admin(request, facade, credentials)
+    actor, ip = claims.username, trusted_client_ip(request)
     try:
         await service.revoke_old_key(id, actor=actor, ip=ip)
     except AppNotFound as error:
@@ -413,13 +396,13 @@ async def rotate_callback_secret(
     request: Request,
     response: Response,
     service: Annotated[AppManagementService, Depends(get_app_management_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
 ) -> dict[str, str]:
-    actor, ip = await _admin(request, facade, credentials)
+    actor, ip = claims.username, trusted_client_ip(request)
     try:
         result = await service.rotate_callback_secret(id, actor=actor, ip=ip)
         _no_store(response)

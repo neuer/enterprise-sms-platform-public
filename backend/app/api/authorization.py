@@ -51,3 +51,13 @@ async def require_writer_actor(actor: WebActor) -> JwtClaims:
 
 
 WriterActor = Annotated[JwtClaims, Depends(require_writer_actor)]
+
+
+async def require_reader_actor(actor: WebActor) -> JwtClaims:
+    """业务目录读取仅向现有三种 Web 角色开放。"""
+    if actor.role not in {"admin", "operator", "approver"}:
+        raise ApiError(403, "FORBIDDEN", "当前角色无读取权限", None)
+    return actor
+
+
+ReaderActor = Annotated[JwtClaims, Depends(require_reader_actor)]

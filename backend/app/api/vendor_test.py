@@ -21,12 +21,11 @@ from pydantic import (
 )
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
-from app.api.authorization import require_admin_actor
+from app.api.authorization import AdminActor, require_admin_actor
 from app.api.messages import _error as _send_error
 from app.api.vendor_control_ready import raise_vendor_control_unavailable
 from app.core.audit import audited
 from app.core.auth.accounts import SecurityPrincipal
-from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import (
@@ -328,19 +327,19 @@ class UatPreviewRequestModel(StrictModel):
         return self
 
 
-def get_vendor_control_state() -> VendorControlStateGuard:
+def get_vendor_control_state(_actor: AdminActor) -> VendorControlStateGuard:
     return VendorControlStateGuard()
 
 
-def get_vendor_control_client() -> VendorControlClient:
+def get_vendor_control_client(_actor: AdminActor) -> VendorControlClient:
     return VendorControlClient()
 
 
-def get_vendor_security_audit() -> VendorTestSecurityAudit:
+def get_vendor_security_audit(_actor: AdminActor) -> VendorTestSecurityAudit:
     return SqlVendorTestSecurityAuditRepository()
 
 
-def get_vendor_operation_service() -> VendorTestOperationService:
+def get_vendor_operation_service(_actor: AdminActor) -> VendorTestOperationService:
     settings = get_settings()
     return VendorTestOperationService(
         SqlVendorTestOperationRepository(settings),
@@ -348,7 +347,7 @@ def get_vendor_operation_service() -> VendorTestOperationService:
     )
 
 
-def get_vendor_recipient_service() -> VendorTestRecipientService:
+def get_vendor_recipient_service(_actor: AdminActor) -> VendorTestRecipientService:
     settings = get_settings()
     return VendorTestRecipientService(
         SqlVendorTestRecipientRepository(settings),
@@ -356,33 +355,22 @@ def get_vendor_recipient_service() -> VendorTestRecipientService:
     )
 
 
-def get_vendor_uat_service() -> VendorTestUatService:
+def get_vendor_uat_service(_actor: AdminActor) -> VendorTestUatService:
     return build_vendor_test_uat_service()
 
 
-def get_vendor_uat_preview_service() -> VendorTestUatPreviewService:
+def get_vendor_uat_preview_service(_actor: AdminActor) -> VendorTestUatPreviewService:
     return build_vendor_test_uat_preview_service()
 
 
 def get_vendor_step_up_service(
+    _actor: AdminActor,
     facade: Annotated[AuthFacade, Depends(get_auth_facade)],
 ) -> VendorTestStepUpService:
     settings = get_settings()
     return VendorTestStepUpService(facade, redis_client(settings.redis_auth_url))
 
 
-async def _admin(
-    request: Request,
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> tuple[JwtClaims, str]:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    if claims.role != "admin":
-        raise ApiError(403, "FORBIDDEN", "仅管理员可访问真实联调控制台", None)
-    ip = trusted_client_ip(request)
-    return claims, ip
 
 
 def _operation_model(record: VendorTestOperation) -> VendorTestOperationModel:
@@ -446,10 +434,9 @@ async def status(
         VendorTestRecipientService,
         Depends(get_vendor_recipient_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> VendorTestStatusModel:
-    await _admin(request, facade, credentials)
     try:
         current = state.read_fresh()
     except VendorControlStateUnavailable as error:
@@ -484,10 +471,10 @@ async def step_up(
     request: Request,
     service: Annotated[VendorTestStepUpService, Depends(get_vendor_step_up_service)],
     audit: Annotated[VendorTestSecurityAudit, Depends(get_vendor_security_audit)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> StepUpResponseModel:
-    claims, ip = await _admin(request, facade, credentials)
+    ip = trusted_client_ip(request)
     correlation_id = str(uuid4())
     try:
         token = await service.issue(
@@ -534,10 +521,9 @@ async def create_seal_session(
     request: Request,
     client: Annotated[VendorControlClient, Depends(get_vendor_control_client)],
     audit: Annotated[VendorTestSecurityAudit, Depends(get_vendor_security_audit)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SealSessionResponseModel:
-    claims, _ = await _admin(request, facade, credentials)
     operation_id = str(uuid4())
     try:
         response = await client.request(
@@ -613,10 +599,10 @@ async def install_credentials(
         VendorTestOperationService,
         Depends(get_vendor_operation_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> VendorTestOperationModel:
-    claims, ip = await _admin(request, facade, credentials)
+    ip = trusted_client_ip(request)
     try:
         await step_up_service.consume(
             payload.step_up_token.get_secret_value(),
@@ -675,10 +661,9 @@ async def list_recipients(
         VendorTestRecipientService,
         Depends(get_vendor_recipient_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> list[RecipientModel]:
-    await _admin(request, facade, credentials)
     return [_recipient_model(item) for item in await service.list()]
 
 
@@ -695,10 +680,9 @@ async def add_recipient(
         VendorTestRecipientService,
         Depends(get_vendor_recipient_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> RecipientModel:
-    claims, _ = await _admin(request, facade, credentials)
     try:
         record = await service.add(
             label=payload.label,
@@ -739,10 +723,9 @@ async def refresh_recipient_hmac_index(
         VendorTestRecipientService,
         Depends(get_vendor_recipient_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> RecipientModel:
-    claims, _ = await _admin(request, facade, credentials)
     try:
         record = await service.refresh_hmac_index(
             recipient_id,
@@ -771,10 +754,9 @@ async def disable_recipient(
         VendorTestRecipientService,
         Depends(get_vendor_recipient_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> RecipientModel:
-    claims, _ = await _admin(request, facade, credentials)
     try:
         record = await service.disable(recipient_id, actor=claims.login_name)
     except RecipientNotFound:
@@ -803,10 +785,10 @@ async def activate(
         VendorTestOperationService,
         Depends(get_vendor_operation_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> VendorTestOperationModel:
-    claims, ip = await _admin(request, facade, credentials)
+    ip = trusted_client_ip(request)
     try:
         await step_up_service.consume(
             payload.step_up_token.get_secret_value(),
@@ -851,12 +833,12 @@ async def reset_configuration(
         VendorTestOperationService,
         Depends(get_vendor_operation_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> VendorTestOperationModel:
     """消费当前身份的单次令牌后，仅从安全投影启动受控清理 operation。"""
 
-    claims, ip = await _admin(request, facade, credentials)
+    ip = trusted_client_ip(request)
     try:
         await step_up_service.consume(
             payload.step_up_token.get_secret_value(),
@@ -901,11 +883,10 @@ async def pause(
         VendorTestOperationService,
         Depends(get_vendor_operation_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> VendorTestOperationModel:
     del payload
-    claims, _ = await _admin(request, facade, credentials)
     return await _start_control_operation(
         background_tasks=background_tasks,
         operations=operations,
@@ -935,10 +916,10 @@ async def resume(
         VendorTestOperationService,
         Depends(get_vendor_operation_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> VendorTestOperationModel:
-    claims, ip = await _admin(request, facade, credentials)
+    ip = trusted_client_ip(request)
     try:
         pause_kind = state.read().pause_kind
     except VendorControlStateUnavailable as error:
@@ -983,10 +964,9 @@ async def get_operation(
         VendorTestOperationService,
         Depends(get_vendor_operation_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> VendorTestOperationModel:
-    await _admin(request, facade, credentials)
     record = await operations.get(str(operation_id))
     if record is None:
         raise ApiError(404, "NOT_FOUND", "控制操作不存在", None)
@@ -1015,10 +995,9 @@ async def preview_uat_message(
         VendorTestUatPreviewService,
         Depends(get_vendor_uat_preview_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> BillingPreview:
-    await _admin(request, facade, credentials)
     try:
         state.require_fresh()
     except VendorControlStateUnavailable as error:
@@ -1062,10 +1041,9 @@ async def send_uat_message(
     request: Request,
     state: Annotated[VendorControlStateGuard, Depends(get_vendor_control_state)],
     service: Annotated[VendorTestUatService, Depends(get_vendor_uat_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> VendorTestOperationModel:
-    claims, _ = await _admin(request, facade, credentials)
     try:
         state.require_fresh()
     except VendorControlStateUnavailable as error:
@@ -1132,10 +1110,9 @@ async def get_uat_message(
     request: Request,
     operation_id: UUID,
     service: Annotated[VendorTestUatService, Depends(get_vendor_uat_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> VendorTestOperationModel:
-    await _admin(request, facade, credentials)
     record = await service.get(str(operation_id))
     if record is None or record.operation_type != "uat_send":
         raise ApiError(404, "NOT_FOUND", "UAT 操作不存在", None)

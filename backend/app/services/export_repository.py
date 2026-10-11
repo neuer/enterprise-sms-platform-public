@@ -205,10 +205,11 @@ class SqlExportRepository:
                             'actor_account_id',CAST(:actor_account_id AS bigint),
                             'actor_identity_id',CAST(:actor_identity_id AS bigint),
                             'decrypted',CAST(:decrypted AS boolean),'row_limit',100000,
-                            'batch_no',CAST(:batch_no AS text),
                             'dataset',CAST(:dataset AS text),
                             'scope_dept',CAST(:scope_dept AS text)
-                          )
+                          ) || CASE WHEN CAST(:batch_no AS text) IS NULL
+                            THEN '{}'::jsonb ELSE jsonb_build_object(
+                              'batch_no',CAST(:batch_no AS text)) END
                         )
                         """
                     ),

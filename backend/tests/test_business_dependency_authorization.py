@@ -14,6 +14,9 @@ from app.core.auth.runtime import get_auth_facade
 from app.core.errors import ApiError, api_error_handler
 
 CASES = [
+    ("signs", "/api/v1/web/signs", "get_settings", "operator"),
+    ("templates", "/api/v1/web/templates", "get_settings", "operator"),
+    ("security_daily", "/api/v1/web/admin/security-daily/config", "get_settings", "admin"),
     ("web_messages", "/api/v1/web/batches", "get_settings", "viewer"),
     ("vendor_test", "/api/v1/web/admin/vendor-test/recipients", "get_settings", "admin"),
     ("apps", "/api/v1/web/admin/apps", "get_settings", "admin"),
@@ -79,6 +82,9 @@ def test_actual_dependency_graph_authorizes_before_business_io(
     "module_name,path,role",
     [
         ("web_messages", "/api/v1/web/messages/import", "operator"),
+        ("web_messages", "/api/v1/web/billing/preview", "operator"),
+        ("signs", "/api/v1/web/signs", "admin"),
+        ("templates", "/api/v1/web/templates", "operator"),
         ("replies", "/api/v1/web/replies", "viewer"),
         ("replies", "/api/v1/web/replies/1/blacklist", "operator"),
         ("ops", "/api/v1/web/admin/unmatched-reports/export", "admin"),
@@ -113,7 +119,11 @@ def test_post_dependency_graph_authorizes_before_business_io(
                 "viewer" if value == "wrong_role" else role,
             )  # type: ignore[arg-type]
 
-    monkeypatch.setattr(module, "get_settings", fail_business)
+    monkeypatch.setattr(
+        module,
+        "SqlPipelineStore" if path.endswith("/billing/preview") else "get_settings",
+        fail_business,
+    )
     # The admin export dependency lives in reports, not the ops module.
     if module_name == "ops":
         from app.api import reports

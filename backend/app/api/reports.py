@@ -18,7 +18,6 @@ from app.api.authorization import (
     require_approver_actor,
 )
 from app.core.audit import AuditEvent, audited, insert_audit
-from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
@@ -308,13 +307,6 @@ def get_export_codec(_actor: WebActor) -> ExportFileCodec:
     )
 
 
-async def _claims(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> JwtClaims:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    return await facade.verify(credentials.credentials)
 
 
 def _request_filters(value: ExportFiltersModel) -> ExportRequestFilters:
@@ -435,12 +427,11 @@ def _reporting_response(result: ReportingResult) -> ReportingModel:
 )
 async def get_balance(
     repository: Annotated[SqlDashboardRepository, Depends(get_balance_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> BalanceSnapshotModel:
     """管理员顶栏仅取余额事实；未知余额保持 null。"""
 
-    claims = await _claims(facade, credentials)
     if claims.role != "admin":
         raise ApiError(403, "FORBIDDEN", "仅管理员可查询平台余额", None)
     snapshot = await repository.load_balance()
@@ -458,10 +449,9 @@ async def get_balance(
 )
 async def get_dashboard(
     service: Annotated[DashboardService, Depends(get_dashboard_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> DashboardModel:
-    claims = await _claims(facade, credentials)
     return _dashboard_response(await service.get(role=claims.role, dept=claims.dept))
 
 
@@ -472,7 +462,7 @@ async def get_dashboard(
 )
 async def get_reporting_stats(
     service: Annotated[ReportingService, Depends(get_reporting_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     granularity: Granularity = "day",
     group_by: GroupBy = "app",
@@ -485,7 +475,6 @@ async def get_reporting_stats(
     order: ReportOrder = "desc",
     metric: ReportMetric = "total",
 ) -> ReportingModel:
-    claims = await _claims(facade, credentials)
     try:
         result = await service.get(
             granularity=granularity,
@@ -516,10 +505,9 @@ async def get_reporting_stats(
 async def create_export(
     payload: ExportCreateModel,
     service: Annotated[ExportService, Depends(get_export_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ExportTaskModel:
-    claims = await _claims(facade, credentials)
     try:
         task = await service.create(
             _request_filters(payload.filters),
@@ -541,10 +529,9 @@ async def create_export(
 async def get_export(
     public_id: UUID,
     service: Annotated[ExportService, Depends(get_export_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ExportTaskModel:
-    claims = await _claims(facade, credentials)
     try:
         return _response(
             await service.get(
@@ -578,10 +565,9 @@ async def export_step_up(
         ExportStepUpService,
         Depends(get_export_step_up_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ExportStepUpResponseModel:
-    claims = await _claims(facade, credentials)
     try:
         task = await export_service.get(
             public_id,
@@ -617,14 +603,13 @@ async def download_export(
         ExportStepUpService,
         Depends(get_export_step_up_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     export_step_up_token: Annotated[
         str | None,
         Header(alias="X-Export-Step-Up", min_length=1, max_length=256),
     ] = None,
 ) -> StreamingResponse:
-    claims = await _claims(facade, credentials)
     try:
         visible = await service.get(
             public_id,

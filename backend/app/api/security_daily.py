@@ -11,8 +11,9 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.authorization import AdminActor
 from app.core.audit import audited
-from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.auth.jwt import JwtClaims
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.security_daily import (
@@ -130,7 +131,7 @@ class SecurityDailyDeliveryResponseModel(StrictModel):
     idempotent: bool
 
 
-def get_security_daily_service() -> SecurityDailyService:
+def get_security_daily_service(_actor: AdminActor) -> SecurityDailyService:
     settings = get_settings()
     return SecurityDailyService(
         SqlSecurityDailyRepository(settings),
@@ -142,16 +143,6 @@ def get_security_daily_service() -> SecurityDailyService:
     )
 
 
-async def _admin(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> Any:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    if claims.role != "admin":
-        raise ApiError(403, "FORBIDDEN", "仅管理员可访问安全日报", None)
-    return claims
 
 
 def _ip(request: Request) -> str:
@@ -229,10 +220,9 @@ def _configuration_model(
 )
 async def security_daily_overview(
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyOverviewModel:
-    await _admin(facade, credentials)
     try:
         overview = await service.overview()
     except SecurityDailyControlError:
@@ -249,10 +239,9 @@ async def security_daily_overview(
 )
 async def get_security_daily_config(
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyConfigurationModel:
-    await _admin(facade, credentials)
     try:
         configuration = await service.configuration()
     except SecurityDailyConfigurationError as error:
@@ -274,12 +263,11 @@ async def get_security_daily_config(
 async def generate_security_daily_report(
     request: Request,
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyReportModel:
     """管理员无条件重生成上一上海自然日的日报并立即提交邮件投递。"""
 
-    claims = await _admin(facade, credentials)
     try:
         record = await service.generate_latest(principal=claims.principal, ip=_ip(request))
     except SecurityDailyStateConflict as error:
@@ -299,10 +287,9 @@ async def update_security_daily_config(
     payload: SecurityDailyConfigurationUpdateModel,
     request: Request,
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyConfigurationModel:
-    claims = await _admin(facade, credentials)
     try:
         configuration = await service.configure(
             SecurityDailyConfigurationUpdate(
@@ -329,7 +316,7 @@ async def update_security_daily_config(
 )
 async def list_security_daily_reports(
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     date_from: date | None = None,
     date_to: date | None = None,
@@ -341,7 +328,6 @@ async def list_security_daily_reports(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> SecurityDailyPageModel:
-    await _admin(facade, credentials)
     if date_from is not None and date_to is not None and date_from > date_to:
         raise ApiError(400, "INVALID_PARAM", "日期范围无效", None)
     try:
@@ -371,10 +357,9 @@ async def list_security_daily_reports(
 async def get_security_daily_report(
     report_id: Annotated[int, Path(ge=1)],
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyReportModel:
-    await _admin(facade, credentials)
     try:
         record = await service.get_report(report_id)
     except SecurityDailyNotFound:
@@ -392,10 +377,9 @@ async def get_security_daily_report(
 async def preview_security_daily_report(
     report_id: Annotated[int, Path(ge=1)],
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyPreviewModel:
-    await _admin(facade, credentials)
     try:
         preview = await service.preview(report_id)
     except SecurityDailyNotFound:
@@ -432,10 +416,8 @@ async def _request_delivery(
     action: DeliveryAction,
     request: Request,
     service: SecurityDailyService,
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
+    claims: JwtClaims,
 ) -> SecurityDailyDeliveryResponseModel:
-    claims = await _admin(facade, credentials)
     try:
         result = await service.request_delivery(
             report_id,
@@ -467,10 +449,10 @@ async def send_security_daily_report(
     _: SecurityDailyDeliveryActionModel,
     request: Request,
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyDeliveryResponseModel:
-    return await _request_delivery(report_id, "send", request, service, facade, credentials)
+    return await _request_delivery(report_id, "send", request, service, claims)
 
 
 @router.post(
@@ -486,7 +468,7 @@ async def retry_security_daily_report(
     _: SecurityDailyDeliveryActionModel,
     request: Request,
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> SecurityDailyDeliveryResponseModel:
-    return await _request_delivery(report_id, "retry", request, service, facade, credentials)
+    return await _request_delivery(report_id, "retry", request, service, claims)

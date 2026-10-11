@@ -1,6 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.106  2026-09-22
+-- v1.6.107  2026-10-11
+-- v1.6.107：审计载荷仅允许对象，顶层 batch_no 严格验证类型与格式。
 -- v1.6.106：受控联调恢复绑定请求指纹；生命周期事实最小权限。
 -- v1.6.105：临时密码独立期限；历史未改密凭据迁移时一次性宽限 24 小时。
 -- v1.6.104：目录映射按事务去重安全版本失效，保留直接 DML 触发保护。
@@ -2894,6 +2895,21 @@ CREATE TABLE audit_log (
         AND actor_app_id IS NULL
       )
     ),
+    CONSTRAINT ck_audit_payload_shape CHECK (
+      CASE WHEN before_val IS NULL THEN TRUE
+        WHEN jsonb_typeof(before_val) <> 'object' THEN FALSE
+        WHEN NOT (before_val ? 'batch_no') THEN TRUE
+        WHEN before_val->'batch_no' = 'null'::jsonb THEN TRUE
+        ELSE COALESCE(jsonb_typeof(before_val->'batch_no') = 'string'
+          AND (before_val->>'batch_no') ~ '^[0-9a-f]{32}$', FALSE) END
+      AND
+      CASE WHEN after_val IS NULL THEN TRUE
+        WHEN jsonb_typeof(after_val) <> 'object' THEN FALSE
+        WHEN NOT (after_val ? 'batch_no') THEN TRUE
+        WHEN after_val->'batch_no' = 'null'::jsonb THEN TRUE
+        ELSE COALESCE(jsonb_typeof(after_val->'batch_no') = 'string'
+          AND (after_val->>'batch_no') ~ '^[0-9a-f]{32}$', FALSE) END
+    ),
     CONSTRAINT ck_audit_payload_no_pii CHECK (
       (COALESCE((before_val - 'batch_no')::text,'') ||
        COALESCE((after_val - 'batch_no')::text,''))
@@ -2905,6 +2921,23 @@ CREATE TABLE audit_log (
              'ciphertext|encrypted(_list)?)"[[:space:]]*:'
     )
 );
+-- 历史导出曾合法写入 batch_no:null；只保留既存证据，新写入严格拒绝。
+CREATE OR REPLACE FUNCTION enforce_new_audit_payload_shape()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (NEW.before_val ? 'batch_no' AND NEW.before_val->'batch_no' = 'null'::jsonb)
+     OR (NEW.after_val ? 'batch_no' AND NEW.after_val->'batch_no' = 'null'::jsonb) THEN
+    RAISE EXCEPTION 'invalid audit batch reference'
+      USING ERRCODE = '23514', CONSTRAINT = 'ck_audit_payload_shape';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+REVOKE ALL ON FUNCTION enforce_new_audit_payload_shape() FROM PUBLIC;
+CREATE TRIGGER trg_audit_payload_shape
+BEFORE INSERT OR UPDATE ON audit_log
+FOR EACH ROW EXECUTE FUNCTION enforce_new_audit_payload_shape();
+
 CREATE INDEX idx_audit_actor  ON audit_log(actor, created_at);
 CREATE INDEX idx_audit_actor_account ON audit_log(actor_account_id, created_at DESC);
 CREATE INDEX idx_audit_correlation ON audit_log(correlation_id, created_at DESC);

@@ -133,6 +133,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0118_role_mapping_invalidation",
         "0119_temporary_password_expiry",
         "0120_uat_recovery_fingerprint",
+        "0121_audit_payload_shape",
     ]
 
 

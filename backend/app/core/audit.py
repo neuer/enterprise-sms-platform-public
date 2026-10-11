@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from functools import wraps
 from typing import Any, TypeVar, cast
 from uuid import UUID
@@ -20,6 +22,12 @@ F = TypeVar("F", bound=Callable[..., Any])
 FORBIDDEN_AUDIT_KEY = re.compile(
     r"(?:^|_)(?:phone|phones|mobile|mobiles|token|secret|password|"
     r"body|request|request_body|content|ciphertext|encrypted)(?:$|_)",
+    re.IGNORECASE,
+)
+DATABASE_FORBIDDEN_AUDIT_KEY = re.compile(
+    r"^(?:phones?|mobiles?|phone_enc|phone_hmac|phone_list|mobile_list|"
+    r".*_(?:enc|hmac)|.*token.*|.*secret.*|.*password.*|body|request|"
+    r"request_body|content|ciphertext|encrypted(?:_list)?)$",
     re.IGNORECASE,
 )
 AUDIT_BATCH_NO = re.compile(r"[0-9a-f]{32}")
@@ -60,28 +68,45 @@ def validate_audit_payload(value: Any) -> None:
     豁免手机号检测，避免批次号中的数字片段误判；嵌套或其它键不豁免。
     """
 
-    if isinstance(value, dict):
-        batch_no = value.get("batch_no")
-        if isinstance(batch_no, str) and AUDIT_BATCH_NO.fullmatch(batch_no):
-            value = {
-                nested_key: nested_value
-                for nested_key, nested_value in value.items()
-                if nested_key != "batch_no"
-            }
+    if value is None:
+        return
+    if not isinstance(value, dict):
+        raise ValueError("audit payload must be an object")
+    if "batch_no" in value:
+        batch_no = value["batch_no"]
+        if not isinstance(batch_no, str) or AUDIT_BATCH_NO.fullmatch(batch_no) is None:
+            raise ValueError("audit payload contains an invalid batch reference")
+        value = {key: item for key, item in value.items() if key != "batch_no"}
     _reject_sensitive(value, key=None)
 
 
 def _reject_sensitive(value: Any, *, key: str | None) -> None:
-    if key is not None and FORBIDDEN_AUDIT_KEY.search(key):
+    if key is not None and (
+        FORBIDDEN_AUDIT_KEY.search(key) or DATABASE_FORBIDDEN_AUDIT_KEY.fullmatch(key)
+    ):
         raise ValueError("audit payload contains a forbidden field")
     if isinstance(value, dict):
         for nested_key, nested_value in value.items():
-            _reject_sensitive(nested_value, key=str(nested_key))
+            if not isinstance(nested_key, str):
+                raise ValueError("audit payload contains a non-string key")
+            if PHONE_IN_TEXT.search(nested_key):
+                raise ValueError("audit payload contains a phone number")
+            _reject_sensitive(nested_value, key=nested_key)
         return
     if isinstance(value, (list, tuple)):
         for item in value:
             _reject_sensitive(item, key=key)
         return
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("audit payload contains a non-JSON number")
+    # JSONB 将科学计数法展开为十进制；与数据库文本兜底使用相同数值外形。
+    numeric = (
+        format(Decimal(str(value)), "f")
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        else None
+    )
+    if numeric is not None and PHONE_IN_TEXT.search(numeric):
+        raise ValueError("audit payload contains a phone number")
     if isinstance(value, str) and PHONE_IN_TEXT.search(value):
         raise ValueError("audit payload contains a phone number")
     if not isinstance(value, (str, int, float, bool, type(None))):
