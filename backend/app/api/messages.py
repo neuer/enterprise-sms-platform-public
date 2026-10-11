@@ -14,6 +14,7 @@ from app.api.vendor_control_ready import raise_vendor_control_unavailable
 from app.core.apikey import ApiAppContext, optional_api_app, require_api_app
 from app.core.audit import audited
 from app.core.auth.accounts import ActorPrincipal, ApplicationPrincipal
+from app.core.auth.department import require_account_department
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
@@ -416,6 +417,7 @@ def _batch_scope(
 ) -> BatchAccessScope:
     if isinstance(actor, ApiAppContext):
         return BatchAccessScope(app_id=actor.app_id)
+    require_account_department(actor.role, actor.dept)
     if write and actor.role not in {"operator", "admin"}:
         raise ApiError(403, "FORBIDDEN", "仅操作员或管理员可修改批次", None)
     if actor.role in {"approver", "admin"}:

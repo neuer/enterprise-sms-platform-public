@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from app.core.auth.department import valid_account_department
 from app.core.auth.roles import Role
 
 
@@ -31,7 +32,7 @@ class SecurityPrincipal:
             raise ValueError("稳定主体 ID 无效")
         if not self.login_name or len(self.login_name) > 64:
             raise ValueError("主体展示登录名无效")
-        if len(self.dept) > 128:
+        if not valid_account_department(self.role, self.dept):
             raise ValueError("主体部门快照无效")
 
     @property

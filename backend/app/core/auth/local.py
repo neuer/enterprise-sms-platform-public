@@ -10,6 +10,7 @@ from app.core.auth.backends import (
     InvalidCredentials,
     ProviderCapacityUnavailable,
 )
+from app.core.auth.department import valid_account_department
 from app.core.auth.identity import normalize_login_name
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 
@@ -58,7 +59,10 @@ class LocalPasswordProvider:
             )
         except (ExecutorBackpressure, TimeoutError):
             raise ProviderCapacityUnavailable("本地认证容量暂不可用") from None
-        if record is None or not password_matches or not record.account.active:
+        if (
+            record is None or not password_matches or not record.account.active
+            or not valid_account_department(record.account.role, record.account.dept)
+        ):
             raise InvalidCredentials("用户名或密码错误")
         if record.account.must_change_password:
             current = await self.repository.find_local_account(normalized)

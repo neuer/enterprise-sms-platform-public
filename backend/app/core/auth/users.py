@@ -21,6 +21,7 @@ from app.core.auth.backends import (
     InvalidCredentials,
     SessionStateUnavailable,
 )
+from app.core.auth.department import normalize_account_department, valid_account_department
 from app.core.auth.identity import normalize_login_name, validate_local_login_name
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
 from app.core.auth.temporary_password import TEMPORARY_PASSWORD_EXPIRY_SQL
@@ -297,6 +298,8 @@ class SqlUserRepository:
         """把 Provider 结果解析为稳定主体；来源冲突由全局唯一名裁决。"""
 
         if identity.account is not None:
+            if not valid_account_department(identity.account.role, identity.account.dept):
+                raise InvalidCredentials("账号部门无效")
             await self._record_local_login(identity.account, ip)
             return identity.account
         return await self._synchronize_external(identity, ip)
@@ -1026,6 +1029,7 @@ class SqlUserRepository:
         """事务创建主体、local 身份与临时凭据；唯一约束裁决先到先得。"""
 
         normalized = validate_local_login_name(login_name)
+        dept = normalize_account_department(role, dept)
         engine = self._engine()
         try:
             try:

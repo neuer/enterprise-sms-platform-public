@@ -19,6 +19,7 @@ import jwt
 
 from app.core.auth.accounts import PlatformAccount, SecurityPrincipal
 from app.core.auth.backends import InvalidCredentials, SessionStateUnavailable
+from app.core.auth.department import valid_account_department
 from app.core.auth.observability import (
     observe_access_only_refresh_block,
     observe_token_issue_denied,
@@ -1246,6 +1247,8 @@ class JwtService:
         )
 
     async def _authoritative(self, claims: JwtClaims) -> JwtClaims:
+        if not valid_account_department(claims.role, claims.dept):
+            raise InvalidCredentials("无效或已吊销的令牌")
         if self.security_session_loader is None:
             return claims
         try:
@@ -1261,6 +1264,7 @@ class JwtService:
             raise SessionStateUnavailable("security session projection unavailable") from None
         if (
             not current.active
+            or not valid_account_department(current.role, current.dept)
             or current.account_id != claims.account_id
             or current.identity_id != claims.identity_id
             or current.provider_code != claims.provider_code

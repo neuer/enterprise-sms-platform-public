@@ -336,9 +336,13 @@ def test_persisted_export_filters_cannot_bypass_metadata_validation() -> None:
 async def test_non_admin_empty_scope_never_creates_export(role: str, dept: str) -> None:
     repository = FakeRepository()
     service = ExportService(repository, crypto(), retention_days=7)
+    with pytest.raises(ValueError):
+        principal(1, "synthetic-user", role, dept)
+    # 显式构造旧版本坏快照，独立验证服务兜底；生产构造已在上一断言拒绝。
+    legacy = principal(1, "synthetic-user", role)
+    object.__setattr__(legacy, "dept", dept)
     with pytest.raises(ExportForbidden):
         await service.create(
-            ExportRequestFilters(), decrypted=False,
-            principal=principal(1, "synthetic-user", role, dept),
+            ExportRequestFilters(), decrypted=False, principal=legacy,
         )
     assert repository.calls == []

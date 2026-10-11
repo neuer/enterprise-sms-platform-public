@@ -7,7 +7,7 @@ from typing import Annotated, Literal, NoReturn, cast
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.api.admin_step_up import AdminStepUp, AdminStepUpToken
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
@@ -15,6 +15,7 @@ from app.core.audit import audited
 from app.core.auth.accounts import AccountSourceConflict
 from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.backends import ProviderCapacityUnavailable
+from app.core.auth.department import InvalidAccountDepartment, normalize_account_department
 from app.core.auth.identity import InvalidLoginName
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.password_screening import PasswordScreeningUnavailable
@@ -80,6 +81,17 @@ class LocalUserCreateModel(StrictModel):
         max_length=128,
         json_schema_extra={"writeOnly": True},
     )
+
+
+    @field_validator("dept", mode="before")
+    @classmethod
+    def trim_department(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def validate_department(self) -> LocalUserCreateModel:
+        self.dept = normalize_account_department(self.role, self.dept)
+        return self
 
 
 class RoleUpdateModel(StrictModel):
@@ -196,7 +208,7 @@ def _raise_user_error(error: Exception) -> NoReturn:
             str(error),
             None,
         ) from None
-    if isinstance(error, InvalidLoginName):
+    if isinstance(error, (InvalidLoginName, InvalidAccountDepartment)):
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
     if isinstance(error, LastAdminProtected):
         raise ApiError(
@@ -222,6 +234,7 @@ def _raise_user_error(error: Exception) -> NoReturn:
 
 
 USER_ERRORS = (
+    InvalidAccountDepartment,
     UserNotFound,
     AccountSourceConflict,
     PasswordPolicyViolation,

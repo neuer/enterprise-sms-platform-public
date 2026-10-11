@@ -8,6 +8,7 @@ from typing import Literal, Protocol
 
 from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.backends import ProviderCapacityUnavailable
+from app.core.auth.department import normalize_account_department
 from app.core.auth.identity import validate_local_login_name
 from app.core.auth.passwords import LocalPasswordHasher, PasswordPolicy
 from app.core.auth.roles import Role
@@ -194,6 +195,7 @@ class UserManagementService:
         ip: str,
     ) -> UserRecord:
         normalized = validate_local_login_name(username)
+        dept = normalize_account_department(role, dept)
         self.policy.validate(temporary_password, username=normalized)
         try:
             password_hash = await run_bounded(

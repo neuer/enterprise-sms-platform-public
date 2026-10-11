@@ -21,6 +21,7 @@ from app.core.auth.backends import (
     ProviderUnavailable,
     SessionStateUnavailable,
 )
+from app.core.auth.department import valid_account_department
 from app.core.auth.guard_policy import SqlAuthGuardPolicyLoader
 from app.core.auth.identity import normalize_login_name
 from app.core.auth.jwt import (
@@ -149,6 +150,8 @@ class AuthFacade:
     async def _record_bound_success(self, account: PlatformAccount) -> None:
         """账号归属确认后才允许清除规范化登录名的失败/锁定状态。"""
 
+        if not valid_account_department(account.role, account.dept):
+            raise InvalidCredentials("账号部门无效")
         await self.auth.record_bound_success(account.normalized_login_name)
 
     async def _record_completed_success(self, identity: AuthenticatedIdentity, ip: str) -> None:

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal, Protocol
 
+from app.core.auth.department import require_account_department
 from app.services.stats import SHANGHAI, success_rate
 
 Granularity = Literal["day", "week", "month"]
@@ -151,6 +152,7 @@ class ReportingService:
         order: ReportOrder = "desc",
         metric: ReportMetric = "total",
     ) -> ReportingResult:
+        require_account_department(role, dept)
         if not 1 <= page <= 1_000_000 or not 1 <= size <= 100:
             raise ValueError("report page or size is out of bounds")
         if sort not in {"period_start", "total", "total_segments", "success_rate"}:

@@ -198,7 +198,13 @@ async def test_revocation_commits_before_every_admin_write(context, operation):
 async def test_write_lock_precedes_revocation(context, operation, monkeypatch):
     from app.core.auth.admin_authorization import lock_admin_authorization
 
-    engine, principal, *_ = context
+    engine, principal, target, *_ = context
+    if operation == "role":
+        async with engine.begin() as c:
+            await c.execute(
+                text("UPDATE user_account SET dept='synthetic-department' WHERE id=:id"),
+                {"id": target},
+            )
     acquired, release = asyncio.Event(), asyncio.Event()
 
     async def held(*args, **kwargs):

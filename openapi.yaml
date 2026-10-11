@@ -3782,7 +3782,7 @@ components:
       properties:
         username: { type: string, minLength: 1, maxLength: 64 }
         display_name: { type: string, minLength: 1, maxLength: 128 }
-        dept: { type: string, maxLength: 128 }
+        dept: { type: string, maxLength: 128, description: "去除首尾空白后校验长度；非管理员必须非空，管理员允许空部门。" }
         role: { type: string, enum: [admin, approver, operator, viewer], default: viewer }
         temporary_password: { type: string, minLength: 1, maxLength: 128, writeOnly: true }
 
