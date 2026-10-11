@@ -101,7 +101,11 @@ esac
   # 可传 pytest 文件/nodeid 做定向修复；CI 默认全收集并由独立清单核验。
   pytest_args=(-q --tb=short "$@")
   if [[ "${SMS_COVERAGE:-0}" == "1" ]]; then
-    pytest_args+=(--cov=app --cov-report=)
+    if [[ -n "${SMS_COVERAGE_CONFIG:-}" ]]; then
+      pytest_args+=(--cov --cov-config="$SMS_COVERAGE_CONFIG" --cov-report=)
+    else
+      pytest_args+=(--cov=app --cov-report=)
+    fi
   fi
   ENVIRONMENT=test DEBUG=1 AUTH_MOCK=1 VENDOR_MOCK=1 \
   DB_HOST=127.0.0.1 \

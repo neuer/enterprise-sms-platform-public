@@ -24,6 +24,8 @@ GATE_CONTRACT_TESTS = (
     "tests/test_gate_execution.py",
     "tests/test_gate_evidence.py",
     "tests/test_coverage_gates.py",
+    "tests/test_frontend_coverage_gates.py",
+    "tests/test_operations_coverage.py",
     "tests/test_call_order.py",
     "tests/test_gate_scripts.py",
 )

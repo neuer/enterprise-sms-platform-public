@@ -64,6 +64,9 @@ JUnit 和覆盖数据。隔离分区自动收集 `tests/integration/` 以及显�
 报告哈希、源码/配置摘要和提交 SHA；API、会话、composables 分组独立达标，
 不能用全局覆盖率抵消安全模块缺口。版本化门槛见该脚本和 Vite 配置。
 证据包含 JSON summary、测试报告、manifest 与 lcov；失败重跑先废止旧成功回执。
+Python 同一分片同时覆盖 `app`、`scripts`、`deploy/scripts`，后两组及高风险入口
+有独立语句/分支门槛，合并前校验每个分片的覆盖数据摘要。完整分母、实测基线、
+最终命令与语言边界见 [覆盖证据说明](docs/coverage-evidence.md)。
 full G2 复用 `scripts/run_backend_tests.sh full <临时证据目录>` 和相同静态入口，
 不再重复执行关键 marker 子集。普通分区仅保留公开快照缺失文档与本机无 Lua 的明确例外。
 

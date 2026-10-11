@@ -10,22 +10,36 @@ export UV_LOCKED=1
 export ENVIRONMENT=test DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1
 export SMS_GATE_SHA="${SMS_GATE_SHA:-$(git -C "$ROOT" rev-parse HEAD)}"
 cd "$ROOT/backend"
+export SMS_COVERAGE_CONFIG="$evidence/coverage.ini"
+uv run --locked python "$ROOT/scripts/coverage_runtime.py" prepare "$SMS_COVERAGE_CONFIG" \
+  --commit "$SMS_GATE_SHA"
+export COVERAGE_RCFILE="$SMS_COVERAGE_CONFIG"
 case "$mode" in
   unit)
-    mkdir -p "$evidence/unit"
+    uv run --locked python "$ROOT/scripts/coverage_runtime.py" begin "$evidence/unit" \
+      --commit "$SMS_GATE_SHA" --shard unit
     COVERAGE_FILE="$evidence/unit/.coverage" uv run --locked python -m pytest -c pyproject.toml --rootdir=. -q --strict-markers \
       -p scripts_support.gate_evidence --gate-shard unit \
       --gate-evidence "$evidence/unit/tests.json" --junitxml "$evidence/unit/junit.xml" \
-      --durations=30 --cov=app --cov-report=
+      --durations=30 --cov --cov-config="$SMS_COVERAGE_CONFIG" --cov-report=
+    uv run --locked python "$ROOT/scripts/coverage_runtime.py" stamp "$evidence/unit" \
+      --commit "$SMS_GATE_SHA" --shard unit
     ;;
   postgres)
-    mkdir -p "$evidence/postgres"
+    uv run --locked python "$ROOT/scripts/coverage_runtime.py" begin "$evidence/postgres" \
+      --commit "$SMS_GATE_SHA" --shard postgres
     COVERAGE_FILE="$evidence/postgres/.coverage" SMS_COVERAGE=1 \
       SMS_TEST_EVIDENCE="$evidence/postgres/tests.json" \
       SMS_TEST_JUNIT="$evidence/postgres/junit.xml" \
       bash "$ROOT/scripts/verify_vendor_postgres_recovery.sh"
+    uv run --locked python "$ROOT/scripts/coverage_runtime.py" stamp "$evidence/postgres" \
+      --commit "$SMS_GATE_SHA" --shard postgres
     ;;
   merge)
+    for shard in unit postgres; do
+      uv run --locked python "$ROOT/scripts/coverage_runtime.py" verify "$evidence/$shard" \
+        --commit "$SMS_GATE_SHA" --shard "$shard"
+    done
     uv run --locked python -m pytest -c pyproject.toml --rootdir=. -q --collect-only -p scripts_support.gate_evidence \
       --gate-shard inventory --gate-evidence "$evidence/inventory.json" > "$evidence/collection.txt"
     COVERAGE_FILE="$evidence/.coverage" uv run --locked coverage combine --keep \

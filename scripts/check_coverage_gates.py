@@ -10,6 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from check_operations_coverage import app_document, evaluate, normalize
 from gate_policy import CRITICAL_MARKERS, logical_module_files
 
 THRESHOLDS: Mapping[str, float] = {
@@ -224,10 +225,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         expected = {
             path.relative_to(backend).as_posix() for path in (backend / "app").rglob("*.py")
         }
-        totals = evaluate_coverage(document, expected_files=expected)
-    except (OSError, UnicodeError, json.JSONDecodeError, CoverageGateError) as error:
+        full_document = normalize(document, root=backend.parent)
+        operations_totals = evaluate(full_document)
+        totals = evaluate_coverage(app_document(full_document), expected_files=expected)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
         print(f"coverage-gate: {error}", file=sys.stderr)
         return 1
+    print("operations-coverage-gate: " + json.dumps(operations_totals, sort_keys=True))
     print("coverage-gate: passed " + " ".join(f"{name}={totals[name]:.2f}%" for name in THRESHOLDS))
     return 0
 
