@@ -8,6 +8,13 @@ if [[ "${SMS_DOCKER_PUBLIC_SESSION:-0}" != "1" ]]; then
 fi
 cache_root="${G2_DOCKER_CACHE_DIR:?G2_DOCKER_CACHE_DIR is required}"
 mkdir -p "$cache_root"
+candidate=development
+if [ -z "$(git -C "$ROOT" status --porcelain --untracked-files=normal)" ]; then
+  candidate="$(git -C "$ROOT" rev-parse HEAD)"
+fi
+metadata="$(python3 "$ROOT/scripts/release_metadata.py" --root "$ROOT")"
+app_version="$(printf '%s' "$metadata" | python3 -c 'import json,sys; print(json.load(sys.stdin)["app_version"])')"
+schema_revision="$(printf '%s' "$metadata" | python3 -c 'import json,sys; print(json.load(sys.stdin)["schema_revision"])')"
 
 builder="g2-${COMPOSE_PROJECT_NAME:-local}-$$"
 builder="${builder//[^a-zA-Z0-9_.-]/-}"
@@ -59,8 +66,14 @@ build_image(){
     --file "$dockerfile"
     --tag "$image"
     --load
+    --build-arg "GIT_SHA=$candidate"
+    --build-arg "APP_VERSION=$app_version"
+    --build-arg "SCHEMA_REVISION=$schema_revision"
     --cache-to "type=local,dest=$next,mode=max"
   )
+  if [ "${G2_COLD_BUILD:-0}" = 1 ]; then
+    common+=(--no-cache --pull)
+  fi
 
   if [ ! -e "$current" ] && [ -e "$previous" ]; then
     mv "$previous" "$current"
@@ -69,7 +82,7 @@ build_image(){
   fi
   rm -rf "$next"
 
-  if [ -f "$current/index.json" ]; then
+  if [ -f "$current/index.json" ] && [ "${G2_COLD_BUILD:-0}" != 1 ]; then
     if ! run_build "${common[@]}" --cache-from "type=local,src=$current" "$ROOT"; then
       printf 'G2_BUILD_CACHE cache_name=%s status=retry-cold\n' "$cache_name"
       rm -rf "$next"

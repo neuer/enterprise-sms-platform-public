@@ -1,6 +1,6 @@
 FROM ghcr.io/astral-sh/uv:0.7.12@sha256:4faec156e35a5f345d57804d8858c6ba1cf6352ce5f4bffc11b7fdebdef46a38 AS uv-bin
 
-FROM python:3.12-alpine@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a AS builder
+FROM python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4 AS builder
 
 # Dependencies are built by uv (the mailer uses only stdlib); remove unused installers.
 RUN python -m pip uninstall --yes pip \
@@ -17,16 +17,11 @@ WORKDIR /app
 COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-FROM python:3.12-alpine@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a
+FROM python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
 
 # Dependencies are built by uv (the mailer uses only stdlib); remove unused installers.
 RUN python -m pip uninstall --yes pip \
     && rm -rf /usr/local/lib/python3.12/ensurepip
-
-RUN apk add --no-cache --upgrade \
-      libcrypto3=3.5.8-r0 \
-      libuuid=2.42.3-r1 \
-      libssl3=3.5.8-r0
 
 ARG APP_VERSION
 ARG GIT_SHA=development

@@ -177,6 +177,8 @@ def classify_paths(paths: Iterable[str]) -> Classification:
             path_fallback
             or path in RELEASE_CONTROL_EXACT
             or path.startswith("deploy/scripts/release_")
+            or path.startswith("deploy/vendor-apk/")
+            or path == "deploy/install-retained-apk.sh"
         )
 
     return Classification(

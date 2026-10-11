@@ -392,6 +392,7 @@ def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
         "G2_DOCKER_CACHE_DIR": "${{ runner.temp }}/g2-buildkit-cache",
         "G2_NPM_CACHE_DIR": "${{ runner.temp }}/g2-npm-cache",
         "G2_TIMING_FILE": "${{ runner.temp }}/g2-timing.jsonl",
+        "G2_COLD_BUILD": "${{ github.event_name == 'schedule' && '1' || '0' }}",
     }
     for variable in ("G2_DOCKER_CACHE_DIR", "G2_NPM_CACHE_DIR", "G2_TIMING_FILE"):
         assert f'{variable}="${variable}"' in gate["run"]

@@ -53,6 +53,16 @@ jobs:
             --archive-dir "$RUNNER_TEMP/release-evidence/images" \
             --scan-dir "$RUNNER_TEMP/release-evidence/scans" \
             --sbom-dir "$RUNNER_TEMP/release-evidence/sboms"
+      - name: Verify independent mailer image
+        run: |
+          python3 scripts/verify_image_security.py --scope mailer --output "$RUNNER_TEMP/mailer-image-security"
+      - name: Upload independent mailer evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mailer-image-security-${{ github.sha }}
+          path: ${{ runner.temp }}/mailer-image-security
+          if-no-files-found: error
+          retention-days: 90
       - name: Save the single-build release checkpoint
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

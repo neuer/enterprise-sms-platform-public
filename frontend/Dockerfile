@@ -13,16 +13,12 @@ COPY frontend .
 COPY VERSION /VERSION
 RUN VITE_APP_VERSION="$(tr -d '\n' < /VERSION)" npm run build
 
-FROM nginx:stable-alpine@sha256:dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c
+FROM nginx:stable-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
 
-RUN apk add --no-cache --upgrade \
-      c-ares=1.34.8-r0 \
-      curl=8.22.0-r0 \
-      libcrypto3=3.5.8-r0 \
-      libcurl=8.22.0-r0 \
-      libexpat=2.8.4-r0 \
-      libuuid=2.42.3-r1 \
-      libssl3=3.5.8-r0
+# Retained signed packages; installation never consults a mutable mirror.
+RUN --network=none --mount=type=bind,source=deploy/vendor-apk/web,target=/apks,ro \
+    --mount=type=bind,source=deploy/install-retained-apk.sh,target=/install-retained-apk.sh,ro \
+    sh /install-retained-apk.sh
 
 ARG APP_VERSION
 ARG GIT_SHA

@@ -35,7 +35,7 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
     )
     assert (
         "FROM python:3.12-alpine@sha256:"
-        "b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a" in backend
+        "1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4" in backend
     )
     assert "uv sync --frozen --no-dev" in backend
     assert backend.count("RUN python -m pip uninstall --yes pip") == 2
@@ -48,29 +48,17 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
     assert "USER 101:101" in frontend
     assert (
         "FROM nginx:stable-alpine@sha256:"
-        "dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c" in frontend
+        "0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94" in frontend
     )
-    for package in ("libcrypto3=3.5.8-r0", "libssl3=3.5.8-r0", "libuuid=2.42.3-r1"):
-        assert package in backend
-    for package in (
-        "c-ares=1.34.8-r0",
-        "curl=8.22.0-r0",
-        "libcrypto3=3.5.8-r0",
-        "libcurl=8.22.0-r0",
-        "libuuid=2.42.3-r1",
-        "libexpat=2.8.4-r0",
-        "libssl3=3.5.8-r0",
-    ):
-        assert package in frontend
+    assert "RUN apk add" not in backend
+    for dockerfile in (frontend, postgres, redis):
+        assert "RUN --network=none --mount=type=bind" in dockerfile
+        assert "sh /install-retained-apk.sh" in dockerfile
+        assert "RUN apk add" not in dockerfile
     assert (
         "FROM postgres:16-alpine@sha256:"
-        "cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685" in postgres
+        "721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea" in postgres
     )
-    assert "apk add --no-cache --upgrade" in postgres
-    assert "libcrypto3=3.5.8-r0" in postgres
-    assert "libssl3=3.5.8-r0" in postgres
-    assert "libuuid=2.42.3-r1" in postgres
-    assert "su-exec=0.3-r0" in postgres
     assert "rm /usr/local/bin/gosu" in postgres
     assert "ln -s /sbin/su-exec /usr/local/bin/gosu" in postgres
     assert "PG_VERSION=16.15" in postgres
@@ -89,7 +77,7 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
         assert metadata in postgres
     assert (
         "FROM redis:7-alpine@sha256:"
-        "ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf" in redis
+        "858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499" in redis
     )
     assert "USER 999:1000" in redis
 

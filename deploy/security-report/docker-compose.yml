@@ -3,7 +3,7 @@ name: sms-security-report
 services:
   security-report-mailer:
     profiles: [send]
-    image: sms-platform-security-report-mailer:local
+    image: ${SMS_SECURITY_REPORT_IMAGE:-sms-platform-security-report-mailer:local}
     build:
       context: ../..
       dockerfile: deploy/security-report/Dockerfile
