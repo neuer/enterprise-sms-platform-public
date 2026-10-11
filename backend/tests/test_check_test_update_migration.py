@@ -135,6 +135,7 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0120_uat_recovery_fingerprint",
         "0121_audit_payload_shape",
         "0122_poll_lease_events",
+        "0123_send_db_failure_events",
     ]
 
 

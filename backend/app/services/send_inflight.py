@@ -682,9 +682,7 @@ async def expand_in_flight_for_split(
     if current is None:
         raise InFlightInvariantViolation("split", "reservation missing")
     occupancy = int(current["reserved_chunks"]) + delta
-    materialized = (
-        int(current["materialized_chunks"] or current["reserved_chunks"]) + delta
-    )
+    materialized = int(current["materialized_chunks"] or current["reserved_chunks"]) + delta
     changed = await apply_inflight_delta(
         connection,
         operation="split",
@@ -704,24 +702,32 @@ async def reconcile_split_occupancy_drift(
     connection: Any,
     *,
     limit: int = 100,
+    rows: list[Any] | None = None,
 ) -> int:
     """把低估的 materialized 预留补到当前占用分片数；只扩不缩。"""
 
-    rows = (
-        await connection.execute(
-            text(
-                """
-                SELECT r.id, r.generation, r.app_id, r.reserved_chunks, r.batch_id
-                FROM send_inflight_reservation r
-                WHERE r.state='materialized'
-                  AND r.batch_id IS NOT NULL
-                ORDER BY r.id
-                LIMIT :limit
-                """
-            ),
-            {"limit": limit},
+    if rows is None:
+        rows = (
+            (
+                await connection.execute(
+                    text(
+                        """
+                    SELECT r.id, r.generation, r.app_id, r.reserved_chunks, r.batch_id
+                    FROM send_inflight_reservation r
+                    WHERE r.state='materialized'
+                      AND r.batch_id IS NOT NULL
+                    ORDER BY r.id
+                    LIMIT :limit
+                    """
+                    ),
+                    {"limit": limit},
+                )
+            )
+            .mappings()
+            .all()
         )
-    ).mappings()
+    for app_id in sorted({int(row["app_id"]) for row in rows}):
+        await _lock_balance(connection, app_id=app_id, operation="repair", allow_create=True)
     repaired = 0
     for row in rows:
         occupying = (
@@ -956,9 +962,10 @@ async def repair_misreleased_bound_reservations(
     """恢复仍活跃批次上被 acceptance-failed 误释放的预留，且禁止双份占用。"""
 
     rows = (
-        await connection.execute(
-            text(
-                """
+        (
+            await connection.execute(
+                text(
+                    """
                 SELECT r.id, r.generation, r.app_id, r.batch_id, r.reserved_chunks
                 FROM send_inflight_reservation r
                 JOIN sms_batch b ON b.id=r.batch_id
@@ -969,16 +976,32 @@ async def repair_misreleased_bound_reservations(
                     'completed','completed_unknown','cancelled','rejected','expired'
                   )
                 ORDER BY r.id
-                FOR UPDATE OF r
                 LIMIT :limit
                 """
-            ),
-            {"limit": limit},
+                ),
+                {"limit": limit},
+            )
         )
-    ).mappings()
+        .mappings()
+        .all()
+    )
+    # 此阶段从空事务开始：全部 batch → 按 app 排序的 balance → reservation。
+    batch_ids = sorted({int(row["batch_id"]) for row in rows})
+    if batch_ids:
+        await connection.execute(
+            text("SELECT id FROM sms_batch WHERE id=ANY(:ids) ORDER BY id FOR UPDATE"),
+            {"ids": batch_ids},
+        )
+    for app_id in sorted({int(row["app_id"]) for row in rows}):
+        await _lock_balance(connection, app_id=app_id, operation="repair", allow_create=True)
     repaired = 0
     for row in rows:
         batch_id = int(row["batch_id"])
+        status = await connection.scalar(
+            text("SELECT status FROM sms_batch WHERE id=:id"), {"id": batch_id}
+        )
+        if status in {"completed", "completed_unknown", "cancelled", "rejected", "expired"}:
+            continue
         replacement = (
             await connection.execute(
                 text(
@@ -1019,24 +1042,46 @@ async def bind_reserved_reservation_to_existing_batch(
     """把仍 reserved 但批次指针已指向它的行补绑到同一事务合同。"""
 
     rows = (
-        await connection.execute(
-            text(
-                """
+        (
+            await connection.execute(
+                text(
+                    """
                 SELECT r.id, r.generation, r.app_id, b.id AS batch_id
                 FROM send_inflight_reservation r
                 JOIN sms_batch b ON b.send_inflight_reservation_id=r.id
                 WHERE r.state='reserved'
                   AND r.batch_id IS NULL
                 ORDER BY r.id
-                FOR UPDATE OF r
                 LIMIT :limit
                 """
-            ),
-            {"limit": limit},
+                ),
+                {"limit": limit},
+            )
         )
-    ).mappings()
+        .mappings()
+        .all()
+    )
+    # 此阶段从空事务开始：全部 batch → 按 app 排序的 balance → reservation。
+    batch_ids = sorted({int(row["batch_id"]) for row in rows})
+    if batch_ids:
+        await connection.execute(
+            text("SELECT id FROM sms_batch WHERE id=ANY(:ids) ORDER BY id FOR UPDATE"),
+            {"ids": batch_ids},
+        )
+    for app_id in sorted({int(row["app_id"]) for row in rows}):
+        await _lock_balance(connection, app_id=app_id, operation="repair", allow_create=True)
     repaired = 0
     for row in rows:
+        current = await connection.scalar(
+            text(
+                "SELECT id FROM send_inflight_reservation WHERE id=:id "
+                "AND generation=:generation AND state='reserved' AND batch_id IS NULL "
+                "AND expires_at > clock_timestamp()"
+            ),
+            {"id": int(row["id"]), "generation": int(row["generation"])},
+        )
+        if current is None:
+            continue
         await bind_in_flight_reservation(
             connection,
             reservation_id=int(row["id"]),
@@ -1052,10 +1097,11 @@ async def reconcile_in_flight_reservations(connection: Any, *, limit: int = 100)
     """释放过期未绑定预留，并回收已终态批次上的活动预留。"""
 
     orphans = (
-        await connection.execute(
-            text(
-                """
-                SELECT id, generation
+        (
+            await connection.execute(
+                text(
+                    """
+                SELECT id, generation, app_id
                 FROM send_inflight_reservation
                 WHERE state='reserved'
                   AND batch_id IS NULL
@@ -1064,24 +1110,19 @@ async def reconcile_in_flight_reservations(connection: Any, *, limit: int = 100)
                 ORDER BY id
                 LIMIT :limit
                 """
-            ),
-            {"limit": limit},
+                ),
+                {"limit": limit},
+            )
         )
-    ).mappings()
-    repaired = 0
-    for row in orphans:
-        if await release_in_flight_reservation(
-            connection,
-            reservation_id=int(row["id"]),
-            generation=int(row["generation"]),
-            reason="orphan-expired",
-        ):
-            repaired += 1
+        .mappings()
+        .all()
+    )
     terminals = (
-        await connection.execute(
-            text(
-                """
-                SELECT r.id, r.generation, b.status
+        (
+            await connection.execute(
+                text(
+                    """
+                SELECT r.id, r.generation, r.app_id, b.status
                 FROM send_inflight_reservation r
                 JOIN sms_batch b ON b.id=r.batch_id
                 WHERE r.state <> 'released'
@@ -1091,10 +1132,53 @@ async def reconcile_in_flight_reservations(connection: Any, *, limit: int = 100)
                 ORDER BY r.id
                 LIMIT :limit
                 """
-            ),
-            {"limit": limit},
+                ),
+                {"limit": limit},
+            )
         )
-    ).mappings()
+        .mappings()
+        .all()
+    )
+    drift_rows = (
+        (
+            await connection.execute(
+                text(
+                    "SELECT id,generation,app_id,reserved_chunks,batch_id "
+                    "FROM send_inflight_reservation "
+                    "WHERE state='materialized' AND batch_id IS NOT NULL ORDER BY id LIMIT :limit"
+                ),
+                {"limit": limit},
+            )
+        )
+        .mappings()
+        .all()
+    )
+    conservation_apps = list(
+        (
+            await connection.execute(
+                text(
+                    "SELECT app_id FROM (SELECT app_id FROM send_inflight_balance UNION "
+                    "SELECT app_id FROM send_inflight_reservation WHERE state IN "
+                    "('reserved','batch_bound','materialized')) apps ORDER BY app_id LIMIT :limit"
+                ),
+                {"limit": limit},
+            )
+        ).scalars()
+    )
+    app_ids = {int(row["app_id"]) for row in [*orphans, *terminals, *drift_rows]}
+    app_ids.update(int(app_id) for app_id in conservation_apps)
+    # 所有后续子阶段只消费上述快照；首次更新前按 app 顺序取得完整余额锁集合。
+    for app_id in sorted(app_ids):
+        await _lock_balance(connection, app_id=app_id, operation="reconcile", allow_create=True)
+    repaired = 0
+    for row in orphans:
+        if await release_in_flight_reservation(
+            connection,
+            reservation_id=int(row["id"]),
+            generation=int(row["generation"]),
+            reason="orphan-expired",
+        ):
+            repaired += 1
     reasons = {
         "completed": "batch-completed",
         "completed_unknown": "batch-completed-unknown",
@@ -1110,21 +1194,13 @@ async def reconcile_in_flight_reservations(connection: Any, *, limit: int = 100)
             reason=reasons[str(row["status"])],
         ):
             repaired += 1
-    repaired += await bind_reserved_reservation_to_existing_batch(
-        connection,
-        limit=limit,
-    )
-    repaired += await repair_misreleased_bound_reservations(
-        connection,
-        limit=limit,
-    )
-    repaired += await reconcile_split_occupancy_drift(connection, limit=limit)
-    from app.tasks.send_repository import retry_capacity_blocked_splits
-
-    repaired += await retry_capacity_blocked_splits(connection, limit=limit)
+    # 需要 batch 锁的补绑/误释放修复由恢复器各自以独立事务执行。
+    repaired += await reconcile_split_occupancy_drift(connection, limit=limit, rows=drift_rows)
+    # 拆分会取得 chunk/batch 锁，必须由恢复器在独立事务调用，禁止在余额锁后执行。
     repaired += await reconcile_inflight_balance_conservation(
         connection,
         limit=limit,
+        apps=conservation_apps,
     )
     return repaired
 
@@ -1133,29 +1209,33 @@ async def reconcile_inflight_balance_conservation(
     connection: Any,
     *,
     limit: int = 100,
+    apps: list[int] | None = None,
 ) -> int:
     """按 app 把 balance 收敛到 SUM(active reservations)，禁止猜测释放。"""
 
-    apps = (
-        await connection.execute(
-            text(
-                """
-                SELECT app_id
-                FROM (
-                  SELECT app_id FROM send_inflight_balance
-                  UNION
-                  SELECT app_id FROM send_inflight_reservation
-                   WHERE state IN ('reserved','batch_bound','materialized')
-                ) apps
-                ORDER BY app_id
-                LIMIT :limit
-                """
-            ),
-            {"limit": limit},
+    if apps is None:
+        apps = list(
+            (
+                await connection.execute(
+                    text(
+                        """
+                    SELECT app_id
+                    FROM (
+                      SELECT app_id FROM send_inflight_balance
+                      UNION
+                      SELECT app_id FROM send_inflight_reservation
+                       WHERE state IN ('reserved','batch_bound','materialized')
+                    ) apps
+                    ORDER BY app_id
+                    LIMIT :limit
+                    """
+                    ),
+                    {"limit": limit},
+                )
+            ).scalars()
         )
-    ).scalars()
     repaired = 0
-    for app_id in apps:
+    for app_id in sorted(set(apps)):
         outcome = (
             await connection.execute(
                 text("SELECT reconcile_send_inflight_app(:app_id)"),

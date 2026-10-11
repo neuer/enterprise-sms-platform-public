@@ -17,6 +17,7 @@ from app.core.runtime_telemetry import (
     RuntimeTelemetrySnapshot,
     runtime_telemetry_snapshot,
 )
+from app.services.send_db_errors import SEND_DB_REASONS
 from app.vendor.codes import ERROR_POLICIES
 
 CATEGORIES = ("verify", "notice", "market")
@@ -86,6 +87,7 @@ class MetricsFacts:
     usage_projection_absolute_delta: tuple[tuple[str, int], ...] = ()
     worker_stalled_leases: tuple[tuple[str, int], ...] = ()
     worker_lease_events: tuple[tuple[str, str, int], ...] = ()
+    send_db_failures: tuple[tuple[str, str, int], ...] = ()
     queue_depths: tuple[tuple[str, int], ...] = ()
     raw_replay_eligibility: tuple[tuple[str, int], ...] = ()
     system_replay_audit_pending: int = 0
@@ -375,7 +377,8 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
     normalized_lease_events: dict[tuple[str, str], int] = {}
     for task_kind, event, count in snapshot.facts.worker_lease_events:
         task_label = (
-            task_kind if task_kind in {"callback", "export", "poll_report", "poll_reply"}
+            task_kind
+            if task_kind in {"callback", "export", "poll_report", "poll_reply"}
             else "other"
         )
         event_label = event if event in LEASE_EVENT_LABELS else "other"
@@ -383,6 +386,16 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
         normalized_lease_events[key] = normalized_lease_events.get(key, 0) + count
     for (task_kind, event), count in sorted(normalized_lease_events.items()):
         lease_events.labels(task_kind=task_kind, event=event).set(count)
+
+    send_db_failures = Gauge(
+        "sms_send_db_failures",
+        "Persisted send database failures; unavailable writes are logged.",
+        ("phase", "reason"),
+        registry=registry,
+    )
+    for phase, reason, count in snapshot.facts.send_db_failures:
+        if phase in {"claim", "finalize"} and reason in SEND_DB_REASONS:
+            send_db_failures.labels(phase=phase, reason=reason).set(max(0, count))
 
     eligibility = Gauge(
         "sms_raw_replay_eligibility",

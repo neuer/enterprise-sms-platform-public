@@ -34,8 +34,8 @@ from app.services.pipeline import (
 )
 from app.services.pipeline_repository import SqlPipelineStore
 from app.services.send_inflight import (
-    reconcile_in_flight_reservations,
     release_unbound_acceptance_reservation,
+    repair_misreleased_bound_reservations,
     resolve_ambiguous_acceptance_commit,
 )
 from scripts_support.maintain_partitions import maintain
@@ -628,7 +628,7 @@ async def test_reconcile_restores_historical_acceptance_failed(
     assert (await _reservation(engine, reserved.id))["state"] == "released"
     assert await _balance(engine, app_id) == 0
     async with engine.begin() as connection:
-        repaired = await reconcile_in_flight_reservations(connection)
+        repaired = await repair_misreleased_bound_reservations(connection)
     assert repaired >= 1
     row = await _reservation(engine, reserved.id)
     assert row["state"] == "batch_bound"

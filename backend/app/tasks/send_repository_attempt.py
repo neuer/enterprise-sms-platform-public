@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.services.crypto import CryptoService
 from app.services.report_projection import NO_REPORT_EVIDENCE
+from app.services.send_db_errors import RolledBackSendDeadlock, send_db_reason, send_sqlstate
+from app.services.send_db_events import observe_send_db_failure
+from app.services.send_locks import lock_send_context
 from app.services.vendor_test_budget import (
     SubmissionClaim,
     settle_live_test_attempt,
@@ -33,6 +39,9 @@ from app.vendor.routing import (
     VendorAttempt,
     VendorRecord,
 )
+
+FINALIZE_DB_ATTEMPTS = 3
+FINALIZE_DB_BUDGET_S = 28  # 为最终故障观测预留 2 秒，总持久化预算不超过 30 秒。
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,51 +148,15 @@ class VendorAttemptStoreMixin:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                chunk = (
-                    (
-                        await connection.execute(
-                            text(
-                                """
-                            SELECT c.id, c.status, c.batch_id
-                            FROM sms_chunk c
-                            WHERE c.id=:id
-                            FOR UPDATE
-                            """
-                            ),
-                            {"id": chunk_id},
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                if chunk is None:
+                context = await lock_send_context(connection, chunk_id)
+                if context is None:
                     raise RuntimeError("vendor attempt chunk missing")
-                await connection.execute(
-                    text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
-                    {"id": int(chunk["batch_id"])},
-                )
+                chunk = context.chunk
                 if str(chunk["status"]) in ISOLATING_CHUNK_STATES:
                     raise RuntimeError("vendor attempt blocked by terminal chunk")
                 if str(chunk["status"]) not in FIRST_INVOKE_CHUNK_STATES:
                     raise RuntimeError("vendor attempt not first-invoke")
-                history = (
-                    (
-                        await connection.execute(
-                            text(
-                                """
-                            SELECT id, generation, outcome
-                            FROM sms_vendor_attempt
-                            WHERE chunk_id=:chunk_id
-                            ORDER BY generation
-                            FOR UPDATE
-                            """
-                            ),
-                            {"chunk_id": chunk_id},
-                        )
-                    )
-                    .mappings()
-                    .all()
-                )
+                history = context.attempts
                 if any(
                     str(row["outcome"]) in {"submitted", "uncertain", "invoking", "inconsistent"}
                     for row in history
@@ -256,6 +229,92 @@ class VendorAttemptStoreMixin:
         batch_id: int | None = None,
         balance_blocked: bool = False,
     ) -> FinalizeReport:
+        """仅对已确认回滚的死锁重试结果落库；提交不确定及投递错误交由事实回读。"""
+        deadline = asyncio.timeout(FINALIZE_DB_BUDGET_S)
+        try:
+            async with deadline:
+                for ordinal in range(1, FINALIZE_DB_ATTEMPTS + 1):
+                    try:
+                        report, enqueue = await self._finalize_vendor_attempt_once(
+                            attempt_id,
+                            chunk_id,
+                            expected_generation=expected_generation,
+                            result=result,
+                            vendor_task_id=vendor_task_id,
+                            vendor_code=vendor_code,
+                            safe_to_failover=safe_to_failover,
+                            retry_delay_s=retry_delay_s,
+                            expected_retry_count=expected_retry_count,
+                            batch_id=batch_id,
+                            balance_blocked=balance_blocked,
+                        )
+                        break
+                    except RolledBackSendDeadlock:
+                        await observe_send_db_failure(
+                            self.settings,
+                            phase="finalize",
+                            reason="db_deadlock",
+                            chunk_id=chunk_id,
+                            attempt_id=attempt_id,
+                            generation=expected_generation,
+                            alert=ordinal == FINALIZE_DB_ATTEMPTS,
+                        )
+                        if ordinal == FINALIZE_DB_ATTEMPTS:
+                            raise
+                        await asyncio.sleep(random.uniform(0.01, 0.03) * ordinal)
+                    except Exception as error:
+                        await observe_send_db_failure(
+                            self.settings,
+                            phase="finalize",
+                            reason=send_db_reason(error),
+                            chunk_id=chunk_id,
+                            attempt_id=attempt_id,
+                            generation=expected_generation,
+                            alert=True,
+                        )
+                        raise
+        except TimeoutError:
+            if deadline.expired():
+                await observe_send_db_failure(
+                    self.settings,
+                    phase="finalize",
+                    reason="db_timeout",
+                    chunk_id=chunk_id,
+                    attempt_id=attempt_id,
+                    generation=expected_generation,
+                    alert=True,
+                )
+            raise
+        if report.kind is FinalizeKind.LOST_CAS:
+            await observe_send_db_failure(
+                self.settings,
+                phase="finalize",
+                reason="cas_lost",
+                chunk_id=chunk_id,
+                attempt_id=attempt_id,
+                generation=expected_generation,
+                alert=True,
+            )
+        # COMMIT 已经成功；这里的故障绝不重新执行结果事务，更不再次调用厂商。
+        if enqueue is not None and report.kind is FinalizeKind.APPLIED:
+            await self._enqueue_retry(enqueue[0], self.lane_for(enqueue[1]), enqueue[2])
+        return report
+
+    async def _finalize_vendor_attempt_once(
+        self,
+        attempt_id: int,
+        chunk_id: int,
+        *,
+        expected_generation: int,
+        result: str,
+        vendor_task_id: str | None = None,
+        vendor_code: int | None = None,
+        safe_to_failover: bool = False,
+        retry_delay_s: int | None = None,
+        expected_retry_count: int | None = None,
+        batch_id: int | None = None,
+        balance_blocked: bool = False,
+    ) -> tuple[FinalizeReport, tuple[int, str, int] | None]:
         """在同一事务内 CAS 终结 attempt 与 chunk，避免 submitted/invoking 撕裂。"""
 
         if result not in {
@@ -283,64 +342,25 @@ class VendorAttemptStoreMixin:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                attempt = (
-                    (
-                        await connection.execute(
-                            text(
-                                """
-                            SELECT id, chunk_id, generation, outcome
-                            FROM sms_vendor_attempt
-                            WHERE id=:id
-                            FOR UPDATE
-                            """
-                            ),
-                            {"id": attempt_id},
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
+                context = await lock_send_context(connection, chunk_id)
+                if context is None:
+                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result), None
+                chunk = context.chunk
+                if batch_id is not None and batch_id != int(chunk["batch_id"]):
+                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result), None
+                attempt = next(
+                    (row for row in context.attempts if int(row["id"]) == attempt_id), None
                 )
-                if attempt is None:
-                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
-                if int(attempt["chunk_id"]) != chunk_id:
-                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
-                if int(attempt["generation"]) != expected_generation:
-                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
-                chunk = (
-                    (
-                        await connection.execute(
-                            text(
-                                """
-                            SELECT c.id, c.status, c.batch_id, c.route_generation,
-                                   c.retry_count, c.vendor_msg,
-                                   c.next_vendor, c.route_policy_version,
-                                   c.failover_from_attempt_id, b.category,
-                                   b.route_policy_version AS batch_policy_version,
-                                   b.status AS batch_status
-                            FROM sms_chunk c
-                            JOIN sms_batch b ON b.id=c.batch_id
-                            WHERE c.id=:id
-                            FOR UPDATE OF c
-                            """
-                            ),
-                            {"id": chunk_id},
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                if chunk is None:
-                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result)
-                await connection.execute(
-                    text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
-                    {"id": int(chunk["batch_id"])},
-                )
+                if attempt is None or int(attempt["generation"]) != expected_generation:
+                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result), None
                 if str(attempt["outcome"]) != "invoking":
                     return self._report_from_locked_state(
                         attempt=attempt,
                         chunk=chunk,
                         requested=result,
-                    )
+                    ), None
+                if int(chunk["route_generation"]) != expected_generation:
+                    return FinalizeReport(FinalizeKind.STATE_CORRUPTION, result), None
                 exhausted = result == "delayed" and int(chunk["retry_count"]) >= DELAYED_RETRY_LIMIT
                 if exhausted:
                     result = "failed"
@@ -390,7 +410,7 @@ class VendorAttemptStoreMixin:
                         attempt=current,
                         chunk=current,
                         requested=result,
-                    )
+                    ), None
                 if result == "submitted":
                     submitted = await connection.execute(
                         text(
@@ -533,15 +553,13 @@ class VendorAttemptStoreMixin:
                     report = FinalizeReport(FinalizeKind.APPLIED, result)
         except _FinalizeRollback as exc:
             report = exc.report
+        except DBAPIError as error:
+            if send_sqlstate(error) == "40P01":
+                raise RolledBackSendDeadlock("db_deadlock") from error
+            raise
         finally:
             await engine.dispose()
-        if enqueue is not None and report.kind is FinalizeKind.APPLIED:
-            await self._enqueue_retry(
-                enqueue[0],
-                self.lane_for(enqueue[1]),
-                enqueue[2],
-            )
-        return report
+        return report, enqueue
 
     def _report_from_locked_state(
         self,
@@ -614,7 +632,7 @@ class VendorAttemptStoreMixin:
                            safe_to_failover, vendor_code
                     FROM sms_vendor_attempt
                     WHERE chunk_id=:chunk_id
-                    ORDER BY generation
+                    ORDER BY generation,id
                     FOR UPDATE
                     """
                     ),

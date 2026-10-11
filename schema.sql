@@ -1,6 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.108  2026-10-11
+-- v1.6.109  2026-10-11
+-- v1.6.109：发送事务失败的固定分类计数，最小只追加/聚合读取权限。
 -- v1.6.108：轮询租约故障以固定原因记入 worker_lease_event。
 -- v1.6.107：审计载荷仅允许对象，顶层 batch_no 严格验证类型与格式。
 -- v1.6.106：受控联调恢复绑定请求指纹；生命周期事实最小权限。
@@ -2168,6 +2169,17 @@ CREATE TABLE worker_lease_event (
 CREATE INDEX idx_worker_lease_event_metrics
     ON worker_lease_event(task_kind,event_type,created_at);
 
+-- 发送失败观测不含 SQL、参数、厂商内容或凭据；业务失败回读不依赖它。
+CREATE TABLE send_db_failure_event (
+    id UUID PRIMARY KEY,
+    phase VARCHAR(16) NOT NULL CHECK (phase IN ('claim','finalize')),
+    reason VARCHAR(24) NOT NULL CHECK (reason IN (
+        'cas_lost','db_deadlock','db_timeout','db_connection','unexpected'
+    )),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_send_db_failure_event_metrics ON send_db_failure_event(phase,reason);
+
 -- ─────────────── 余额 / 告警 ───────────────
 CREATE TABLE balance_snapshot (
     id         BIGSERIAL PRIMARY KEY,
@@ -3602,3 +3614,8 @@ REVOKE ALL ON FUNCTION lock_idempotency_result_batch() FROM PUBLIC;
 
 -- 生命周期事实由 CAS 推进，不允许发送角色删除。
 REVOKE DELETE ON sms_uncertain_resolution, sms_uncertain_child, usage_chunk_allocation, usage_chunk_release, send_inflight_balance, send_inflight_reservation, send_inflight_reconcile_fact, send_admission_state, send_runtime_heartbeat FROM sms_send;
+
+-- 发送事务观测：仅 send 追加，metrics 只读固定聚合维度。
+REVOKE ALL ON send_db_failure_event FROM PUBLIC;
+GRANT INSERT ON send_db_failure_event TO sms_send;
+GRANT SELECT (phase,reason) ON send_db_failure_event TO sms_metrics;

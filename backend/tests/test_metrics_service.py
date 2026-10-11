@@ -243,3 +243,21 @@ def test_two_process_snapshots_have_distinct_runtime_series() -> None:
     assert 'process_instance="process-b"' not in bodies[0]
     assert 'process_instance="process-b"' in bodies[1]
     assert "sms_runtime_event_loop_delay_seconds 0.01" not in bodies[0]
+
+
+def test_send_database_metrics_only_expose_fixed_labels() -> None:
+    from dataclasses import replace
+
+    facts = replace(
+        sample_facts(),
+        send_db_failures=(
+            ("finalize", "db_deadlock", 3),
+            ("claim", "cas_lost", 2),
+            ("secret-phase", "db_deadlock", 999),
+            ("finalize", "secret-reason", 999),
+        ),
+    )
+    output = render_prometheus(MetricsSnapshot(queue_depths=(), facts=facts)).decode()
+    assert 'sms_send_db_failures{phase="finalize",reason="db_deadlock"} 3.0' in output
+    assert 'sms_send_db_failures{phase="claim",reason="cas_lost"} 2.0' in output
+    assert "secret-phase" not in output and "secret-reason" not in output

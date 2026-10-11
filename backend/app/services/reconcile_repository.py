@@ -11,6 +11,7 @@ from app.services.category import queue_for_category
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.reconcile import RecoveryWork
+from app.services.send_locks import lock_send_chunks
 from app.settings import Settings, get_settings
 from app.vendor.zhihui import VENDOR_TIMEOUT_S
 
@@ -46,6 +47,25 @@ class SqlRecoveryRepository:
                     redis=object(),
                 )
                 await repair_store.repair_legacy_safe_reject_submitting(connection)
+            # 每个阶段先提交再进入下一组锁；禁止持有前一批的 batch/余额锁再等新 chunk。
+            async with engine.begin() as connection:
+                candidates = await connection.execute(
+                    text(
+                        "SELECT c.id FROM sms_chunk c WHERE c.status='submitting' "
+                        "OR EXISTS (SELECT 1 FROM sms_vendor_attempt a "
+                        "WHERE a.chunk_id=c.id AND a.outcome='invoking') "
+                        "ORDER BY c.id LIMIT 500"
+                    )
+                )
+                chunk_ids = [int(value) for value in candidates.scalars()]
+                await lock_send_chunks(connection, chunk_ids)
+                await connection.execute(
+                    text(
+                        "SELECT id FROM sms_vendor_attempt WHERE chunk_id=ANY(:ids) "
+                        "ORDER BY chunk_id,generation,id FOR UPDATE"
+                    ),
+                    {"ids": chunk_ids},
+                )
                 await connection.execute(
                     text(
                         """
@@ -53,7 +73,7 @@ class SqlRecoveryRepository:
                           UPDATE sms_vendor_attempt a
                           SET outcome='submitted', updated_at=now()
                           FROM sms_chunk c
-                          WHERE a.chunk_id=c.id
+                          WHERE a.chunk_id=c.id AND c.id=ANY(:chunk_ids)
                             AND a.outcome='invoking'
                             AND c.status='submitted'
                             AND c.route_generation=a.generation
@@ -68,7 +88,7 @@ class SqlRecoveryRepository:
                           UPDATE sms_vendor_attempt a
                           SET outcome='inconsistent', updated_at=now()
                           FROM sms_chunk c
-                          WHERE a.chunk_id=c.id
+                          WHERE a.chunk_id=c.id AND c.id=ANY(:chunk_ids)
                             AND a.outcome='invoking'
                             AND c.status IN (
                               'submitted','failed','uncertain','unknown_terminal'
@@ -79,7 +99,7 @@ class SqlRecoveryRepository:
                           UPDATE sms_vendor_attempt a
                           SET outcome='uncertain', updated_at=now()
                           FROM sms_chunk c
-                          WHERE a.chunk_id=c.id
+                          WHERE a.chunk_id=c.id AND c.id=ANY(:chunk_ids)
                             AND a.outcome='invoking'
                             AND c.status='submitting'
                             AND c.route_generation=a.generation
@@ -91,7 +111,7 @@ class SqlRecoveryRepository:
                             uncertain_since=COALESCE(c.submitting_since,now()),
                             submitting_since=NULL
                           FROM sms_batch b
-                          WHERE b.id=c.batch_id
+                          WHERE b.id=c.batch_id AND c.id=ANY(:chunk_ids)
                             AND b.status IN ('queued','sending')
                             AND c.status='submitting'
                             AND (
@@ -135,8 +155,27 @@ class SqlRecoveryRepository:
                           updated_at=now()
                         FROM totals WHERE usage.usage_date=totals.usage_date
                         """
-                    )
+                    ),
+                    {"chunk_ids": chunk_ids},
                 )
+            async with engine.begin() as connection:
+                from app.tasks.send_repository_split import retry_capacity_blocked_splits
+
+                await retry_capacity_blocked_splits(connection)
+            from app.services.send_inflight import (
+                bind_reserved_reservation_to_existing_batch,
+                repair_misreleased_bound_reservations,
+            )
+
+            async with engine.begin() as connection:
+                await bind_reserved_reservation_to_existing_batch(connection)
+            async with engine.begin() as connection:
+                await repair_misreleased_bound_reservations(connection)
+            async with engine.begin() as connection:
+                from app.services.send_inflight import reconcile_in_flight_reservations
+
+                await reconcile_in_flight_reservations(connection)
+            async with engine.begin() as connection:
                 batches = await connection.execute(
                     text(
                         """
@@ -162,9 +201,6 @@ class SqlRecoveryRepository:
                         """
                     )
                 )
-                from app.services.send_inflight import reconcile_in_flight_reservations
-
-                await reconcile_in_flight_reservations(connection)
                 work = [
                     RecoveryWork("batch", str(row["batch_no"]), None, str(row["category"]))
                     for row in batches.mappings()

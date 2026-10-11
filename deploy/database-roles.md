@@ -115,3 +115,11 @@ PostgreSQL 16 中验证：
 仅前者向 `sms_callback` 开放 EXECUTE；函数不更新业务字段、不读出批次数据。
 
 `role_mapping_invalidation` 是每个 Provider 一行的事务去重事实，七个运行角色均无直接权限。固定 search_path 的 owner 触发函数仅使用实际 OLD/NEW Provider 与数据库事务编号，在映射发生实质变更时使关联账号会话失效；不得用客户端参数或可写配置跳过该失效。
+
+### 发送数据库失败观测
+
+`send_db_failure_event` 仅包含随机事件标识、固定 phase/reason 和时间。
+`sms_send` 仅有 INSERT，`sms_metrics` 仅有 phase/reason 列 SELECT；运行角色没有修改、删除权限。
+`sms_send_db_failures` 是已保存事件的聚合计数，数据库故障期间无法保存的事件以
+`send_db_observation_unavailable` 日志标记缺口，不能用该计数证明没有失败。
+结果落库耗尽重试或其他失败使用 `send_db_failure` 告警；详情不含 SQL、参数或厂商响应。
