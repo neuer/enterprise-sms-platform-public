@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -52,3 +53,49 @@ def test_canonical_sbom_removes_volatile_fields_and_sorts_arrays(
 def test_canonical_sbom_rejects_non_cyclonedx() -> None:
     with pytest.raises(SbomCanonicalizationError, match="CycloneDX"):
         canonicalize({"bomFormat": "SPDX", "specVersion": "2.3"})
+
+
+def _graph(reference: str) -> dict[str, object]:
+    return {
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "metadata": {"component": {"name": "image", "bom-ref": reference}},
+        "components": [
+            {
+                "name": "package",
+                "version": "1",
+                "bom-ref": "pkg:apk/test@1",
+                "hashes": [{"alg": "SHA-256", "content": "a" * 64}],
+            }
+        ],
+        "dependencies": [{"ref": reference, "dependsOn": ["pkg:apk/test@1"]}],
+    }
+
+
+def test_uuid_renaming_preserves_dependency_graph_and_is_idempotent() -> None:
+    first = canonicalize(_graph("11111111-1111-4111-8111-111111111111"))
+    second = canonicalize(_graph("22222222-2222-4222-8222-222222222222"))
+    assert first == second
+    assert canonicalize(first) == first
+    root = first["metadata"]["component"]["bom-ref"]
+    assert first["dependencies"] == [{"ref": root, "dependsOn": ["pkg:apk/test@1"]}]
+
+
+@pytest.mark.parametrize("change", ["version", "hash", "edge"])
+def test_canonicalization_never_hides_package_or_dependency_changes(change: str) -> None:
+    baseline = _graph("11111111-1111-4111-8111-111111111111")
+    altered = deepcopy(baseline)
+    if change == "version":
+        altered["components"][0]["version"] = "2"  # type: ignore[index]
+    elif change == "hash":
+        altered["components"][0]["hashes"][0]["content"] = "b" * 64  # type: ignore[index]
+    else:
+        altered["dependencies"][0]["dependsOn"] = []  # type: ignore[index]
+    assert canonicalize(baseline) != canonicalize(altered)
+
+
+def test_undefined_uuid_reference_is_rejected() -> None:
+    document = _graph("11111111-1111-4111-8111-111111111111")
+    document["dependencies"][0]["ref"] = "22222222-2222-4222-8222-222222222222"  # type: ignore[index]
+    with pytest.raises(SbomCanonicalizationError, match="undefined"):
+        canonicalize(document)

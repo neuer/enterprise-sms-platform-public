@@ -107,7 +107,6 @@ async def test_finalize_submitted_updates_attempt_and_chunk_in_one_transaction(
     store = chunk_store()
     connection = SequenceConnection(
         [
-            FakeResult(row={"id": 9, "chunk_id": 7, "generation": 2, "outcome": "invoking"}),
             FakeResult(
                 row={
                     "id": 7,
@@ -117,7 +116,10 @@ async def test_finalize_submitted_updates_attempt_and_chunk_in_one_transaction(
                     "category": "notice",
                 }
             ),
-            FakeResult(),
+            FakeResult(
+                row={"id": 3, "status": "sending", "category": "notice", "route_policy_version": 1}
+            ),
+            FakeResult(rows=[{"id": 9, "chunk_id": 7, "generation": 2, "outcome": "invoking"}]),
             FakeResult(scalar=9),
             FakeResult(scalar=7),
             FakeResult(rowcount=1),
@@ -151,7 +153,6 @@ async def test_finalize_conflict_does_not_mark_messages_sent(
     store = chunk_store()
     connection = SequenceConnection(
         [
-            FakeResult(row={"id": 9, "chunk_id": 7, "generation": 2, "outcome": "uncertain"}),
             FakeResult(
                 row={
                     "id": 7,
@@ -161,7 +162,10 @@ async def test_finalize_conflict_does_not_mark_messages_sent(
                     "category": "notice",
                 }
             ),
-            FakeResult(),
+            FakeResult(
+                row={"id": 3, "status": "sending", "category": "notice", "route_policy_version": 1}
+            ),
+            FakeResult(rows=[{"id": 9, "chunk_id": 7, "generation": 2, "outcome": "uncertain"}]),
         ]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
@@ -185,7 +189,6 @@ async def test_finalize_lost_cas_does_not_keep_attempt_update(
     store = chunk_store()
     connection = SequenceConnection(
         [
-            FakeResult(row={"id": 9, "chunk_id": 7, "generation": 2, "outcome": "invoking"}),
             FakeResult(
                 row={
                     "id": 7,
@@ -195,7 +198,10 @@ async def test_finalize_lost_cas_does_not_keep_attempt_update(
                     "category": "notice",
                 }
             ),
-            FakeResult(),
+            FakeResult(
+                row={"id": 3, "status": "sending", "category": "notice", "route_policy_version": 1}
+            ),
+            FakeResult(rows=[{"id": 9, "chunk_id": 7, "generation": 2, "outcome": "invoking"}]),
             FakeResult(scalar=9),
             FakeResult(scalar=None),
         ]
@@ -216,3 +222,11 @@ async def test_finalize_lost_cas_does_not_keep_attempt_update(
 
 def test_sql_chunk_store_exposes_atomic_finalize() -> None:
     assert hasattr(SqlChunkStore, "finalize_vendor_attempt")
+
+
+@pytest.fixture(autouse=True)
+def no_external_send_observation(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unavailable(*args: Any, **kwargs: Any):
+        raise ConnectionError("synthetic observation unavailable")
+
+    monkeypatch.setattr("app.services.send_db_events.database_engine", unavailable)

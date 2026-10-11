@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,6 +22,7 @@ from app.core.auth.backends import (
     ProviderUnavailable,
     SessionStateUnavailable,
 )
+from app.core.auth.department import valid_account_department
 from app.core.auth.guard_policy import SqlAuthGuardPolicyLoader
 from app.core.auth.identity import normalize_login_name
 from app.core.auth.jwt import (
@@ -149,6 +151,8 @@ class AuthFacade:
     async def _record_bound_success(self, account: PlatformAccount) -> None:
         """账号归属确认后才允许清除规范化登录名的失败/锁定状态。"""
 
+        if not valid_account_department(account.role, account.dept):
+            raise InvalidCredentials("账号部门无效")
         await self.auth.record_bound_success(account.normalized_login_name)
 
     async def _record_completed_success(self, identity: AuthenticatedIdentity, ip: str) -> None:
@@ -663,9 +667,17 @@ class AuthFacade:
                 None,
             ) from None
 
-    async def verify(self, token: str) -> JwtClaims:
+    async def verify(
+        self, token: str, *,
+        security_session_loader: Callable[[int, int], Awaitable[PlatformAccount]] | None = None,
+    ) -> JwtClaims:
         try:
-            claims = await self.tokens.verify(token)
+            if security_session_loader is None:
+                claims = await self.tokens.verify(token)
+            else:
+                claims = await self.tokens.verify(
+                    token, security_session_loader=security_session_loader,
+                )
             bind_audit_principal(claims.principal)
             return claims
         except ReauthenticationRequired:

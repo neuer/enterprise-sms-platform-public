@@ -252,7 +252,6 @@ services:
       - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
       # 只挂载独立 UDS 目录，绝不挂载宿主 runtime secrets 或 Docker Socket。
       - ${SMS_VENDOR_CONTROL_SOCKET_DIR:-./vendor-control-empty}:/run/vendor-control:ro
-    ports: ["127.0.0.1:${API_PORT:-8000}:8000"]
     healthcheck:
       test: ["CMD", "python", "-m", "app.healthcheck", "ready"]
       interval: 10s

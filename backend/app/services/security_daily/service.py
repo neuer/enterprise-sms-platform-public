@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.services.security_daily.contract import (
     MAX_SECURITY_DAILY_INPUT_BYTES,
     SHANGHAI_TZ,
@@ -84,6 +85,8 @@ class SecurityDailyRepository(Protocol):
         *,
         principal: SecurityPrincipal,
         ip: str,
+        authorization: AdminAuthorization,
+        expected_config_version: int,
     ) -> SecurityDailyConfiguration: ...
 
     async def overview(self, *, now: datetime) -> SecurityDailyOverview: ...
@@ -241,6 +244,8 @@ class SecurityDailyService:
         *,
         principal: SecurityPrincipal,
         ip: str,
+        authorization: AdminAuthorization,
+        expected_config_version: int,
     ) -> SecurityDailyConfiguration:
         """保存管理员配置并同步独立 mailer；Key 不进入日报投递请求。"""
 
@@ -248,6 +253,8 @@ class SecurityDailyService:
             update,
             principal=principal,
             ip=ip,
+            authorization=authorization,
+            expected_config_version=expected_config_version,
         )
         await self._publish_configuration(configuration, persist=True)
         return configuration
@@ -342,9 +349,7 @@ class SecurityDailyService:
             return None
         if await self.repository.exists_sent_delivery(report_date):
             return None
-        record = await self.repository.get_latest_report(
-            report_date, generation_source="auto"
-        )
+        record = await self.repository.get_latest_report(report_date, generation_source="auto")
         if record is None:
             return None
         if record.delivery_status == "sent":
@@ -481,9 +486,7 @@ class SecurityDailyService:
         )
         if evidence in {"claimed", "result", "unknown"}:
             return request
-        resubmit_pending = (
-            request.idempotent and request.state == "pending" and action == "send"
-        )
+        resubmit_pending = request.idempotent and request.state == "pending" and action == "send"
         # 控制文件丢失时复用同一 request_id 重建请求，保留 Resend 幂等边界；
         # 已完成请求仍只返回事实，不再次接触投递器。
         if request.idempotent and not resubmit_pending:

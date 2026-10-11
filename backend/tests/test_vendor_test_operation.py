@@ -737,7 +737,11 @@ def test_api_factory_does_not_register_destructive_reset_finalizer(
     monkeypatch.setattr(vendor_test_api, "get_settings", lambda: "settings")
     monkeypatch.setattr(vendor_test_api, "VendorTestOperationService", CapturingService)
 
-    vendor_test_api.get_vendor_operation_service()
+    from app.core.auth.jwt import JwtClaims
+
+    vendor_test_api.get_vendor_operation_service(
+        JwtClaims(1, 11, "local", "admin", "管理员", "平台", "admin")
+    )
 
     assert captured == {"finalizers": None}
 

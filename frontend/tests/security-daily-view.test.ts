@@ -1,4 +1,4 @@
-import { flushPromises, mount } from "@vue/test-utils"
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils"
 import ElementPlus, { ElMessageBox } from "element-plus"
 import { createPinia } from "pinia"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -16,7 +16,21 @@ const api = vi.hoisted(() => ({
 }))
 
 vi.mock("../src/api/securityDaily", () => api)
+const reauth = vi.hoisted(() => ({ issueAdminStepUp: vi.fn() }))
+vi.mock("../src/api/adminStepUp", () => reauth)
+import AdminStepUpDialog from "../src/components/AdminStepUpDialog.vue"
 
+async function authorizeConfiguration(wrapper: VueWrapper) {
+  const controller = wrapper.findComponent(AdminStepUpDialog).props("controller")
+  expect(controller.state.open).toBe(true)
+  expect(api.updateSecurityDailyConfiguration).not.toHaveBeenCalled()
+  controller.updatePassword("synthetic-password")
+  await controller.submit()
+  await flushPromises()
+}
+
+import SecurityDailyConfigDialog from "../src/components/SecurityDailyConfigDialog.vue"
+import { SESSION_CLEARING_EVENT } from "../src/api/sessionEvents"
 import SecurityDailyView from "../src/views/SecurityDailyView.vue"
 
 // ElMessageBox.confirm 的消息为 h() VNode（lib/confirm.ts confirm-dialog），递归提取文本用于断言。
@@ -210,12 +224,14 @@ const overview = {
 describe("安全日报页面", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    reauth.issueAdminStepUp.mockResolvedValue("synthetic-daily-grant")
     api.generateSecurityDailyReport.mockResolvedValue(reports[2])
     api.getSecurityDailyOverview.mockResolvedValue(overview)
     api.getSecurityDailyConfiguration.mockResolvedValue({
       enabled: true,
       recipients: ["security-owner@example.com"],
       resend_api_key_configured: true,
+      config_version: 7,
       sender_domain: "reports.neuer.cn",
       sender_address: "security-daily@reports.neuer.cn",
     })
@@ -250,6 +266,7 @@ describe("安全日报页面", () => {
       enabled: true,
       recipients: ["security-owner@example.com"],
       resend_api_key_configured: true,
+      config_version: 7,
       sender_domain: "reports.neuer.cn",
       sender_address: "security-daily@reports.neuer.cn",
     })
@@ -490,12 +507,72 @@ describe("安全日报页面", () => {
       .trigger("click")
     await flushPromises()
 
-    expect(api.updateSecurityDailyConfiguration).toHaveBeenCalledWith({
-      enabled: true,
-      recipients: ["ops@example.com", "security@example.com"],
-      resend_api_key: "re_ui_test",
-    })
+    await authorizeConfiguration(wrapper)
+    expect(api.updateSecurityDailyConfiguration).toHaveBeenCalledWith(
+      {
+        enabled: true,
+        recipients: ["ops@example.com", "security@example.com"],
+        resend_api_key: "re_ui_test",
+        expected_config_version: 7,
+      },
+      "synthetic-daily-grant",
+    )
+    expect(reauth.issueAdminStepUp).toHaveBeenCalledWith(
+      {
+        operation: "security_daily_config_update",
+        target_id: "default",
+        parameters: {
+          enabled: true,
+          recipients: ["ops@example.com", "security@example.com"],
+          api_key_action: "replace",
+          expected_config_version: 7,
+        },
+      },
+      "synthetic-password",
+    )
+    expect(JSON.stringify(reauth.issueAdminStepUp.mock.calls)).not.toContain("re_ui_test")
     wrapper.unmount()
+  })
+
+  it.each(["close", "session", "unmount"])("%s 后迟到授权不提交邮件 Key", async (kind) => {
+    let finish!: (token: string) => void
+    reauth.issueAdminStepUp.mockImplementationOnce(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve
+        }),
+    )
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    try {
+      await flushPromises()
+      await wrapper
+        .findAll("button")
+        .find((button) => button.text().includes("配置邮件"))!
+        .trigger("click")
+      await flushPromises()
+      await wrapper.find("input[type='password']").setValue("re_cancelled_secret")
+      await wrapper
+        .findAll("button")
+        .find((button) => button.text() === "保存")!
+        .trigger("click")
+      await flushPromises()
+      const controller = wrapper.findComponent(AdminStepUpDialog).props("controller")
+      controller.updatePassword("synthetic-password")
+      const pending = controller.submit()
+      await flushPromises()
+      expect(JSON.stringify(reauth.issueAdminStepUp.mock.calls)).not.toContain("re_cancelled_secret")
+      if (kind === "close") wrapper.findComponent(SecurityDailyConfigDialog).vm.$emit("update:modelValue", false)
+      else if (kind === "session") window.dispatchEvent(new Event(SESSION_CLEARING_EVENT))
+      else wrapper.unmount()
+      await flushPromises()
+      finish("late-daily-grant")
+      await pending
+      await flushPromises()
+      expect(api.updateSecurityDailyConfiguration).not.toHaveBeenCalled()
+      expect(controller.state.password).toBe("")
+    } finally {
+      wrapper.unmount()
+    }
   })
 
   it("收件人地址无效或大小写重复时阻止保存并给出提示", async () => {
@@ -546,11 +623,16 @@ describe("安全日报页面", () => {
       .find((button) => button.text() === "保存")!
       .trigger("click")
     await flushPromises()
-    expect(api.updateSecurityDailyConfiguration).toHaveBeenCalledWith({
-      enabled: true,
-      recipients: ["security-owner@example.com"],
-      resend_api_key: "",
-    })
+    await authorizeConfiguration(wrapper)
+    expect(api.updateSecurityDailyConfiguration).toHaveBeenCalledWith(
+      {
+        enabled: true,
+        recipients: ["security-owner@example.com"],
+        resend_api_key: "",
+        expected_config_version: 7,
+      },
+      "synthetic-daily-grant",
+    )
     wrapper.unmount()
   })
 
@@ -589,6 +671,7 @@ describe("安全日报页面", () => {
       enabled: false,
       recipients: [],
       resend_api_key_configured: false,
+      config_version: 7,
       sender_domain: "reports.neuer.cn",
       sender_address: "security-daily@reports.neuer.cn",
     })

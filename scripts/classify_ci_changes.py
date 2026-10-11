@@ -69,6 +69,8 @@ CI_CONTROL_SCRIPTS = {
     "scripts/check_gate_contracts.py",
 }
 RELEASE_CONTROL_EXACT = {
+    "scripts/release_builder.sh",
+    "scripts/canonicalize_sbom.py",
     ".github/workflows/release-gate.yml",
     "backend/Dockerfile",
     "deploy/docker-compose.yml",
@@ -177,6 +179,8 @@ def classify_paths(paths: Iterable[str]) -> Classification:
             path_fallback
             or path in RELEASE_CONTROL_EXACT
             or path.startswith("deploy/scripts/release_")
+            or path.startswith("deploy/vendor-apk/")
+            or path == "deploy/install-retained-apk.sh"
         )
 
     return Classification(

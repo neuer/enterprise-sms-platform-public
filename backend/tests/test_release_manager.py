@@ -6803,3 +6803,20 @@ def test_forged_worker_probe_binding_rolls_back(tmp_path: Path, field: str) -> N
     with pytest.raises(ReleaseManagerError, match="rolled_back"):
         manager.activate(manifest["release_id"])
     assert manager.status(manifest["release_id"])["state"] == "rolled_back"
+
+
+def test_development_release_compose_rechecks_explicit_port_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = tmp_path / ".env"
+    environment.write_text("ENVIRONMENT=development\n")
+    manager = ReleaseManager(root=tmp_path, release_root=tmp_path / "releases", mode="development")
+    monkeypatch.setenv("SMS_DEV_API_PORT", "0")
+    assert not any("development-api" in item for item in manager._compose())
+    monkeypatch.setenv("SMS_DEV_API_PORT", "1")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    override = str(tmp_path / "deploy/docker-compose.development-api.yml")
+    assert manager._compose().count(override) == 1
+    environment.write_text("ENVIRONMENT=test\n")
+    with pytest.raises(ReleaseManagerError, match="configuration rejected"):
+        manager._compose()

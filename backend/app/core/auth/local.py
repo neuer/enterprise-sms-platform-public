@@ -9,7 +9,9 @@ from app.core.auth.backends import (
     AuthenticatedIdentity,
     InvalidCredentials,
     ProviderCapacityUnavailable,
+    ProviderUnavailable,
 )
+from app.core.auth.department import valid_account_department
 from app.core.auth.identity import normalize_login_name
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 
@@ -22,9 +24,17 @@ class LocalAccountReader(Protocol):
         normalized_login_name: str,
     ) -> LocalAccountRecord | None: ...
 
+    async def upgrade_local_password_hash(
+        self, *, expected: LocalAccountRecord, password_hash: str,
+    ) -> bool: ...
+
 
 class PasswordVerifier(Protocol):
     def verify_or_dummy(self, encoded: str | None, password: str) -> bool: ...
+
+    def needs_rehash(self, encoded: str) -> bool: ...
+
+    def hash(self, password: str) -> str: ...
 
 
 class LocalPasswordProvider:
@@ -58,7 +68,10 @@ class LocalPasswordProvider:
             )
         except (ExecutorBackpressure, TimeoutError):
             raise ProviderCapacityUnavailable("本地认证容量暂不可用") from None
-        if record is None or not password_matches or not record.account.active:
+        if (
+            record is None or not password_matches or not record.account.active
+            or not valid_account_department(record.account.role, record.account.dept)
+        ):
             raise InvalidCredentials("用户名或密码错误")
         if record.account.must_change_password:
             current = await self.repository.find_local_account(normalized)
@@ -69,6 +82,7 @@ class LocalPasswordProvider:
                 or current.credential_version != record.credential_version
             ):
                 raise InvalidCredentials("用户名或密码错误")
+        await self._upgrade_password_hash(record, password)
         return AuthenticatedIdentity(
             provider_code="local",
             login_name=record.account.login_name,
@@ -78,3 +92,22 @@ class LocalPasswordProvider:
             groups=(),
             account=record.account,
         )
+
+    async def _upgrade_password_hash(self, record: LocalAccountRecord, password: str) -> None:
+        """成功校验后可选升级；线程只计算摘要，迟到结果没有数据库写入能力。"""
+
+        try:
+            if not self.hasher.needs_rehash(record.password_hash):
+                return
+            password_hash = await run_bounded(
+                self.hasher.hash, password, timeout_s=5, pool="auth_hash",
+            )
+        except (ExecutorBackpressure, TimeoutError):
+            # 参数维护不争用交互式登录池；容量不足时保留后续权威状态检查。
+            return
+        except Exception:
+            raise ProviderUnavailable("本地凭据维护暂不可用") from None
+        if not await self.repository.upgrade_local_password_hash(
+            expected=record, password_hash=password_hash,
+        ):
+            raise InvalidCredentials("用户名或密码错误")

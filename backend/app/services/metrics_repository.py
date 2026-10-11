@@ -145,6 +145,17 @@ class SqlMetricsRepository:
                 for row in lease_events_result.mappings()
             )
 
+            send_db_result = await connection.execute(
+                text(
+                    "SELECT phase,reason,count(reason) count FROM send_db_failure_event "
+                    "GROUP BY phase,reason ORDER BY phase,reason"
+                )
+            )
+            send_db_failures = tuple(
+                (str(row["phase"]), str(row["reason"]), max(0, int(row["count"])))
+                for row in send_db_result.mappings()
+            )
+
             frequency_result = await connection.execute(
                 text(
                     """
@@ -384,6 +395,7 @@ class SqlMetricsRepository:
                     ("export", max(0, int(counts.get("export_stalled", 0)))),
                 ),
                 worker_lease_events=lease_events,
+                send_db_failures=send_db_failures,
                 queue_depths=queue_depths,
                 raw_replay_eligibility=raw_replay_eligibility,
                 system_replay_audit_pending=max(0, int(pending_audit or 0)),

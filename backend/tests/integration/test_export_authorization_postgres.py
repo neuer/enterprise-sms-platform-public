@@ -27,6 +27,31 @@ def filters(scope_dept: str | None = "平台部") -> ExportFilterSet:
     return ExportFilterSet(None, None, None, None, None, None, (), scope_dept)
 
 
+async def authorized_download(repository, public_id, *, principal, ip, retention_days):
+    """旧 ACL 矩阵也通过生产最终授权；JWT/Redis 联合边界另有流式测试。"""
+    from app.core.auth.export_authorization import ExportDownloadAuthorization
+    from app.core.auth.users import SqlUserRepository
+
+    expected = await repository.precheck_downloadable(
+        public_id, principal=principal, retention_days=retention_days,
+    )
+    if expected is None:
+        return None
+    snapshot = await SqlUserRepository(repository.settings).load_security_session(
+        principal.account_id, principal.identity_id,
+    )
+
+    async def recheck(_connection):
+        pass
+
+    return await repository.get_downloadable_and_audit(
+        public_id, authorization=ExportDownloadAuthorization(
+            principal, snapshot.security_version, snapshot.provider_code,
+        ), expected=expected, check_file=lambda: None, recheck_session=recheck,
+        ip=ip, retention_days=retention_days,
+    )
+
+
 @pytest.mark.asyncio
 async def test_real_postgres_export_scope_matrix_and_download_audit_are_fail_closed() -> None:
     database_url = make_url(os.environ["EXPORT_AUTH_POSTGRES_DSN"])
@@ -223,14 +248,14 @@ async def test_real_postgres_export_scope_matrix_and_download_audit_are_fail_clo
         assert unresolved_admin is None
 
         with audit_principal_scope(principals[1]), correlation_scope(uuid4()):
-            allowed_download = await repository.get_downloadable_and_audit(
+            allowed_download = await authorized_download(repository,
                 task.public_id,
                 principal=principals[1],
                 ip="10.0.0.8",
                 retention_days=7,
             )
         with audit_principal_scope(principals[2]), correlation_scope(uuid4()):
-            denied_download = await repository.get_downloadable_and_audit(
+            denied_download = await authorized_download(repository,
                 task.public_id,
                 principal=principals[2],
                 ip="10.0.0.9",
@@ -322,7 +347,7 @@ async def test_real_postgres_export_scope_matrix_and_download_audit_are_fail_clo
                         historical.public_id, principal=current, retention_days=7,
                     )
                     with audit_principal_scope(current), correlation_scope(uuid4()):
-                        downloaded = await repository.get_downloadable_and_audit(
+                        downloaded = await authorized_download(repository,
                             historical.public_id, principal=current,
                             ip="127.0.0.1", retention_days=7,
                         )
@@ -350,6 +375,11 @@ async def test_real_postgres_export_scope_matrix_and_download_audit_are_fail_clo
                 )
             for role in ("admin", "approver"):
                 current = replace(principals[0], role=role)
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        text("UPDATE user_account SET role=:role,dept=:dept WHERE id=:id"),
+                        {"role": role, "dept": current.dept, "id": current.account_id},
+                    )
                 allowed = dataset == "message" or (dataset == "unmatched" and role == "admin")
                 assert (
                     await repository.get_accessible(
@@ -359,7 +389,7 @@ async def test_real_postgres_export_scope_matrix_and_download_audit_are_fail_clo
                 ) == allowed
                 with audit_principal_scope(current), correlation_scope(uuid4()):
                     assert (
-                        await repository.get_downloadable_and_audit(
+                        await authorized_download(repository,
                             task.public_id, principal=current, ip="127.0.0.1", retention_days=7
                         )
                         is not None

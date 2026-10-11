@@ -1,0 +1,4 @@
+# 仅由受控入口在显式 SMS_DEV_API_PORT=1 且 ENVIRONMENT=development 时加载。
+services:
+  api:
+    ports: ["127.0.0.1:${API_PORT:-8000}:8000"]

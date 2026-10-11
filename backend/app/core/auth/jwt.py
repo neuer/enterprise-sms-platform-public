@@ -19,6 +19,7 @@ import jwt
 
 from app.core.auth.accounts import PlatformAccount, SecurityPrincipal
 from app.core.auth.backends import InvalidCredentials, SessionStateUnavailable
+from app.core.auth.department import valid_account_department
 from app.core.auth.observability import (
     observe_access_only_refresh_block,
     observe_token_issue_denied,
@@ -375,7 +376,10 @@ def parse_jwt_keyring(secret: str) -> JwtKeyring:
     """解析裸 v1 key 或版本化 JSON keyring；新签发必须使用带 kid 的 key。"""
 
     if not secret.startswith("{"):
-        return JwtKeyring(1, {1: secret.encode("utf-8")})
+        key = secret.encode("utf-8")
+        if not secret.strip() or len(key) < 32:
+            raise ValueError("JWT key must contain at least 32 bytes of key material")
+        return JwtKeyring(1, {1: key})
     try:
         document = json.loads(secret)
     except json.JSONDecodeError as exc:
@@ -649,8 +653,6 @@ class JwtService:
         security_session_loader: (Callable[[int, int], Awaitable[PlatformAccount]] | None) = None,
         session_policy_loader: Callable[[], Awaitable[AuthSessionPolicy]] | None = None,
     ) -> None:
-        if len(secret) < 32:
-            raise ValueError("JWT secret must be at least 32 characters")
         if ttl.total_seconds() <= 0 or ttl > timedelta(minutes=15):
             raise ValueError("JWT access ttl must be between 1 second and 15 minutes")
         if refresh_ttl < timedelta(minutes=1) or refresh_ttl > timedelta(days=7):
@@ -1244,11 +1246,17 @@ class JwtService:
             session_mode=_read_session_mode(payload),
         )
 
-    async def _authoritative(self, claims: JwtClaims) -> JwtClaims:
-        if self.security_session_loader is None:
+    async def _authoritative(
+        self, claims: JwtClaims,
+        security_session_loader: Callable[[int, int], Awaitable[PlatformAccount]] | None = None,
+    ) -> JwtClaims:
+        if not valid_account_department(claims.role, claims.dept):
+            raise InvalidCredentials("无效或已吊销的令牌")
+        loader = security_session_loader or self.security_session_loader
+        if loader is None:
             return claims
         try:
-            current = await self.security_session_loader(
+            current = await loader(
                 claims.account_id,
                 claims.identity_id,
             )
@@ -1260,6 +1268,7 @@ class JwtService:
             raise SessionStateUnavailable("security session projection unavailable") from None
         if (
             not current.active
+            or not valid_account_department(current.role, current.dept)
             or current.account_id != claims.account_id
             or current.identity_id != claims.identity_id
             or current.provider_code != claims.provider_code
@@ -1327,7 +1336,11 @@ class JwtService:
             raise InvalidCredentials("无效或已吊销的令牌")
         raise SessionStateUnavailable("JWT revocation state unavailable")
 
-    async def verify(self, token: str) -> JwtClaims:
+    async def verify(
+        self, token: str, *,
+        security_session_loader: Callable[[int, int], Awaitable[PlatformAccount]] | None = None,
+    ) -> JwtClaims:
+        """验证签名、期限及全部撤销状态；事务内可复用受信任的权威投影读取器。"""
         payload = self._decode(token)
         if payload["token_type"] != ACCESS_TOKEN_TYPE:
             raise InvalidCredentials("无效或已吊销的令牌")
@@ -1343,7 +1356,7 @@ class JwtService:
             raise SessionStateUnavailable("JWT revocation state unavailable") from None
         await self._ensure_session_not_revoked(claims)
         await self._ensure_account_not_revoked(payload, claims)
-        return await self._authoritative(claims)
+        return await self._authoritative(claims, security_session_loader)
 
     @staticmethod
     def _redis_text(value: object) -> str:

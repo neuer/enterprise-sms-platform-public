@@ -5,6 +5,9 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.services.send_db_errors import SendCasLost, send_db_reason
+from app.services.send_db_events import observe_send_db_failure
+from app.services.send_locks import lock_send_chunks, lock_send_context
 from app.services.vendor_test_budget import (
     SubmissionClaimStatus,
     settle_live_test_attempt,
@@ -49,74 +52,17 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                context = await lock_send_context(connection, chunk_id)
+                if context is None:
+                    return InvokeClaim(InvokeClaimKind.DENIED, reason="chunk_missing")
+                chunk, history = context.chunk, context.attempts
+                previous = next(
+                    (row for row in history if int(row["id"]) == previous_attempt_id), None
+                )
                 if bool(getattr(self.settings, "vendor_live_test", False)):
                     payload = await self._payload(connection, chunk_id)
                     if payload.denied_recipient_count:
                         return InvokeClaim(InvokeClaimKind.DENIED, reason="recipient_denied")
-                previous = (
-                    (
-                        await connection.execute(
-                            text(
-                                """
-                            SELECT id, chunk_id, vendor_id, generation, outcome,
-                                   safe_to_failover, vendor_code
-                            FROM sms_vendor_attempt
-                            WHERE id=:id
-                            FOR UPDATE
-                            """
-                            ),
-                            {"id": previous_attempt_id},
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                chunk = (
-                    (
-                        await connection.execute(
-                            text(
-                                """
-                            SELECT c.id, c.status, c.batch_id, c.route_generation,
-                                   c.next_vendor, c.route_policy_version,
-                                   c.retry_not_before, c.vendor_attempt_count,
-                                   b.category, b.status AS batch_status
-                            FROM sms_chunk c
-                            JOIN sms_batch b ON b.id=c.batch_id
-                            WHERE c.id=:id
-                            FOR UPDATE OF c
-                            """
-                            ),
-                            {"id": chunk_id},
-                        )
-                    )
-                    .mappings()
-                    .one_or_none()
-                )
-                if chunk is None:
-                    return InvokeClaim(InvokeClaimKind.DENIED, reason="chunk_missing")
-                await connection.execute(
-                    text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
-                    {"id": int(chunk["batch_id"])},
-                )
-                history = (
-                    (
-                        await connection.execute(
-                            text(
-                                """
-                            SELECT id, vendor_id, generation, outcome,
-                                   safe_to_failover, vendor_code
-                            FROM sms_vendor_attempt
-                            WHERE chunk_id=:chunk_id
-                            ORDER BY generation
-                            FOR UPDATE
-                            """
-                            ),
-                            {"chunk_id": chunk_id},
-                        )
-                    )
-                    .mappings()
-                    .all()
-                )
                 previous_attempt = None
                 if previous is not None:
                     previous_attempt = VendorAttempt(
@@ -253,7 +199,7 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                     },
                 )
                 if claimed.scalar_one_or_none() is None:
-                    raise RuntimeError("failover claim lost cas")
+                    raise SendCasLost("cas_lost")
                 return InvokeClaim(
                     InvokeClaimKind.AUTHORIZED,
                     authorization=InvokeAuthorization(
@@ -265,8 +211,18 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                     ),
                     reason="authorized",
                 )
-        except Exception:
-            return InvokeClaim(InvokeClaimKind.DENIED, reason="claim_failed")
+        except Exception as error:
+            reason = send_db_reason(error)
+            await observe_send_db_failure(
+                self.settings,
+                phase="claim",
+                reason=reason,
+                chunk_id=chunk_id,
+                attempt_id=previous_attempt_id,
+                generation=expected_route_generation,
+                alert=True,
+            )
+            return InvokeClaim(InvokeClaimKind.DENIED, reason=reason)
         finally:
             await engine.dispose()
 
@@ -351,25 +307,31 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
             .mappings()
             .all()
         )
+        await lock_send_chunks(connection, [int(row["id"]) for row in rows])
         repaired = 0
-        for row in rows:
-            chunk_id = int(row["id"])
-            last_id = int(row["attempt_id"])
-            await connection.execute(
-                text("SELECT id FROM sms_vendor_attempt WHERE id=:id FOR UPDATE"),
-                {"id": last_id},
+        for candidate in rows:
+            chunk_id = int(candidate["id"])
+            context = await lock_send_context(connection, chunk_id)
+            if context is None or context.chunk["batch_status"] not in {"queued", "sending"}:
+                continue
+            row = context.chunk
+            if not context.attempts or int(context.attempts[-1]["id"]) != int(
+                candidate["attempt_id"]
+            ):
+                continue
+            last_id = int(context.attempts[-1]["id"])
+            attempts = tuple(
+                VendorAttempt(
+                    str(item["vendor_id"]),
+                    int(item["generation"]),
+                    str(item["outcome"]),
+                    bool(item["safe_to_failover"]),
+                    int(item["vendor_code"]) if item["vendor_code"] is not None else None,
+                )
+                for item in context.attempts
             )
-            await connection.execute(
-                text("SELECT id FROM sms_chunk WHERE id=:id FOR UPDATE"),
-                {"id": chunk_id},
-            )
-            await connection.execute(
-                text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
-                {"id": int(row["batch_id"])},
-            )
-            attempts = await self._load_attempts_for_update(connection, chunk_id)
             if not historical_safe_reject_repairable(
-                chunk_status="submitting",
+                chunk_status=str(row["status"]),
                 attempts=attempts,
             ):
                 continue
@@ -379,10 +341,10 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                 previous_attempt_id=int(last_id),
                 records=self.registry,
                 adapter_ids=self.adapter_ids,
-                policy_version=int(row["route_policy_version"] or 1),
+                policy_version=int(row["batch_policy_version"] or 1),
             )
             if persisted.action is NextAction.FAILOVER_PENDING:
-                await connection.execute(
+                changed = await connection.execute(
                     text(
                         """
                         UPDATE sms_chunk SET
@@ -395,7 +357,7 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                           submitting_since=NULL,
                           retry_not_before=now(),
                           vendor_msg='repaired_legacy_safe_reject'
-                        WHERE id=:id AND status='submitting'
+                        WHERE id=:id AND status='submitting' RETURNING id
                         """
                     ),
                     {
@@ -406,6 +368,8 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                         "attempt_id": last_id,
                     },
                 )
+                if changed.scalar_one_or_none() is None:
+                    continue
                 await self._enqueue_chunk_ready(
                     connection,
                     [chunk_id],
@@ -426,8 +390,9 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                     {"id": chunk_id},
                 )
                 batch_id = failed.scalar_one_or_none()
-                if batch_id is not None:
-                    await settle_live_test_attempt(connection, chunk_id, "released")
-                    await self._finalize_failed_messages(connection, chunk_id, int(batch_id))
+                if batch_id is None:
+                    continue
+                await settle_live_test_attempt(connection, chunk_id, "released")
+                await self._finalize_failed_messages(connection, chunk_id, int(batch_id))
             repaired += 1
         return repaired

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -10,12 +11,15 @@ import pytest
 
 from app.core.audit import audit_uuid_ref
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.admin_authorization import AdminAuthorization, require_admin_intent
+from app.services.admin_step_up import admin_intent
 from app.services.security_daily import (
     DeliveryStatus,
     SecurityDailyConfigurationUpdate,
     SecurityDailyControlResult,
     SecurityDailyReportRecord,
 )
+from app.services.security_daily.contract import security_daily_write_parameters
 from app.services.security_daily_repository import SqlSecurityDailyRepository
 from app.settings import Settings
 
@@ -185,9 +189,7 @@ async def test_audit_evidence_uses_full_day_and_consistent_self_event_filter() -
     assert evidence.events[0].time == "2026-08-01 23:59:59"
     expected_end = datetime(2026, 8, 2, 0, tzinfo=SHANGHAI)
     assert all(params["end"] == expected_end for _, params in connection.calls)
-    assert all(
-        "action NOT LIKE 'security_daily_%'" in sql for sql, _ in connection.calls
-    )
+    assert all("action NOT LIKE 'security_daily_%'" in sql for sql, _ in connection.calls)
 
 
 @pytest.mark.asyncio
@@ -345,9 +347,7 @@ async def test_superseded_request_result_cannot_overwrite_current_report(
     )
     assert request_update["state"] == "sent"
     report_update = next(
-        (sql, params)
-        for sql, params in connection.calls
-        if "UPDATE security_daily_report" in sql
+        (sql, params) for sql, params in connection.calls if "UPDATE security_daily_report" in sql
     )
     assert "delivery_generation" in report_update[0]
     assert report_update[1]["delivery_generation"] == 1
@@ -409,16 +409,43 @@ async def test_writer_race_failed_request_still_accepts_mailer_sent(
 
     assert any("UPDATE security_daily_report" in sql for sql, _ in connection.calls)
     report_update = next(
-        params
-        for sql, params in connection.calls
-        if "UPDATE security_daily_report" in sql
+        params for sql, params in connection.calls if "UPDATE security_daily_report" in sql
     )
     assert report_update["delivery_status"] == "sent"
 
 
 @pytest.mark.asyncio
-async def test_update_configuration_audits_publish_phases_without_secrets() -> None:
-    repo, connection = repository([FakeResult() for _ in range(20)])
+async def test_update_configuration_audits_publish_phases_without_secrets(monkeypatch) -> None:
+    repo, connection = repository(
+        [
+            FakeResult(),
+            FakeResult(),
+            FakeResult([{"value": "1"}]),
+            *[FakeResult() for _ in range(20)],
+        ]
+    )
+
+    @asynccontextmanager
+    async def accepted(_settings, authorization, **intent):
+        # 本测试仅核对审计载荷；真实认证 SQL 锁另由集成测试覆盖。
+        require_admin_intent(authorization, **intent)
+        yield None
+
+    monkeypatch.setattr("app.services.security_daily_repository.hold_admin_authorization", accepted)
+    update = SecurityDailyConfigurationUpdate(
+        True, ("security-owner@example.com",), "re_secret_key"
+    )
+    grant = AdminAuthorization(
+        1,
+        2,
+        1,
+        "local",
+        admin_intent(
+            "security_daily_config_update",
+            "default",
+            security_daily_write_parameters(update, 1),
+        ),
+    )
 
     configuration = await repo.update_configuration(
         SecurityDailyConfigurationUpdate(
@@ -428,9 +455,11 @@ async def test_update_configuration_audits_publish_phases_without_secrets() -> N
         ),
         principal=SecurityPrincipal(1, 2, "admin", "security", "admin"),
         ip="127.0.0.1",
+        authorization=grant,
+        expected_config_version=1,
     )
 
-    assert configuration.config_version == 1
+    assert configuration.config_version == 2
     audits = [
         json.loads(params["after"])
         for sql, params in connection.calls
@@ -443,12 +472,9 @@ async def test_update_configuration_audits_publish_phases_without_secrets() -> N
     operation_id = next(
         params["value"]
         for sql, params in connection.calls
-        if "INSERT INTO sys_config" in sql
-        and params["key"] == "security_daily_config_operation_id"
+        if "INSERT INTO sys_config" in sql and params["key"] == "security_daily_config_operation_id"
     )
-    assert [item["operation_ref"] for item in audits] == [
-        audit_uuid_ref(UUID(operation_id))
-    ] * 2
+    assert [item["operation_ref"] for item in audits] == [audit_uuid_ref(UUID(operation_id))] * 2
     assert operation_id not in encoded
     assert not any(character.isdigit() for character in audits[0]["operation_ref"])
     assert all("recipient_count" in item for item in audits)
@@ -535,17 +561,14 @@ async def test_request_delivery_does_not_supersede_claimed_request() -> None:
         ]
     )
 
-    request = await repo.request_delivery(
-        report(), "send", system=True, control_evidence="claimed"
-    )
+    request = await repo.request_delivery(report(), "send", system=True, control_evidence="claimed")
 
     assert request.request_id == request_id
     assert request.config_version == 2
     assert request.delivery_generation == 1
     assert all("SET state='failed'" not in sql for sql, _ in connection.calls)
     assert all(
-        "INSERT INTO security_daily_delivery_request" not in sql
-        for sql, _ in connection.calls
+        "INSERT INTO security_daily_delivery_request" not in sql for sql, _ in connection.calls
     )
 
 

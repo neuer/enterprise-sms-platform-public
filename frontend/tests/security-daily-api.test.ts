@@ -81,6 +81,7 @@ describe("安全日报 API client", () => {
             enabled: true,
             recipients: ["ops@example.com"],
             resend_api_key_configured: true,
+            config_version: 7,
             sender_domain: "reports.neuer.cn",
             sender_address: "security-daily@reports.neuer.cn",
           }),
@@ -93,6 +94,7 @@ describe("安全日报 API client", () => {
             enabled: true,
             recipients: ["ops@example.com"],
             resend_api_key_configured: true,
+            config_version: 7,
             sender_domain: "reports.neuer.cn",
             sender_address: "security-daily@reports.neuer.cn",
           }),
@@ -102,18 +104,24 @@ describe("安全日报 API client", () => {
     vi.stubGlobal("fetch", fetch)
 
     await getSecurityDailyConfiguration()
-    await updateSecurityDailyConfiguration({
-      enabled: true,
-      recipients: ["ops@example.com"],
-      resend_api_key: "re_ui_test",
-    })
+    await updateSecurityDailyConfiguration(
+      {
+        enabled: true,
+        recipients: ["ops@example.com"],
+        resend_api_key: "re_ui_test",
+        expected_config_version: 7,
+      },
+      "synthetic-daily-grant",
+    )
 
     expect(fetch.mock.calls[0][0]).toBe("/api/v1/web/admin/security-daily/config")
     expect(fetch.mock.calls[1][1].method).toBe("PUT")
+    expect(new Headers(fetch.mock.calls[1][1].headers).get("X-Admin-Step-Up")).toBe("synthetic-daily-grant")
     expect(JSON.parse(fetch.mock.calls[1][1].body as string)).toEqual({
       enabled: true,
       recipients: ["ops@example.com"],
       resend_api_key: "re_ui_test",
+      expected_config_version: 7,
     })
   })
 })

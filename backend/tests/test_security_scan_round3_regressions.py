@@ -21,10 +21,8 @@ from tests.test_blacklist import FakeRepository as FakeBlacklistRepository
 from tests.test_blacklist import crypto as blacklist_crypto
 from tests.test_send_pipeline import (
     ADMIN,
-    FakeFrequency,
     FakeIdempotency,
     FakePublisher,
-    FakeQuota,
     FakeStore,
     FakeUsageLedger,
     crypto,
@@ -39,8 +37,8 @@ async def test_web_usage_reservation_key_isolated_by_stable_principal() -> None:
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
+
+
         publisher=FakePublisher(),
         usage_ledger=ledger,
         config=PipelineConfig(),

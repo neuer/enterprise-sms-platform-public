@@ -21,3 +21,20 @@
 - 接管后，旧 callback/export lease 的完成更新受影响行数必须为零，并产生 `fencing_miss`。
 - 重复 callback 的 body 与 `X-Sms-Event-Id` 必须使用同一稳定事件 UUID。
 - 两个 export lease 的 `.part`/`.smsx` 路径必须不同；清理旧租约文件后，新租约完成文件仍存在且数据库只引用新路径。
+
+## Report/Reply 轮询 Redis 租约
+
+`HeartbeatLock` 的调用方仅为 `tasks/poll_report.py` 和 `tasks/poll_reply.py`。
+每次成功获取建立单调截止时间；续租从请求发出前计算新期限，超时、拒绝或 owner 丢失
+立即固定本次不确定状态。迟到成功不能解除该状态；只有新一次成功 acquire 可以重置。
+安全点顺序为：检查 → GetReport/GetReply → 原始响应加密捕获/提交 → 检查 → 解析。
+续租故障不会取消正在读取或持久化的响应；raw 磁盘和 DB 同时异常仍走既有隔离恢复合同。
+
+首次故障写入 `worker_lease_event`，`task_kind=poll_report|poll_reply`、`task_id=1`
+表示单例轮询源，独立随机 `lease_id` 只是观测引用，不是 Redis token。
+`sms_worker_lease_events{task_kind,event}` 汇总所有 worker 的数据库事实；event 只允许
+`extend_rejected`、`owner_lost`、`renewal_unavailable`、`release_unavailable`、
+`deadline_elapsed`。每次持有最多一次主告警，持久化计数失败保留安全日志，不能阻断 raw 捕获。
+成功重新获取说明该次 acquire 成功，不推断之前一定被接管。旧 owner 释放仍由 Redis
+原子 token 比较保护。这是并发抑制和安全点退出，不是严格分布式单主或 exactly-once；
+重复响应的最终幂等事实继续由 PostgreSQL 约束保证。

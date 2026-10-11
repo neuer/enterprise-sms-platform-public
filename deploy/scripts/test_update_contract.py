@@ -166,6 +166,7 @@ _VENDOR_LIVE_PROTECTED_EXACT = (
             "backend/app/services/vendor_test_step_up.py",
             "backend/app/services/vendor_test_uat.py",
             "backend/app/tasks/send_repository.py",
+            "backend/app/tasks/send_repository_contracts.py",
             "backend/app/tasks/send_repository_attempt.py",
             "backend/app/tasks/send_repository_failover.py",
             "backend/app/tasks/send_repository_payload.py",

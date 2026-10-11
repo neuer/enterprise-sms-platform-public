@@ -6,7 +6,7 @@ import secrets
 from dataclasses import dataclass, field
 from typing import Final
 
-from argon2 import PasswordHasher, Type
+from argon2 import PasswordHasher, Type, extract_parameters
 from argon2.exceptions import InvalidHashError, VerificationError
 
 from app.core.auth.identity import normalize_login_name
@@ -112,10 +112,22 @@ class LocalPasswordHasher:
             return False
 
     def needs_rehash(self, encoded: str) -> bool:
+        """仅升级可逐项比较的旧参数，避免把较强或不可比摘要降到固定配置。"""
+
         try:
-            return self._hasher.check_needs_rehash(encoded)
+            parameters = extract_parameters(encoded)
         except InvalidHashError:
-            return True
+            return False
+        target = self._hasher
+        if parameters.version > 19 or any((
+            parameters.memory_cost > target.memory_cost,
+            parameters.time_cost > target.time_cost,
+            parameters.parallelism > target.parallelism,
+            parameters.hash_len > target.hash_len,
+            parameters.salt_len > target.salt_len,
+        )):
+            return False
+        return target.check_needs_rehash(encoded)
 
 
 def generate_temporary_password(

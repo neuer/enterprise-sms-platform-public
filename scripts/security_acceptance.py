@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from admin_write_client import AdminWriteClient
 from runtime_credentials import read_secret_file
 
 TAB_ID = "00000000000000000000000000000001"
@@ -79,6 +80,7 @@ class HttpClient(Protocol):
         *,
         payload: object = None,
         token: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> HttpResponse: ...
 
 
@@ -103,8 +105,9 @@ class StdlibHttpClient:
         *,
         payload: object = None,
         token: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> HttpResponse:
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", **(headers or {})}
         body = None
         if payload is not None:
             body = json.dumps(payload, ensure_ascii=False).encode()
@@ -317,17 +320,14 @@ class AcceptanceSuite:
             raise AcceptanceFailure("SEC-03 filter injection changed scoped result")
         checks.append("SEC-03 SQL injection boundaries")
 
-        ssrf = self.http.request(
-            "POST",
-            "/api/v1/web/admin/apps",
-            payload={
-                "name": "security-ssrf-probe",
-                "dept": "安全验收",
-                "callback_url": "http://127.0.0.1:9028/_mock/callback",
-            },
-            token=admin_token,
-        )
-        self._expect(ssrf, 400, "SEC-04")
+        ssrf = AdminWriteClient(
+            self.http, admin_token, self.mock_password, failure=AcceptanceFailure, label="SEC-04",
+        ).create_app({
+            "name": "security-ssrf-probe",
+            "dept": "安全验收",
+            "callback_url": "http://127.0.0.1:9028/_mock/callback",
+        })
+        self._expect_error(ssrf, 400, "INVALID_PARAM", "SEC-04")
         checks.append("SEC-04 callback SSRF save boundary")
 
         if self._database_count(AUDIT_SQL, "SEC-05") != 0:

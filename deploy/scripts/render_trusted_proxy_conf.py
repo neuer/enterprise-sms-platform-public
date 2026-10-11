@@ -87,6 +87,17 @@ def render(mode: str, cidrs: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def ensure_output_parent(directory: Path) -> None:
+    """仅设置本次新建目录权限，不修改 /tmp 等已存在的共享父目录。"""
+    try:
+        directory.mkdir(parents=True, mode=0o755)
+    except FileExistsError:
+        if not directory.is_dir():
+            raise
+    else:
+        directory.chmod(0o755)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", required=True)
@@ -101,8 +112,7 @@ def main() -> int:
         if arguments.output is None:
             parser.error("--output is required unless --validate-only is used")
         target = Path(arguments.output)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.parent.chmod(0o755)
+        ensure_output_parent(target.parent)
         descriptor, temporary = tempfile.mkstemp(
             prefix=f".{target.name}.",
             dir=str(target.parent),

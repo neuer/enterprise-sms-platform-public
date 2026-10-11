@@ -124,7 +124,7 @@ class SqlUncertainRepository:
                         FROM sms_chunk c
                         JOIN sms_batch b ON b.id=c.batch_id
                         WHERE c.id=:chunk_id AND c.status='uncertain'
-                        FOR UPDATE OF c, b
+                        FOR UPDATE OF c
                         """
                     ),
                     {"chunk_id": chunk.chunk_id},
@@ -133,6 +133,10 @@ class SqlUncertainRepository:
                 if row is None:
                     return
                 batch_id = int(row["batch_id"])
+                await connection.execute(
+                    text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
+                    {"id": batch_id},
+                )
                 moved = await connection.execute(
                     text(
                         """

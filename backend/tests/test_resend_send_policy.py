@@ -14,11 +14,10 @@ from app.services.uncertain_resolution import (
     _row,
 )
 from tests.test_send_pipeline import (
-    FakeFrequency,
     FakeIdempotency,
     FakePublisher,
-    FakeQuota,
     FakeStore,
+    FakeUsageLedger,
     crypto,
 )
 from tests.test_uncertain_resolution import FakeConnection, FakeResult, _resolution
@@ -68,10 +67,10 @@ async def test_resend_policy_reaches_actual_pipeline_cost_and_frequency() -> Non
 
     app = await source_context()
     limiter = Limiter()
-    frequency = FakeFrequency()
-    pipeline = SendPipeline(
+    ledger = FakeUsageLedger()
+    pipeline = SendPipeline(usage_ledger=ledger,
         store=FakeStore(), idempotency=FakeIdempotency(), crypto=crypto(),
-        frequency=frequency, quota=FakeQuota(), publisher=FakePublisher(),
+          publisher=FakePublisher(),
         config=PipelineConfig(), acceptance_limiter=limiter,  # type: ignore[arg-type]
     )
     result = await pipeline.accept(app, SendRequest("verify", ["13800138000"],
@@ -79,7 +78,7 @@ async def test_resend_policy_reaches_actual_pipeline_cost_and_frequency() -> Non
     assert not result.idempotent
     assert limiter.costs[0]["recipient_limit"] == 2
     assert limiter.costs[0]["segment_limit"] == 3
-    limits = frequency.values[0]["limits"]
+    limits = ledger.frequency[0]["limits"]
     assert limits.verify_per_minute == 2
     assert limits.verify_per_day == 3
     assert limits.market_per_day == 4
@@ -89,9 +88,9 @@ async def test_resend_policy_reaches_actual_pipeline_cost_and_frequency() -> Non
 @pytest.mark.parametrize("allowed", [True, False])
 async def test_loaded_market_authorization_changes_real_gate(allowed: bool) -> None:
     app = await source_context(allow_market_api_bulk=allowed)
-    pipeline = SendPipeline(
+    pipeline = SendPipeline(usage_ledger=FakeUsageLedger(),
         store=FakeStore(), idempotency=FakeIdempotency(), crypto=crypto(),
-        frequency=FakeFrequency(), quota=FakeQuota(), publisher=FakePublisher(),
+          publisher=FakePublisher(),
         config=PipelineConfig(market_approval_threshold=2),
     )
     request = SendRequest("market", ["13800138000"], content="活动通知")

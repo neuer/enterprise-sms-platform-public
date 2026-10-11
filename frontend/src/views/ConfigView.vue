@@ -4,7 +4,7 @@ import { useAdminStepUp } from "../composables/useAdminStepUp"
 const adminStepUp = useAdminStepUp()
 import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
-import { computed, nextTick, onMounted, reactive, ref } from "vue"
+import { computed, nextTick, onMounted, onScopeDispose, reactive, ref } from "vue"
 
 import {
   activateAuthProvider,
@@ -26,12 +26,13 @@ import EmptyState from "../components/EmptyState.vue"
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import VendorTestConsole from "../components/VendorTestConsole.vue"
 import { useConfirmActions } from "../lib/confirm"
-const { confirmAction, confirmAuditedAction } = useConfirmActions()
+const { confirmAction, confirmAuditedAction, captureCurrent } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { ROLE_LABELS } from "../lib/labels"
 import { formatDateTime } from "../lib/time"
 import { useLatestRead } from "../composables/useLatestRead"
 import { useMobileLayout } from "../composables/useMobileLayout"
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 import { useSessionStore } from "../stores/session"
 
 type ConfigTab = "runtime" | "providers" | "vendor-test"
@@ -258,33 +259,77 @@ function markProviderDirty(): void {
 const changes = computed<ConfigUpdate[]>(() => {
   return configs.value
     .filter((item) => (item.sensitive ? touched.has(item.key) : values[item.key] !== original[item.key]))
-    .map((item) => ({ key: item.key, value: values[item.key] }))
+    .map((item) => ({ key: item.key, value: values[item.key], expected_updated_at: item.updated_at ?? "" }))
+})
+
+function clearConfigSecrets(): void {
+  for (const item of configs.value) {
+    if (item.sensitive) {
+      values[item.key] = ""
+      touched.delete(item.key)
+    }
+  }
+}
+window.addEventListener(SESSION_CLEARING_EVENT, clearConfigSecrets)
+onScopeDispose(() => {
+  window.removeEventListener(SESSION_CLEARING_EVENT, clearConfigSecrets)
+  clearConfigSecrets()
 })
 
 async function save(): Promise<void> {
-  const items = changes.value
+  if (saving.value) return
+  const items = changes.value.map((item) => ({ ...item }))
   if (!items.length) {
     ElMessage.info("没有待保存的变更")
     return
   }
-  const restartKeys = new Set(configs.value.filter((item) => item.beat_restart_required).map((item) => item.key))
-  if (items.some((item) => restartKeys.has(item.key))) {
-    const confirmed = await confirmAuditedAction({
-      title: "确认调度参数变更",
-      isCurrent: () => JSON.stringify(changes.value) === JSON.stringify(items),
-      body: "待保存项包含 beat 调度参数；保存后必须重启 beat 与 API 容器才会生效，运行中不会动态热更。",
-      auditNote: "每个变更键的旧值与新值将写入审计日志。",
-      confirmText: "保存变更",
-    })
-    if (!confirmed) return
+  if (items.some((item) => !item.expected_updated_at)) {
+    ElMessage.error("配置版本缺失，请刷新后重新编辑")
+    return
   }
+  const sensitiveKeys = new Set(configs.value.filter((item) => item.sensitive).map((item) => item.key))
+  const restartKeys = new Set(configs.value.filter((item) => item.beat_restart_required).map((item) => item.key))
+  const isCurrent = captureCurrent()
   saving.value = true
   try {
-    hydrate(await updateConfigs(items))
+    if (items.some((item) => restartKeys.has(item.key))) {
+      const confirmed = await confirmAuditedAction({
+        title: "确认调度参数变更",
+        isCurrent: () => JSON.stringify(changes.value) === JSON.stringify(items),
+        body: "待保存项包含 beat 调度参数；保存后必须重启 beat 与 API 容器才会生效，运行中不会动态热更。",
+        auditNote: "每个变更键的旧值与新值将写入审计日志。",
+        confirmText: "保存变更",
+      })
+      if (!confirmed) return
+    }
+    const binding = items.map((item) => ({
+      key: item.key,
+      expected_updated_at: item.expected_updated_at,
+      ...(sensitiveKeys.has(item.key)
+        ? { secret_action: item.value == null ? "keep" : item.value ? "replace" : "clear" }
+        : { value: item.value }),
+    }))
+    const result = await adminStepUp.run(
+      {
+        operation: "config_update",
+        target_id: "default",
+        parameters: { items: binding },
+      },
+      `保存 ${items.length} 项系统参数`,
+      (token) =>
+        updateConfigs(
+          items.map((item) => ({ ...item })),
+          token,
+        ),
+    )
+    if (!result || !isCurrent()) return
+    hydrate(result)
     ElMessage.success("系统参数已更新 · 本次操作已记入审计")
   } catch (error) {
-    ElMessage.error(errorText(error, "参数保存失败"))
+    if (isCurrent()) ElMessage.error(errorText(error, "参数保存失败"))
   } finally {
+    for (const item of items) if (sensitiveKeys.has(item.key)) item.value = null
+    clearConfigSecrets()
     saving.value = false
   }
 }
@@ -769,6 +814,7 @@ onMounted(() => {
             >
             <p>{{ item.description || "未提供参数说明" }}</p>
             <el-select
+              :disabled="saving"
               v-if="item.value_type === 'bool'"
               v-model="values[item.key]"
               :data-testid="`config-${item.key}`"
@@ -777,6 +823,7 @@ onMounted(() => {
               ><el-option label="开启 · true" value="true" /><el-option label="关闭 · false" value="false"
             /></el-select>
             <el-input-number
+              :disabled="saving"
               v-else-if="item.value_type === 'int'"
               :model-value="values[item.key] === '' ? undefined : Number(values[item.key])"
               :data-testid="`config-${item.key}`"
@@ -789,6 +836,7 @@ onMounted(() => {
               @update:model-value="(value: number | undefined) => setNumber(item.key, value)"
             />
             <el-input
+              :disabled="saving"
               v-else
               v-model="values[item.key]"
               :data-testid="`config-${item.key}`"
@@ -818,6 +866,7 @@ onMounted(() => {
               <template v-if="isPendingClear(item)">
                 <small class="pending-clear-badge">待清除 · 保存后该值置空</small>
                 <el-button
+                  :disabled="saving"
                   link
                   type="primary"
                   :data-testid="`config-undo-clear-${item.key}`"
@@ -829,7 +878,7 @@ onMounted(() => {
                 <small>已配置，值不回显</small>
                 <!-- 多语句内联处理器依赖分号分隔：prettier 的 semi:false 折行会产生非法 Vue 表达式，故豁免格式化 -->
                 <!-- prettier-ignore -->
-                <el-button link type="danger" @click="values[item.key] = ''; mark(item.key)">清除配置</el-button>
+                <el-button :disabled="saving" link type="danger" @click="values[item.key] = ''; mark(item.key)">清除配置</el-button>
               </template>
             </div>
             <small v-else-if="item.sensitive">未配置 · 当前 log-sink</small>
@@ -839,6 +888,7 @@ onMounted(() => {
               >
               <small v-else></small>
               <el-button
+                :disabled="saving"
                 v-if="isModified(item)"
                 link
                 type="primary"

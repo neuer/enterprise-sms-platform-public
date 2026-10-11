@@ -35,7 +35,7 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
     )
     assert (
         "FROM python:3.12-alpine@sha256:"
-        "b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a" in backend
+        "1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4" in backend
     )
     assert "uv sync --frozen --no-dev" in backend
     assert backend.count("RUN python -m pip uninstall --yes pip") == 2
@@ -48,29 +48,17 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
     assert "USER 101:101" in frontend
     assert (
         "FROM nginx:stable-alpine@sha256:"
-        "dc5069ad14f19660b141b21236140b91656bf89bbc3e2417c70ae650cd66104c" in frontend
+        "0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94" in frontend
     )
-    for package in ("libcrypto3=3.5.8-r0", "libssl3=3.5.8-r0", "libuuid=2.42.3-r1"):
-        assert package in backend
-    for package in (
-        "c-ares=1.34.8-r0",
-        "curl=8.22.0-r0",
-        "libcrypto3=3.5.8-r0",
-        "libcurl=8.22.0-r0",
-        "libuuid=2.42.3-r1",
-        "libexpat=2.8.4-r0",
-        "libssl3=3.5.8-r0",
-    ):
-        assert package in frontend
+    assert "RUN apk add" not in backend
+    for dockerfile in (frontend, postgres, redis):
+        assert "RUN --network=none --mount=type=bind" in dockerfile
+        assert "sh /install-retained-apk.sh" in dockerfile
+        assert "RUN apk add" not in dockerfile
     assert (
         "FROM postgres:16-alpine@sha256:"
-        "cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685" in postgres
+        "721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea" in postgres
     )
-    assert "apk add --no-cache --upgrade" in postgres
-    assert "libcrypto3=3.5.8-r0" in postgres
-    assert "libssl3=3.5.8-r0" in postgres
-    assert "libuuid=2.42.3-r1" in postgres
-    assert "su-exec=0.3-r0" in postgres
     assert "rm /usr/local/bin/gosu" in postgres
     assert "ln -s /sbin/su-exec /usr/local/bin/gosu" in postgres
     assert "PG_VERSION=16.15" in postgres
@@ -89,7 +77,7 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
         assert metadata in postgres
     assert (
         "FROM redis:7-alpine@sha256:"
-        "ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf" in redis
+        "858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499" in redis
     )
     assert "USER 999:1000" in redis
 
@@ -171,9 +159,7 @@ def test_runtime_services_never_mount_owner_password() -> None:
         {"source": "postgres_db_owner_password", "target": "db_owner_password"}
     ]
     provision = services["db-role-provision"]
-    assert provision["depends_on"] == {
-        "postgres": {"condition": "service_healthy"}
-    }
+    assert provision["depends_on"] == {"postgres": {"condition": "service_healthy"}}
     assert {item["target"] for item in provision["secrets"]} == {
         "db_owner_password",
         "db_auth_password",
@@ -185,9 +171,7 @@ def test_runtime_services_never_mount_owner_password() -> None:
         "db_metrics_password",
     }
     migrate = services["migrate"]
-    assert migrate["environment"]["DB_OWNER_PASSWORD_FILE"] == (
-        "/run/secrets/db_owner_password"
-    )
+    assert migrate["environment"]["DB_OWNER_PASSWORD_FILE"] == ("/run/secrets/db_owner_password")
     assert migrate["environment"]["SMS_COMPONENT"] == "migrate"
     assert migrate["secrets"] == [
         {"source": "db_owner_password", "target": "db_owner_password"},
@@ -231,9 +215,7 @@ def test_runtime_services_never_mount_owner_password() -> None:
         f"{runtime}/postgres/db_owner_password"
     )
     for role in ("auth", "accept", "send", "callback", "export", "scheduler", "metrics"):
-        assert secrets[f"db_{role}_password"]["file"] == (
-            f"{runtime}/backend/db_{role}_password"
-        )
+        assert secrets[f"db_{role}_password"]["file"] == (f"{runtime}/backend/db_{role}_password")
         assert secrets[f"postgres_db_{role}_password"]["file"] == (
             f"{runtime}/postgres/db_{role}_password"
         )
@@ -242,9 +224,7 @@ def test_runtime_services_never_mount_owner_password() -> None:
 def test_database_role_provision_repairs_attributes_and_search_path_boundary() -> None:
     script = (ROOT / "deploy/provision-db-roles.sh").read_text(encoding="utf-8")
 
-    safe_attributes = (
-        "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT"
-    )
+    safe_attributes = "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT"
     for role in ("auth", "accept", "send", "callback", "export", "scheduler", "metrics"):
         assert f"'ALTER ROLE sms_{role} {safe_attributes} PASSWORD %L'" in script
     assert "REVOKE CONNECT, TEMPORARY ON DATABASE %I FROM PUBLIC" in script
@@ -369,7 +349,9 @@ def test_host_ports_are_overridable_without_changing_container_contract() -> Non
     compose = load_compose()
     services = compose["services"]
 
-    assert services["api"]["ports"] == ["127.0.0.1:${API_PORT:-8000}:8000"]
+    assert "ports" not in services["api"]
+    development = yaml.safe_load((ROOT / "deploy/docker-compose.development-api.yml").read_text())
+    assert development["services"]["api"]["ports"] == ["127.0.0.1:${API_PORT:-8000}:8000"]
     assert services["web"]["ports"] == ["${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-18080}:8080"]
     assert services["mock-vendor"]["ports"] == ["127.0.0.1:${MOCK_VENDOR_PORT:-9028}:9028"]
 
@@ -437,16 +419,12 @@ def test_nginx_bounds_pre_authentication_body_storage() -> None:
     assert IMPORT_PATH == "/api/v1/web/messages/import"
     assert "limit_conn_zone $server_addr zone=sms_api_concurrency:1m;" in config
     assert "limit_conn_zone $server_addr zone=sms_import_concurrency:1m;" in config
-    assert (
-        "limit_conn_zone $binary_remote_addr zone=sms_client_concurrency:10m;"
-        in config
-    )
+    assert "limit_conn_zone $binary_remote_addr zone=sms_client_concurrency:10m;" in config
     assert config.count("limit_conn sms_api_concurrency 16;") == 2
-    assert config.count("limit_conn sms_client_concurrency 16;") == 2
+    assert config.count("limit_conn sms_client_concurrency 8;") == 2
     assert "limit_conn sms_import_concurrency 2;" in config
     assert (
-        "/tmp/client_temp:rw,noexec,nosuid,nodev,size=64m,"
-        "uid=101,gid=101,mode=0700"
+        "/tmp/client_temp:rw,noexec,nosuid,nodev,size=64m,uid=101,gid=101,mode=0700"
     ) in web_tmpfs
 
     ordinary_mib = 1
@@ -455,8 +433,7 @@ def test_nginx_bounds_pre_authentication_body_storage() -> None:
     import_concurrency = 2
     client_body_tmpfs_mib = 64
     worst_case_mib = (
-        import_concurrency * import_mib
-        + (api_concurrency - import_concurrency) * ordinary_mib
+        import_concurrency * import_mib + (api_concurrency - import_concurrency) * ordinary_mib
     )
     assert worst_case_mib == 38
     assert worst_case_mib < client_body_tmpfs_mib
@@ -510,25 +487,18 @@ def test_api_trusts_only_fixed_nginx_proxy_address(
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in config
     assert "proxy_set_header X-Real-IP $remote_addr;" in config
     assert "proxy_set_header X-Forwarded-Proto $forwarded_proto;" in config
-    assert "map \"$sms_trusted_proxy|$http_x_forwarded_proto\" $forwarded_proto" in config
+    assert 'map "$sms_trusted_proxy|$http_x_forwarded_proto" $forwarded_proto' in config
     assert "$http_x_forwarded_for" not in config
     assert "include /etc/nginx/trusted-proxies.conf;" in config
     assert "if ($sms_plaintext_client_allowed = 0)" in config
     assert "$proxy_add_x_forwarded_for" not in config
     dockerfile = (ROOT / "frontend/Dockerfile").read_text(encoding="utf-8")
-    assert (
-        "COPY deploy/trusted-proxies.conf /etc/nginx/trusted-proxies.conf" in dockerfile
-    )
+    assert "COPY deploy/trusted-proxies.conf /etc/nginx/trusted-proxies.conf" in dockerfile
     trusted = (ROOT / "deploy/trusted-proxies.conf").read_text(encoding="utf-8")
     assert "geo $realip_remote_addr $sms_trusted_proxy" in trusted
     assert "default 0;" in trusted
     web_volumes = compose["services"]["web"]["volumes"]
-    assert any(
-        str(volume).endswith(
-            "/etc/nginx/trusted-proxies.conf:ro"
-        )
-        for volume in web_volumes
-    )
+    assert any(str(volume).endswith("/etc/nginx/trusted-proxies.conf:ro") for volume in web_volumes)
     assert any(
         str(volume).startswith(
             "${SMS_TRUSTED_PROXY_CONF:-/usr/local/share/sms-platform/trusted-proxies.conf}"
@@ -586,7 +556,9 @@ def test_export_ciphertext_volume_is_shared_only_by_api_and_bulk_worker() -> Non
         assert "exportdata:/var/lib/sms/exports" not in services[name].get("volumes", [])
 
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
-    assert """RUN adduser -D -u 10001 sms \\
+    assert (
+        """RUN adduser -D -u 10001 sms \\
+    && sed -i 's/^sms:!:[0-9]*:/sms:!:0:/' /etc/shadow \\
     && mkdir -p \\
       /var/lib/sms/beat \\
       /var/lib/sms/imports \\
@@ -598,7 +570,9 @@ def test_export_ciphertext_volume_is_shared_only_by_api_and_bulk_worker() -> Non
       /var/lib/sms/imports \\
       /var/lib/sms/exports \\
       /var/lib/sms/raw-spill
-""" in dockerfile
+"""
+        in dockerfile
+    )
     assert "USER sms" in dockerfile
 
 
@@ -761,9 +735,7 @@ def test_isolated_redis_tls_overlay_fixes_server_and_client_identity_contract() 
 
 
 def test_redis_domain_runtime_enforces_aof_noeviction_and_bounded_memory() -> None:
-    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
-        encoding="utf-8"
-    )
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(encoding="utf-8")
 
     for token in (
         "--appendonly yes",
@@ -785,9 +757,7 @@ def test_auth_redis_acl_allows_auth_lua_primitives() -> None:
         POLICY_MIN_ACCEPTED_LUA,
     )
 
-    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
-        encoding="utf-8"
-    )
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(encoding="utf-8")
     auth_block = entrypoint.split("  auth)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
     service = (ROOT / "backend/app/core/auth/service.py").read_text(encoding="utf-8")
     required = {
@@ -809,14 +779,11 @@ def test_auth_redis_acl_allows_auth_lua_primitives() -> None:
 def test_control_redis_acl_allows_admission_recovery_budget() -> None:
     from app.services.send_admission_repository import RECOVERY_BUDGET_LUA
 
-    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
-        encoding="utf-8"
-    )
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(encoding="utf-8")
     control_block = entrypoint.split("  control)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
     assert "~admission:*" in control_block
     required = {
-        f"+{name.lower()}"
-        for name in re.findall(r"redis\.call\('([A-Z]+)'", RECOVERY_BUDGET_LUA)
+        f"+{name.lower()}" for name in re.findall(r"redis\.call\('([A-Z]+)'", RECOVERY_BUDGET_LUA)
     }
     for command in sorted(required):
         assert command in control_block
@@ -826,9 +793,7 @@ def test_control_redis_acl_allows_weighted_send_cost_lua() -> None:
     from app.services.app_ratelimit import SLIDING_WINDOW_LUA, WEIGHTED_WINDOW_LUA
     from app.services.app_ratelimit_cutover import CUTOVER_CAS_LUA
 
-    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
-        encoding="utf-8"
-    )
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(encoding="utf-8")
     control_block = entrypoint.split("  control)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
     required = {
         f"+{name.lower()}"
@@ -855,9 +820,7 @@ def test_lifecycle_partition_maintenance_stays_in_owner_migrate_boundary() -> No
         "python -m scripts_support.provision_audit_context_key && "
         "python -m scripts_support.maintain_partitions",
     ]
-    assert migrate["environment"]["DB_OWNER_PASSWORD_FILE"] == (
-        "/run/secrets/db_owner_password"
-    )
+    assert migrate["environment"]["DB_OWNER_PASSWORD_FILE"] == ("/run/secrets/db_owner_password")
     assert "importdata:/var/lib/sms/imports" in services["worker-bulk"]["volumes"]
 
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")

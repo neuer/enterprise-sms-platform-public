@@ -1,4 +1,4 @@
-FROM python:3.12-alpine@sha256:b64631e04e4920160c50fbe8d8df828f7f35f06f425cb44aa09bca53e708a35a
+FROM python:3.12-alpine@sha256:1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4
 
 # Dependencies are built by uv (the mailer uses only stdlib); remove unused installers.
 RUN python -m pip uninstall --yes pip \
@@ -8,12 +8,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 
-RUN apk add --no-cache --upgrade \
-      ca-certificates \
-      libcrypto3=3.5.8-r0 \
-      libuuid=2.42.3-r1 \
-      libssl3=3.5.8-r0 \
-    && adduser -D -u 10001 security-report
+ARG GIT_SHA=development
+LABEL org.opencontainers.image.revision="${GIT_SHA}"
+
+RUN adduser -D -u 10001 security-report \
+    && sed -i 's/^security-report:!:[0-9]*:/security-report:!:0:/' /etc/shadow \
+    && python -c "import ssl; assert ssl.create_default_context().get_ca_certs()"
 
 WORKDIR /app
 

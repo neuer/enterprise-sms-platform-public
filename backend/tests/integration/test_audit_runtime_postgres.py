@@ -23,9 +23,10 @@ from app.core.auth.jwt import JwtClaims
 from app.core.auth.principal_context import audit_principal_scope
 from app.core.correlation import correlation_scope
 from app.core.runtime_resources import bind_connection_audit_subject
-from app.services.admin import ConfigUpdate
+from app.services.admin import ConfigUpdate, config_write_parameters
 from app.services.admin_repository import SqlAdminRepository
-from app.services.admin_step_up import AdminIntent
+from app.services.admin_step_up import admin_intent
+from app.services.app_contract import AppCreateRequest
 from app.services.app_repository import SqlAppRepository
 from app.services.auth_provider import ProviderTestResult
 from app.services.auth_provider_repository import SqlAuthProviderRepository
@@ -199,34 +200,57 @@ async def test_app_create_and_key_rotation_persist_real_audit_rows() -> None:
     try:
         principal = stable_admin()
         correlation_id = uuid4()
+        values = {
+            "name": app_name,
+            "dept": "平台部",
+            "api_key_hash": "a" * 64,
+            "api_key_prefix": "aud",
+            "allowed_categories": "notice",
+            "default_sign": "【青鸾】",
+            "daily_quota": 100,
+            "rate_limit_per_min": 10,
+            "recipient_limit_per_min": 6000,
+            "segment_limit_per_min": 6000,
+            "max_in_flight_chunks": 100,
+            "allow_market_api_bulk": False,
+            "ip_allowlist_exempt_until": None,
+            "unlimited_quota_exempt_until": None,
+            "admission_exempt_note": None,
+            "blacklist_check": True,
+            "freq_override": None,
+            "allowed_ips": [],
+            "callback_url": None,
+            "callback_secret_enc": None,
+            "callback_report_enabled": False,
+            "actor": "audit-admin",
+            "ip": "127.0.0.1",
+        }
         with audit_principal_scope(principal), correlation_scope(correlation_id):
             app_id = await repository.create(
-                name=app_name,
-                dept="平台部",
-                api_key_hash="a" * 64,
-                api_key_prefix="aud",
-                allowed_categories="notice",
-                default_sign="【青鸾】",
-                daily_quota=100,
-                rate_limit_per_min=10,
-                recipient_limit_per_min=6000,
-                segment_limit_per_min=6000,
-                max_in_flight_chunks=100,
-                allow_market_api_bulk=False,
-                ip_allowlist_exempt_until=None,
-                unlimited_quota_exempt_until=None,
-                admission_exempt_note=None,
-                blacklist_check=True,
-                freq_override=None,
-                allowed_ips=[],
-                callback_url=None,
-                callback_secret_enc=None,
-                callback_report_enabled=False,
-                actor="audit-admin",
-                ip="127.0.0.1",
+                **values,
+                authorization=AdminAuthorization(
+                    principal.account_id,
+                    principal.identity_id,
+                    1,
+                    "local",
+                    admin_intent(
+                        "app_create",
+                        "new",
+                        {"config": {key: values[key] for key in AppCreateRequest.model_fields}},
+                    ),
+                ),
             )
+            revision = (await repository.get(app_id))["updated_at"]
             await repository.rotate_key(
                 app_id,
+                expected_updated_at=revision,
+                authorization=AdminAuthorization(
+                    principal.account_id,
+                    principal.identity_id,
+                    1,
+                    "local",
+                    admin_intent("app_rotate_key", str(app_id), {"expected_updated_at": revision}),
+                ),
                 api_key_hash="b" * 64,
                 api_key_prefix="aud",
                 old_key_expires_at=datetime.now(UTC) + timedelta(hours=1),
@@ -326,7 +350,7 @@ async def test_auth_provider_lifecycle_persists_real_audit_rows() -> None:
                     stable_admin().identity_id,
                     1,
                     "local",
-                    AdminIntent("provider_save_draft", str(code), "synthetic"),
+                    admin_intent("provider_save_draft", str(code), {"config": config}),
                 ),
                 actor="audit-admin",
                 ip="127.0.0.1",
@@ -345,7 +369,11 @@ async def test_auth_provider_lifecycle_persists_real_audit_rows() -> None:
                     stable_admin().identity_id,
                     1,
                     "local",
-                    AdminIntent("provider_enable_disable", str(code), "synthetic"),
+                    admin_intent(
+                        "provider_enable_disable",
+                        str(code),
+                        {"enabled": True, "draft_version": saved.draft_version},
+                    ),
                 ),
                 actor="audit-admin",
                 ip="127.0.0.1",
@@ -358,7 +386,11 @@ async def test_auth_provider_lifecycle_persists_real_audit_rows() -> None:
                     stable_admin().identity_id,
                     1,
                     "local",
-                    AdminIntent("provider_enable_disable", str(code), "synthetic"),
+                    admin_intent(
+                        "provider_enable_disable",
+                        str(code),
+                        {"enabled": False, "draft_version": saved.draft_version},
+                    ),
                 ),
                 actor="audit-admin",
                 ip="127.0.0.1",
@@ -716,6 +748,7 @@ async def test_config_update_persists_real_audit_row() -> None:
         Any,
         SimpleNamespace(
             database_url=database_url,
+            database_url_for=lambda _role: database_url,
             alert_smtp_allowed_host_set=frozenset({"smtp"}),
         ),
     )
@@ -730,16 +763,28 @@ async def test_config_update_persists_real_audit_row() -> None:
     original: str | None = None
     try:
         async with engine.connect() as connection:
-            original = str(
+            before = (
                 (
                     await connection.execute(
-                        text("SELECT value FROM sys_config WHERE key='vendor_qps'")
+                        text("SELECT value, updated_at FROM sys_config WHERE key='vendor_qps'")
                     )
-                ).scalar_one()
+                )
+                .mappings()
+                .one()
+            )
+            original = str(before["value"])
+            updates = (ConfigUpdate("vendor_qps", "8", before["updated_at"]),)
+            authorization = AdminAuthorization(
+                principal.account_id,
+                principal.identity_id,
+                1,
+                "local",
+                admin_intent("config_update", "default", config_write_parameters(updates)),
             )
         with correlation_scope(uuid4()):
             await repository.update_configs(
-                (ConfigUpdate(key="vendor_qps", value="8"),),
+                updates,
+                authorization=authorization,
                 principal=principal,
                 ip="127.0.0.1",
             )
@@ -860,9 +905,7 @@ async def test_message_phone_decrypt_audit_accepts_phone_like_batch_no() -> None
         base64.b64encode(b"b" * 32).decode(),
     )
     protected = crypto.protect_phone("13900139000")
-    repository = SqlOperationsQueryRepository(
-        cast(Any, SimpleNamespace(database_url=database_url))
-    )
+    repository = SqlOperationsQueryRepository(cast(Any, SimpleNamespace(database_url=database_url)))
     message_id: int | None = None
     try:
         await _insert_blocked_batch(owner, PHONEISH_BATCH_NO)

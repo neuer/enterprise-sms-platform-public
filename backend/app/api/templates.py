@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
-from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.auth import ERROR_RESPONSE
+from app.api.authorization import ReaderActor, WriterActor
 from app.core.audit import audited
-from app.core.auth.jwt import JwtClaims
-from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
+from app.core.correlation import REQUEST_ID_HEADER, current_correlation_id
 from app.core.errors import ApiError
 from app.services.ops_dispatch import TemplateSyncSender
 from app.services.sensitive_read_audit import (
@@ -63,28 +63,29 @@ class TemplateModel(BaseModel):
     vendor_reject_reason: str | None
 
 
-def get_template_service() -> TemplateManagementService:
+def get_template_read_auditor(
+    _actor: ReaderActor,
+    auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
+) -> SensitiveReadAuditor:
+    """模板敏感读取审计资源同样只能在角色校验后构造。"""
+    return auditor
+
+
+def get_template_service(_actor: ReaderActor) -> TemplateManagementService:
     settings = get_settings()
     return TemplateManagementService(SqlTemplateRepository(settings))
 
 
-def get_template_job_sender() -> TemplateSyncSender:
+def get_template_write_service(
+    _actor: WriterActor,
+    service: Annotated[TemplateManagementService, Depends(get_template_service)],
+) -> TemplateManagementService:
+    """先通过写入角色校验，再构造业务服务。"""
+    return service
+
+
+def get_template_job_sender(_actor: WriterActor) -> TemplateSyncSender:
     return TemplateSyncSender(get_settings())
-
-
-async def _user(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-    *,
-    write: bool,
-) -> JwtClaims:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    allowed = {"operator", "approver", "admin"} if not write else {"operator", "admin"}
-    if claims.role not in allowed:
-        raise ApiError(403, "FORBIDDEN", "当前角色无模板操作权限", None)
-    return claims
 
 
 def _model(record: TemplateRecord) -> TemplateModel:
@@ -92,6 +93,8 @@ def _model(record: TemplateRecord) -> TemplateModel:
 
 
 def _error(error: Exception) -> ApiError:
+    if isinstance(error, ApiError):
+        return error
     if isinstance(error, TemplateNotFound):
         return ApiError(404, "NOT_FOUND", str(error), None)
     if isinstance(error, TemplateStateConflict):
@@ -100,18 +103,24 @@ def _error(error: Exception) -> ApiError:
         return ApiError(422, error.code, str(error), error.detail)
     if isinstance(error, ValueError):
         return ApiError(400, "INVALID_PARAM", str(error), None)
-    return ApiError(500, "INTERNAL_ERROR", "服务内部错误", None)
+    correlation_id = current_correlation_id()
+    logging.getLogger(__name__).error(
+        "catalog operation failed",
+        extra={"error_type": type(error).__name__, "correlation_id": str(correlation_id)},
+    )
+    return ApiError(
+        500, "INTERNAL_ERROR", "服务内部错误", None,
+        headers={REQUEST_ID_HEADER: str(correlation_id)} if correlation_id is not None else None,
+    )
 
 
 @router.get("", response_model=list[TemplateModel])
 async def list_templates(
     request: Request,
-    auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
+    auditor: Annotated[SensitiveReadAuditor, Depends(get_template_read_auditor)],
     service: Annotated[TemplateManagementService, Depends(get_template_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    claims: ReaderActor,
 ) -> list[TemplateModel]:
-    await _user(facade, credentials, write=False)
     records = await service.list_all(dept=None)
     await auditor.record(
         action="template_content_read",
@@ -127,11 +136,9 @@ async def list_templates(
 @audited("template_create")
 async def create_template(
     payload: TemplatePayload,
-    service: Annotated[TemplateManagementService, Depends(get_template_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    service: Annotated[TemplateManagementService, Depends(get_template_write_service)],
+    claims: WriterActor,
 ) -> TemplateModel:
-    claims = await _user(facade, credentials, write=True)
     try:
         return _model(
             await service.create(
@@ -150,12 +157,10 @@ async def create_template(
 async def get_template(
     id: int,
     request: Request,
-    auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
+    auditor: Annotated[SensitiveReadAuditor, Depends(get_template_read_auditor)],
     service: Annotated[TemplateManagementService, Depends(get_template_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    claims: ReaderActor,
 ) -> TemplateModel:
-    await _user(facade, credentials, write=False)
     try:
         record = await service.get(id, dept=None)
     except TemplateNotFound as error:
@@ -175,11 +180,9 @@ async def get_template(
 async def update_template(
     id: int,
     payload: TemplateUpdatePayload,
-    service: Annotated[TemplateManagementService, Depends(get_template_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    service: Annotated[TemplateManagementService, Depends(get_template_write_service)],
+    claims: WriterActor,
 ) -> TemplateModel:
-    claims = await _user(facade, credentials, write=True)
     try:
         current = await service.get(id, dept=None)
         return _model(
@@ -199,11 +202,9 @@ async def update_template(
 @audited("template_delete")
 async def delete_template(
     id: int,
-    service: Annotated[TemplateManagementService, Depends(get_template_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    service: Annotated[TemplateManagementService, Depends(get_template_write_service)],
+    claims: WriterActor,
 ) -> Response:
-    claims = await _user(facade, credentials, write=True)
     try:
         current = await service.get(id, dept=None)
         await service.delete(current.id, actor=claims.username)
@@ -222,12 +223,10 @@ async def delete_template(
 async def sync_template(
     id: int,
     request: Request,
-    service: Annotated[TemplateManagementService, Depends(get_template_service)],
+    service: Annotated[TemplateManagementService, Depends(get_template_write_service)],
     sender: Annotated[TemplateSyncSender, Depends(get_template_job_sender)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    claims: WriterActor,
 ) -> Response:
-    claims = await _user(facade, credentials, write=True)
     try:
         current = await service.get(id, dept=None)
         if (

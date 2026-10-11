@@ -16,13 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.principal_context import audit_principal_scope
 from app.core.correlation import correlation_scope
-from app.services.admin_step_up import AdminIntent
+from app.services.admin_step_up import admin_intent
 from app.services.auth_provider import (
     ExternalRoleMapping,
     StaleProviderDraft,
     role_mapping_revision,
 )
 from app.services.auth_provider_repository import SqlAuthProviderRepository
+from tests.business_ids import new_business_id
 from tests.integration.test_ops_audit_postgres import _create_admin
 from tests.integration.test_ops_audit_postgres import accept_runtime as accept_runtime
 
@@ -37,8 +38,8 @@ async def test_thousand_accounts_and_hundred_mappings_invalidate_once_per_transa
     accept_runtime: tuple[AsyncEngine, URL],
 ) -> None:
     owner, _ = accept_runtime
-    principal = await _create_admin(owner, login="mapping-" + uuid4().hex[:12])
-    code = uuid4().hex
+    principal = await _create_admin(owner, login="mapping-" + new_business_id()[:12])
+    code = new_business_id()
     provider = 0
     accounts: list[int] = []
     try:
@@ -109,7 +110,13 @@ async def test_thousand_accounts_and_hundred_mappings_invalidate_once_per_transa
                         principal.identity_id,
                         1,
                         "local",
-                        AdminIntent("provider_role_mapping_change", str(code), "synthetic"),
+                        admin_intent("provider_role_mapping_change", str(code), {
+                            "mappings": [
+                                {"external_group": item.external_group, "role": item.role,
+                                 "dept": item.dept} for item in items
+                            ],
+                            "expected_revision": role_mapping_revision(expected),
+                        }),
                     ),
                     actor=principal.login_name,
                     ip="127.0.0.1",
@@ -172,7 +179,13 @@ async def test_thousand_accounts_and_hundred_mappings_invalidate_once_per_transa
                     principal.identity_id,
                     1,
                     "local",
-                    AdminIntent("provider_role_mapping_change", str(code), "synthetic"),
+                    admin_intent("provider_role_mapping_change", str(code), {
+                            "mappings": [
+                                {"external_group": item.external_group, "role": item.role,
+                                 "dept": item.dept} for item in original
+                            ],
+                            "expected_revision": role_mapping_revision(original),
+                        }),
                 ),
                 actor=principal.login_name,
                 ip="127.0.0.1",
@@ -195,7 +208,13 @@ async def test_thousand_accounts_and_hundred_mappings_invalidate_once_per_transa
                             principal.identity_id,
                             1,
                             "local",
-                            AdminIntent("provider_role_mapping_change", str(code), "synthetic"),
+                            admin_intent("provider_role_mapping_change", str(code), {
+                            "mappings": [
+                                {"external_group": item.external_group, "role": item.role,
+                                 "dept": item.dept} for item in items
+                            ],
+                            "expected_revision": role_mapping_revision(changed),
+                        }),
                         ),
                         actor=principal.login_name,
                         ip="127.0.0.1",

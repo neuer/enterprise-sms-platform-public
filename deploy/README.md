@@ -55,7 +55,17 @@ Celery beat 的 PersistentScheduler 状态只保存可重建的调度元数据�
 - Web 明文 HTTP 上游默认绑定宿主机回环 `127.0.0.1:18080`，映射到容器内非特权 Nginx `8080`；direct 模式生产强制回环。远程 TLS 终结器场景必须显式设置 `SMS_EXTERNAL_TLS_MODE=1`、将 `WEB_BIND_IP` 设为专用私网接口，并用精确 `SMS_TRUSTED_PROXY_CIDRS` 同时限制代理头信任与明文 listener 来源；其余来源由 Nginx 返回 444。
 - `18443` 预留给配置证书后的 TLS 终结服务；Phase 0 只对经批准的公司 VPN
   来源开放，未配置证书前不得宣称 HTTPS 可用。
-- API `8000` 与 dev profile 的 Mock `9028` 只绑定宿主机回环地址，不得直接暴露到公网。
+- 基础 Compose 不发布 API 宿主端口。仅 `SMS_DEV_API_PORT=1` 且实际环境文件为
+  `ENVIRONMENT=development` 时，受控入口加载 `docker-compose.development-api.yml`，
+  将 `${API_PORT:-8000}` 发布到宿主回环；local_test/G2 显式使用此模式。共享 test 与
+  production 不加载覆盖文件，不能仅凭 secrets 模式或 dev profile 开放端口。
+  dev profile 的 Mock `9028` 仍只绑定宿主回环，不得直接暴露到公网。
+- Nginx API 全局最多 16 个活动请求、单来源最多 8 个，导入另有全局 2 个限制，
+  请求体磁盘最坏预算仍为 38 MiB，小于 64 MiB tmpfs。共享 NAT 用户共用 8 个槽位，
+  客户端应限制并发并退避处理 503；多个来源仍可能耗尽全局预算。受信 TLS 代理继续恢复
+  真实客户端 IP，客户端自行提交的代理头不能绕过限制。
+- 移除宿主发布端口不等于禁止 Docker 网桥内部访问。Prometheus 继续按既有固定 ingress
+  IP 直连 API 的 metrics 入口；宿主与内部网络访问仍由原有 ACL/防火墙与 API 认证约束。
 - 明文 HTTP 上游默认绑定回环，仅允许本机或显式批准的 TLS 终结器访问；主机防火墙与
   Docker `DOCKER-USER` 转发链必须阻断 `80/443/8080/8443/8000/9028` 的互联网入站。
   `18443` 也不对互联网公开，只接受获批公司 VPN 网段；网络侧真实读回是上线证据。
@@ -1208,6 +1218,21 @@ Docker unit 的固定 `journal` 事件只提供信号，外部采集/告警链�
 `up == 0`、抓取超时或任一关键 family 消失均视为监控故障，不得用缓存旧值伪装健康。
 
 ## 数据密钥轮换格式
+
+### JWT 签名密钥升级与回退
+
+`jwt_secret` 的裸 v1 值必须非纯空白且 UTF-8 编码至少 32 字节；JSON keyring 的每个
+base64 key 解码后同样至少 32 字节。解析器、JWT 服务构造和 API 就绪预检统一校验，
+不提供短密钥兼容开关。长度检查不代表熵检查：新密钥必须用密码学安全随机源生成，
+例如在受控凭据目录以 `umask 077` 将 `openssl rand -base64 48` 直接重定向至待安装
+secret 文件，不得输出至终端、日志或工单。按既有 secret 安装流程挂载，禁止改为环境变量。
+
+升级前由操作者在受控主机校验已有材料，保留原始有效字节；不要 trim 后再写回。
+裸 v1 转 keyring 时，版本 1 的 base64 必须编码**原 UTF-8 签名字节**，不能把裸文本
+误当作已编码 key 解码。新活动版本用于签发，仍有效的旧版本保留供历史验签。
+若旧材料不合格，必须先完成受控轮换并要求旧会话重新登录，不能通过回退应用继续使用
+弱密钥。回退目标也须支持所用 keyring 和验证规则，保留仍需验签的版本；生产继续禁止
+`JWT_ACCEPT_LEGACY`。本变更不自动轮换任何部署凭据。
 
 首次部署的 `data_aes_key`、`data_hmac_key` 均为 32 字节随机值的 base64 文本，自动视为 v1。轮换时不新增 secret 名，而是把两个文件同步改为 JSON keyring：
 

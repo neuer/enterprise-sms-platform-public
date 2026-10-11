@@ -97,6 +97,20 @@ broker 不再开放共享 `unacked`、通配队列或 pidbox，详细边界如�
 `CONFIG`、`FLUSHALL`、`FLUSHDB`、`MODULE`、`REPLICAOF`、`SHUTDOWN` 和 `CLIENT PAUSE/KILL/UNBLOCK`。
 管理账号不进入应用 Compose；托管管理只走受控运维身份和双人审批。
 
+Redis 7 的 AOF 内部回放会按 default 用户检查事务命令。仅写 `user default off`
+可能导致已持久化的 Lua 多写事务在重启时被拒绝，单条 SET 却正常恢复；上游问题与修复见
+[Redis #14541](https://github.com/redis/redis/issues/14541) 和
+[Redis #14545](https://github.com/redis/redis/pull/14545)。不能因为容器能启动或 PING 成功
+就认定状态已完整恢复。
+
+生成器以 `user default reset off` 清空密码并禁用登录，再赋予本故障域已有的受限键和
+命令范围，附加 AOF 回放需要的 `SELECT/MULTI/EXEC/PEXPIREAT`。broker 的范围取其现有
+职责权限并集；不授予全局键或全局命令权限，不增加运行账号权限，也不给运行账号修改
+ACL 的能力。default 仍不能用空密码、运行密码或未认证连接执行命令。
+`scripts/verify_redis_domains.sh` 对三个真实实例验证 Lua 事务的多键写入、过期键重启恢复，
+同时拒绝 AOF 回放错误、default 登录、运行账号修改 ACL 和跨域访问。发现回放错误应保持
+失败关闭并保留原始持久化文件；禁止清空认证事实或补写满桶来伪造就绪。
+
 ## Broker 职责隔离与首次切换
 
 | 职责 / ACL 用户后缀 | 客户端 | 消费及同队列重投 | 跨队列生产 | 确认/结果 |

@@ -91,12 +91,18 @@ class FakeApi:
         headers: Mapping[str, str] | None = None,
     ) -> HttpResponse:
         self.calls.append((method, path))
+        if path == "/api/v1/web/admin/step-up":
+            assert isinstance(payload, dict) and payload["password"] == "synthetic-password"
+            return HttpResponse(200, {"token": "single-use-grant"})
+        if path.startswith("/api/v1/web/admin/") and method in {"POST", "PUT", "DELETE"}:
+            assert headers is not None and headers.get("X-Admin-Step-Up") == "single-use-grant"
         if path == "/api/v1/web/admin/apps" and method == "POST":
             return HttpResponse(200, {"id": 9, "api_key": "temporary-notice-key"})
         if path == "/api/v1/web/admin/apps/9" and method == "GET":
             return HttpResponse(
                 200,
                 {
+                    "updated_at": "2026-01-01T00:00:00+00:00",
                     "dept": "平台技术部",
                     "allowed_categories": ["notice"],
                     "default_sign": "demo-sign",
@@ -109,18 +115,21 @@ class FakeApi:
                     "status": 1,
                 },
             )
-        if path == "/api/v1/web/admin/apps/9" and method == "PUT":
-            assert isinstance(payload, dict) and payload.get("status") == 0
-            return HttpResponse(200, {"status": 0})
+        if path == "/api/v1/web/admin/apps/9" and method == "DELETE":
+            assert headers is not None and headers.get("X-App-Revision")
+            return HttpResponse(204, None)
         if path == "/api/v1/web/admin/vendor-test/status":
             return HttpResponse(200, {"mode": self.vendor_mode})
         if path == "/api/v1/web/admin/configs" and method == "GET":
             return HttpResponse(
                 200,
                 [
-                    {"key": "vendor_qps", "value": "5"},
-                    {"key": "reserved_realtime_qps", "value": "2"},
-                    {"key": "vendor_batch_size", "value": "500"},
+                    {"key": "vendor_qps", "value": "5",
+                     "sensitive": False, "updated_at": "2026-01-01T00:00:00+00:00"},
+                    {"key": "reserved_realtime_qps", "value": "2",
+                     "sensitive": False, "updated_at": "2026-01-01T00:00:00+00:00"},
+                    {"key": "vendor_batch_size", "value": "500",
+                     "sensitive": False, "updated_at": "2026-01-01T00:00:00+00:00"},
                 ],
             )
         if path == "/api/v1/web/admin/configs" and method == "PUT":
@@ -185,7 +194,7 @@ def _suite(
         mock or FakeMock(),
         FakeProbe(),
         {NOTICE_APP: "notice-key"},
-        RuntimeConfigClient(token_api, "admin-token"),
+        RuntimeConfigClient(token_api, "admin-token", "synthetic-password"),
         config=config
         or VendorScaleConfig(
             phase_a_batches=2,
@@ -241,7 +250,7 @@ def test_mock_send_phone_counts_use_masked_lists_only() -> None:
 
 def test_runtime_config_restore_writes_5_2_500_and_rejects_dual_maxima() -> None:
     api = FakeApi()
-    client = RuntimeConfigClient(api, "admin-token")
+    client = RuntimeConfigClient(api, "admin-token", "synthetic-password")
     assert client.snapshot() == {
         "vendor_qps": "5",
         "reserved_realtime_qps": "2",
@@ -426,11 +435,11 @@ def test_sql_config_client_restores_5_2_500() -> None:
 
 def test_notice_app_provisioner_creates_and_disables_without_logging_key() -> None:
     api = FakeApi()
-    provisioner = NoticeAppProvisioner(api, "admin-token")
+    provisioner = NoticeAppProvisioner(api, "admin-token", "synthetic-password")
     keys = provisioner.create(sign_name="demo-sign")
     assert keys[NOTICE_APP] == "temporary-notice-key"
     provisioner.disable()
-    assert ("PUT", "/api/v1/web/admin/apps/9") in api.calls
+    assert ("DELETE", "/api/v1/web/admin/apps/9") in api.calls
 
 
 def test_classify_does_not_mark_vendor_scale_as_g2_performance() -> None:

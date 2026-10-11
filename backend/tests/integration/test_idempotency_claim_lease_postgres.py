@@ -33,6 +33,8 @@ from app.services.pipeline import BatchCommand, StoredBatch
 from app.services.pipeline_repository import SqlPipelineStore
 from scripts_support.maintain_partitions import maintain
 from tests.business_ids import new_business_id
+from tests.integration.test_uncertain_web_resend_postgres import BoundLedger
+from tests.integration.test_usage_ledger_postgres import ProjectionRedis
 
 pytestmark = pytest.mark.skipif(
     "OUTBOX_POSTGRES_DSN" not in os.environ or "AUTH_GUARD_REDIS_URL" not in os.environ,
@@ -677,16 +679,17 @@ async def test_pipeline_rejection_immediately_releases_authoritative_claim(
     from app.services.app_ratelimit import ApplicationRateLimitExceeded
     from app.services.pipeline import PipelineConfig, SendPipeline, SendRequest
     from app.services.send_admission import SendAdmissionRejected
-    from tests.test_send_pipeline import FakeFrequency, FakePublisher, FakeQuota
+    from tests.test_send_pipeline import FakePublisher
 
     engine, store, redis, app_id = claim_env
     coordinator = IdempotencyCoordinator(redis, store)
     pipeline = SendPipeline(
+        usage_ledger=BoundLedger(ProjectionRedis(), store.settings, store._engine()),
         store=store,
         idempotency=coordinator,
         crypto=_crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
+
+
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1108,11 +1111,12 @@ async def test_r8_cleanup_proof_and_delete_rollback_together(claim_env: Any) -> 
 
 def _r8_pipeline(store: Any, redis: Any) -> Any:
     from app.services.pipeline import PipelineConfig, SendPipeline
-    from tests.test_send_pipeline import FakeFrequency, FakePublisher, FakeQuota
+    from tests.test_send_pipeline import FakePublisher
 
     return SendPipeline(
+        usage_ledger=BoundLedger(ProjectionRedis(), store.settings, store._engine()),
         store=store, idempotency=IdempotencyCoordinator(redis, store), crypto=_crypto(),
-        frequency=FakeFrequency(), quota=FakeQuota(), publisher=FakePublisher(),
+          publisher=FakePublisher(),
         config=PipelineConfig(),
     )
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal, Protocol
 
+from app.core.auth.department import require_account_department
 from app.core.jobtrack import JobSpec
 from app.services.current_alerts import CurrentAlertRead, DatabaseCurrentFacts
 from app.services.stats import SHANGHAI, success_rate
@@ -187,6 +188,7 @@ class DashboardService:
         self.clock = clock
 
     async def get(self, *, role: str, dept: str) -> DashboardSnapshot:
+        require_account_department(role, dept)
         now = self.clock()
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("dashboard clock must be timezone-aware")

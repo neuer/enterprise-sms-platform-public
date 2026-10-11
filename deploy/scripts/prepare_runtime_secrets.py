@@ -729,6 +729,15 @@ def broker_runtime_material(seed: bytes) -> dict[str, bytes]:
             bindings = " ".join("~_kombu.binding." + name for name in queue_names)
             lines.append(prefix + f" ({enqueue} +lpush +llen +exists) "
                          + f"({bindings} +sadd +srem +smembers +exists)")
+    # AOF 内部客户端按 default 的 ACL 回放 MULTI/EXEC；不得开放该账号登录。
+    # 只合并既有职责的键/命令范围，并补足 AOF 的数据库选择和绝对过期写法。
+    replay_rules = {"+select", "+multi", "+exec", "+pexpireat"}
+    for line in lines[1:]:
+        for token in line.split():
+            token = token.strip("()")
+            if token.startswith(("~", "+")):
+                replay_rules.add(token)
+    lines[0] = "user default reset off " + " ".join(sorted(replay_rules))
     values[BROKER_ACL_NAME] = ("\n".join(lines) + "\n").encode("ascii")
     return values
 

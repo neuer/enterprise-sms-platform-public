@@ -28,6 +28,7 @@ from app.services.pipeline_repository import (
 )
 from app.services.resend import EncryptedFailedPhone, ResendService, ResendSource
 from app.services.scheduling_repository import SqlSchedulingRepository
+from tests.test_send_pipeline import FakeUsageLedger
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA = ROOT / "schema.sql"
@@ -53,12 +54,12 @@ def _mailer_module() -> ModuleType:
 
 
 def _fingerprint_pipeline(crypto: CryptoService) -> SendPipeline:
-    return SendPipeline(
+    return SendPipeline(usage_ledger=FakeUsageLedger(),
         store=object(),  # type: ignore[arg-type]
         idempotency=object(),  # type: ignore[arg-type]
         crypto=crypto,
-        frequency=object(),  # type: ignore[arg-type]
-        quota=object(),  # type: ignore[arg-type]
+          # type: ignore[arg-type]
+          # type: ignore[arg-type]
         publisher=object(),  # type: ignore[arg-type]
         config=PipelineConfig(),
     )

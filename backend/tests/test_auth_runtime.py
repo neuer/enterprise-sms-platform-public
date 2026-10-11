@@ -1342,3 +1342,33 @@ async def test_temporary_password_expiry_at_token_issue_is_generic_unauthorized(
     assert failure.value.status_code == 401
     assert failure.value.code == "UNAUTHORIZED"
     assert not users.password_change_tokens
+
+
+@pytest.mark.asyncio
+async def test_transaction_authority_loader_is_per_call_and_keeps_revocation_checks() -> None:
+    current = account(must_change_password=False)
+    store = FakeKeyValue()
+    default_calls = []
+
+    async def default_loader(account_id, identity_id):
+        default_calls.append((account_id, identity_id))
+        raise SessionStateUnavailable("default connection unavailable")
+
+    async def locked_loader(account_id, identity_id):
+        assert (account_id, identity_id) == (8, 18)
+        return current
+
+    tokens = JwtService(SECRET, store, security_session_loader=default_loader)
+    token = tokens.issue(JwtClaims(8, 18, "local", "admin", "管理员", "平台部", "admin", 3))
+    verified = await tokens.verify(token, security_session_loader=locked_loader)
+    assert default_calls == []
+    with pytest.raises(SessionStateUnavailable):
+        await tokens.verify(token)
+    assert default_calls == [(8, 18)]
+    current = replace(current, security_version=4)
+    with pytest.raises(InvalidCredentials):
+        await tokens.verify(token, security_session_loader=locked_loader)
+    current = replace(current, security_version=3)
+    store.values[f"auth:jwt:session-revoked:{verified.session_id}"] = "1"
+    with pytest.raises(InvalidCredentials):
+        await tokens.verify(token, security_session_loader=locked_loader)

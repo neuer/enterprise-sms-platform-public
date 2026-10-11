@@ -30,6 +30,14 @@ from e2e_api import (  # noqa: E402
     wait_until,
 )
 
+CONFIG_REVISION = "2026-01-01T00:00:00+00:00"
+RESTORE_REVISION = "2026-01-01T00:00:01+00:00"
+
+
+def config_rows(key: str, value: str, revision: str = CONFIG_REVISION) -> HttpResponse:
+    return HttpResponse(200, [{"key": key, "value": value, "sensitive": False,
+                               "updated_at": revision}])
+
 
 class FakeRunner:
     def __init__(self, outputs: list[bytes]) -> None:
@@ -384,10 +392,9 @@ def test_approval_expiration_case_requires_reserve_refund_and_alert(
     batch_no = "b" * 32
     http = FakeHttp(
         [
-            HttpResponse(
-                200,
-                [{"key": "market_approval_threshold", "value": "50"}],
-            ),
+            config_rows("market_approval_threshold", "50"),
+            config_rows("market_approval_threshold", "50"),
+            HttpResponse(200, {"token": "config-grant"}),
             HttpResponse(200, []),
             HttpResponse(
                 200,
@@ -459,10 +466,9 @@ def test_case08_restores_original_market_window_before_case09(
     http = FakeHttp(
         [
             HttpResponse(503, {"code": "DEPENDENCY_UNAVAILABLE"}),
-            HttpResponse(
-                200,
-                [{"key": "market_send_window", "value": previous}],
-            ),
+            config_rows("market_send_window", previous),
+            config_rows("market_send_window", previous),
+            HttpResponse(200, {"token": "initial-grant"}),
             HttpResponse(200, []),
             HttpResponse(
                 200,
@@ -474,7 +480,11 @@ def test_case08_restores_original_market_window_before_case09(
                 },
             ),
             HttpResponse(200, {}),
+            config_rows("market_send_window", window, RESTORE_REVISION),
+            HttpResponse(200, {"token": "restore-grant"}),
             HttpResponse(200, []),
+            config_rows("market_send_window", previous, RESTORE_REVISION),
+            HttpResponse(200, {"token": "cleanup-grant"}),
             HttpResponse(200, []),
         ]
     )
@@ -503,7 +513,8 @@ def test_case08_restores_original_market_window_before_case09(
             -1
         ]
         assert latest_config[1]["payload"] == {
-            "items": [{"key": "market_send_window", "value": previous}]
+            "items": [{"key": "market_send_window", "value": previous,
+                       "expected_updated_at": RESTORE_REVISION}]
         }
         events.append("case09")
 
@@ -511,12 +522,15 @@ def test_case08_restores_original_market_window_before_case09(
 
     suite.run(("08", "09"))
 
-    config_calls = [call for call in http.calls if call[0][1] == "/api/v1/web/admin/configs"]
-    assert config_calls[1][1]["payload"] == {
-        "items": [{"key": "market_send_window", "value": window}]
+    config_calls = [call for call in http.calls
+                    if call[0][:2] == ("PUT", "/api/v1/web/admin/configs")]
+    assert config_calls[0][1]["payload"] == {
+        "items": [{"key": "market_send_window", "value": window,
+                   "expected_updated_at": CONFIG_REVISION}]
     }
-    assert config_calls[2][1]["payload"] == {
-        "items": [{"key": "market_send_window", "value": previous}]
+    assert config_calls[1][1]["payload"] == {
+        "items": [{"key": "market_send_window", "value": previous,
+                       "expected_updated_at": RESTORE_REVISION}]
     }
     assert events == ["case09"]
     assert suite.rollback.restore() == ()
@@ -645,9 +659,12 @@ def test_role_uat_does_not_write_without_reauthentication_grant(response: HttpRe
 
 
 @pytest.mark.parametrize("path", ["/api/v1/web/auth/login", "/api/v1/web/admin/step-up"])
-def test_authentication_uat_obeys_explicit_admission_retry(path: str, monkeypatch) -> None:
+@pytest.mark.parametrize("delay", [15, 45, 300])
+def test_authentication_uat_obeys_explicit_admission_retry(
+    path: str, delay: int, monkeypatch,
+) -> None:
     busy = HttpResponse(429, {"code": "RATE_LIMITED", "detail": {
-        "auth_admission_retry": True, "retry_after_seconds": 15,
+        "auth_admission_retry": True, "retry_after_seconds": delay,
     }})
     success = HttpResponse(200, {"token": "synthetic-token"})
     http = FakeHttp([busy, success])
@@ -655,7 +672,7 @@ def test_authentication_uat_obeys_explicit_admission_retry(path: str, monkeypatc
     delays = []
     monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
     assert suite._authentication_request(path, payload={}) == success
-    assert delays == [15]
+    assert delays == [delay]
     assert len(http.calls) == 2
 
 
@@ -663,7 +680,7 @@ def test_authentication_uat_obeys_explicit_admission_retry(path: str, monkeypatc
     (401, {"auth_admission_retry": True, "retry_after_seconds": 1}),
     (429, None),
     (429, {"auth_admission_retry": False, "retry_after_seconds": 1}),
-    (429, {"auth_admission_retry": True, "retry_after_seconds": 300}),
+    (429, {"auth_admission_retry": True, "retry_after_seconds": 301}),
     (429, {"auth_admission_retry": True, "retry_after_seconds": True}),
 ])
 def test_authentication_uat_never_retries_other_rejections(
@@ -680,11 +697,26 @@ def test_authentication_uat_never_retries_other_rejections(
 
 def test_authentication_uat_retry_budget_is_bounded(monkeypatch) -> None:
     busy = HttpResponse(429, {"code": "RATE_LIMITED", "detail": {
-        "auth_admission_retry": True, "retry_after_seconds": 30,
+        "auth_admission_retry": True, "retry_after_seconds": 150,
     }})
     http = FakeHttp([busy, busy, busy])
     suite = UatSuite(http, None, {})
     delays = []
     monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
     assert suite._authentication_request("/api/v1/web/auth/login", payload={}) == busy
-    assert delays == [30, 30] and len(http.calls) == 3
+    assert delays == [150, 150] and len(http.calls) == 3
+
+
+def test_cleanup_reports_only_http_status_and_never_error_payload() -> None:
+    rollback = RollbackStack()
+
+    def http_failure() -> None:
+        raise UatFailure("UAT admin write reauthentication returned HTTP 429 private-response")
+
+    def unknown_failure() -> None:
+        raise RuntimeError("private-secret-response")
+
+    rollback.defer(http_failure)
+    rollback.defer(unknown_failure)
+    assert rollback.restore() == ("RuntimeError", "UatFailure:HTTP_429")
+    assert rollback.restore() == ()

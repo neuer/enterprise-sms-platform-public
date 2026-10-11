@@ -403,6 +403,11 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
+      - name: Set up Python coverage gate runtime
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.7.12"
+          python-version: "3.12"
       - name: Install dependencies
         run: npm ci
       - name: Audit dependency lockfile
@@ -418,7 +423,19 @@ jobs:
           npm run lint
           npm run format:check
       - name: Run component tests
-        run: npm test
+        run: uv run --no-project --python 3.12 npm run test:coverage
+      - name: Verify frontend coverage evidence
+        run: >-
+          uv run --no-project --python 3.12 python ../scripts/check_frontend_coverage.py
+          verify --commit "$GITHUB_SHA"
+      - name: Upload frontend coverage evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: frontend-coverage-${{ github.sha }}
+          path: frontend/coverage/
+          if-no-files-found: error
+          retention-days: 7
 
   security:
     name: security
@@ -549,7 +566,9 @@ jobs:
               'frontend/Dockerfile',
               'frontend/package-lock.json',
               'deploy/postgres.Dockerfile',
-              'deploy/redis.Dockerfile'
+              'deploy/redis.Dockerfile',
+              'deploy/vendor-apk/**',
+              'deploy/install-retained-apk.sh'
             ) }}
           restore-keys: |
             g2-buildkit-${{ runner.os }}-
@@ -568,6 +587,7 @@ jobs:
           G2_DOCKER_CACHE_DIR: ${{ runner.temp }}/g2-buildkit-cache
           G2_NPM_CACHE_DIR: ${{ runner.temp }}/g2-npm-cache
           G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
+          G2_COLD_BUILD: ${{ github.event_name == 'schedule' && '1' || '0' }}
         run: |
           g2_args=(--mode integration)
           expected_stages="5,6,7"
@@ -588,7 +608,22 @@ jobs:
             G2_DOCKER_CACHE_DIR="$G2_DOCKER_CACHE_DIR" \
             G2_NPM_CACHE_DIR="$G2_NPM_CACHE_DIR" \
             G2_TIMING_FILE="$G2_TIMING_FILE" \
+            G2_COLD_BUILD="$G2_COLD_BUILD" \
             bash scripts/verify_all.sh "${g2_args[@]}"
+      - name: Scan the exact G2 images and independent mailer
+        run: |
+          python3 scripts/verify_image_security.py --scope g2 --output "$RUNNER_TEMP/g2-image-security"
+          python3 scripts/verify_image_security.py --scope mailer --output "$RUNNER_TEMP/mailer-image-security"
+      - name: Upload image security evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: image-security-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/g2-image-security
+            ${{ runner.temp }}/mailer-image-security
+          if-no-files-found: error
+          retention-days: 30
       - name: Render G2 timing summary
         if: ${{ always() }}
         env:

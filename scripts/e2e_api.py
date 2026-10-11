@@ -21,6 +21,12 @@ from typing import Any, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from admin_write_client import (
+    AUTH_MAX_ATTEMPTS,
+    AUTH_MAX_RETRY_AFTER_S,
+    AUTH_MAX_TOTAL_WAIT_S,
+    AdminWriteClient,
+)
 from runtime_credentials import read_secret_file
 
 CASE_IDS = tuple(
@@ -73,7 +79,16 @@ class RollbackStack:
             try:
                 callback()
             except Exception as error:  # 恢复必须继续执行其余动作
-                errors.append(type(error).__name__)
+                # 只保留固定 HTTP 状态，既能定位受保护清理失败，也不输出响应/凭据。
+                status = (
+                    re.search(
+                        r"(?:returned|failed|cleanup) HTTP ([1-5][0-9]{2})(?:$|\s)", str(error)
+                    )
+                    if isinstance(error, UatFailure) else None
+                )
+                errors.append(
+                    f"UatFailure:HTTP_{status.group(1)}" if status else type(error).__name__
+                )
         return tuple(errors)
 
 
@@ -447,11 +462,11 @@ class UatSuite:
     def _authentication_request(
         self, path: str, *, payload: object, headers: Mapping[str, str] | None = None,
     ) -> HttpResponse:
-        """仅遵循认证准入的显式可重试提示，最多等待 60 秒且最多重试三次。"""
+        """仅遵循认证准入的显式可重试提示，最多等待 360 秒且最多重试三次。"""
         if path not in {"/api/v1/web/auth/login", "/api/v1/web/admin/step-up"}:
             raise UatFailure("UAT authentication retry path is invalid")
         waited = 0
-        for attempt in range(4):
+        for attempt in range(AUTH_MAX_ATTEMPTS):
             response = self._request(
                 self.api, "POST", path, payload=payload, headers=headers,
             )
@@ -464,9 +479,9 @@ class UatSuite:
                 and isinstance(detail, dict)
                 and detail.get("auth_admission_retry") is True
                 and type(delay) is int
-                and 1 <= delay <= 30
-                and attempt < 3
-                and waited + delay <= 60
+                and 1 <= delay <= AUTH_MAX_RETRY_AFTER_S
+                and attempt + 1 < AUTH_MAX_ATTEMPTS
+                and waited + delay <= AUTH_MAX_TOTAL_WAIT_S
             ):
                 return response
             time.sleep(delay)
@@ -613,16 +628,22 @@ class UatSuite:
         self._put_config(key, value)
         return previous
 
-    def _put_config(self, key: str, value: str | None) -> None:
-        response = self._request(
-            self.api,
-            "PUT",
-            "/api/v1/web/admin/configs",
-            payload={"items": [{"key": key, "value": value}]},
-            headers=self._bearer("admin01"),
+    def _admin_writes(self) -> AdminWriteClient[HttpResponse]:
+        if self.api is None:
+            raise UatFailure("UAT client is unavailable")
+        return AdminWriteClient(
+            self.api, self.login("admin01"), self.mock_password,
+            failure=UatFailure, label="UAT admin write",
         )
+
+    def _put_config(self, key: str, value: str | None) -> None:
+        response = self._admin_writes().update_configs({key: value})
         if response.status != 200:
             raise UatFailure(f"UAT config update failed HTTP {response.status}")
+
+    def _disable_app(self, case_id: str, app_id: int) -> None:
+        response = self._admin_writes().disable_app(app_id)
+        self._expect(case_id, response, 204)
 
     def _approval(self, case_id: str, batch_no: str) -> dict[str, Any]:
         response = self._request(
@@ -1703,22 +1724,16 @@ class UatSuite:
         callback_url = "http://mock-vendor:9028/_mock/callback"
         created = self._expect(
             "20",
-            self._request(
-                self.api,
-                "POST",
-                "/api/v1/web/admin/apps",
-                payload={
-                    "name": f"uat-callback-{self.run_id}",
-                    "dept": "平台技术部",
-                    "allowed_categories": ["notice"],
-                    "daily_quota": 0,
-                    "rate_limit_per_min": 100,
-                    "blacklist_check": False,
-                    "callback_url": callback_url,
-                    "callback_report_enabled": False,
-                },
-                headers=self._bearer("admin01"),
-            ),
+            self._admin_writes().create_app({
+                "name": f"uat-callback-{self.run_id}",
+                "dept": "平台技术部",
+                "allowed_categories": ["notice"],
+                "daily_quota": 0,
+                "rate_limit_per_min": 100,
+                "blacklist_check": False,
+                "callback_url": callback_url,
+                "callback_report_enabled": False,
+            }),
             200,
         )
         app_id = created.get("id")
@@ -1731,13 +1746,7 @@ class UatSuite:
         ):
             raise UatFailure("UAT-20 callback app credentials missing")
         self.rollback.defer(
-            lambda: self._cleanup_http(
-                "20",
-                "DELETE",
-                f"/api/v1/web/admin/apps/{app_id}",
-                headers=self._bearer("admin01"),
-                allowed=(204,),
-            )
+            lambda: self._disable_app("20", app_id)
         )
         self._mock_config(
             "20",
@@ -2324,21 +2333,15 @@ class UatSuite:
     def case_29(self) -> None:
         created = self._expect(
             "29",
-            self._request(
-                self.api,
-                "POST",
-                "/api/v1/web/admin/apps",
-                payload={
-                    "name": f"uat-ipallow-{self.run_id}",
-                    "dept": "平台技术部",
-                    "allowed_categories": ["notice"],
-                    "daily_quota": 0,
-                    "rate_limit_per_min": 100,
-                    "blacklist_check": False,
-                    "allowed_ips": ["198.51.100.0/24"],
-                },
-                headers=self._bearer("admin01"),
-            ),
+            self._admin_writes().create_app({
+                "name": f"uat-ipallow-{self.run_id}",
+                "dept": "平台技术部",
+                "allowed_categories": ["notice"],
+                "daily_quota": 0,
+                "rate_limit_per_min": 100,
+                "blacklist_check": False,
+                "allowed_ips": ["198.51.100.0/24"],
+            }),
             200,
         )
         app_id = created.get("id")
@@ -2346,13 +2349,7 @@ class UatSuite:
         if not isinstance(app_id, int) or not isinstance(api_key, str):
             raise UatFailure("UAT-29 app credentials missing")
         self.rollback.defer(
-            lambda: self._cleanup_http(
-                "29",
-                "DELETE",
-                f"/api/v1/web/admin/apps/{app_id}",
-                headers=self._bearer("admin01"),
-                allowed=(204,),
-            )
+            lambda: self._disable_app("29", app_id)
         )
         denied = self._request(
             self.api,
@@ -2370,24 +2367,18 @@ class UatSuite:
 
         updated = self._expect(
             "29",
-            self._request(
-                self.api,
-                "PUT",
-                f"/api/v1/web/admin/apps/{app_id}",
-                payload={
-                    "dept": "平台技术部",
-                    "allowed_categories": ["notice"],
-                    "daily_quota": 0,
-                    "rate_limit_per_min": 100,
-                    "blacklist_check": False,
-                    "freq_override": None,
-                    "allowed_ips": ["0.0.0.0/0", "::/0"],
-                    "callback_url": None,
-                    "callback_report_enabled": False,
-                    "status": 1,
-                },
-                headers=self._bearer("admin01"),
-            ),
+            self._admin_writes().update_app(app_id, {
+                "dept": "平台技术部",
+                "allowed_categories": ["notice"],
+                "daily_quota": 0,
+                "rate_limit_per_min": 100,
+                "blacklist_check": False,
+                "freq_override": None,
+                "allowed_ips": ["0.0.0.0/0", "::/0"],
+                "callback_url": None,
+                "callback_report_enabled": False,
+                "status": 1,
+            }),
             200,
         )
         if updated.get("allowed_ips") != ["0.0.0.0/0", "::/0"]:

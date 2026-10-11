@@ -24,6 +24,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, NoReturn, Protocol, cast
 
+from development_api_port import enabled as development_api_port_enabled
+
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -1758,7 +1760,7 @@ class ReleaseManager:
 
     def _compose(self) -> list[str]:
         environment_file = self._environment_path()
-        if self._compose_argv is not None:
+        if self._compose_argv is not None and self.mode != "development":
             return list(self._compose_argv)
         command = [
             "docker",
@@ -1769,6 +1771,16 @@ class ReleaseManager:
             str(self.control_root / "deploy" / _BASE_COMPOSE_FILE),
         ]
         if self.mode == "development":
+            try:
+                publish_api = development_api_port_enabled(
+                    environment_file, mode=self.mode, environ=os.environ
+                )
+            except (OSError, UnicodeError, ValueError) as error:
+                raise ReleaseManagerError("development API port configuration rejected") from error
+            if publish_api:
+                command.extend([
+                    "-f", str(self.control_root / "deploy/docker-compose.development-api.yml")
+                ])
             self._compose_argv = tuple(command)
             return list(self._compose_argv)
         command.extend(

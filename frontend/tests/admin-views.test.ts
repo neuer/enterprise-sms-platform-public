@@ -38,7 +38,7 @@ const configs = [
     configured: true,
     beat_restart_required: false,
     updated_by: null,
-    updated_at: null,
+    updated_at: "2026-07-12T08:00:00+08:00",
     default: "5",
     min_value: null,
     max_value: 1000,
@@ -53,7 +53,7 @@ const configs = [
     configured: true,
     beat_restart_required: true,
     updated_by: null,
-    updated_at: null,
+    updated_at: "2026-07-12T08:00:00+08:00",
     default: "60",
     min_value: 10,
     max_value: 3600,
@@ -215,12 +215,13 @@ describe("审计与系统参数", () => {
       .trigger("click")
     await flushPromises()
 
+    await approveStepUp(wrapper)
     expect(ElMessageBox.confirm).toHaveBeenCalled()
     const request = fetch.mock.calls.find(([url, init]) => url === "/api/v1/web/admin/configs" && init.method === "PUT")
     expect(JSON.parse(String(request?.[1].body))).toEqual({
       items: [
-        { key: "report_poll_seconds", value: "90" },
-        { key: "alert_wecom_webhook", value: "" },
+        { key: "report_poll_seconds", value: "90", expected_updated_at: "2026-07-12T08:00:00+08:00" },
+        { key: "alert_wecom_webhook", value: "", expected_updated_at: "2026-07-12T08:00:00+08:00" },
       ],
     })
     wrapper.unmount()
@@ -252,6 +253,7 @@ describe("审计与系统参数", () => {
       .trigger("click")
     await flushPromises()
 
+    await approveStepUp(wrapper)
     expect(wrapper.text()).toContain("0 项待保存")
     wrapper.unmount()
     vi.unstubAllGlobals()

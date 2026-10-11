@@ -13,6 +13,7 @@ from typing import Any, Protocol
 from urllib.parse import urlsplit
 
 from app.core.apikey import issue_api_key_record
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.runtime_policy import (
@@ -23,9 +24,7 @@ from app.services.runtime_policy import (
 
 VALID_CATEGORIES = frozenset({"verify", "notice", "market"})
 DEFAULT_CATEGORIES = frozenset({"notice"})
-FREQ_OVERRIDE_KEYS = frozenset(
-    {"verify_per_minute", "verify_per_day", "market_per_day"}
-)
+FREQ_OVERRIDE_KEYS = frozenset({"verify_per_minute", "verify_per_day", "market_per_day"})
 MAX_ALLOWED_IPS = 50
 MAX_EXEMPTION_DAYS = 90
 LOGGER = logging.getLogger(__name__)
@@ -92,17 +91,54 @@ class AppRepository(Protocol):
 
     async def get(self, app_id: int) -> dict[str, Any] | None: ...
 
-    async def create(self, **values: Any) -> int: ...
+    async def create(self, *, authorization: AdminAuthorization, **values: Any) -> int: ...
 
-    async def update(self, app_id: int, **values: Any) -> dict[str, Any]: ...
+    async def update(
+        self,
+        app_id: int,
+        *,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+        **values: Any,
+    ) -> dict[str, Any]: ...
 
-    async def disable(self, app_id: int, actor: str, ip: str) -> None: ...
+    async def disable(
+        self,
+        app_id: int,
+        actor: str,
+        ip: str,
+        *,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+    ) -> None: ...
 
-    async def rotate_key(self, app_id: int, **values: Any) -> None: ...
+    async def rotate_key(
+        self,
+        app_id: int,
+        *,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+        **values: Any,
+    ) -> None: ...
 
-    async def revoke_old_key(self, app_id: int, actor: str, ip: str) -> None: ...
+    async def revoke_old_key(
+        self,
+        app_id: int,
+        actor: str,
+        ip: str,
+        *,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+    ) -> None: ...
 
-    async def rotate_callback_secret(self, app_id: int, **values: Any) -> None: ...
+    async def rotate_callback_secret(
+        self,
+        app_id: int,
+        *,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+        **values: Any,
+    ) -> None: ...
 
 
 def utc_now() -> datetime:
@@ -134,17 +170,13 @@ class CallbackUrlValidator:
         self,
         allow_cidrs: str | Sequence[str],
         *,
-        deployment_allow_cidrs: Sequence[
-            ipaddress.IPv4Network | ipaddress.IPv6Network
-        ]
+        deployment_allow_cidrs: Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network]
         | None = None,
         deployment_allow_ports: Collection[int] = (80, 443),
         resolver: Callable[[str], Sequence[str]] = _resolve_addresses,
         allow_http: bool = False,
     ) -> None:
-        raw_cidrs = (
-            allow_cidrs.split(",") if isinstance(allow_cidrs, str) else allow_cidrs
-        )
+        raw_cidrs = allow_cidrs.split(",") if isinstance(allow_cidrs, str) else allow_cidrs
         try:
             requested = ",".join(raw_cidrs)
             if deployment_allow_cidrs is None:
@@ -157,9 +189,7 @@ class CallbackUrlValidator:
         except InvalidRuntimePolicy as exc:
             raise InvalidAppConfig(str(exc)) from exc
         self.allowed_ports = frozenset(deployment_allow_ports)
-        if not self.allowed_ports or any(
-            port < 1 or port > 65535 for port in self.allowed_ports
-        ):
+        if not self.allowed_ports or any(port < 1 or port > 65535 for port in self.allowed_ports):
             raise InvalidAppConfig("callback 部署端口边界无效")
         self.resolver = resolver
         self.allow_http = allow_http
@@ -261,9 +291,7 @@ class AppManagementService:
             or not 1 <= config.max_in_flight_chunks <= 100_000
         ):
             raise InvalidAppConfig("配额或限流参数无效")
-        if config.admission_exempt_note is not None and len(
-            config.admission_exempt_note
-        ) > 200:
+        if config.admission_exempt_note is not None and len(config.admission_exempt_note) > 200:
             raise InvalidAppConfig("豁免原因最长 200 字")
         self._validate_production_admission(config)
         if config.freq_override is not None and (
@@ -372,7 +400,7 @@ class AppManagementService:
             "ip_allowlist_exempt_until": config.ip_allowlist_exempt_until,
             "unlimited_quota_exempt_until": config.unlimited_quota_exempt_until,
             "admission_exempt_note": (
-                config.admission_exempt_note.strip()
+                (config.admission_exempt_note.strip() or None)
                 if config.admission_exempt_note
                 else None
             ),
@@ -401,7 +429,9 @@ class AppManagementService:
             raise AppNotFound("应用不存在")
         return app
 
-    async def create(self, config: AppCreate, *, actor: str, ip: str) -> dict[str, Any]:
+    async def create(
+        self, config: AppCreate, *, actor: str, ip: str, authorization: AdminAuthorization
+    ) -> dict[str, Any]:
         values = await self._config_values(config)
         issued_token = self.token_factory()
         values.update(self._key_values(issued_token))
@@ -414,7 +444,9 @@ class AppManagementService:
             )
         else:
             values["callback_secret_enc"] = None
-        app_id = await self.repository.create(**values, actor=actor, ip=ip)
+        app_id = await self.repository.create(
+            **values, actor=actor, ip=ip, authorization=authorization
+        )
         return {"id": app_id, "api_key": issued_token, "callback_secret": callback_secret}
 
     async def update(
@@ -424,6 +456,8 @@ class AppManagementService:
         *,
         actor: str,
         ip: str,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
     ) -> dict[str, Any]:
         values = await self._config_values(config)
         if config.callback_url:
@@ -437,12 +471,36 @@ class AppManagementService:
             **values,
             actor=actor,
             ip=ip,
+            authorization=authorization,
+            expected_updated_at=expected_updated_at,
         )
 
-    async def disable(self, app_id: int, *, actor: str, ip: str) -> None:
-        await self.repository.disable(app_id, actor, ip)
+    async def disable(
+        self,
+        app_id: int,
+        *,
+        actor: str,
+        ip: str,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+    ) -> None:
+        await self.repository.disable(
+            app_id,
+            actor,
+            ip,
+            authorization=authorization,
+            expected_updated_at=expected_updated_at,
+        )
 
-    async def rotate_key(self, app_id: int, *, actor: str, ip: str) -> dict[str, Any]:
+    async def rotate_key(
+        self,
+        app_id: int,
+        *,
+        actor: str,
+        ip: str,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+    ) -> dict[str, Any]:
         issued_token = self.token_factory()
         expires_at = self.clock() + self.key_grace
         await self.repository.rotate_key(
@@ -451,11 +509,27 @@ class AppManagementService:
             old_key_expires_at=expires_at,
             actor=actor,
             ip=ip,
+            authorization=authorization,
+            expected_updated_at=expected_updated_at,
         )
         return {"api_key": issued_token, "old_key_expires_at": expires_at}
 
-    async def revoke_old_key(self, app_id: int, *, actor: str, ip: str) -> None:
-        await self.repository.revoke_old_key(app_id, actor, ip)
+    async def revoke_old_key(
+        self,
+        app_id: int,
+        *,
+        actor: str,
+        ip: str,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+    ) -> None:
+        await self.repository.revoke_old_key(
+            app_id,
+            actor,
+            ip,
+            authorization=authorization,
+            expected_updated_at=expected_updated_at,
+        )
 
     async def rotate_callback_secret(
         self,
@@ -463,6 +537,8 @@ class AppManagementService:
         *,
         actor: str,
         ip: str,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
     ) -> dict[str, str]:
         callback_secret = self.token_factory()
         current = await self.repository.get(app_id)
@@ -476,5 +552,7 @@ class AppManagementService:
             ),
             actor=actor,
             ip=ip,
+            authorization=authorization,
+            expected_updated_at=expected_updated_at,
         )
         return {"callback_secret": callback_secret}

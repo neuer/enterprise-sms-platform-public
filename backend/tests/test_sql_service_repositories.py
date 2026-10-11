@@ -787,23 +787,19 @@ async def test_reschedule_uses_runtime_approval_expiry(
 async def test_recovery_repository_selects_only_recoverable_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    connection = FakeConnection(
-        [
-            FakeResult(rows=[]),
-            FakeResult(rowcount=1),
-            FakeResult(rows=[{"batch_no": "batch-1", "category": "notice"}]),
-            FakeResult(rows=[{"batch_no": "batch-2", "category": "market", "chunk_id": 8}]),
-            FakeResult(),
-            FakeResult(),
-            FakeResult(),
-            FakeResult(),
-            FakeResult(),
-            FakeResult(),
-            FakeResult(),
-            FakeResult(rowcount=1),  # re-arm batch.ready
-            FakeResult(rowcount=1),  # re-arm chunk.ready
-        ]
-    )
+    class RecoveryConnection(FakeConnection):
+        async def execute(self, statement, params=None):
+            sql = " ".join(str(statement).split())
+            self.calls.append((str(statement), params))
+            if "SELECT trim(batch_no) batch_no,category" in sql:
+                return FakeResult(rows=[{"batch_no": "batch-1", "category": "notice"}])
+            if "SELECT trim(b.batch_no) batch_no,b.category,c.id chunk_id" in sql:
+                return FakeResult(
+                    rows=[{"batch_no": "batch-2", "category": "market", "chunk_id": 8}]
+                )
+            return FakeResult()
+
+    connection = RecoveryConnection([])
     engine = FakeEngine(connection)
     monkeypatch.setattr(
         reconcile_repository_module,
@@ -827,7 +823,7 @@ async def test_recovery_repository_selects_only_recoverable_work(
         ("batch", "batch-1", None),
         ("chunk", "batch-2", 8),
     ]
-    recovery_sql = connection.calls[1][0]
+    recovery_sql = next(sql for sql, _ in connection.calls if "WITH repaired AS" in sql)
     assert "UPDATE sms_chunk" in recovery_sql
     assert "vendor_test_send_attempt" in recovery_sql
     assert "status='reserved'" in recovery_sql
@@ -846,7 +842,7 @@ async def test_recovery_repository_selects_only_recoverable_work(
     assert "c.status='submitted'" in recovery_sql
     assert "b.updated_at" not in recovery_sql
     assert "5 minutes" in recovery_sql
-    enqueue_sql = connection.calls[3][0]
+    enqueue_sql = next(sql for sql, _ in connection.calls if "SELECT trim(b.batch_no)" in sql)
     assert "c.status='pending'" in enqueue_sql
     assert "retrying" in enqueue_sql
     assert "failover_pending" in enqueue_sql
@@ -1351,6 +1347,7 @@ async def test_terminalize_unknown_locks_and_enqueues_final_callback(
     connection = FakeConnection(
         [
             FakeResult(rows=[{"chunk_id": 3, "batch_id": 8}]),
+            FakeResult(),
             FakeResult(rowcount=1),
             FakeResult(),
             FakeResult(rows=[{"id": 8, "status": "completed_unknown", "unknown_cnt": 2}]),
@@ -1362,10 +1359,11 @@ async def test_terminalize_unknown_locks_and_enqueues_final_callback(
         UncertainChunk(3, "custom-3", datetime(2026, 7, 10, 8, 0, tzinfo=UTC))
     )
 
-    assert "FOR UPDATE OF c, b" in connection.calls[0][0]
-    assert "unknown_terminal" in connection.calls[1][0]
-    assert "status='unknown'" in connection.calls[2][0]
-    assert "completed_unknown" in connection.calls[3][0]
+    assert "FOR UPDATE OF c" in connection.calls[0][0]
+    assert "SELECT id FROM sms_batch" in connection.calls[1][0]
+    assert "unknown_terminal" in connection.calls[2][0]
+    assert "status='unknown'" in connection.calls[3][0]
+    assert "completed_unknown" in connection.calls[4][0]
     assert "phone_enc" not in "".join(sql for sql, _params in connection.calls)
     assert enqueued == [8]
     assert emitted[0]["alert_type"] == "uncertain_terminal"

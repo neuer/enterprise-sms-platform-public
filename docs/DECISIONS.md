@@ -1671,3 +1671,33 @@
   `translate(request_id::text,'0123456789','ghijklmnop')` 直接关联；base32 也不含 `1`，
   但无法在 SQL 内还原。`correlation_id` 列由触发器强制写入请求链路 ID，不能挪作他用。
 - 影响：旧审计行仍是 `request_id`/`operation_id` 原值键，查询历史时两种键都要覆盖。
+
+
+## D120 高风险管理写入的完整参数绑定与跨角色授权锁
+
+- 决策：复用现有 300 秒单次 step-up。六类应用写入、全局配置、安全日报配置必须
+  重认证；账号及 Provider 管理保留原有要求。仓储按实际写入重新计算规范意图，
+  不信任客户端摘要或仅有操作名的授权。应用用已有 updated_at，系统参数逐项用
+  expected_updated_at，日报用已有 config_version；冲突必须重新读取并认证。
+- 决策：auth 角色先取统一管理员锁和主体共享锁，再由 accept 角色检查目标版本、
+  写业务及审计，提交后释放授权锁。同事务内的账号／Provider 操作仍使用更新锁。
+  共享锁阻止撤权更新，同时允许另一事务审计外键的 KEY SHARE，避免自行阻塞。
+  不新增角色权限，不把共享连接池的 dispose 变为每请求 close。
+- 凭据合同：授权的是对指定目标保留／替换／清空凭据；不宣称绑定具体秘密值，
+  不把密码、Key、密文或可离线猜测摘要放入 intent。前端冻结本次参数，关闭或
+  会话变化时取消迟到结果；一次性明文返回保持 no-store，令牌消费后失败不退还。
+- 日报先提交配置、file_pending 和审计，再由现有 FileSecurityDailyControl 按版本
+  发布文件；失败保留明确发布状态，不宣称数据库与文件天然原子。授权或版本
+  检查失败不得进入文件发布阶段。
+- 验证：真实 auth／accept 角色的配置、应用、日报事务测试；真实 JWT、Argon2、
+  Redis Lua、回环 HTTP 与临时配置文件的路由测试。完整登录准入及发送容量不由
+  这些专项测试替代，统一门禁仍须在最终候选上通过。
+
+
+## D121 Refresh Cookie 生产前缀与强制重新登录迁移
+
+- 背景：现有 Cookie 在 HTTPS 下能够删除，F-21 属于加固；不将属性统一表述为已证实的登出漏洞修复。
+- 决策：生产采用 `__Secure-sms_refresh_token`，开发/测试保留 `sms_refresh_token`；保留受限 Path `/api/v1/web/auth`，不采用要求根路径的 `__Host-`。设置与删除共享 Secure、HttpOnly、SameSite=Lax 及无 Domain 策略。
+- 迁移：生产旧名立即失去刷新资格，用户须重新登录。经过完整口令认证后仍可用旧值撤销原 Family，随后删除旧名；不保留双凭据认证窗口。重复同名/多个 Header/两个名称并存均拒绝，不依赖框架最后值覆盖。主动 Logout 在 Cookie 歧义时仍使用合法 Bearer 撤销当前会话。
+- 边界：服务只能清理约定的 host-only Path；其他 Domain/Path 导致的重复输入继续失败关闭。生产刷新对 HTTP 失败关闭。普通业务迟到 Bearer 错误不触碰 Cookie，access-only、同源、tab binding、轮换与 Web Storage 合同不变。
+- 回退：旧版本不识别生产新名，回退需要重新登录；禁止为无感回退永久接受双来源。真实浏览器证据须分别覆盖 HTTPS 生产与 HTTP 开发，HTTPX CookieJar 只作路由回归，不能证明浏览器前缀执行。

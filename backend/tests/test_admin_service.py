@@ -6,6 +6,7 @@ from ipaddress import ip_network
 import pytest
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.services.admin import (
     AdminService,
     AuditQuery,
@@ -13,7 +14,20 @@ from app.services.admin import (
     ConfigRow,
     ConfigUpdate,
     InvalidAdminQuery,
+    config_write_parameters,
 )
+from app.services.admin_step_up import AdminIntent, admin_intent
+
+REVISION = datetime(2026, 1, 2, tzinfo=UTC)
+
+
+def grant(updates):
+    try:
+        intent = admin_intent("config_update", "default", config_write_parameters(updates))
+    except InvalidAdminQuery:
+        intent = AdminIntent("config_update", "default", "invalid-input-unit-only")
+    return AdminAuthorization(1, 10, 1, "local", intent)
+
 
 ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 
@@ -57,6 +71,7 @@ class FakeRepository:
         self,
         updates: tuple[ConfigUpdate, ...],
         *,
+        authorization: AdminAuthorization,
         principal: SecurityPrincipal,
         ip: str,
     ) -> tuple[ConfigRow, ...]:
@@ -119,33 +134,51 @@ async def test_config_update_validates_types_duplicates_and_sensitive_keep_seman
 
     await service.update_configs(
         (
-            ConfigUpdate("vendor_qps", "8"),
-            ConfigUpdate("unsubscribe_auto_append", "false"),
-            ConfigUpdate("alert_wecom_webhook", None),
+            ConfigUpdate("vendor_qps", "8", REVISION),
+            ConfigUpdate("unsubscribe_auto_append", "false", REVISION),
+            ConfigUpdate("alert_wecom_webhook", None, REVISION),
         ),
         principal=ADMIN,
         ip="10.0.0.8",
+        authorization=grant(
+            (
+                ConfigUpdate("vendor_qps", "8", REVISION),
+                ConfigUpdate("unsubscribe_auto_append", "false", REVISION),
+                ConfigUpdate("alert_wecom_webhook", None, REVISION),
+            )
+        ),
     )
 
     assert repository.updates[0][0] == (
-        ConfigUpdate("vendor_qps", "8"),
-        ConfigUpdate("unsubscribe_auto_append", "false"),
+        ConfigUpdate("vendor_qps", "8", REVISION),
+        ConfigUpdate("unsubscribe_auto_append", "false", REVISION),
+        ConfigUpdate("alert_wecom_webhook", None, REVISION),
     )
     with pytest.raises(InvalidAdminQuery, match="重复"):
         await service.update_configs(
-            (ConfigUpdate("vendor_qps", "5"), ConfigUpdate("vendor_qps", "6")),
+            (ConfigUpdate("vendor_qps", "5", REVISION), ConfigUpdate("vendor_qps", "6", REVISION)),
             principal=ADMIN,
             ip="10.0.0.8",
+            authorization=grant(
+                (
+                    ConfigUpdate("vendor_qps", "5", REVISION),
+                    ConfigUpdate("vendor_qps", "6", REVISION),
+                )
+            ),
         )
     with pytest.raises(InvalidAdminQuery, match="正整数"):
         await service.update_configs(
-            (ConfigUpdate("vendor_qps", "0"),), principal=ADMIN, ip="10.0.0.8"
+            (ConfigUpdate("vendor_qps", "0", REVISION),),
+            principal=ADMIN,
+            ip="10.0.0.8",
+            authorization=grant((ConfigUpdate("vendor_qps", "0", REVISION),)),
         )
     with pytest.raises(InvalidAdminQuery, match="布尔"):
         await service.update_configs(
-            (ConfigUpdate("unsubscribe_auto_append", "yes"),),
+            (ConfigUpdate("unsubscribe_auto_append", "yes", REVISION),),
             principal=ADMIN,
             ip="10.0.0.8",
+            authorization=grant((ConfigUpdate("unsubscribe_auto_append", "yes", REVISION),)),
         )
 
 
@@ -231,7 +264,10 @@ async def test_invalid_semantic_config_is_rejected_before_any_write(
 
     with pytest.raises(InvalidAdminQuery):
         await AdminService(repository).update_configs(
-            (ConfigUpdate(key, value),), principal=ADMIN, ip="10.0.0.8"
+            (ConfigUpdate(key, value, REVISION),),
+            principal=ADMIN,
+            ip="10.0.0.8",
+            authorization=grant((ConfigUpdate(key, value, REVISION),)),
         )
 
     assert repository.updates == []
@@ -244,11 +280,17 @@ async def test_cross_field_config_is_validated_atomically() -> None:
     with pytest.raises(InvalidAdminQuery, match="reserved_realtime_qps"):
         await AdminService(repository).update_configs(
             (
-                ConfigUpdate("vendor_qps", "8"),
-                ConfigUpdate("reserved_realtime_qps", "8"),
+                ConfigUpdate("vendor_qps", "8", REVISION),
+                ConfigUpdate("reserved_realtime_qps", "8", REVISION),
             ),
             principal=ADMIN,
             ip="10.0.0.8",
+            authorization=grant(
+                (
+                    ConfigUpdate("vendor_qps", "8", REVISION),
+                    ConfigUpdate("reserved_realtime_qps", "8", REVISION),
+                )
+            ),
         )
 
     assert repository.updates == []
@@ -270,9 +312,10 @@ async def test_alert_egress_config_is_rejected_before_write(key: str, value: str
             repository,
             allowed_smtp_hosts={"smtp", "mail.internal"},
         ).update_configs(
-            (ConfigUpdate(key, value),),
+            (ConfigUpdate(key, value, REVISION),),
             principal=ADMIN,
             ip="10.0.0.8",
+            authorization=grant((ConfigUpdate(key, value, REVISION),)),
         )
 
     assert repository.updates == []
@@ -288,11 +331,17 @@ async def test_active_smtp_egress_config_is_rejected_before_write() -> None:
             allowed_smtp_hosts={"smtp", "mail.internal"},
         ).update_configs(
             (
-                ConfigUpdate("alert_mail_to", "ops@example.com"),
-                ConfigUpdate("alert_smtp_host", "attacker.internal"),
+                ConfigUpdate("alert_mail_to", "ops@example.com", REVISION),
+                ConfigUpdate("alert_smtp_host", "attacker.internal", REVISION),
             ),
             principal=ADMIN,
             ip="10.0.0.8",
+            authorization=grant(
+                (
+                    ConfigUpdate("alert_mail_to", "ops@example.com", REVISION),
+                    ConfigUpdate("alert_smtp_host", "attacker.internal", REVISION),
+                )
+            ),
         )
 
     assert repository.updates == []
@@ -306,12 +355,13 @@ async def test_inactive_smtp_host_does_not_block_unrelated_config_updates() -> N
         repository,
         allowed_smtp_hosts={"mail.internal"},
     ).update_configs(
-        (ConfigUpdate("vendor_qps", "8"),),
+        (ConfigUpdate("vendor_qps", "8", REVISION),),
         principal=ADMIN,
         ip="10.0.0.8",
+        authorization=grant((ConfigUpdate("vendor_qps", "8", REVISION),)),
     )
 
-    assert repository.updates[0][0] == (ConfigUpdate("vendor_qps", "8"),)
+    assert repository.updates[0][0] == (ConfigUpdate("vendor_qps", "8", REVISION),)
 
 
 @pytest.mark.asyncio
@@ -323,9 +373,10 @@ async def test_callback_admin_policy_cannot_expand_deployment_maximum() -> None:
             repository,
             callback_egress_networks=(ip_network("10.20.0.0/16"),),
         ).update_configs(
-            (ConfigUpdate("callback_allow_cidrs", "10.0.0.0/8"),),
+            (ConfigUpdate("callback_allow_cidrs", "10.0.0.0/8", REVISION),),
             principal=ADMIN,
             ip="10.0.0.8",
+            authorization=grant((ConfigUpdate("callback_allow_cidrs", "10.0.0.0/8", REVISION),)),
         )
 
     assert repository.updates == []
@@ -339,9 +390,10 @@ async def test_empty_callback_deployment_does_not_block_unrelated_config_updates
         repository,
         callback_egress_networks=(),
     ).update_configs(
-        (ConfigUpdate("vendor_qps", "8"),),
+        (ConfigUpdate("vendor_qps", "8", REVISION),),
         principal=ADMIN,
         ip="10.0.0.8",
+        authorization=grant((ConfigUpdate("vendor_qps", "8", REVISION),)),
     )
 
-    assert repository.updates[0][0] == (ConfigUpdate("vendor_qps", "8"),)
+    assert repository.updates[0][0] == (ConfigUpdate("vendor_qps", "8", REVISION),)

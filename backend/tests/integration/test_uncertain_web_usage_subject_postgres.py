@@ -119,23 +119,7 @@ class PolicyStore(EngineBoundStore):
         return ["违禁"] if self.sensitive else []
 
 
-class FakeFrequency:
-    def __init__(self, *, allow: bool = True) -> None:
-        self.allow_next = allow
 
-    async def allow(self, *_args: object, **_kwargs: object) -> bool:
-        return self.allow_next
-
-
-class FakeQuota:
-    async def reserve(self, **_values: object) -> None:
-        return None
-
-    async def refund(self, **_values: object) -> None:
-        return None
-
-    async def refund_reservation(self, **_values: object) -> None:
-        return None
 
 
 class FakePublisher:
@@ -371,7 +355,7 @@ async def _insert_unknown(
 
 def _pipeline(
     store: SqlPipelineStore,
-    ledger: UsageLedgerService | None,
+    ledger: UsageLedgerService,
     redis: Any,
     *,
     admission: Any = None,
@@ -381,8 +365,8 @@ def _pipeline(
         store=store,
         idempotency=IdempotencyCoordinator(redis, store),
         crypto=_crypto(),
-        frequency=frequency or FakeFrequency(),
-        quota=FakeQuota(),
+
+
         publisher=FakePublisher(),
         usage_ledger=ledger,
         admission_guard=admission,

@@ -24,6 +24,8 @@ GATE_CONTRACT_TESTS = (
     "tests/test_gate_execution.py",
     "tests/test_gate_evidence.py",
     "tests/test_coverage_gates.py",
+    "tests/test_frontend_coverage_gates.py",
+    "tests/test_operations_coverage.py",
     "tests/test_call_order.py",
     "tests/test_gate_scripts.py",
 )
@@ -49,6 +51,7 @@ SPLIT_MODULE_PARTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "services/usage_ledger_release.py",
         ),
         "tasks/send_repository.py": (
+            "tasks/send_repository_contracts.py",
             "tasks/send_repository_attempt.py",
             "tasks/send_repository_failover.py",
             "tasks/send_repository_payload.py",

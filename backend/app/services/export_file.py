@@ -8,11 +8,13 @@ import io
 import json
 import os
 import re
+import stat
 import struct
 from collections.abc import AsyncIterable, Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from threading import Lock
 from typing import BinaryIO
 from uuid import UUID
 
@@ -101,6 +103,82 @@ class _CiphertextDigest:
 
     def hexdigest(self) -> str:
         return self._digest.hexdigest()
+
+
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+
+
+class PreparedExportDownload:
+    """持有完整认证后的密文描述符；拒绝路径替换，不创建明文中间文件。"""
+
+    def __init__(
+        self, codec: ExportFileCodec, path: Path, source: BinaryIO, directory_fd: int,
+        *, task_id: int, lease_id: UUID, version: int, legacy: bool,
+        identity: tuple[int, int, int, int, int], row_count: int | None,
+    ) -> None:
+        self.codec = codec
+        self.path = path
+        self.source = source
+        self.directory_fd = directory_fd
+        self.task_id = task_id
+        self.lease_id = lease_id
+        self.version = version
+        self.legacy = legacy
+        self.identity = identity
+        self.row_count = row_count
+        self._started = False
+        self._close_lock = Lock()
+
+    @property
+    def closed(self) -> bool:
+        return self.source.closed
+
+    def close(self) -> None:
+        """拒绝、响应取消和流完成均可重复调用，不依赖垃圾回收。"""
+
+        with self._close_lock:
+            try:
+                self.source.close()
+            finally:
+                if self.directory_fd >= 0:
+                    descriptor, self.directory_fd = self.directory_fd, -1
+                    os.close(descriptor)
+
+    def _assert_descriptor(self) -> None:
+        if self.closed or _file_identity(os.fstat(self.source.fileno())) != self.identity:
+            raise ValueError("export ciphertext resource changed")
+
+    def assert_current(self) -> None:
+        """在最终授权事务内以固定目录描述符复核路径仍指向已验证资源。"""
+
+        self._assert_descriptor()
+        current = os.stat(self.path.name, dir_fd=self.directory_fd, follow_symlinks=False)
+        if not stat.S_ISREG(current.st_mode) or _file_identity(current) != self.identity:
+            raise ValueError("export ciphertext resource changed")
+
+    def iter_decrypted(self) -> Iterator[bytes]:
+        """只读取已验证的同一描述符，流式逐帧认证且始终关闭资源。"""
+
+        if self._started:
+            raise ValueError("export stream already started")
+        self._started = True
+        try:
+            self._assert_descriptor()
+            self.source.seek(len(MAGIC) + VERSION_SIZE)
+            frames = (
+                self.codec._iter_legacy(self.source, self.version)
+                if self.legacy else self.codec._iter_v2(
+                    self.source, self.version, self.task_id, self.lease_id,
+                    verify_terminal=False,
+                )
+            )
+            for plaintext in frames:
+                self._assert_descriptor()
+                yield plaintext
+            self._assert_descriptor()
+        finally:
+            self.close()
 
 
 def _csv_cell(value: object) -> str:
@@ -426,6 +504,69 @@ class ExportFileCodec:
                 lease_id,
                 verify_terminal=False,
             )
+
+    def prepare_download(
+        self, raw_path: str | Path, *, expected_task_id: int,
+    ) -> PreparedExportDownload:
+        """无副作用完整认证并保留文件句柄，必须在令牌消费和响应头之前完成。"""
+
+        # 不先 resolve 文件名，否则会隐藏符号链接；目录本身由初始化固定。
+        path = Path(raw_path).absolute()
+        match = EXPORT_FILENAME.fullmatch(path.name)
+        if (
+            path.parent != self.root or match is None
+            or int(match.group("task_id")) != expected_task_id
+        ):
+            raise ValueError("export ciphertext does not belong to authorized export task")
+        lease_id = UUID(match.group("lease_id"))
+        directory_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        source: BinaryIO | None = None
+        try:
+            descriptor = os.open(
+                path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd,
+            )
+            try:
+                source = os.fdopen(descriptor, "rb")
+            except BaseException:
+                os.close(descriptor)
+                raise
+            attributes = os.fstat(source.fileno())
+            if not stat.S_ISREG(attributes.st_mode):
+                raise ValueError("export ciphertext is not a regular file")
+            identity = _file_identity(attributes)
+            header = source.read(len(MAGIC) + VERSION_SIZE)
+            if len(header) != len(MAGIC) + VERSION_SIZE or not header.startswith(
+                (MAGIC, LEGACY_MAGIC)
+            ):
+                raise ValueError("truncated or invalid export header")
+            version = int.from_bytes(header[len(MAGIC):], "big")
+            legacy = header.startswith(LEGACY_MAGIC)
+            accepted: list[ExportReadyFile] = []
+            if legacy:
+                if self.reject_legacy:
+                    raise ValueError("legacy export format rejected")
+                for _ in self._iter_legacy(source, version):
+                    pass
+            else:
+                digest = _CiphertextDigest()
+                digest.update(header)
+                for _ in self._iter_v2(
+                    source, version, expected_task_id, lease_id, digest=digest,
+                    require_manifest=False, accepted=accepted,
+                ):
+                    pass
+            prepared = PreparedExportDownload(
+                self, path, source, directory_fd, task_id=expected_task_id, lease_id=lease_id,
+                version=version, legacy=legacy, identity=identity,
+                row_count=accepted[0].row_count if accepted else None,
+            )
+            prepared.assert_current()
+            return prepared
+        except BaseException:
+            if source is not None:
+                source.close()
+            os.close(directory_fd)
+            raise
 
     def _iter_v2(
         self,

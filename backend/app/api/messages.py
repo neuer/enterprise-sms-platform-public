@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Any, Literal, cast
 
-from fastapi import APIRouter, Depends, Query, Request, Response, Security
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -14,7 +14,9 @@ from app.api.vendor_control_ready import raise_vendor_control_unavailable
 from app.core.apikey import ApiAppContext, optional_api_app, require_api_app
 from app.core.audit import audited
 from app.core.auth.accounts import ActorPrincipal, ApplicationPrincipal
-from app.core.auth.runtime import get_auth_facade
+from app.core.auth.department import require_account_department
+from app.core.auth.jwt import JwtClaims
+from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.runtime_resources import redis_client
@@ -28,7 +30,7 @@ from app.services.batch_query import BatchAccessScope, BatchNotFound, BatchQuery
 from app.services.blacklist import BlacklistCacheUnavailable
 from app.services.category import CategoryNotAllowed
 from app.services.crypto import CryptoService, ProtectedPhone
-from app.services.freq import FrequencyFenceLost, FrequencyLimiter
+from app.services.freq import FrequencyFenceLost
 from app.services.idempotency import IdempotencyCoordinationTimeout, IdempotencyCoordinator
 from app.services.pipeline import (
     AcceptCommitConflict,
@@ -292,8 +294,8 @@ async def _pipeline(app: ApiAppContext) -> SendPipeline:
         store=store,
         idempotency=IdempotencyCoordinator(redis, store),
         crypto=crypto,
-        frequency=FrequencyLimiter(redis),
-        quota=QuotaService(redis),
+
+
         publisher=CeleryQueuePublisher(),
         templates=SqlTemplateRenderer(settings),
         signs=SignResolver(SqlSignRepository(settings)),
@@ -325,12 +327,44 @@ def _batch_queries() -> BatchQueryService:
     return BatchQueryService(settings, CryptoService.from_settings(settings))
 
 
-async def require_batch_writer(
+def get_batch_auth_facade(
     app: Annotated[ApiAppContext | None, Depends(optional_api_app)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(bearer_scheme)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> AuthFacade | None:
+    """API Key 入口不构造 Web 认证资源，缺凭据时也不读取认证密钥。"""
+    if isinstance(app, ApiAppContext):
+        return None
+    if credentials is None or credentials.scheme.casefold() != "bearer":
+        raise ApiError(401, "UNAUTHORIZED", "缺少有效认证凭据", None)
+    return get_auth_facade()
+
+
+async def require_batch_actor(
+    app: Annotated[ApiAppContext | None, Depends(optional_api_app)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    facade: Annotated[AuthFacade | None, Depends(get_batch_auth_facade)],
+) -> ApiAppContext | JwtClaims:
+    """保持 API Key 优先入口，并在请求内只解析一次 Web 主体。"""
+    if isinstance(app, ApiAppContext):
+        return app
+    if credentials is None or credentials.scheme.casefold() != "bearer":
+        raise ApiError(401, "UNAUTHORIZED", "缺少有效认证凭据", None)
+    assert facade is not None
+    return await facade.verify(credentials.credentials)
+
+
+async def require_batch_reader(
+    actor: Annotated[ApiAppContext | JwtClaims, Depends(require_batch_actor)],
+) -> BatchAccessScope:
+    """只从已认证主体构造原有对象范围。"""
+    return _batch_scope(actor)
+
+
+async def require_batch_writer(
+    actor: Annotated[ApiAppContext | JwtClaims, Depends(require_batch_actor)],
 ) -> BatchAccessScope:
     """在业务工厂之前校验路由已有的应用或 Web 写入主体。"""
-    return await _batch_scope(app, credentials, write=True)
+    return _batch_scope(actor, write=True)
 
 
 def get_resend_service(
@@ -376,22 +410,19 @@ async def get_scheduling_service(
     )
 
 
-async def _batch_scope(
-    app: ApiAppContext | None,
-    credentials: HTTPAuthorizationCredentials | None,
+def _batch_scope(
+    actor: ApiAppContext | JwtClaims,
     *,
     write: bool = False,
 ) -> BatchAccessScope:
-    if isinstance(app, ApiAppContext):
-        return BatchAccessScope(app_id=app.app_id)
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效认证凭据", None)
-    claims = await get_auth_facade().verify(credentials.credentials)
-    if write and claims.role not in {"operator", "admin"}:
+    if isinstance(actor, ApiAppContext):
+        return BatchAccessScope(app_id=actor.app_id)
+    require_account_department(actor.role, actor.dept)
+    if write and actor.role not in {"operator", "admin"}:
         raise ApiError(403, "FORBIDDEN", "仅操作员或管理员可修改批次", None)
-    if claims.role in {"approver", "admin"}:
+    if actor.role in {"approver", "admin"}:
         return BatchAccessScope(all_departments=True)
-    return BatchAccessScope(dept=claims.dept)
+    return BatchAccessScope(dept=actor.dept)
 
 
 def _error(error: Exception) -> ApiError:
@@ -728,13 +759,8 @@ async def get_batch(
     batch_no: str,
     request: Request,
     auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
-    app: Annotated[ApiAppContext | None, Depends(optional_api_app)],
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Security(bearer_scheme),
-    ],
+    scope: Annotated[BatchAccessScope, Depends(require_batch_reader)],
 ) -> dict[str, object]:
-    scope = await _batch_scope(app, credentials)
     try:
         result = await _batch_queries().get_batch(batch_no, scope)
     except BatchNotFound:
@@ -755,16 +781,11 @@ async def get_batch(
 )
 async def list_batch_details(
     batch_no: str,
-    app: Annotated[ApiAppContext | None, Depends(optional_api_app)],
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Security(bearer_scheme),
-    ],
+    scope: Annotated[BatchAccessScope, Depends(require_batch_reader)],
     status: Annotated[MessageStatus | None, Query()] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> dict[str, object]:
-    scope = await _batch_scope(app, credentials)
     return await _batch_queries().list_details(
         batch_no,
         scope,
@@ -783,10 +804,8 @@ async def list_batch_details(
 async def cancel_batch(
     batch_no: str,
     service: Annotated[SchedulingService, Depends(get_scheduling_cancel_service)],
-    app: Annotated[ApiAppContext | None, Depends(optional_api_app)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(bearer_scheme)],
+    scope: Annotated[BatchAccessScope, Depends(require_batch_writer)],
 ) -> Response:
-    scope = await _batch_scope(app, credentials, write=True)
     try:
         await service.cancel(batch_no, scope)
     except SchedulingConflict as error:
@@ -809,10 +828,8 @@ async def reschedule_batch(
     batch_no: str,
     payload: RescheduleRequest,
     service: Annotated[SchedulingService, Depends(get_scheduling_service)],
-    app: Annotated[ApiAppContext | None, Depends(optional_api_app)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(bearer_scheme)],
+    scope: Annotated[BatchAccessScope, Depends(require_batch_writer)],
 ) -> Response:
-    scope = await _batch_scope(app, credentials, write=True)
     try:
         await service.reschedule(batch_no, scope, payload.scheduled_at)
     except SchedulingConflict as error:
@@ -840,26 +857,16 @@ async def reschedule_batch(
 async def resend_failed_batch(
     batch_no: str,
     service: Annotated[ResendService, Depends(get_resend_service)],
-    app: Annotated[ApiAppContext | None, Depends(optional_api_app)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(bearer_scheme)],
+    batch_actor: Annotated[ApiAppContext | JwtClaims, Depends(require_batch_actor)],
+    scope: Annotated[BatchAccessScope, Depends(require_batch_writer)],
 ) -> ResendResponseModel:
     actor: ActorPrincipal | None = None
     expected_channel = "api"
-    if isinstance(app, ApiAppContext):
-        scope = BatchAccessScope(app_id=app.app_id)
-        pipeline_app = app
-        actor = ApplicationPrincipal(app.app_id, app.name, app.dept)
+    if isinstance(batch_actor, ApiAppContext):
+        pipeline_app = batch_actor
+        actor = ApplicationPrincipal(batch_actor.app_id, batch_actor.name, batch_actor.dept)
     else:
-        if credentials is None or credentials.scheme.casefold() != "bearer":
-            raise ApiError(401, "UNAUTHORIZED", "缺少有效认证凭据", None)
-        claims = await get_auth_facade().verify(credentials.credentials)
-        if claims.role not in {"operator", "admin"}:
-            raise ApiError(403, "FORBIDDEN", "仅操作员或管理员可重发", None)
-        scope = (
-            BatchAccessScope(all_departments=True)
-            if claims.role == "admin"
-            else BatchAccessScope(dept=claims.dept)
-        )
+        claims = batch_actor
         actor = claims.principal
         expected_channel = "web"
         pipeline_app = ApiAppContext(

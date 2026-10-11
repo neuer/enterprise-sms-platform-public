@@ -17,7 +17,6 @@ from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
 from app.services.app_ratelimit import ApplicationRateLimitExceeded
 from app.services.category import CategoryNotAllowed, policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
-from app.services.freq import FrequencyFenceLost
 from app.services.idempotency import (
     CLAIM_RELEASE_LUA,
     CLAIM_RENEW_LUA,
@@ -43,7 +42,6 @@ from app.services.pipeline import (
     VendorTestConsoleOnly,
 )
 from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL, SqlPipelineStore
-from app.services.quota import QuotaFenceLost
 from app.services.send_admission import SendAdmissionRejected
 from app.services.send_inflight import (
     ACTIVE_INFLIGHT_STATES,
@@ -58,6 +56,7 @@ from app.services.send_inflight import (
     release_unbound_acceptance_reservation,
     reserve_in_flight_chunks,
 )
+from app.services.usage_ledger_common import UsageProjectionUnavailable, UsageReservation
 from app.services.usage_subject import UsageSubject
 from app.services.vendor_test_guard import VendorTestRecipientDenied
 
@@ -108,17 +107,20 @@ def test_inflight_mutations_use_conservation_primitive() -> None:
         assert "apply_inflight_delta" in source
     assert inspect.getsource(apply_inflight_delta).count("def apply_inflight_delta") == 1
     assert frozenset({"reserved", "batch_bound", "materialized"}) == ACTIVE_INFLIGHT_STATES
-    assert frozenset(
-        {
-            "pending",
-            "submitting",
-            "retrying",
-            "submitted",
-            "uncertain",
-            "split_capacity_blocked",
-            "failover_pending",
-        }
-    ) == OCCUPYING_CHUNK_STATES
+    assert (
+        frozenset(
+            {
+                "pending",
+                "submitting",
+                "retrying",
+                "submitted",
+                "uncertain",
+                "split_capacity_blocked",
+                "failover_pending",
+            }
+        )
+        == OCCUPYING_CHUNK_STATES
+    )
 
 
 def test_split_expand_does_not_lock_reservation_before_balance() -> None:
@@ -275,33 +277,7 @@ class HistoricalBlacklistStore(FakeStore):
         return {self.blocked} & phone_hmacs
 
 
-class FakeFrequency:
-    def __init__(self, rejected_suffix: str = "") -> None:
-        self.rejected_suffix = rejected_suffix
-        self.calls = 0
-        self.values: list[dict[str, Any]] = []
 
-    async def allow(self, category: str, **values: Any) -> bool:
-        self.calls += 1
-        self.values.append(values)
-        if not self.rejected_suffix:
-            return True
-        return not values["phone_hmac"].endswith(self.rejected_suffix)
-
-
-class FakeQuota:
-    def __init__(self) -> None:
-        self.reservations: list[dict[str, Any]] = []
-        self.refunds: list[dict[str, Any]] = []
-
-    async def reserve(self, **values: Any) -> None:
-        self.reservations.append(values)
-
-    async def refund(self, **values: Any) -> None:
-        self.refunds.append(values)
-
-    async def refund_reservation(self, **values: Any) -> None:
-        self.refunds.append(values)
 
 
 class FakePublisher:
@@ -322,9 +298,9 @@ class FakeUsageLedger:
         self.quota: list[dict[str, Any]] = []
         self.releases: list[tuple[UUID, str]] = []
 
-    async def start_reservation(self, **values: Any) -> object:
+    async def start_reservation(self, **values: Any) -> UsageReservation:
         self.started.append(values)
-        return SimpleNamespace(reservation_id=self.reservation_id, reused=self.reused)
+        return UsageReservation(self.reservation_id, self.reused)
 
     async def allow_frequency(
         self,
@@ -380,15 +356,11 @@ class FakeUsageLedger:
 @pytest.mark.asyncio
 async def test_usage_ledger_replaces_redis_counters_and_commits_stable_reference() -> None:
     ledger = FakeUsageLedger()
-    frequency = FakeFrequency()
-    quota = FakeQuota()
     store = FakeStore()
     pipeline = SendPipeline(
         store=store,
         idempotency=FakeIdempotency(),
         crypto=rotated_crypto(),
-        frequency=frequency,
-        quota=quota,
         publisher=FakePublisher(),
         usage_ledger=ledger,
         config=PipelineConfig(),
@@ -401,8 +373,6 @@ async def test_usage_ledger_replaces_redis_counters_and_commits_stable_reference
     )
 
     assert response.batch_no == "new-batch"
-    assert frequency.calls == 0
-    assert quota.reservations == []
     assert ledger.frequency[0]["hmac_aliases"].keys() == {1, 2}
     assert ledger.quota[0]["cost"] == 1
     assert store.commands[0].usage_reservation_id == ledger.reservation_id
@@ -416,8 +386,6 @@ async def test_database_save_failure_creates_durable_usage_release_request() -> 
         store=FailingStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         usage_ledger=ledger,
         config=PipelineConfig(),
@@ -458,8 +426,6 @@ async def test_database_idempotent_reuse_releases_new_usage_facts_once() -> None
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         usage_ledger=ledger,
         config=PipelineConfig(),
@@ -494,8 +460,6 @@ async def test_database_idempotent_reuse_keeps_original_usage_facts() -> None:
         store=IdempotentStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         usage_ledger=ledger,
         config=PipelineConfig(),
@@ -517,8 +481,6 @@ async def test_reused_usage_reservation_failure_still_requests_release() -> None
         store=FailingStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         usage_ledger=ledger,
         config=PipelineConfig(),
@@ -550,8 +512,6 @@ async def test_frequency_filtered_request_releases_all_partial_usage_facts() -> 
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         usage_ledger=ledger,
         config=PipelineConfig(),
@@ -585,11 +545,10 @@ async def test_controlled_api_preauthorization_limits_once_and_is_reused_by_acce
     admission = RecordingAdmission()
     limiter = RecordingLimiter()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         acceptance_limiter=limiter,  # type: ignore[arg-type]
@@ -642,11 +601,10 @@ async def test_controlled_api_preauthorization_limits_before_category_denial() -
 
     limiter = RecordingLimiter()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         acceptance_limiter=limiter,  # type: ignore[arg-type]
@@ -671,11 +629,10 @@ async def test_console_uat_reprotects_with_current_key_and_all_blacklist_candida
     historical_hmac = current_crypto.phone_hmac("13900000001", 1)
     store = HistoricalBlacklistStore(historical_hmac)
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=current_crypto,
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         vendor_test_console_only=True,
@@ -700,11 +657,10 @@ async def test_console_uat_reprotects_with_current_key_and_all_blacklist_candida
 @pytest.mark.asyncio
 async def test_live_mode_blocks_plain_send_and_uat_market_still_requires_consent() -> None:
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         vendor_test_console_only=True,
@@ -752,14 +708,13 @@ async def test_live_test_guard_rejects_before_crypto_quota_storage_or_publish() 
 
     guard = RejectingGuard()
     store = FakeStore()
-    quota = FakeQuota()
     publisher = FakePublisher()
+    ledger = FakeUsageLedger()
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=store,
         idempotency=FakeIdempotency(),
         crypto=UnexpectedCrypto(),  # type: ignore[arg-type]
-        frequency=FakeFrequency(),
-        quota=quota,
         publisher=publisher,
         config=PipelineConfig(),
         recipient_guard=guard,
@@ -779,7 +734,7 @@ async def test_live_test_guard_rejects_before_crypto_quota_storage_or_publish() 
     assert captured.value.denied_count == 1
     assert guard.calls == [("13800138000", "13900139000")]
     assert store.commands == []
-    assert quota.reservations == []
+    assert ledger.quota == []
     assert publisher.events == []
 
 
@@ -799,11 +754,10 @@ async def test_idempotency_hit_does_not_recheck_or_resend_live_test_recipient() 
     )
     policy = policy_for_category(request.category, app.allowed_categories)
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency("existing"),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         recipient_guard=UnexpectedGuard(),
@@ -822,8 +776,6 @@ async def test_idempotency_hit_does_not_recheck_or_resend_live_test_recipient() 
 @pytest.mark.asyncio
 async def test_idempotency_short_circuits_frequency_quota_and_storage() -> None:
     store = FakeStore()
-    frequency = FakeFrequency()
-    quota = FakeQuota()
 
     class CountingLimiter:
         def __init__(self) -> None:
@@ -836,12 +788,12 @@ async def test_idempotency_short_circuits_frequency_quota_and_storage() -> None:
     request = SendRequest("verify", ["13800138000"], content="验证码123456", biz_id="biz-1")
     policy = policy_for_category(request.category, app.allowed_categories)
     limiter = CountingLimiter()
+    ledger = FakeUsageLedger()
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=store,
         idempotency=FakeIdempotency("existing"),
         crypto=crypto(),
-        frequency=frequency,
-        quota=quota,
         publisher=FakePublisher(),
         config=PipelineConfig(),
         acceptance_limiter=limiter,  # type: ignore[arg-type]
@@ -853,8 +805,8 @@ async def test_idempotency_short_circuits_frequency_quota_and_storage() -> None:
     result = await pipeline.accept(app, request)
     assert result.idempotent is True
     assert limiter.calls == 0
-    assert frequency.calls == 0
-    assert quota.reservations == []
+    assert ledger.frequency == []
+    assert ledger.quota == []
     assert store.commands == []
 
 
@@ -882,11 +834,10 @@ async def test_idempotent_replay_skips_send_limiter_when_bucket_full() -> None:
     policy = policy_for_category(request.category, app.allowed_categories)
     limiter = SendFullLimiter()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         acceptance_limiter=limiter,  # type: ignore[arg-type]
@@ -917,11 +868,10 @@ async def test_idempotent_replay_skips_send_admission_guard() -> None:
     policy = policy_for_category(request.category, app.allowed_categories)
     guard = RecordingGuard()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency("existing"),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         admission_guard=guard,
@@ -957,11 +907,10 @@ async def test_new_send_is_rejected_by_admission_before_request_limiter() -> Non
     guard = ClosedGuard()
     limiter = CountingLimiter()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         acceptance_limiter=limiter,  # type: ignore[arg-type]
@@ -988,11 +937,10 @@ async def test_accept_reauthorizes_admission_with_rendered_segment_cost() -> Non
 
     guard = RecordingGuard()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         admission_guard=guard,
@@ -1020,11 +968,10 @@ async def test_active_claim_with_different_fingerprint_conflicts_before_admissio
     idem = FakeIdempotency()
     idem.inspect_view = IdempotencyClaimView("owner", "other-fingerprint", 1)
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=idem,
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         admission_guard=ClosedGuard(),  # type: ignore[arg-type]
@@ -1050,11 +997,10 @@ async def test_expired_unlimited_quota_is_rejected_in_production(
     )
     store = FakeStore()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1083,11 +1029,10 @@ def test_web_channel_skips_expired_unlimited_quota_check(
         lambda: SimpleNamespace(environment="production"),
     )
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1120,11 +1065,10 @@ async def test_unknown_biz_id_still_hits_send_limiter() -> None:
             raise AssertionError("未知 biz_id 不得走 replay")
 
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         acceptance_limiter=SendFullLimiter(),  # type: ignore[arg-type]
@@ -1140,11 +1084,10 @@ async def test_unknown_biz_id_still_hits_send_limiter() -> None:
 async def test_market_api_bulk_requires_explicit_preauthorization() -> None:
     mobiles = [f"1380013{index:04d}" for index in range(50)]
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(market_approval_threshold=50),
     )
@@ -1175,11 +1118,10 @@ async def test_in_flight_chunk_cap_blocks_new_acceptance() -> None:
             return 200
 
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=BusyStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1197,11 +1139,10 @@ async def test_in_flight_query_failure_fails_closed() -> None:
             raise RuntimeError("database unavailable")
 
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=BrokenStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1233,11 +1174,10 @@ async def test_unbound_inflight_reservation_releases_on_accept_failure() -> None
 
     store = TrackingStore()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1280,13 +1220,12 @@ async def test_ambiguous_commit_keeps_bound_inflight_reservation() -> None:
     request = SendRequest("notice", ["13800138000"], content="通知", biz_id="bound-1")
     policy = policy_for_category(request.category, app.allowed_categories)
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(
             stored_request_hash="pending",
         ),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1303,11 +1242,10 @@ async def test_unknown_commit_does_not_release_inflight() -> None:
     store = _ReservedFailingStore()
     store.resolution = AcceptCommitResolution("UNKNOWN")
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1324,11 +1262,10 @@ async def test_conflicting_bound_commit_does_not_release_inflight() -> None:
     store = _ReservedFailingStore()
     store.resolution = AcceptCommitResolution("BOUND_TO_CONFLICTING_BATCH")
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1345,11 +1282,10 @@ async def test_unbound_commit_resolution_still_releases_inflight() -> None:
     store = _ReservedFailingStore()
     store.resolution = AcceptCommitResolution("UNBOUND")
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1391,11 +1327,10 @@ async def test_save_failure_lookup_hit_does_not_release_inflight() -> None:
     request = SendRequest("notice", ["13800138000"], content="通知", biz_id="commit-hit")
     policy = policy_for_category(request.category, app.allowed_categories)
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=CommitThenRaiseIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1411,11 +1346,10 @@ async def test_save_failure_lookup_hit_does_not_release_inflight() -> None:
 async def test_idempotency_same_key_different_hash_conflicts() -> None:
     store = FakeStore()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency("existing", stored_request_hash="other-hash"),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1439,6 +1373,7 @@ async def test_retired_fingerprint_key_version_maps_to_conflict_not_param_error(
 
     store = FakeStore()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(
             "existing",
@@ -1446,8 +1381,6 @@ async def test_retired_fingerprint_key_version_maps_to_conflict_not_param_error(
             stored_key_version=99,
         ),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1484,11 +1417,10 @@ async def test_web_idempotency_uses_web_scope_and_same_hash_returns_original() -
     store = FakeStore()
     crypto_service = crypto()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto_service,
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1524,11 +1456,10 @@ async def test_console_uat_idempotency_is_bound_to_stable_web_principal() -> Non
         notice_blacklist=app.blacklist_check,
     )
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1545,11 +1476,10 @@ async def test_web_idempotency_isolates_different_accounts_with_same_biz_id() ->
     store = FakeStore()
     idempotency = FakeIdempotency()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=idempotency,
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1591,11 +1521,10 @@ async def test_web_idempotency_isolates_different_accounts_with_same_biz_id() ->
 @pytest.mark.asyncio
 async def test_initial_accept_rejects_past_or_beyond_max_schedule_window() -> None:
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(max_schedule_ahead_days=90),
         clock=lambda: datetime(2026, 7, 11, 8, 0, tzinfo=UTC),
@@ -1700,22 +1629,20 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
         async def response_for(self, batch_no: str) -> BatchResponse:
             return BatchResponse(batch_no, True, 1, 0, 0, 0, 1, 1, "queued", None, None)
 
-    class BlockingFrequency(FakeFrequency):
+    class BlockingLedger(FakeUsageLedger):
         def __init__(self) -> None:
             super().__init__()
             self.entered = asyncio.Event()
             self.resume = asyncio.Event()
 
-        async def allow(self, category: str, **values: Any) -> bool:
-            self.calls += 1
+        async def allow_frequency(self, reservation_id: UUID, category: str, **values: Any) -> bool:
             self.entered.set()
             await self.resume.wait()
-            return True
+            return await super().allow_frequency(reservation_id, category, **values)
 
     redis = ClaimRedis()
     store = ConcurrentStore()
-    frequency = BlockingFrequency()
-    quota = FakeQuota()
+    ledger = BlockingLedger()
     publisher = FakePublisher()
 
     async def advance(seconds: float) -> None:
@@ -1733,11 +1660,10 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
         clock=lambda: redis.now,
     )
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=store,
         idempotency=coordinator,
         crypto=crypto(),
-        frequency=frequency,
-        quota=quota,
         publisher=publisher,
         config=PipelineConfig(),
     )
@@ -1751,7 +1677,7 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
     owner = asyncio.create_task(
         pipeline.accept(ApiAppContext(7, "app", "研发部", frozenset({"verify"})), request)
     )
-    await frequency.entered.wait()
+    await asyncio.wait_for(ledger.entered.wait(), timeout=5)
     contender = asyncio.create_task(
         pipeline.accept(ApiAppContext(7, "app", "研发部", frozenset({"verify"})), request)
     )
@@ -1761,13 +1687,13 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
         await asyncio.sleep(0)
     assert redis.renewals >= 3
     assert redis.now > 6
-    frequency.resume.set()
+    ledger.resume.set()
     first, second = await asyncio.gather(owner, contender)
 
     assert first.batch_no == second.batch_no == "shared-batch"
     assert sorted([first.idempotent, second.idempotent]) == [False, True]
-    assert frequency.calls == 1
-    assert len(quota.reservations) == 1
+    assert len(ledger.frequency) == 1
+    assert len(ledger.quota) == 1
     assert len(store.commands) == 1
     assert publisher.events == [("shared-batch", "realtime")]
 
@@ -1816,11 +1742,10 @@ async def test_idempotency_claim_is_released_after_pipeline_failure() -> None:
     redis = ClaimRedis()
     coordinator = IdempotencyCoordinator(redis, RepositoryFailingStore())
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=RepositoryFailingStore(),
         idempotency=coordinator,
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1847,15 +1772,13 @@ async def test_lost_claim_fails_closed_before_business_side_effects() -> None:
             return False
 
     store = FakeStore()
-    frequency = FakeFrequency()
-    quota = FakeQuota()
     publisher = FakePublisher()
+    ledger = FakeUsageLedger()
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=store,
         idempotency=LostClaimIdempotency(),
         crypto=crypto(),
-        frequency=frequency,
-        quota=quota,
         publisher=publisher,
         config=PipelineConfig(),
     )
@@ -1871,8 +1794,8 @@ async def test_lost_claim_fails_closed_before_business_side_effects() -> None:
             ),
         )
 
-    assert frequency.calls == 0
-    assert quota.reservations == []
+    assert ledger.frequency == []
+    assert ledger.quota == []
     assert store.commands == []
     assert publisher.events == []
 
@@ -1897,11 +1820,10 @@ async def test_phone_protect_waves_renew_ownership_between_batches(
 
     monkeypatch.setattr(SendPipeline, "_protect_plain_phones", fake_protect)
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -1915,90 +1837,78 @@ async def test_phone_protect_waves_renew_ownership_between_batches(
 
 @pytest.mark.asyncio
 async def test_replaced_claim_stops_frequency_loop_before_quota_and_storage() -> None:
-    ownership = {"token": "claim-token"}
+    class LosingIdempotency(FakeIdempotency):
+        lost = False
 
-    class ReplacingFrequency(FakeFrequency):
-        def __init__(self) -> None:
-            super().__init__()
-            self.writes = 0
+        async def renew(self, scope: IdempotencyScope, biz_id: str, token: str) -> bool:
+            return not self.lost
 
-        async def allow(self, category: str, **values: Any) -> bool:
-            assert values["claim_key"] == "idem:claim:app:7:freq-race"
-            assert values["result_key"] == "idem:freq:app:7:freq-race"
-            if ownership["token"] != values["claim_token"]:
-                raise FrequencyFenceLost("frequency fence lost")
-            self.writes += 1
-            ownership["token"] = "new-owner"
-            return True
+    idem = LosingIdempotency()
 
+    class ReplacingLedger(FakeUsageLedger):
+        async def allow_frequency_many(self, *args: Any, **values: Any) -> list[bool]:
+            result = await super().allow_frequency_many(*args, **values)
+            idem.lost = True
+            return result
+
+    ledger = ReplacingLedger()
     store = FakeStore()
-    frequency = ReplacingFrequency()
-    quota = FakeQuota()
     publisher = FakePublisher()
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=store,
-        idempotency=FakeIdempotency(),
+        idempotency=idem,
         crypto=crypto(),
-        frequency=frequency,
-        quota=quota,
         publisher=publisher,
         config=PipelineConfig(),
     )
-
-    with pytest.raises(FrequencyFenceLost):
+    with pytest.raises(RuntimeError, match="claim lost"):
         await pipeline.accept(
             ApiAppContext(7, "app", "研发部", frozenset({"verify"})),
             SendRequest(
                 "verify",
-                ["13800138000", "13900139000"],
+                [f"1380013{i:04d}" for i in range(201)],
                 content="验证码123456",
                 biz_id="freq-race",
             ),
         )
-
-    assert frequency.writes == 1
-    assert quota.reservations == []
+    assert len(ledger.frequency) == 200
+    assert ledger.quota == []
+    assert ledger.releases
     assert store.commands == []
     assert publisher.events == []
 
 
 @pytest.mark.asyncio
-async def test_quota_lua_fence_closes_check_to_increment_race() -> None:
-    ownership = {"token": "claim-token"}
+async def test_quota_projection_failure_stops_storage_and_requests_release() -> None:
+    class UnavailableLedger(FakeUsageLedger):
+        async def reserve_quota(self, reservation_id: UUID, **values: Any) -> None:
+            raise UsageProjectionUnavailable("usage projection unavailable")
 
-    class RacingQuota(FakeQuota):
-        async def reserve(self, **values: Any) -> None:
-            ownership["token"] = "new-owner"
-            if ownership["token"] != values["claim_token"]:
-                raise QuotaFenceLost("quota fence lost")
-            self.reservations.append(values)
-
+    ledger = UnavailableLedger()
     store = FakeStore()
-    quota = RacingQuota()
     publisher = FakePublisher()
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=quota,
         publisher=publisher,
         config=PipelineConfig(),
     )
-
-    with pytest.raises(QuotaFenceLost):
+    with pytest.raises(UsageProjectionUnavailable):
         await pipeline.accept(
             ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
             SendRequest("notice", ["13800138000"], content="通知", biz_id="quota-race"),
         )
-
-    assert quota.reservations == []
+    assert ledger.quota == []
+    assert ledger.releases
     assert store.commands == []
     assert publisher.events == []
 
 
 @pytest.mark.asyncio
-async def test_claim_loss_after_reserve_refunds_without_save_or_publish() -> None:
+async def test_claim_loss_after_reserve_requests_release_without_save_or_publish() -> None:
     class LosingIdempotency(FakeIdempotency):
         def __init__(self) -> None:
             super().__init__()
@@ -2009,20 +1919,19 @@ async def test_claim_loss_after_reserve_refunds_without_save_or_publish() -> Non
 
     idem = LosingIdempotency()
 
-    class LosingQuota(FakeQuota):
-        async def reserve(self, **values: Any) -> None:
-            self.reservations.append(values)
+    class LosingLedger(FakeUsageLedger):
+        async def reserve_quota(self, reservation_id: UUID, **values: Any) -> None:
+            await super().reserve_quota(reservation_id, **values)
             idem.lost = True
 
     store = FakeStore()
-    quota = LosingQuota()
+    ledger = LosingLedger()
     publisher = FakePublisher()
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=store,
         idempotency=idem,
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=quota,
         publisher=publisher,
         config=PipelineConfig(),
     )
@@ -2033,7 +1942,8 @@ async def test_claim_loss_after_reserve_refunds_without_save_or_publish() -> Non
             SendRequest("notice", ["13800138000"], content="通知", biz_id="refund-race"),
         )
 
-    assert len(quota.refunds) == 1
+    assert len(ledger.quota) == 1
+    assert ledger.releases
     assert store.commands == []
     assert publisher.events == []
 
@@ -2047,11 +1957,10 @@ async def test_release_failure_does_not_mask_successful_response(
             raise RuntimeError("redis unavailable")
 
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=ReleaseFailureIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2076,7 +1985,7 @@ async def test_release_failure_does_not_mask_successful_response(
 async def test_verify_pipeline_deduplicates_encrypts_masks_and_enqueues_reference_only() -> None:
     service = crypto()
     store = FakeStore()
-    quota = FakeQuota()
+    ledger = FakeUsageLedger()
     publisher = FakePublisher()
     app = ApiAppContext(
         7,
@@ -2087,11 +1996,10 @@ async def test_verify_pipeline_deduplicates_encrypts_masks_and_enqueues_referenc
         100,
     )
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=store,
         idempotency=FakeIdempotency(),
         crypto=service,
-        frequency=FakeFrequency(),
-        quota=quota,
         publisher=publisher,
         config=PipelineConfig(),
     )
@@ -2137,8 +2045,8 @@ async def test_verify_pipeline_deduplicates_encrypts_masks_and_enqueues_referenc
     assert command.sign_name == "【青鸾】"
     assert all(message.phone_mask in {"138****8000", "139****9000"} for message in command.messages)
     assert all(not hasattr(message, "phone") for message in command.messages)
-    assert quota.reservations[0]["cost"] == 2
-    assert quota.reservations[0]["category"] == "verify"
+    assert ledger.quota[0]["cost"] == 2
+    assert ledger.quota[0]["category"] == "verify"
     assert publisher.events == [("new-batch", "realtime")]
 
 
@@ -2151,11 +2059,10 @@ async def test_pipeline_resolves_approved_default_sign_before_billing_and_storag
 
     store = FakeStore()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         signs=FakeSigns(),
         config=PipelineConfig(),
@@ -2179,11 +2086,10 @@ async def test_sensitive_audit_policy_records_count_and_allows_send() -> None:
     store = FakeStore()
     store.sensitive_hits_result = ["敏感", "禁词"]
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(sensitive_hit_action="audit"),
     )
@@ -2196,13 +2102,12 @@ async def test_sensitive_audit_policy_records_count_and_allows_send() -> None:
 
 @pytest.mark.asyncio
 async def test_all_filtered_reserves_no_quota_so_no_refund_is_needed() -> None:
-    quota = FakeQuota()
+    ledger = FakeUsageLedger()
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=BlockAllStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=quota,
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2211,8 +2116,8 @@ async def test_all_filtered_reserves_no_quota_so_no_refund_is_needed() -> None:
             ApiAppContext(7, "app", "平台部", frozenset({"market"})),
             SendRequest("market", ["13800138000"], content="营销回T退订"),
         )
-    assert quota.reservations == []
-    assert quota.refunds == []
+    assert ledger.quota == []
+    assert ledger.releases == []
 
 
 @pytest.mark.asyncio
@@ -2221,11 +2126,10 @@ async def test_pipeline_historical_blacklist_filters_active_protected_phone() ->
     blocked_candidates = service_crypto.hmac_candidates("13800138000")
     store = HistoricalBlacklistStore(blocked_candidates[1])
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=service_crypto,
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2257,13 +2161,12 @@ async def test_protected_uat_checks_all_hmac_aliases_and_uses_stable_frequency_k
         table="vendor_test_recipient",
     )
     store = HistoricalBlacklistStore(candidates[1])
-    frequency = FakeFrequency()
+    ledger = FakeUsageLedger()
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=store,
         idempotency=FakeIdempotency(),
         crypto=service_crypto,
-        frequency=frequency,
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2282,23 +2185,22 @@ async def test_protected_uat_checks_all_hmac_aliases_and_uses_stable_frequency_k
         )
 
     assert store.seen == set(candidates.values())
-    assert frequency.calls == 0
+    assert ledger.started == []
 
     clean_store = FakeStore()
-    clean_frequency = FakeFrequency()
+    clean_ledger = FakeUsageLedger()
     clean_pipeline = SendPipeline(
+        usage_ledger=clean_ledger,
         store=clean_store,
         idempotency=FakeIdempotency(),
         crypto=service_crypto,
-        frequency=clean_frequency,
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
     await clean_pipeline.accept(
-        ApiAppContext(7, "app", "平台部", frozenset({"notice"})),
+        ApiAppContext(7, "app", "平台部", frozenset({"verify"})),
         SendRequest(
-            "notice",
+            "verify",
             (),
             content="维护通知",
             protected_mobiles=(protected,),
@@ -2306,29 +2208,28 @@ async def test_protected_uat_checks_all_hmac_aliases_and_uses_stable_frequency_k
             vendor_test_uat=True,
         ),
     )
-    assert clean_frequency.values[0]["phone_hmac"] == candidates[1]
+    assert clean_ledger.frequency[0]["phone_hmac"] == candidates[1]
 
 
 @pytest.mark.asyncio
 async def test_plain_send_uses_same_oldest_retained_hmac_for_frequency() -> None:
     service_crypto = rotated_crypto()
-    frequency = FakeFrequency()
+    ledger = FakeUsageLedger()
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=service_crypto,
-        frequency=frequency,
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
 
     await pipeline.accept(
-        ApiAppContext(7, "app", "平台部", frozenset({"notice"})),
-        SendRequest("notice", ["13800138000"], content="维护通知"),
+        ApiAppContext(7, "app", "平台部", frozenset({"verify"})),
+        SendRequest("verify", ["13800138000"], content="维护通知"),
     )
 
-    assert frequency.values[0]["phone_hmac"] == service_crypto.hmac_candidates("13800138000")[1]
+    assert ledger.frequency[0]["phone_hmac"] == service_crypto.hmac_candidates("13800138000")[1]
 
 
 @pytest.mark.asyncio
@@ -2336,11 +2237,10 @@ async def test_web_market_uses_independent_threshold_and_waits_for_approval() ->
     store = FakeStore()
     publisher = FakePublisher()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=publisher,
         config=PipelineConfig(approval_threshold=100, market_approval_threshold=2),
     )
@@ -2366,11 +2266,10 @@ async def test_market_test_send_bypasses_window_and_approval_but_keeps_controls(
     store = FakeStore()
     publisher = FakePublisher()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=publisher,
         config=PipelineConfig(market_approval_threshold=1),
         clock=lambda: datetime(2026, 7, 11, 22, 0, tzinfo=UTC),
@@ -2393,14 +2292,13 @@ async def test_market_test_send_bypasses_window_and_approval_but_keeps_controls(
 
 
 @pytest.mark.asyncio
-async def test_storage_failure_refunds_reserved_quota() -> None:
-    quota = FakeQuota()
+async def test_storage_failure_requests_release_of_reserved_usage() -> None:
+    ledger = FakeUsageLedger()
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=FailingStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=quota,
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2409,13 +2307,14 @@ async def test_storage_failure_refunds_reserved_quota() -> None:
             ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
             SendRequest("notice", ["13800138000"], content="系统通知"),
         )
-    assert len(quota.reservations) == 1
-    assert len(quota.refunds) == 1
-    assert quota.refunds[0]["category"] == "notice"
+    assert len(ledger.quota) == 1
+    assert ledger.releases == [
+        (ledger.reservation_id, f"usage:{ledger.reservation_id}:acceptance-failed")
+    ]
 
 
 @pytest.mark.asyncio
-async def test_save_commit_then_raise_returns_database_fact_without_refund() -> None:
+async def test_save_commit_then_raise_returns_fact_and_only_requests_unlinked_release() -> None:
     class CommitThenRaiseIdempotency(FakeIdempotency):
         def __init__(self) -> None:
             super().__init__()
@@ -2425,17 +2324,16 @@ async def test_save_commit_then_raise_returns_database_fact_without_refund() -> 
             self.lookups += 1
             return "committed-batch" if self.lookups >= 3 else None
 
-    quota = FakeQuota()
     store = FailingStore()
     app = ApiAppContext(1, "app", "研发部", frozenset({"notice"}))
     request = SendRequest("notice", ["13800138000"], content="通知", biz_id="commit-race")
     policy = policy_for_category(request.category, app.allowed_categories)
+    ledger = FakeUsageLedger()
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=store,
         idempotency=CommitThenRaiseIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=quota,
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2444,23 +2342,24 @@ async def test_save_commit_then_raise_returns_database_fact_without_refund() -> 
     )
     result = await pipeline.accept(app, request)
     assert result.batch_no == "existing"
-    assert quota.refunds == []
+    assert ledger.releases == [
+        (ledger.reservation_id, f"usage:{ledger.reservation_id}:idempotent-reuse")
+    ]
 
 
 @pytest.mark.asyncio
 async def test_refund_failure_does_not_mask_storage_error(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    class RefundFailureQuota(FakeQuota):
-        async def refund_reservation(self, **values: Any) -> None:
-            raise RuntimeError("redis refund unavailable")
+    class BrokenLedger(FakeUsageLedger):
+        async def request_unlinked_release(self, reservation_id: UUID, *, event_id: str) -> bool:
+            raise RuntimeError("usage release unavailable")
 
     pipeline = SendPipeline(
+        usage_ledger=BrokenLedger(),
         store=FailingStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=RefundFailureQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2469,17 +2368,16 @@ async def test_refund_failure_does_not_mask_storage_error(
             ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
             SendRequest("notice", ["13800138000"], content="通知", biz_id="refund-fail"),
         )
-    assert "quota reservation compensation unavailable" in caplog.text
+    assert "usage reservation release fact unavailable" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_empty_idempotency_fingerprint_conflicts() -> None:
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency("existing"),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2516,8 +2414,6 @@ async def test_frequency_batch_uses_allow_frequency_many_and_ownership_check() -
         store=FakeStore(),
         idempotency=LosingIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         usage_ledger=ledger,
@@ -2551,8 +2447,6 @@ async def test_frequency_many_covers_two_hundred_phones_in_one_ledger_call() -> 
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         usage_ledger=ledger,
@@ -2569,11 +2463,10 @@ async def test_frequency_many_covers_two_hundred_phones_in_one_ledger_call() -> 
 @pytest.mark.asyncio
 async def test_protect_plain_phones_splits_beyond_one_thousand() -> None:
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2609,11 +2502,10 @@ async def test_protect_plain_phones_splits_beyond_one_thousand() -> None:
 @pytest.mark.asyncio
 async def test_test_send_rejects_explicit_schedule() -> None:
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         clock=lambda: datetime(2026, 7, 11, 8, 0, tzinfo=UTC),
@@ -2633,11 +2525,10 @@ async def test_test_send_rejects_explicit_schedule() -> None:
 
 def test_request_hash_normalizes_mobile_order_and_timezone() -> None:
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2685,11 +2576,10 @@ async def test_legacy_fingerprint_still_matches_same_request() -> None:
     )
     policy = policy_for_category(request.category, app.allowed_categories)
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2712,8 +2602,6 @@ async def test_idempotent_fingerprint_conflict_releases_new_usage() -> None:
         store=IdempotentStore(),
         idempotency=FakeIdempotency(stored_request_hash="other-hash"),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         usage_ledger=ledger,
         config=PipelineConfig(),
@@ -2750,8 +2638,6 @@ async def test_save_failure_lookup_error_still_releases_usage() -> None:
         store=FailingStore(),
         idempotency=LookupBoom(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         usage_ledger=ledger,
         config=PipelineConfig(),
@@ -2777,11 +2663,10 @@ async def test_web_channel_skips_application_rate_limiter() -> None:
             raise AssertionError("Web 渠道不得走应用限流桶")
 
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         acceptance_limiter=BoomLimiter(),  # type: ignore[arg-type]
@@ -2811,11 +2696,10 @@ async def test_system_resend_hits_application_rate_limiter() -> None:
             return None
 
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=OpenStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         acceptance_limiter=BoomLimiter(),  # type: ignore[arg-type]
@@ -2848,11 +2732,10 @@ async def test_uncertain_effect_principal_requires_verified_resolution() -> None
             raise ValueError("system resend principal is not forgeable")
 
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=ClosedStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2883,11 +2766,10 @@ async def test_uncertain_effect_principal_creates_child_after_verify() -> None:
 
     store = OpenStore()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2925,11 +2807,10 @@ async def test_replay_if_present_returns_existing_without_admission() -> None:
     )
     idempotency = FakeIdempotency(existing="existing")
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=idempotency,
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         admission_guard=BoomAdmission(),  # type: ignore[arg-type]
@@ -2952,11 +2833,10 @@ async def test_replay_if_present_rejects_fingerprint_mismatch() -> None:
     idempotency = FakeIdempotency()
     idempotency.inspect_view = SimpleNamespace(fingerprint="other-hash")
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=idempotency,
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -2994,11 +2874,10 @@ async def test_replay_if_present_waits_for_in_flight_claim() -> None:
     )
     idempotency = WaitIdempotency()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=idempotency,
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -3012,11 +2891,10 @@ async def test_replay_if_present_waits_for_in_flight_claim() -> None:
 @pytest.mark.asyncio
 async def test_replay_if_present_returns_none_when_inspect_empty() -> None:
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -3046,11 +2924,10 @@ async def test_replay_if_present_returns_none_when_wait_times_out() -> None:
             return None
 
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=TimeoutIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -3089,11 +2966,10 @@ async def test_replay_if_present_consumes_replay_limit_only() -> None:
     limiter = ReplayLimiter()
     idempotency = FakeIdempotency(existing="existing")
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=idempotency,
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         acceptance_limiter=limiter,  # type: ignore[arg-type]
@@ -3118,11 +2994,10 @@ async def test_replay_if_present_rewrites_uat_plaintext_identity() -> None:
     )
     idempotency = FakeIdempotency(existing="existing")
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=idempotency,
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -3141,11 +3016,10 @@ async def test_uat_recovery_fingerprint_preserves_key_version_across_acceptance(
     store = FakeStore()
     idem = FakeIdempotency()
     pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
         store=store,
         idempotency=idem,
         crypto=service_crypto,
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -3207,8 +3081,6 @@ def _unbound_after_save_pipeline(
         store=store,
         idempotency=_LookupAfterSaveIdempotency(store),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         usage_ledger=usage_ledger,
@@ -3260,18 +3132,17 @@ async def test_unbound_commit_lookup_hit_with_other_request_compensates_and_conf
 
 
 @pytest.mark.asyncio
-async def test_idempotent_store_hit_without_ledger_refunds_unreused_quota() -> None:
+async def test_idempotent_store_hit_releases_new_ledger_reservation() -> None:
     store = IdempotentStore()
-    quota = FakeQuota()
+    ledger = FakeUsageLedger()
     app = ApiAppContext(1, "app", "研发部", frozenset({"notice"}))
     request = SendRequest("notice", ["13800138000"], content="通知", biz_id="store-hit")
     policy = policy_for_category(request.category, app.allowed_categories)
     pipeline = SendPipeline(
+        usage_ledger=ledger,
         store=store,
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=quota,
         publisher=FakePublisher(),
         config=PipelineConfig(),
     )
@@ -3282,9 +3153,10 @@ async def test_idempotent_store_hit_without_ledger_refunds_unreused_quota() -> N
     result = await pipeline.accept(app, request)
 
     assert result.batch_no == "existing"
-    assert len(quota.reservations) == 1
-    assert len(quota.refunds) == 1
-    assert quota.refunds[0]["reservation_key"] == quota.reservations[0]["reservation_key"]
+    assert len(ledger.quota) == 1
+    assert ledger.releases == [
+        (ledger.reservation_id, f"usage:{ledger.reservation_id}:idempotent-reuse")
+    ]
 
 
 @pytest.mark.asyncio
@@ -3299,8 +3171,6 @@ async def test_usage_release_failure_is_logged_without_masking_original_error(
         store=FailingStore(),
         idempotency=FakeIdempotency(),
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
         usage_ledger=BrokenReleaseLedger(),
@@ -3313,3 +3183,20 @@ async def test_usage_release_failure_is_logged_without_masking_original_error(
         )
 
     assert "usage reservation release fact unavailable" in caplog.text
+
+
+@pytest.mark.parametrize("arguments", [{}, {"usage_ledger": None}])
+def test_pipeline_requires_ledger_at_construction(arguments: dict[str, Any]) -> None:
+    store = FakeStore()
+    publisher = FakePublisher()
+    with pytest.raises(TypeError, match="usage_ledger|PostgreSQL usage ledger"):
+        SendPipeline(
+            store=store,
+            idempotency=FakeIdempotency(),
+            crypto=crypto(),
+            publisher=publisher,
+            config=PipelineConfig(),
+            **arguments,
+        )
+    assert store.commands == []
+    assert publisher.events == []

@@ -396,10 +396,18 @@ configure_auth_policy_path() {
   export SMS_AUTH_POLICY_DIR="$directory"
 }
 
+configure_development_api_port() {
+  [[ "${SMS_DEV_API_PORT:-0}" == 0 ]] && return 0
+  "${CONTROL_PYTHON[@]}" "$CONTROL_ROOT/deploy/scripts/development_api_port.py" \
+    --environment-file "$PLATFORM_ENV_FILE" --mode "$SECRETS_MODE" || return $?
+  COMPOSE+=( -f "$CONTROL_ROOT/deploy/docker-compose.development-api.yml" )
+}
+
 configure_compose_topology() {
   COMPOSE=(docker compose --env-file "$PLATFORM_ENV_FILE" -f "$BASE_COMPOSE_FILE")
   PRODUCTION_REDIS_HA_MODE=""
   if [[ "$SECRETS_MODE" != production ]]; then
+    configure_development_api_port || return $?
     configure_auth_policy_path || return $?
     return 0
   fi
@@ -1936,6 +1944,7 @@ esac
 validate_control_entry
 validate_control_state_binding "$ACTION" "$@"
 configure_internal_compose_env
+configure_development_api_port
 
 case "$ACTION" in
   up | down | rotate | run | partition-maintenance | init-admin | continuity | release | vendor-test | test-update | __locked)

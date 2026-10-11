@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime
 from typing import Annotated, Literal, cast
 from uuid import UUID
 
+from cryptography.exceptions import InvalidTag
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection
+from starlette.concurrency import run_in_threadpool
+from starlette.types import Receive, Scope, Send
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.authorization import (
@@ -18,8 +24,10 @@ from app.api.authorization import (
     require_approver_actor,
 )
 from app.core.audit import AuditEvent, audited, insert_audit
-from app.core.auth.jwt import JwtClaims
+from app.core.auth.accounts import PlatformAccount
+from app.core.auth.export_authorization import ExportDownloadAuthorization
 from app.core.auth.runtime import AuthFacade, get_auth_facade
+from app.core.auth.users import load_security_session_from_connection
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.jobtrack import JOB_SPECS
@@ -38,7 +46,7 @@ from app.services.export import (
     ExportTaskInfo,
     ExportTooLarge,
 )
-from app.services.export_file import ExportFileCodec
+from app.services.export_file import ExportFileCodec, PreparedExportDownload
 from app.services.export_repository import SqlExportRepository
 from app.services.export_step_up import (
     EXPORT_STEP_UP_TTL_SECONDS,
@@ -308,13 +316,6 @@ def get_export_codec(_actor: WebActor) -> ExportFileCodec:
     )
 
 
-async def _claims(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> JwtClaims:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    return await facade.verify(credentials.credentials)
 
 
 def _request_filters(value: ExportFiltersModel) -> ExportRequestFilters:
@@ -435,12 +436,11 @@ def _reporting_response(result: ReportingResult) -> ReportingModel:
 )
 async def get_balance(
     repository: Annotated[SqlDashboardRepository, Depends(get_balance_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> BalanceSnapshotModel:
     """管理员顶栏仅取余额事实；未知余额保持 null。"""
 
-    claims = await _claims(facade, credentials)
     if claims.role != "admin":
         raise ApiError(403, "FORBIDDEN", "仅管理员可查询平台余额", None)
     snapshot = await repository.load_balance()
@@ -458,10 +458,9 @@ async def get_balance(
 )
 async def get_dashboard(
     service: Annotated[DashboardService, Depends(get_dashboard_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> DashboardModel:
-    claims = await _claims(facade, credentials)
     return _dashboard_response(await service.get(role=claims.role, dept=claims.dept))
 
 
@@ -472,7 +471,7 @@ async def get_dashboard(
 )
 async def get_reporting_stats(
     service: Annotated[ReportingService, Depends(get_reporting_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     granularity: Granularity = "day",
     group_by: GroupBy = "app",
@@ -485,7 +484,6 @@ async def get_reporting_stats(
     order: ReportOrder = "desc",
     metric: ReportMetric = "total",
 ) -> ReportingModel:
-    claims = await _claims(facade, credentials)
     try:
         result = await service.get(
             granularity=granularity,
@@ -516,10 +514,9 @@ async def get_reporting_stats(
 async def create_export(
     payload: ExportCreateModel,
     service: Annotated[ExportService, Depends(get_export_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ExportTaskModel:
-    claims = await _claims(facade, credentials)
     try:
         task = await service.create(
             _request_filters(payload.filters),
@@ -541,10 +538,9 @@ async def create_export(
 async def get_export(
     public_id: UUID,
     service: Annotated[ExportService, Depends(get_export_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ExportTaskModel:
-    claims = await _claims(facade, credentials)
     try:
         return _response(
             await service.get(
@@ -578,10 +574,9 @@ async def export_step_up(
         ExportStepUpService,
         Depends(get_export_step_up_service),
     ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ExportStepUpResponseModel:
-    claims = await _claims(facade, credentials)
     try:
         task = await export_service.get(
             public_id,
@@ -603,62 +598,111 @@ async def export_step_up(
     return ExportStepUpResponseModel(token=token)
 
 
+class _ExportDownloadResponse(StreamingResponse):
+    def __init__(self, resource: PreparedExportDownload, public_id: UUID) -> None:
+        self.resource = resource
+        super().__init__(
+            resource.iter_decrypted(), media_type="text/csv; charset=utf-8",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Disposition": f'attachment; filename="sms-export-{public_id}.csv"',
+            },
+        )
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """即使迭代尚未开始或 ASGI 发送失败，也立即释放已验证资源。"""
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.resource.close()
+
+
+async def _prepare_export_download(
+    codec: ExportFileCodec, task: ExportTaskInfo,
+) -> PreparedExportDownload:
+    if task.file_path is None:
+        raise ExportNotFound("导出文件不存在或已过期")
+    work = asyncio.create_task(run_in_threadpool(
+        codec.prepare_download, task.file_path, expected_task_id=task.id,
+    ))
+    try:
+        return await asyncio.shield(work)
+    except BaseException:
+        # 客户端取消不会让线程结果遗失；迟到句柄也必须显式关闭。
+        def close_late(result: asyncio.Task[PreparedExportDownload]) -> None:
+            if not result.cancelled() and result.exception() is None:
+                result.result().close()
+        work.add_done_callback(close_late)
+        raise
+
+
 @router.get(
     "/export/{public_id}/download",
     response_class=StreamingResponse,
-    responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 404: ERROR_RESPONSE},
+    responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 404: ERROR_RESPONSE, 503: ERROR_RESPONSE},
 )
 async def download_export(
     public_id: UUID,
     request: Request,
     service: Annotated[ExportService, Depends(get_export_service)],
     codec: Annotated[ExportFileCodec, Depends(get_export_codec)],
-    step_up_service: Annotated[
-        ExportStepUpService,
-        Depends(get_export_step_up_service),
-    ],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    step_up_service: Annotated[ExportStepUpService, Depends(get_export_step_up_service)],
+    claims: WebActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    auth: Annotated[AuthFacade, Depends(get_auth_facade)],
     export_step_up_token: Annotated[
-        str | None,
-        Header(alias="X-Export-Step-Up", min_length=1, max_length=256),
+        str | None, Header(alias="X-Export-Step-Up", min_length=1, max_length=256),
     ] = None,
 ) -> StreamingResponse:
-    claims = await _claims(facade, credentials)
+    prepared: PreparedExportDownload | None = None
+    response_owns_resource = False
     try:
-        visible = await service.get(
-            public_id,
-            principal=claims.principal,
-        )
-        if visible.decrypted:
-            if export_step_up_token is None:
-                raise ExportStepUpExpired("明文导出需要二次认证")
+        task = await service.precheck_downloadable(public_id, principal=claims.principal)
+        if task.decrypted and export_step_up_token is None:
+            raise ExportStepUpExpired("明文导出需要二次认证")
+        prepared = await _prepare_export_download(codec, task)
+        if prepared.row_count is not None and prepared.row_count != task.row_count:
+            raise ValueError("export row count does not match authorized task")
+        if task.decrypted:
+            assert export_step_up_token is not None
             await step_up_service.consume(
-                export_step_up_token,
-                claims=claims,
-                ip=_ip(request),
-                public_id=public_id,
+                export_step_up_token, claims=claims, ip=_ip(request), public_id=public_id,
             )
-        task = await service.get_downloadable(
-            public_id,
-            principal=claims.principal,
-            ip=_ip(request),
+        authorization = ExportDownloadAuthorization.from_claims(claims)
+
+        async def recheck_session(connection: AsyncConnection) -> None:
+            if credentials is None:
+                raise ApiError(401, "UNAUTHORIZED", "登录会话已失效", None)
+            async def load_authority(account_id: int, identity_id: int) -> PlatformAccount:
+                return await load_security_session_from_connection(
+                    connection, account_id, identity_id,
+                )
+
+            fresh = await auth.verify(
+                credentials.credentials, security_session_loader=load_authority,
+            )
+            if (
+                ExportDownloadAuthorization.from_claims(fresh) != authorization
+                or fresh.jti != claims.jti
+            ):
+                raise ApiError(401, "UNAUTHORIZED", "登录会话已变化", None)
+
+        await service.get_downloadable(
+            public_id, authorization=authorization, expected=task,
+            check_file=prepared.assert_current, recheck_session=recheck_session, ip=_ip(request),
         )
-        if task.file_path is None:
-            raise ExportNotFound("导出文件不存在或已过期")
-        path = codec.validate(task.file_path, expected_task_id=task.id)
+        response = _ExportDownloadResponse(prepared, public_id)
+        response_owns_resource = True
+        return response
     except ExportStepUpExpired as error:
         raise ApiError(401, "STEP_UP_REQUIRED", str(error), None) from None
-    except (ExportNotFound, FileNotFoundError, ValueError) as error:
-        raise ApiError(404, "NOT_FOUND", str(error), None) from None
-    return StreamingResponse(
-        codec.iter_decrypted(path),
-        media_type="text/csv; charset=utf-8",
-        headers={
-            "Cache-Control": "no-store",
-            "Content-Disposition": f'attachment; filename="sms-export-{public_id}.csv"',
-        },
-    )
+    except (ExportNotFound, OSError, ValueError, InvalidTag):
+        raise ApiError(404, "NOT_FOUND", "导出文件不存在、不可用或已过期", None) from None
+    except SQLAlchemyError:
+        raise ApiError(503, "DEPENDENCY_UNAVAILABLE", "下载状态暂不可用", None) from None
+    finally:
+        if prepared is not None and not response_owns_resource:
+            prepared.close()
 
 
 def _ip(request: Request) -> str:

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.principal_context import audit_principal_scope
 from app.core.correlation import correlation_scope
-from app.services.admin_step_up import AdminIntent
+from app.services.admin_step_up import admin_intent
 from app.services.user_repository import SqlUserManagementRepository
 from tests.integration.test_ops_audit_postgres import _create_admin
 from tests.integration.test_ops_audit_postgres import accept_runtime as accept_runtime
@@ -98,7 +98,8 @@ async def test_restored_mapping_response_and_audit_match_committed_department(
                     principal.identity_id,
                     1,
                     "local",
-                    AdminIntent("user_role_change", str(account), "synthetic"),
+                    admin_intent("user_role_change", str(account),
+                                 {"role": "viewer", "role_override": False}),
                 ),
                 actor=principal.login_name,
                 ip="127.0.0.1",

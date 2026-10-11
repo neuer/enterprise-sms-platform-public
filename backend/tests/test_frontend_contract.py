@@ -261,6 +261,7 @@ def test_frontend_package_exposes_one_canonical_gate_set() -> None:
         "gen:api-types": "openapi-typescript ../openapi.yaml -o src/api/types.gen.ts"
         " && node scripts/stamp-api-types.mjs",
         "test": "vitest run",
+        "test:coverage": "python3 ../scripts/check_frontend_coverage.py run",
         "lint": "eslint .",
         "lint:fix": "eslint . --fix",
         "format:check": "prettier --check .",

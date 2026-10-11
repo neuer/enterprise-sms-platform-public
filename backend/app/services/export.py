@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, Protocol
 from uuid import UUID
 
+from sqlalchemy.ext.asyncio import AsyncConnection
+
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.export_authorization import ExportDownloadAuthorization
 from app.core.sensitive_text import reject_phone_in_text
 from app.services.crypto import CryptoService
 
@@ -149,9 +153,16 @@ class ExportRepository(Protocol):
         self,
         public_id: UUID,
         *,
-        principal: SecurityPrincipal,
+        authorization: ExportDownloadAuthorization,
+        expected: ExportTaskInfo,
+        check_file: Callable[[], None],
+        recheck_session: Callable[[AsyncConnection], Awaitable[None]],
         ip: str,
         retention_days: int,
+    ) -> ExportTaskInfo | None: ...
+
+    async def precheck_downloadable(
+        self, public_id: UUID, *, principal: SecurityPrincipal, retention_days: int,
     ) -> ExportTaskInfo | None: ...
 
 
@@ -256,16 +267,34 @@ class ExportService:
         self,
         public_id: UUID,
         *,
-        principal: SecurityPrincipal,
+        authorization: ExportDownloadAuthorization,
+        expected: ExportTaskInfo,
+        check_file: Callable[[], None],
+        recheck_session: Callable[[AsyncConnection], Awaitable[None]],
         ip: str,
     ) -> ExportTaskInfo:
         """在同一数据库事务内重验下载权限、有效期并写无 PII 审计。"""
 
         task = await self.repository.get_downloadable_and_audit(
             public_id,
-            principal=principal,
+            authorization=authorization,
+            expected=expected,
+            check_file=check_file,
+            recheck_session=recheck_session,
             ip=ip,
             retention_days=self.retention_days,
+        )
+        if task is None:
+            raise ExportNotFound("导出文件不存在或已过期")
+        return task
+
+    async def precheck_downloadable(
+        self, public_id: UUID, *, principal: SecurityPrincipal,
+    ) -> ExportTaskInfo:
+        """仅读取当前可下载条件，不消费令牌、不记下载审计。"""
+
+        task = await self.repository.precheck_downloadable(
+            public_id, principal=principal, retention_days=self.retention_days,
         )
         if task is None:
             raise ExportNotFound("导出文件不存在或已过期")

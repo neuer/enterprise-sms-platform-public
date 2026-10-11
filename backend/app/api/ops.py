@@ -14,8 +14,6 @@ from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.authorization import AdminActor, require_admin_actor
 from app.api.reports import ExportTaskModel, _response, get_export_service
 from app.core.audit import audited
-from app.core.auth.jwt import JwtClaims
-from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.jobtrack import JOB_SPECS
@@ -363,23 +361,8 @@ def get_raw_replay_service(
     )
 
 
-async def _admin(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> str:
-    return (await _admin_claims(facade, credentials)).login_name
 
 
-async def _admin_claims(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> JwtClaims:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    if claims.role != "admin":
-        raise ApiError(403, "FORBIDDEN", "仅管理员可访问运维中心", None)
-    return claims
 
 
 def _ip(request: Request) -> str:
@@ -405,10 +388,9 @@ def _page(
 )
 async def outbox_status(
     repository: Annotated[SqlOutboxRepository, Depends(get_outbox_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> OutboxStatsModel:
-    await _admin(facade, credentials)
     return OutboxStatsModel.model_validate(
         await repository.stats(),
         from_attributes=True,
@@ -422,7 +404,7 @@ async def outbox_status(
 )
 async def list_outbox_events(
     repository: Annotated[SqlOutboxRepository, Depends(get_outbox_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     state: Literal[
         "pending", "leased", "published", "processing", "completed", "dead"
@@ -431,7 +413,6 @@ async def list_outbox_events(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
-    await _admin(facade, credentials)
     return _page(
         await repository.list_events(state, page, page_size),
         OutboxEventModel,
@@ -451,10 +432,9 @@ async def list_outbox_events(
 async def retry_outbox_event(
     event_id: UUID,
     repository: Annotated[SqlOutboxRepository, Depends(get_outbox_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> Response:
-    claims = await _admin_claims(facade, credentials)
     if not await repository.retry_dead(event_id, principal=claims.principal):
         raise ApiError(409, "STATE_CONFLICT", "仅 dead 事件允许人工重推", None)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -467,10 +447,9 @@ async def retry_outbox_event(
 )
 async def current_alerts(
     service: Annotated[CurrentAlertService, Depends(get_current_alert_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> CurrentAlertSnapshotModel:
-    await _admin(facade, credentials)
     return CurrentAlertSnapshotModel.model_validate(
         await service.get(),
         from_attributes=True,
@@ -484,7 +463,7 @@ async def current_alerts(
 )
 async def list_alerts(
     repository: Annotated[SqlOpsRepository, Depends(get_ops_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     alert_type: str | None = None,
     level: Literal["info", "warn", "crit"] | None = None,
@@ -493,7 +472,6 @@ async def list_alerts(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
-    await _admin(facade, credentials)
     try:
         validate_range(start, end)
     except ValueError as error:
@@ -511,14 +489,13 @@ async def list_alerts(
 )
 async def list_raw_logs(
     repository: Annotated[SqlOpsRepository, Depends(get_ops_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     source: Literal["report", "reply"] | None = None,
     processed: bool | None = None,
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
-    await _admin(facade, credentials)
     return _page(
         await repository.list_raw_logs(RawLogQuery(source, processed, page, page_size)),
         RawLogModel,
@@ -532,12 +509,11 @@ async def list_raw_logs(
 )
 async def list_uncertain(
     repository: Annotated[SqlOpsRepository, Depends(get_ops_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
-    await _admin(facade, credentials)
     return _page(await repository.list_uncertain(page, page_size), UncertainModel)
 
 
@@ -560,10 +536,9 @@ def _resolution_service() -> UncertainResolutionService:
 async def propose_uncertain_resolution(
     chunk_id: int,
     payload: UncertainResolutionRequestModel,
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> UncertainResolutionModel:
-    claims = await _admin_claims(facade, credentials)
     try:
         item = await _resolution_service().propose(
             chunk_id,
@@ -591,10 +566,9 @@ async def propose_uncertain_resolution(
 @audited("uncertain_resolve_confirm")
 async def confirm_uncertain_resolution(
     resolution_id: int,
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> UncertainResolutionModel:
-    claims = await _admin_claims(facade, credentials)
     service = _resolution_service()
     try:
         item = await service.confirm(
@@ -617,11 +591,10 @@ async def confirm_uncertain_resolution(
 async def list_unmatched(
     payload: UnmatchedQueryModel,
     service: Annotated[OpsService, Depends(get_ops_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> dict[str, object]:
     # 手机号精确查询走 POST body：GET query 会把明文写进访问日志（硬性规则 2）。
-    await _admin(facade, credentials)
     try:
         value = await service.list_unmatched(
             payload.phone, payload.start, payload.end, payload.page, payload.page_size
@@ -638,10 +611,9 @@ async def list_unmatched(
 )
 async def list_jobs(
     service: Annotated[JobOpsService, Depends(get_job_ops_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> list[JobModel]:
-    await _admin(facade, credentials)
     return [JobModel.model_validate(item, from_attributes=True) for item in await service.list()]
 
 
@@ -656,10 +628,9 @@ async def trigger_job(
     job_name: str,
     request: Request,
     service: Annotated[JobOpsService, Depends(get_job_ops_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> Response:
-    claims = await _admin_claims(facade, credentials)
     try:
         await service.trigger(
             job_name,
@@ -679,10 +650,9 @@ async def trigger_job(
 )
 async def queue_status(
     service: Annotated[QueueRecoveryService, Depends(get_queue_recovery_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> QueueSnapshot:
-    await _admin(facade, credentials)
     return await service.status()
 
 
@@ -695,11 +665,10 @@ async def queue_status(
 async def resume_queue(
     request: Request,
     service: Annotated[QueueRecoveryService, Depends(get_queue_recovery_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     force: bool = False,
 ) -> QueueResumeResult:
-    claims = await _admin_claims(facade, credentials)
     try:
         return await service.resume(
             force=force,
@@ -721,10 +690,9 @@ async def replay_raw(
     id: int,
     request: Request,
     service: Annotated[RawReplayService, Depends(get_raw_replay_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ReplayResultModel:
-    claims = await _admin_claims(facade, credentials)
     try:
         count = await service.replay(
             id,
@@ -749,10 +717,9 @@ async def reevaluate_raw(
     id: int,
     request: Request,
     service: Annotated[RawReplayService, Depends(get_raw_replay_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ReevaluateResultModel:
-    claims = await _admin_claims(facade, credentials)
     try:
         disposition = await service.reevaluate(
             id,
@@ -782,10 +749,9 @@ async def reevaluate_raw(
 async def create_unmatched_export(
     payload: UnmatchedExportModel,
     service: Annotated[ExportService, Depends(get_export_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
+    claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ExportTaskModel:
-    claims = await _admin_claims(facade, credentials)
     try:
         task = await service.create(
             ExportRequestFilters(

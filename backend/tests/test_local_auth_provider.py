@@ -49,6 +49,12 @@ class RecordingHasher:
         self.candidates.append((encoded, candidate))
         return self.matches
 
+    def needs_rehash(self, encoded: str) -> bool:
+        return False
+
+    def hash(self, password: str) -> str:
+        raise AssertionError("current hash must not be upgraded")
+
 
 @pytest.mark.asyncio
 async def test_local_provider_uses_dummy_hash_for_missing_identity() -> None:

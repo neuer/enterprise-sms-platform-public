@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.auth.accounts import AccountSourceConflict
 from app.core.auth.admin_authorization import AdminAuthorization, lock_admin_authorization
 from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
+from app.core.auth.department import normalize_account_department
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
 from app.core.auth.temporary_password import TEMPORARY_PASSWORD_EXPIRY_SQL
 from app.core.runtime_resources import database_engine
@@ -165,6 +166,7 @@ class SqlUserManagementRepository:
         actor: str,
         ip: str,
     ) -> UserRecord:
+        dept = normalize_account_department(role, dept)
         engine = self._engine()
         try:
             try:
@@ -174,6 +176,10 @@ class SqlUserManagementRepository:
                         authorization,
                         operation="user_create_admin" if role == "admin" else "user_create",
                         target="new",
+                        parameters={
+                            "username": username, "display_name": display_name,
+                            "dept": dept, "role": role,
+                        },
                     )
                     provider = await connection.execute(
                         text(
@@ -287,7 +293,8 @@ class SqlUserManagementRepository:
         try:
             async with engine.begin() as connection:
                 await lock_admin_authorization(
-                    connection, authorization, operation="user_role_change", target=str(account_id)
+                    connection, authorization, operation="user_role_change", target=str(account_id),
+                    parameters={"role": role, "role_override": role_override},
                 )
                 row = await self._locked(connection, account_id)
                 current = _record(row)
@@ -340,6 +347,7 @@ class SqlUserManagementRepository:
                         )
                     except InvalidCredentials:
                         raise RoleMappingConflict("最近目录来源组无法按当前映射恢复角色") from None
+                target_dept = normalize_account_department(target_role, target_dept)
                 await connection.execute(
                     text(
                         """
@@ -418,20 +426,24 @@ class SqlUserManagementRepository:
                     authorization,
                     operation="user_status_change",
                     target=str(account_id),
+                    parameters={"status": status},
                 )
                 row = await self._locked(connection, account_id)
                 current = _record(row)
+                target_dept = current.dept
+                if status == 1:
+                    target_dept = normalize_account_department(current.role, current.dept)
                 if status == 0 and account_id == actor_account_id:
                     raise SelfDisableDenied("管理员不能禁用自己")
                 await connection.execute(
                     text(
                         """
-                        UPDATE user_account SET status=:status,
+                        UPDATE user_account SET status=:status,dept=:dept,
                           security_version=security_version+1,updated_at=now()
                         WHERE id=:account_id
                         """
                     ),
-                    {"account_id": account_id, "status": status},
+                    {"account_id": account_id, "status": status, "dept": target_dept},
                 )
                 await ensure_effective_admin(connection)
                 await connection.execute(
@@ -443,8 +455,10 @@ class SqlUserManagementRepository:
                         ) VALUES(
                           :actor,'admin',CAST(:ip AS inet),'account_status_change',
                           'user_account',:object_id,
-                          jsonb_build_object('status',CAST(:before_status AS integer)),
-                          jsonb_build_object('status',CAST(:after_status AS integer))
+                          jsonb_build_object('status',CAST(:before_status AS integer),
+                            'dept',CAST(:before_dept AS text)),
+                          jsonb_build_object('status',CAST(:after_status AS integer),
+                            'dept',CAST(:after_dept AS text))
                         )
                         """
                     ),
@@ -454,11 +468,14 @@ class SqlUserManagementRepository:
                         "object_id": str(account_id),
                         "before_status": current.status,
                         "after_status": status,
+                        "before_dept": current.dept,
+                        "after_dept": target_dept,
                     },
                 )
                 return replace(
                     current,
                     status=status,
+                    dept=target_dept,
                     security_version=current.security_version + 1,
                 )
         finally:
@@ -481,6 +498,7 @@ class SqlUserManagementRepository:
                     authorization,
                     operation="user_password_reset",
                     target=str(account_id),
+                    parameters={"action": "reset"},
                 )
                 row = await self._locked(connection, account_id)
                 current = _record(row)

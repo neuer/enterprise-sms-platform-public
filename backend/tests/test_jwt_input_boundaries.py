@@ -12,13 +12,49 @@ import jwt
 import pytest
 
 from app.core.auth.backends import InvalidCredentials
-from app.core.auth.jwt import JWT_AUDIENCE, JWT_ISSUER, JwtService
+from app.core.auth.jwt import JWT_AUDIENCE, JWT_ISSUER, JwtService, parse_jwt_keyring
 from app.core.auth.service import AsyncKeyValue
 
 
 @pytest.fixture
 def service() -> JwtService:
     return JwtService(secrets.token_urlsafe(32), cast(AsyncKeyValue, object()))
+
+
+@pytest.mark.parametrize("secret", ["", "x", "x" * 31, " " * 40, "\t" * 40, "密" * 10])
+@pytest.mark.parametrize("boundary", ["parser", "service"])
+def test_raw_key_requires_nonblank_32_bytes(secret: str, boundary: str) -> None:
+    with pytest.raises(ValueError, match="at least 32 bytes") as caught:
+        if boundary == "parser":
+            parse_jwt_keyring(secret)
+        else:
+            JwtService(secret, cast(AsyncKeyValue, object()))
+    assert str(caught.value) == "JWT key must contain at least 32 bytes of key material"
+
+
+@pytest.mark.parametrize("secret", ["x" * 32, "x" * 64, "密" * 11, " " + "x" * 32 + " "])
+def test_raw_key_preserves_exact_material_and_v1_tokens(secret: str) -> None:
+    ring = parse_jwt_keyring(secret)
+    assert ring.active_version == 1
+    assert ring.keys == {1: secret.encode("utf-8")}
+    issuer = JwtService(secret, cast(AsyncKeyValue, object()))
+    verifier = JwtService(secret, cast(AsyncKeyValue, object()))
+    token = issuer.issue_password_change(
+        account_id=1, identity_id=2, provider_code="local", login_name="test-user"
+    )
+    assert jwt.get_unverified_header(token)["kid"] == "1"
+    assert verifier._decode(token)["identity_id"] == 2
+
+
+@pytest.mark.parametrize("size", [0, 1, 31, 32, 64])
+def test_json_keyring_uses_same_byte_boundary(size: int) -> None:
+    key = b"k" * size
+    secret = json.dumps({"active_version": 1, "keys": {"1": base64.b64encode(key).decode()}})
+    if size < 32:
+        with pytest.raises(ValueError, match="at least 32 bytes"):
+            parse_jwt_keyring(secret)
+    else:
+        assert parse_jwt_keyring(secret).keys == {1: key}
 
 
 def token_with_header(header: object) -> str:

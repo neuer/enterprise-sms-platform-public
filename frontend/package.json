@@ -15,7 +15,8 @@
     "test": "vitest run",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "test:coverage": "python3 ../scripts/check_frontend_coverage.py run"
   },
   "dependencies": {
     "@fontsource-variable/noto-sans-sc": "5.3.0",
@@ -30,6 +31,7 @@
     "@fontsource-variable/noto-serif-sc": "5.3.0",
     "@types/node": "24.13.3",
     "@vitejs/plugin-vue": "6.0.7",
+    "@vitest/coverage-v8": "4.1.11",
     "@vue/test-utils": "2.4.11",
     "eslint": "9.39.5",
     "eslint-config-prettier": "10.1.8",

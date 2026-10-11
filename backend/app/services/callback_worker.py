@@ -16,20 +16,10 @@ from app.services.callback_authority import CallbackAuthorityBusy
 RETRY_DELAYS_S = (60, 300, 900, 3600, 3600)
 CALLBACK_LEASE_SECONDS = 30
 CALLBACK_AUTHORITY_BUSY_DELAY_S = 1
-PERMANENT_CALLBACK_STATUSES = frozenset({400, 401, 403, 404, 410, 422})
-RETRYABLE_CALLBACK_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 
 
 class CallbackLeaseLost(RuntimeError):
     """当前 callback worker 的 fencing token 已失效。"""
-
-
-def classify_callback_http_status(status: int) -> str:
-    """与规则 13 对齐：2xx 成功，4xx/5xx 一律可重试。worker 按此语义重试。"""
-
-    if 200 <= status < 300:
-        return "success"
-    return "retryable"
 
 
 @dataclass(frozen=True, slots=True)

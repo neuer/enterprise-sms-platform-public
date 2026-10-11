@@ -12,22 +12,21 @@ from app.services.app_ratelimit import ApplicationRateLimitExceeded
 from app.services.pipeline import PipelineConfig, SendPipeline, SendRequest
 from app.services.send_admission import SendAdmissionRejected
 from tests.test_send_pipeline import (
-    FakeFrequency,
     FakeIdempotency,
     FakePublisher,
-    FakeQuota,
     FakeStore,
+    FakeUsageLedger,
     crypto,
 )
 
 
 def pipeline(idem: Any, **kwargs: Any) -> SendPipeline:
-    return SendPipeline(
+    return SendPipeline(usage_ledger=FakeUsageLedger(),
         store=FakeStore(),
         idempotency=idem,
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
+
+
         publisher=FakePublisher(),
         config=PipelineConfig(),
         **kwargs,

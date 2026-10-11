@@ -29,5 +29,13 @@ export default defineConfig({
     exclude: ["node_modules/**", "dist/**"],
     setupFiles: ["./tests/setup-session.ts"],
     testTimeout: 15000,
+    coverage: {
+      provider: "v8",
+      thresholds: { statements: 85, branches: 82 },
+      include: ["src/**/*.{ts,vue}"],
+      exclude: ["src/api/types.gen.ts", "src/**/*.d.ts"],
+      reportsDirectory: "coverage",
+      reporter: ["json", "json-summary", "lcov", "text-summary"],
+    },
   },
 })

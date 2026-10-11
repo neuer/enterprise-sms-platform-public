@@ -671,6 +671,7 @@ async def test_claim_reserves_segments_and_marks_submitting_in_one_transaction(
     connection = SequenceConnection(
         [
             FakeResult({"id": 7, "batch_id": 11, "vendor_attempt_count": 2}),
+            FakeResult(scalar="sending"),
             FakeResult(),
             FakeResult(
                 {
@@ -701,18 +702,18 @@ async def test_claim_reserves_segments_and_marks_submitting_in_one_transaction(
 
     assert claim.status is SubmissionClaimStatus.CLAIMED
     assert "FOR UPDATE" in connection.calls[0][0]
-    assert "vendor_test_daily_usage" in connection.calls[1][0]
-    assert "FOR UPDATE" in connection.calls[2][0]
-    assert "status='submitting'" in connection.calls[5][0]
-    assert "vendor_attempt_count=vendor_attempt_count+1" in connection.calls[5][0]
-    assert connection.calls[3][1] == {
+    assert "vendor_test_daily_usage" in connection.calls[2][0]
+    assert "FOR UPDATE" in connection.calls[3][0]
+    assert "status='submitting'" in connection.calls[6][0]
+    assert "vendor_attempt_count=vendor_attempt_count+1" in connection.calls[6][0]
+    assert connection.calls[4][1] == {
         "usage_date": datetime(2026, 7, 16, 8, tzinfo=UTC).date(),
         "chunk_id": 7,
         "attempt_no": 3,
         "segments": 5,
     }
-    assert "in_flight_segments=in_flight_segments+:segments" in connection.calls[4][0]
-    assert "UPDATE sms_batch" in connection.calls[6][0]
+    assert "in_flight_segments=in_flight_segments+:segments" in connection.calls[5][0]
+    assert "UPDATE sms_batch" in connection.calls[7][0]
 
 
 @pytest.mark.asyncio
@@ -723,6 +724,7 @@ async def test_claim_at_daily_limit_leaves_chunk_sendable(
     connection = SequenceConnection(
         [
             FakeResult({"id": 7, "batch_id": 11, "vendor_attempt_count": 2}),
+            FakeResult(scalar="sending"),
             FakeResult(),
             FakeResult(
                 {
@@ -750,7 +752,7 @@ async def test_claim_at_daily_limit_leaves_chunk_sendable(
     assert claim.status is SubmissionClaimStatus.DAILY_LIMIT
     assert claim.reset_at is not None
     assert claim.reset_at.isoformat() == "2026-07-17T00:00:00+08:00"
-    assert len(connection.calls) == 3
+    assert len(connection.calls) == 4
 
 
 class ConcurrentBudgetState:
@@ -768,6 +770,8 @@ class ConcurrentBudgetConnection:
         values = cast(dict[str, object], params or {})
         if "SELECT c.id,c.batch_id" in sql:
             return FakeResult({"id": values["id"], "batch_id": 11, "vendor_attempt_count": 0})
+        if "SELECT status FROM sms_batch" in sql:
+            return FakeResult(scalar="sending")
         if "SELECT in_flight_segments" in sql:
             return FakeResult(
                 {
@@ -1158,9 +1162,9 @@ async def test_balance_blocked_retry_is_immediately_due_for_admin_resume(
     assert "status='retrying'" in chunk_sql
     assert "vendor_code=999" in chunk_sql
     assert "retry_not_before=now()" in chunk_sql
-    assert chunk_params == {"id": 7}
-    assert connection.calls[1][1] == {"chunk_id": 7, "status": "released"}
-    assert "status='balance_blocked'" in connection.calls[2][0]
+    assert chunk_params == {"id": 7, "batch_id": 3}
+    assert connection.calls[2][1] == {"chunk_id": 7, "status": "released"}
+    assert "status='balance_blocked'" in connection.calls[1][0]
 
     due_connection = StatusConnection("queued")
     monkeypatch.setattr(store, "_engine", lambda: StatusEngine(due_connection))
@@ -1447,7 +1451,7 @@ async def test_guard_denial_fails_unclaimed_chunk_without_budget_attempt(
     connection = SequenceConnection(
         [
             FakeResult(scalar=11),
-            FakeResult(),
+            FakeResult(scalar="sending"),
             FakeResult(scalar=11),
             FakeResult(rowcount=1),
             FakeResult({"id": 11, "status": "completed"}),

@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "packages": [
+    {
+      "component": "web",
+      "architecture": "x86_64",
+      "filename": "libexpat-2.8.5-r0.apk",
+      "sha256": "2e56946bc495cbed9eb1ad70859a79cba9db6420016453e065a0628848b32c7e",
+      "package": "libexpat",
+      "version": "2.8.5-r0",
+      "license": "MIT",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    },
+    {
+      "component": "web",
+      "architecture": "x86_64",
+      "filename": "pcre2-10.49-r0.apk",
+      "sha256": "2919897914820f42a17a8d7d37df310d2dfad1c82ebe5f539cc5c765f916752a",
+      "package": "pcre2",
+      "version": "10.49-r0",
+      "license": "BSD-3-Clause",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    },
+    {
+      "component": "web",
+      "architecture": "x86_64",
+      "filename": "tiff-4.7.2-r0.apk",
+      "sha256": "757ce87ebe4923a6be9869d026e250958ca09696529c464781e8a91d2b81670b",
+      "package": "tiff",
+      "version": "4.7.2-r0",
+      "license": "libtiff",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    },
+    {
+      "component": "web",
+      "architecture": "aarch64",
+      "filename": "libexpat-2.8.5-r0.apk",
+      "sha256": "568a12a4889a00711d1c80c197a5540ee1cdec26c1c59da38f8342ad69e7eff9",
+      "package": "libexpat",
+      "version": "2.8.5-r0",
+      "license": "MIT",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    },
+    {
+      "component": "web",
+      "architecture": "aarch64",
+      "filename": "pcre2-10.49-r0.apk",
+      "sha256": "03efd0b29f7f38deb10a9ccb54f56e19683eb7ac27eb1f347e6dbd2e59ea000d",
+      "package": "pcre2",
+      "version": "10.49-r0",
+      "license": "BSD-3-Clause",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    },
+    {
+      "component": "web",
+      "architecture": "aarch64",
+      "filename": "tiff-4.7.2-r0.apk",
+      "sha256": "606643bc7b0741bc14e325c64640834aa210c74240b4c7595fe8d1d23e77ee5f",
+      "package": "tiff",
+      "version": "4.7.2-r0",
+      "license": "libtiff",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    },
+    {
+      "component": "postgres",
+      "architecture": "x86_64",
+      "filename": "su-exec-0.3-r0.apk",
+      "sha256": "4003163f58cd4a75df79973171d25e4912df4284d8bac9850ac267b58b969be5",
+      "package": "su-exec",
+      "version": "0.3-r0",
+      "license": "MIT",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    },
+    {
+      "component": "postgres",
+      "architecture": "aarch64",
+      "filename": "su-exec-0.3-r0.apk",
+      "sha256": "e40ecb44d07d25686f0e0836f4990e7c47d5d44d8956bcb523f5cab9108dd156",
+      "package": "su-exec",
+      "version": "0.3-r0",
+      "license": "MIT",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    },
+    {
+      "component": "redis",
+      "architecture": "x86_64",
+      "filename": "libcrypto3-3.3.7-r2.apk",
+      "sha256": "3c6fb1c90a974ef0fc83687868712340ca3df3ef5206cfc79fd81ff16f22596a",
+      "package": "libcrypto3",
+      "version": "3.3.7-r2",
+      "license": "Apache-2.0",
+      "repository": "v3.21/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    },
+    {
+      "component": "redis",
+      "architecture": "x86_64",
+      "filename": "libssl3-3.3.7-r2.apk",
+      "sha256": "00e674d00a80c9808580546dd388093c1c67f21628a9d70e27628bddc86a31e8",
+      "package": "libssl3",
+      "version": "3.3.7-r2",
+      "license": "Apache-2.0",
+      "repository": "v3.21/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    },
+    {
+      "component": "redis",
+      "architecture": "aarch64",
+      "filename": "libcrypto3-3.3.7-r2.apk",
+      "sha256": "2303cca13dc8bba5798744a68abd07530abb35ab339d9cc4640fc53276049af0",
+      "package": "libcrypto3",
+      "version": "3.3.7-r2",
+      "license": "Apache-2.0",
+      "repository": "v3.21/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    },
+    {
+      "component": "redis",
+      "architecture": "aarch64",
+      "filename": "libssl3-3.3.7-r2.apk",
+      "sha256": "d494a0a211dd78a8055c24885fc06375eabb79c82ae797f7f694cefbf3653b79",
+      "package": "libssl3",
+      "version": "3.3.7-r2",
+      "license": "Apache-2.0",
+      "repository": "v3.21/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-11"
+    }
+  ]
+}

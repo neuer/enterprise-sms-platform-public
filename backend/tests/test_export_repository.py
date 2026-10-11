@@ -8,7 +8,8 @@ from uuid import UUID
 import pytest
 
 from app.core.auth.accounts import SecurityPrincipal
-from app.services.export import ExportFilterSet
+from app.core.auth.export_authorization import ExportDownloadAuthorization
+from app.services.export import ExportFilterSet, ExportTaskInfo
 from app.services.export_repository import (
     ExpiredExport,
     ExportClaim,
@@ -279,7 +280,7 @@ async def test_status_access_uses_uuid_stable_subject_and_explicit_scope_matrix(
 
 
 @pytest.mark.asyncio
-async def test_download_authorization_and_pii_free_audit_share_one_transaction() -> None:
+async def test_download_authorization_and_pii_free_audit_share_one_transaction(monkeypatch) -> None:
     now = datetime(2026, 7, 12, tzinfo=UTC)
     row = {
         "id": 9,
@@ -293,12 +294,24 @@ async def test_download_authorization_and_pii_free_audit_share_one_transaction()
         "created_at": now,
     }
     repository = SqlExportRepository()
-    connection = FakeConnection([FakeResult(rows=[row]), FakeResult()])
+    connection = FakeConnection([FakeResult(rows=[row]), FakeResult(scalar=True), FakeResult()])
     bind(repository, connection)
 
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def authority(*args):
+        yield
+
+    async def recheck(_connection):
+        pass
+
+    monkeypatch.setattr("app.services.export_repository.lock_export_authorization", authority)
+    expected = ExportTaskInfo(9, PUBLIC_ID, "done", True, 2, "/safe/export-9.smsx", now, now)
     task = await repository.get_downloadable_and_audit(
         PUBLIC_ID,
-        principal=APPROVER,
+        authorization=ExportDownloadAuthorization(APPROVER, 1, "local"), expected=expected,
+        check_file=lambda: None, recheck_session=recheck,
         ip="10.0.0.8",
         retention_days=7,
     )
@@ -309,7 +322,7 @@ async def test_download_authorization_and_pii_free_audit_share_one_transaction()
     assert "scope_resolved" in select_sql
     assert "FOR SHARE" in select_sql
     assert select_params["actor_account_id"] == 21
-    audit_sql, audit_params = connection.calls[1]
+    audit_sql, audit_params = connection.calls[2]
     assert "INSERT INTO audit_log" in audit_sql
     assert "'export_download'" in audit_sql
     assert "'actor_account_id'" in audit_sql

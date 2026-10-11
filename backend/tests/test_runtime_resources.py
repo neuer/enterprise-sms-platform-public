@@ -87,6 +87,7 @@ class FakeRedisClient:
 
 @pytest.fixture(autouse=True)
 def reset_runtime_resources() -> None:
+    resources._INHERITED_DATABASE_POOLS.clear()
     resources._DATABASE_ENGINES.clear()
     resources._DATABASE_METRICS.clear()
     resources._REDIS_CLIENTS.clear()
@@ -321,6 +322,7 @@ def test_prefork_discards_inherited_pool_without_closing_parent_connections(
 
     resources.discard_inherited_runtime_resources()
 
+    assert [engine.pool] == resources._INHERITED_DATABASE_POOLS
     assert engine.sync_engine.discarded is True
     assert engine.closed is False
     assert resources._DATABASE_ENGINES == {}
@@ -342,3 +344,17 @@ def test_request_worker_and_metric_paths_cannot_create_private_engines() -> None
             offenders.append(path.relative_to(app_root).as_posix())
 
     assert offenders == []
+
+
+@pytest.mark.asyncio
+async def test_repository_dispose_is_noop_but_explicit_owner_close_releases_engine() -> None:
+    raw = FakeEngine()
+    managed = resources.ManagedAsyncEngine(raw, "api", resources.DEFAULT_BUDGETS["api"])
+    async with managed.begin():
+        pass
+    await managed.dispose()
+    assert raw.closed is False
+    async with managed.connect():
+        pass
+    await managed.close()
+    assert raw.closed is True

@@ -1,10 +1,9 @@
-FROM postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 AS prepared
+FROM postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea AS prepared
 
-RUN apk add --no-cache --upgrade \
-      libcrypto3=3.5.8-r0 \
-      libuuid=2.42.3-r1 \
-      libssl3=3.5.8-r0 \
-      su-exec=0.3-r0 \
+# Retained signed packages; installation never consults a mutable mirror.
+RUN --network=none --mount=type=bind,source=deploy/vendor-apk/postgres,target=/apks,ro \
+    --mount=type=bind,source=deploy/install-retained-apk.sh,target=/install-retained-apk.sh,ro \
+    sh /install-retained-apk.sh \
     && rm /usr/local/bin/gosu \
     && ln -s /sbin/su-exec /usr/local/bin/gosu
 

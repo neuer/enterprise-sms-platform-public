@@ -1,3 +1,4 @@
+import { adminStepUpHeaders } from "./adminStepUp"
 import { apiRequest } from "./client"
 import type { MessageCategory } from "../lib/labels"
 import type { components } from "./types.gen"
@@ -61,6 +62,7 @@ export interface ManagedApp {
   old_key_expires_at: string | null
   callback_secret_configured: boolean
   created_at: string
+  updated_at: string
 }
 
 export interface AppPayload {
@@ -104,26 +106,43 @@ export const listApps = (signal?: AbortSignal) => apiRequest<ManagedApp[]>("/adm
 
 export const getApp = (id: number) => apiRequest<ManagedApp>(`/admin/apps/${id}`, { method: "GET" })
 
-export const createApp = (payload: AppPayload & { name: string }) =>
+export interface AppWriteAuthorization {
+  token: string
+  expectedUpdatedAt: string
+}
+
+function writeHeaders(authorization: AppWriteAuthorization): Record<string, string> {
+  return { ...adminStepUpHeaders(authorization.token), "X-App-Revision": authorization.expectedUpdatedAt }
+}
+
+export const createApp = (payload: AppPayload & { name: string }, token: string) =>
   apiRequest<{ id: number; api_key: string; callback_secret: string | null }>("/admin/apps", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...adminStepUpHeaders(token) },
     body: JSON.stringify(payload),
   })
 
-export const updateApp = (id: number, payload: AppPayload) =>
+export const updateApp = (id: number, payload: AppPayload, authorization: AppWriteAuthorization) =>
   apiRequest<ManagedApp>(`/admin/apps/${id}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...writeHeaders(authorization) },
     body: JSON.stringify(payload),
   })
 
-export const disableApp = (id: number) => apiRequest<void>(`/admin/apps/${id}`, { method: "DELETE" })
+export const disableApp = (id: number, authorization: AppWriteAuthorization) =>
+  apiRequest<void>(`/admin/apps/${id}`, { method: "DELETE", headers: writeHeaders(authorization) })
 
-export const rotateAppKey = (id: number) =>
-  apiRequest<{ api_key: string; old_key_expires_at: string }>(`/admin/apps/${id}/rotate-key`, { method: "POST" })
+export const rotateAppKey = (id: number, authorization: AppWriteAuthorization) =>
+  apiRequest<{ api_key: string; old_key_expires_at: string }>(`/admin/apps/${id}/rotate-key`, {
+    method: "POST",
+    headers: writeHeaders(authorization),
+  })
 
-export const revokeOldAppKey = (id: number) => apiRequest<void>(`/admin/apps/${id}/revoke-old-key`, { method: "POST" })
+export const revokeOldAppKey = (id: number, authorization: AppWriteAuthorization) =>
+  apiRequest<void>(`/admin/apps/${id}/revoke-old-key`, { method: "POST", headers: writeHeaders(authorization) })
 
-export const rotateCallbackSecret = (id: number) =>
-  apiRequest<{ callback_secret: string }>(`/admin/apps/${id}/rotate-callback-secret`, { method: "POST" })
+export const rotateCallbackSecret = (id: number, authorization: AppWriteAuthorization) =>
+  apiRequest<{ callback_secret: string }>(`/admin/apps/${id}/rotate-callback-secret`, {
+    method: "POST",
+    headers: writeHeaders(authorization),
+  })

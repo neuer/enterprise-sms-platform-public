@@ -208,7 +208,7 @@ class CipherQueue:
                 continue
             if entry.reason in CIPHERQ_EVICTABLE_REASONS:
                 evictable.append((stat.st_mtime, stat.st_size, entry))
-        evictable.sort()
+        evictable.sort(key=lambda item: (item[0], item[1], item[2].source, item[2].token))
         total_files = retained_files + len(evictable)
         total_bytes = retained_bytes + sum(size for _mtime, size, _entry in evictable)
         dropped = 0

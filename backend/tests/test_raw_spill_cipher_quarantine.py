@@ -623,3 +623,70 @@ def test_legacy_nine_key_manifest_still_parses(tmp_path: Path) -> None:
     parsed = store._cipherq._parse_cipherq_manifest(man)
     assert parsed is not None
     assert parsed.token == token
+
+
+@pytest.mark.parametrize("count", [2, 32])
+@pytest.mark.parametrize("budget", ["within", "files", "bytes"])
+def test_cipherq_equal_time_size_has_deterministic_quota(
+    tmp_path: Path, count: int, budget: str
+) -> None:
+    """固定平局输入，回收不得比较清单对象或改变保留类策略。"""
+    store = RawSpillStore(tmp_path, max_cipherq_files=100)
+    fixed_ns = 1_700_000_000_000_000_000
+    for index in range(count):
+        source = "report" if index % 2 else "reply"
+        token = f"{index // 2:064x}"
+        path = tmp_path / f"{source}-{token}.spill"
+        path.write_bytes(b"corrupt")
+        os.utime(path, ns=(fixed_ns, fixed_ns))
+        assert store._cipherq.isolate_ciphertext_locked(
+            path, source=source, token=token, kind="spill", reason="corrupt"
+        )
+    entries = store._cipherq._iter_cipherq_entries_locked()
+    assert len({entry.dest.stat().st_mtime_ns for entry in entries}) == 1
+    assert len({entry.dest.stat().st_size for entry in entries}) == 1
+    expected = sorted(entries, key=lambda entry: (entry.source, entry.token))
+    if budget == "files":
+        store.max_cipherq_files = count - 1
+    elif budget == "bytes":
+        store.max_cipherq_bytes = (count - 1) * len(b"corrupt")
+    dropped = store._cipherq.enforce_cipherq_quota_locked()
+    assert dropped == (0 if budget == "within" else 1)
+    remaining = expected[dropped:]
+    assert {p.name for p in tmp_path.glob("*.cq")} == {e.dest.name for e in remaining}
+    assert store._cipherq.cipherq_usage_locked() == (
+        len(remaining), len(remaining) * len(b"corrupt")
+    )
+    assert len(list(tmp_path.glob(f"*{CIPHERQ_MANIFEST_SUFFIX}"))) == len(remaining)
+
+
+@pytest.mark.parametrize("reason", ["key_unavailable", "transient_io"])
+def test_cipherq_ties_preserve_retained_and_pending(
+    tmp_path: Path, reason: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """完全相同排序键也不比较对象；容量清理保留不可驱逐与 pending。"""
+    store = RawSpillStore(tmp_path, max_cipherq_files=100)
+    fixed_ns = 1_700_000_000_000_000_000
+    for index, item_reason in enumerate(["corrupt", "auth_failed", reason, "corrupt"]):
+        token = f"{index:064x}"
+        path = tmp_path / f"report-{token}.spill"
+        path.write_bytes(b"corrupt")
+        os.utime(path, ns=(fixed_ns, fixed_ns))
+        assert store._cipherq.isolate_ciphertext_locked(
+            path, source="report", token=token, kind="spill", reason=item_reason
+        )
+    entries = store._cipherq._iter_cipherq_entries_locked()
+    pending = entries[-1]
+    document = json.loads(pending.manifest.read_text())
+    document["state"] = CIPHERQ_STATE_PENDING
+    pending.manifest.write_text(json.dumps(document))
+    # 重复记录使所有排序键完全相同；稳定 key 排序不得比较 dataclass。
+    original = store._cipherq._iter_cipherq_entries_locked
+    monkeypatch.setattr(store._cipherq, "_iter_cipherq_entries_locked", lambda: original() * 2)
+    assert store._cipherq.enforce_cipherq_quota_locked() == 0
+    monkeypatch.setattr(store._cipherq, "_iter_cipherq_entries_locked", original)
+    store.max_cipherq_files = 1
+    assert store._cipherq.enforce_cipherq_quota_locked() == 2
+    assert entries[2].dest.exists()
+    assert pending.dest.exists()
+    assert store._cipherq.cipherq_usage_locked() == (2, 14)

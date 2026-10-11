@@ -17,10 +17,8 @@ from app.services.idempotency import (
 )
 from app.services.pipeline import ApiAppContext, PipelineConfig, SendPipeline, SendRequest
 from tests.test_send_pipeline import (
-    FakeFrequency,
     FakeIdempotency,
     FakePublisher,
-    FakeQuota,
     FakeStore,
     FakeUsageLedger,
     crypto,
@@ -86,10 +84,10 @@ def pipeline_for(idempotency: Any, *, store: Any = None, ledger: Any = None) -> 
         store=store or FakeStore(),
         idempotency=idempotency,
         crypto=crypto(),
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
+
+
         publisher=FakePublisher(),
-        usage_ledger=ledger,
+        usage_ledger=ledger if ledger is not None else FakeUsageLedger(),
         config=PipelineConfig(),
     )
 

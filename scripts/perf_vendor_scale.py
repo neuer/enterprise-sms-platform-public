@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from admin_write_client import AdminWriteClient
 from perf_smoke import (
     TAB_ID,
     CommandRunner,
@@ -187,7 +188,7 @@ class VendorScaleConfig:
         return phase in self.phases
 
     def phase_d_stages(self) -> tuple[tuple[str, int, int, int, int, int, float], ...]:
-        stages = (
+        stages: tuple[tuple[str, int, int, int, int, int, float], ...] = (
             (
                 "d1",
                 self.phase_d1_vendor_qps,
@@ -352,9 +353,12 @@ class VendorScaleResult:
 class RuntimeConfigClient:
     """通过管理 API 临时改发送参数，失败也必须回到 5/2/500。"""
 
-    def __init__(self, api: HttpClient, token: str) -> None:
+    def __init__(self, api: HttpClient, token: str, password: str) -> None:
         self.api = api
         self._headers = {"Authorization": f"Bearer {token}"}
+        self.admin = AdminWriteClient(
+            api, token, password, failure=PerformanceFailure, label="SCALE-00",
+        )
         self.original: dict[str, str] = {}
 
     def _auth(self) -> Mapping[str, str]:
@@ -386,12 +390,7 @@ class RuntimeConfigClient:
             updates.get("vendor_batch_size", self.original.get("vendor_batch_size", "500"))
         )
         refuse_simultaneous_maxima(vendor_qps=vendor_qps, vendor_batch_size=batch_size)
-        response = self.api.request(
-            "PUT",
-            "/api/v1/web/admin/configs",
-            payload={"items": [{"key": key, "value": value} for key, value in updates.items()]},
-            headers=self._auth(),
-        )
+        response = self.admin.update_configs(updates)
         if response.status != 200:
             raise PerformanceFailure(f"SCALE-00 config update returned HTTP {response.status}")
 
@@ -1352,28 +1351,26 @@ class VendorScaleSuite:
 class NoticeAppProvisioner:
     """创建高配额 notice 应用，结束后停用；不把 Key 写入报告。"""
 
-    def __init__(self, api: HttpClient, token: str) -> None:
+    def __init__(self, api: HttpClient, token: str, password: str) -> None:
         self.api = api
         self._headers = {"Authorization": f"Bearer {token}"}
+        self.admin = AdminWriteClient(
+            api, token, password, failure=PerformanceFailure, label="SCALE-00",
+        )
         self.app_id: int | None = None
 
     def create(self, *, sign_name: str) -> dict[str, str]:
         if not sign_name:
             raise PerformanceFailure("SCALE-00 notice app requires an approved sign")
-        response = self.api.request(
-            "POST",
-            "/api/v1/web/admin/apps",
-            payload={
-                "name": f"scale-mock-{uuid4().hex[:8]}",
-                "dept": "平台技术部",
-                "allowed_categories": ["notice"],
-                "default_sign": sign_name,
-                "daily_quota": 0,
-                "rate_limit_per_min": 60_000,
-                "blacklist_check": False,
-            },
-            headers=self._headers,
-        )
+        response = self.admin.create_app({
+            "name": f"scale-mock-{uuid4().hex[:8]}",
+            "dept": "平台技术部",
+            "allowed_categories": ["notice"],
+            "default_sign": sign_name,
+            "daily_quota": 0,
+            "rate_limit_per_min": 60_000,
+            "blacklist_check": False,
+        })
         if response.status != 200:
             raise PerformanceFailure(f"SCALE-00 notice app create returned HTTP {response.status}")
         data = _object(response.data, "SCALE-00")
@@ -1387,37 +1384,9 @@ class NoticeAppProvisioner:
     def disable(self) -> None:
         if self.app_id is None:
             return
-        response = self.api.request(
-            "GET",
-            f"/api/v1/web/admin/apps/{self.app_id}",
-            headers=self._headers,
-        )
-        if response.status != 200:
-            raise PerformanceFailure(f"SCALE-00 notice app lookup returned HTTP {response.status}")
-        current = _object(response.data, "SCALE-00")
-        categories = current.get("allowed_categories")
-        if not isinstance(categories, list):
-            raise PerformanceFailure("SCALE-00 notice app categories are invalid")
-        payload = {
-            "dept": current.get("dept") or "平台技术部",
-            "allowed_categories": categories,
-            "default_sign": current.get("default_sign"),
-            "daily_quota": current.get("daily_quota") or 0,
-            "rate_limit_per_min": current.get("rate_limit_per_min") or 60,
-            "blacklist_check": bool(current.get("blacklist_check")),
-            "allowed_ips": current.get("allowed_ips") or [],
-            "callback_url": current.get("callback_url"),
-            "callback_report_enabled": bool(current.get("callback_report_enabled")),
-            "status": 0,
-        }
-        update = self.api.request(
-            "PUT",
-            f"/api/v1/web/admin/apps/{self.app_id}",
-            payload=payload,
-            headers=self._headers,
-        )
-        if update.status != 200:
-            raise PerformanceFailure(f"SCALE-00 notice app disable returned HTTP {update.status}")
+        response = self.admin.disable_app(self.app_id)
+        if response.status != 204:
+            raise PerformanceFailure(f"SCALE-00 notice app disable returned HTTP {response.status}")
 
 
 def _login_admin(
@@ -1538,22 +1507,23 @@ def main() -> int:
                 raise ValueError("sql config mode requires --drain-via ssh or sms-compose")
             require_vendor_status = False
         else:
+            admin_password = read_secret_file(args.admin_password_file, label="admin password")
             token = _login_admin(
                 api_client,
-                read_secret_file(args.admin_password_file, label="admin password"),
+                admin_password,
                 username=args.admin_username,
                 provider_code=args.admin_provider,
             )
             if args.provision_notice_app:
                 if args.keys is not None:
                     raise ValueError("provision-notice-app cannot be combined with --keys")
-                provisioner = NoticeAppProvisioner(api_client, token)
+                provisioner = NoticeAppProvisioner(api_client, token, admin_password)
                 keys = provisioner.create(sign_name=args.sign_name)
             elif args.keys is not None:
                 keys = _load_keys(args.keys)
             else:
                 raise ValueError("vendor-scale requires --keys or --provision-notice-app")
-            config_client = RuntimeConfigClient(api_client, token)
+            config_client = RuntimeConfigClient(api_client, token, admin_password)
             require_vendor_status = True
         try:
             suite = VendorScaleSuite(

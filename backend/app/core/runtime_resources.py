@@ -5,16 +5,18 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Awaitable, Callable
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from threading import Lock
 from time import monotonic
-from typing import Any, Literal, Protocol, cast
+from types import TracebackType
+from typing import Any, Literal, cast
 
 from redis.asyncio import Redis
 from sqlalchemy import event, text
 from sqlalchemy.engine import URL, Connection
 from sqlalchemy.exc import TimeoutError as SqlAlchemyTimeoutError
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from app.core.audit_context import (
     decode_audit_context_key,
@@ -88,18 +90,14 @@ class RuntimeResourceSnapshot:
     database_components: tuple[DatabaseComponentSnapshot, ...] = ()
 
 
-class _AsyncContext(Protocol):
-    async def __aenter__(self) -> Any: ...
-
-    async def __aexit__(self, *args: object) -> Any: ...
-
-
-class _MeasuredConnectionContext:
-    def __init__(self, delegate: _AsyncContext, component: str) -> None:
+class _MeasuredConnectionContext(AbstractAsyncContextManager[AsyncConnection]):
+    def __init__(
+        self, delegate: AbstractAsyncContextManager[AsyncConnection], component: str,
+    ) -> None:
         self.delegate = delegate
         self.component = component
 
-    async def __aenter__(self) -> Any:
+    async def __aenter__(self) -> AsyncConnection:
         started = monotonic()
         try:
             value = await self.delegate.__aenter__()
@@ -109,8 +107,11 @@ class _MeasuredConnectionContext:
         _record_acquisition(self.component, monotonic() - started, timed_out=False)
         return value
 
-    async def __aexit__(self, *args: object) -> Any:
-        return await self.delegate.__aexit__(*args)
+    async def __aexit__(
+        self, exc_type: type[BaseException] | None, exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None:
+        return await self.delegate.__aexit__(exc_type, exc, traceback)
 
 
 class ManagedAsyncEngine:
@@ -127,12 +128,12 @@ class ManagedAsyncEngine:
 
     def connect(self) -> _MeasuredConnectionContext:
         return _MeasuredConnectionContext(
-            cast(_AsyncContext, self._engine.connect()),
+            self._engine.connect(),
             self.component,
         )
 
     def begin(self) -> _MeasuredConnectionContext:
-        return _MeasuredConnectionContext(cast(_AsyncContext, self._engine.begin()), self.component)
+        return _MeasuredConnectionContext(self._engine.begin(), self.component)
 
     async def dispose(self, *_: object, **__: object) -> None:
         """兼容旧 repository；共享池只允许统一 shutdown 关闭。"""
@@ -143,12 +144,15 @@ class ManagedAsyncEngine:
     def discard_after_fork(self) -> None:
         """子进程丢弃继承的 pool 状态，不触碰父进程仍持有的连接。"""
 
+        # asyncpg 的析构会发送协议终止；仅 dispose(close=False) 后旧池被 GC，
+        # 仍会经 fork 继承的 socket 终止父进程会话。保留旧池直到子进程退出，
+        # 不向其发送 close/terminate，不允许它重新进入活动缓存或 shutdown。
+        _INHERITED_DATABASE_POOLS.append(self._engine.pool)
         self._engine.sync_engine.dispose(close=False)
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._engine, name)
 
-
+# 仅 fork 初始化追加父进程池；不按请求增长。由进程退出回收继承的 FD。
+_INHERITED_DATABASE_POOLS: list[Any] = []
 _DATABASE_ENGINES: dict[tuple[str, DatabaseUrl], ManagedAsyncEngine] = {}
 _DATABASE_METRICS: dict[str, _DatabaseMetrics] = {}
 _REDIS_CLIENTS: dict[str, Any] = {}
@@ -426,7 +430,7 @@ def database_engine(
     database_url: DatabaseUrl,
     *,
     component: str | None = None,
-) -> AsyncEngine:
+) -> ManagedAsyncEngine:
     """按组件与 DSN 复用有界池；同一进程绝不按请求重复创建 engine。"""
 
     selected = (component or _RUNTIME_COMPONENT).strip().casefold()
@@ -459,7 +463,7 @@ def database_engine(
             managed = ManagedAsyncEngine(engine, selected, budget)
             _DATABASE_ENGINES[key] = managed
             _DATABASE_METRICS.setdefault(selected, _DatabaseMetrics())
-        return cast(AsyncEngine, managed)
+        return managed
 
 
 def redis_client(redis_url: str) -> Any:

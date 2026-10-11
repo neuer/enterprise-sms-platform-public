@@ -98,20 +98,7 @@ class BoundResolution(UncertainResolutionService):
         return self._bound_engine
 
 
-class FakeFrequency:
-    async def allow(self, category: str, **_values: Any) -> bool:
-        return True
 
-
-class FakeQuota:
-    async def reserve(self, **_values: Any) -> None:
-        return None
-
-    async def refund(self, **_values: Any) -> None:
-        return None
-
-    async def refund_reservation(self, **_values: Any) -> None:
-        return None
 
 
 class FakePublisher:
@@ -304,8 +291,8 @@ def _pipeline(
         store=store,
         idempotency=IdempotencyCoordinator(redis, store),
         crypto=crypto,
-        frequency=FakeFrequency(),
-        quota=FakeQuota(),
+
+
         publisher=FakePublisher(),
         usage_ledger=ledger,
         config=PipelineConfig(dept_daily_quota=0),

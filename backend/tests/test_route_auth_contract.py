@@ -6,6 +6,8 @@ from typing import Any
 from fastapi.routing import APIRoute
 
 from app.api.auth import bearer_scheme
+from app.api.authorization import require_web_actor
+from app.api.messages import require_batch_actor
 from app.api.metrics import authorize_metrics
 from app.core.apikey import optional_api_app, require_api_app
 from app.main import app
@@ -75,3 +77,33 @@ def test_api_key_authentication_is_not_installed_as_path_guessing_middleware() -
     }
 
     assert "ApiKeyMiddleware" not in middleware_names
+
+
+def test_business_factories_depend_on_a_verified_actor() -> None:
+    """检查实际依赖子图；仅解析 Bearer header 不算已认证主体。"""
+    modules = {
+        "app.api." + name
+        for name in (
+            "apps", "admin", "ops", "signs", "templates", "security_daily",
+            "vendor_test", "web_messages", "replies", "reports", "messages",
+        )
+    }
+    checked = set()
+
+    def inspect(dependant: Any) -> None:
+        call = dependant.call
+        if (
+            getattr(call, "__module__", None) in modules
+            and getattr(call, "__name__", "").startswith("get_")
+            and call.__name__ != "get_batch_auth_facade"
+        ):
+            calls = _dependency_calls(dependant) - {call}
+            assert calls & {require_web_actor, require_batch_actor}, call.__name__
+            checked.add(call)
+        for child in dependant.dependencies:
+            inspect(child)
+
+    for route in _api_routes(app):
+        for child in route.dependant.dependencies:
+            inspect(child)
+    assert len(checked) >= 35

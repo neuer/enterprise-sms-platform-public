@@ -1,3 +1,4 @@
+import { adminStepUpHeaders } from "./adminStepUp"
 import { DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { apiRequest } from "./client"
 import type { NumberedPage } from "./pagination"
@@ -110,10 +111,11 @@ export function getSecurityDailyConfiguration(signal?: AbortSignal): Promise<Sec
 
 export function updateSecurityDailyConfiguration(
   configuration: SecurityDailyConfigurationUpdate,
+  token: string,
 ): Promise<SecurityDailyConfiguration> {
   return apiRequest<SecurityDailyConfiguration>(`${basePath}/config`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...adminStepUpHeaders(token) },
     body: JSON.stringify(configuration),
   })
 }

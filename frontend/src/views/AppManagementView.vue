@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { CATEGORY_OPTIONS } from "../lib/labels"
+import AdminStepUpDialog from "../components/AdminStepUpDialog.vue"
+import { useAdminStepUp } from "../composables/useAdminStepUp"
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
+import type { AdminOperation } from "../api/adminStepUp"
 import ApiDemoDialog from "../components/ApiDemoDialog.vue"
 import AppDetailDrawer from "../components/AppDetailDrawer.vue"
 import AppEditorDrawer from "../components/AppEditorDrawer.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
-import { computed, h, onMounted, ref } from "vue"
+import { computed, h, onMounted, onScopeDispose, ref, watch } from "vue"
 
 import {
   createApp,
@@ -17,6 +21,7 @@ import {
   rotateCallbackSecret,
   updateApp,
   type AppPayload,
+  type AppWriteAuthorization,
   type ManagedApp,
 } from "../api/apps"
 import { listConfigs } from "../api/admin"
@@ -53,6 +58,7 @@ const STATUS_FILTERS: { label: string; value: "all" | "1" | "0" }[] = [
   { label: "停用", value: "0" },
 ]
 
+const adminStepUp = useAdminStepUp()
 const items = ref<ManagedApp[]>([])
 const loading = ref(false)
 const saving = ref(false)
@@ -225,11 +231,13 @@ async function loadKeyGraceHours(): Promise<void> {
 }
 
 function openCreate(): void {
+  if (saving.value) return
   editorDrawer.value?.prepare(null)
   drawerOpen.value = true
 }
 
 function openEdit(item: ManagedApp): void {
+  if (saving.value) return
   editorDrawer.value?.prepare(item)
   drawerOpen.value = true
 }
@@ -282,15 +290,55 @@ async function copySecret(): Promise<void> {
   }
 }
 
-async function save(body: AppPayload, name: string, targetId: number | null): Promise<void> {
+/** 捕获目标与版本，取消或会话切换后不显示迟到凭据。 */
+async function authorizedAppWrite<T>(
+  item: Pick<ManagedApp, "id" | "updated_at">,
+  operation: AdminOperation,
+  label: string,
+  action: (authorization: AppWriteAuthorization) => Promise<T>,
+  config?: AppPayload,
+): Promise<T | undefined> {
+  const expectedUpdatedAt = item.updated_at
+  const isCurrent = captureCurrent()
+  const result = await adminStepUp.run(
+    {
+      operation,
+      target_id: String(item.id),
+      parameters: { expected_updated_at: expectedUpdatedAt, ...(config ? { config } : {}) },
+    },
+    label,
+    (token) => action({ token, expectedUpdatedAt }),
+  )
+  return isCurrent() ? result : undefined
+}
+
+watch(drawerOpen, (open) => {
+  if (!open && saving.value) adminStepUp.cancel()
+})
+
+async function save(body: AppPayload, name: string, targetId: number | null, revision: string | null): Promise<void> {
   const creating = targetId === null
-  if (creating && secretOperation.value !== null) return
+  if (saving.value || (creating && secretOperation.value !== null)) return
+  const snapshot = JSON.parse(JSON.stringify(body)) as AppPayload
+  delete snapshot.name
+  if (creating) delete snapshot.status
   if (creating) secretOperation.value = "create-app"
+  const isCurrent = captureCurrent()
   let secretRevealed = false
   saving.value = true
   try {
     if (creating) {
-      const result = await createApp({ ...body, name })
+      const config = { ...snapshot, name }
+      const result = await adminStepUp.run(
+        {
+          operation: "app_create",
+          target_id: "new",
+          parameters: { config },
+        },
+        `创建应用「${name}」`,
+        (token) => createApp(config, token),
+      )
+      if (!result || !isCurrent()) return
       const credentials = result.callback_secret
         ? `API Key: ${result.api_key}\nCallback Secret: ${result.callback_secret}`
         : result.api_key
@@ -301,13 +349,21 @@ async function save(body: AppPayload, name: string, targetId: number | null): Pr
         `应用「${name}」的凭据仅展示一次，请立即复制并安全保存；关闭后平台不会再次展示。`,
       )
     } else {
-      await updateApp(targetId, body)
+      if (!revision) throw new Error("应用版本缺失，请刷新后重新编辑")
+      const result = await authorizedAppWrite(
+        { id: targetId, updated_at: revision },
+        "app_update",
+        `更新应用「${name}」配置`,
+        (authorization) => updateApp(targetId, snapshot, authorization),
+        snapshot,
+      )
+      if (!result) return
       ElMessage.success("应用配置已更新 · 本次操作已记入审计")
     }
     drawerOpen.value = false
     await load()
   } catch (error) {
-    ElMessage.error(errorText(error, "应用保存失败"))
+    if (isCurrent()) ElMessage.error(errorText(error, "应用保存失败"))
   } finally {
     saving.value = false
     if (creating && !secretRevealed) clearSecret()
@@ -334,7 +390,10 @@ async function rotateKey(item: ManagedApp): Promise<void> {
       }))
     )
       return
-    const result = await rotateAppKey(item.id)
+    const result = await authorizedAppWrite(item, "app_rotate_key", `为「${item.name}」轮换 API Key`, (authorization) =>
+      rotateAppKey(item.id, authorization),
+    )
+    if (!result) return
     secretRevealed = true
     reveal(
       "这是当前最终 API Key（仅展示一次）",
@@ -363,7 +422,16 @@ async function revokeKey(item: ManagedApp): Promise<void> {
       }))
     )
       return
-    await revokeOldAppKey(item.id)
+    const completed = await authorizedAppWrite(
+      item,
+      "app_revoke_old_key",
+      `为「${item.name}」作废旧 Key`,
+      async (authorization) => {
+        await revokeOldAppKey(item.id, authorization)
+        return true
+      },
+    )
+    if (!completed) return
     ElMessage.success("旧 API Key 已作废 · 本次操作已记入审计")
     await load()
   } catch (error) {
@@ -389,7 +457,13 @@ async function rotateCallback(item: ManagedApp): Promise<void> {
       }))
     )
       return
-    const result = await rotateCallbackSecret(item.id)
+    const result = await authorizedAppWrite(
+      item,
+      "app_rotate_callback_secret",
+      `为「${item.name}」轮换回调密钥`,
+      (authorization) => rotateCallbackSecret(item.id, authorization),
+    )
+    if (!result) return
     secretRevealed = true
     reveal("新回调密钥（仅展示一次）", result.callback_secret)
     await load()
@@ -419,7 +493,16 @@ async function disable(item: ManagedApp): Promise<void> {
       }))
     )
       return
-    await disableApp(item.id)
+    const completed = await authorizedAppWrite(
+      item,
+      "app_disable",
+      `为「${item.name}」停用应用`,
+      async (authorization) => {
+        await disableApp(item.id, authorization)
+        return true
+      },
+    )
+    if (!completed) return
     ElMessage.success(`应用 ${item.name} 已停用 · 本次操作已记入审计`)
     await load()
   } catch (error) {
@@ -447,7 +530,7 @@ async function enable(item: ManagedApp): Promise<void> {
       return
     const current = await getApp(item.id)
     if (!isCurrent()) return
-    await updateApp(item.id, {
+    const config: AppPayload = {
       dept: current.dept,
       allowed_categories: current.allowed_categories,
       default_sign: current.default_sign,
@@ -466,7 +549,15 @@ async function enable(item: ManagedApp): Promise<void> {
       callback_url: current.callback_url,
       callback_report_enabled: current.callback_report_enabled,
       status: 1,
-    })
+    }
+    const result = await authorizedAppWrite(
+      current,
+      "app_update",
+      `启用应用「${item.name}」`,
+      (authorization) => updateApp(item.id, config, authorization),
+      config,
+    )
+    if (!result) return
     ElMessage.success(`应用 ${item.name} 已启用 · 本次操作已记入审计`)
     await load()
   } catch (error) {
@@ -476,6 +567,12 @@ async function enable(item: ManagedApp): Promise<void> {
   }
 }
 
+window.addEventListener(SESSION_CLEARING_EVENT, closeSecret)
+onScopeDispose(() => {
+  window.removeEventListener(SESSION_CLEARING_EVENT, closeSecret)
+  closeSecret()
+})
+
 onMounted(() => {
   void load()
   void loadDailyUsage()
@@ -484,6 +581,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <AdminStepUpDialog :controller="adminStepUp" />
   <section class="page-heading apps-heading">
     <div>
       <p class="eyebrow">APPLICATION CONTROL / 应用控制</p>

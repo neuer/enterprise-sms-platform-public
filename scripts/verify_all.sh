@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/verify_all.sh — 受保护变更、专项复验与生产候选的完整 G2 门禁
-# 约定：项目根执行；ENVIRONMENT=test DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1；禁止削弱本脚本（只能修被测对象）。
+# 约定：隔离开发栈 ENVIRONMENT=development DEBUG=1 VENDOR_MOCK=1 AUTH_MOCK=1；禁止削弱门禁。
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ "${SMS_DOCKER_PUBLIC_SESSION:-0}" != "1" ]]; then
@@ -80,6 +80,7 @@ run_stage(){
 compose(){
   SMS_PLATFORM_ROOT="$ROOT" \
   SMS_SECRETS_MODE=development \
+  SMS_DEV_API_PORT=1 \
   SMS_RUNTIME_ROOT="${SMS_RUNTIME_ROOT:-${TMPDIR:-/tmp}/sms-platform-${UID}/secrets}" \
   CALLBACK_EGRESS_ALLOWED_PORTS="${CALLBACK_EGRESS_ALLOWED_PORTS:-80,443,9028}" \
   COMPOSE_PROFILES=dev \

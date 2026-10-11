@@ -50,6 +50,8 @@ def sample_facts() -> MetricsFacts:
         worker_lease_events=(
             ("callback", "fencing_miss", 3),
             ("export", "takeover", 4),
+            ("poll_report", "deadline_elapsed", 2),
+            ("poll_reply", "owner_lost", 1),
             ("unexpected-kind", "free-form-event", 5),
         ),
         queue_depths=(("realtime", 3), ("bulk", 9)),
@@ -174,6 +176,8 @@ def test_render_exposes_fixed_low_cardinality_metrics_and_zero_categories() -> N
     assert 'sms_worker_stalled_leases{task_kind="callback"} 2.0' in body
     assert 'sms_worker_lease_events{event="fencing_miss",task_kind="callback"} 3.0' in body
     assert 'sms_worker_lease_events{event="other",task_kind="other"} 5.0' in body
+    assert 'sms_worker_lease_events{event="deadline_elapsed",task_kind="poll_report"} 2.0' in body
+    assert 'sms_worker_lease_events{event="owner_lost",task_kind="poll_reply"} 1.0' in body
     assert 'sms_raw_replay_eligibility{eligibility="automatic"} 2.0' in body
     assert 'sms_raw_replay_eligibility{eligibility="manual"} 3.0' in body
     assert 'sms_raw_replay_eligibility{eligibility="never"} 5.0' in body
@@ -239,3 +243,21 @@ def test_two_process_snapshots_have_distinct_runtime_series() -> None:
     assert 'process_instance="process-b"' not in bodies[0]
     assert 'process_instance="process-b"' in bodies[1]
     assert "sms_runtime_event_loop_delay_seconds 0.01" not in bodies[0]
+
+
+def test_send_database_metrics_only_expose_fixed_labels() -> None:
+    from dataclasses import replace
+
+    facts = replace(
+        sample_facts(),
+        send_db_failures=(
+            ("finalize", "db_deadlock", 3),
+            ("claim", "cas_lost", 2),
+            ("secret-phase", "db_deadlock", 999),
+            ("finalize", "secret-reason", 999),
+        ),
+    )
+    output = render_prometheus(MetricsSnapshot(queue_depths=(), facts=facts)).decode()
+    assert 'sms_send_db_failures{phase="finalize",reason="db_deadlock"} 3.0' in output
+    assert 'sms_send_db_failures{phase="claim",reason="cas_lost"} 2.0' in output
+    assert "secret-phase" not in output and "secret-reason" not in output

@@ -512,7 +512,10 @@ def test_raw_processing_lease_epoch_is_in_schema_and_followup_migration() -> Non
     assert "processing_lease_expires_at TIMESTAMPTZ" in raw_table
     assert "ck_raw_vendor_processed_consistency" in raw_table
     assert "idx_raw_processing_lease_epoch" in schema
-    assert "CHECK (task_kind IN ('callback','export','raw'))" in schema
+    assert (
+        "CHECK (task_kind IN ('callback','export','raw','poll_report','poll_reply'))"
+        in schema
+    )
     assert revision.is_file()
 
     spec = importlib.util.spec_from_file_location(

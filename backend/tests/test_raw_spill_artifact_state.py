@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -577,14 +578,21 @@ def test_stream_delete_reconciles_orphan_markers(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_32_unreadable_objects_do_not_stop_shared_volume_polls(tmp_path: Path) -> None:
+@pytest.mark.parametrize("source", ["report", "reply"])
+async def test_32_unreadable_objects_do_not_stop_shared_volume_polls(
+    tmp_path: Path, source: str
+) -> None:
     store = RawSpillStore(tmp_path, max_pending_files=32, header_only_min_age_s=0)
+    fixed_ns = time.time_ns()
     for index in range(32):
-        (tmp_path / f"report-{index:064x}.spill").write_bytes(b"corrupt")
+        path = tmp_path / f"report-{index:064x}.spill"
+        path.write_bytes(b"corrupt")
+        os.utime(path, ns=(fixed_ns, fixed_ns))
     assert_quota(store, 32)
     gateway = RecordingGateway(empty_payload())
     alerts = FakeAlerts()
-    await ReplyIngestService(
+    service_type = ReportIngestService if source == "report" else ReplyIngestService
+    await service_type(
         gateway, FakeRepository(), crypto(), alerts=alerts, spill=store
     ).poll_once()
     assert gateway.calls == 1
@@ -660,8 +668,11 @@ def test_nonactive_quarantine_has_capacity_retention_metrics(tmp_path: Path) -> 
         max_cipherq_bytes=4096,
         cipherq_retention_s=60,
     )
+    fixed_ns = time.time_ns()
     for index in range(4):
-        (tmp_path / f"report-{index:064x}.spill").write_bytes(b"corrupt")
+        path = tmp_path / f"report-{index:064x}.spill"
+        path.write_bytes(b"corrupt")
+        os.utime(path, ns=(fixed_ns, fixed_ns))
     result = store.reclaim_idle("report", crypto())
     assert result.isolated >= 2
     stats = store.artifact_stats()

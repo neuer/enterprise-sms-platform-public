@@ -108,7 +108,8 @@ class SqlAuthProviderRepository:
         try:
             async with engine.begin() as connection:
                 await lock_admin_authorization(
-                    connection, authorization, operation="provider_save_draft", target=code
+                    connection, authorization, operation="provider_save_draft", target=code,
+                    parameters={"config": config},
                 )
                 locked = await connection.execute(
                     text(
@@ -217,7 +218,8 @@ class SqlAuthProviderRepository:
         try:
             async with engine.begin() as connection:
                 await lock_admin_authorization(
-                    connection, authorization, operation="provider_enable_disable", target=code
+                    connection, authorization, operation="provider_enable_disable", target=code,
+                    parameters={"enabled": True, "draft_version": expected_draft_version},
                 )
                 result = await connection.execute(
                     text(
@@ -264,7 +266,8 @@ class SqlAuthProviderRepository:
         try:
             async with engine.begin() as connection:
                 await lock_admin_authorization(
-                    connection, authorization, operation="provider_enable_disable", target=code
+                    connection, authorization, operation="provider_enable_disable", target=code,
+                    parameters={"enabled": False, "draft_version": expected_draft_version},
                 )
                 locked = await connection.execute(
                     text(
@@ -358,7 +361,15 @@ class SqlAuthProviderRepository:
         try:
             async with engine.begin() as connection:
                 await lock_admin_authorization(
-                    connection, authorization, operation="provider_role_mapping_change", target=code
+                    connection, authorization,
+                    operation="provider_role_mapping_change", target=code,
+                    parameters={
+                        "mappings": [
+                            {"external_group": item.external_group, "role": item.role,
+                             "dept": item.dept} for item in mappings
+                        ],
+                        "expected_revision": expected_revision,
+                    },
                 )
                 provider = await connection.execute(
                     text(

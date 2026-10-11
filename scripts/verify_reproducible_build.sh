@@ -53,6 +53,7 @@ fi
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
+source "$root/scripts/release_builder.sh"
 git diff --quiet
 git diff --cached --quiet
 if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
@@ -70,6 +71,7 @@ trivy_image="aquasec/trivy:0.70.0@sha256:be1190afcb28352bfddc4ddeb71470835d16462
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/sms-release-rebuild.XXXXXX")"
 chmod 0700 "$work_dir"
 cleanup() {
+  stop_release_builder
   rm -rf -- "$work_dir"
 }
 trap cleanup EXIT
@@ -93,13 +95,14 @@ common_args=(
   --build-arg "GIT_SHA=$candidate"
   --build-arg "SCHEMA_REVISION=$schema_revision"
 )
-docker build -f backend/Dockerfile "${common_args[@]}" \
+start_release_builder
+docker buildx build --builder "$release_builder" --output type=docker,rewrite-timestamp=true -f backend/Dockerfile "${common_args[@]}" \
   -t "sms-platform-release-api:${candidate}" .
-docker build -f frontend/Dockerfile "${common_args[@]}" \
+docker buildx build --builder "$release_builder" --output type=docker,rewrite-timestamp=true -f frontend/Dockerfile "${common_args[@]}" \
   -t "sms-platform-release-web:${candidate}" .
-docker build -f deploy/postgres.Dockerfile "${common_args[@]}" \
+docker buildx build --builder "$release_builder" --output type=docker,rewrite-timestamp=true -f deploy/postgres.Dockerfile "${common_args[@]}" \
   -t "sms-platform-release-postgres:${candidate}" .
-docker build -f deploy/redis.Dockerfile "${common_args[@]}" \
+docker buildx build --builder "$release_builder" --output type=docker,rewrite-timestamp=true -f deploy/redis.Dockerfile "${common_args[@]}" \
   -t "sms-platform-release-redis:${candidate}" .
 
 python_args=(
@@ -119,7 +122,7 @@ for name in api web postgres redis; do
     -v "$work_dir:/scan:ro" \
     -v trivycache:/root/.cache/trivy \
     "$trivy_image" image --input "/scan/$name.tar" \
-    --format cyclonedx --no-progress > "$raw"
+    --format cyclonedx --cache-backend memory --no-progress > "$raw"
   python3 "$root/scripts/canonicalize_sbom.py" "$raw" "$part"
   rm -f -- "$raw" "$archive"
   chmod 0600 "$part"

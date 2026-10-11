@@ -1,6 +1,9 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.106  2026-09-22
+-- v1.6.109  2026-10-11
+-- v1.6.109：发送事务失败的固定分类计数，最小只追加/聚合读取权限。
+-- v1.6.108：轮询租约故障以固定原因记入 worker_lease_event。
+-- v1.6.107：审计载荷仅允许对象，顶层 batch_no 严格验证类型与格式。
 -- v1.6.106：受控联调恢复绑定请求指纹；生命周期事实最小权限。
 -- v1.6.105：临时密码独立期限；历史未改密凭据迁移时一次性宽限 24 小时。
 -- v1.6.104：目录映射按事务去重安全版本失效，保留直接 DML 触发保护。
@@ -2147,22 +2150,35 @@ AFTER UPDATE OF callback_url,callback_secret_enc,
   callback_report_enabled,status ON app
 FOR EACH ROW EXECUTE FUNCTION revoke_callback_tasks_on_app_change();
 
--- callback/export worker 的无 PII 租约事实；只追加，用于停滞/接管/CAS 观测。
+-- worker 的无 PII 租约事实；只追加。poll_report/poll_reply 的 task_id=1 表示单例轮询源。
 CREATE TABLE worker_lease_event (
     id          BIGSERIAL PRIMARY KEY,
     task_kind   VARCHAR(16) NOT NULL
-                CHECK (task_kind IN ('callback','export','raw')),
+                CHECK (task_kind IN ('callback','export','raw','poll_report','poll_reply')),
     task_id     BIGINT NOT NULL CHECK (task_id>0),
     event_type  VARCHAR(24) NOT NULL
                 CHECK (event_type IN (
                   'acquired','takeover','heartbeat_lost',
-                  'fencing_miss','dead','manual_retry'
+                  'fencing_miss','dead','manual_retry',
+                  'extend_rejected','owner_lost','renewal_unavailable',
+                  'release_unavailable','deadline_elapsed'
                 )),
     lease_id    UUID,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_worker_lease_event_metrics
     ON worker_lease_event(task_kind,event_type,created_at);
+
+-- 发送失败观测不含 SQL、参数、厂商内容或凭据；业务失败回读不依赖它。
+CREATE TABLE send_db_failure_event (
+    id UUID PRIMARY KEY,
+    phase VARCHAR(16) NOT NULL CHECK (phase IN ('claim','finalize')),
+    reason VARCHAR(24) NOT NULL CHECK (reason IN (
+        'cas_lost','db_deadlock','db_timeout','db_connection','unexpected'
+    )),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_send_db_failure_event_metrics ON send_db_failure_event(phase,reason);
 
 -- ─────────────── 余额 / 告警 ───────────────
 CREATE TABLE balance_snapshot (
@@ -2894,6 +2910,21 @@ CREATE TABLE audit_log (
         AND actor_app_id IS NULL
       )
     ),
+    CONSTRAINT ck_audit_payload_shape CHECK (
+      CASE WHEN before_val IS NULL THEN TRUE
+        WHEN jsonb_typeof(before_val) <> 'object' THEN FALSE
+        WHEN NOT (before_val ? 'batch_no') THEN TRUE
+        WHEN before_val->'batch_no' = 'null'::jsonb THEN TRUE
+        ELSE COALESCE(jsonb_typeof(before_val->'batch_no') = 'string'
+          AND (before_val->>'batch_no') ~ '^[0-9a-f]{32}$', FALSE) END
+      AND
+      CASE WHEN after_val IS NULL THEN TRUE
+        WHEN jsonb_typeof(after_val) <> 'object' THEN FALSE
+        WHEN NOT (after_val ? 'batch_no') THEN TRUE
+        WHEN after_val->'batch_no' = 'null'::jsonb THEN TRUE
+        ELSE COALESCE(jsonb_typeof(after_val->'batch_no') = 'string'
+          AND (after_val->>'batch_no') ~ '^[0-9a-f]{32}$', FALSE) END
+    ),
     CONSTRAINT ck_audit_payload_no_pii CHECK (
       (COALESCE((before_val - 'batch_no')::text,'') ||
        COALESCE((after_val - 'batch_no')::text,''))
@@ -2905,6 +2936,23 @@ CREATE TABLE audit_log (
              'ciphertext|encrypted(_list)?)"[[:space:]]*:'
     )
 );
+-- 历史导出曾合法写入 batch_no:null；只保留既存证据，新写入严格拒绝。
+CREATE OR REPLACE FUNCTION enforce_new_audit_payload_shape()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF (NEW.before_val ? 'batch_no' AND NEW.before_val->'batch_no' = 'null'::jsonb)
+     OR (NEW.after_val ? 'batch_no' AND NEW.after_val->'batch_no' = 'null'::jsonb) THEN
+    RAISE EXCEPTION 'invalid audit batch reference'
+      USING ERRCODE = '23514', CONSTRAINT = 'ck_audit_payload_shape';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+REVOKE ALL ON FUNCTION enforce_new_audit_payload_shape() FROM PUBLIC;
+CREATE TRIGGER trg_audit_payload_shape
+BEFORE INSERT OR UPDATE ON audit_log
+FOR EACH ROW EXECUTE FUNCTION enforce_new_audit_payload_shape();
+
 CREATE INDEX idx_audit_actor  ON audit_log(actor, created_at);
 CREATE INDEX idx_audit_actor_account ON audit_log(actor_account_id, created_at DESC);
 CREATE INDEX idx_audit_correlation ON audit_log(correlation_id, created_at DESC);
@@ -3566,3 +3614,8 @@ REVOKE ALL ON FUNCTION lock_idempotency_result_batch() FROM PUBLIC;
 
 -- 生命周期事实由 CAS 推进，不允许发送角色删除。
 REVOKE DELETE ON sms_uncertain_resolution, sms_uncertain_child, usage_chunk_allocation, usage_chunk_release, send_inflight_balance, send_inflight_reservation, send_inflight_reconcile_fact, send_admission_state, send_runtime_heartbeat FROM sms_send;
+
+-- 发送事务观测：仅 send 追加，metrics 只读固定聚合维度。
+REVOKE ALL ON send_db_failure_event FROM PUBLIC;
+GRANT INSERT ON send_db_failure_event TO sms_send;
+GRANT SELECT (phase,reason) ON send_db_failure_event TO sms_metrics;

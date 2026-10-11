@@ -209,7 +209,7 @@ def test_runtime_secret_readiness_parses_keys_without_exposing_values(
         "audit_context_key": encoded_key,
         "audit_system_api_context_key": encoded_system_key,
         "alert_credential_public_key": encoded_key,
-        "jwt_secret": "jwt-key",
+        "jwt_secret": "j" * 32,
         "ldap_bind_password": "ldap-password",
     }
     paths: dict[str, Path] = {}
@@ -250,7 +250,7 @@ def test_auth_database_secret_missing_fails_production_startup(tmp_path: Path) -
         "audit_context_key": encoded_key,
         "audit_system_api_context_key": encoded_system_key,
         "alert_credential_public_key": encoded_key,
-        "jwt_secret": "jwt-key",
+        "jwt_secret": "j" * 32,
         "ldap_bind_password": "ldap-password",
     }
     paths: dict[str, Path] = {}

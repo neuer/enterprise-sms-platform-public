@@ -348,11 +348,18 @@ async def test_local_create_is_single_transaction_and_audit_has_no_hash() -> Non
     assert "'role',CAST(:target_role AS text)" in audit_sql
     assert "$argon2id" not in str(audit_params)
     assert connection.calls[2][1]["normalized_login_name"] == "new.user"
+    provider_sql, _ = connection.calls[0]
+    assert "auth_provider" in provider_sql and "FOR SHARE" in provider_sql
+    assert value.identity_id == 19
+    assert connection.calls[2][1]["login_name"] == "new.user"
+    assert connection.calls[2][1]["external_subject"] == "local:new.user"
+    assert connection.calls[3][1]["password_hash"] == "$argon2id$v=19$new-hash"
+    assert audit_params["object_id"] == "9"
 
 
 @pytest.fixture(autouse=True)
 def authorized_transaction(monkeypatch, request):
-    async def check(connection, authorization, *, operation, target):
+    async def check(connection, authorization, *, operation, target, parameters):
         assert authorization is AUTHORIZATION
         if "activate" not in request.node.name and operation in {
             "user_status_change",

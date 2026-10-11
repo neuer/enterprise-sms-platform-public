@@ -16,12 +16,10 @@ from app.services.app_ratelimit import ApplicationRateLimiter
 from app.services.app_repository import SqlAppRepository
 from app.services.billing_preview import BillingPreview, build_billing_preview
 from app.services.crypto import CryptoService, ProtectedPhone
-from app.services.freq import FrequencyLimiter
 from app.services.idempotency import IdempotencyConflict, IdempotencyCoordinator
 from app.services.pipeline import BatchResponse, PipelineConfig, SendPipeline, SendRequest
 from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRenderer
 from app.services.queue import CeleryQueuePublisher
-from app.services.quota import QuotaService
 from app.services.runtime_policy import RuntimePolicy
 from app.services.send_admission import get_send_admission_guard
 from app.services.sign import SignResolver
@@ -480,8 +478,8 @@ def build_vendor_test_uat_service() -> VendorTestUatService:
                 store=store,
                 idempotency=IdempotencyCoordinator(redis, store),
                 crypto=crypto,
-                frequency=FrequencyLimiter(redis),
-                quota=QuotaService(redis),
+
+
                 publisher=CeleryQueuePublisher(),
                 templates=SqlTemplateRenderer(settings),
                 signs=SignResolver(SqlSignRepository(settings)),

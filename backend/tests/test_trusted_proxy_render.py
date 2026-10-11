@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import sys
 from pathlib import Path
 
@@ -53,3 +54,25 @@ def test_external_tls_mode_fails_closed_on_missing_or_too_broad_cidrs(
 ) -> None:
     with pytest.raises(ValueError):
         render("1", cidrs)
+
+
+@pytest.mark.parametrize("mode", [0o1777, 0o710, 0o700])
+def test_cli_does_not_change_existing_parent_permissions(tmp_path: Path, mode: int) -> None:
+    parent = tmp_path / "existing"
+    parent.mkdir()
+    parent.chmod(mode)
+    output = parent / "trusted-proxies.conf"
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "deploy/scripts/render_trusted_proxy_conf.py"),
+            "--mode",
+            "0",
+            "--output",
+            str(output),
+        ],
+        check=True,
+    )
+    assert parent.stat().st_mode & 0o7777 == mode
+    assert output.stat().st_mode & 0o777 == 0o644
+    assert "default 0;" in output.read_text()

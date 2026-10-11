@@ -105,6 +105,7 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
                     },
                 ]
             ),
+            FakeResult([{"phase": "finalize", "reason": "db_deadlock", "count": 4}]),
             FakeResult([{"category": "market", "count": 6}]),
             FakeResult([{"source": "report", "lag_seconds": 7.5}]),
             FakeResult(
@@ -173,6 +174,7 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
         usage_projection_mismatches=(("frequency", 2), ("quota", 0)),
         usage_projection_absolute_delta=(("frequency", 3), ("quota", 0)),
         worker_stalled_leases=(("callback", 2), ("export", 1)),
+        send_db_failures=(("finalize", "db_deadlock", 4),),
         worker_lease_events=(
             ("callback", "fencing_miss", 3),
             ("export", "takeover", 2),
@@ -246,6 +248,7 @@ async def test_repository_clamps_clock_skew_and_orders_labels() -> None:
                     }
                 ]
             ),
+            FakeResult([]),
             FakeResult([]),
             FakeResult([]),
             FakeResult([]),

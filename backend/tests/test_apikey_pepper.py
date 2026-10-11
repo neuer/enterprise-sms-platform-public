@@ -313,7 +313,10 @@ def test_migration_classifies_versioned_rows_without_guessing_sha256() -> None:
     assert "不得" in source or "禁止" in source
 
 
-def test_readiness_parses_pepper_keyring_without_exposing_value(tmp_path: Path) -> None:
+@pytest.mark.parametrize("jwt_key", ["j" * 32, "synthetic-short", " " * 40])
+def test_readiness_parses_pepper_keyring_without_exposing_value(
+    tmp_path: Path, jwt_key: str
+) -> None:
     encoded = b64(b"k")
     system = b64(b"s")
     pepper = b64(b"p")
@@ -326,11 +329,16 @@ def test_readiness_parses_pepper_keyring_without_exposing_value(tmp_path: Path) 
         "audit_context_key": encoded,
         "audit_system_api_context_key": system,
         "alert_credential_public_key": encoded,
-        "jwt_secret": "jwt-key",
+        "jwt_secret": jwt_key,
         "ldap_bind_password": "ldap-password",
     }
     settings = settings_with_secrets(tmp_path, **values)
-    assert health._validate_runtime_secrets(settings) is None
+    if jwt_key == "j" * 32:
+        assert health._validate_runtime_secrets(settings) is None
+    else:
+        with pytest.raises((ValueError, RuntimeError)) as caught:
+            health._validate_runtime_secrets(settings)
+        assert jwt_key not in str(caught.value)
 
 
 @pytest.mark.asyncio

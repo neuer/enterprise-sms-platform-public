@@ -6,7 +6,13 @@ import httpx
 import pytest
 from fastapi import Request, Response
 
-from app.api.auth import REFRESH_COOKIE_NAME, REFRESH_COOKIE_PATH, _set_refresh_cookie
+from app.core.auth.cookies import (
+    PRODUCTION_REFRESH_COOKIE_NAME as REFRESH_COOKIE_NAME,
+)
+from app.core.auth.cookies import (
+    REFRESH_COOKIE_PATH,
+    RefreshCookiePolicy,
+)
 from app.core.errors import ApiError, api_error_handler
 
 
@@ -34,7 +40,7 @@ async def test_late_error_preserves_new_login_cookie(
 
     def login_cookie(value: str) -> None:
         response = Response()
-        _set_refresh_cookie(response, value, secure=True, max_age=600)
+        RefreshCookiePolicy(REFRESH_COOKIE_NAME, True, True).set(response, value, max_age=600)
         jar.extract_cookies(
             httpx.Response(
                 200,
@@ -55,7 +61,9 @@ async def test_late_error_preserves_new_login_cookie(
             "path": path,
             "query_string": b"",
             "server": ("session.example.invalid", 443),
-            "headers": [(b"cookie", b"sms_refresh_token=old-session")] if old_cookie else [],
+            "headers": (
+                [(b"cookie", f"{REFRESH_COOKIE_NAME}=old-session".encode())] if old_cookie else []
+            ),
         }
     )
     login_cookie(new_session)

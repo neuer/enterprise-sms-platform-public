@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.accounts import (
     AccountNotFound,
@@ -21,9 +22,9 @@ from app.core.auth.backends import (
     InvalidCredentials,
     SessionStateUnavailable,
 )
-from app.core.auth.identity import normalize_login_name, validate_local_login_name
+from app.core.auth.department import valid_account_department
+from app.core.auth.identity import normalize_login_name
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
-from app.core.auth.temporary_password import TEMPORARY_PASSWORD_EXPIRY_SQL
 from app.core.runtime_resources import (
     bind_connection_audit_subject,
     bind_connection_system_audit,
@@ -124,6 +125,26 @@ def _security_account(row: Any) -> PlatformAccount:
     )
 
 
+async def load_security_session_from_connection(
+    connection: AsyncConnection, account_id: int, identity_id: int,
+) -> PlatformAccount:
+    """复用调用方持有的认证事务读取权威投影，避免同池嵌套借连接。"""
+
+    result = await connection.execute(
+        text(
+            f"""
+            {SECURITY_SESSION_SELECT}
+            WHERE ua.id=:account_id AND ai.id=:identity_id
+            """
+        ),
+        {"account_id": account_id, "identity_id": identity_id},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        raise InvalidCredentials("无效或已吊销的令牌")
+    return _security_account(row)
+
+
 def _local_record(row: Any) -> LocalAccountRecord:
     return LocalAccountRecord(
         account=PlatformAccount(
@@ -152,6 +173,10 @@ class UserRepository(Protocol):
         self,
         normalized_login_name: str,
     ) -> LocalAccountRecord | None: ...
+
+    async def upgrade_local_password_hash(
+        self, *, expected: LocalAccountRecord, password_hash: str,
+    ) -> bool: ...
 
     async def load_security_session(
         self,
@@ -268,6 +293,83 @@ class SqlUserRepository:
         finally:
             await engine.dispose()
 
+    async def upgrade_local_password_hash(
+        self, *, expected: LocalAccountRecord, password_hash: str,
+    ) -> bool:
+        """锁内复核旧凭据后仅升级摘要；不改会话版本、密码期限或首次改密状态。"""
+
+        account = expected.account
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
+                result = await connection.execute(
+                    text(f"""
+                        {LOCAL_ACCOUNT_SELECT}
+                        WHERE ua.id=:account_id AND ai.id=:identity_id
+                          AND ap.code='local'
+                        FOR UPDATE OF ua,ai,ap,lc
+                    """),
+                    {"account_id": account.account_id, "identity_id": account.identity_id},
+                )
+                row = result.mappings().one_or_none()
+                if row is None:
+                    return False
+                current = _local_record(row)
+                if (
+                    current.account != account or not account.active
+                    or not valid_account_department(account.role, account.dept)
+                    or current.password_hash != expected.password_hash
+                    or current.credential_version != expected.credential_version
+                ):
+                    return False
+                updated = await connection.execute(
+                    text("""
+                        UPDATE local_credential
+                        SET password_hash=:password_hash,updated_at=now()
+                        WHERE identity_id=:identity_id AND password_hash=:expected_hash
+                          AND credential_version=:credential_version
+                          AND must_change_password=:must_change
+                          AND (NOT must_change_password
+                               OR temporary_password_expires_at > clock_timestamp())
+                        RETURNING identity_id
+                    """),
+                    {
+                        "identity_id": account.identity_id,
+                        "password_hash": password_hash,
+                        "expected_hash": expected.password_hash,
+                        "credential_version": expected.credential_version,
+                        "must_change": account.must_change_password,
+                    },
+                )
+                if updated.scalar_one_or_none() is None:
+                    return False
+                await bind_connection_audit_subject(
+                    connection, subject_kind="human", actor_name=account.login_name,
+                    account_id=account.account_id, identity_id=account.identity_id,
+                )
+                await connection.execute(
+                    text("""
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,actor_account_id,actor_identity_id,
+                          action,object_type,object_id,after_val
+                        ) VALUES(
+                          :actor,'human',:account_id,:identity_id,
+                          'local_password_rehash','user_account',:object_id,
+                          jsonb_build_object('provider_code','local','upgraded',TRUE)
+                        )
+                    """),
+                    {
+                        "actor": account.login_name, "account_id": account.account_id,
+                        "identity_id": account.identity_id, "object_id": str(account.account_id),
+                    },
+                )
+                return True
+        except SQLAlchemyError:
+            raise SessionStateUnavailable("本地凭据维护状态暂不可用") from None
+        finally:
+            await engine.dispose()
+
     async def find_local_account_by_id(
         self,
         account_id: int,
@@ -297,6 +399,8 @@ class SqlUserRepository:
         """把 Provider 结果解析为稳定主体；来源冲突由全局唯一名裁决。"""
 
         if identity.account is not None:
+            if not valid_account_department(identity.account.role, identity.account.dept):
+                raise InvalidCredentials("账号部门无效")
             await self._record_local_login(identity.account, ip)
             return identity.account
         return await self._synchronize_external(identity, ip)
@@ -1012,126 +1116,6 @@ class SqlUserRepository:
         finally:
             await engine.dispose()
 
-    async def create_local_account(
-        self,
-        *,
-        login_name: str,
-        display_name: str,
-        dept: str,
-        role: Role,
-        password_hash: str,
-        actor: str,
-        ip: str,
-    ) -> PlatformAccount:
-        """事务创建主体、local 身份与临时凭据；唯一约束裁决先到先得。"""
-
-        normalized = validate_local_login_name(login_name)
-        engine = self._engine()
-        try:
-            try:
-                async with engine.begin() as connection:
-                    provider_result = await connection.execute(
-                        text(
-                            """
-                            SELECT id FROM auth_provider
-                            WHERE code='local' AND enabled=TRUE FOR SHARE
-                            """
-                        )
-                    )
-                    provider_id = provider_result.scalar_one_or_none()
-                    if provider_id is None:
-                        raise RuntimeError("内置本地认证源不可用")
-                    account_result = await connection.execute(
-                        text(
-                            """
-                            INSERT INTO user_account(display_name,dept,role,role_override,status)
-                            VALUES(:display_name,:dept,:role,TRUE,1)
-                            RETURNING id
-                            """
-                        ),
-                        {
-                            "display_name": display_name.strip(),
-                            "dept": dept.strip(),
-                            "role": role,
-                        },
-                    )
-                    account_id = int(account_result.scalar_one())
-                    identity_result = await connection.execute(
-                        text(
-                            """
-                            INSERT INTO auth_identity(
-                              account_id,provider_id,login_name,normalized_login_name,
-                              external_subject,status
-                            ) VALUES(
-                              :account_id,:provider_id,:login_name,:normalized_login_name,
-                              :external_subject,1
-                            )
-                            RETURNING id
-                            """
-                        ),
-                        {
-                            "account_id": account_id,
-                            "provider_id": int(provider_id),
-                            "login_name": normalized,
-                            "normalized_login_name": normalized,
-                            "external_subject": f"local:{normalized}",
-                        },
-                    )
-                    identity_id = int(identity_result.scalar_one())
-                    await connection.execute(
-                        text(
-                            f"""
-                            INSERT INTO local_credential(
-                              identity_id,password_hash,must_change_password,temporary_password_expires_at
-                            ) VALUES(:identity_id,:password_hash,TRUE,
-                              {TEMPORARY_PASSWORD_EXPIRY_SQL})
-                            """
-                        ),
-                        {
-                            "identity_id": identity_id,
-                            "password_hash": password_hash,
-                        },
-                    )
-                    await connection.execute(
-                        text(
-                            """
-                            INSERT INTO audit_log(
-                              actor,role,ip,action,object_type,object_id,after_val
-                            ) VALUES(
-                              :actor,'admin',CAST(:ip AS inet),'local_account_create',
-                              'user_account',:object_id,
-                              jsonb_build_object(
-                                'provider_code','local',
-                                'role',CAST(:target_role AS text)
-                              )
-                            )
-                            """
-                        ),
-                        {
-                            "actor": actor,
-                            "ip": ip,
-                            "object_id": str(account_id),
-                            "target_role": role,
-                        },
-                    )
-                    created = await connection.execute(
-                        text(
-                            f"""
-                            {LOCAL_ACCOUNT_SELECT}
-                            WHERE ua.id=:account_id AND ai.id=:identity_id
-                            """
-                        ),
-                        {"account_id": account_id, "identity_id": identity_id},
-                    )
-                    row = created.mappings().one_or_none()
-                    if row is None:
-                        raise RuntimeError("本地账号创建后无法读取")
-                    return _local_record(row).account
-            except IntegrityError:
-                raise AccountSourceConflict("登录名已被其他认证身份占用") from None
-        finally:
-            await engine.dispose()
-
     async def load_security_session(
         self,
         account_id: int,
@@ -1140,19 +1124,9 @@ class SqlUserRepository:
         engine = self._engine()
         try:
             async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
-                        {SECURITY_SESSION_SELECT}
-                        WHERE ua.id=:account_id AND ai.id=:identity_id
-                        """
-                    ),
-                    {"account_id": account_id, "identity_id": identity_id},
+                return await load_security_session_from_connection(
+                    connection, account_id, identity_id,
                 )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    raise InvalidCredentials("无效或已吊销的令牌")
-                return _security_account(row)
         finally:
             await engine.dispose()
 

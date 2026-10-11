@@ -107,6 +107,7 @@ fi
 
 root="$(git rev-parse --show-toplevel)"
 cd "$root"
+source "$root/scripts/release_builder.sh"
 
 git diff --quiet
 git diff --cached --quiet
@@ -126,6 +127,7 @@ work_dir="$(mktemp -d "${TMPDIR:-/tmp}/sms-release-trivy.XXXXXX")"
 chmod 0700 "$work_dir"
 published=0
 cleanup() {
+  stop_release_builder
   rm -rf -- "$work_dir"
   if [ "$published" -ne 1 ]; then
     if [ -n "$report_path" ]; then
@@ -240,10 +242,11 @@ fi
 
 printf '发布候选 commit: %s\n' "$candidate"
 if [ "$promoted_count" -eq 0 ]; then
-  docker build -f backend/Dockerfile --pull --no-cache --provenance=false --sbom=false --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH=0 --build-arg APP_VERSION="$app_version" --build-arg GIT_SHA="$candidate" --build-arg SCHEMA_REVISION="$schema_revision" -t "$api_image" .
-  docker build -f frontend/Dockerfile --pull --no-cache --provenance=false --sbom=false --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH=0 --build-arg APP_VERSION="$app_version" --build-arg GIT_SHA="$candidate" --build-arg SCHEMA_REVISION="$schema_revision" -t "$web_image" .
-  docker build -f deploy/postgres.Dockerfile --pull --no-cache --provenance=false --sbom=false --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH=0 --build-arg APP_VERSION="$app_version" --build-arg GIT_SHA="$candidate" --build-arg SCHEMA_REVISION="$schema_revision" -t "$postgres_image" .
-  docker build -f deploy/redis.Dockerfile --pull --no-cache --provenance=false --sbom=false --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH=0 --build-arg APP_VERSION="$app_version" --build-arg GIT_SHA="$candidate" --build-arg SCHEMA_REVISION="$schema_revision" -t "$redis_image" .
+  start_release_builder
+  docker buildx build --builder "$release_builder" --output type=docker,rewrite-timestamp=true -f backend/Dockerfile --pull --no-cache --provenance=false --sbom=false --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH=0 --build-arg APP_VERSION="$app_version" --build-arg GIT_SHA="$candidate" --build-arg SCHEMA_REVISION="$schema_revision" -t "$api_image" .
+  docker buildx build --builder "$release_builder" --output type=docker,rewrite-timestamp=true -f frontend/Dockerfile --pull --no-cache --provenance=false --sbom=false --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH=0 --build-arg APP_VERSION="$app_version" --build-arg GIT_SHA="$candidate" --build-arg SCHEMA_REVISION="$schema_revision" -t "$web_image" .
+  docker buildx build --builder "$release_builder" --output type=docker,rewrite-timestamp=true -f deploy/postgres.Dockerfile --pull --no-cache --provenance=false --sbom=false --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH=0 --build-arg APP_VERSION="$app_version" --build-arg GIT_SHA="$candidate" --build-arg SCHEMA_REVISION="$schema_revision" -t "$postgres_image" .
+  docker buildx build --builder "$release_builder" --output type=docker,rewrite-timestamp=true -f deploy/redis.Dockerfile --pull --no-cache --provenance=false --sbom=false --platform linux/amd64 --build-arg SOURCE_DATE_EPOCH=0 --build-arg APP_VERSION="$app_version" --build-arg GIT_SHA="$candidate" --build-arg SCHEMA_REVISION="$schema_revision" -t "$redis_image" .
 fi
 
 scan_status=0
@@ -293,7 +296,7 @@ if [ "$promoted_count" -eq 0 ]; then
         -v "$archive_work_dir:/scan:ro" \
         -v trivycache:/root/.cache/trivy \
         "$trivy_image" image --input "/scan/$archive_name" \
-        --format cyclonedx --no-progress > "$sbom_raw" \
+        --format cyclonedx --cache-backend memory --no-progress > "$sbom_raw" \
         && python3 "$root/scripts/canonicalize_sbom.py" "$sbom_raw" "$sbom_part"; then
         rm -f -- "$sbom_raw"
         chmod 0600 "$sbom_part"

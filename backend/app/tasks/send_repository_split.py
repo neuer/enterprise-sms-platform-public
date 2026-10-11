@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.services.send_locks import lock_send_chunks
 from app.services.vendor_test_budget import (
     settle_live_test_attempt,
 )
@@ -93,7 +94,13 @@ async def retry_capacity_blocked_splits(
             ),
             {"limit": limit},
         )
-    ).mappings()
+    ).mappings().all()
+    # 本入口必须从未持有业务行锁的事务调用；先取得全部 advisory、chunk、batch。
+    for batch_id in sorted({int(row["batch_id"]) for row in rows}):
+        await connection.execute(
+            text("SELECT pg_advisory_xact_lock(43, :batch)"), {"batch": batch_id}
+        )
+    await lock_send_chunks(connection, [int(row["id"]) for row in rows])
     retried = 0
     for row in rows:
         if int(row["phone_count"]) < 2:
