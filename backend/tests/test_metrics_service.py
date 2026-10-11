@@ -50,6 +50,8 @@ def sample_facts() -> MetricsFacts:
         worker_lease_events=(
             ("callback", "fencing_miss", 3),
             ("export", "takeover", 4),
+            ("poll_report", "deadline_elapsed", 2),
+            ("poll_reply", "owner_lost", 1),
             ("unexpected-kind", "free-form-event", 5),
         ),
         queue_depths=(("realtime", 3), ("bulk", 9)),
@@ -174,6 +176,8 @@ def test_render_exposes_fixed_low_cardinality_metrics_and_zero_categories() -> N
     assert 'sms_worker_stalled_leases{task_kind="callback"} 2.0' in body
     assert 'sms_worker_lease_events{event="fencing_miss",task_kind="callback"} 3.0' in body
     assert 'sms_worker_lease_events{event="other",task_kind="other"} 5.0' in body
+    assert 'sms_worker_lease_events{event="deadline_elapsed",task_kind="poll_report"} 2.0' in body
+    assert 'sms_worker_lease_events{event="owner_lost",task_kind="poll_reply"} 1.0' in body
     assert 'sms_raw_replay_eligibility{eligibility="automatic"} 2.0' in body
     assert 'sms_raw_replay_eligibility{eligibility="manual"} 3.0' in body
     assert 'sms_raw_replay_eligibility{eligibility="never"} 5.0' in body

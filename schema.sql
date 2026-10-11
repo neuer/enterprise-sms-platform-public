@@ -1,6 +1,7 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.107  2026-10-11
+-- v1.6.108  2026-10-11
+-- v1.6.108：轮询租约故障以固定原因记入 worker_lease_event。
 -- v1.6.107：审计载荷仅允许对象，顶层 batch_no 严格验证类型与格式。
 -- v1.6.106：受控联调恢复绑定请求指纹；生命周期事实最小权限。
 -- v1.6.105：临时密码独立期限；历史未改密凭据迁移时一次性宽限 24 小时。
@@ -2148,16 +2149,18 @@ AFTER UPDATE OF callback_url,callback_secret_enc,
   callback_report_enabled,status ON app
 FOR EACH ROW EXECUTE FUNCTION revoke_callback_tasks_on_app_change();
 
--- callback/export worker 的无 PII 租约事实；只追加，用于停滞/接管/CAS 观测。
+-- worker 的无 PII 租约事实；只追加。poll_report/poll_reply 的 task_id=1 表示单例轮询源。
 CREATE TABLE worker_lease_event (
     id          BIGSERIAL PRIMARY KEY,
     task_kind   VARCHAR(16) NOT NULL
-                CHECK (task_kind IN ('callback','export','raw')),
+                CHECK (task_kind IN ('callback','export','raw','poll_report','poll_reply')),
     task_id     BIGINT NOT NULL CHECK (task_id>0),
     event_type  VARCHAR(24) NOT NULL
                 CHECK (event_type IN (
                   'acquired','takeover','heartbeat_lost',
-                  'fencing_miss','dead','manual_retry'
+                  'fencing_miss','dead','manual_retry',
+                  'extend_rejected','owner_lost','renewal_unavailable',
+                  'release_unavailable','deadline_elapsed'
                 )),
     lease_id    UUID,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()

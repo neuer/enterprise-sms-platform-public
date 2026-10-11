@@ -12,6 +12,7 @@ from app.core.runtime_resources import redis_client
 from app.core.worker_runtime import run_worker_async
 from app.services.alert_repository import SqlAlertService
 from app.services.crypto import CryptoService
+from app.services.poll_lease_events import SqlPollLeaseEvents
 from app.services.raw_spill import RawSpillStore
 from app.services.report_ingest import ReportIngestService
 from app.services.report_repository import SqlReportRepository
@@ -38,9 +39,19 @@ async def _alert_lease_lost(alerts: SqlAlertService, source: str) -> None:
         )
 
 
-async def _watch_lease(lock: HeartbeatLock, alerts: SqlAlertService, source: str) -> None:
+async def _watch_lease(
+    lock: HeartbeatLock, alerts: SqlAlertService, source: str, events: SqlPollLeaseEvents
+) -> None:
     """立即报告续租不确定，不取消正在持久化的轮询响应。"""
     await lock.wait_uncertain()
+    try:
+        async with asyncio.timeout(2):
+            await events.record(source, lock.uncertain_reason or "renewal_unavailable")
+    except Exception as exc:
+        LOGGER.error(
+            "poll lease counter unavailable",
+            extra={"source": source, "error_type": type(exc).__name__},
+        )
     await _alert_lease_lost(alerts, source)
 
 
@@ -71,7 +82,9 @@ async def _poll() -> int:
         return 0
     gateway = None
     alerts = SqlAlertService(settings)
-    watcher = asyncio.create_task(_watch_lease(lock, alerts, "report"))
+    watcher = asyncio.create_task(
+        _watch_lease(lock, alerts, "report", SqlPollLeaseEvents(settings))
+    )
     try:
         gateway = ZhihuiClient.from_settings(settings)
         repository = SqlReportRepository(settings)

@@ -10,6 +10,7 @@ from app.core.runtime_resources import redis_client
 from app.core.worker_runtime import run_worker_async
 from app.services.alert_repository import SqlAlertService
 from app.services.crypto import CryptoService
+from app.services.poll_lease_events import SqlPollLeaseEvents
 from app.services.raw_spill import RawSpillStore
 from app.services.reply_ingest import ReplyIngestService
 from app.services.reply_repository import SqlReplyRepository
@@ -30,7 +31,9 @@ async def _poll() -> int:
     if not await lock.acquire():
         return 0
     alerts = SqlAlertService(settings)
-    watcher = asyncio.create_task(_watch_lease(lock, alerts, "reply"))
+    watcher = asyncio.create_task(
+        _watch_lease(lock, alerts, "reply", SqlPollLeaseEvents(settings))
+    )
     try:
         async with ZhihuiClient.from_settings(settings) as vendor:
             return await ReplyIngestService(

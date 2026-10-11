@@ -102,3 +102,86 @@ async def test_renewal_failure_signals_once_and_reacquire_resets(
     assert not heartbeat.lease_uncertain
     heartbeat.ensure_lease()
     assert await heartbeat.release()
+
+
+@pytest.mark.asyncio
+async def test_deadline_detected_at_boundary_even_before_heartbeat_runs(monkeypatch) -> None:
+    now = [100.0]
+    monkeypatch.setattr("app.core.redis_lock.monotonic", lambda: now[0])
+    lock = HeartbeatLock(FakeLock(), ttl_s=3, beat_s=1)
+    assert await lock.acquire()
+    now[0] += 3
+    with pytest.raises(LeaseUncertain):
+        lock.ensure_lease()
+    assert lock.uncertain_reason == "deadline_elapsed"
+    assert not await lock.release()
+    assert await lock.acquire()
+    assert lock.uncertain_reason is None
+    assert await lock.release()
+
+
+@pytest.mark.asyncio
+async def test_hung_renewal_is_cancelled_at_original_deadline() -> None:
+    cancelled = asyncio.Event()
+
+    class HungLock(FakeLock):
+        async def extend(self, ttl: int, **kwargs: Any) -> bool:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+            return True
+
+    lock = HeartbeatLock(HungLock(), ttl_s=2, beat_s=1)
+    assert await lock.acquire()
+    await asyncio.wait_for(lock.wait_uncertain(), 3)
+    assert cancelled.is_set()
+    assert lock.uncertain_reason == "deadline_elapsed"
+    assert not await lock.release()
+
+
+@pytest.mark.asyncio
+async def test_late_success_cannot_restore_an_expired_lease(monkeypatch) -> None:
+    now = [100.0]
+    monkeypatch.setattr("app.core.redis_lock.monotonic", lambda: now[0])
+
+    class LateLock(FakeLock):
+        async def extend(self, ttl: int, **kwargs: Any) -> bool:
+            now[0] += 4
+            return True
+
+    lock = HeartbeatLock(LateLock(), ttl_s=3, beat_s=1)
+    assert await lock.acquire()
+    await asyncio.wait_for(lock.wait_uncertain(), 2)
+    assert lock.uncertain_reason == "deadline_elapsed"
+    assert not await lock.release()
+
+
+@pytest.mark.asyncio
+async def test_lease_watcher_counts_once_and_alerts_even_if_counter_fails() -> None:
+    from app.tasks.poll_report import _finish_lease, _watch_lease
+
+    class Events:
+        def __init__(self):
+            self.calls = []
+
+        async def record(self, source, reason):
+            self.calls.append((source, reason))
+            raise ConnectionError("synthetic")
+
+    class Alerts:
+        def __init__(self):
+            self.calls = []
+
+        async def emit(self, **kwargs):
+            self.calls.append(kwargs)
+
+    lock = HeartbeatLock(FakeLock(), ttl_s=3, beat_s=1)
+    assert await lock.acquire()
+    events, alerts = Events(), Alerts()
+    watcher = asyncio.create_task(_watch_lease(lock, alerts, "report", events))
+    lock._mark_uncertain("owner_lost")
+    await _finish_lease(lock, watcher, alerts, "report")
+    assert events.calls == [("report", "owner_lost")]
+    assert len(alerts.calls) == 1
+    assert watcher.done()

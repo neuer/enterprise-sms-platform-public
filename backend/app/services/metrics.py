@@ -12,6 +12,7 @@ from prometheus_client import CollectorRegistry, Gauge, generate_latest
 
 from app.core.auth.capacity_metrics import append_capacity_metrics
 from app.core.auth.observability import auth_observability_snapshot
+from app.core.redis_lock import LEASE_FAILURE_REASONS
 from app.core.runtime_telemetry import (
     RuntimeTelemetrySnapshot,
     runtime_telemetry_snapshot,
@@ -41,7 +42,7 @@ SEND_SUBMIT_OUTCOMES = (
     "split",
 )
 VENDOR_ERROR_LABELS = frozenset(str(code) for code in ERROR_POLICIES)
-LEASE_EVENT_LABELS = frozenset(
+LEASE_EVENT_LABELS = LEASE_FAILURE_REASONS | frozenset(
     {
         "acquired",
         "takeover",
@@ -367,13 +368,16 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
 
     lease_events = Gauge(
         "sms_worker_lease_events",
-        "Persisted callback/export lease lifecycle events.",
+        "Persisted worker lease lifecycle and poll renewal failure events.",
         ("task_kind", "event"),
         registry=registry,
     )
     normalized_lease_events: dict[tuple[str, str], int] = {}
     for task_kind, event, count in snapshot.facts.worker_lease_events:
-        task_label = task_kind if task_kind in {"callback", "export"} else "other"
+        task_label = (
+            task_kind if task_kind in {"callback", "export", "poll_report", "poll_reply"}
+            else "other"
+        )
         event_label = event if event in LEASE_EVENT_LABELS else "other"
         key = (task_label, event_label)
         normalized_lease_events[key] = normalized_lease_events.get(key, 0) + count
