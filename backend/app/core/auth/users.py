@@ -154,6 +154,10 @@ class UserRepository(Protocol):
         normalized_login_name: str,
     ) -> LocalAccountRecord | None: ...
 
+    async def upgrade_local_password_hash(
+        self, *, expected: LocalAccountRecord, password_hash: str,
+    ) -> bool: ...
+
     async def load_security_session(
         self,
         account_id: int,
@@ -266,6 +270,83 @@ class SqlUserRepository:
                 )
                 row = result.mappings().one_or_none()
                 return _local_record(row) if row is not None else None
+        finally:
+            await engine.dispose()
+
+    async def upgrade_local_password_hash(
+        self, *, expected: LocalAccountRecord, password_hash: str,
+    ) -> bool:
+        """锁内复核旧凭据后仅升级摘要；不改会话版本、密码期限或首次改密状态。"""
+
+        account = expected.account
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
+                result = await connection.execute(
+                    text(f"""
+                        {LOCAL_ACCOUNT_SELECT}
+                        WHERE ua.id=:account_id AND ai.id=:identity_id
+                          AND ap.code='local'
+                        FOR UPDATE OF ua,ai,ap,lc
+                    """),
+                    {"account_id": account.account_id, "identity_id": account.identity_id},
+                )
+                row = result.mappings().one_or_none()
+                if row is None:
+                    return False
+                current = _local_record(row)
+                if (
+                    current.account != account or not account.active
+                    or not valid_account_department(account.role, account.dept)
+                    or current.password_hash != expected.password_hash
+                    or current.credential_version != expected.credential_version
+                ):
+                    return False
+                updated = await connection.execute(
+                    text("""
+                        UPDATE local_credential
+                        SET password_hash=:password_hash,updated_at=now()
+                        WHERE identity_id=:identity_id AND password_hash=:expected_hash
+                          AND credential_version=:credential_version
+                          AND must_change_password=:must_change
+                          AND (NOT must_change_password
+                               OR temporary_password_expires_at > clock_timestamp())
+                        RETURNING identity_id
+                    """),
+                    {
+                        "identity_id": account.identity_id,
+                        "password_hash": password_hash,
+                        "expected_hash": expected.password_hash,
+                        "credential_version": expected.credential_version,
+                        "must_change": account.must_change_password,
+                    },
+                )
+                if updated.scalar_one_or_none() is None:
+                    return False
+                await bind_connection_audit_subject(
+                    connection, subject_kind="human", actor_name=account.login_name,
+                    account_id=account.account_id, identity_id=account.identity_id,
+                )
+                await connection.execute(
+                    text("""
+                        INSERT INTO audit_log(
+                          actor,actor_subject_kind,actor_account_id,actor_identity_id,
+                          action,object_type,object_id,after_val
+                        ) VALUES(
+                          :actor,'human',:account_id,:identity_id,
+                          'local_password_rehash','user_account',:object_id,
+                          jsonb_build_object('provider_code','local','upgraded',TRUE)
+                        )
+                    """),
+                    {
+                        "actor": account.login_name, "account_id": account.account_id,
+                        "identity_id": account.identity_id, "object_id": str(account.account_id),
+                    },
+                )
+                return True
+        except SQLAlchemyError:
+            raise SessionStateUnavailable("本地凭据维护状态暂不可用") from None
         finally:
             await engine.dispose()
 
