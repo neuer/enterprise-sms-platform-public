@@ -501,6 +501,8 @@ def seed_commands(dev_tokens: Mapping[str, str]) -> tuple[tuple[str, dict[str, A
             {},
         )
     )
+    # 同一语句的 UPDATE 看不到 created 刚插入的行；身份关联必须读取 target 的
+    # RETURNING 结果，不能只读取 updated_account，否则首次 seed 会留下孤立账号。
     user_sql = """
         WITH provider AS (
           SELECT id FROM auth_provider WHERE code='ad' AND kind='ldap'
@@ -536,9 +538,9 @@ def seed_commands(dev_tokens: Mapping[str, str]) -> tuple[tuple[str, dict[str, A
           account_id,provider_id,login_name,normalized_login_name,
           external_subject,status,source_groups,last_synced_at
         )
-        SELECT ua.id,p.id,:username,:username,:external_subject,1,
+        SELECT ua.account_id,p.id,:username,:username,:external_subject,1,
                ARRAY[CAST(:source_group AS text)],now()
-        FROM updated_account ua CROSS JOIN provider p
+        FROM target ua CROSS JOIN provider p
         ON CONFLICT (provider_id,external_subject) DO UPDATE SET
           login_name=EXCLUDED.login_name,
           normalized_login_name=EXCLUDED.normalized_login_name,
