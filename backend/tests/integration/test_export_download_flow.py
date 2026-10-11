@@ -5,6 +5,7 @@ import asyncio
 import os
 import secrets
 import socket
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 from uuid import uuid4
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.api import reports
 from app.core.auth.backends import InvalidCredentials, SessionStateUnavailable
+from app.core.auth.export_authorization import lock_export_authorization
 from app.core.auth.jwt import JwtService
 from app.core.auth.local import LocalPasswordProvider
 from app.core.auth.passwords import LocalPasswordHasher
@@ -283,6 +285,34 @@ async def audit_count(flow):
         return await connection.scalar(text("""
             SELECT count(*) FROM audit_log WHERE action='export_download' AND object_id=:id
         """), {"id": str(flow.task.public_id)})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_connection", ["auth", "business"])
+async def test_connection_loss_before_download_commit_rolls_back_audit(
+    flow, monkeypatch, failed_connection,
+):
+    """最终认证成功后连接丢失：无审计提交、无 CSV、令牌不恢复。"""
+    token = await issue(flow)
+
+    @asynccontextmanager
+    async def interrupted(*args):
+        async with lock_export_authorization(*args) as auth_connection:
+            yield auth_connection
+            connection = auth_connection if failed_connection == "auth" else args[2]
+            pid = await connection.scalar(text("SELECT pg_backend_pid()"))
+            async with flow.owner.begin() as fault:
+                assert await fault.scalar(
+                    text("SELECT pg_terminate_backend(:pid)"), {"pid": pid}
+                )
+
+    monkeypatch.setattr("app.services.export_repository.lock_export_authorization", interrupted)
+    response = await flow.client.get(url(flow), headers={"X-Export-Step-Up": token})
+    assert response.status_code == 503
+    assert await audit_count(flow) == 0
+    assert await remaining(flow, token) == 0
+    assert not response.content.startswith(b"\xef\xbb\xbf")
+    assert flow.codec.resources and all(item.closed for item in flow.codec.resources)
 
 
 @pytest.mark.asyncio

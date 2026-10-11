@@ -286,8 +286,8 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     operation="security_daily_config_update",
                     target="default",
                     parameters=parameters,
-                ),
-                engine.begin() as connection,
+                    engine=engine,
+                ) as connection,
             ):
                 await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
                 current_result = await connection.execute(
