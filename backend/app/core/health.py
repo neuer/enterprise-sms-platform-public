@@ -19,6 +19,7 @@ from sqlalchemy import text
 from app.core.apikey import require_api_key_pepper_keyring
 from app.core.audit_context import decode_audit_context_key
 from app.core.auth.admission_policy import get_admission_policy_runtime
+from app.core.auth.jwt import parse_jwt_keyring
 from app.core.auth.ldap_timing import load_ldap_timing_profile
 from app.core.auth.session_policy_sync import (
     AuthSessionPolicyReconciler,
@@ -305,6 +306,7 @@ def _validate_runtime_secrets(settings: Settings) -> None:
         secrets["data_hmac_key"],
     )
     require_api_key_pepper_keyring(settings)
+    parse_jwt_keyring(secrets["jwt_secret"])
     principal_audit_key = decode_audit_context_key(secrets["audit_context_key"])
     api_system_audit_key = decode_audit_context_key(
         secrets["audit_system_api_context_key"]

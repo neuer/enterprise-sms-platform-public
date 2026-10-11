@@ -375,7 +375,10 @@ def parse_jwt_keyring(secret: str) -> JwtKeyring:
     """解析裸 v1 key 或版本化 JSON keyring；新签发必须使用带 kid 的 key。"""
 
     if not secret.startswith("{"):
-        return JwtKeyring(1, {1: secret.encode("utf-8")})
+        key = secret.encode("utf-8")
+        if not secret.strip() or len(key) < 32:
+            raise ValueError("JWT key must contain at least 32 bytes of key material")
+        return JwtKeyring(1, {1: key})
     try:
         document = json.loads(secret)
     except json.JSONDecodeError as exc:
@@ -649,8 +652,6 @@ class JwtService:
         security_session_loader: (Callable[[int, int], Awaitable[PlatformAccount]] | None) = None,
         session_policy_loader: Callable[[], Awaitable[AuthSessionPolicy]] | None = None,
     ) -> None:
-        if len(secret) < 32:
-            raise ValueError("JWT secret must be at least 32 characters")
         if ttl.total_seconds() <= 0 or ttl > timedelta(minutes=15):
             raise ValueError("JWT access ttl must be between 1 second and 15 minutes")
         if refresh_ttl < timedelta(minutes=1) or refresh_ttl > timedelta(days=7):
