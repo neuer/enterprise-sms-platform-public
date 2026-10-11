@@ -1692,3 +1692,12 @@
 - 验证：真实 auth／accept 角色的配置、应用、日报事务测试；真实 JWT、Argon2、
   Redis Lua、回环 HTTP 与临时配置文件的路由测试。完整登录准入及发送容量不由
   这些专项测试替代，统一门禁仍须在最终候选上通过。
+
+
+## D121 Refresh Cookie 生产前缀与强制重新登录迁移
+
+- 背景：现有 Cookie 在 HTTPS 下能够删除，F-21 属于加固；不将属性统一表述为已证实的登出漏洞修复。
+- 决策：生产采用 `__Secure-sms_refresh_token`，开发/测试保留 `sms_refresh_token`；保留受限 Path `/api/v1/web/auth`，不采用要求根路径的 `__Host-`。设置与删除共享 Secure、HttpOnly、SameSite=Lax 及无 Domain 策略。
+- 迁移：生产旧名立即失去刷新资格，用户须重新登录。经过完整口令认证后仍可用旧值撤销原 Family，随后删除旧名；不保留双凭据认证窗口。重复同名/多个 Header/两个名称并存均拒绝，不依赖框架最后值覆盖。主动 Logout 在 Cookie 歧义时仍使用合法 Bearer 撤销当前会话。
+- 边界：服务只能清理约定的 host-only Path；其他 Domain/Path 导致的重复输入继续失败关闭。生产刷新对 HTTP 失败关闭。普通业务迟到 Bearer 错误不触碰 Cookie，access-only、同源、tab binding、轮换与 Web Storage 合同不变。
+- 回退：旧版本不识别生产新名，回退需要重新登录；禁止为无感回退永久接受双来源。真实浏览器证据须分别覆盖 HTTPS 生产与 HTTP 开发，HTTPX CookieJar 只作路由回归，不能证明浏览器前缀执行。
