@@ -1106,5 +1106,12 @@ def test_broker_material_is_domain_separated_and_has_no_plaintext_in_acl(
     assert seed not in acl
     assert all(value not in acl for value in passwords)
     assert b"~*" not in acl and b"+@all" not in acl and b"&*" not in acl
+    default = acl.decode("ascii").splitlines()[0].split()
+    assert default[:4] == ["user", "default", "reset", "off"]
+    assert not {"on", "nopass", "+acl", "+config", "+flushall"}.intersection(default)
+    assert not any(token.startswith(("#", ">")) for token in default)
+    assert {"+select", "+multi", "+exec", "+pexpireat"}.issubset(default)
+    assert "~result:callback:*" in default and "~unacked:realtime" in default
+    assert not any(token.startswith("~auth:") for token in default)
     with pytest.raises(module.RuntimeSecretsError):
         module.broker_runtime_material(b"too-short")

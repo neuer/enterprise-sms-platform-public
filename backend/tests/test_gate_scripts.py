@@ -661,7 +661,8 @@ def test_redis_domain_smoke_enforces_acl_and_secret_boundaries() -> None:
     assert "pidbox" not in entrypoint
     assert " ~* &*" not in entrypoint
     assert "+@all" not in entrypoint
-    assert "user default off" in entrypoint
+    assert "user default reset off" in entrypoint
+    assert "+select +multi +exec +pexpireat" in entrypoint
 
 
 def test_data_image_smoke_records_versions_from_started_candidate_binaries() -> None:

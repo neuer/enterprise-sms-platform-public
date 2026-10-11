@@ -61,7 +61,10 @@ if [ "$domain" = broker ]; then
   cat "$broker_acl" >"$acl_file"
 else
   {
-    printf 'user default off\n'
+    # Redis 7 的 AOF 内部客户端使用 default 执行事务回放。保持禁用且无密码，
+    # 仅授予本故障域已有权限及 AOF 规范化命令，避免重启静默丢失事务写入。
+    printf 'user default reset off %s %s +select +multi +exec +pexpireat\n' \
+      "$key_rules" "$command_rules"
     printf 'user %s on >%s %s &* %s\n' \
       "$username" "$password" "$key_rules" "$command_rules"
   } >"$acl_file"

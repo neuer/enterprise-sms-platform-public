@@ -150,6 +150,17 @@ for domain in "${domains[@]}"; do
   printf '%s\n' "$password" | docker exec -i "$container" \
     redis-cli --user "$username" --askpass -e SET "$allowed_key" "$marker" \
     >/dev/null
+  # Lua 多写在 AOF 中编码为事务；同时覆盖绝对过期命令，不能只测单个 SET。
+  printf '%s\n' "$password" | docker exec -i "$container" \
+    redis-cli --user "$username" --askpass -e EVAL \
+    "redis.call('SET',KEYS[1],'replay-one'); redis.call('SET',KEYS[2],'replay-two'); redis.call('PEXPIRE',KEYS[2],600000); return 1" \
+    2 "${allowed_key}:transaction" "${allowed_key}:expiry" >/dev/null
+  if printf '%s\n' "$password" | docker exec -i "$container" \
+    redis-cli --user "$username" --askpass -e ACL SETUSER default on \
+    >/dev/null 2>&1; then
+    echo "Redis runtime account unexpectedly changed an ACL" >&2
+    exit 1
+  fi
   observed="$(
     printf '%s\n' "$password" | docker exec -i "$container" \
       redis-cli --user "$username" --askpass --raw -e GET "$allowed_key"
@@ -226,6 +237,29 @@ for domain in "${domains[@]}"; do
     echo "Redis AOF restart did not preserve the domain marker" >&2
     exit 1
   fi
+  for probe in transaction expiry; do
+    expected=replay-one
+    [[ "$probe" != expiry ]] || expected=replay-two
+    observed="$(
+      printf '%s\n' "$password" | docker exec -i "$container" \
+        redis-cli --user "$username" --askpass --raw -e GET "${allowed_key}:${probe}"
+    )"
+    if [[ "$observed" != "$expected" ]]; then
+      echo "Redis AOF restart did not preserve transaction writes" >&2
+      exit 1
+    fi
+  done
+  if docker logs "$container" 2>&1 | grep -Fq 'AOF-loading-client'; then
+    echo "Redis reported an AOF replay error" >&2
+    exit 1
+  fi
+  for default_password in '' "$password"; do
+    if printf '%s\n' "$default_password" | docker exec -i "$container" \
+      redis-cli --user default --askpass -e PING >/dev/null 2>&1; then
+      echo "Redis disabled default user unexpectedly authenticated" >&2
+      exit 1
+    fi
+  done
 done
 
 for source_domain in "${domains[@]}"; do
