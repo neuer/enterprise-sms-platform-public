@@ -19,6 +19,14 @@ from app.services.export_step_up import ReauthenticationFacade, StepUpStore
 
 ADMIN_STEP_UP_TTL_SECONDS = 300
 AdminOperation = Literal[
+    "config_update",
+    "security_daily_config_update",
+    "app_create",
+    "app_update",
+    "app_disable",
+    "app_rotate_key",
+    "app_revoke_old_key",
+    "app_rotate_callback_secret",
     "user_create_admin",
     "user_role_change",
     "user_password_reset",
@@ -35,6 +43,19 @@ if stored ~= ARGV[1] then return -1 end
 return 1
 """
 _FIELDS = {
+    "config_update": {"items"},
+    "security_daily_config_update": {
+        "enabled",
+        "recipients",
+        "api_key_action",
+        "expected_config_version",
+    },
+    "app_create": {"config"},
+    "app_update": {"config", "expected_updated_at"},
+    "app_disable": {"expected_updated_at"},
+    "app_rotate_key": {"expected_updated_at"},
+    "app_revoke_old_key": {"expected_updated_at"},
+    "app_rotate_callback_secret": {"expected_updated_at"},
     "user_create_admin": {"username", "display_name", "dept", "role"},
     "user_role_change": {"role", "role_override"},
     "user_password_reset": {"action"},
@@ -61,6 +82,56 @@ def admin_intent(
     if operation not in _FIELDS or set(parameters) != _FIELDS[operation]:
         raise ApiError(422, "INVALID_PARAM", "二次认证操作参数不完整或包含未知字段", None)
     values = dict(parameters)
+    if operation.startswith("app_"):
+        from app.services.app_contract import canonical_app_parameters, canonical_app_revision
+
+        try:
+            if operation == "app_create":
+                if target_id != "new":
+                    raise ValueError("invalid target")
+            else:
+                if not target_id.isascii() or not target_id.isdecimal() or int(target_id) <= 0:
+                    raise ValueError("invalid target")
+                target_id = str(int(target_id))
+                values["expected_updated_at"] = canonical_app_revision(
+                    values["expected_updated_at"]
+                )
+            if "config" in values:
+                if not isinstance(values["config"], dict):
+                    raise ValueError("invalid configuration")
+                values["config"] = canonical_app_parameters(
+                    values["config"],
+                    create=operation == "app_create",
+                )
+        except (TypeError, ValueError):
+            raise ApiError(422, "INVALID_PARAM", "应用二次认证参数无效", None) from None
+    if operation == "security_daily_config_update":
+        from app.services.security_daily.contract import validate_resend_recipients
+
+        try:
+            if (
+                target_id != "default"
+                or type(values["enabled"]) is not bool
+                or not isinstance(values["api_key_action"], str)
+                or values["api_key_action"] not in {"keep", "replace", "clear"}
+                or type(values["expected_config_version"]) is not int
+                or not 1 <= values["expected_config_version"] < 9007199254740991
+                or not isinstance(values["recipients"], list)
+                or any(not isinstance(item, str) for item in values["recipients"])
+            ):
+                raise ValueError("invalid configuration")
+            values["recipients"] = list(validate_resend_recipients(values["recipients"]))
+        except (TypeError, ValueError):
+            raise ApiError(422, "INVALID_PARAM", "安全日报二次认证参数无效", None) from None
+    if operation == "config_update":
+        from app.services.admin import canonical_config_intent_items
+
+        try:
+            if target_id != "default":
+                raise ValueError("invalid target")
+            values["items"] = canonical_config_intent_items(values["items"])
+        except (TypeError, ValueError):
+            raise ApiError(422, "INVALID_PARAM", "全局配置二次认证参数无效", None) from None
     roles = {"admin", "approver", "operator", "viewer"}
     if "role" in values and (not isinstance(values["role"], str) or values["role"] not in roles):
         raise ApiError(422, "INVALID_PARAM", "授权角色无效", None)

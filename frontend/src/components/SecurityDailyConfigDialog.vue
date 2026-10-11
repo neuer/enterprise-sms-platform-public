@@ -1,4 +1,8 @@
 <script setup lang="ts">
+import AdminStepUpDialog from "./AdminStepUpDialog.vue"
+import { useAdminStepUp } from "../composables/useAdminStepUp"
+import { useConfirmActions } from "../lib/confirm"
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 import { ref, watch, onScopeDispose } from "vue"
 import { ElMessage } from "element-plus"
 import {
@@ -8,6 +12,8 @@ import {
 } from "../api/securityDaily"
 import { useLatestRead } from "../composables/useLatestRead"
 import { apiErrorMessage } from "../lib/securityDaily"
+const adminStepUp = useAdminStepUp()
+const { captureCurrent } = useConfirmActions()
 const configOpen = defineModel<boolean>({ default: false })
 const emit = defineEmits<{ saved: []; loading: [value: boolean] }>()
 const configLoading = ref(false)
@@ -22,6 +28,7 @@ const read = useLatestRead()
 watch(configLoading, (value) => emit("loading", value))
 
 function clearConfigurationSecrets(): void {
+  adminStepUp.cancel()
   read.cancel()
   configLoading.value = false
   configApiKey.value = ""
@@ -75,26 +82,48 @@ function validateRecipients(recipients: string[]): string {
 }
 
 async function saveConfiguration(): Promise<void> {
+  if (configSaving.value || configLoading.value || !currentConfiguration.value) return
   const recipients = parseRecipients()
   const validationError = validateRecipients(recipients)
   if (validationError) {
     configErrorMessage.value = validationError
     return
   }
+  const payload = {
+    enabled: configEnabled.value,
+    recipients,
+    resend_api_key: clearConfigApiKey.value ? "" : configApiKey.value.trim() || null,
+    expected_config_version: currentConfiguration.value.config_version,
+  }
+  const isCurrent = captureCurrent()
+  configApiKey.value = ""
   configSaving.value = true
   configErrorMessage.value = ""
   try {
-    currentConfiguration.value = await updateSecurityDailyConfiguration({
-      enabled: configEnabled.value,
-      recipients,
-      resend_api_key: clearConfigApiKey.value ? "" : configApiKey.value.trim() || null,
-    })
+    const configuration = await adminStepUp.run(
+      {
+        operation: "security_daily_config_update",
+        target_id: "default",
+        parameters: {
+          enabled: payload.enabled,
+          recipients: [...recipients],
+          api_key_action: payload.resend_api_key === null ? "keep" : payload.resend_api_key ? "replace" : "clear",
+          expected_config_version: payload.expected_config_version,
+        },
+      },
+      "保存安全日报邮件配置",
+      (token) => updateSecurityDailyConfiguration({ ...payload, recipients: [...payload.recipients] }, token),
+    )
+    if (!configuration || !isCurrent() || !configOpen.value) return
+    currentConfiguration.value = configuration
     configOpen.value = false
     ElMessage.success("安全日报配置已保存 · 本次操作已记入审计")
     emit("saved")
   } catch (error) {
-    configErrorMessage.value = apiErrorMessage(error, "安全日报配置保存失败，请检查输入")
+    if (isCurrent() && configOpen.value)
+      configErrorMessage.value = apiErrorMessage(error, "安全日报配置保存失败，请检查输入")
   } finally {
+    payload.resend_api_key = null
     configSaving.value = false
   }
 }
@@ -103,9 +132,14 @@ watch(configOpen, (open) => {
   if (open) void openConfiguration()
   else clearConfigurationSecrets()
 })
-onScopeDispose(clearConfigurationSecrets)
+window.addEventListener(SESSION_CLEARING_EVENT, clearConfigurationSecrets)
+onScopeDispose(() => {
+  window.removeEventListener(SESSION_CLEARING_EVENT, clearConfigurationSecrets)
+  clearConfigurationSecrets()
+})
 </script>
 <template>
+  <AdminStepUpDialog :controller="adminStepUp" />
   <el-dialog
     v-model="configOpen"
     title="安全日报邮件配置"
@@ -114,7 +148,7 @@ onScopeDispose(clearConfigurationSecrets)
     @closed="clearConfigurationSecrets"
   >
     <el-skeleton v-if="configLoading" :rows="5" animated />
-    <el-form v-else label-position="top" @submit.prevent="saveConfiguration">
+    <el-form v-else :disabled="configSaving" label-position="top" @submit.prevent="saveConfiguration">
       <el-form-item label="启用安全日报">
         <el-switch v-model="configEnabled" active-text="启用" inactive-text="停用" />
       </el-form-item>

@@ -22,13 +22,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.audit import audit_uuid_ref
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.principal_context import audit_principal_scope
 from app.core.correlation import correlation_scope
 from app.core.runtime_resources import bind_connection_system_audit, close_runtime_resources
+from app.services.admin_step_up import admin_intent
 from app.services.security_daily import (
     SecurityDailyConfigurationUpdate,
     SecurityDailyControlResult,
 )
+from app.services.security_daily.contract import security_daily_write_parameters
 from app.services.security_daily_repository import SqlSecurityDailyRepository
 from app.services.vendor_test_operation_repository import SqlVendorTestOperationRepository
 from app.services.vendor_test_security_audit import SqlVendorTestSecurityAuditRepository
@@ -148,7 +151,9 @@ async def test_security_daily_config_audit_keeps_phone_shaped_operation_correlat
     """配置三阶段审计以无数字引用关联同一 operation，碰撞 UUID 也不得写入失败。"""
 
     engine, url = owner
-    repository = SqlSecurityDailyRepository(cast(Any, SimpleNamespace(database_url=url)))
+    repository = SqlSecurityDailyRepository(
+        cast(Any, SimpleNamespace(database_url=url, database_url_for=lambda _: url))
+    )
     monkeypatch.setattr(
         "app.services.security_daily_repository.uuid4", _uuid_sequence(PHONE_SHAPED_A)
     )
@@ -159,16 +164,28 @@ async def test_security_daily_config_audit_keeps_phone_shaped_operation_correlat
             )
         ).all()
         saved_recipients = (
-            await connection.execute(
-                text("SELECT position,address FROM security_daily_recipient")
-            )
+            await connection.execute(text("SELECT position,address FROM security_daily_recipient"))
         ).all()
     try:
         with audit_principal_scope(principal), correlation_scope():
+            update = SecurityDailyConfigurationUpdate(enabled=False, recipients=())
+            version = (await repository.configuration()).config_version
             configuration = await repository.update_configuration(
-                SecurityDailyConfigurationUpdate(enabled=False, recipients=()),
+                update,
                 principal=principal,
                 ip="10.8.0.8",
+                expected_config_version=version,
+                authorization=AdminAuthorization(
+                    principal.account_id,
+                    principal.identity_id,
+                    1,
+                    "local",
+                    admin_intent(
+                        "security_daily_config_update",
+                        "default",
+                        security_daily_write_parameters(update, version),
+                    ),
+                ),
             )
         with correlation_scope():
             # 该方法吞掉 SQLAlchemyError；下方按行断言，确保审计确实落库而非被静默丢弃。
@@ -193,10 +210,7 @@ async def test_security_daily_config_audit_keeps_phone_shaped_operation_correlat
                 )
             ).all()
             stored_operation = await connection.scalar(
-                text(
-                    "SELECT value FROM sys_config "
-                    "WHERE key='security_daily_config_operation_id'"
-                )
+                text("SELECT value FROM sys_config WHERE key='security_daily_config_operation_id'")
             )
     finally:
         async with engine.begin() as connection:
@@ -236,7 +250,9 @@ async def test_security_daily_delivery_audits_keep_phone_shaped_requests_correla
     """请求/失败/重试/unknown/结果五类投递审计都能写入，并能按引用连回请求行。"""
 
     engine, url = owner
-    repository = SqlSecurityDailyRepository(cast(Any, SimpleNamespace(database_url=url)))
+    repository = SqlSecurityDailyRepository(
+        cast(Any, SimpleNamespace(database_url=url, database_url_for=lambda _: url))
+    )
     monkeypatch.setattr(
         "app.services.security_daily_repository.uuid4",
         _uuid_sequence(PHONE_SHAPED_A, PHONE_SHAPED_B),

@@ -37,7 +37,7 @@ from app.core.auth.session_policy_sync import (
 from app.core.health import AuthSessionPolicyReadinessCheck
 from app.services.admin import AdminService, ConfigRow, ConfigUpdate
 from app.services.runtime_policy import RuntimePolicy
-from tests.test_admin_service import ADMIN, FakeRepository
+from tests.test_admin_service import ADMIN, REVISION, FakeRepository, grant
 from tests.test_auth import TAB_ID, FakeKeyValue
 from tests.test_auth_ad_deadline import SECRET, ad_claims, seed_policy
 
@@ -345,9 +345,11 @@ async def test_admin_policy_update_publishes_revision_after_commit() -> None:
                 *await super().list_configs(),
             )
 
-        async def update_configs(self, updates, *, principal, ip):
+        async def update_configs(self, updates, *, principal, ip, authorization):
             self.policy = _policy(2, int(updates[0].value or "60"))
-            return await super().update_configs(updates, principal=principal, ip=ip)
+            return await super().update_configs(
+                updates, principal=principal, ip=ip, authorization=authorization
+            )
 
         async def load_auth_session_policy(self) -> AuthSessionPolicy:
             return self.policy
@@ -359,8 +361,10 @@ async def test_admin_policy_update_publishes_revision_after_commit() -> None:
         RecordingRepository(),
         session_policy_publisher=publisher,
     )
+    updates = (ConfigUpdate("ad_session_max_age_minutes", "60", REVISION),)
     await service.update_configs(
-        (ConfigUpdate("ad_session_max_age_minutes", "60"),),
+        updates,
+        authorization=grant(updates),
         principal=ADMIN,
         ip="10.0.0.8",
     )

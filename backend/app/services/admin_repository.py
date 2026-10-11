@@ -9,8 +9,10 @@ from uuid import UUID
 from sqlalchemy import text
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.admin_authorization import AdminAuthorization, hold_admin_authorization
 from app.core.auth.session_policy import AuthSessionPolicy
 from app.core.auth.session_policy_sync import POLICY_SELECT, policy_from_mapping
+from app.core.errors import ApiError
 from app.core.runtime_resources import bind_connection_audit_subject, database_engine
 from app.services.admin import (
     SENSITIVE_CONFIG_KEYS,
@@ -19,9 +21,12 @@ from app.services.admin import (
     ConfigRow,
     ConfigUpdate,
     InvalidAdminQuery,
+    config_write_parameters,
+    normalize_config_updates,
 )
 from app.services.alert import validate_alert_destinations
-from app.services.runtime_policy import InvalidRuntimePolicy, RuntimePolicy
+from app.services.app_contract import canonical_app_revision
+from app.services.runtime_policy import CONFIG_SPECS, InvalidRuntimePolicy, RuntimePolicy
 from app.services.sensitive_config import (
     WECOM_WEBHOOK_KEY,
     AlertCredentialCipher,
@@ -87,15 +92,32 @@ class SqlAdminRepository:
         self,
         updates: tuple[ConfigUpdate, ...],
         *,
+        authorization: AdminAuthorization,
         principal: SecurityPrincipal,
         ip: str,
     ) -> tuple[ConfigRow, ...]:
+        if (principal.account_id, principal.identity_id) != (
+            authorization.account_id,
+            authorization.identity_id,
+        ):
+            raise ApiError(401, "STEP_UP_REQUIRED", "授权主体不匹配", None)
+        updates = normalize_config_updates(updates)
+        parameters = config_write_parameters(updates)
         keys = [item.key for item in updates]
         if any(key.startswith("__") for key in keys):
             raise InvalidAdminQuery("配置项不存在或已被删除")
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
+            async with (
+                hold_admin_authorization(
+                    self.settings,
+                    authorization,
+                    operation="config_update",
+                    target="default",
+                    parameters=parameters,
+                ),
+                engine.begin() as connection,
+            ):
                 await bind_connection_audit_subject(
                     connection,
                     subject_kind="human",
@@ -119,6 +141,18 @@ class SqlAdminRepository:
                 before = {str(row["key"]): self._config(row) for row in locked.mappings()}
                 if any(key not in before for key in keys):
                     raise InvalidAdminQuery("配置项不存在或已被删除")
+                for item in updates:
+                    row = before[item.key]
+                    if row.value_type != CONFIG_SPECS[item.key].value_type:
+                        raise InvalidAdminQuery("配置类型与注册表不一致")
+                    if canonical_app_revision(row.updated_at) != canonical_app_revision(
+                        item.expected_updated_at,
+                    ):
+                        raise ApiError(409, "STATE_CONFLICT", "配置已变化，请刷新后重新认证", None)
+                updates = tuple(item for item in updates if item.value is not None)
+                if not updates:
+                    return tuple(before.values())
+                keys = [item.key for item in updates]
                 effective = {key: row.value for key, row in before.items()}
                 for item in updates:
                     if item.value is None:
@@ -140,9 +174,7 @@ class SqlAdminRepository:
                     raise InvalidAdminQuery(str(error)) from error
                 stored_values = {
                     item.key: (
-                        encrypt_wecom_webhook(
-                            item.value or "", self._credential_cipher()
-                        )
+                        encrypt_wecom_webhook(item.value or "", self._credential_cipher())
                         if item.key == WECOM_WEBHOOK_KEY
                         else item.value
                     )
@@ -199,9 +231,7 @@ class SqlAdminRepository:
                     )
                 if any(item.key == "ad_session_max_age_minutes" for item in updates):
                     minutes = next(
-                        item.value
-                        for item in updates
-                        if item.key == "ad_session_max_age_minutes"
+                        item.value for item in updates if item.key == "ad_session_max_age_minutes"
                     )
                     if minutes is None:
                         raise InvalidAdminQuery("认证会话策略缺少最大认证年龄")

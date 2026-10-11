@@ -352,7 +352,7 @@ async def test_local_create_is_single_transaction_and_audit_has_no_hash() -> Non
 
 @pytest.fixture(autouse=True)
 def authorized_transaction(monkeypatch, request):
-    async def check(connection, authorization, *, operation, target):
+    async def check(connection, authorization, *, operation, target, parameters):
         assert authorization is AUTHORIZATION
         if "activate" not in request.node.name and operation in {
             "user_status_change",

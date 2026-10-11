@@ -10,6 +10,8 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.admin_authorization import AdminAuthorization, require_admin_intent
+from app.services.admin_step_up import admin_intent
 from app.services.security_daily import (
     FileSecurityDailyControl,
     SecurityDailyAutoDeliveryConfiguration,
@@ -35,6 +37,7 @@ from app.services.security_daily import (
     resolve_configuration_state,
     validate_security_daily_payload,
 )
+from app.services.security_daily.contract import security_daily_write_parameters
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / "deploy" / "templates" / "security_daily_report.sample.json"
@@ -227,8 +230,17 @@ class FakeRepository:
         *,
         principal: SecurityPrincipal,
         ip: str,
+        authorization: AdminAuthorization,
+        expected_config_version: int,
     ) -> SecurityDailyConfiguration:
         del principal, ip
+        require_admin_intent(
+            authorization,
+            operation="security_daily_config_update",
+            target="default",
+            parameters=security_daily_write_parameters(update, expected_config_version),
+        )
+        assert expected_config_version == self.config.config_version
         api_key = self.config.api_key if update.api_key is None else update.api_key
         self.config = SecurityDailyConfiguration(
             update.enabled,
@@ -277,14 +289,9 @@ class FakeRepository:
         return self.record
 
     async def exists_sent_delivery(self, report_date: date) -> bool:
-        return (
-            report_date == self.record.report_date
-            and self.record.delivery_status == "sent"
-        )
+        return report_date == self.record.report_date and self.record.delivery_status == "sent"
 
-    async def latest_delivery_request(
-        self, report_id: int
-    ) -> SecurityDailyDeliveryRequest | None:
+    async def latest_delivery_request(self, report_id: int) -> SecurityDailyDeliveryRequest | None:
         if report_id != self.record.id:
             return None
         return self.existing_request
@@ -716,9 +723,7 @@ async def test_generate_latest_forces_manual_regeneration_and_sends(tmp_path: Pa
     )
     incoming = tmp_path / "incoming"
     incoming.mkdir()
-    incoming.joinpath("2026-07-15.json").write_text(
-        json.dumps(payload()), encoding="utf-8"
-    )
+    incoming.joinpath("2026-07-15.json").write_text(json.dumps(payload()), encoding="utf-8")
     principal = SecurityPrincipal(1, 2, "admin", "security", "admin")
 
     result = await service.generate_latest(principal=principal, ip="127.0.0.1")
@@ -726,9 +731,7 @@ async def test_generate_latest_forces_manual_regeneration_and_sends(tmp_path: Pa
     assert result.generation_source == "manual"
     assert repository.ingested[-1]["force"] is True
     assert repository.ingested[-1]["generation_source"] == "manual"
-    assert repository.ingested[-1]["payload"]["generated_at"] == (
-        "2026-07-16T09:00:00+08:00"
-    )
+    assert repository.ingested[-1]["payload"]["generated_at"] == ("2026-07-16T09:00:00+08:00")
     assert len(control.submitted) == 1
 
 
@@ -881,9 +884,7 @@ async def test_submit_auto_delivery_marks_config_incomplete_instead_of_silent_sk
 
     await service.submit_auto_delivery(date(2026, 7, 15))
 
-    assert repository.delivery_failed == [
-        (1, "安全日报发信配置不完整（缺少 Resend Key 或收件人）")
-    ]
+    assert repository.delivery_failed == [(1, "安全日报发信配置不完整（缺少 Resend Key 或收件人）")]
     assert control.submitted == []
 
 
@@ -976,18 +977,17 @@ async def test_stale_config_writer_cannot_overwrite_newer_mailer_file(
     tmp_path: Path,
 ) -> None:
     control = FileSecurityDailyControl(tmp_path / "control", tmp_path / "config")
-    newer = SecurityDailyConfiguration(
-        True, "re_test_value", ("security-owner@example.com",), 3
-    )
-    older = SecurityDailyConfiguration(
-        True, "re_test_value", ("security-owner@example.com",), 2
-    )
+    newer = SecurityDailyConfiguration(True, "re_test_value", ("security-owner@example.com",), 3)
+    older = SecurityDailyConfiguration(True, "re_test_value", ("security-owner@example.com",), 2)
     await control.sync_configuration(newer)
     with pytest.raises(SecurityDailyConfigurationSuperseded, match="更新版本"):
         await control.sync_configuration(older)
-    assert json.loads((tmp_path / "config" / "resend.json").read_text(encoding="utf-8"))[
-        "config_version"
-    ] == 3
+    assert (
+        json.loads((tmp_path / "config" / "resend.json").read_text(encoding="utf-8"))[
+            "config_version"
+        ]
+        == 3
+    )
     assert list((tmp_path / "config").glob(".resend.json.tmp")) == []
 
 
@@ -1016,13 +1016,15 @@ async def test_concurrent_config_writers_use_unique_temps_and_keep_highest_versi
     second.start()
     first.join()
     second.join()
-    assert json.loads((tmp_path / "config" / "resend.json").read_text(encoding="utf-8"))[
-        "config_version"
-    ] == 3
+    assert (
+        json.loads((tmp_path / "config" / "resend.json").read_text(encoding="utf-8"))[
+            "config_version"
+        ]
+        == 3
+    )
     assert list((tmp_path / "config").glob(".resend.json.tmp")) == []
     assert all(
-        not str(error).startswith("re_")
-        and "security-owner@example.com" not in str(error)
+        not str(error).startswith("re_") and "security-owner@example.com" not in str(error)
         for error in errors
     )
 
@@ -1111,9 +1113,7 @@ async def test_mailer_claim_is_inspected_as_in_progress_not_failure(
     (control_dir / "requests").mkdir(parents=True)
     (control_dir / "results").mkdir()
     request_id = uuid4()
-    (control_dir / "requests" / f".{request_id}.99.processing").write_text(
-        "{}", encoding="utf-8"
-    )
+    (control_dir / "requests" / f".{request_id}.99.processing").write_text("{}", encoding="utf-8")
     control = FileSecurityDailyControl(control_dir, tmp_path / "config")
     assert await control.inspect_delivery(request_id) == "claimed"
     request = SecurityDailyDeliveryRequest(
@@ -1157,6 +1157,20 @@ async def test_auto_delivery_waits_on_configuration_version_split() -> None:
     assert control.submitted == []
     assert repository.delivery_failed == []
     assert repository.failed == []
+
+
+def _config_grant(update: SecurityDailyConfigurationUpdate) -> AdminAuthorization:
+    return AdminAuthorization(
+        1,
+        2,
+        1,
+        "local",
+        admin_intent(
+            "security_daily_config_update",
+            "default",
+            security_daily_write_parameters(update, 1),
+        ),
+    )
 
 
 def _admin() -> SecurityPrincipal:
@@ -1243,7 +1257,13 @@ async def test_configure_enospc_leaves_file_pending_and_overview_reconciles() ->
     )
 
     with pytest.raises(SecurityDailyControlError, match="配置同步失败"):
-        await service.configure(update, principal=_admin(), ip="127.0.0.1")
+        await service.configure(
+            update,
+            principal=_admin(),
+            ip="127.0.0.1",
+            authorization=_config_grant(update),
+            expected_config_version=1,
+        )
     assert repository.publish_states == ["file_pending"]
     assert repository.config.config_version == 2
 
@@ -1262,13 +1282,9 @@ async def test_stale_configure_does_not_claim_file_committed_success() -> None:
     repository = FakeRepository(record())
 
     class SupersededControl(FakeControl):
-        async def sync_configuration(
-            self, configuration: SecurityDailyConfiguration
-        ) -> None:
+        async def sync_configuration(self, configuration: SecurityDailyConfiguration) -> None:
             del configuration
-            raise SecurityDailyConfigurationSuperseded(
-                "安全日报配置版本已被更新版本取代"
-            )
+            raise SecurityDailyConfigurationSuperseded("安全日报配置版本已被更新版本取代")
 
     service = SecurityDailyService(repository, SupersededControl())
     with pytest.raises(SecurityDailyStateConflict, match="已被更新版本取代"):
@@ -1278,6 +1294,12 @@ async def test_stale_configure_does_not_claim_file_committed_success() -> None:
             ),
             principal=_admin(),
             ip="127.0.0.1",
+            authorization=_config_grant(
+                SecurityDailyConfigurationUpdate(
+                    True, ("security-owner@example.com",), "re_test_value"
+                )
+            ),
+            expected_config_version=1,
         )
     assert "file_committed" not in repository.publish_states
     assert repository.publish_states == ["file_pending", "file_pending"]
@@ -1324,9 +1346,7 @@ async def test_overview_reconciles_writer_race_failed_request_to_sent() -> None:
     request_id = uuid4()
     repository = FakeRepository(replace(item, delivery_status="failed"))
     repository.pending_requests = [(request_id, item.report_date)]
-    service = SecurityDailyService(
-        repository, SentResultControl(request_id, item.report_date)
-    )
+    service = SecurityDailyService(repository, SentResultControl(request_id, item.report_date))
 
     await service.overview()
 
@@ -1357,9 +1377,7 @@ def test_configuration_write_fsyncs_temp_final_and_parent_directory(
     monkeypatch.setattr(os, "replace", tracked_replace)
     control = FileSecurityDailyControl(tmp_path / "control", tmp_path / "config")
     control._write_configuration(
-        SecurityDailyConfiguration(
-            True, "re_test_value", ("security-owner@example.com",), 1
-        )
+        SecurityDailyConfiguration(True, "re_test_value", ("security-owner@example.com",), 1)
     )
     assert events == ["fsync:file", "replace", "fsync:file", "fsync:directory"]
     restarted = FileSecurityDailyControl(tmp_path / "control", tmp_path / "config")
@@ -1378,9 +1396,7 @@ def test_configuration_crash_before_replace_does_not_publish(
     control = FileSecurityDailyControl(tmp_path / "control", tmp_path / "config")
     with pytest.raises(SecurityDailyControlError):
         control._write_configuration(
-            SecurityDailyConfiguration(
-                True, "re_test_value", ("security-owner@example.com",), 1
-            )
+            SecurityDailyConfiguration(True, "re_test_value", ("security-owner@example.com",), 1)
         )
     assert not (tmp_path / "config" / "resend.json").exists()
     assert list((tmp_path / "config").glob(".resend.*.tmp")) == []

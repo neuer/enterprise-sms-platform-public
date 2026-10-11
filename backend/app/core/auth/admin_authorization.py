@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.errors import ApiError
+from app.core.runtime_resources import database_engine
+from app.settings import Settings
 
 if TYPE_CHECKING:
     from app.core.auth.jwt import JwtClaims
@@ -36,27 +42,56 @@ class AdminAuthorization:
         )
 
 
+def require_admin_intent(
+    authorization: AdminAuthorization,
+    *,
+    operation: str,
+    target: str,
+    parameters: dict[str, Any],
+) -> None:
+    """实际写入的规范化非凭据参数必须与单次授权一致。"""
+    from app.services.admin_step_up import admin_intent
+
+    if authorization.intent is None:
+        valid = (
+            operation == "user_create"
+            and target == "new"
+            and set(parameters) == {"username", "display_name", "dept", "role"}
+            and parameters["role"] in {"approver", "operator", "viewer"}
+        )
+    else:
+        valid = (
+            authorization.intent.operation == operation
+            and authorization.intent.target_id == target
+            and authorization.intent
+            == admin_intent(
+                authorization.intent.operation,
+                target,
+                parameters,
+            )
+        )
+    if not valid:
+        raise ApiError(401, "STEP_UP_REQUIRED", "二次认证用途或参数不匹配", None)
+
+
 async def lock_admin_authorization(
     connection: Any,
     authorization: AdminAuthorization,
     *,
     operation: str,
     target: str,
+    parameters: dict[str, Any],
+    authority_lock: Literal["update", "share"] = "update",
 ) -> None:
-    """先取统一锁，再锁定当前管理员；撤销先提交时整笔写入失败。"""
+    """比对实际意图后先取统一锁，再锁定管理员；撤销先提交时写入失败。"""
     from app.services.admin_invariant import lock_admin_invariant
 
+    require_admin_intent(authorization, operation=operation, target=target, parameters=parameters)
     await lock_admin_invariant(connection)
-    if authorization.intent is None:
-        intent_valid = operation == "user_create"
-    else:
-        intent_valid = (
-            authorization.intent.operation == operation and authorization.intent.target_id == target
-        )
-    if not intent_valid:
-        raise ApiError(401, "STEP_UP_REQUIRED", "二次认证用途不匹配", None)
+    lock_clause = "FOR SHARE OF ua,ai,ap" if authority_lock == "share" else "FOR UPDATE OF ua,ai,ap"
     result = await connection.execute(
-        text("""
+        text(
+            """
         SELECT ua.id FROM user_account ua
         JOIN auth_identity ai ON ai.account_id=ua.id
         JOIN auth_provider ap ON ap.id=ai.provider_id
@@ -73,8 +108,9 @@ async def lock_admin_authorization(
             SELECT 1 FROM external_role_mapping erm WHERE erm.provider_id=ap.id
               AND erm.external_group=ANY(ai.source_groups) AND erm.role='admin'
           ))
-        FOR UPDATE OF ua,ai,ap
-    """),
+    """
+            + lock_clause
+        ),
         {
             "account_id": authorization.account_id,
             "identity_id": authorization.identity_id,
@@ -84,3 +120,31 @@ async def lock_admin_authorization(
     )
     if result.scalar_one_or_none() is None:
         raise ApiError(401, "STEP_UP_REQUIRED", "管理员权限已变化，请重新登录并验证", None)
+
+
+@asynccontextmanager
+async def hold_admin_authorization(
+    settings: Settings,
+    authorization: AdminAuthorization,
+    *,
+    operation: str,
+    target: str,
+    parameters: dict[str, Any],
+) -> AsyncIterator[AsyncConnection]:
+    """共享锁阻止撤权并兼容另一事务审计外键的 KEY SHARE，不扩充角色权限。"""
+    engine = database_engine(settings.database_url_for("auth"))
+    try:
+        async with engine.begin() as connection:
+            await lock_admin_authorization(
+                connection,
+                authorization,
+                operation=operation,
+                target=target,
+                parameters=parameters,
+                authority_lock="share",
+            )
+            yield connection
+    except SQLAlchemyError:
+        raise ApiError(503, "AUTH_SESSION_UNAVAILABLE", "管理操作授权暂不可用", None) from None
+    finally:
+        await engine.dispose()

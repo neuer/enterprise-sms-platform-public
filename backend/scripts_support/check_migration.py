@@ -595,20 +595,18 @@ def verify_legitimate_audit_signatures(port: int, database: str) -> None:
             async with engine.begin() as connection:
                 await connection.execute(text("SET SESSION AUTHORIZATION sms_accept"))
                 identity = (
-                    await connection.execute(
-                        text(
-                            "SELECT current_user AS database_user,"
-                            "txid_current() AS txid"
+                    (
+                        await connection.execute(
+                            text("SELECT current_user AS database_user,txid_current() AS txid")
                         )
                     )
-                ).mappings().one()
+                    .mappings()
+                    .one()
+                )
                 app_id = int(
                     (
                         await connection.execute(
-                            text(
-                                "SELECT id FROM app "
-                                "WHERE name='audit-forgery-probe'"
-                            )
+                            text("SELECT id FROM app WHERE name='audit-forgery-probe'")
                         )
                     ).scalar_one()
                 )
@@ -665,13 +663,14 @@ def verify_legitimate_audit_signatures(port: int, database: str) -> None:
             async with engine.begin() as connection:
                 await connection.execute(text("SET SESSION AUTHORIZATION sms_send"))
                 identity = (
-                    await connection.execute(
-                        text(
-                            "SELECT current_user AS database_user,"
-                            "txid_current() AS txid"
+                    (
+                        await connection.execute(
+                            text("SELECT current_user AS database_user,txid_current() AS txid")
                         )
                     )
-                ).mappings().one()
+                    .mappings()
+                    .one()
+                )
                 correlation_id = "30000000-0000-4000-8000-000000000096"
                 signature = sign_system_audit_context(
                     bytes.fromhex("22" * 32),
@@ -716,13 +715,14 @@ def verify_legitimate_audit_signatures(port: int, database: str) -> None:
             async with engine.begin() as connection:
                 await connection.execute(text("SET SESSION AUTHORIZATION sms_auth"))
                 identity = (
-                    await connection.execute(
-                        text(
-                            "SELECT current_user AS database_user,"
-                            "txid_current() AS txid"
+                    (
+                        await connection.execute(
+                            text("SELECT current_user AS database_user,txid_current() AS txid")
                         )
                     )
-                ).mappings().one()
+                    .mappings()
+                    .one()
+                )
                 correlation_id = "30000000-0000-4000-8000-000000000094"
                 signature = sign_system_audit_context(
                     bytes.fromhex("33" * 32),
@@ -779,13 +779,14 @@ def verify_legitimate_audit_signatures(port: int, database: str) -> None:
                 async with engine.begin() as connection:
                     await connection.execute(text("SET SESSION AUTHORIZATION sms_send"))
                     identity = (
-                        await connection.execute(
-                            text(
-                                "SELECT current_user AS database_user,"
-                                "txid_current() AS txid"
+                        (
+                            await connection.execute(
+                                text("SELECT current_user AS database_user,txid_current() AS txid")
                             )
                         )
-                    ).mappings().one()
+                        .mappings()
+                        .one()
+                    )
                     correlation_id = "30000000-0000-4000-8000-000000000095"
                     signature = sign_system_audit_context(
                         bytes.fromhex("22" * 32),
@@ -921,9 +922,7 @@ def verify_callback_revocation_boundary(container: str, database: str) -> None:
         """,
     ).strip()
     if function_boundary != "1|1|1":
-        raise RuntimeError(
-            f"callback revocation function boundary is unsafe: {function_boundary}"
-        )
+        raise RuntimeError(f"callback revocation function boundary is unsafe: {function_boundary}")
     docker_psql(
         container,
         database,
@@ -1257,11 +1256,15 @@ def verify_runtime_role_matrix(container: str, database: str) -> None:
             "SELECT id FROM auth_transition_dead_letter LIMIT 1",
         )
         assert_role_sql_denied(
-            container, database, role,
+            container,
+            database,
+            role,
             "SELECT provider_id FROM role_mapping_invalidation LIMIT 1",
         )
         assert_role_sql_denied(
-            container, database, role,
+            container,
+            database,
+            role,
             "UPDATE role_mapping_invalidation SET transaction_id=pg_current_xact_id()",
         )
 
@@ -1593,13 +1596,19 @@ def run_check() -> None:
             from sqlalchemy.ext.asyncio import create_async_engine  # noqa: PLC0415
 
             from app.core.auth.accounts import SecurityPrincipal  # noqa: PLC0415
+            from app.core.auth.admin_authorization import AdminAuthorization  # noqa: PLC0415
             from app.core.auth.principal_context import (  # noqa: PLC0415
                 audit_principal_scope,
             )
             from app.core.auth.users import SqlUserRepository  # noqa: PLC0415
             from app.core.correlation import correlation_scope  # noqa: PLC0415
-            from app.services.admin import ConfigUpdate, InvalidAdminQuery  # noqa: PLC0415
+            from app.services.admin import (  # noqa: PLC0415
+                ConfigUpdate,
+                InvalidAdminQuery,
+                config_write_parameters,
+            )
             from app.services.admin_repository import SqlAdminRepository  # noqa: PLC0415
+            from app.services.admin_step_up import admin_intent  # noqa: PLC0415
             from app.services.sensitive_repository import (  # noqa: PLC0415
                 SqlSensitiveWordRepository,
             )
@@ -1744,17 +1753,42 @@ def run_check() -> None:
                 or password_row["correlation_id"] != password_correlation
             ):
                 raise RuntimeError("normal local password change was not committed atomically")
+            async with engine.connect() as connection:
+                revision_rows = await connection.execute(
+                    text(
+                        "SELECT key,updated_at FROM sys_config WHERE key IN "
+                        "('vendor_qps','reserved_realtime_qps','callback_allow_cidrs')"
+                    )
+                )
+                revisions = {str(row["key"]): row["updated_at"] for row in revision_rows.mappings()}
+                version_rows = await connection.execute(
+                    text("SELECT id,security_version FROM user_account WHERE id=ANY(:ids)"),
+                    {"ids": [p.account_id for p in principals]},
+                )
+                versions = {
+                    int(row["id"]): int(row["security_version"]) for row in version_rows.mappings()
+                }
+            await engine.dispose()
+
+            async def authorized_config(index: int, key: str, value: str) -> None:
+                principal = principals[index]
+                updates = (ConfigUpdate(key, value, revisions[key]),)
+                await repository.update_configs(
+                    updates,
+                    principal=principal,
+                    ip="127.0.0.1",
+                    authorization=AdminAuthorization(
+                        principal.account_id,
+                        principal.identity_id,
+                        int(versions[principal.account_id]),
+                        "local",
+                        admin_intent("config_update", "default", config_write_parameters(updates)),
+                    ),
+                )
+
             results = await asyncio.gather(
-                repository.update_configs(
-                    (ConfigUpdate("vendor_qps", "3"),),
-                    principal=principals[0],
-                    ip="127.0.0.1",
-                ),
-                repository.update_configs(
-                    (ConfigUpdate("reserved_realtime_qps", "4"),),
-                    principal=principals[1],
-                    ip="127.0.0.1",
-                ),
+                authorized_config(0, "vendor_qps", "3"),
+                authorized_config(1, "reserved_realtime_qps", "4"),
                 return_exceptions=True,
             )
             successes = [item for item in results if not isinstance(item, BaseException)]
@@ -1771,11 +1805,7 @@ def run_check() -> None:
                     f"other={','.join(other_failures) or 'none'}"
                 )
             try:
-                await repository.update_configs(
-                    (ConfigUpdate("callback_allow_cidrs", "0.0.0.0/0"),),
-                    principal=principals[0],
-                    ip="127.0.0.1",
-                )
+                await authorized_config(0, "callback_allow_cidrs", "0.0.0.0/0")
             except InvalidAdminQuery:
                 pass
             else:

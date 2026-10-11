@@ -10,12 +10,14 @@ from fastapi import APIRouter, Depends, Path, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.api.admin_step_up import AdminStepUp, AdminStepUpToken
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
+from app.services.admin_step_up import admin_intent
 from app.services.security_daily import (
     SENDER_ADDRESS,
     SENDER_DOMAIN,
@@ -36,6 +38,7 @@ from app.services.security_daily import (
     SecurityDailyUnavailable,
     SecurityStatus,
 )
+from app.services.security_daily.contract import security_daily_write_parameters
 from app.services.security_daily_repository import SqlSecurityDailyRepository
 from app.settings import get_settings
 
@@ -56,9 +59,7 @@ class SecurityDailyOverviewModel(StrictModel):
     last_delivered_at: datetime | None
     next_scheduled_at: datetime | None
     latest_failure: str | None
-    delivery_status: (
-        Literal["not_sent", "pending", "sending", "sent", "failed", "unknown"] | None
-    )
+    delivery_status: Literal["not_sent", "pending", "sending", "sent", "failed", "unknown"] | None
     recipient_count: int = Field(ge=0, le=3)
     resend_configured: bool
     sender_domain: str
@@ -67,6 +68,7 @@ class SecurityDailyOverviewModel(StrictModel):
 
 
 class SecurityDailyConfigurationModel(StrictModel):
+    config_version: int = Field(ge=1, le=9007199254740991)
     enabled: bool
     recipients: list[str] = Field(max_length=3)
     resend_api_key_configured: bool
@@ -75,6 +77,7 @@ class SecurityDailyConfigurationModel(StrictModel):
 
 
 class SecurityDailyConfigurationUpdateModel(StrictModel):
+    expected_config_version: int = Field(strict=True, ge=1, lt=9007199254740991)
     enabled: bool
     recipients: list[str] = Field(max_length=3)
     resend_api_key: str | None = Field(default=None, max_length=512)
@@ -88,9 +91,7 @@ class SecurityDailyReportModel(StrictModel):
     status: SecurityStatus
     generation_source: Literal["auto", "manual"]
     generation_status: Literal["pending", "ready", "failed", "unavailable"]
-    delivery_status: Literal[
-        "not_sent", "pending", "sending", "sent", "failed", "unknown"
-    ]
+    delivery_status: Literal["not_sent", "pending", "sending", "sent", "failed", "unknown"]
     generated_at: datetime | None
     delivered_at: datetime | None
     recipient_count: int = Field(ge=0, le=3)
@@ -141,8 +142,6 @@ def get_security_daily_service(_actor: AdminActor) -> SecurityDailyService:
         ),
         control_dir=settings.security_daily_control_dir,
     )
-
-
 
 
 def _ip(request: Request) -> str:
@@ -208,6 +207,7 @@ def _configuration_model(
         enabled=configuration.enabled,
         recipients=list(configuration.recipients),
         resend_api_key_configured=bool(configuration.api_key),
+        config_version=configuration.config_version,
         sender_domain=SENDER_DOMAIN,
         sender_address=SENDER_ADDRESS,
     )
@@ -280,7 +280,14 @@ async def generate_security_daily_report(
 @router.put(
     "/config",
     response_model=SecurityDailyConfigurationModel,
-    responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 503: ERROR_RESPONSE},
+    responses={
+        400: ERROR_RESPONSE,
+        401: ERROR_RESPONSE,
+        403: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
+        422: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
+    },
 )
 @audited("security_daily_config_update")
 async def update_security_daily_config(
@@ -289,16 +296,32 @@ async def update_security_daily_config(
     service: Annotated[SecurityDailyService, Depends(get_security_daily_service)],
     claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    step_up: AdminStepUp,
+    step_up_token: AdminStepUpToken = None,
 ) -> SecurityDailyConfigurationModel:
     try:
-        configuration = await service.configure(
-            SecurityDailyConfigurationUpdate(
-                enabled=payload.enabled,
-                recipients=tuple(payload.recipients),
-                api_key=payload.resend_api_key,
+        update = SecurityDailyConfigurationUpdate(
+            enabled=payload.enabled,
+            recipients=tuple(payload.recipients),
+            api_key=payload.resend_api_key,
+        )
+        authorization = await step_up.consume(
+            step_up_token,
+            claims=claims,
+            access_token=credentials.credentials if credentials is not None else "",
+            ip=_ip(request),
+            intent=admin_intent(
+                "security_daily_config_update",
+                "default",
+                security_daily_write_parameters(update, payload.expected_config_version),
             ),
+        )
+        configuration = await service.configure(
+            update,
             principal=claims.principal,
             ip=_ip(request),
+            authorization=authorization,
+            expected_config_version=payload.expected_config_version,
         )
     except SecurityDailyConfigurationError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
@@ -440,8 +463,14 @@ async def _request_delivery(
     "/reports/{report_id}/send",
     response_model=SecurityDailyDeliveryResponseModel,
     status_code=status.HTTP_202_ACCEPTED,
-    responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 404: ERROR_RESPONSE,
-               409: ERROR_RESPONSE, 503: ERROR_RESPONSE},
+    responses={
+        400: ERROR_RESPONSE,
+        401: ERROR_RESPONSE,
+        403: ERROR_RESPONSE,
+        404: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
+    },
 )
 @audited("security_daily_send")
 async def send_security_daily_report(
@@ -459,8 +488,14 @@ async def send_security_daily_report(
     "/reports/{report_id}/retry",
     response_model=SecurityDailyDeliveryResponseModel,
     status_code=status.HTTP_202_ACCEPTED,
-    responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 403: ERROR_RESPONSE, 404: ERROR_RESPONSE,
-               409: ERROR_RESPONSE, 503: ERROR_RESPONSE},
+    responses={
+        400: ERROR_RESPONSE,
+        401: ERROR_RESPONSE,
+        403: ERROR_RESPONSE,
+        404: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
+    },
 )
 @audited("security_daily_retry")
 async def retry_security_daily_report(

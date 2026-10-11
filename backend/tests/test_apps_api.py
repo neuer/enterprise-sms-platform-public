@@ -3,11 +3,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.api.admin_step_up import get_admin_step_up_service
 from app.api.apps import get_app_management_service
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
+from app.core.errors import ApiError
 from app.main import create_app
 from app.services.callback_authority import CallbackAuthorityBusy
 
@@ -39,7 +43,9 @@ class FakeFacade:
         self.role = role
 
     async def verify(self, token: str) -> JwtClaims:
-        return JwtClaims("admin01", "管理员", "平台部", self.role)  # type: ignore[arg-type]
+        return JwtClaims(
+            1, 2, "local", "admin01", "管理员", "平台部", self.role, 1, "synthetic-jti"
+        )
 
 
 class FakeAppService:
@@ -49,10 +55,14 @@ class FakeAppService:
     async def get(self, app_id: int) -> dict[str, Any]:
         return APP | {"api_key_prefix": "prefixxx"}
 
-    async def create(self, config: Any, *, actor: str, ip: str) -> dict[str, Any]:
+    async def create(
+        self, config: Any, *, actor: str, ip: str, **authorization: Any
+    ) -> dict[str, Any]:
         return {"id": 2, "api_key": "one-time-key", "callback_secret": None}
 
-    async def rotate_key(self, app_id: int, *, actor: str, ip: str) -> dict[str, Any]:
+    async def rotate_key(
+        self, app_id: int, *, actor: str, ip: str, **authorization: Any
+    ) -> dict[str, Any]:
         return {
             "api_key": "rotated-one-time-key",
             "old_key_expires_at": datetime(2026, 7, 12, tzinfo=UTC),
@@ -64,15 +74,32 @@ class FakeAppService:
         *,
         actor: str,
         ip: str,
+        **authorization: Any,
     ) -> dict[str, str]:
         return {"callback_secret": "rotated-callback-secret"}
 
 
+class FakeStepUp:
+    """路由单测替身只接纳显式令牌；Redis/JWT 在独立集成测试覆盖。"""
+
+    async def consume(self, token, *, claims, intent, **kwargs):
+        if token != "synthetic-grant":
+            raise ApiError(401, "STEP_UP_REQUIRED", "需要二次认证", None)
+        return AdminAuthorization.from_claims(claims, intent)
+
+
+WRITE_HEADERS = {
+    "X-Admin-Step-Up": "synthetic-grant",
+    "X-App-Revision": "2026-07-11T00:00:00+00:00",
+}
+
+
 def client(role: str = "admin") -> TestClient:
     app = create_app()
+    app.dependency_overrides[get_admin_step_up_service] = lambda: FakeStepUp()
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade(role)
     app.dependency_overrides[get_app_management_service] = lambda: FakeAppService()
-    return TestClient(app)
+    return TestClient(app, headers=WRITE_HEADERS)
 
 
 def test_app_responses_filter_key_material_but_expose_safe_key_metadata() -> None:
@@ -140,13 +167,15 @@ def test_active_callback_delivery_blocks_secret_rotation_with_state_conflict() -
             *,
             actor: str,
             ip: str,
+            **authorization: Any,
         ) -> dict[str, str]:
             raise CallbackAuthorityBusy("回调正在投递，请稍后重试配置变更")
 
     app = create_app()
+    app.dependency_overrides[get_admin_step_up_service] = lambda: FakeStepUp()
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
     app.dependency_overrides[get_app_management_service] = lambda: BusyService()
-    response = TestClient(app).post(
+    response = TestClient(app, headers=WRITE_HEADERS).post(
         "/api/v1/web/admin/apps/1/rotate-callback-secret",
         headers={"Authorization": "Bearer admin.jwt"},
     )
@@ -214,3 +243,55 @@ def test_app_responses_echo_allowlist_and_create_rejects_invalid_entries() -> No
         )
         assert response.status_code == 400, invalid
         assert response.json()["code"] == "INVALID_PARAM"
+
+
+@pytest.mark.parametrize(
+    "method,path,payload",
+    [
+        ("POST", "", {"name": "synthetic", "dept": "synthetic"}),
+        (
+            "PUT",
+            "/1",
+            {
+                "dept": "synthetic",
+                "allowed_categories": ["notice"],
+                "daily_quota": 1,
+                "rate_limit_per_min": 60,
+                "blacklist_check": True,
+            },
+        ),
+        ("DELETE", "/1", None),
+        ("POST", "/1/rotate-key", None),
+        ("POST", "/1/revoke-old-key", None),
+        ("POST", "/1/rotate-callback-secret", None),
+    ],
+)
+def test_all_app_writes_require_explicit_step_up_before_business_call(method, path, payload):
+    browser = client()
+    del browser.headers["X-Admin-Step-Up"]
+    response = browser.request(
+        method,
+        "/api/v1/web/admin/apps" + path,
+        headers={"Authorization": "Bearer admin.jwt"},
+        json=payload,
+    )
+    assert response.status_code == 401
+    assert response.json()["code"] == "STEP_UP_REQUIRED"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/1/rotate-key",
+        "/1/revoke-old-key",
+        "/1/rotate-callback-secret",
+    ],
+)
+def test_existing_app_credential_write_requires_observed_revision(path):
+    browser = client()
+    del browser.headers["X-App-Revision"]
+    response = browser.post(
+        "/api/v1/web/admin/apps" + path, headers={"Authorization": "Bearer admin.jwt"}
+    )
+    assert response.status_code == 400
+    assert response.json()["code"] == "INVALID_PARAM"

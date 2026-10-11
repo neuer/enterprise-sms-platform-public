@@ -5,16 +5,25 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, ConfigDict, Field, with_config
-from typing_extensions import TypedDict
+from pydantic import BaseModel, Field
 
+from app.api.admin_step_up import AdminStepUp, AdminStepUpToken
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
+from app.services.admin_step_up import admin_intent
+from app.services.app_contract import (
+    AppCreateRequest,
+    AppUpdateRequest,
+    Category,
+    FrequencyOverride,
+    IpCidr,
+    _frequency_values,
+)
 from app.services.app_management import (
     AppCreate,
     AppManagementService,
@@ -29,87 +38,17 @@ from app.services.callback_authority import CallbackAuthorityBusy
 from app.services.crypto import CryptoService
 from app.settings import get_settings
 
+APP_WRITE_ERRORS: dict[int | str, dict[str, Any]] = {
+    code: ERROR_RESPONSE for code in (400, 401, 403, 404, 409, 422, 503)
+}
+
 router = APIRouter(prefix="/api/v1/web/admin/apps", tags=["admin"])
-Category = Literal["verify", "notice", "market"]
-IpCidr = Annotated[str, Field(max_length=64)]
 
 
 def _no_store(response: Response) -> None:
     """一次性凭据响应禁止被浏览器或中间缓存保存。"""
 
     response.headers["Cache-Control"] = "no-store"
-
-
-@with_config(ConfigDict(extra="forbid"))
-class FrequencyOverride(TypedDict, total=False):
-    """应用级号码频控覆盖；拒绝未定义键及隐式类型转换。"""
-
-    verify_per_minute: Annotated[int, Field(strict=True, ge=1, le=100)]
-    verify_per_day: Annotated[int, Field(strict=True, ge=1, le=10_000)]
-    market_per_day: Annotated[int, Field(strict=True, ge=1, le=1_000)]
-
-
-def _frequency_values(value: FrequencyOverride | None) -> dict[str, int] | None:
-    if value is None:
-        return None
-    result: dict[str, int] = {}
-    if "verify_per_minute" in value:
-        result["verify_per_minute"] = value["verify_per_minute"]
-    if "verify_per_day" in value:
-        result["verify_per_day"] = value["verify_per_day"]
-    if "market_per_day" in value:
-        result["market_per_day"] = value["market_per_day"]
-    return result or None
-
-
-class AppCreateRequest(BaseModel):
-    name: str
-    dept: str
-    allowed_categories: list[Category] = ["notice"]
-    default_sign: str | None = None
-    daily_quota: int = Field(default=0, ge=0, le=100_000_000)
-    rate_limit_per_min: int = Field(default=60, ge=1, le=60_000)
-    recipient_limit_per_min: int = Field(default=10_000, ge=1, le=100_000_000)
-    segment_limit_per_min: int = Field(default=10_000, ge=1, le=100_000_000)
-    max_in_flight_chunks: int = Field(default=200, ge=1, le=100_000)
-    allow_market_api_bulk: bool = False
-    blacklist_check: bool = True
-    freq_override: FrequencyOverride | None = None
-    allowed_ips: list[IpCidr] = Field(
-        default_factory=list,
-        max_length=50,
-        description="入站来源 IP/CIDR 白名单；生产空数组须填写未过期豁免",
-    )
-    ip_allowlist_exempt_until: datetime | None = None
-    unlimited_quota_exempt_until: datetime | None = None
-    admission_exempt_note: str | None = Field(default=None, max_length=200)
-    callback_url: str | None = None
-    callback_report_enabled: bool = False
-
-
-class AppUpdateRequest(BaseModel):
-    dept: str
-    allowed_categories: list[Category]
-    default_sign: str | None = None
-    daily_quota: int = Field(ge=0, le=100_000_000)
-    rate_limit_per_min: int = Field(ge=1, le=60_000)
-    recipient_limit_per_min: int = Field(default=10_000, ge=1, le=100_000_000)
-    segment_limit_per_min: int = Field(default=10_000, ge=1, le=100_000_000)
-    max_in_flight_chunks: int = Field(default=200, ge=1, le=100_000)
-    allow_market_api_bulk: bool = False
-    blacklist_check: bool
-    freq_override: FrequencyOverride | None = None
-    allowed_ips: list[IpCidr] = Field(
-        default_factory=list,
-        max_length=50,
-        description="入站来源 IP/CIDR 白名单；生产空数组须填写未过期豁免",
-    )
-    ip_allowlist_exempt_until: datetime | None = None
-    unlimited_quota_exempt_until: datetime | None = None
-    admission_exempt_note: str | None = Field(default=None, max_length=200)
-    callback_url: str | None = None
-    callback_report_enabled: bool = False
-    status: Literal[0, 1] = 1
 
 
 class AppResponse(BaseModel):
@@ -147,6 +86,7 @@ class AppResponse(BaseModel):
     )
     callback_secret_configured: bool = Field(description="回调签名密钥是否已配置")
     created_at: datetime
+    updated_at: datetime
 
 
 class CreateAppResponse(BaseModel):
@@ -181,10 +121,6 @@ async def get_app_management_service(_actor: AdminActor) -> AppManagementService
     )
 
 
-
-
-
-
 def _translate(error: Exception) -> ApiError:
     if isinstance(error, AppNotFound):
         return ApiError(404, "NOT_FOUND", "应用不存在", None)
@@ -213,7 +149,7 @@ async def list_apps(
 @router.post(
     "",
     response_model=CreateAppResponse,
-    responses={400: ERROR_RESPONSE, 503: ERROR_RESPONSE},
+    responses=APP_WRITE_ERRORS,
 )
 @audited("app_create")
 async def create_app(
@@ -226,8 +162,17 @@ async def create_app(
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
+    step_up: AdminStepUp,
+    step_up_token: AdminStepUpToken = None,
 ) -> dict[str, Any]:
     actor, ip = claims.username, trusted_client_ip(request)
+    authorization = await step_up.consume(
+        step_up_token,
+        access_token=credentials.credentials if credentials is not None else "",
+        claims=claims,
+        ip=ip,
+        intent=admin_intent("app_create", "new", {"config": payload.model_dump()}),
+    )
     try:
         result = await service.create(
             AppCreate(
@@ -240,6 +185,7 @@ async def create_app(
             ),
             actor=actor,
             ip=ip,
+            authorization=authorization,
         )
         _no_store(response)
         return result
@@ -267,12 +213,7 @@ async def get_app(
 @router.put(
     "/{id}",
     response_model=AppResponse,
-    responses={
-        404: ERROR_RESPONSE,
-        409: ERROR_RESPONSE,
-        400: ERROR_RESPONSE,
-        503: ERROR_RESPONSE,
-    },
+    responses=APP_WRITE_ERRORS,
 )
 @audited("app_update")
 async def update_app(
@@ -285,8 +226,22 @@ async def update_app(
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
+    step_up: AdminStepUp,
+    expected_updated_at: Annotated[datetime, Header(alias="X-App-Revision")],
+    step_up_token: AdminStepUpToken = None,
 ) -> dict[str, Any]:
     actor, ip = claims.username, trusted_client_ip(request)
+    authorization = await step_up.consume(
+        step_up_token,
+        access_token=credentials.credentials if credentials is not None else "",
+        claims=claims,
+        ip=ip,
+        intent=admin_intent(
+            "app_update",
+            str(id),
+            {"config": payload.model_dump(), "expected_updated_at": expected_updated_at},
+        ),
+    )
     try:
         return await service.update(
             id,
@@ -300,6 +255,8 @@ async def update_app(
             ),
             actor=actor,
             ip=ip,
+            authorization=authorization,
+            expected_updated_at=expected_updated_at,
         )
     except (
         AppNotFound,
@@ -314,7 +271,7 @@ async def update_app(
     "/{id}",
     status_code=204,
     response_class=Response,
-    responses={404: ERROR_RESPONSE, 409: ERROR_RESPONSE},
+    responses=APP_WRITE_ERRORS,
 )
 @audited("app_disable")
 async def disable_app(
@@ -326,10 +283,26 @@ async def disable_app(
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
+    step_up: AdminStepUp,
+    expected_updated_at: Annotated[datetime, Header(alias="X-App-Revision")],
+    step_up_token: AdminStepUpToken = None,
 ) -> Response:
     actor, ip = claims.username, trusted_client_ip(request)
+    authorization = await step_up.consume(
+        step_up_token,
+        access_token=credentials.credentials if credentials is not None else "",
+        claims=claims,
+        ip=ip,
+        intent=admin_intent("app_disable", str(id), {"expected_updated_at": expected_updated_at}),
+    )
     try:
-        await service.disable(id, actor=actor, ip=ip)
+        await service.disable(
+            id,
+            actor=actor,
+            ip=ip,
+            authorization=authorization,
+            expected_updated_at=expected_updated_at,
+        )
     except (AppNotFound, CallbackAuthorityBusy) as error:
         raise _translate(error) from None
     return Response(status_code=204)
@@ -338,7 +311,7 @@ async def disable_app(
 @router.post(
     "/{id}/rotate-key",
     response_model=RotateKeyResponse,
-    responses={404: ERROR_RESPONSE},
+    responses=APP_WRITE_ERRORS,
 )
 @audited("app_rotate_key")
 async def rotate_key(
@@ -351,10 +324,28 @@ async def rotate_key(
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
+    step_up: AdminStepUp,
+    expected_updated_at: Annotated[datetime, Header(alias="X-App-Revision")],
+    step_up_token: AdminStepUpToken = None,
 ) -> dict[str, Any]:
     actor, ip = claims.username, trusted_client_ip(request)
+    authorization = await step_up.consume(
+        step_up_token,
+        access_token=credentials.credentials if credentials is not None else "",
+        claims=claims,
+        ip=ip,
+        intent=admin_intent(
+            "app_rotate_key", str(id), {"expected_updated_at": expected_updated_at}
+        ),
+    )
     try:
-        result = await service.rotate_key(id, actor=actor, ip=ip)
+        result = await service.rotate_key(
+            id,
+            actor=actor,
+            ip=ip,
+            authorization=authorization,
+            expected_updated_at=expected_updated_at,
+        )
         _no_store(response)
         return result
     except AppNotFound as error:
@@ -364,7 +355,7 @@ async def rotate_key(
 @router.post(
     "/{id}/revoke-old-key",
     response_class=Response,
-    responses={404: ERROR_RESPONSE},
+    responses=APP_WRITE_ERRORS,
 )
 @audited("app_revoke_old_key")
 async def revoke_old_key(
@@ -376,10 +367,28 @@ async def revoke_old_key(
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
+    step_up: AdminStepUp,
+    expected_updated_at: Annotated[datetime, Header(alias="X-App-Revision")],
+    step_up_token: AdminStepUpToken = None,
 ) -> Response:
     actor, ip = claims.username, trusted_client_ip(request)
+    authorization = await step_up.consume(
+        step_up_token,
+        access_token=credentials.credentials if credentials is not None else "",
+        claims=claims,
+        ip=ip,
+        intent=admin_intent(
+            "app_revoke_old_key", str(id), {"expected_updated_at": expected_updated_at}
+        ),
+    )
     try:
-        await service.revoke_old_key(id, actor=actor, ip=ip)
+        await service.revoke_old_key(
+            id,
+            actor=actor,
+            ip=ip,
+            authorization=authorization,
+            expected_updated_at=expected_updated_at,
+        )
     except AppNotFound as error:
         raise _translate(error) from None
     return Response(status_code=200)
@@ -388,7 +397,7 @@ async def revoke_old_key(
 @router.post(
     "/{id}/rotate-callback-secret",
     response_model=RotateCallbackSecretResponse,
-    responses={404: ERROR_RESPONSE, 409: ERROR_RESPONSE},
+    responses=APP_WRITE_ERRORS,
 )
 @audited("app_rotate_callback_secret")
 async def rotate_callback_secret(
@@ -401,10 +410,28 @@ async def rotate_callback_secret(
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
+    step_up: AdminStepUp,
+    expected_updated_at: Annotated[datetime, Header(alias="X-App-Revision")],
+    step_up_token: AdminStepUpToken = None,
 ) -> dict[str, str]:
     actor, ip = claims.username, trusted_client_ip(request)
+    authorization = await step_up.consume(
+        step_up_token,
+        access_token=credentials.credentials if credentials is not None else "",
+        claims=claims,
+        ip=ip,
+        intent=admin_intent(
+            "app_rotate_callback_secret", str(id), {"expected_updated_at": expected_updated_at}
+        ),
+    )
     try:
-        result = await service.rotate_callback_secret(id, actor=actor, ip=ip)
+        result = await service.rotate_callback_secret(
+            id,
+            actor=actor,
+            ip=ip,
+            authorization=authorization,
+            expected_updated_at=expected_updated_at,
+        )
         _no_store(response)
         return result
     except (AppNotFound, CallbackAuthorityBusy) as error:

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.apikey import ApiKeyAuthenticator, InvalidApiKey, SqlApiKeyRepository
 from app.services.app_repository import SqlAppRepository
+from tests.integration.app_authorization_fixtures import authorized_app_write
 from tests.integration.audit_fixtures import live_audit_principal  # noqa: F401
 from tests.integration.test_ops_audit_postgres import accept_runtime  # noqa: F401
 
@@ -49,7 +50,9 @@ async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced(
     app_id: int | None = None
 
     try:
-        app_id = await repository.create(
+        app_id = await authorized_app_write(
+            repository,
+            "create",
             name=f"ip-allow-{nonce}",
             dept="测试部",
             api_key_hash=digest(key1),
@@ -87,7 +90,9 @@ async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced(
         assert context.app_id == app_id
         assert context.allowed_ips == ("10.0.0.0/8", "2001:db8::/32")
 
-        await repository.rotate_key(
+        await authorized_app_write(
+            repository,
+            "rotate_key",
             app_id,
             api_key_hash=digest(key2),
             api_key_hash_algorithm="legacy_sha256",
@@ -106,16 +111,22 @@ async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced(
         with pytest.raises(InvalidApiKey):
             await expired.authenticate(key1)
 
-        await repository.revoke_old_key(app_id, actor="integration", ip="127.0.0.1")
+        await authorized_app_write(
+            repository, "revoke_old_key", app_id, actor="integration", ip="127.0.0.1"
+        )
         with pytest.raises(InvalidApiKey):
             await authenticator.authenticate(key1)
         assert (await authenticator.authenticate(key2)).app_id == app_id
 
-        await repository.disable(app_id, actor="integration", ip="127.0.0.1")
+        await authorized_app_write(
+            repository, "disable", app_id, actor="integration", ip="127.0.0.1"
+        )
         with pytest.raises(InvalidApiKey):
             await authenticator.authenticate(key2)
 
-        await repository.update(
+        await authorized_app_write(
+            repository,
+            "update",
             app_id,
             dept="测试部",
             allowed_categories="notice",
@@ -142,10 +153,16 @@ async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced(
         with pytest.raises(InvalidApiKey):
             await authenticator.authenticate(key2)
         key3 = f"key-three-{nonce}-with-enough-entropy"
-        await repository.rotate_key(
-            app_id, api_key_hash=digest(key3), api_key_prefix=key3[:8],
-            api_key_hash_algorithm="legacy_sha256", old_key_expires_at=now,
-            actor="integration", ip="127.0.0.1",
+        await authorized_app_write(
+            repository,
+            "rotate_key",
+            app_id,
+            api_key_hash=digest(key3),
+            api_key_prefix=key3[:8],
+            api_key_hash_algorithm="legacy_sha256",
+            old_key_expires_at=now,
+            actor="integration",
+            ip="127.0.0.1",
         )
         context = await authenticator.authenticate(key3)
         assert context.app_id == app_id
@@ -186,7 +203,9 @@ async def test_callback_url_change_quarantines_queued_task_in_same_transaction()
     task_id: int | None = None
 
     try:
-        app_id = await repository.create(
+        app_id = await authorized_app_write(
+            repository,
+            "create",
             name=f"callback-revoke-{nonce}",
             dept="测试部",
             api_key_hash=digest(key),
@@ -234,7 +253,9 @@ async def test_callback_url_change_quarantines_queued_task_in_same_transaction()
                 ).scalar_one()
             )
 
-        await repository.update(
+        await authorized_app_write(
+            repository,
+            "update",
             app_id,
             dept="测试部",
             allowed_categories="notice",
@@ -260,16 +281,20 @@ async def test_callback_url_change_quarantines_queued_task_in_same_transaction()
 
         async with engine.connect() as connection:
             task = (
-                await connection.execute(
-                    text(
-                        """
+                (
+                    await connection.execute(
+                        text(
+                            """
                         SELECT status,last_error,lease_id,lease_expires_at
                         FROM callback_task WHERE id=:task_id
                         """
-                    ),
-                    {"task_id": task_id},
+                        ),
+                        {"task_id": task_id},
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
         assert dict(task) == {
             "status": "dead",
             "last_error": "CallbackConfigRevoked",

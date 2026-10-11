@@ -14,11 +14,12 @@ import type { MessageCategory } from "../lib/labels"
  * 提交接口、一次性凭据展示与列表刷新由应用管理页负责。打开前须先调用 prepare 回填表单。
  */
 const open = defineModel<boolean>({ default: false })
-defineProps<{ saving: boolean }>()
-const emit = defineEmits<{ save: [body: AppPayload, name: string, appId: number | null] }>()
+const props = defineProps<{ saving: boolean }>()
+const emit = defineEmits<{ save: [body: AppPayload, name: string, appId: number | null, revision: string | null] }>()
 
 /** 正在编辑的应用 id；null 表示新建。 */
 const targetId = ref<number | null>(null)
+const targetRevision = ref<string | null>(null)
 const creating = computed(() => targetId.value === null)
 
 const form = reactive({
@@ -94,6 +95,7 @@ function fillForm(item: ManagedApp): void {
 /** 按目标应用回填或重置表单；编辑期间列表刷新不覆盖未保存输入。 */
 function prepare(app: ManagedApp | null): void {
   targetId.value = app?.id ?? null
+  targetRevision.value = app?.updated_at ?? null
   if (app) fillForm(app)
   else resetForm()
 }
@@ -148,6 +150,7 @@ function payload(): AppPayload {
 const worstCase = computed(() => estimateWorstCaseCapacity(form))
 
 function submit(): void {
+  if (props.saving) return
   if (!form.name.trim() || !form.dept.trim() || !form.allowed_categories.length) {
     ElMessage.warning("请填写应用名、部门并选择至少一个类别")
     return
@@ -159,7 +162,7 @@ function submit(): void {
     ElMessage.error(errorText(error, "应用保存失败"))
     return
   }
-  emit("save", body, form.name.trim(), targetId.value)
+  emit("save", body, form.name.trim(), targetId.value, targetRevision.value)
 }
 
 onMounted(() => {
@@ -179,7 +182,7 @@ onMounted(() => {
         }}</code>
       </div>
     </template>
-    <el-form label-position="top" @submit.prevent="submit">
+    <el-form :disabled="saving" label-position="top" @submit.prevent="submit">
       <section class="apps-form-sec">
         <h3>基本信息</h3>
         <el-form-item label="应用名" required>

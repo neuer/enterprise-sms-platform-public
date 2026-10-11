@@ -5,12 +5,18 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.core.auth.admin_authorization import AdminAuthorization, hold_admin_authorization
+from app.core.errors import ApiError
 from app.core.runtime_resources import database_engine
+from app.services.app_contract import AppCreateRequest, AppUpdateRequest, canonical_app_revision
 from app.services.app_management import AppNotFound
 from app.services.callback_authority import ensure_callback_authority_idle
 from app.settings import Settings, get_settings
@@ -131,10 +137,59 @@ class SqlAppRepository:
         finally:
             await engine.dispose()
 
-    async def create(self, **values: Any) -> int:
+    @asynccontextmanager
+    async def _authorized_write(
+        self,
+        authorization: AdminAuthorization,
+        *,
+        operation: str,
+        app_id: int | None,
+        expected_updated_at: datetime | None,
+        values: dict[str, Any],
+    ) -> AsyncIterator[AsyncConnection]:
+        """先锁授权主体，再锁回调权限与应用版本；审计失败时整体回滚。"""
+        parameters: dict[str, Any] = {}
+        if operation in {"app_create", "app_update"}:
+            model = AppCreateRequest if app_id is None else AppUpdateRequest
+            parameters["config"] = {key: values[key] for key in model.model_fields}
+        if app_id is not None:
+            parameters["expected_updated_at"] = canonical_app_revision(expected_updated_at)
+        async with (
+            hold_admin_authorization(
+                self.settings,
+                authorization,
+                operation=operation,
+                target="new" if app_id is None else str(app_id),
+                parameters=parameters,
+            ),
+            self._engine().begin() as connection,
+        ):
+            if app_id is not None:
+                if operation in {"app_update", "app_disable", "app_rotate_callback_secret"}:
+                    await ensure_callback_authority_idle(connection, app_id)
+                actual = await connection.scalar(
+                    text(
+                        "SELECT updated_at FROM app WHERE id=:id "
+                        "AND usage_subject_kind='api_app' FOR UPDATE"
+                    ),
+                    {"id": app_id},
+                )
+                if actual is None:
+                    raise AppNotFound("应用不存在")
+                if canonical_app_revision(actual) != parameters["expected_updated_at"]:
+                    raise ApiError(409, "STATE_CONFLICT", "应用已变化，请刷新后重新认证", None)
+            yield connection
+
+    async def create(self, *, authorization: AdminAuthorization, **values: Any) -> int:
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
+            async with self._authorized_write(
+                authorization,
+                operation="app_create",
+                app_id=None,
+                expected_updated_at=None,
+                values=values,
+            ) as connection:
                 result = await connection.execute(
                     text(
                         """
@@ -169,9 +224,7 @@ class SqlAppRepository:
                         "api_key_hash_version": values.get("api_key_hash_version"),
                         "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
                         or (
-                            "api_pepper"
-                            if values.get("api_key_hash_version") is not None
-                            else None
+                            "api_pepper" if values.get("api_key_hash_version") is not None else None
                         ),
                         "freq_override": (
                             json.dumps(values["freq_override"])
@@ -194,21 +247,31 @@ class SqlAppRepository:
                         "daily_quota": values["daily_quota"],
                         "allowed_ips": list(values["allowed_ips"]),
                         "allow_market_api_bulk": values["allow_market_api_bulk"],
-                        "has_ip_exemption": values["ip_allowlist_exempt_until"]
-                        is not None,
-                        "has_quota_exemption": values["unlimited_quota_exempt_until"]
-                        is not None,
+                        "has_ip_exemption": values["ip_allowlist_exempt_until"] is not None,
+                        "has_quota_exemption": values["unlimited_quota_exempt_until"] is not None,
                     },
                 )
                 return app_id
         finally:
             await engine.dispose()
 
-    async def update(self, app_id: int, **values: Any) -> dict[str, Any]:
+    async def update(
+        self,
+        app_id: int,
+        *,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+        **values: Any,
+    ) -> dict[str, Any]:
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
-                await ensure_callback_authority_idle(connection, app_id)
+            async with self._authorized_write(
+                authorization,
+                operation="app_update",
+                app_id=app_id,
+                expected_updated_at=expected_updated_at,
+                values=values,
+            ) as connection:
                 result = await connection.execute(
                     text(
                         f"""
@@ -259,21 +322,32 @@ class SqlAppRepository:
                         "daily_quota": values["daily_quota"],
                         "allowed_ips": list(values["allowed_ips"]),
                         "allow_market_api_bulk": values["allow_market_api_bulk"],
-                        "has_ip_exemption": values["ip_allowlist_exempt_until"]
-                        is not None,
-                        "has_quota_exemption": values["unlimited_quota_exempt_until"]
-                        is not None,
+                        "has_ip_exemption": values["ip_allowlist_exempt_until"] is not None,
+                        "has_quota_exemption": values["unlimited_quota_exempt_until"] is not None,
                     },
                 )
                 return _safe_row(row)
         finally:
             await engine.dispose()
 
-    async def disable(self, app_id: int, actor: str, ip: str) -> None:
+    async def disable(
+        self,
+        app_id: int,
+        actor: str,
+        ip: str,
+        *,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+    ) -> None:
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
-                await ensure_callback_authority_idle(connection, app_id)
+            async with self._authorized_write(
+                authorization,
+                operation="app_disable",
+                app_id=app_id,
+                expected_updated_at=expected_updated_at,
+                values={},
+            ) as connection:
                 result = await connection.execute(
                     text(
                         """
@@ -307,10 +381,23 @@ class SqlAppRepository:
         finally:
             await engine.dispose()
 
-    async def rotate_key(self, app_id: int, **values: Any) -> None:
+    async def rotate_key(
+        self,
+        app_id: int,
+        *,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+        **values: Any,
+    ) -> None:
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
+            async with self._authorized_write(
+                authorization,
+                operation="app_rotate_key",
+                app_id=app_id,
+                expected_updated_at=expected_updated_at,
+                values=values,
+            ) as connection:
                 result = await connection.execute(
                     text(
                         """
@@ -335,9 +422,7 @@ class SqlAppRepository:
                         "api_key_hash_version": values.get("api_key_hash_version"),
                         "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
                         or (
-                            "api_pepper"
-                            if values.get("api_key_hash_version") is not None
-                            else None
+                            "api_pepper" if values.get("api_key_hash_version") is not None else None
                         ),
                     },
                 )
@@ -354,10 +439,24 @@ class SqlAppRepository:
         finally:
             await engine.dispose()
 
-    async def revoke_old_key(self, app_id: int, actor: str, ip: str) -> None:
+    async def revoke_old_key(
+        self,
+        app_id: int,
+        actor: str,
+        ip: str,
+        *,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+    ) -> None:
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
+            async with self._authorized_write(
+                authorization,
+                operation="app_revoke_old_key",
+                app_id=app_id,
+                expected_updated_at=expected_updated_at,
+                values={},
+            ) as connection:
                 result = await connection.execute(
                     text(
                         """
@@ -383,11 +482,23 @@ class SqlAppRepository:
         finally:
             await engine.dispose()
 
-    async def rotate_callback_secret(self, app_id: int, **values: Any) -> None:
+    async def rotate_callback_secret(
+        self,
+        app_id: int,
+        *,
+        authorization: AdminAuthorization,
+        expected_updated_at: datetime,
+        **values: Any,
+    ) -> None:
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
-                await ensure_callback_authority_idle(connection, app_id)
+            async with self._authorized_write(
+                authorization,
+                operation="app_rotate_callback_secret",
+                app_id=app_id,
+                expected_updated_at=expected_updated_at,
+                values=values,
+            ) as connection:
                 result = await connection.execute(
                     text(
                         """

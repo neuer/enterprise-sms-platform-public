@@ -8,6 +8,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.api.security_daily as security_daily_api
+from app.api.admin_step_up import get_admin_step_up_service
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
 from app.core.errors import ApiError, api_error_handler, internal_error_handler
@@ -76,8 +78,12 @@ class FakeService:
         *,
         principal: object,
         ip: str,
+        authorization: AdminAuthorization,
+        expected_config_version: int,
     ) -> SecurityDailyConfiguration:
         del principal, ip
+        assert authorization.intent is not None
+        assert expected_config_version == self.configuration_value.config_version
         if self.configure_error is not None:
             raise self.configure_error
         self.configuration_update = update
@@ -172,15 +178,27 @@ def overview(
     )
 
 
+class FakeStepUp:
+    async def consume(self, token, *, claims, intent, **kwargs):
+        if token != "synthetic-grant":
+            raise ApiError(401, "STEP_UP_REQUIRED", "需要二次认证", None)
+        return AdminAuthorization.from_claims(claims, intent)
+
+
 def client(service: FakeService, *, internal_handler: bool = False) -> TestClient:
     app = FastAPI()
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     if internal_handler:
         app.add_exception_handler(Exception, internal_error_handler)
     app.include_router(security_daily_api.router)
+    app.dependency_overrides[get_admin_step_up_service] = lambda: FakeStepUp()
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade()
     app.dependency_overrides[security_daily_api.get_security_daily_service] = lambda: service
-    return TestClient(app, raise_server_exceptions=not internal_handler)
+    return TestClient(
+        app,
+        raise_server_exceptions=not internal_handler,
+        headers={"X-Admin-Step-Up": "synthetic-grant"},
+    )
 
 
 @pytest.mark.parametrize(
@@ -276,6 +294,7 @@ def test_configuration_endpoint_returns_status_without_echoing_resend_key() -> N
             "enabled": True,
             "recipients": ["ops@example.com"],
             "resend_api_key": "re_new_value",
+            "expected_config_version": 1,
         },
     )
     assert write.status_code == 200
@@ -293,9 +312,7 @@ def test_configuration_update_conflict_is_409_without_echoing_key() -> None:
             recipient_count=1,
         )
     )
-    service.configure_error = SecurityDailyStateConflict(
-        "安全日报配置已被更新版本取代"
-    )
+    service.configure_error = SecurityDailyStateConflict("安全日报配置已被更新版本取代")
 
     response = client(service).put(
         "/api/v1/web/admin/security-daily/config",
@@ -304,6 +321,7 @@ def test_configuration_update_conflict_is_409_without_echoing_key() -> None:
             "enabled": True,
             "recipients": ["ops@example.com"],
             "resend_api_key": "re_conflict_value",
+            "expected_config_version": 1,
         },
     )
 
@@ -470,3 +488,30 @@ def test_unknown_delivery_retry_is_409() -> None:
     assert response.status_code == 409
     assert response.json()["code"] == "STATE_CONFLICT"
     assert "禁止盲目重试" in response.json()["message"]
+
+
+def test_configuration_without_step_up_cannot_reach_service() -> None:
+    service = FakeService(
+        overview(
+            configuration_state="ready",
+            enabled=True,
+            resend_configured=True,
+            recipient_count=1,
+        )
+    )
+    http = client(service)
+    del http.headers["X-Admin-Step-Up"]
+    rejected = http.put(
+        "/api/v1/web/admin/security-daily/config",
+        headers={"Authorization": "Bearer jwt"},
+        json={
+            "enabled": True,
+            "recipients": ["owner@example.test"],
+            "resend_api_key": "re_not_authorized",
+            "expected_config_version": 1,
+        },
+    )
+    assert rejected.status_code == 401
+    assert rejected.json()["code"] == "STEP_UP_REQUIRED"
+    assert service.configuration_update is None
+    assert "re_not_authorized" not in rejected.text

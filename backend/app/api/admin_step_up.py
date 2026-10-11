@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, Request, Response
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
-from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.auth import ERROR_RESPONSE
+from app.api.authorization import AdminActor
 from app.core.audit import AuditEvent, audited, insert_audit
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
@@ -25,17 +25,9 @@ AdminStepUpToken = Annotated[
 ]
 
 
-async def require_step_up_admin(
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-) -> JwtClaims:
-    """先验证当前 JWT 和管理员角色，再构造二次认证存储。"""
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    if claims.role != "admin":
-        raise ApiError(403, "FORBIDDEN", "仅管理员可操作", None)
-    return claims
+async def require_step_up_admin(actor: AdminActor) -> JwtClaims:
+    """复用当前请求已验证管理员，消费单次令牌时仍执行安全复核。"""
+    return actor
 
 
 StepUpAdmin = Annotated[JwtClaims, Depends(require_step_up_admin)]

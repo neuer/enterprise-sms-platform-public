@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_network
 from typing import Any
 
 import pytest
 
+from app.core.auth.admin_authorization import AdminAuthorization
+from app.services.admin_step_up import admin_intent
 from app.services.app_management import (
     AppCreate,
     AppManagementService,
@@ -15,6 +18,23 @@ from app.services.app_management import (
     InvalidAppConfig,
 )
 from app.services.crypto import CryptoService
+
+REVISION = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def grant(operation, target, config=None):
+    """服务测试使用显式合法授权；事务权限另由真实数据库测试覆盖。"""
+    parameters = {} if operation == "app_create" else {"expected_updated_at": REVISION}
+    if config is not None:
+        parameters["config"] = asdict(config)
+    # 非法配置测试需要抵达原业务校验；此处不重复签发校验。
+    try:
+        intent = admin_intent(operation, str(target), parameters)
+    except Exception:
+        from app.services.admin_step_up import AdminIntent
+
+        intent = AdminIntent(operation, str(target), "invalid-config-test-only")
+    return AdminAuthorization(1, 2, 1, "local", intent)
 
 
 class FakeRepository:
@@ -38,13 +58,13 @@ class FakeRepository:
     async def rotate_key(self, app_id: int, **values: Any) -> None:
         self.calls.append(("rotate_key", {"app_id": app_id, **values}))
 
-    async def revoke_old_key(self, app_id: int, actor: str, ip: str) -> None:
+    async def revoke_old_key(self, app_id: int, actor: str, ip: str, **authorization: Any) -> None:
         self.calls.append(("revoke_old_key", {"app_id": app_id, "actor": actor, "ip": ip}))
 
     async def rotate_callback_secret(self, app_id: int, **values: Any) -> None:
         self.calls.append(("rotate_callback_secret", {"app_id": app_id, **values}))
 
-    async def disable(self, app_id: int, actor: str, ip: str) -> None:
+    async def disable(self, app_id: int, actor: str, ip: str, **authorization: Any) -> None:
         self.calls.append(("disable", {"app_id": app_id, "actor": actor, "ip": ip}))
 
 
@@ -150,6 +170,7 @@ async def test_app_without_callback_works_when_callback_egress_is_disabled() -> 
         AppCreate(name="app-no-callback", dept="研发部"),
         actor="admin01",
         ip="10.0.0.8",
+        authorization=grant("app_create", "new", AppCreate(name="app-no-callback", dept="研发部")),
     ) == {
         "id": 17,
         "api_key": "api-key-plain-once",
@@ -172,6 +193,11 @@ async def test_create_returns_secrets_once_but_repository_only_gets_hash_and_cip
         AppCreate(name="app-new", dept="研发部", callback_url="http://callback.internal/hook"),
         actor="admin01",
         ip="10.0.0.8",
+        authorization=grant(
+            "app_create",
+            "new",
+            AppCreate(name="app-new", dept="研发部", callback_url="http://callback.internal/hook"),
+        ),
     )
 
     assert result == {
@@ -203,14 +229,26 @@ async def test_rotate_key_sets_previous_expiry_and_revoke_is_explicit() -> None:
         key_grace=timedelta(hours=72),
     )
 
-    result = await service.rotate_key(9, actor="admin01", ip="10.0.0.8")
+    result = await service.rotate_key(
+        9,
+        actor="admin01",
+        ip="10.0.0.8",
+        authorization=grant("app_rotate_key", 9),
+        expected_updated_at=REVISION,
+    )
     assert result["api_key"] == "new-api-key-plain-value"
     assert result["old_key_expires_at"] == now + timedelta(hours=72)
     assert repo.calls[0][1]["old_key_expires_at"] == now + timedelta(hours=72)
     assert "api_key_hash_version" in repo.calls[0][1]
     assert "new-api-key-plain-value" not in str(repo.calls[0][1])
 
-    await service.revoke_old_key(9, actor="admin01", ip="10.0.0.8")
+    await service.revoke_old_key(
+        9,
+        actor="admin01",
+        ip="10.0.0.8",
+        authorization=grant("app_revoke_old_key", 9),
+        expected_updated_at=REVISION,
+    )
     assert repo.calls[1][0] == "revoke_old_key"
 
 
@@ -224,6 +262,12 @@ async def test_update_and_outbound_validation_reject_public_or_rebound_address()
             AppUpdate(dept="研发部", callback_url="https://callback.example/hook"),
             actor="admin01",
             ip="10.0.0.8",
+            authorization=grant(
+                "app_update",
+                1,
+                AppUpdate(dept="研发部", callback_url="https://callback.example/hook"),
+            ),
+            expected_updated_at=REVISION,
         )
 
     rebound = validator("10.1.1.1", "100.64.0.1")
@@ -240,7 +284,13 @@ async def test_callback_secret_rotation_only_persists_packed_ciphertext() -> Non
         validator("10.1.1.1"),
         token_factory=lambda: "rotated-callback-secret",
     )
-    result = await service.rotate_callback_secret(3, actor="admin01", ip="10.0.0.8")
+    result = await service.rotate_callback_secret(
+        3,
+        actor="admin01",
+        ip="10.0.0.8",
+        authorization=grant("app_rotate_callback_secret", 3),
+        expected_updated_at=REVISION,
+    )
 
     assert result == {"callback_secret": "rotated-callback-secret"}
     stored = repo.calls[0][1]
@@ -276,12 +326,20 @@ async def test_production_rejects_unlimited_quota_and_empty_allowlist(
             AppCreate(name="prod-open", dept="研发部", allowed_ips=("10.0.0.0/8",)),
             actor="admin01",
             ip="10.0.0.8",
+            authorization=grant(
+                "app_create",
+                "new",
+                AppCreate(name="prod-open", dept="研发部", allowed_ips=("10.0.0.0/8",)),
+            ),
         )
     with pytest.raises(InvalidAppConfig, match="来源 IP"):
         await service.create(
             AppCreate(name="prod-open", dept="研发部", daily_quota=1000),
             actor="admin01",
             ip="10.0.0.8",
+            authorization=grant(
+                "app_create", "new", AppCreate(name="prod-open", dept="研发部", daily_quota=1000)
+            ),
         )
     result = await service.create(
         AppCreate(
@@ -295,6 +353,19 @@ async def test_production_rejects_unlimited_quota_and_empty_allowlist(
         ),
         actor="admin01",
         ip="10.0.0.8",
+        authorization=grant(
+            "app_create",
+            "new",
+            AppCreate(
+                name="prod-exempt",
+                dept="研发部",
+                daily_quota=0,
+                allowed_ips=(),
+                unlimited_quota_exempt_until=now + timedelta(days=7),
+                ip_allowlist_exempt_until=now + timedelta(days=7),
+                admission_exempt_note="联调窗口",
+            ),
+        ),
     )
     assert result["id"] == 17
     stored = repo.calls[0][1]
@@ -325,6 +396,20 @@ async def test_allowed_ips_are_normalized_deduped_and_sorted_on_create() -> None
         ),
         actor="admin01",
         ip="10.0.0.8",
+        authorization=grant(
+            "app_create",
+            "new",
+            AppCreate(
+                name="app-ip",
+                dept="研发部",
+                allowed_ips=(
+                    "203.0.113.7",
+                    "203.0.113.7/32",
+                    "10.0.0.0/8",
+                    "2001:db8::1",
+                ),
+            ),
+        ),
     )
 
     stored = repo.calls[0][1]
@@ -357,6 +442,11 @@ async def test_allowed_ips_reject_invalid_entries_and_exceed_bounds() -> None:
                 AppCreate(name="app-ip", dept="研发部", allowed_ips=invalid),
                 actor="admin01",
                 ip="10.0.0.8",
+                authorization=grant(
+                    "app_create",
+                    "new",
+                    AppCreate(name="app-ip", dept="研发部", allowed_ips=invalid),
+                ),
             )
 
     too_many = tuple(f"10.0.{index}.0/24" for index in range(51))
@@ -365,6 +455,9 @@ async def test_allowed_ips_reject_invalid_entries_and_exceed_bounds() -> None:
             AppCreate(name="app-ip", dept="研发部", allowed_ips=too_many),
             actor="admin01",
             ip="10.0.0.8",
+            authorization=grant(
+                "app_create", "new", AppCreate(name="app-ip", dept="研发部", allowed_ips=too_many)
+            ),
         )
 
 
@@ -387,4 +480,13 @@ async def test_update_requires_callback_secret_before_callback_url() -> None:
             ),
             actor="admin01",
             ip="10.0.0.8",
+            authorization=grant(
+                "app_update",
+                1,
+                AppUpdate(
+                    dept="研发部",
+                    callback_url="http://callback.internal/hook",
+                ),
+            ),
+            expected_updated_at=REVISION,
         )

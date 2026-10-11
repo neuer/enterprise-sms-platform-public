@@ -176,6 +176,10 @@ class SqlUserManagementRepository:
                         authorization,
                         operation="user_create_admin" if role == "admin" else "user_create",
                         target="new",
+                        parameters={
+                            "username": username, "display_name": display_name,
+                            "dept": dept, "role": role,
+                        },
                     )
                     provider = await connection.execute(
                         text(
@@ -289,7 +293,8 @@ class SqlUserManagementRepository:
         try:
             async with engine.begin() as connection:
                 await lock_admin_authorization(
-                    connection, authorization, operation="user_role_change", target=str(account_id)
+                    connection, authorization, operation="user_role_change", target=str(account_id),
+                    parameters={"role": role, "role_override": role_override},
                 )
                 row = await self._locked(connection, account_id)
                 current = _record(row)
@@ -421,6 +426,7 @@ class SqlUserManagementRepository:
                     authorization,
                     operation="user_status_change",
                     target=str(account_id),
+                    parameters={"status": status},
                 )
                 row = await self._locked(connection, account_id)
                 current = _record(row)
@@ -492,6 +498,7 @@ class SqlUserManagementRepository:
                     authorization,
                     operation="user_password_reset",
                     target=str(account_id),
+                    parameters={"action": "reset"},
                 )
                 row = await self._locked(connection, account_id)
                 current = _record(row)

@@ -8,8 +8,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
+from app.api.admin_step_up import AdminStepUp, AdminStepUpToken
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.authorization import AdminActor
 from app.core.audit import audited
@@ -22,8 +23,10 @@ from app.services.admin import (
     AuditQuery,
     ConfigUpdate,
     InvalidAdminQuery,
+    config_write_parameters,
 )
 from app.services.admin_repository import SqlAdminRepository
+from app.services.admin_step_up import admin_intent
 from app.settings import get_settings
 
 router = APIRouter(prefix="/api/v1/web/admin", tags=["admin"])
@@ -71,11 +74,14 @@ class ConfigModel(BaseModel):
 
 
 class ConfigUpdateModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_updated_at: datetime
     key: str = Field(min_length=1, max_length=64)
     value: str | None = Field(default=None, max_length=512)
 
 
 class ConfigBatchUpdateModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     items: list[ConfigUpdateModel] = Field(min_length=1, max_length=50)
 
 
@@ -94,8 +100,6 @@ def get_admin_service(_actor: AdminActor) -> AdminService:
         allowed_smtp_hosts=settings.alert_smtp_allowed_host_set,
         session_policy_publisher=publish_session_policy,
     )
-
-
 
 
 @router.get(
@@ -180,7 +184,14 @@ async def list_configs(
 @router.put(
     "/configs",
     response_model=list[ConfigModel],
-    responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 403: ERROR_RESPONSE},
+    responses={
+        400: ERROR_RESPONSE,
+        401: ERROR_RESPONSE,
+        403: ERROR_RESPONSE,
+        409: ERROR_RESPONSE,
+        422: ERROR_RESPONSE,
+        503: ERROR_RESPONSE,
+    },
 )
 @audited("config_update")
 async def update_configs(
@@ -189,11 +200,24 @@ async def update_configs(
     service: Annotated[AdminService, Depends(get_admin_service)],
     claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    step_up: AdminStepUp,
+    step_up_token: AdminStepUpToken = None,
 ) -> list[ConfigModel]:
     principal, ip = claims.principal, trusted_client_ip(request)
     try:
+        updates = tuple(
+            ConfigUpdate(item.key, item.value, item.expected_updated_at) for item in payload.items
+        )
+        authorization = await step_up.consume(
+            step_up_token,
+            claims=claims,
+            access_token=credentials.credentials if credentials is not None else "",
+            ip=ip,
+            intent=admin_intent("config_update", "default", config_write_parameters(updates)),
+        )
         values = await service.update_configs(
-            tuple(ConfigUpdate(item.key, item.value) for item in payload.items),
+            updates,
+            authorization=authorization,
             principal=principal,
             ip=ip,
         )

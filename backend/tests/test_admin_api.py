@@ -7,7 +7,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import admin as admin_api
+from app.api.admin_step_up import get_admin_step_up_service
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.roles import Role
 from app.core.auth.runtime import get_auth_facade
@@ -78,6 +80,7 @@ class FakeService:
         self,
         updates: tuple[ConfigUpdate, ...],
         *,
+        authorization: AdminAuthorization,
         principal: SecurityPrincipal,
         ip: str,
     ) -> tuple[ConfigItem, ...]:
@@ -85,14 +88,22 @@ class FakeService:
         return await self.list_configs()
 
 
+class FakeStepUp:
+    async def consume(self, token, *, claims, intent, **kwargs):
+        if token != "synthetic-config-grant":
+            raise ApiError(401, "STEP_UP_REQUIRED", "需要二次认证", None)
+        return AdminAuthorization.from_claims(claims, intent)
+
+
 def client(role: Role = "admin") -> tuple[TestClient, FakeService]:
     app = FastAPI()
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     app.include_router(admin_api.router)
+    app.dependency_overrides[get_admin_step_up_service] = lambda: FakeStepUp()
     service = FakeService()
     app.dependency_overrides[admin_api.get_admin_service] = lambda: service
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade(role)
-    return TestClient(app), service
+    return TestClient(app, headers={"X-Admin-Step-Up": "synthetic-config-grant"}), service
 
 
 def test_audit_query_supports_exclude_action() -> None:
@@ -112,7 +123,6 @@ def test_admin_can_query_audits_and_update_configs() -> None:
     http, service = client()
     headers = {"Authorization": "Bearer test"}
 
-
     audits = http.get(
         "/api/v1/web/admin/audit-logs?action=config_update&object_id=vendor_qps"
         f"&correlation_id={CORRELATION_ID}&page=1&page_size=20",
@@ -122,7 +132,9 @@ def test_admin_can_query_audits_and_update_configs() -> None:
     updated = http.put(
         "/api/v1/web/admin/configs",
         headers=headers,
-        json={"items": [{"key": "vendor_qps", "value": "8"}]},
+        json={
+            "items": [{"key": "vendor_qps", "value": "8", "expected_updated_at": NOW.isoformat()}]
+        },
     )
 
     assert audits.status_code == 200 and audits.json()["total"] == 1
@@ -161,4 +173,19 @@ def test_non_admin_is_denied_without_calling_service() -> None:
     assert response.json()["code"] == "FORBIDDEN"
     assert actions.status_code == 403
     assert actions.json()["code"] == "FORBIDDEN"
+    assert service.updates == []
+
+
+def test_config_write_without_step_up_cannot_reach_service() -> None:
+    http, service = client()
+    http.headers.pop("X-Admin-Step-Up")
+    response = http.put(
+        "/api/v1/web/admin/configs",
+        headers={"Authorization": "Bearer test"},
+        json={
+            "items": [{"key": "vendor_qps", "value": "8", "expected_updated_at": NOW.isoformat()}]
+        },
+    )
+    assert response.status_code == 401
+    assert response.json()["code"] == "STEP_UP_REQUIRED"
     assert service.updates == []

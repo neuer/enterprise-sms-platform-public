@@ -322,6 +322,22 @@ class SecurityDailyConfigurationUpdate:
     api_key: str | None = None
 
 
+def security_daily_write_parameters(
+    update: SecurityDailyConfigurationUpdate,
+    expected_config_version: int,
+) -> dict[str, Any]:
+    """授权只绑定收件人、开关、版本及 Key 操作，不含 Key 或其摘要。"""
+    action = "keep"
+    if update.api_key is not None:
+        action = "replace" if validate_resend_api_key(update.api_key) else "clear"
+    return {
+        "enabled": update.enabled,
+        "recipients": list(validate_resend_recipients(update.recipients)),
+        "api_key_action": action,
+        "expected_config_version": expected_config_version,
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class SecurityDailyQuery:
     report_date_from: date | None
@@ -374,10 +390,7 @@ class SecurityDailyDeliveryRequest:
             raise SecurityDailyConfigurationError("安全日报投递身份无效")
         if self.recipient_set_digest and (
             len(self.recipient_set_digest) != 64
-            or any(
-                character not in "0123456789abcdef"
-                for character in self.recipient_set_digest
-            )
+            or any(character not in "0123456789abcdef" for character in self.recipient_set_digest)
         ):
             raise SecurityDailyConfigurationError("安全日报收件人摘要无效")
 

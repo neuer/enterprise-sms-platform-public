@@ -1,11 +1,29 @@
-import { flushPromises, mount } from "@vue/test-utils"
+import { flushPromises, mount, type VueWrapper } from "@vue/test-utils"
 import ElementPlus, { ElMessageBox, ElPagination } from "element-plus"
 import { createPinia } from "pinia"
 import { vi } from "vitest"
 
+import AdminStepUpDialog from "../src/components/AdminStepUpDialog.vue"
 import AppManagementView from "../src/views/AppManagementView.vue"
 import BlacklistView from "../src/views/BlacklistView.vue"
 import SensitiveWordView from "../src/views/SensitiveWordView.vue"
+
+vi.mock("../src/api/adminStepUp", async (original) => ({
+  ...(await original<typeof import("../src/api/adminStepUp")>()),
+  issueAdminStepUp: vi.fn().mockResolvedValue("synthetic-app-grant"),
+}))
+
+/** 现有业务场景显式完成新增认证；认证取消和真实 HTTP 绑定另有专门测试。 */
+async function authorizeOpenDialog(wrapper: VueWrapper) {
+  await flushPromises()
+  const dialog = wrapper.findComponent(AdminStepUpDialog)
+  if (!dialog.exists()) return
+  const controller = dialog.props("controller")
+  if (!controller.state.open) return
+  controller.updatePassword("synthetic-password")
+  await controller.submit()
+  await flushPromises()
+}
 
 function response(body: unknown, status = 200) {
   return {
@@ -55,6 +73,7 @@ const app = {
   old_key_expires_at: null,
   callback_secret_configured: true,
   created_at: "2026-04-02T10:18:44+08:00",
+  updated_at: "2026-04-02T10:18:44+08:00",
 }
 
 /** 今日用量联查的空响应（stat_daily 无记录）。 */
@@ -175,7 +194,7 @@ describe("管理员治理页面", () => {
       if (url.endsWith("/admin/configs")) {
         return failPolicy
           ? response({ code: "UNAVAILABLE", message: "策略暂不可用" }, 503)
-          : response([{ key: "sensitive_hit_action", value: policy }])
+          : response([{ key: "sensitive_hit_action", value: policy, updated_at: app.updated_at }])
       }
       return response({ total: 125, items: [] })
     })
@@ -241,6 +260,7 @@ describe("管理员治理页面", () => {
     expect(wrapper.get("[data-testid='rotate-callback-1']").text()).toContain("轮换回调密钥")
     expect(wrapper.get("[data-testid='disable-app-1']").text()).toContain("停用应用")
     await wrapper.get("[data-testid='rotate-key-1']").trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
     expect(document.body.textContent).toContain("once-only-key")
     await wrapper.get("[data-testid='secret-close']").trigger("click")
@@ -310,6 +330,7 @@ describe("管理员治理页面", () => {
     await wrapper.get("[data-testid='app-detail-2']").trigger("click")
     await flushPromises()
     await wrapper.get("[data-testid='revoke-old-key-2']").trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
     expect(confirm).toHaveBeenCalledWith(
       expect.objectContaining({ type: "div" }),
@@ -451,6 +472,7 @@ describe("管理员治理页面", () => {
     const callbackButton = wrapper.get("[data-testid='rotate-callback-1']")
     const newAppButton = wrapper.get("[data-testid='new-app']")
     await rotateButton.trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
 
     expect(confirm).toHaveBeenCalledWith(
@@ -543,6 +565,7 @@ describe("管理员治理页面", () => {
     await wrapper.get("[data-testid='app-detail-1']").trigger("click")
     await flushPromises()
     await wrapper.get("[data-testid='rotate-key-1']").trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
 
     expect(fetch.mock.calls.filter(([url]) => String(url).endsWith("/rotate-key"))).toHaveLength(0)
@@ -572,6 +595,7 @@ describe("管理员治理页面", () => {
     await wrapper.get("[data-testid='app-detail-1']").trigger("click")
     await flushPromises()
     await wrapper.get("[data-testid='rotate-callback-1']").trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
 
     expect(confirm).toHaveBeenCalledWith(
@@ -613,6 +637,7 @@ describe("管理员治理页面", () => {
     await wrapper.get("[data-testid='app-detail-1']").trigger("click")
     await flushPromises()
     await wrapper.get("[data-testid='rotate-callback-1']").trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
     expect(document.body.textContent).toContain("cb-secret-once")
 
@@ -666,6 +691,7 @@ describe("管理员治理页面", () => {
     await flushPromises()
     expect(wrapper.find("[data-testid='enable-app-1']").exists()).toBe(false)
     await wrapper.get("[data-testid='disable-app-1']").trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
     expect(confirm).toHaveBeenCalledWith(
       expect.objectContaining({ type: "div" }),
@@ -680,6 +706,7 @@ describe("管理员治理页面", () => {
     expect(wrapper.find("[data-testid='disable-app-2']").exists()).toBe(false)
     expect(wrapper.get("[data-testid='enable-app-2']").text()).toContain("启用")
     await wrapper.get("[data-testid='enable-app-2']").trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
 
     // 启用流程：先 GET 权威配置，再 PUT 仅改 status
@@ -849,12 +876,14 @@ describe("管理员治理页面", () => {
     ]) {
       await overrideInput.setValue(invalid)
       await wrapper.get("[data-testid='save-app']").trigger("click")
+      await authorizeOpenDialog(wrapper)
       await flushPromises()
       expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0)
     }
 
     await overrideInput.setValue('{"verify_per_minute":2}')
     await wrapper.get("[data-testid='save-app']").trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
     expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1)
 
@@ -883,6 +912,7 @@ describe("管理员治理页面", () => {
     await textInputs[1].setValue("平台部")
     await wrapper.get("[data-testid='allowed-ips-input']").setValue("203.0.113.7\n10.0.0.0/8 \n")
     await wrapper.get("[data-testid='save-app']").trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
 
     const createCall = fetch.mock.calls.find(([, init]) => init?.method === "POST")
@@ -1110,7 +1140,7 @@ describe("管理员治理页面", () => {
       configured: true,
       beat_restart_required: false,
       updated_by: null,
-      updated_at: null,
+      updated_at: app.updated_at,
       default: "block",
       min_value: null,
       max_value: null,
@@ -1178,7 +1208,7 @@ describe("管理员治理页面", () => {
       configured: true,
       beat_restart_required: false,
       updated_by: null,
-      updated_at: null,
+      updated_at: app.updated_at,
       default: "block",
       min_value: null,
       max_value: null,
@@ -1227,7 +1257,7 @@ describe("管理员治理页面", () => {
       configured: true,
       beat_restart_required: false,
       updated_by: null,
-      updated_at: null,
+      updated_at: app.updated_at,
       default: "block",
       min_value: null,
       max_value: null,
@@ -1274,7 +1304,7 @@ describe("管理员治理页面", () => {
       configured: true,
       beat_restart_required: false,
       updated_by: null,
-      updated_at: null,
+      updated_at: app.updated_at,
       default: "block",
       min_value: null,
       max_value: null,
@@ -1297,12 +1327,15 @@ describe("管理员治理页面", () => {
 
     expect(wrapper.get("[data-testid='sensitive-policy-block']").classes()).toContain("on")
     await wrapper.get("[data-testid='sensitive-policy-audit']").trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
     expect(fetch).toHaveBeenCalledWith(
       "/api/v1/web/admin/configs",
       expect.objectContaining({
         method: "PUT",
-        body: JSON.stringify({ items: [{ key: "sensitive_hit_action", value: "audit" }] }),
+        body: JSON.stringify({
+          items: [{ key: "sensitive_hit_action", value: "audit", expected_updated_at: app.updated_at }],
+        }),
       }),
     )
     expect(wrapper.get("[data-testid='sensitive-policy-audit']").classes()).toContain("on")
@@ -1310,6 +1343,7 @@ describe("管理员治理页面", () => {
     // 写入失败回退原值
     failPut = true
     await wrapper.get("[data-testid='sensitive-policy-block']").trigger("click")
+    await authorizeOpenDialog(wrapper)
     await flushPromises()
     expect(wrapper.get("[data-testid='sensitive-policy-audit']").classes()).toContain("on")
     expect(wrapper.get("[data-testid='sensitive-policy-block']").classes()).not.toContain("on")

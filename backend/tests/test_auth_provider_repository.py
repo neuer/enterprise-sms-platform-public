@@ -444,7 +444,7 @@ async def test_disable_rejects_a_draft_changed_since_step_up_before_any_mutation
 
 @pytest.fixture(autouse=True)
 def authorized_transaction(monkeypatch, request):
-    async def check(connection, authorization, *, operation, target):
+    async def check(connection, authorization, *, operation, target, parameters):
         assert authorization is AUTHORIZATION
         if "activate" not in request.node.name and operation in {
             "provider_enable_disable",

@@ -19,7 +19,7 @@ from app.core.auth.principal_context import audit_principal_scope
 from app.core.correlation import correlation_scope
 from app.core.errors import ApiError
 from app.services.admin_invariant import ensure_effective_admin, lock_admin_invariant
-from app.services.admin_step_up import AdminIntent
+from app.services.admin_step_up import admin_intent
 from app.services.auth_provider import role_mapping_revision
 from app.services.auth_provider_repository import SqlAuthProviderRepository
 from app.services.user_management import LastAdminProtected
@@ -111,7 +111,17 @@ async def context():
 OPERATIONS = ["create", "role", "status", "reset", "draft", "activate", "disable", "mappings"]
 
 
-async def write(context, operation):
+LDAP_CONFIG = {
+    "server": "ldaps://directory.example.test:636",
+    "base_dn": "DC=example,DC=test", "bind_dn": "CN=reader,DC=example,DC=test",
+    "user_search_filter": "(uid={username})", "username_attribute": "uid",
+    "display_name_attribute": "displayName", "dept_attribute": "department",
+    "subject_attribute": "objectGUID", "group_attribute": "memberOf",
+    "connect_timeout_s": 5.0, "receive_timeout_s": 10.0,
+}
+
+
+async def write(context, operation, *, altered_grant=False):
     _, principal, account, code, settings = context
     users = SqlUserManagementRepository(settings)
     providers = SqlAuthProviderRepository(settings)
@@ -132,12 +142,39 @@ async def write(context, operation):
         if operation in ("role", "status", "reset")
         else code
     )
+    parameters = {
+        "create": {"username": code + "new", "display_name": code, "dept": "", "role": "admin"},
+        "role": {"role": "viewer", "role_override": True},
+        "status": {"status": 0}, "reset": {"action": "reset"},
+        "draft": {"config": LDAP_CONFIG},
+        "activate": {"enabled": True, "draft_version": 1},
+        "disable": {"enabled": False, "draft_version": 1},
+        "mappings": {"mappings": [], "expected_revision": role_mapping_revision(())},
+    }[operation]
+    if altered_grant:
+        parameters = dict(parameters)
+        if operation == "create":
+            parameters["display_name"] = "different-name"
+        elif operation == "role":
+            parameters["role"] = "operator"
+        elif operation == "status":
+            parameters["status"] = 1
+        elif operation == "reset":
+            target = str(principal.account_id)
+        elif operation == "draft":
+            parameters["config"] = {**LDAP_CONFIG, "connect_timeout_s": 6.0}
+        elif operation in {"activate", "disable"}:
+            parameters["draft_version"] = 2
+        else:
+            parameters["mappings"] = [
+                {"external_group": "different-group", "role": "viewer", "dept": "synthetic"}
+            ]
     authorization = AdminAuthorization(
         principal.account_id,
         principal.identity_id,
         1,
         "local",
-        AdminIntent(name, target, "synthetic"),
+        admin_intent(name, target, parameters),
     )
     kwargs = dict(authorization=authorization, actor=principal.login_name, ip="127.0.0.1")
     with audit_principal_scope(principal), correlation_scope(uuid4()):
@@ -159,7 +196,7 @@ async def write(context, operation):
         if operation == "reset":
             return await users.reset_local_password(account, "synthetic-new-hash", **kwargs)
         if operation == "draft":
-            return await providers.save_draft(code, {}, **kwargs)
+            return await providers.save_draft(code, LDAP_CONFIG, **kwargs)
         if operation == "activate":
             return await providers.activate(code, expected_draft_version=1, **kwargs)
         if operation == "disable":
@@ -167,6 +204,33 @@ async def write(context, operation):
         return await providers.replace_role_mappings(
             code, (), expected_revision=role_mapping_revision(()), **kwargs
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", OPERATIONS)
+async def test_valid_grant_for_different_write_cannot_mutate_or_audit(context, operation):
+    engine, principal, *_ = context
+
+    async def snapshot():
+        async with engine.connect() as connection:
+            # 专用一次性数据库内比较全部相关事实，避免只检查返回码。
+            return [
+                await connection.scalar(text(
+                    f"SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text), '[]') "
+                    f"FROM {table} t"
+                ))
+                for table in (
+                    "user_account", "auth_identity", "local_credential", "auth_provider",
+                    "external_role_mapping", "audit_log",
+                )
+            ]
+
+    before = await snapshot()
+    with pytest.raises(ApiError) as rejected:
+        await write(context, operation, altered_grant=True)
+    assert rejected.value.status_code == 401
+    assert rejected.value.code == "STEP_UP_REQUIRED"
+    assert await snapshot() == before
 
 
 @pytest.mark.asyncio
@@ -251,7 +315,7 @@ async def test_temporary_or_missing_local_credentials_cannot_replace_durable_adm
             principal.identity_id,
             1,
             "local",
-            AdminIntent("user_password_reset", str(principal.account_id), "synthetic"),
+            admin_intent("user_password_reset", str(principal.account_id), {"action": "reset"}),
         )
         with (
             audit_principal_scope(principal),

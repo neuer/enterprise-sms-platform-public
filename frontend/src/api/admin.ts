@@ -91,10 +91,10 @@ export const listAuditActions = (signal?: AbortSignal) =>
 export const listConfigs = (signal?: AbortSignal) =>
   apiRequest<ConfigItem[]>("/admin/configs", { method: "GET", signal })
 
-export function updateConfigs(items: ConfigUpdate[]): Promise<ConfigItem[]> {
+export function updateConfigs(items: ConfigUpdate[], token: string): Promise<ConfigItem[]> {
   return apiRequest<ConfigItem[]>("/admin/configs", {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...adminStepUpHeaders(token) },
     body: JSON.stringify({ items }),
   })
 }

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -9,8 +10,11 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
 from app.core.auth.accounts import SecurityPrincipal
-from app.services.admin import AuditQuery, ConfigUpdate, InvalidAdminQuery
+from app.core.auth.admin_authorization import AdminAuthorization, require_admin_intent
+from app.core.errors import ApiError
+from app.services.admin import AuditQuery, ConfigUpdate, InvalidAdminQuery, config_write_parameters
 from app.services.admin_repository import SqlAdminRepository
+from app.services.admin_step_up import AdminIntent, admin_intent
 from app.services.sensitive_config import AlertCredentialCipher, encrypt_wecom_webhook
 
 NOW = datetime(2026, 7, 12, 8, tzinfo=UTC)
@@ -18,6 +22,26 @@ CORRELATION_ID = UUID("30000000-0000-4000-8000-000000000009")
 ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 PRIVATE_KEY = X25519PrivateKey.from_private_bytes(b"w" * 32)
 PUBLIC_CIPHER = AlertCredentialCipher(public_key=PRIVATE_KEY.public_key())
+
+
+def grant(updates):
+    try:
+        intent = admin_intent("config_update", "default", config_write_parameters(updates))
+    except InvalidAdminQuery:
+        intent = AdminIntent("config_update", "default", "invalid-input-unit-only")
+    return AdminAuthorization(1, 10, 1, "local", intent)
+
+
+@pytest.fixture(autouse=True)
+def isolated_authority_guard(monkeypatch):
+    """SQL 形状测试只替换数据库授权锁；保留真实意图比对。"""
+
+    @asynccontextmanager
+    async def accepted(settings, authorization, **intent):
+        require_admin_intent(authorization, **intent)
+        yield
+
+    monkeypatch.setattr("app.services.admin_repository.hold_admin_authorization", accepted)
 
 
 class FakeResult:
@@ -207,11 +231,22 @@ async def test_config_update_locks_rows_and_audits_safe_before_after() -> None:
 
     result = await repo.update_configs(
         (
-            ConfigUpdate("vendor_qps", "8"),
+            ConfigUpdate("vendor_qps", "8", NOW),
             ConfigUpdate(
                 "alert_wecom_webhook",
                 "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=new",
+                NOW,
             ),
+        ),
+        authorization=grant(
+            (
+                ConfigUpdate("vendor_qps", "8", NOW),
+                ConfigUpdate(
+                    "alert_wecom_webhook",
+                    "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=new",
+                    NOW,
+                ),
+            )
         ),
         principal=ADMIN,
         ip="10.0.0.8",
@@ -231,9 +266,7 @@ async def test_config_update_locks_rows_and_audits_safe_before_after() -> None:
     assert audit_params[1]["before"] == '{"configured": true}'
     assert audit_params[1]["after"] == '{"configured": true}'
     assert "old" not in str(audit_params) and "new" not in str(audit_params)
-    update_params = next(
-        params for sql, params in connection.calls if "UPDATE sys_config" in sql
-    )
+    update_params = next(params for sql, params in connection.calls if "UPDATE sys_config" in sql)
     stored = next(item["value"] for item in update_params if item["key"] == "alert_wecom_webhook")
     assert stored.startswith("sealed:v1:")
     assert "key=new" not in stored
@@ -243,9 +276,10 @@ async def test_config_update_locks_rows_and_audits_safe_before_after() -> None:
 async def test_config_update_rejects_internal_revision_keys() -> None:
     repo, connection = repository([])
 
-    with pytest.raises(InvalidAdminQuery, match="不存在"):
+    with pytest.raises(InvalidAdminQuery, match="配置键无效"):
         await repo.update_configs(
-            (ConfigUpdate("__sensitive_word_revision", "0"),),
+            (ConfigUpdate("__sensitive_word_revision", "0", NOW),),
+            authorization=grant((ConfigUpdate("__sensitive_word_revision", "0", NOW),)),
             principal=ADMIN,
             ip="10.0.0.8",
         )
@@ -281,7 +315,8 @@ async def test_transaction_final_gate_rejects_public_callback_allowlist() -> Non
 
     with pytest.raises(ValueError, match="私网"):
         await repo.update_configs(
-            (ConfigUpdate("callback_allow_cidrs", "0.0.0.0/0"),),
+            (ConfigUpdate("callback_allow_cidrs", "0.0.0.0/0", NOW),),
+            authorization=grant((ConfigUpdate("callback_allow_cidrs", "0.0.0.0/0", NOW),)),
             principal=ADMIN,
             ip="10.0.0.8",
         )
@@ -321,7 +356,8 @@ async def test_ad_session_policy_revision_bumps_with_config_and_audit() -> None:
     )
 
     result = await repo.update_configs(
-        (ConfigUpdate("ad_session_max_age_minutes", "60"),),
+        (ConfigUpdate("ad_session_max_age_minutes", "60", NOW),),
+        authorization=grant((ConfigUpdate("ad_session_max_age_minutes", "60", NOW),)),
         principal=ADMIN,
         ip="10.0.0.8",
     )
@@ -335,3 +371,42 @@ async def test_ad_session_policy_revision_bumps_with_config_and_audit() -> None:
     )
     assert policy_params["minutes"] == 60
     assert policy_params["actor"] == "admin01"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key,value", [("vendor_qps", "8"), ("alert_wecom_webhook", None)])
+async def test_stale_config_revision_rejects_before_mutation_or_audit(key, value):
+    """普通更新和凭据保留都须匹配读取时版本。"""
+    before = [
+        config_row(key, "5" if key == "vendor_qps" else "", "int" if key == "vendor_qps" else "str")
+    ]
+    repo, connection = repository(
+        [
+            FakeResult([{"database_user": "sms_accept", "txid": 80}]),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(before),
+        ]
+    )
+    updates = (ConfigUpdate(key, value, NOW - timedelta(seconds=1)),)
+    with pytest.raises(ApiError) as error:
+        await repo.update_configs(
+            updates, authorization=grant(updates), principal=ADMIN, ip="127.0.0.1"
+        )
+    assert error.value.status_code == 409
+    assert not any(
+        "UPDATE sys_config" in sql or "INSERT INTO audit_log" in sql for sql, _ in connection.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_grant_for_different_value_rejects_before_business_sql():
+    repo, connection = repository([])
+    updates = (ConfigUpdate("vendor_qps", "8", NOW),)
+    other = (ConfigUpdate("vendor_qps", "9", NOW),)
+    with pytest.raises(ApiError) as error:
+        await repo.update_configs(
+            updates, authorization=grant(other), principal=ADMIN, ip="127.0.0.1"
+        )
+    assert error.value.status_code == 401
+    assert connection.calls == []

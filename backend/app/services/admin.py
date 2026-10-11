@@ -10,9 +10,11 @@ from typing import Any, Protocol
 from uuid import UUID
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.backends import SessionStateUnavailable
 from app.core.auth.session_policy import AuthSessionPolicy
 from app.services.alert import validate_alert_destinations
+from app.services.app_contract import canonical_app_revision
 from app.services.runtime_policy import (
     BEAT_STARTUP_ONLY_KEYS,
     CONFIG_SPECS,
@@ -74,6 +76,7 @@ class ConfigRow:
 class ConfigUpdate:
     key: str
     value: str | None
+    expected_updated_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +103,7 @@ class AdminRepository(Protocol):
         self,
         updates: tuple[ConfigUpdate, ...],
         *,
+        authorization: AdminAuthorization,
         principal: SecurityPrincipal,
         ip: str,
     ) -> tuple[ConfigRow, ...]: ...
@@ -123,6 +127,7 @@ UI_ONLY_CONFIG_KEYS = frozenset(
         "security_daily_config_file_version",
         "security_daily_config_operation_id",
         "security_daily_recipient_count",
+        "security_daily_recipient_set_digest",
         "security_daily_resend_configured",
         "security_daily_resend_api_key",
     }
@@ -170,16 +175,8 @@ class AdminService:
             updated_by=row.updated_by,
             updated_at=row.updated_at,
             default=spec.default if spec is not None else "",
-            min_value=(
-                spec.minimum
-                if spec is not None and spec.value_type == "int"
-                else None
-            ),
-            max_value=(
-                spec.maximum
-                if spec is not None and spec.value_type == "int"
-                else None
-            ),
+            min_value=(spec.minimum if spec is not None and spec.value_type == "int" else None),
+            max_value=(spec.maximum if spec is not None and spec.value_type == "int" else None),
         )
 
     async def list_configs(self) -> tuple[ConfigItem, ...]:
@@ -227,6 +224,7 @@ class AdminService:
         self,
         updates: tuple[ConfigUpdate, ...],
         *,
+        authorization: AdminAuthorization,
         principal: SecurityPrincipal,
         ip: str,
     ) -> tuple[ConfigItem, ...]:
@@ -247,12 +245,22 @@ class AdminService:
             if item.value is None:
                 if item.key not in SENSITIVE_CONFIG_KEYS:
                     raise InvalidAdminQuery(f"配置 {item.key} 缺少值")
+                normalized.append(item)
                 continue
-            normalized.append(ConfigUpdate(item.key, self._validate_value(row, item.value)))
-        if not normalized:
-            return tuple(self._item(row) for row in rows)
+            normalized.append(
+                ConfigUpdate(
+                    item.key,
+                    self._validate_value(row, item.value),
+                    item.expected_updated_at,
+                )
+            )
         effective = {row.key: row.value for row in rows}
-        effective.update({item.key: item.value or "" for item in normalized})
+        effective.update({item.key: item.value for item in normalized if item.value is not None})
+        if not any(
+            item.key == "alert_wecom_webhook" and item.value is not None for item in normalized
+        ):
+            # 既有 Webhook 为密文；未替换时不解封，也不当作明文 URL 重验。
+            effective["alert_wecom_webhook"] = ""
         try:
             RuntimePolicy.from_mapping(effective)
             ensure_callback_cidrs_within_deployment(
@@ -266,12 +274,12 @@ class AdminService:
             raise InvalidAdminQuery(str(error)) from error
         changed = await self.repository.update_configs(
             tuple(normalized),
+            authorization=authorization,
             principal=principal,
             ip=ip,
         )
-        if (
-            self.session_policy_publisher is not None
-            and any(item.key == "ad_session_max_age_minutes" for item in normalized)
+        if self.session_policy_publisher is not None and any(
+            item.key == "ad_session_max_age_minutes" for item in normalized
         ):
             policy = await self.repository.load_auth_session_policy()
             with suppress(SessionStateUnavailable):
@@ -305,3 +313,89 @@ class AdminService:
         """返回审计动作清单供前端下拉，避免管理员手输未知动作。"""
 
         return await self.repository.list_audit_actions()
+
+
+def _config_revision(value: Any) -> str:
+    """配置 CAS 版本使用读取时的带时区时间，不能猜测或省略。"""
+    try:
+        return canonical_app_revision(value)
+    except (TypeError, ValueError):
+        raise InvalidAdminQuery("配置版本必须为带时区时间") from None
+
+
+def canonical_config_intent_items(items: Any) -> list[dict[str, Any]]:
+    """授权白名单按键排序；敏感项只记录动作，不接收凭据摘要。"""
+    if not isinstance(items, list) or not 1 <= len(items) <= 50:
+        raise InvalidAdminQuery("配置更新数量无效")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("key"), str):
+            raise InvalidAdminQuery("配置授权参数无效")
+        key = item["key"]
+        if key not in CONFIG_SPECS or key in UI_ONLY_CONFIG_KEYS or key in seen:
+            raise InvalidAdminQuery("配置授权键无效或重复")
+        seen.add(key)
+        sensitive = key in SENSITIVE_CONFIG_KEYS
+        field = "secret_action" if sensitive else "value"
+        if set(item) != {"key", field, "expected_updated_at"}:
+            raise InvalidAdminQuery("配置授权字段无效")
+        value = item[field]
+        if not isinstance(value, str):
+            raise InvalidAdminQuery("配置授权值无效")
+        if sensitive:
+            if value not in {"keep", "replace", "clear"}:
+                raise InvalidAdminQuery("配置凭据操作无效")
+        else:
+            value = AdminService._validate_value(
+                ConfigRow(key, "", CONFIG_SPECS[key].value_type, None, None, None),
+                value,
+            )
+        result.append(
+            {
+                "key": key,
+                field: value,
+                "expected_updated_at": _config_revision(item["expected_updated_at"]),
+            }
+        )
+    return sorted(result, key=lambda item: item["key"])
+
+
+def normalize_config_updates(updates: tuple[ConfigUpdate, ...]) -> tuple[ConfigUpdate, ...]:
+    """服务与仓储使用同一静态注册表校验，实际存储值即授权规范值。"""
+    normalized = []
+    for item in updates:
+        if item.key not in CONFIG_SPECS or item.key in UI_ONLY_CONFIG_KEYS:
+            raise InvalidAdminQuery("配置键无效")
+        value = item.value
+        if value is None:
+            if item.key not in SENSITIVE_CONFIG_KEYS:
+                raise InvalidAdminQuery("非敏感配置必须提供值")
+        elif not isinstance(value, str):
+            raise InvalidAdminQuery("配置值必须为字符串")
+        else:
+            value = AdminService._validate_value(
+                ConfigRow(item.key, "", CONFIG_SPECS[item.key].value_type, None, None, None),
+                value,
+            )
+        normalized.append(
+            ConfigUpdate(
+                item.key, value, datetime.fromisoformat(_config_revision(item.expected_updated_at))
+            )
+        )
+    return tuple(normalized)
+
+
+def config_write_parameters(updates: tuple[ConfigUpdate, ...]) -> dict[str, Any]:
+    """由实际变更重新构造非凭据授权参数。"""
+    items = []
+    for item in normalize_config_updates(updates):
+        entry: dict[str, Any] = {"key": item.key, "expected_updated_at": item.expected_updated_at}
+        if item.key in SENSITIVE_CONFIG_KEYS:
+            entry["secret_action"] = (
+                "keep" if item.value is None else "replace" if item.value else "clear"
+            )
+        else:
+            entry["value"] = item.value
+        items.append(entry)
+    return {"items": canonical_config_intent_items(items)}

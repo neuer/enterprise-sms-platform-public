@@ -24,6 +24,7 @@ from app.core.apikey import (
 )
 from app.core.health import ApiKeyPepperReferenceCheck
 from app.services.app_repository import SqlAppRepository
+from tests.integration.app_authorization_fixtures import authorized_app_write
 from tests.integration.audit_fixtures import live_audit_principal  # noqa: F401
 from tests.integration.test_ops_audit_postgres import accept_runtime  # noqa: F401
 from tests.test_apikey_pepper import b64, keyring, settings_with_secrets
@@ -58,7 +59,9 @@ async def _insert_app(
     name: str,
     algorithm: str | None = None,
 ) -> int:
-    return await repository.create(
+    return await authorized_app_write(
+        repository,
+        "create",
         name=name,
         dept="测试部",
         api_key_hash=digest,
@@ -69,13 +72,13 @@ async def _insert_app(
         default_sign=None,
         daily_quota=0,
         rate_limit_per_min=60,
-            recipient_limit_per_min=6000,
-            segment_limit_per_min=6000,
-            max_in_flight_chunks=100,
-            allow_market_api_bulk=False,
-            ip_allowlist_exempt_until=None,
-            unlimited_quota_exempt_until=None,
-            admission_exempt_note=None,
+        recipient_limit_per_min=6000,
+        segment_limit_per_min=6000,
+        max_in_flight_chunks=100,
+        allow_market_api_bulk=False,
+        ip_allowlist_exempt_until=None,
+        unlimited_quota_exempt_until=None,
+        admission_exempt_note=None,
         blacklist_check=True,
         freq_override=None,
         allowed_ips=("10.0.0.0/8",),
@@ -138,23 +141,29 @@ async def test_pepper_bound_key_survives_data_hmac_rotation_and_legacy_sha256(
         app_ids.append(app_id)
         async with engine.connect() as connection:
             row = (
-                await connection.execute(
-                    text(
-                        """
+                (
+                    await connection.execute(
+                        text(
+                            """
                         SELECT api_key_hash_version, api_key_prev_hash_version
                         FROM app WHERE id=:app_id
                         """
-                    ),
-                    {"app_id": app_id},
+                        ),
+                        {"app_id": app_id},
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
         assert row["api_key_hash_version"] == 1
         assert row["api_key_prev_hash_version"] is None
 
         hmac_auth = ApiKeyAuthenticator(key_repository, settings=hmac_rotated)
         assert (await hmac_auth.authenticate(modern_key)).app_id == app_id
 
-        await repository.rotate_key(
+        await authorized_app_write(
+            repository,
+            "rotate_key",
             app_id,
             api_key_hash=digest_v2,
             api_key_prefix=rotated_key[:8],
@@ -167,7 +176,9 @@ async def test_pepper_bound_key_survives_data_hmac_rotation_and_legacy_sha256(
         assert (await pepper_auth.authenticate(modern_key)).app_id == app_id
         assert (await pepper_auth.authenticate(rotated_key)).app_id == app_id
 
-        await repository.revoke_old_key(app_id, actor="integration", ip="127.0.0.1")
+        await authorized_app_write(
+            repository, "revoke_old_key", app_id, actor="integration", ip="127.0.0.1"
+        )
         with pytest.raises(InvalidApiKey):
             await pepper_auth.authenticate(modern_key)
 
@@ -195,13 +206,9 @@ async def test_pepper_bound_key_survives_data_hmac_rotation_and_legacy_sha256(
         with pytest.raises(InvalidApiKey):
             await pepper_auth.authenticate(unclassified_key)
 
-        await ApiKeyPepperReferenceCheck(
-            _ReferenceSettings(pepper_rotated, database_url)
-        )()
+        await ApiKeyPepperReferenceCheck(_ReferenceSettings(pepper_rotated, database_url))()
         with pytest.raises(RuntimeError, match="unavailable"):
-            await ApiKeyPepperReferenceCheck(
-                _ReferenceSettings(missing_history, database_url)
-            )()
+            await ApiKeyPepperReferenceCheck(_ReferenceSettings(missing_history, database_url))()
     finally:
         async with engine.begin() as connection:
             if app_ids:
@@ -277,9 +284,12 @@ async def test_unclassified_hmac_digest_requires_deploy_inventory(
         migrated = await ApiKeyAuthenticator(key_repository, settings=settings).authenticate(key)
         assert migrated.app_id == app_id
         async with engine.connect() as connection:
-            assert await connection.scalar(text(
-                "SELECT api_key_hash_algorithm FROM app WHERE id=:id"
-            ), {"id": app_id}) == "api_pepper"
+            assert (
+                await connection.scalar(
+                    text("SELECT api_key_hash_algorithm FROM app WHERE id=:id"), {"id": app_id}
+                )
+                == "api_pepper"
+            )
     finally:
         async with engine.begin() as connection:
             await connection.execute(

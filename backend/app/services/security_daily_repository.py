@@ -12,6 +12,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.audit import audit_uuid_ref
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.admin_authorization import AdminAuthorization, hold_admin_authorization
+from app.core.errors import ApiError
 from app.core.runtime_resources import bind_connection_system_audit, database_engine
 from app.services.security_daily import (
     MAX_RESEND_RECIPIENTS,
@@ -45,6 +47,7 @@ from app.services.security_daily import (
     validate_resend_recipients,
     validate_security_daily_payload,
 )
+from app.services.security_daily.contract import security_daily_write_parameters
 from app.settings import Settings, get_settings
 
 SENDER_DOMAIN = "reports.neuer.cn"
@@ -110,9 +113,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         try:
             async with engine.connect() as connection:
                 enabled_result = await connection.execute(
-                    text(
-                        "SELECT value FROM sys_config WHERE key='security_daily_enabled'"
-                    )
+                    text("SELECT value FROM sys_config WHERE key='security_daily_enabled'")
                 )
                 enabled_row = enabled_result.mappings().one_or_none()
                 count_result = await connection.execute(
@@ -140,10 +141,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 )
                 config = {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
                 recipients_result = await connection.execute(
-                    text(
-                        "SELECT position,address FROM security_daily_recipient "
-                        "ORDER BY position"
-                    )
+                    text("SELECT position,address FROM security_daily_recipient ORDER BY position")
                 )
                 recipients = tuple(str(row["address"]) for row in recipients_result.mappings())
         finally:
@@ -169,10 +167,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         "'security_daily_config_publish_state','security_daily_recipient_set_digest')"
                     )
                 )
-                config = {
-                    str(row["key"]): str(row["value"])
-                    for row in result.mappings()
-                }
+                config = {str(row["key"]): str(row["value"]) for row in result.mappings()}
         finally:
             await engine.dispose()
         try:
@@ -181,9 +176,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             raise SecurityDailyConfigurationError("安全日报收件人数量无效") from error
         return SecurityDailyAutoDeliveryConfiguration(
             enabled=_bool_config(config.get("security_daily_enabled")),
-            resend_configured=_bool_config(
-                config.get("security_daily_resend_configured")
-            ),
+            resend_configured=_bool_config(config.get("security_daily_resend_configured")),
             recipient_count=recipient_count,
             config_version=int(config.get("security_daily_config_version", "0")),
             publish_state=config.get("security_daily_config_publish_state", "file_pending"),
@@ -247,9 +240,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         category_counter: dict[str, int] = {}
         for row in category_result.mappings():
             category = _audit_category(str(row["action"]))
-            category_counter[category] = category_counter.get(category, 0) + int(
-                row["n"]
-            )
+            category_counter[category] = category_counter.get(category, 0) + int(row["n"])
         category_counts = tuple(
             sorted(category_counter.items(), key=lambda item: (-item[1], item[0]))
         )
@@ -274,21 +265,33 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         *,
         principal: SecurityPrincipal,
         ip: str,
+        authorization: AdminAuthorization,
+        expected_config_version: int,
     ) -> SecurityDailyConfiguration:
         """事务性保存安全日报开关、Resend Key 和收件人，并写入审计。"""
 
+        if (principal.account_id, principal.identity_id) != (
+            authorization.account_id,
+            authorization.identity_id,
+        ):
+            raise ApiError(401, "STEP_UP_REQUIRED", "授权主体不匹配", None)
+        parameters = security_daily_write_parameters(update, expected_config_version)
         recipients = validate_resend_recipients(update.recipients)
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})")
-                )
+            async with (
+                hold_admin_authorization(
+                    self.settings,
+                    authorization,
+                    operation="security_daily_config_update",
+                    target="default",
+                    parameters=parameters,
+                ),
+                engine.begin() as connection,
+            ):
+                await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
                 current_result = await connection.execute(
-                    text(
-                        "SELECT value FROM sys_config "
-                        "WHERE key='security_daily_resend_api_key'"
-                    )
+                    text("SELECT value FROM sys_config WHERE key='security_daily_resend_api_key'")
                 )
                 current_row = current_result.mappings().one_or_none()
                 current_key = str(current_row["value"]) if current_row is not None else ""
@@ -300,6 +303,8 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 )
                 version_row = version_result.mappings().one_or_none()
                 current_version = int(version_row["value"]) if version_row is not None else 0
+                if current_version != expected_config_version:
+                    raise SecurityDailyStateConflict("安全日报配置已变化，请刷新后重新认证")
                 next_version = current_version + 1
                 if not 1 <= next_version <= 9223372036854775807:
                     raise SecurityDailyConfigurationError("安全日报配置版本无效")
@@ -530,9 +535,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         try:
             async with engine.begin() as connection:
                 result = await connection.execute(
-                    text(
-                        statement
-                    ),
+                    text(statement),
                     {
                         "report_date": report_date,
                         "period_start": period_start,
@@ -625,9 +628,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         try:
             async with engine.begin() as connection:
                 result = await connection.execute(
-                    text(
-                        statement
-                    ),
+                    text(statement),
                     {
                         "report_date": report_date,
                         "period_start": period_start,
@@ -859,9 +860,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         finally:
             await engine.dispose()
 
-    async def latest_delivery_request(
-        self, report_id: int
-    ) -> SecurityDailyDeliveryRequest | None:
+    async def latest_delivery_request(self, report_id: int) -> SecurityDailyDeliveryRequest | None:
         engine = self._engine()
         try:
             async with engine.connect() as connection:
@@ -931,14 +930,9 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                await connection.execute(
-                    text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})")
-                )
+                await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
                 version_result = await connection.execute(
-                    text(
-                        "SELECT value FROM sys_config "
-                        "WHERE key='security_daily_config_version'"
-                    )
+                    text("SELECT value FROM sys_config WHERE key='security_daily_config_version'")
                 )
                 version_raw = version_result.scalar_one_or_none()
                 config_version = int(version_raw) if version_raw is not None else 1
@@ -1076,8 +1070,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 # 每次投递请求使用独立 request_id，避免同一报告/快照重复生成时
                 # 复用同一 dedup_key（唯一约束冲突会让“立即生成”变成 500）。
                 dedup_key = (
-                    f"security-daily:{action}:{report.report_date}:"
-                    f"{next_retry}:{request_id}"
+                    f"security-daily:{action}:{report.report_date}:{next_retry}:{request_id}"
                 )
                 await connection.execute(
                     text(
@@ -1200,8 +1193,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     )
                 )
                 return tuple(
-                    (UUID(str(row["request_id"])), row["report_date"])
-                    for row in result.mappings()
+                    (UUID(str(row["request_id"])), row["report_date"]) for row in result.mappings()
                 )
         finally:
             await engine.dispose()
@@ -1212,9 +1204,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                await connection.execute(
-                    text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})")
-                )
+                await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
                 request_result = await connection.execute(
                     text(
                         """
@@ -1302,9 +1292,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                             {
                                 "delivery_ref": audit_uuid_ref(result.request_id),
                                 "state": result.state,
-                                "delivery_generation": int(
-                                    request["delivery_generation"]
-                                ),
+                                "delivery_generation": int(request["delivery_generation"]),
                                 "config_version": int(request["config_version"]),
                             },
                             ensure_ascii=False,
@@ -1318,9 +1306,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                await connection.execute(
-                    text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})")
-                )
+                await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
                 await bind_connection_system_audit(
                     connection,
                     actor_name="security-report-mailer",
@@ -1368,9 +1354,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                await connection.execute(
-                    text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})")
-                )
+                await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
                 await bind_connection_system_audit(
                     connection,
                     actor_name="security-report-mailer",

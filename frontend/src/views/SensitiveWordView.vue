@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import AdminStepUpDialog from "../components/AdminStepUpDialog.vue"
+import { useAdminStepUp } from "../composables/useAdminStepUp"
 import { ElMessage } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 
@@ -17,7 +19,7 @@ import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { usePagedList } from "../composables/usePagedList"
 import { useConfirmActions } from "../lib/confirm"
-const { confirmAuditedAction } = useConfirmActions()
+const { confirmAuditedAction, captureCurrent } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
 import { formatDateTime } from "../lib/time"
@@ -25,7 +27,9 @@ import { formatDateTime } from "../lib/time"
 const MAX_WORD_LENGTH = 64
 
 const keyword = ref("")
+const adminStepUp = useAdminStepUp()
 const policy = ref("")
+const policyRevision = ref("")
 const policyLoading = ref(false)
 const policyError = ref("")
 const policyRead = useLatestRead()
@@ -92,7 +96,10 @@ async function loadPolicy(): Promise<void> {
   try {
     const configs = await listConfigs(signal)
     if (signal.aborted) return
-    const next = configs.find((item) => item.key === "sensitive_hit_action")?.value
+    const config = configs.find((item) => item.key === "sensitive_hit_action")
+    const next = config?.value
+    if (!config?.updated_at) throw new Error("命中策略版本缺失，请刷新重试")
+    policyRevision.value = config.updated_at
     if (next !== "block" && next !== "audit") throw new Error("命中策略暂不可用")
     policy.value = next
   } catch (error) {
@@ -108,10 +115,31 @@ async function setPolicy(next: string): Promise<void> {
   if (next === policy.value || policySaving.value || policyLoading.value || !policy.value) return
   policyRead.cancel()
   const previous = policy.value
+  const expected_updated_at = policyRevision.value
+  const isCurrent = captureCurrent()
   policy.value = next
   policySaving.value = true
   try {
-    await updateConfigs([{ key: "sensitive_hit_action", value: next }])
+    const items = [{ key: "sensitive_hit_action", value: next, expected_updated_at }]
+    const result = await adminStepUp.run(
+      {
+        operation: "config_update",
+        target_id: "default",
+        parameters: { items },
+      },
+      "修改敏感词命中策略",
+      (token) => updateConfigs(items, token),
+    )
+    if (!result || !isCurrent()) {
+      policy.value = previous
+      return
+    }
+    const saved = result.find((item) => item.key === "sensitive_hit_action")
+    if (!saved?.updated_at) {
+      policyError.value = "策略版本缺失，请刷新后再操作"
+    } else {
+      policyRevision.value = saved.updated_at
+    }
     ElMessage.success(next === "block" ? "敏感词命中将阻断发送" : "敏感词命中仅审计记录")
   } catch (error) {
     policy.value = previous
@@ -186,6 +214,7 @@ onMounted(() => {
 </script>
 
 <template>
+  <AdminStepUpDialog :controller="adminStepUp" />
   <section class="page-heading sensitive-heading">
     <div>
       <p class="eyebrow">CONTENT POLICY / 内容策略</p>
