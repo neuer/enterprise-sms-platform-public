@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from redis.exceptions import LockNotOwnedError
 
-from app.core.redis_lock import HeartbeatLock
+from app.core.redis_lock import HeartbeatLock, LeaseUncertain
 
 
 class FakeLock:
@@ -68,3 +68,37 @@ async def test_lost_lease_release_is_tolerated_and_reported() -> None:
 def test_heartbeat_must_beat_faster_than_lease() -> None:
     with pytest.raises(ValueError):
         HeartbeatLock(FakeLock(), ttl_s=90, beat_s=90)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [False, ConnectionError("sensitive-token"), LockNotOwnedError("sensitive-key")]
+)
+async def test_renewal_failure_signals_once_and_reacquire_resets(
+    failure: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    class FaultLock(FakeLock):
+        async def extend(self, ttl: int, **kwargs: Any) -> Any:
+            if isinstance(failure, Exception):
+                raise failure
+            return failure
+
+    lock = FaultLock()
+    heartbeat = HeartbeatLock(lock, ttl_s=2, beat_s=1)
+    assert await heartbeat.acquire()
+    assert not await heartbeat.acquire()
+    task = heartbeat._task
+    await asyncio.wait_for(heartbeat.wait_uncertain(), 2)
+    assert heartbeat.lease_uncertain
+    with pytest.raises(LeaseUncertain):
+        heartbeat.ensure_lease()
+    assert not await heartbeat.release()
+    assert task is not None and task.done()
+    assert not await heartbeat.release()
+    assert lock.released == 1
+    assert len([r for r in caplog.records if r.message == "redis lock renewal uncertain"]) == 1
+    assert "sensitive" not in caplog.text
+    assert await heartbeat.acquire()
+    assert not heartbeat.lease_uncertain
+    heartbeat.ensure_lease()
+    assert await heartbeat.release()

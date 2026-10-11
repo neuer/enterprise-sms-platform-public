@@ -7,6 +7,7 @@ import hashlib
 import logging
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -820,11 +821,13 @@ class ReportIngestService:
         )
         return recovered
 
-    async def poll_once(self) -> int:
+    async def poll_once(self, *, check_lease: Callable[[], None] | None = None) -> int:
         if self.gateway is None:
             raise RuntimeError("report gateway is not configured")
         self._spill_degraded = False
         await self.recover_spills()
+        if check_lease is not None:
+            check_lease()
         stream = None
         if self.spill is not None:
             try:
@@ -871,6 +874,8 @@ class ReportIngestService:
             capture_state=capture_state,
             stream=stream,
         )
+        if check_lease is not None:
+            check_lease()
         if is_non_replayable_capture(capture_state):
             await self.repository.mark_error(raw_id, "report protocol-invalid vendor response")
             await self._alert_protocol_invalid("report")

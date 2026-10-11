@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from app.core.jobtrack import tracked_job
 from app.core.redis_lock import HeartbeatLock
 from app.core.runtime_resources import redis_client
@@ -13,7 +15,7 @@ from app.services.reply_ingest import ReplyIngestService
 from app.services.reply_repository import SqlReplyRepository
 from app.settings import get_settings
 from app.tasks import celery_app
-from app.tasks.poll_report import _alert_lease_lost
+from app.tasks.poll_report import _finish_lease, _watch_lease
 from app.vendor.zhihui import ZhihuiClient
 
 
@@ -28,6 +30,7 @@ async def _poll() -> int:
     if not await lock.acquire():
         return 0
     alerts = SqlAlertService(settings)
+    watcher = asyncio.create_task(_watch_lease(lock, alerts, "reply"))
     try:
         async with ZhihuiClient.from_settings(settings) as vendor:
             return await ReplyIngestService(
@@ -36,10 +39,9 @@ async def _poll() -> int:
                 CryptoService.from_settings(settings),
                 alerts=alerts,
                 spill=RawSpillStore.from_settings(settings),
-            ).poll_once()
+            ).poll_once(check_lease=lock.ensure_lease)
     finally:
-        if not await lock.release():
-            await _alert_lease_lost(alerts, "reply")
+        await _finish_lease(lock, watcher, alerts, "reply")
 
 
 @celery_app.task(name="app.tasks.poll_reply")  # type: ignore[untyped-decorator]

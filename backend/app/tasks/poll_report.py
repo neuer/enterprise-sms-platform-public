@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from contextlib import suppress
 
 from app.core.jobtrack import tracked_job
 from app.core.redis_lock import HeartbeatLock
@@ -25,7 +27,7 @@ async def _alert_lease_lost(alerts: SqlAlertService, source: str) -> None:
         await alerts.emit(
             alert_type="poll_lock_expired",
             level="warn",
-            title="轮询锁在处理期间过期，已被其他实例接管",
+            title="轮询租约无法确认，已在安全点停止新拉取",
             detail={"source": source},
             dedup_key=f"poll_lock_expired:{source}",
         )
@@ -34,6 +36,27 @@ async def _alert_lease_lost(alerts: SqlAlertService, source: str) -> None:
             "poll lock alert unavailable",
             extra={"source": source, "error_type": type(exc).__name__},
         )
+
+
+async def _watch_lease(lock: HeartbeatLock, alerts: SqlAlertService, source: str) -> None:
+    """立即报告续租不确定，不取消正在持久化的轮询响应。"""
+    await lock.wait_uncertain()
+    await _alert_lease_lost(alerts, source)
+
+
+async def _finish_lease(
+    lock: HeartbeatLock, watcher: asyncio.Task[None], alerts: SqlAlertService, source: str
+) -> None:
+    """先释放 owner，再收拢通知任务，每次持有最多发出一次主告警。"""
+    released = await lock.release()
+    if lock.lease_uncertain:
+        await watcher
+    else:
+        watcher.cancel()
+        with suppress(asyncio.CancelledError):
+            await watcher
+        if not released:
+            await _alert_lease_lost(alerts, source)
 
 
 async def _poll() -> int:
@@ -48,6 +71,7 @@ async def _poll() -> int:
         return 0
     gateway = None
     alerts = SqlAlertService(settings)
+    watcher = asyncio.create_task(_watch_lease(lock, alerts, "report"))
     try:
         gateway = ZhihuiClient.from_settings(settings)
         repository = SqlReportRepository(settings)
@@ -57,13 +81,14 @@ async def _poll() -> int:
             CryptoService.from_settings(settings),
             alerts=alerts,
             spill=RawSpillStore.from_settings(settings),
-        ).poll_once()
+        ).poll_once(check_lease=lock.ensure_lease)
         return count
     finally:
-        if gateway is not None:
-            await gateway.aclose()
-        if not await lock.release():
-            await _alert_lease_lost(alerts, "report")
+        try:
+            if gateway is not None:
+                await gateway.aclose()
+        finally:
+            await _finish_lease(lock, watcher, alerts, "report")
 
 
 @celery_app.task(name="app.tasks.poll_report")  # type: ignore[untyped-decorator]
