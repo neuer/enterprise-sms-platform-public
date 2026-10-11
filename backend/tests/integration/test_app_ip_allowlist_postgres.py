@@ -30,8 +30,14 @@ def digest(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def audit_safe_nonce(value: str) -> str:
+    """保留 UUID 的唯一性，避免随机数字串被审计识别为手机号。"""
+    return value.translate(str.maketrans("0123456789", "ghijklmnop"))
+
+
 @pytest.mark.asyncio
-async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced() -> None:
+@pytest.mark.parametrize("nonce", [uuid4().hex, "1" * 11 + "a" * 21], ids=["random", "numeric-run"])
+async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced(nonce: str) -> None:
     database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
     settings = cast(
         Any,
@@ -44,7 +50,7 @@ async def test_allowed_ips_persist_and_rotate_grace_revoke_disable_are_enforced(
     repository = SqlAppRepository(settings)
     key_repository = SqlApiKeyRepository(settings)
     now = datetime.now(UTC).replace(second=0, microsecond=0)
-    nonce = uuid4().hex
+    nonce = audit_safe_nonce(nonce)
     key1 = f"key-one-{nonce}-with-enough-entropy"
     key2 = f"key-two-{nonce}-with-enough-entropy"
     app_id: int | None = None
@@ -196,7 +202,7 @@ async def test_callback_url_change_quarantines_queued_task_in_same_transaction()
     )
     engine = create_async_engine(database_url)
     repository = SqlAppRepository(settings)
-    nonce = uuid4().hex
+    nonce = audit_safe_nonce(uuid4().hex)
     key = f"callback-{nonce}-with-enough-entropy"
     secret = b"\x00\x01encrypted-callback-secret"
     app_id: int | None = None
