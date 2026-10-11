@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -38,6 +38,7 @@ class FakeHttp:
         self.login_injection_status = login_injection_status
         self.path_injection_status = path_injection_status
         self.calls: list[tuple[str, str, object, str | None]] = []
+        self.authorized_config: object = None
 
     def request(
         self,
@@ -46,6 +47,7 @@ class FakeHttp:
         *,
         payload: object = None,
         token: str | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> HttpResponse:
         self.calls.append((method, path, payload, token))
         if path == "/api/v1/web/auth/login":
@@ -69,7 +71,16 @@ class FakeHttp:
             return HttpResponse(200, {"total": 0, "items": []})
         if path.startswith("/api/v1/web/batches?status="):
             return HttpResponse(200, {"total": self.injection_total, "items": []})
+        if path == "/api/v1/web/admin/step-up":
+            assert headers == {"Authorization": "Bearer token-admin01"}
+            assert isinstance(payload, dict) and payload["operation"] == "app_create"
+            assert payload["target_id"] == "new"
+            self.authorized_config = payload["parameters"]["config"]
+            return HttpResponse(200, {"token": "ssrf-grant"})
         if path == "/api/v1/web/admin/apps":
+            if headers is None or headers.get("X-Admin-Step-Up") != "ssrf-grant":
+                return HttpResponse(401, {"code": "UNAUTHORIZED"})
+            assert payload == self.authorized_config
             return HttpResponse(self.ssrf_status, {"code": "INVALID_PARAM"})
         raise AssertionError(f"unexpected request: {method} {path}")
 
@@ -187,6 +198,7 @@ def test_injection_probes_reject_validation_auth_and_not_found_shortcuts(
     [
         (FakeHttp(injection_total=1), FakeRunner(), "SEC-03"),
         (FakeHttp(ssrf_status=200), FakeRunner(), "SEC-04"),
+        (FakeHttp(ssrf_status=401), FakeRunner(), "SEC-04"),
         (FakeHttp(), FakeRunner(audit_count=1), "SEC-05"),
         (FakeHttp(), FakeRunner(otp_count=1), "SEC-06"),
     ],

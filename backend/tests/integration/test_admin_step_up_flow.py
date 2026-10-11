@@ -3,7 +3,9 @@
 import asyncio
 import os
 import socket
+import sys
 from ipaddress import ip_network
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -42,6 +44,10 @@ from tests.integration.test_config_authorization_postgres import (  # noqa: F401
 from tests.integration.test_daily_authorization_postgres import daily_context  # noqa: F401
 from tests.integration.test_security_session_postgres import claims as jwt_claims
 from tests.test_app_management import crypto
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+from admin_write_client import AdminWriteClient  # noqa: E402
+from security_acceptance import HttpResponse  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     not {"EXPORT_AUTH_POSTGRES_DSN", "AUTH_GUARD_REDIS_URL"}.issubset(os.environ),
@@ -543,3 +549,44 @@ async def test_real_redis_connection_failure_closes_write(flow):
         flow.step.store = original_store
         await unavailable.aclose()
         listener.close()
+
+
+@pytest.mark.asyncio
+async def test_operational_admin_client_uses_real_http_grants_and_revisions(flow):
+    """验收工具实际经过 HTTP、密码、Redis 授权、角色事务，SSRF 仍在业务层拒绝。"""
+    base_url = str(flow.client.base_url)
+
+    def scenario():
+        with httpx.Client(base_url=base_url, timeout=15, trust_env=False) as http:
+            class Transport:
+                def request(self, method, path, *, payload=None, headers=None):
+                    response = http.request(method, path, json=payload, headers=headers)
+                    return HttpResponse(response.status_code,
+                                        response.json() if response.content else None)
+
+            api = Transport()
+            client = AdminWriteClient(api, flow.access, PASSWORD,
+                                      failure=RuntimeError, label="synthetic operational probe")
+            configured = client.update_configs({"vendor_qps": "6"})
+            assert configured.status == 200
+            created = client.create_app({"name": "client-" + uuid4().hex, "dept": "test"})
+            assert created.status == 200
+            app_id = created.data["id"]
+            updated = client.update_app(app_id, {
+                "dept": "test", "allowed_categories": ["notice"], "daily_quota": 100,
+                "rate_limit_per_min": 60, "blacklist_check": True,
+            })
+            assert updated.status == 200 and updated.data["daily_quota"] == 100
+            assert client.disable_app(app_id).status == 204
+            denied = client.create_app({"name": "ssrf-" + uuid4().hex, "dept": "test",
+                                        "callback_url": "http://127.0.0.1:9028/_mock/callback"})
+            assert denied.status == 400 and denied.data["code"] == "INVALID_PARAM"
+            return app_id
+
+    app_id = await asyncio.to_thread(scenario)
+    async with flow.owner.connect() as connection:
+        assert await connection.scalar(text("SELECT status FROM app WHERE id=:id"),
+                                       {"id": app_id}) == 0
+        assert await connection.scalar(
+            text("SELECT value FROM sys_config WHERE key='vendor_qps'")
+        ) == "6"

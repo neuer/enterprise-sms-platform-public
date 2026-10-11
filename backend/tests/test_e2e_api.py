@@ -30,6 +30,14 @@ from e2e_api import (  # noqa: E402
     wait_until,
 )
 
+CONFIG_REVISION = "2026-01-01T00:00:00+00:00"
+RESTORE_REVISION = "2026-01-01T00:00:01+00:00"
+
+
+def config_rows(key: str, value: str, revision: str = CONFIG_REVISION) -> HttpResponse:
+    return HttpResponse(200, [{"key": key, "value": value, "sensitive": False,
+                               "updated_at": revision}])
+
 
 class FakeRunner:
     def __init__(self, outputs: list[bytes]) -> None:
@@ -384,10 +392,9 @@ def test_approval_expiration_case_requires_reserve_refund_and_alert(
     batch_no = "b" * 32
     http = FakeHttp(
         [
-            HttpResponse(
-                200,
-                [{"key": "market_approval_threshold", "value": "50"}],
-            ),
+            config_rows("market_approval_threshold", "50"),
+            config_rows("market_approval_threshold", "50"),
+            HttpResponse(200, {"token": "config-grant"}),
             HttpResponse(200, []),
             HttpResponse(
                 200,
@@ -459,10 +466,9 @@ def test_case08_restores_original_market_window_before_case09(
     http = FakeHttp(
         [
             HttpResponse(503, {"code": "DEPENDENCY_UNAVAILABLE"}),
-            HttpResponse(
-                200,
-                [{"key": "market_send_window", "value": previous}],
-            ),
+            config_rows("market_send_window", previous),
+            config_rows("market_send_window", previous),
+            HttpResponse(200, {"token": "initial-grant"}),
             HttpResponse(200, []),
             HttpResponse(
                 200,
@@ -474,7 +480,11 @@ def test_case08_restores_original_market_window_before_case09(
                 },
             ),
             HttpResponse(200, {}),
+            config_rows("market_send_window", window, RESTORE_REVISION),
+            HttpResponse(200, {"token": "restore-grant"}),
             HttpResponse(200, []),
+            config_rows("market_send_window", previous, RESTORE_REVISION),
+            HttpResponse(200, {"token": "cleanup-grant"}),
             HttpResponse(200, []),
         ]
     )
@@ -503,7 +513,8 @@ def test_case08_restores_original_market_window_before_case09(
             -1
         ]
         assert latest_config[1]["payload"] == {
-            "items": [{"key": "market_send_window", "value": previous}]
+            "items": [{"key": "market_send_window", "value": previous,
+                       "expected_updated_at": RESTORE_REVISION}]
         }
         events.append("case09")
 
@@ -511,12 +522,15 @@ def test_case08_restores_original_market_window_before_case09(
 
     suite.run(("08", "09"))
 
-    config_calls = [call for call in http.calls if call[0][1] == "/api/v1/web/admin/configs"]
-    assert config_calls[1][1]["payload"] == {
-        "items": [{"key": "market_send_window", "value": window}]
+    config_calls = [call for call in http.calls
+                    if call[0][:2] == ("PUT", "/api/v1/web/admin/configs")]
+    assert config_calls[0][1]["payload"] == {
+        "items": [{"key": "market_send_window", "value": window,
+                   "expected_updated_at": CONFIG_REVISION}]
     }
-    assert config_calls[2][1]["payload"] == {
-        "items": [{"key": "market_send_window", "value": previous}]
+    assert config_calls[1][1]["payload"] == {
+        "items": [{"key": "market_send_window", "value": previous,
+                       "expected_updated_at": RESTORE_REVISION}]
     }
     assert events == ["case09"]
     assert suite.rollback.restore() == ()
