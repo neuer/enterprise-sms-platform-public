@@ -69,6 +69,8 @@ CI_CONTROL_SCRIPTS = {
     "scripts/check_gate_contracts.py",
 }
 RELEASE_CONTROL_EXACT = {
+    "scripts/release_builder.sh",
+    "scripts/canonicalize_sbom.py",
     ".github/workflows/release-gate.yml",
     "backend/Dockerfile",
     "deploy/docker-compose.yml",

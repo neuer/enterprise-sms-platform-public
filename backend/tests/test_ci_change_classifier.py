@@ -272,6 +272,11 @@ def test_offline_release_changes_select_release_control(path: str) -> None:
     assert (result.backend, result.g2, result.security) == (True, True, True)
 
 
+@pytest.mark.parametrize("path", ["scripts/release_builder.sh", "scripts/canonicalize_sbom.py"])
+def test_reproducible_build_inputs_select_release_control(path: str) -> None:
+    assert classify_paths([path]).release_control
+
+
 def test_production_restart_contract_changes_select_release_control() -> None:
     result = classify_paths(["deploy/docker-compose.production-restart.yml"])
 

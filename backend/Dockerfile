@@ -39,6 +39,7 @@ LABEL org.opencontainers.image.version="${APP_VERSION}" \
       com.sms-platform.schema-revision="${SCHEMA_REVISION}"
 
 RUN adduser -D -u 10001 sms \
+    && sed -i 's/^sms:!:[0-9]*:/sms:!:0:/' /etc/shadow \
     && mkdir -p \
       /var/lib/sms/beat \
       /var/lib/sms/imports \

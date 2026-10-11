@@ -159,9 +159,7 @@ def test_runtime_services_never_mount_owner_password() -> None:
         {"source": "postgres_db_owner_password", "target": "db_owner_password"}
     ]
     provision = services["db-role-provision"]
-    assert provision["depends_on"] == {
-        "postgres": {"condition": "service_healthy"}
-    }
+    assert provision["depends_on"] == {"postgres": {"condition": "service_healthy"}}
     assert {item["target"] for item in provision["secrets"]} == {
         "db_owner_password",
         "db_auth_password",
@@ -173,9 +171,7 @@ def test_runtime_services_never_mount_owner_password() -> None:
         "db_metrics_password",
     }
     migrate = services["migrate"]
-    assert migrate["environment"]["DB_OWNER_PASSWORD_FILE"] == (
-        "/run/secrets/db_owner_password"
-    )
+    assert migrate["environment"]["DB_OWNER_PASSWORD_FILE"] == ("/run/secrets/db_owner_password")
     assert migrate["environment"]["SMS_COMPONENT"] == "migrate"
     assert migrate["secrets"] == [
         {"source": "db_owner_password", "target": "db_owner_password"},
@@ -219,9 +215,7 @@ def test_runtime_services_never_mount_owner_password() -> None:
         f"{runtime}/postgres/db_owner_password"
     )
     for role in ("auth", "accept", "send", "callback", "export", "scheduler", "metrics"):
-        assert secrets[f"db_{role}_password"]["file"] == (
-            f"{runtime}/backend/db_{role}_password"
-        )
+        assert secrets[f"db_{role}_password"]["file"] == (f"{runtime}/backend/db_{role}_password")
         assert secrets[f"postgres_db_{role}_password"]["file"] == (
             f"{runtime}/postgres/db_{role}_password"
         )
@@ -230,9 +224,7 @@ def test_runtime_services_never_mount_owner_password() -> None:
 def test_database_role_provision_repairs_attributes_and_search_path_boundary() -> None:
     script = (ROOT / "deploy/provision-db-roles.sh").read_text(encoding="utf-8")
 
-    safe_attributes = (
-        "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT"
-    )
+    safe_attributes = "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOINHERIT"
     for role in ("auth", "accept", "send", "callback", "export", "scheduler", "metrics"):
         assert f"'ALTER ROLE sms_{role} {safe_attributes} PASSWORD %L'" in script
     assert "REVOKE CONNECT, TEMPORARY ON DATABASE %I FROM PUBLIC" in script
@@ -427,16 +419,12 @@ def test_nginx_bounds_pre_authentication_body_storage() -> None:
     assert IMPORT_PATH == "/api/v1/web/messages/import"
     assert "limit_conn_zone $server_addr zone=sms_api_concurrency:1m;" in config
     assert "limit_conn_zone $server_addr zone=sms_import_concurrency:1m;" in config
-    assert (
-        "limit_conn_zone $binary_remote_addr zone=sms_client_concurrency:10m;"
-        in config
-    )
+    assert "limit_conn_zone $binary_remote_addr zone=sms_client_concurrency:10m;" in config
     assert config.count("limit_conn sms_api_concurrency 16;") == 2
     assert config.count("limit_conn sms_client_concurrency 8;") == 2
     assert "limit_conn sms_import_concurrency 2;" in config
     assert (
-        "/tmp/client_temp:rw,noexec,nosuid,nodev,size=64m,"
-        "uid=101,gid=101,mode=0700"
+        "/tmp/client_temp:rw,noexec,nosuid,nodev,size=64m,uid=101,gid=101,mode=0700"
     ) in web_tmpfs
 
     ordinary_mib = 1
@@ -445,8 +433,7 @@ def test_nginx_bounds_pre_authentication_body_storage() -> None:
     import_concurrency = 2
     client_body_tmpfs_mib = 64
     worst_case_mib = (
-        import_concurrency * import_mib
-        + (api_concurrency - import_concurrency) * ordinary_mib
+        import_concurrency * import_mib + (api_concurrency - import_concurrency) * ordinary_mib
     )
     assert worst_case_mib == 38
     assert worst_case_mib < client_body_tmpfs_mib
@@ -500,25 +487,18 @@ def test_api_trusts_only_fixed_nginx_proxy_address(
     assert "proxy_set_header X-Forwarded-For $remote_addr;" in config
     assert "proxy_set_header X-Real-IP $remote_addr;" in config
     assert "proxy_set_header X-Forwarded-Proto $forwarded_proto;" in config
-    assert "map \"$sms_trusted_proxy|$http_x_forwarded_proto\" $forwarded_proto" in config
+    assert 'map "$sms_trusted_proxy|$http_x_forwarded_proto" $forwarded_proto' in config
     assert "$http_x_forwarded_for" not in config
     assert "include /etc/nginx/trusted-proxies.conf;" in config
     assert "if ($sms_plaintext_client_allowed = 0)" in config
     assert "$proxy_add_x_forwarded_for" not in config
     dockerfile = (ROOT / "frontend/Dockerfile").read_text(encoding="utf-8")
-    assert (
-        "COPY deploy/trusted-proxies.conf /etc/nginx/trusted-proxies.conf" in dockerfile
-    )
+    assert "COPY deploy/trusted-proxies.conf /etc/nginx/trusted-proxies.conf" in dockerfile
     trusted = (ROOT / "deploy/trusted-proxies.conf").read_text(encoding="utf-8")
     assert "geo $realip_remote_addr $sms_trusted_proxy" in trusted
     assert "default 0;" in trusted
     web_volumes = compose["services"]["web"]["volumes"]
-    assert any(
-        str(volume).endswith(
-            "/etc/nginx/trusted-proxies.conf:ro"
-        )
-        for volume in web_volumes
-    )
+    assert any(str(volume).endswith("/etc/nginx/trusted-proxies.conf:ro") for volume in web_volumes)
     assert any(
         str(volume).startswith(
             "${SMS_TRUSTED_PROXY_CONF:-/usr/local/share/sms-platform/trusted-proxies.conf}"
@@ -576,7 +556,9 @@ def test_export_ciphertext_volume_is_shared_only_by_api_and_bulk_worker() -> Non
         assert "exportdata:/var/lib/sms/exports" not in services[name].get("volumes", [])
 
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
-    assert """RUN adduser -D -u 10001 sms \\
+    assert (
+        """RUN adduser -D -u 10001 sms \\
+    && sed -i 's/^sms:!:[0-9]*:/sms:!:0:/' /etc/shadow \\
     && mkdir -p \\
       /var/lib/sms/beat \\
       /var/lib/sms/imports \\
@@ -588,7 +570,9 @@ def test_export_ciphertext_volume_is_shared_only_by_api_and_bulk_worker() -> Non
       /var/lib/sms/imports \\
       /var/lib/sms/exports \\
       /var/lib/sms/raw-spill
-""" in dockerfile
+"""
+        in dockerfile
+    )
     assert "USER sms" in dockerfile
 
 
@@ -751,9 +735,7 @@ def test_isolated_redis_tls_overlay_fixes_server_and_client_identity_contract() 
 
 
 def test_redis_domain_runtime_enforces_aof_noeviction_and_bounded_memory() -> None:
-    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
-        encoding="utf-8"
-    )
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(encoding="utf-8")
 
     for token in (
         "--appendonly yes",
@@ -775,9 +757,7 @@ def test_auth_redis_acl_allows_auth_lua_primitives() -> None:
         POLICY_MIN_ACCEPTED_LUA,
     )
 
-    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
-        encoding="utf-8"
-    )
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(encoding="utf-8")
     auth_block = entrypoint.split("  auth)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
     service = (ROOT / "backend/app/core/auth/service.py").read_text(encoding="utf-8")
     required = {
@@ -799,14 +779,11 @@ def test_auth_redis_acl_allows_auth_lua_primitives() -> None:
 def test_control_redis_acl_allows_admission_recovery_budget() -> None:
     from app.services.send_admission_repository import RECOVERY_BUDGET_LUA
 
-    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
-        encoding="utf-8"
-    )
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(encoding="utf-8")
     control_block = entrypoint.split("  control)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
     assert "~admission:*" in control_block
     required = {
-        f"+{name.lower()}"
-        for name in re.findall(r"redis\.call\('([A-Z]+)'", RECOVERY_BUDGET_LUA)
+        f"+{name.lower()}" for name in re.findall(r"redis\.call\('([A-Z]+)'", RECOVERY_BUDGET_LUA)
     }
     for command in sorted(required):
         assert command in control_block
@@ -816,9 +793,7 @@ def test_control_redis_acl_allows_weighted_send_cost_lua() -> None:
     from app.services.app_ratelimit import SLIDING_WINDOW_LUA, WEIGHTED_WINDOW_LUA
     from app.services.app_ratelimit_cutover import CUTOVER_CAS_LUA
 
-    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
-        encoding="utf-8"
-    )
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(encoding="utf-8")
     control_block = entrypoint.split("  control)", maxsplit=1)[1].split("    ;;", maxsplit=1)[0]
     required = {
         f"+{name.lower()}"
@@ -845,9 +820,7 @@ def test_lifecycle_partition_maintenance_stays_in_owner_migrate_boundary() -> No
         "python -m scripts_support.provision_audit_context_key && "
         "python -m scripts_support.maintain_partitions",
     ]
-    assert migrate["environment"]["DB_OWNER_PASSWORD_FILE"] == (
-        "/run/secrets/db_owner_password"
-    )
+    assert migrate["environment"]["DB_OWNER_PASSWORD_FILE"] == ("/run/secrets/db_owner_password")
     assert "importdata:/var/lib/sms/imports" in services["worker-bulk"]["volumes"]
 
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")

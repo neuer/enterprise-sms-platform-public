@@ -88,9 +88,7 @@ def test_g2_unit_tests_enable_debug_with_auth_mock() -> None:
 
 def test_g2_migration_check_uses_explicit_test_settings() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
-    stage_three = all_gate.split("stage_3(){", maxsplit=1)[1].split(
-        "\n}", maxsplit=1
-    )[0]
+    stage_three = all_gate.split("stage_3(){", maxsplit=1)[1].split("\n}", maxsplit=1)[0]
     normalized_stage = stage_three.replace("\\\n", " ")
 
     assert (
@@ -101,9 +99,7 @@ def test_g2_migration_check_uses_explicit_test_settings() -> None:
 
 def test_g2_contract_check_uses_explicit_test_settings() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
-    stage_four = all_gate.split("stage_4(){", maxsplit=1)[1].split(
-        "\n}", maxsplit=1
-    )[0]
+    stage_four = all_gate.split("stage_4(){", maxsplit=1)[1].split("\n}", maxsplit=1)[0]
     normalized_stage = stage_four.replace("\\\n", " ")
 
     assert (
@@ -114,16 +110,16 @@ def test_g2_contract_check_uses_explicit_test_settings() -> None:
 
 def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() -> None:
     gate = (ROOT / "scripts/verify_vendor_live_test.sh").read_text(encoding="utf-8")
-    postgres_gate = (
-        ROOT / "scripts/verify_vendor_postgres_recovery.sh"
-    ).read_text(encoding="utf-8")
+    postgres_gate = (ROOT / "scripts/verify_vendor_postgres_recovery.sh").read_text(
+        encoding="utf-8"
+    )
 
     assert "VENDOR_MOCK=1" in gate
     assert "AUTH_MOCK=1" in gate
     assert "DEBUG=1" in gate
     assert "check_invariants.py" in gate
     assert "verify_vendor_postgres_recovery.sh" in gate
-    assert 'SMS_SKIP_VENDOR_POSTGRES_RECOVERY:-0' in gate
+    assert "SMS_SKIP_VENDOR_POSTGRES_RECOVERY:-0" in gate
     assert "--gate-shard postgres" in postgres_gate
     assert "--gate-evidence" in postgres_gate
     assert "OUTBOX_POSTGRES_DSN" in postgres_gate
@@ -139,8 +135,7 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
     assert "POSTGRES_PASSWORD_FILE" in postgres_gate
     assert "DB_OWNER_PASSWORD_FILE" in postgres_gate
     assert (
-        'SMS_ISOLATED_TEST_DATABASE="$database" \\\n'
-        '  DB_OWNER_PASSWORD_FILE="$owner_password_file"'
+        'SMS_ISOLATED_TEST_DATABASE="$database" \\\n  DB_OWNER_PASSWORD_FILE="$owner_password_file"'
     ) in postgres_gate
     assert "DATA_AES_KEY_FILE" in postgres_gate
     assert "DATA_HMAC_KEY_FILE" in postgres_gate
@@ -194,7 +189,7 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
     assert '-v "$ROOT/frontend:/app"' in gate
     assert "-v /app/node_modules" in gate
     assert "G2_NPM_CACHE_DIR:-" in gate
-    assert '$G2_NPM_CACHE_DIR:/root/.npm' in gate
+    assert "$G2_NPM_CACHE_DIR:/root/.npm" in gate
     assert "npm_config_cache=/root/.npm" in gate
     assert "npm ci --silent" in gate
     assert "npm test --" in gate
@@ -216,7 +211,7 @@ def test_g2_wraps_exactly_ten_authoritative_stages_with_timing() -> None:
     ]
     assert "time.monotonic_ns" in all_gate
     assert "scripts/g2_timing.py record" in all_gate
-    assert 'G2_TIMING_FILE:-' in all_gate
+    assert "G2_TIMING_FILE:-" in all_gate
 
 
 def test_g2_records_stage_failure_before_returning_original_status() -> None:
@@ -250,12 +245,10 @@ def test_g2_uses_optional_buildkit_cache_without_losing_cold_build_path() -> Non
 
 def test_g2_frontend_gate_isolates_container_node_modules_from_host() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
-    frontend_gate = all_gate.split("frontend_gate(){", maxsplit=1)[1].split(
-        "\n}", maxsplit=1
-    )[0]
+    frontend_gate = all_gate.split("frontend_gate(){", maxsplit=1)[1].split("\n}", maxsplit=1)[0]
 
-    assert 'G2_NPM_CACHE_DIR:-' in frontend_gate
-    assert '$G2_NPM_CACHE_DIR:/root/.npm' in frontend_gate
+    assert "G2_NPM_CACHE_DIR:-" in frontend_gate
+    assert "$G2_NPM_CACHE_DIR:/root/.npm" in frontend_gate
     assert "npm_config_cache=/root/.npm" in frontend_gate
     assert "-v /app/node_modules" in frontend_gate
     for command in (
@@ -269,14 +262,12 @@ def test_g2_frontend_gate_isolates_container_node_modules_from_host() -> None:
 
 def test_g2_frontend_checks_run_concurrently_after_npm_ci() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
-    frontend_gate = all_gate.split("frontend_gate(){", maxsplit=1)[1].split(
-        "\n}", maxsplit=1
-    )[0]
+    frontend_gate = all_gate.split("frontend_gate(){", maxsplit=1)[1].split("\n}", maxsplit=1)[0]
 
     install_index = frontend_gate.index("npm ci --silent")
     for command in ("npm run build:g2 &", "npm run typecheck &", "npm test &"):
         assert install_index < frontend_gate.index(command)
-    assert frontend_gate.count("wait \"$") == 3
+    assert frontend_gate.count('wait "$') == 3
 
 
 def test_g2_bundle_command_avoids_duplicate_typecheck_without_weakening_build() -> None:
@@ -311,9 +302,7 @@ def test_dev_check_requires_local_git_hooks_path() -> None:
 
 def test_dev_check_avoids_duplicate_frontend_typecheck_and_classifies_shell() -> None:
     source = (ROOT / "scripts/dev_check_impl.sh").read_text(encoding="utf-8")
-    frontend = source.split("run_frontend() {", maxsplit=1)[1].split(
-        "\n}", maxsplit=1
-    )[0]
+    frontend = source.split("run_frontend() {", maxsplit=1)[1].split("\n}", maxsplit=1)[0]
 
     # lint/format 先于组件测试（失败早报错），typecheck 仍只由 build 承载一次
     assert "npm run lint" in frontend
@@ -327,9 +316,7 @@ def test_dev_check_avoids_duplicate_frontend_typecheck_and_classifies_shell() ->
     assert 'for script in "${shell_scripts[@]}"; do bash -n "$script"; done' in source
     header = source.split("run_contract() {", maxsplit=1)[0]
     assert "scripts/local_test.sh prepare" not in header
-    assert "scripts/local_test.sh prepare" in source.split(
-        "run_contract() {", maxsplit=1
-    )[1]
+    assert "scripts/local_test.sh prepare" in source.split("run_contract() {", maxsplit=1)[1]
 
 
 def test_release_control_terms_the_lifecycle_lock_holder_directly() -> None:
@@ -369,9 +356,7 @@ def test_g2_gate_scrapes_required_prometheus_families() -> None:
 
 def test_g2_runs_security_acceptance_after_seed_and_before_uat() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
-    stage_five = all_gate.split("stage_5(){", maxsplit=1)[1].split(
-        "\n}", maxsplit=1
-    )[0]
+    stage_five = all_gate.split("stage_5(){", maxsplit=1)[1].split("\n}", maxsplit=1)[0]
     security = (
         'python3 scripts/security_acceptance.py --base "http://localhost:${web_port}" '
         "--compose-file deploy/docker-compose.yml --secrets-dir deploy/secrets"
@@ -442,10 +427,10 @@ def test_release_gate_records_clean_candidate_and_never_reads_secrets() -> None:
     assert "git diff --quiet" in release
     assert "git diff --cached --quiet" in release
     assert 'candidate="$(git rev-parse HEAD)"' in release
-    assert "docker build -f backend/Dockerfile" in release
-    assert "docker build -f frontend/Dockerfile" in release
-    assert "docker build -f deploy/postgres.Dockerfile" in release
-    assert "docker build -f deploy/redis.Dockerfile" in release
+    assert "-f backend/Dockerfile" in release
+    assert "-f frontend/Dockerfile" in release
+    assert "-f deploy/postgres.Dockerfile" in release
+    assert "-f deploy/redis.Dockerfile" in release
     assert "trivycache" in release
     assert "deploy/secrets" not in release
 
@@ -453,19 +438,25 @@ def test_release_gate_records_clean_candidate_and_never_reads_secrets() -> None:
 def test_release_gate_rebuilds_all_candidates_without_stale_package_cache() -> None:
     release = (ROOT / "scripts/verify_release.sh").read_text(encoding="utf-8")
     build_commands = [
-        line.strip() for line in release.splitlines() if line.strip().startswith("docker build ")
+        line.strip()
+        for line in release.splitlines()
+        if line.strip().startswith("docker buildx build ")
     ]
 
     assert len(build_commands) == 4
     for command in build_commands:
         assert " --pull " in command
         assert " --no-cache " in command
+        assert '--builder "$release_builder"' in command
+        assert "--output type=docker,rewrite-timestamp=true" in command
 
 
 def test_release_gate_builds_every_candidate_for_the_amd64_server() -> None:
     release = (ROOT / "scripts/verify_release.sh").read_text(encoding="utf-8")
     build_commands = [
-        line.strip() for line in release.splitlines() if line.strip().startswith("docker build ")
+        line.strip()
+        for line in release.splitlines()
+        if line.strip().startswith("docker buildx build ")
     ]
 
     assert len(build_commands) == 4
@@ -503,11 +494,9 @@ def test_release_gate_binds_evidence_to_machine_readable_trivy_results() -> None
 def test_reproducible_build_helper_is_not_in_the_temporary_release_workflow() -> None:
     rebuild_path = ROOT / "scripts/verify_reproducible_build.sh"
     rebuild = rebuild_path.read_text(encoding="utf-8")
-    workflow = (ROOT / ".github/workflows/release-gate.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (ROOT / ".github/workflows/release-gate.yml").read_text(encoding="utf-8")
 
-    assert rebuild.count("docker build -f ") == 4
+    assert rebuild.count("docker buildx build ") == 4
     for option in (
         "--pull",
         "--no-cache",
@@ -565,7 +554,7 @@ def test_release_gate_promotes_same_image_ids_without_repeating_trivy() -> None:
     assert "RELEASE_SOURCE_REPORT" in release
     assert "--promotion-source" in release
     assert 'render_release_evidence.py" promote' in release
-    promoted_branch = release.split('else\n  printf \'\\n复用候选 commit', maxsplit=1)[1]
+    promoted_branch = release.split("else\n  printf '\\n复用候选 commit", maxsplit=1)[1]
     assert "docker run --rm" not in promoted_branch
 
 
@@ -574,7 +563,7 @@ def test_release_gate_does_not_grant_trivy_the_host_docker_socket() -> None:
 
     assert "/var/run/docker.sock" not in release
     assert "docker image save --platform linux/amd64" in release
-    assert ':/scan:ro' in release
+    assert ":/scan:ro" in release
     assert 'image --input "/scan/$archive_name"' in release
 
 
@@ -634,9 +623,7 @@ def test_data_image_smoke_checks_roles_and_restart_persistence() -> None:
 
 def test_redis_domain_smoke_enforces_acl_and_secret_boundaries() -> None:
     smoke = (ROOT / "scripts/verify_redis_domains.sh").read_text(encoding="utf-8")
-    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(
-        encoding="utf-8"
-    )
+    entrypoint = (ROOT / "deploy/redis-domain-entrypoint.sh").read_text(encoding="utf-8")
 
     for token in (
         "domains=(broker auth control)",
@@ -675,6 +662,8 @@ def test_redis_domain_smoke_enforces_acl_and_secret_boundaries() -> None:
     assert " ~* &*" not in entrypoint
     assert "+@all" not in entrypoint
     assert "user default off" in entrypoint
+
+
 def test_data_image_smoke_records_versions_from_started_candidate_binaries() -> None:
     smoke = (ROOT / "scripts/verify_data_images.sh").read_text(encoding="utf-8")
 
@@ -713,8 +702,7 @@ def test_release_and_data_gates_accept_only_optional_absolute_report_path() -> N
     assert "--archive-dir)" in release
     assert "--scan-dir)" in release
     assert (
-        'for absolute_path in "$report_path" "$sbom_dir" "$archive_dir" "$scan_dir"; do'
-        in release
+        'for absolute_path in "$report_path" "$sbom_dir" "$archive_dir" "$scan_dir"; do' in release
     )
     assert 'rm -f -- "$report_path"' in release
     assert "render_release_evidence.py" in release
@@ -743,9 +731,7 @@ def test_g2_runs_release_control_smoke_as_a_non_substitute_control_plane_check()
 
 def test_g2_release_control_reuses_stage_five_amd64_images() -> None:
     all_gate = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
-    stage_nine = all_gate.split("stage_9(){", maxsplit=1)[1].split(
-        "\n}", maxsplit=1
-    )[0]
+    stage_nine = all_gate.split("stage_9(){", maxsplit=1)[1].split("\n}", maxsplit=1)[0]
 
     for image in (
         "sms-platform-api:local",
@@ -1255,10 +1241,7 @@ def test_promoted_release_rejects_digest_with_different_candidate_image_id(
                     "workflow_repository": "local",
                     "workflow_run_id": 0,
                     "workflow_run_attempt": 0,
-                    "sbom_sha256": {
-                        name: "8" * 64
-                        for name in ("api", "web", "postgres", "redis")
-                    },
+                    "sbom_sha256": {name: "8" * 64 for name in ("api", "web", "postgres", "redis")},
                 },
                 "generated_at": "2026-07-15T00:00:00Z",
                 "trivy_image": "aquasec/trivy:0.70.0@sha256:" + "d" * 64,

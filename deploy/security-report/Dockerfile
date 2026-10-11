@@ -12,6 +12,7 @@ ARG GIT_SHA=development
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
 RUN adduser -D -u 10001 security-report \
+    && sed -i 's/^security-report:!:[0-9]*:/security-report:!:0:/' /etc/shadow \
     && python -c "import ssl; assert ssl.create_default_context().get_ca_certs()"
 
 WORKDIR /app

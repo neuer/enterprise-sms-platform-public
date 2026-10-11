@@ -83,8 +83,6 @@ def scan_image(name: str, image: str, sha: str, scratch: Path, output: Path) -> 
         "docker",
         "run",
         "--rm",
-        "--platform",
-        "linux/amd64",
         "--user",
         f"{os.getuid()}:{os.getgid()}",
         "--env",
@@ -99,6 +97,8 @@ def scan_image(name: str, image: str, sha: str, scratch: Path, output: Path) -> 
             (
                 *common,
                 "image",
+                "--cache-backend",
+                "memory",
                 "--cache-dir",
                 "/evidence/cache",
                 "--input",
@@ -139,6 +139,8 @@ def scan_image(name: str, image: str, sha: str, scratch: Path, output: Path) -> 
             command(
                 *common,
                 "image",
+                "--cache-backend",
+                "memory",
                 "--cache-dir",
                 "/evidence/cache",
                 "--input",

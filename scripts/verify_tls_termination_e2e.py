@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 
-from render_trusted_proxy_conf import render  # noqa: E402
+from render_trusted_proxy_conf import ensure_output_parent, render  # noqa: E402
 
 SIMULATED_CLIENTS = ("203.0.113.7", "203.0.113.8")
 TAB_ID = "00000000000000000000000000000001"
@@ -165,8 +165,7 @@ def _render_and_restart_web(project: str, mode: str, cidrs: str) -> None:
             "/usr/local/share/sms-platform/trusted-proxies.conf",
         )
     )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.parent.chmod(0o755)
+    ensure_output_parent(target.parent)
     target.write_text(content, encoding="utf-8")
     subprocess.run(
         ["docker", "restart", f"{project}-web-1"],
@@ -286,8 +285,7 @@ def main() -> int:
                 ["git", "show", "HEAD:deploy/trusted-proxies.conf"],
                 text=True,
             )
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.parent.chmod(0o755)
+            ensure_output_parent(target.parent)
             target.write_text(canonical, encoding="utf-8")
             subprocess.run(
                 ["docker", "restart", f"{arguments.project}-web-1"],

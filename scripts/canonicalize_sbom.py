@@ -4,13 +4,63 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 
 class SbomCanonicalizationError(ValueError):
     pass
+
+
+UUID_REF = re.compile(r"(?:urn:uuid:)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z", re.I)
+
+
+def _stable_references(document: dict[str, Any]) -> dict[str, Any]:
+    """只重命名随机 UUID 引用，保留组件事实、哈希和依赖边；重复定义失败关闭。"""
+    references: dict[str, str] = {}
+    identities: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            ref = value.get("bom-ref")
+            if isinstance(ref, str):
+                if ref in identities:
+                    raise SbomCanonicalizationError("duplicate CycloneDX bom-ref")
+                identities.add(ref)
+                if UUID_REF.fullmatch(ref):
+                    # Trivy 的根镜像/操作系统组件使用 UUID；包的 purl 不重写。
+                    identity = {key: item for key, item in value.items() if key != "bom-ref"}
+                    encoded = json.dumps(
+                        _normalize(identity), sort_keys=True, separators=(",", ":")
+                    )
+                    references[ref] = "urn:sms-sbom:" + hashlib.sha256(encoded.encode()).hexdigest()
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    def rewrite(value: Any, key: str = "") -> Any:
+        if isinstance(value, dict):
+            return {name: rewrite(item, name) for name, item in value.items()}
+        if isinstance(value, list):
+            return [rewrite(item, key) for item in value]
+        if isinstance(value, str) and key in {"bom-ref", "ref", "dependsOn", "provides"}:
+            if UUID_REF.fullmatch(value) and value not in references:
+                raise SbomCanonicalizationError("undefined CycloneDX UUID reference")
+            return references.get(value, value)
+        return value
+
+    visit(document)
+    if len(set(references.values())) != len(references):
+        raise SbomCanonicalizationError("ambiguous CycloneDX component identity")
+    rewritten = rewrite(document)
+    if not isinstance(rewritten, dict):
+        raise AssertionError("rewritten CycloneDX root must remain an object")
+    return rewritten
 
 
 def _normalize(value: Any) -> Any:
@@ -44,7 +94,7 @@ def canonicalize(document: object) -> dict[str, Any]:
         metadata = dict(metadata)
         metadata.pop("timestamp", None)
         normalized["metadata"] = metadata
-    result = _normalize(normalized)
+    result = _normalize(_stable_references(normalized))
     if not isinstance(result, dict):
         raise AssertionError("canonical CycloneDX root must remain an object")
     return result

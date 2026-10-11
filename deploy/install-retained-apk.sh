@@ -16,3 +16,5 @@ test "$(wc -l < SHA256SUMS | tr -d ' ')" -eq "$#"
 test "$(sha256sum "$@" | sed 's@  ./@  @' | sort)" = "$(sort SHA256SUMS)"
 apk verify "$@"
 apk --repositories-file /dev/null add --no-cache --no-network "$@"
+# APK 安装日志含构建时钟；包数据库与签名证据仍保留，运行层不带构建日志。
+rm -f /var/log/apk.log
