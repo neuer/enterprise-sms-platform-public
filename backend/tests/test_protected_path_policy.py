@@ -205,7 +205,9 @@ def test_app_vue_uses_existing_frontend_security_gate() -> None:
     assert scope.risk == "high-risk"
     assert scope.components == frozenset({"web"})
     frontend_job = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "npm test" in frontend_job
+    assert "npm run test:coverage" in frontend_job
+    assert "check_frontend_coverage.py" in frontend_job
+    assert 'verify --commit "$GITHUB_SHA"' in frontend_job
     assert (ROOT / "frontend" / "tests" / "app-shell.test.ts").is_file()
 
 

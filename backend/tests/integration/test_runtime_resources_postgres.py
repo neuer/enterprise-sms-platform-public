@@ -170,17 +170,48 @@ async def test_connect_failure_is_bounded_and_same_pool_recovers() -> None:
 
 @pytest.mark.asyncio
 async def test_real_prefork_workers_preserve_parent_and_close_independent_pools() -> None:
+    import signal
     import sys
 
     process = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "tests.runtime_pool_process_probe",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
+    communication = asyncio.create_task(process.communicate())
+
+    def phases(output: bytes) -> str:
+        allowed = {
+            "parent-warmed", "workers-started", "child-discarded", "child-pool-exercised",
+            "child-resources-closed", "child-result-sent", "results-received",
+        }
+        observed = [
+            line.removeprefix("prefork-phase:")
+            for line in output.decode("utf-8", errors="replace").splitlines()
+            if line.startswith("prefork-phase:")
+            and line.removeprefix("prefork-phase:") in allowed
+        ]
+        return ",".join(observed) or "no-phase"
+
     try:
-        output, _stderr = await asyncio.wait_for(process.communicate(), timeout=50)
-        assert process.returncode == 0, "isolated prefork resource probe failed"
-        assert output.strip() == b"prefork-pools: isolated, bounded, parent-preserved, closed"
+        try:
+            output, _stderr = await asyncio.wait_for(asyncio.shield(communication), timeout=50)
+        except TimeoutError:
+            # 独立进程组仅属于本探针；超时必须回收继承 stdout 的所有子进程。
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            output, _stderr = await asyncio.wait_for(communication, timeout=5)
+            pytest.fail(f"prefork resource probe timed out; phases={phases(output)}")
+        assert process.returncode == 0, f"prefork resource probe failed; phases={phases(output)}"
+        assert output.splitlines()[-1] == (
+            b"prefork-pools: isolated, bounded, parent-preserved, closed"
+        )
     finally:
         if process.returncode is None:
-            process.kill()
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
             await process.wait()
+        if not communication.done():
+            communication.cancel()
+            with suppress(asyncio.CancelledError):
+                await communication

@@ -248,13 +248,15 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "npm run build",
         "npm run lint",
         "npm run format:check",
-        "npm test",
+        "npm run test:coverage",
     ):
         assert command in frontend_commands
     # lint/format 先于组件测试（失败早报错），typecheck 仍只由 build 承载一次
-    assert frontend_commands.index("npm run lint") < frontend_commands.index("npm test")
+    assert frontend_commands.index("npm run lint") < frontend_commands.index(
+        "npm run test:coverage"
+    )
     assert frontend_commands.index("npm run format:check") < frontend_commands.index(
-        "npm test"
+        "npm run test:coverage"
     )
     assert "npm run typecheck" not in frontend_commands
     # 契约类型零漂移门禁：重新生成 openapi 类型后 git diff 必须为空，且先于构建
@@ -284,6 +286,13 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     ):
         step = next(item for item in jobs["frontend"]["steps"] if item.get("name") == name)
         assert "skip_frontend_static" not in str(step.get("if", ""))
+
+    assert "check_frontend_coverage.py" in frontend_commands
+    assert 'verify --commit "$GITHUB_SHA"' in frontend_commands
+    upload = next(step for step in jobs["frontend"]["steps"]
+                  if step.get("name") == "Upload frontend coverage evidence")
+    assert upload["with"]["if-no-files-found"] == "error"
+    assert upload["with"]["name"] == "frontend-coverage-${{ github.sha }}"
 
     security_commands = job_commands(jobs["security"])
     for command in (

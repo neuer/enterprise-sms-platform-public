@@ -87,6 +87,7 @@ class FakeRedisClient:
 
 @pytest.fixture(autouse=True)
 def reset_runtime_resources() -> None:
+    resources._INHERITED_DATABASE_POOLS.clear()
     resources._DATABASE_ENGINES.clear()
     resources._DATABASE_METRICS.clear()
     resources._REDIS_CLIENTS.clear()
@@ -321,6 +322,7 @@ def test_prefork_discards_inherited_pool_without_closing_parent_connections(
 
     resources.discard_inherited_runtime_resources()
 
+    assert [engine.pool] == resources._INHERITED_DATABASE_POOLS
     assert engine.sync_engine.discarded is True
     assert engine.closed is False
     assert resources._DATABASE_ENGINES == {}

@@ -21,7 +21,12 @@ from typing import Any, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from admin_write_client import AdminWriteClient
+from admin_write_client import (
+    AUTH_MAX_ATTEMPTS,
+    AUTH_MAX_RETRY_AFTER_S,
+    AUTH_MAX_TOTAL_WAIT_S,
+    AdminWriteClient,
+)
 from runtime_credentials import read_secret_file
 
 CASE_IDS = tuple(
@@ -457,11 +462,11 @@ class UatSuite:
     def _authentication_request(
         self, path: str, *, payload: object, headers: Mapping[str, str] | None = None,
     ) -> HttpResponse:
-        """仅遵循认证准入的显式可重试提示，最多等待 60 秒且最多重试三次。"""
+        """仅遵循认证准入的显式可重试提示，最多等待 360 秒且最多重试三次。"""
         if path not in {"/api/v1/web/auth/login", "/api/v1/web/admin/step-up"}:
             raise UatFailure("UAT authentication retry path is invalid")
         waited = 0
-        for attempt in range(4):
+        for attempt in range(AUTH_MAX_ATTEMPTS):
             response = self._request(
                 self.api, "POST", path, payload=payload, headers=headers,
             )
@@ -474,9 +479,9 @@ class UatSuite:
                 and isinstance(detail, dict)
                 and detail.get("auth_admission_retry") is True
                 and type(delay) is int
-                and 1 <= delay <= 30
-                and attempt < 3
-                and waited + delay <= 60
+                and 1 <= delay <= AUTH_MAX_RETRY_AFTER_S
+                and attempt + 1 < AUTH_MAX_ATTEMPTS
+                and waited + delay <= AUTH_MAX_TOTAL_WAIT_S
             ):
                 return response
             time.sleep(delay)

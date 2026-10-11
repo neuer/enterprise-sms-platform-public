@@ -8,6 +8,11 @@ from copy import deepcopy
 from datetime import datetime
 from typing import Any, Protocol
 
+# 来源准入窗口最长 300 秒；仅遵循服务器显式可重试提示，不重试业务写入。
+AUTH_MAX_ATTEMPTS = 4
+AUTH_MAX_RETRY_AFTER_S = 300
+AUTH_MAX_TOTAL_WAIT_S = 360
+
 
 class HttpResult(Protocol):
     @property
@@ -78,7 +83,7 @@ class AdminWriteClient[T: HttpResult]:
 
     def _grant(self, operation: str, target: str, parameters: dict[str, Any]) -> dict[str, str]:
         waited = 0
-        for attempt in range(4):
+        for attempt in range(AUTH_MAX_ATTEMPTS):
             response = self.api.request(
                 "POST", "/api/v1/web/admin/step-up", headers=self.headers,
                 payload={"operation": operation, "target_id": target,
@@ -95,8 +100,8 @@ class AdminWriteClient[T: HttpResult]:
             if not (
                 response.status == 429 and data.get("code") == "RATE_LIMITED"
                 and isinstance(detail, dict) and detail.get("auth_admission_retry") is True
-                and type(delay) is int and 1 <= delay <= 30
-                and attempt < 3 and waited + delay <= 60
+                and type(delay) is int and 1 <= delay <= AUTH_MAX_RETRY_AFTER_S
+                and attempt + 1 < AUTH_MAX_ATTEMPTS and waited + delay <= AUTH_MAX_TOTAL_WAIT_S
             ):
                 raise self._fail(f"reauthentication returned HTTP {response.status}")
             time.sleep(delay)

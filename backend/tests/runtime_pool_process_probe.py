@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import multiprocessing
 import os
 from multiprocessing.connection import Connection
@@ -25,6 +26,8 @@ async def _pid() -> int:
 
 def _worker(channel: Connection) -> None:
     resources.discard_inherited_runtime_resources()
+    gc.collect()
+    print("prefork-phase:child-discarded", flush=True)
 
     async def probe() -> tuple[set[int], bool]:
         engine = _engine()
@@ -42,6 +45,7 @@ def _worker(channel: Connection) -> None:
             assert _engine() is engine
             assert await _pid() in pids
             assert len(pids) <= 2
+            print("prefork-phase:child-pool-exercised", flush=True)
         finally:
             await resources.close_runtime_resources()
         snapshot = resources.resource_snapshot()
@@ -49,10 +53,12 @@ def _worker(channel: Connection) -> None:
             item.open == item.checked_out == item.leaked_on_shutdown == 0
             for item in snapshot.database_components
         )
+        print("prefork-phase:child-resources-closed", flush=True)
         return pids, closed
 
     try:
         channel.send(asyncio.run(probe()))
+        print("prefork-phase:child-result-sent", flush=True)
     except BaseException:
         channel.send((set(), False))
         raise
@@ -71,6 +77,7 @@ def main() -> None:
     readers: list[Connection] = []
     try:
         parent_pid = loop.run_until_complete(_pid())
+        print("prefork-phase:parent-warmed", flush=True)
         for _ in range(2):
             reader, writer = context.Pipe(duplex=False)
             process = context.Process(target=_worker, args=(writer,))
@@ -78,10 +85,12 @@ def main() -> None:
             writer.close()
             readers.append(reader)
             children.append(process)
+        print("prefork-phase:workers-started", flush=True)
         results = []
         for reader in readers:
             assert reader.poll(20), "worker resource probe timed out"
             results.append(reader.recv())
+        print("prefork-phase:results-received", flush=True)
         for process in children:
             process.join(timeout=5)
             assert process.exitcode == 0, "worker resource probe failed"
@@ -94,6 +103,9 @@ def main() -> None:
             if process.is_alive():
                 process.terminate()
                 process.join(timeout=5)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=5)
         for reader in readers:
             reader.close()
         loop.run_until_complete(resources.close_runtime_resources())

@@ -120,13 +120,52 @@ def test_diagnostic_client_refuses_ambiguous_or_secret_config(sensitive: object)
 
 def test_only_explicit_admission_throttle_retries_and_total_wait_is_bounded(monkeypatch) -> None:
     throttle = Response(429, {"code": "RATE_LIMITED", "detail": {
-        "auth_admission_retry": True, "retry_after_seconds": 30,
+        "auth_admission_retry": True, "retry_after_seconds": 150,
     }})
     transport = Transport([throttle] * 4)
     waits = []
     monkeypatch.setattr(admin_write_client.time, "sleep", waits.append)
     with pytest.raises(RuntimeError, match="429"):
         client(transport).create_app({"name": "probe", "dept": "test"})
-    assert waits == [30, 30] and len(transport.calls) == 3
+    assert waits == [150, 150] and len(transport.calls) == 3
     assert all(call[1].endswith("/step-up") for call in transport.calls)
 
+
+
+@pytest.mark.parametrize("delay", [45, 300])
+def test_server_admission_window_is_honored_before_single_mutation(delay, monkeypatch) -> None:
+    busy = Response(429, {"code": "RATE_LIMITED", "detail": {
+        "auth_admission_retry": True, "retry_after_seconds": delay,
+    }})
+    transport = Transport([busy, Response(200, {"token": "grant"}), Response(200, {})])
+    waits = []
+    monkeypatch.setattr(admin_write_client.time, "sleep", waits.append)
+    assert client(transport).create_app({"name": "probe", "dept": "test"}).status == 200
+    assert waits == [delay]
+    assert [call[1] for call in transport.calls] == [
+        "/api/v1/web/admin/step-up", "/api/v1/web/admin/step-up", "/api/v1/web/admin/apps",
+    ]
+
+
+@pytest.mark.parametrize("delay", [0, 301, True, "45"])
+def test_invalid_admission_delay_never_retries_or_writes(delay, monkeypatch) -> None:
+    transport = Transport([Response(429, {"code": "RATE_LIMITED", "detail": {
+        "auth_admission_retry": True, "retry_after_seconds": delay,
+    }})])
+    waits = []
+    monkeypatch.setattr(admin_write_client.time, "sleep", waits.append)
+    with pytest.raises(RuntimeError, match="429"):
+        client(transport).create_app({"name": "probe", "dept": "test"})
+    assert waits == [] and len(transport.calls) == 1
+
+
+def test_repeated_short_admission_waits_still_stop_after_four_attempts(monkeypatch) -> None:
+    busy = Response(429, {"code": "RATE_LIMITED", "detail": {
+        "auth_admission_retry": True, "retry_after_seconds": 1,
+    }})
+    transport = Transport([busy] * 4)
+    waits = []
+    monkeypatch.setattr(admin_write_client.time, "sleep", waits.append)
+    with pytest.raises(RuntimeError, match="429"):
+        client(transport).create_app({"name": "probe", "dept": "test"})
+    assert waits == [1, 1, 1] and len(transport.calls) == 4

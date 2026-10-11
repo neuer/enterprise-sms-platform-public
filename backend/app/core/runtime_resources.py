@@ -144,9 +144,15 @@ class ManagedAsyncEngine:
     def discard_after_fork(self) -> None:
         """子进程丢弃继承的 pool 状态，不触碰父进程仍持有的连接。"""
 
+        # asyncpg 的析构会发送协议终止；仅 dispose(close=False) 后旧池被 GC，
+        # 仍会经 fork 继承的 socket 终止父进程会话。保留旧池直到子进程退出，
+        # 不向其发送 close/terminate，不允许它重新进入活动缓存或 shutdown。
+        _INHERITED_DATABASE_POOLS.append(self._engine.pool)
         self._engine.sync_engine.dispose(close=False)
 
 
+# 仅 fork 初始化追加父进程池；不按请求增长。由进程退出回收继承的 FD。
+_INHERITED_DATABASE_POOLS: list[Any] = []
 _DATABASE_ENGINES: dict[tuple[str, DatabaseUrl], ManagedAsyncEngine] = {}
 _DATABASE_METRICS: dict[str, _DatabaseMetrics] = {}
 _REDIS_CLIENTS: dict[str, Any] = {}

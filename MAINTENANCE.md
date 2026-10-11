@@ -58,6 +58,12 @@ JUnit 和覆盖数据。隔离分区自动收集 `tests/integration/` 以及显�
 汇总重新独立收集完整清单，验证分区互斥且穷尽、关键 marker 实际通过，
 并核验 app 文件全集及 application/auth/pipeline/export/tasks/api 六项覆盖率，
 同时保留原 full G2 的 services ≥80% 基线。
+前端 CI 使用 `npm run test:coverage`（Python 3.12 / Node 24），先用真实 Vitest
+负向 fixture 验证未导入文件进入分母，再执行完整组件测试。
+`check_frontend_coverage.py verify` 重新核验完整 TS/Vue 文件集、测试执行清单、
+报告哈希、源码/配置摘要和提交 SHA；API、会话、composables 分组独立达标，
+不能用全局覆盖率抵消安全模块缺口。版本化门槛见该脚本和 Vite 配置。
+证据包含 JSON summary、测试报告、manifest 与 lcov；失败重跑先废止旧成功回执。
 full G2 复用 `scripts/run_backend_tests.sh full <临时证据目录>` 和相同静态入口，
 不再重复执行关键 marker 子集。普通分区仅保留公开快照缺失文档与本机无 Lua 的明确例外。
 

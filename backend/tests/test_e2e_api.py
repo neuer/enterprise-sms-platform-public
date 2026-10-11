@@ -659,9 +659,12 @@ def test_role_uat_does_not_write_without_reauthentication_grant(response: HttpRe
 
 
 @pytest.mark.parametrize("path", ["/api/v1/web/auth/login", "/api/v1/web/admin/step-up"])
-def test_authentication_uat_obeys_explicit_admission_retry(path: str, monkeypatch) -> None:
+@pytest.mark.parametrize("delay", [15, 45, 300])
+def test_authentication_uat_obeys_explicit_admission_retry(
+    path: str, delay: int, monkeypatch,
+) -> None:
     busy = HttpResponse(429, {"code": "RATE_LIMITED", "detail": {
-        "auth_admission_retry": True, "retry_after_seconds": 15,
+        "auth_admission_retry": True, "retry_after_seconds": delay,
     }})
     success = HttpResponse(200, {"token": "synthetic-token"})
     http = FakeHttp([busy, success])
@@ -669,7 +672,7 @@ def test_authentication_uat_obeys_explicit_admission_retry(path: str, monkeypatc
     delays = []
     monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
     assert suite._authentication_request(path, payload={}) == success
-    assert delays == [15]
+    assert delays == [delay]
     assert len(http.calls) == 2
 
 
@@ -677,7 +680,7 @@ def test_authentication_uat_obeys_explicit_admission_retry(path: str, monkeypatc
     (401, {"auth_admission_retry": True, "retry_after_seconds": 1}),
     (429, None),
     (429, {"auth_admission_retry": False, "retry_after_seconds": 1}),
-    (429, {"auth_admission_retry": True, "retry_after_seconds": 300}),
+    (429, {"auth_admission_retry": True, "retry_after_seconds": 301}),
     (429, {"auth_admission_retry": True, "retry_after_seconds": True}),
 ])
 def test_authentication_uat_never_retries_other_rejections(
@@ -694,14 +697,14 @@ def test_authentication_uat_never_retries_other_rejections(
 
 def test_authentication_uat_retry_budget_is_bounded(monkeypatch) -> None:
     busy = HttpResponse(429, {"code": "RATE_LIMITED", "detail": {
-        "auth_admission_retry": True, "retry_after_seconds": 30,
+        "auth_admission_retry": True, "retry_after_seconds": 150,
     }})
     http = FakeHttp([busy, busy, busy])
     suite = UatSuite(http, None, {})
     delays = []
     monkeypatch.setattr(e2e_api.time, "sleep", delays.append)
     assert suite._authentication_request("/api/v1/web/auth/login", payload={}) == busy
-    assert delays == [30, 30] and len(http.calls) == 3
+    assert delays == [150, 150] and len(http.calls) == 3
 
 
 def test_cleanup_reports_only_http_status_and_never_error_payload() -> None:

@@ -23,6 +23,7 @@ from app.services.auth_provider import (
     role_mapping_revision,
 )
 from app.services.auth_provider_repository import SqlAuthProviderRepository
+from tests.business_ids import new_business_id
 from tests.integration.test_ops_audit_postgres import _create_admin
 from tests.integration.test_ops_audit_postgres import accept_runtime as accept_runtime
 
@@ -37,8 +38,8 @@ async def test_thousand_accounts_and_hundred_mappings_invalidate_once_per_transa
     accept_runtime: tuple[AsyncEngine, URL],
 ) -> None:
     owner, _ = accept_runtime
-    principal = await _create_admin(owner, login="mapping-" + uuid4().hex[:12])
-    code = uuid4().hex
+    principal = await _create_admin(owner, login="mapping-" + new_business_id()[:12])
+    code = new_business_id()
     provider = 0
     accounts: list[int] = []
     try:
