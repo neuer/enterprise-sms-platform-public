@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.accounts import (
     AccountNotFound,
@@ -123,6 +124,26 @@ def _security_account(row: Any) -> PlatformAccount:
         identity_enabled=int(row["identity_status"]) == 1,
         provider_enabled=bool(row["provider_enabled"]),
     )
+
+
+async def load_security_session_from_connection(
+    connection: AsyncConnection, account_id: int, identity_id: int,
+) -> PlatformAccount:
+    """复用调用方持有的认证事务读取权威投影，避免同池嵌套借连接。"""
+
+    result = await connection.execute(
+        text(
+            f"""
+            {SECURITY_SESSION_SELECT}
+            WHERE ua.id=:account_id AND ai.id=:identity_id
+            """
+        ),
+        {"account_id": account_id, "identity_id": identity_id},
+    )
+    row = result.mappings().one_or_none()
+    if row is None:
+        raise InvalidCredentials("无效或已吊销的令牌")
+    return _security_account(row)
 
 
 def _local_record(row: Any) -> LocalAccountRecord:
@@ -1225,19 +1246,9 @@ class SqlUserRepository:
         engine = self._engine()
         try:
             async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
-                        {SECURITY_SESSION_SELECT}
-                        WHERE ua.id=:account_id AND ai.id=:identity_id
-                        """
-                    ),
-                    {"account_id": account_id, "identity_id": identity_id},
+                return await load_security_session_from_connection(
+                    connection, account_id, identity_id,
                 )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    raise InvalidCredentials("无效或已吊销的令牌")
-                return _security_account(row)
         finally:
             await engine.dispose()
 

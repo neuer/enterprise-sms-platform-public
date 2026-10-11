@@ -29,7 +29,7 @@ class FakeFacade:
     def __init__(self, role: Role) -> None:
         self.role: Role = role
 
-    async def verify(self, _token: str) -> JwtClaims:
+    async def verify(self, _token: str, **_kwargs) -> JwtClaims:
         return JwtClaims(
             11,
             101,
@@ -110,30 +110,19 @@ class FakeService:
             self.now,
         )
 
+    async def precheck_downloadable(self, public_id, *, principal):
+        return await self.get(public_id, principal=principal)
+
     async def get_downloadable(
-        self,
-        public_id: UUID,
-        *,
-        principal: SecurityPrincipal,
-        ip: str,
-    ) -> ExportTaskInfo:
-        self.calls.append(
-            (
-                "download",
-                {
-                    "public_id": public_id,
-                    "actor": principal.login_name,
-                    "actor_account_id": principal.account_id,
-                    "role": principal.role,
-                    "dept": principal.dept,
-                    "ip": ip,
-                },
-            )
-        )
-        return await self.get(
-            public_id,
-            principal=principal,
-        )
+        self, public_id, *, authorization, expected, check_file, recheck_session, ip,
+    ):
+        principal = authorization.principal
+        await recheck_session(None)
+        check_file()
+        self.calls.append(("download", {"public_id": public_id, "actor": principal.login_name,
+            "actor_account_id": principal.account_id, "role": principal.role,
+            "dept": principal.dept, "ip": ip}))
+        return expected
 
 
 class FakeStepUp:
@@ -163,15 +152,28 @@ class FakeStepUp:
         self.consumes.append((token, public_id, claims.account_id, ip))
 
 
-class FakeCodec:
-    def validate(self, raw_path: str | Path, *, expected_task_id: int) -> Path:
-        assert str(raw_path) == "/safe/export-9.smsx"
-        assert expected_task_id == 9
-        return Path(str(raw_path))
+class FakePrepared:
+    row_count = 2
 
-    def iter_decrypted(self, _path: str | Path) -> Iterator[bytes]:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+    def assert_current(self):
+        assert not self.closed
+
+    def iter_decrypted(self) -> Iterator[bytes]:
         yield b"phone,status\r\n"
         yield b"138****8000,delivered\r\n"
+
+
+class FakeCodec:
+    def prepare_download(self, raw_path: str | Path, *, expected_task_id: int):
+        assert str(raw_path) == "/safe/export-9.smsx"
+        assert expected_task_id == 9
+        return FakePrepared()
 
 
 def make_client(

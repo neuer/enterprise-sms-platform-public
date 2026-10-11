@@ -1246,13 +1246,17 @@ class JwtService:
             session_mode=_read_session_mode(payload),
         )
 
-    async def _authoritative(self, claims: JwtClaims) -> JwtClaims:
+    async def _authoritative(
+        self, claims: JwtClaims,
+        security_session_loader: Callable[[int, int], Awaitable[PlatformAccount]] | None = None,
+    ) -> JwtClaims:
         if not valid_account_department(claims.role, claims.dept):
             raise InvalidCredentials("无效或已吊销的令牌")
-        if self.security_session_loader is None:
+        loader = security_session_loader or self.security_session_loader
+        if loader is None:
             return claims
         try:
-            current = await self.security_session_loader(
+            current = await loader(
                 claims.account_id,
                 claims.identity_id,
             )
@@ -1332,7 +1336,11 @@ class JwtService:
             raise InvalidCredentials("无效或已吊销的令牌")
         raise SessionStateUnavailable("JWT revocation state unavailable")
 
-    async def verify(self, token: str) -> JwtClaims:
+    async def verify(
+        self, token: str, *,
+        security_session_loader: Callable[[int, int], Awaitable[PlatformAccount]] | None = None,
+    ) -> JwtClaims:
+        """验证签名、期限及全部撤销状态；事务内可复用受信任的权威投影读取器。"""
         payload = self._decode(token)
         if payload["token_type"] != ACCESS_TOKEN_TYPE:
             raise InvalidCredentials("无效或已吊销的令牌")
@@ -1348,7 +1356,7 @@ class JwtService:
             raise SessionStateUnavailable("JWT revocation state unavailable") from None
         await self._ensure_session_not_revoked(claims)
         await self._ensure_account_not_revoked(payload, claims)
-        return await self._authoritative(claims)
+        return await self._authoritative(claims, security_session_loader)
 
     @staticmethod
     def _redis_text(value: object) -> str:

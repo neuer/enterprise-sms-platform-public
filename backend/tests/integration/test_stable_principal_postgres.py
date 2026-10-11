@@ -419,8 +419,10 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
                 {"public_id": export_public_id},
             )
         with audit_principal_scope(renamed_principal), correlation_scope(uuid4()):
-            downloadable = await export_repository.get_downloadable_and_audit(
-                export_task.public_id,
+            from tests.integration.test_export_authorization_postgres import authorized_download
+
+            downloadable = await authorized_download(
+                export_repository, export_task.public_id,
                 principal=renamed_principal,
                 ip="10.0.0.8",
                 retention_days=7,

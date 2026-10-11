@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -666,9 +667,17 @@ class AuthFacade:
                 None,
             ) from None
 
-    async def verify(self, token: str) -> JwtClaims:
+    async def verify(
+        self, token: str, *,
+        security_session_loader: Callable[[int, int], Awaitable[PlatformAccount]] | None = None,
+    ) -> JwtClaims:
         try:
-            claims = await self.tokens.verify(token)
+            if security_session_loader is None:
+                claims = await self.tokens.verify(token)
+            else:
+                claims = await self.tokens.verify(
+                    token, security_session_loader=security_session_loader,
+                )
             bind_audit_principal(claims.principal)
             return claims
         except ReauthenticationRequired:

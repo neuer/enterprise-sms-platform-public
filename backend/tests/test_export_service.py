@@ -7,6 +7,7 @@ from uuid import UUID
 import pytest
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.auth.export_authorization import ExportDownloadAuthorization
 from app.services.crypto import CryptoService
 from app.services.export import (
     ExportFilterSet,
@@ -106,14 +107,18 @@ class FakeRepository:
             datetime.now(UTC),
         )
 
+    async def precheck_downloadable(self, public_id, *, principal, retention_days):
+        return await self.get_accessible(
+            public_id, principal=principal, retention_days=retention_days,
+        )
+
     async def get_downloadable_and_audit(
-        self,
-        public_id: UUID,
-        *,
-        principal: SecurityPrincipal,
-        ip: str,
-        retention_days: int,
-    ) -> ExportTaskInfo | None:
+        self, public_id, *, authorization, expected, check_file, recheck_session,
+        ip, retention_days,
+    ):
+        principal = authorization.principal
+        await recheck_session(None)
+        check_file()
         self.calls.append(
             (
                 "download",
@@ -127,16 +132,7 @@ class FakeRepository:
                 },
             )
         )
-        return ExportTaskInfo(
-            9,
-            public_id,
-            "done",
-            False,
-            1,
-            "/safe/export.smsx",
-            datetime.now(UTC) + timedelta(days=retention_days),
-            datetime.now(UTC),
-        )
+        return expected
 
 
 @pytest.mark.asyncio
@@ -238,10 +234,15 @@ async def test_download_access_is_rechecked_and_transactionally_audited() -> Non
     repository = FakeRepository()
     service = ExportService(repository, crypto(), retention_days=7)
 
+    actor = principal(21, "approver-a", "approver")
+    expected = await service.precheck_downloadable(PUBLIC_ID, principal=actor)
+
+    async def recheck(_connection):
+        pass
+
     task = await service.get_downloadable(
-        PUBLIC_ID,
-        principal=principal(21, "approver-a", "approver"),
-        ip="10.0.0.8",
+        PUBLIC_ID, authorization=ExportDownloadAuthorization(actor, 1, "local"),
+        expected=expected, check_file=lambda: None, recheck_session=recheck, ip="10.0.0.8",
     )
 
     assert task.public_id == PUBLIC_ID
