@@ -369,7 +369,9 @@ def test_host_ports_are_overridable_without_changing_container_contract() -> Non
     compose = load_compose()
     services = compose["services"]
 
-    assert services["api"]["ports"] == ["127.0.0.1:${API_PORT:-8000}:8000"]
+    assert "ports" not in services["api"]
+    development = yaml.safe_load((ROOT / "deploy/docker-compose.development-api.yml").read_text())
+    assert development["services"]["api"]["ports"] == ["127.0.0.1:${API_PORT:-8000}:8000"]
     assert services["web"]["ports"] == ["${WEB_BIND_IP:-127.0.0.1}:${WEB_PORT:-18080}:8080"]
     assert services["mock-vendor"]["ports"] == ["127.0.0.1:${MOCK_VENDOR_PORT:-9028}:9028"]
 
@@ -442,7 +444,7 @@ def test_nginx_bounds_pre_authentication_body_storage() -> None:
         in config
     )
     assert config.count("limit_conn sms_api_concurrency 16;") == 2
-    assert config.count("limit_conn sms_client_concurrency 16;") == 2
+    assert config.count("limit_conn sms_client_concurrency 8;") == 2
     assert "limit_conn sms_import_concurrency 2;" in config
     assert (
         "/tmp/client_temp:rw,noexec,nosuid,nodev,size=64m,"

@@ -172,6 +172,7 @@ compose() {
   WEB_PORT="$WEB_PORT" API_PORT="$API_PORT" MOCK_VENDOR_PORT="$MOCK_VENDOR_PORT" \
   SMS_PLATFORM_ROOT="$ROOT" \
   SMS_SECRETS_MODE=development \
+  SMS_DEV_API_PORT=1 \
   SMS_RUNTIME_ROOT="${SMS_RUNTIME_ROOT:-${TMPDIR:-/tmp}/sms-platform-${UID}/secrets}" \
   COMPOSE_PROFILES=dev \
     "$ROOT/deploy/sms-compose" "$@"

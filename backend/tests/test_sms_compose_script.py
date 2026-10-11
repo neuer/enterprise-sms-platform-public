@@ -292,6 +292,7 @@ exit 0
         "SMS_REDIS_IMAGE",
         "METRICS_ALLOWED_CIDRS",
         "SMS_INTERNAL_PLATFORM_ENV_FILE",
+        "SMS_DEV_API_PORT",
     ):
         environment.pop(name, None)
     return platform_root, log, environment
@@ -3632,3 +3633,38 @@ def test_invalid_rotation_group_exits_two_without_compose_mutation(
 
     assert result.returncode == 2
     assert command_lines(log) == []
+
+
+@pytest.mark.parametrize("action", ["config", "ps", "up"])
+def test_explicit_development_api_port_is_selected_for_all_compose_paths(
+    fake_environment: tuple[Path, Path, dict[str, str]], action: str
+) -> None:
+    root, log, _ = fake_environment
+    (root / ".env").write_text("ENVIRONMENT=development\nSMS_EXTERNAL_TLS_MODE=0\n")
+    helper = Path("deploy/scripts/development_api_port.py")
+    (root / helper).write_text((ROOT / helper).read_text())
+    result = run_wrapper(fake_environment, action, extra_environment={
+        "SMS_DEV_API_PORT": "1", "ENVIRONMENT": "development",
+    })
+    assert result.returncode == 0, result.stderr
+    compose_lines = [line for line in command_lines(log) if "docker|compose|" in line]
+    assert compose_lines
+    assert all(line.count("docker-compose.development-api.yml") == 1 for line in compose_lines)
+
+
+@pytest.mark.parametrize("environment", [
+    "test", "production", "development\nENVIRONMENT=test", "development\nENVIRONMENT: test",
+])
+def test_development_secrets_cannot_publish_non_development_api_port(
+    fake_environment: tuple[Path, Path, dict[str, str]], environment: str
+) -> None:
+    root, log, _ = fake_environment
+    (root / ".env").write_text(f"ENVIRONMENT={environment}\n")
+    helper = Path("deploy/scripts/development_api_port.py")
+    (root / helper).write_text((ROOT / helper).read_text())
+    result = run_wrapper(fake_environment, "config", extra_environment={
+        "SMS_DEV_API_PORT": "1", "ENVIRONMENT": "development",
+    })
+    assert result.returncode != 0
+    assert command_lines(log) == []
+    assert "configuration rejected" in result.stderr

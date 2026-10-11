@@ -55,7 +55,17 @@ Celery beat 的 PersistentScheduler 状态只保存可重建的调度元数据�
 - Web 明文 HTTP 上游默认绑定宿主机回环 `127.0.0.1:18080`，映射到容器内非特权 Nginx `8080`；direct 模式生产强制回环。远程 TLS 终结器场景必须显式设置 `SMS_EXTERNAL_TLS_MODE=1`、将 `WEB_BIND_IP` 设为专用私网接口，并用精确 `SMS_TRUSTED_PROXY_CIDRS` 同时限制代理头信任与明文 listener 来源；其余来源由 Nginx 返回 444。
 - `18443` 预留给配置证书后的 TLS 终结服务；Phase 0 只对经批准的公司 VPN
   来源开放，未配置证书前不得宣称 HTTPS 可用。
-- API `8000` 与 dev profile 的 Mock `9028` 只绑定宿主机回环地址，不得直接暴露到公网。
+- 基础 Compose 不发布 API 宿主端口。仅 `SMS_DEV_API_PORT=1` 且实际环境文件为
+  `ENVIRONMENT=development` 时，受控入口加载 `docker-compose.development-api.yml`，
+  将 `${API_PORT:-8000}` 发布到宿主回环；local_test/G2 显式使用此模式。共享 test 与
+  production 不加载覆盖文件，不能仅凭 secrets 模式或 dev profile 开放端口。
+  dev profile 的 Mock `9028` 仍只绑定宿主回环，不得直接暴露到公网。
+- Nginx API 全局最多 16 个活动请求、单来源最多 8 个，导入另有全局 2 个限制，
+  请求体磁盘最坏预算仍为 38 MiB，小于 64 MiB tmpfs。共享 NAT 用户共用 8 个槽位，
+  客户端应限制并发并退避处理 503；多个来源仍可能耗尽全局预算。受信 TLS 代理继续恢复
+  真实客户端 IP，客户端自行提交的代理头不能绕过限制。
+- 移除宿主发布端口不等于禁止 Docker 网桥内部访问。Prometheus 继续按既有固定 ingress
+  IP 直连 API 的 metrics 入口；宿主与内部网络访问仍由原有 ACL/防火墙与 API 认证约束。
 - 明文 HTTP 上游默认绑定回环，仅允许本机或显式批准的 TLS 终结器访问；主机防火墙与
   Docker `DOCKER-USER` 转发链必须阻断 `80/443/8080/8443/8000/9028` 的互联网入站。
   `18443` 也不对互联网公开，只接受获批公司 VPN 网段；网络侧真实读回是上线证据。

@@ -29,6 +29,18 @@ scripts/local_test.sh status
 WEB_PORT=28080 API_PORT=28000 MOCK_VENDOR_PORT=29028 scripts/local_test.sh up
 ```
 
+`local_test.sh` 显式启用仅限 development 的 API 回环端口覆盖。基础 Compose、共享 test
+及 production 默认不发布 API 宿主端口；独立开发诊断使用 `deploy/sms-compose` 时，需
+显式设置 `SMS_DEV_API_PORT=1`，且实际 `.env` 的 `ENVIRONMENT` 必须是 development。
+此端口授权只接受单行环境配置，`ENVIRONMENT` 必须是唯一的等号赋值；冒号、裸键、
+多行值或 shell 环境冲突均拒绝，不按猜测结果开放端口。
+`perf_smoke.py`、`perf_vendor_scale.py`、`security_acceptance.py` 和 `e2e_api.py` 的默认
+8000 URL 只适用于该开发覆盖；其他环境按对应入口地址及授权流程执行。
+
+入口限额回归可运行 `python scripts/verify_nginx_admission.py`：使用候选 Dockerfile 的
+固定镜像摘要，在无外网、无宿主发布端口的临时容器中验证单来源/共享 NAT、全局、导入
+与受信代理边界。它不启动平台、不连接厂商，也不替代完整 G2 和最终镜像漏洞扫描。
+
 后续启动保留的数据卷使用 `up`：
 
 ```bash
