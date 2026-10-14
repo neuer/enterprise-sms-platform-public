@@ -18,16 +18,20 @@ T = TypeVar("T")
 
 LOGGER = logging.getLogger(__name__)
 
-# 日历等待不是 dispatcher 积压；恢复到期后从可执行时刻计算等待年龄。
+# 数量保护保留未到期回调；只有合法业务等待不提前贡献处理积压年龄。
+# 独立锚点不会被 dispatcher 的基础设施重试时钟向后推迟。
 OUTBOX_CAPACITY_ACTIVE_SQL = """
 state IN ('pending','leased','published','processing')
 AND NOT (state='pending' AND event_type='chunk.ready'
          AND last_error IS NOT DISTINCT FROM 'MarketWindowDeferred'
-         AND next_attempt_at>now())
+         AND COALESCE(capacity_eligible_at,next_attempt_at)>now())
 """
 OUTBOX_CAPACITY_AGE_SQL = """
-CASE WHEN event_type='chunk.ready' AND last_error='MarketWindowDeferred'
-     THEN next_attempt_at ELSE created_at END
+COALESCE(capacity_eligible_at,created_at)
+"""
+OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL = f"""
+({OUTBOX_CAPACITY_ACTIVE_SQL})
+AND (state<>'pending' OR {OUTBOX_CAPACITY_AGE_SQL}<=now())
 """
 
 OUTBOX_BACKLOG_ALERT_SECONDS = 300

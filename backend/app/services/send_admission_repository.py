@@ -9,17 +9,27 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine, redis_client
-from app.services.outbox import OUTBOX_CAPACITY_ACTIVE_SQL, OUTBOX_CAPACITY_AGE_SQL
+from app.services.outbox import (
+    OUTBOX_CAPACITY_ACTIVE_SQL,
+    OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL,
+    OUTBOX_CAPACITY_AGE_SQL,
+)
 from app.services.send_admission import SendAdmissionFacts, SendAdmissionLimits
 from app.settings import Settings, get_settings
 
 RECOVERY_BUDGET_LUA = """
 local t = redis.call('TIME')
 local now_sec = tonumber(t[1]) or 0
+local epoch = tonumber(ARGV[7]) or 0
+local latest_epoch = tonumber(redis.call('HGET', KEYS[1], 'epoch')) or 0
+if epoch < latest_epoch then
+  return 0
+end
 local last = tonumber(redis.call('HGET', KEYS[1], 'sec')) or 0
 if last > 0 and now_sec < last then
   return 0
 end
+redis.call('HSET', KEYS[1], 'epoch', epoch)
 if last ~= now_sec then
   redis.call('HSET', KEYS[1], 'sec', now_sec, 'b', 0, 'r', 0, 's', 0)
 end
@@ -30,7 +40,6 @@ if b > (tonumber(ARGV[4]) or 0) or r > (tonumber(ARGV[5]) or 0) or s > (tonumber
   return 0
 end
 redis.call('HSET', KEYS[1], 'b', b, 'r', r, 's', s)
-redis.call('EXPIRE', KEYS[1], 3)
 return 1
 """
 
@@ -78,7 +87,7 @@ class SqlSendAdmissionRepository:
                         outbox_active,
                       (SELECT EXTRACT(EPOCH FROM (now()-min({OUTBOX_CAPACITY_AGE_SQL})))
                        FROM outbox_event
-                       WHERE {OUTBOX_CAPACITY_ACTIVE_SQL})
+                       WHERE {OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL})
                         outbox_oldest_age_s,
                       (SELECT count(*) FROM outbox_event
                        WHERE state='dead') outbox_dead,
@@ -172,6 +181,10 @@ class SqlSendAdmissionRepository:
             raise ValueError("open admission state cannot carry a recovery hold")
         if reason == "recovery_hold" and state != "degraded":
             raise ValueError("recovery_hold must be a degraded admission state")
+        if reason == "recovery_hold" and hold_until is None:
+            raise ValueError("recovery_hold requires an explicit deadline")
+        if reason == "capacity_hysteresis" and state not in {"closed", "degraded"}:
+            raise ValueError("capacity_hysteresis must retain a restricted capacity state")
         engine = self._engine()
         async with engine.begin() as connection:
             updated = await connection.execute(
@@ -272,14 +285,15 @@ class SqlSendAdmissionRepository:
         segments: int,
         limits: SendAdmissionLimits,
     ) -> bool:
-        """按当前 state_epoch 消费共享恢复预算；旧 generation 键不可复用。
+        """所有状态版本共享同一秒预算，reason 变化不补发额度。
 
-        control Redis ACL 只有 HGET/HSET/INCR，没有 INCRBY。
+        单个固定大小 hash 保留最高 epoch 围栏；旧版本不能重新取得预算。
+        不设置 TTL，避免空闲后旧 generation 复活。control Redis 故障失败关闭。
         """
 
         if epoch < 1 or batches < 1 or recipients < 1 or segments < 1:
             raise ValueError("recovery budget inputs must be positive")
-        key = f"admission:recovery:{epoch}"
+        key = "admission:recovery:window"
         args = (
             str(batches),
             str(recipients),
@@ -287,6 +301,7 @@ class SqlSendAdmissionRepository:
             str(limits.recovery_accept_batches_per_second),
             str(limits.recovery_accept_recipients_per_second),
             str(limits.recovery_accept_segments_per_second),
+            str(epoch),
         )
         try:
             async with asyncio.timeout(max(self.control_timeout_s, 2.0)):

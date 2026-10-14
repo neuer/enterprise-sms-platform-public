@@ -8,8 +8,11 @@ from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine
 from app.services.metrics import MetricsFacts
-from app.services.outbox import OUTBOX_CAPACITY_ACTIVE_SQL, OUTBOX_CAPACITY_AGE_SQL
-from app.services.send_admission import SendAdmissionFacts, evaluate_capacity
+from app.services.outbox import (
+    OUTBOX_CAPACITY_ACTIVE_SQL,
+    OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL,
+    OUTBOX_CAPACITY_AGE_SQL,
+)
 from app.settings import Settings, get_settings
 
 
@@ -101,10 +104,12 @@ class SqlMetricsRepository:
                              outbox_active,
                           (SELECT EXTRACT(EPOCH FROM (now()-min({OUTBOX_CAPACITY_AGE_SQL})))
                            FROM outbox_event
-                           WHERE {OUTBOX_CAPACITY_ACTIVE_SQL})
+                           WHERE {OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL})
                              outbox_oldest_age,
                           (SELECT count(*) FROM outbox_event
-                           WHERE state='dead') outbox_dead
+                           WHERE state='dead') outbox_dead,
+                          (SELECT CASE WHEN valid_until>=now() THEN state ELSE 'closed' END
+                           FROM send_admission_state WHERE scope='send') admission_state
                         """
                 )
             )
@@ -237,18 +242,8 @@ class SqlMetricsRepository:
                 for row in eligibility_result.mappings()
             )
             oldest_age = max(0.0, float(counts.get("outbox_oldest_age") or 0))
-            admission_state, _reason = evaluate_capacity(
-                SendAdmissionFacts(
-                    outbox_active=max(0, int(counts.get("outbox_active") or 0)),
-                    outbox_oldest_age_s=int(oldest_age),
-                    outbox_dead=max(0, int(counts.get("outbox_dead") or 0)),
-                    uncertain_overdue=max(0, int(counts["uncertain_overdue"])),
-                    callback_dead=max(0, int(counts["callback_dead"])),
-                    realtime_paused=False,
-                    bulk_paused=False,
-                    vendor_failures=0,
-                )
-            )
+            # 指标沿用已持久化的权威状态，不以原始容量重算并丢掉 hold/滞回。
+            admission_state = str(counts.get("admission_state") or "closed")
 
             pending_audit = await connection.scalar(
                 text(

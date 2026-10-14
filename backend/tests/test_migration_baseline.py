@@ -822,8 +822,8 @@ def test_send_admission_metrics_grant_is_expand_only() -> None:
 
     assert "-- v1.6.75：" in schema
     assert (
-        "GRANT SELECT (queue, state, created_at, event_type, last_error, next_attempt_at)"
-        in schema
+        "GRANT SELECT (queue, state, created_at, event_type, last_error, next_attempt_at, "
+        "capacity_eligible_at)" in " ".join(schema.split())
     )
     assert "GRANT SELECT (created_at)" in source
     assert "outbox_event TO sms_metrics" in source

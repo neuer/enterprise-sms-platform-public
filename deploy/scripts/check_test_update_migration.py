@@ -94,6 +94,10 @@ _WIDEN_VARCHAR_RE = re.compile(
     r"TYPE\s+VARCHAR\(\d+\)",
     re.IGNORECASE,
 )
+_LOCAL_TIMEOUT_RE = re.compile(
+    r"SET\s+LOCAL\s+(?:lock_timeout|statement_timeout)\s*=\s*'([1-9][0-9]{0,5})(ms|s)'",
+    re.IGNORECASE,
+)
 
 
 def _literal_assignment(tree: ast.Module, name: str, path: Path) -> str | None:
@@ -249,6 +253,14 @@ def _check_raw_sql(
 ) -> None:
     sql = resolved_sql if resolved_sql is not None else _literal_sql(call, migration)
     normalized = re.sub(r"\s+", " ", sql).upper()
+    local_timeout = _LOCAL_TIMEOUT_RE.fullmatch(sql.strip())
+    if local_timeout is not None:
+        duration_ms = int(local_timeout.group(1)) * (
+            1000 if local_timeout.group(2).lower() == "s" else 1
+        )
+        # 只允许当前事务的正数、有界等待；禁用超时、全局设置和复合语句仍拒绝。
+        if duration_ms <= 120_000:
+            return
     if normalized.startswith(("GRANT ", "REVOKE ")):
         if ";" in sql.rstrip().removesuffix(";"):
             raise ExpandOnlyError(

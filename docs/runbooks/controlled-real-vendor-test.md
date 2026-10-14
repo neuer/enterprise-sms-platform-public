@@ -166,6 +166,46 @@ inactive/unknown 为成功硬判据。失败只保持入口关闭，不回退 HT
 
 agent 每次接收新的凭据 envelope 前都会先通过固定 wrapper 执行恢复：存在 `rotation-state.json` 时，在同一 lifecycle lock 内保持独立 critical 暂停、停止发送进程、回切 previous generation、重新生成运行时 secrets、校验 Compose、重建旧服务并用 GetBalance 验证，成功后才清理事务；只有不存在事务时，才把尚未切换的孤儿 pending generation 丢弃。事务未恢复时人工 resume 必须 fail closed，不能只凭一次探针清除暂停。页面只得到 `recovered/rotated` 安全状态。不得手工删除事务或 pending 指针、读取 generation 内容或跳过恢复直接重试。
 
+## 代理资源边界
+
+`AgentLimits` 在 `deploy/scripts/vendor_seal_sessions.py` 集中声明有界值。
+这些是保护测试宿主的保守预算，不是生产吞吐承诺，也不接受请求或环境变量覆盖。
+
+| 资源 | 默认上限 |
+|---|---|
+| API peer / 只读 worker peer 连接 | 16 / 4，分别计数，超额在创建任务前关闭 |
+| 完整 header + body | 共用 2 秒绝对期限；帧体最多 65,536 字节 |
+| 响应写入 / 关闭等待 | 1 秒 / 0.25 秒 |
+| RSA 执行中 / 含排队工作总数 | 2 / 2，不排队 |
+| 生命周期执行中 / 含排队总数 | 2 / 4 |
+| health/status 执行中 / 含排队总数 | 2 / 4，独立于 RSA 和生命周期 |
+| 心跳 | 独立单线程，沿用 10 秒刷新间隔 |
+| 活跃会话加生成预留 | 全局 32、每主体 4 |
+| 60 秒滚动窗口内创建尝试 | 全局 16、每主体 4；生成失败也计数 |
+| 会话期限 / 周期清理 | 生成完成后 120 秒 / 每 5 秒 |
+
+20 个应用连接最多同时解析 20 份 64 KiB 帧；StreamReader、传输层和内核另有
+有界缓冲，不能把帧大小合计当成 RSS 上限。最多两个 RSA 工作约束 CPU 并行度，
+活跃会话和创建窗口共同约束私钥数量及持续计算。创建窗口只保留
+至多 16 个时间/主体条目，不另建无限主体桶。不驱逐有效会话来腾位。
+同一短锁保护清理、预留、插入及首次 open 消费，RSA 和解密在锁外执行。
+墙钟与单调期限任一到期即清理私钥引用；不宣称物理内存擦除。
+
+`SO_PEERCRED` 在读帧前核验，完整解码后仍校验操作授权。只读 worker peer
+拥有独立连接额度；普通 API peer 自身读连接全部占满时仍会被拒，不能宣称
+同一身份具有无法耗尽的保留通道。短读帧期限不套用到 180/300 秒生命周期命令。
+取消客户端等待不释放实际线程槽，也不撤销已启动的生命周期操作，结果继续
+按原 operation journal 查询。确认写响应尚未开始的封装结果可回收；任何请求
+已开始交付后保留至单次消费或 TTL，包括重放取消和交付结果不确定的情况。
+缓存只能返回仍有效且同主体/操作的会话，不能重新发出已消费或到期的会话。
+资源拒绝使用现有 `CONTROL_OPERATION_REJECTED`，Web seal API 映射为安全的
+`503 CONTROL_AGENT_UNAVAILABLE`；不记为凭据错误或已完成配置变更。
+
+执行 `bash scripts/verify_vendor_control_uds.sh` 可在一次性 Linux 容器中复核
+真实 peer/UDS、RSA、涓流读帧、取消、缓存及独立状态通道。运行期关闭网络，
+源代码只读挂载；输出仅含合成场景的 CPU、RSS、FD、执行槽和时延汇总。
+这些结果不替代实际测试宿主的部署验收。
+
 ## 页面登记测试号码
 
 管理员在页面输入备注与一个 `^1\d{10}$` 号码。普通 API 仅在该次 HTTPS 请求内接收号码，立即调用统一 `CryptoService.protect_phone()` 写入 PostgreSQL；审计只写操作、数量和 recipient id，不写手机号或 HMAC。

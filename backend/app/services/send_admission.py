@@ -9,12 +9,44 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache
 from time import monotonic
-from typing import Literal, Protocol
+from typing import Literal, NamedTuple, Protocol
 
 LOGGER = logging.getLogger(__name__)
 
 AdmissionState = Literal["open", "degraded", "closed"]
+BudgetMode = Literal["normal", "degraded", "recovery", "closed"]
 ADMISSION_STATES: tuple[AdmissionState, ...] = ("open", "degraded", "closed")
+
+
+class CapacityEvaluation(NamedTuple):
+    """容量原因与滞回事实独立于定时保持和请求预算。"""
+
+    state: AdmissionState
+    capacity_reason: str
+    hysteresis_active: bool = False
+
+
+class AdmissionControlState(NamedTuple):
+    """一次权威状态转换的完整结果，CAS 胜者也必须重建此结果。"""
+
+    state: AdmissionState
+    reason: str
+    state_epoch: int
+    budget_mode: BudgetMode
+    hold_until: datetime | None
+
+
+def _budget_mode(
+    state: AdmissionState,
+    *,
+    active_hold: bool,
+    hysteresis_active: bool,
+) -> BudgetMode:
+    if state == "closed":
+        return "closed"
+    if state == "open":
+        return "normal"
+    return "recovery" if active_hold or hysteresis_active else "degraded"
 
 
 def _aware_datetime(value: object) -> datetime:
@@ -122,7 +154,9 @@ class SendAdmissionSnapshot:
     facts: SendAdmissionFacts
     state: AdmissionState
     reason: str
+    budget_mode: BudgetMode
     state_epoch: int = 1
+    hold_until: datetime | None = None
 
 
 class SendAdmissionFactsPort(Protocol):
@@ -218,24 +252,36 @@ def evaluate_capacity(
     *,
     limits: SendAdmissionLimits | None = None,
     previous_state: str | None = None,
-) -> tuple[AdmissionState, str]:
+) -> CapacityEvaluation:
     """计算全局容量带。恢复时滞回在半阈值，避免刚离开 CLOSED 就放行洪峰。"""
 
     selected = limits or SendAdmissionLimits()
     raw_state, reason = _raw_capacity(facts, selected)
     if previous_state == "closed":
         if raw_state == "closed" or _in_closed_hysteresis(facts, selected):
-            return "closed", reason if raw_state == "closed" else "recovery_hold"
+            return CapacityEvaluation(
+                "closed",
+                reason if raw_state == "closed" else "capacity_hysteresis",
+                raw_state != "closed",
+            )
         if raw_state == "degraded" or _in_degraded_hysteresis(facts, selected):
-            return "degraded", reason if raw_state == "degraded" else "recovery_hold"
-        return "open", "ok"
+            return CapacityEvaluation(
+                "degraded",
+                reason if raw_state == "degraded" else "capacity_hysteresis",
+                raw_state != "degraded",
+            )
+        return CapacityEvaluation("open", "ok")
     if previous_state == "degraded":
         if raw_state == "closed":
-            return "closed", reason
+            return CapacityEvaluation("closed", reason)
         if raw_state == "degraded" or _in_degraded_hysteresis(facts, selected):
-            return "degraded", reason if raw_state == "degraded" else "recovery_hold"
-        return "open", "ok"
-    return raw_state, reason
+            return CapacityEvaluation(
+                "degraded",
+                reason if raw_state == "degraded" else "capacity_hysteresis",
+                raw_state != "degraded",
+            )
+        return CapacityEvaluation("open", "ok")
+    return CapacityEvaluation(raw_state, reason)
 
 
 RECOVERY_HOLD_SECONDS = 60
@@ -289,12 +335,16 @@ def _apply_lane_and_request(
     recipient_count: int,
     state: AdmissionState,
     reason: str,
+    budget_mode: BudgetMode,
     limits: SendAdmissionLimits,
     estimated_segments: int | None = None,
     estimated_chunks: int | None = None,
 ) -> SendAdmissionDecision:
     """全局容量带确定后再叠加 lane 心跳/暂停与请求规模，禁止二次查库。"""
 
+    valid_modes = {"open": {"normal"}, "degraded": {"degraded", "recovery"}, "closed": {"closed"}}
+    if budget_mode not in valid_modes.get(state, set()):
+        raise SendAdmissionUnavailable()
     if state == "closed":
         return SendAdmissionDecision(state, reason, False, 60)
     lane = _lane_for_category(category)
@@ -309,7 +359,7 @@ def _apply_lane_and_request(
     if state == "degraded":
         if category == "market":
             return SendAdmissionDecision(state, "degraded_bulk", False, 30)
-        recovering = reason == "recovery_hold"
+        recovering = budget_mode == "recovery"
         recipient_cap = (
             limits.recovery_max_recipients if recovering else limits.degraded_max_recipients
         )
@@ -339,7 +389,7 @@ def decide(
     """把容量带叠到类别/规模：degraded 与 recovery_hold 都只放行少量 verify/notice。"""
 
     selected = limits or SendAdmissionLimits()
-    state, reason = evaluate_capacity(
+    capacity = evaluate_capacity(
         facts,
         limits=selected,
         previous_state=previous_state,
@@ -348,8 +398,11 @@ def decide(
         facts,
         category=category,
         recipient_count=recipient_count,
-        state=state,
-        reason=reason,
+        state=capacity.state,
+        reason=capacity.capacity_reason,
+        budget_mode=_budget_mode(
+            capacity.state, active_hold=False, hysteresis_active=capacity.hysteresis_active
+        ),
         limits=selected,
         estimated_segments=estimated_segments,
         estimated_chunks=estimated_chunks,
@@ -374,6 +427,7 @@ def authorize_from_snapshot(
         recipient_count=recipient_count,
         state=snapshot.state,
         reason=snapshot.reason,
+        budget_mode=snapshot.budget_mode,
         limits=selected,
         estimated_segments=estimated_segments,
         estimated_chunks=estimated_chunks,
@@ -425,7 +479,7 @@ class SendAdmissionGuard:
                 raise SendAdmissionUnavailable() from exc
             load_control = getattr(self.repository, "load_control_state", None)
             save_control = getattr(self.repository, "save_control_state", None)
-            state, reason, epoch = await self._persist_control_state(
+            control = await self._persist_control_state(
                 facts,
                 load_control=load_control,
                 save_control=save_control,
@@ -435,9 +489,11 @@ class SendAdmissionGuard:
                 self._version,
                 now,
                 facts,
-                state,
-                reason,
-                epoch,
+                control.state,
+                control.reason,
+                control.budget_mode,
+                control.state_epoch,
+                control.hold_until,
             )
             if (
                 self._snapshot is None
@@ -466,7 +522,7 @@ class SendAdmissionGuard:
         self,
         facts: SendAdmissionFacts,
         persisted: dict[str, object] | None,
-    ) -> tuple[AdmissionState, str, int, object]:
+    ) -> AdmissionControlState:
         from datetime import UTC, datetime
 
         previous = None if self._snapshot is None else self._snapshot.state
@@ -484,10 +540,12 @@ class SendAdmissionGuard:
             raw_hold_until = persisted.get("hold_until")
             loaded_state = persisted.get("state") or previous
             if raw_valid_until is not None and _aware_datetime(raw_valid_until) < db_now:
-                # 过期 OPEN/CLOSED 快照按 CLOSED 重入 hold。已在 recovery_hold
-                # 的行必须续读 degraded，否则 hold 到期后的下一次请求会因
-                # 15s valid_until 过期再次被当成 CLOSED，永远到不了 OPEN。
-                if loaded_state == "degraded" and previous_reason == "recovery_hold":
+                # 已存在的保持或滞回继续用新 facts 评估，不因快照过期重开期限。
+                # legacy recovery_hold + NULL 按滞回解释并在本次保存时规范化。
+                if loaded_state == "degraded" and (
+                    raw_hold_until is not None
+                    or previous_reason in {"recovery_hold", "capacity_hysteresis"}
+                ):
                     previous = "degraded"
                 else:
                     previous = "closed"
@@ -498,32 +556,73 @@ class SendAdmissionGuard:
             raw_epoch = persisted.get("state_epoch")
             if raw_epoch is None:
                 epoch = 1
-            elif isinstance(raw_epoch, int) and not isinstance(raw_epoch, bool):
+            elif isinstance(raw_epoch, int) and not isinstance(raw_epoch, bool) and raw_epoch >= 1:
                 epoch = raw_epoch
             else:
                 raise SendAdmissionUnavailable()
             now_utc = db_now
         if persisted is None:
             previous = previous or "closed"
-        state, reason = evaluate_capacity(
+        capacity = evaluate_capacity(
             facts,
             limits=self.limits,
             previous_state=previous,
         )
         state, reason, hold = transition_admission_state(
             previous=previous,
-            raw_state=state,
-            raw_reason=reason,
+            raw_state=capacity.state,
+            raw_reason=capacity.capacity_reason,
             db_now=now_utc,
             hold_until=hold_until,
             previous_reason=previous_reason,
         )
-        return state, reason, epoch, hold
+        return AdmissionControlState(
+            state,
+            reason,
+            epoch,
+            _budget_mode(
+                state,
+                active_hold=hold is not None and hold > now_utc,
+                hysteresis_active=capacity.hysteresis_active,
+            ),
+            hold,
+        )
+
+    @staticmethod
+    def _row_control(
+        row: dict[str, object], fallback: AdmissionControlState
+    ) -> AdmissionControlState:
+        """用完整保存结果重建预算；兼容仅返回变更字段的仓储替身。"""
+        from datetime import UTC
+
+        raw_state = row.get("state", fallback.state)
+        if raw_state not in ADMISSION_STATES:
+            raise SendAdmissionUnavailable()
+        state = raw_state
+        reason = str(row.get("reason_code") or row.get("reason") or fallback.reason)
+        epoch = row.get("state_epoch", fallback.state_epoch)
+        if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 1:
+            raise SendAdmissionUnavailable()
+        raw_hold = row.get("hold_until", fallback.hold_until)
+        hold = _aware_datetime(raw_hold) if raw_hold is not None else None
+        now = _aware_datetime(row["db_now"]) if "db_now" in row else datetime.now(UTC)
+        if state == "open" and hold is not None:
+            raise SendAdmissionUnavailable()
+        return AdmissionControlState(
+            state,
+            reason,
+            epoch,
+            _budget_mode(
+                state,
+                active_hold=hold is not None and hold > now,
+                hysteresis_active=reason in {"capacity_hysteresis", "recovery_hold"},
+            ),
+            hold,
+        )
 
     @staticmethod
     def _can_adopt(
-        candidate_state: str,
-        candidate_reason: str,
+        candidate: AdmissionControlState,
         winner: dict[str, object],
     ) -> bool:
         from datetime import UTC, datetime
@@ -539,18 +638,21 @@ class SendAdmissionGuard:
             return False
         if valid_until < db_now:
             return False
-        winner_state = str(winner.get("state") or "")
-        winner_reason = str(winner.get("reason_code") or winner.get("reason") or "")
-        if winner_state == candidate_state and winner_reason == candidate_reason:
-            return True
-        return _state_rank(winner_state) >= _state_rank(candidate_state)
-
-    @staticmethod
-    def _control_epoch(row: dict[str, object], default: int) -> int:
-        raw = row.get("state_epoch")
-        if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 1:
-            return raw
-        return default
+        if not {"state", "state_epoch", "hold_until"}.issubset(winner):
+            return False
+        try:
+            adopted = SendAdmissionGuard._row_control(winner, candidate)
+        except SendAdmissionUnavailable:
+            return False
+        if _state_rank(adopted.state) < _state_rank(candidate.state):
+            return False
+        if adopted.state_epoch < candidate.state_epoch:
+            return False
+        return not (
+            adopted.state == candidate.state == "degraded"
+            and candidate.budget_mode == "recovery"
+            and adopted.budget_mode != "recovery"
+        )
 
     async def _persist_control_state(
         self,
@@ -558,10 +660,18 @@ class SendAdmissionGuard:
         *,
         load_control: Callable[..., Awaitable[object]] | None,
         save_control: Callable[..., Awaitable[object]] | None,
-    ) -> tuple[AdmissionState, str, int]:
+    ) -> AdmissionControlState:
         if load_control is None and save_control is None:
-            state, reason = evaluate_capacity(facts, limits=self.limits)
-            return state, reason, 1
+            capacity = evaluate_capacity(facts, limits=self.limits)
+            return AdmissionControlState(
+                capacity.state,
+                capacity.capacity_reason,
+                1,
+                _budget_mode(
+                    capacity.state, active_hold=False, hysteresis_active=capacity.hysteresis_active
+                ),
+                None,
+            )
         last_error: Exception | None = None
         for _ in range(_CONTROL_CAS_ATTEMPTS):
             try:
@@ -572,42 +682,34 @@ class SendAdmissionGuard:
             if persisted is not None and not isinstance(persisted, dict):
                 self._snapshot = None
                 raise SendAdmissionUnavailable()
-            state, reason, epoch, hold = self._compute_from_persisted(
+            candidate = self._compute_from_persisted(
                 facts,
                 persisted if isinstance(persisted, dict) else None,
             )
             if save_control is None:
-                return state, reason, epoch
+                return candidate
             try:
                 saved = await save_control(
-                    state=state,
-                    reason=reason,
-                    hold_until=hold,
-                    epoch=epoch,
+                    state=candidate.state,
+                    reason=candidate.reason,
+                    hold_until=candidate.hold_until,
+                    epoch=candidate.state_epoch,
                 )
             except Exception as exc:
                 last_error = exc
                 if type(exc).__name__ == "AdmissionControlConflict":
                     winner = getattr(exc, "winner", None)
-                    if isinstance(winner, dict) and self._can_adopt(state, reason, winner):
-                        adopted = str(winner.get("state") or state)
-                        adopted_reason = str(
-                            winner.get("reason_code") or winner.get("reason") or reason
-                        )
-                        if adopted in ADMISSION_STATES:
-                            return adopted, adopted_reason, self._control_epoch(winner, epoch)
+                    if isinstance(winner, dict) and self._can_adopt(candidate, winner):
+                        return self._row_control(winner, candidate)
                     continue
                 self._snapshot = None
                 raise SendAdmissionUnavailable() from exc
             if isinstance(saved, dict):
                 outcome = str(saved.get("outcome") or "saved")
-                saved_state = str(saved.get("state") or state)
-                saved_reason = str(saved.get("reason_code") or saved.get("reason") or reason)
-                if outcome == "adopted" and not self._can_adopt(state, reason, saved):
+                if outcome == "adopted" and not self._can_adopt(candidate, saved):
                     continue
-                if saved_state in ADMISSION_STATES:
-                    return saved_state, saved_reason, self._control_epoch(saved, epoch)
-            return state, reason, epoch
+                return self._row_control(saved, candidate)
+            return candidate
         self._snapshot = None
         raise SendAdmissionUnavailable() from last_error
 
@@ -639,7 +741,7 @@ class SendAdmissionGuard:
                 decision.reason,
                 decision.retry_after_s,
             )
-        if snap.reason != "recovery_hold" or estimated_segments is None:
+        if snap.budget_mode != "recovery" or estimated_segments is None:
             return
         consume = getattr(self.repository, "consume_recovery_budget", None)
         if consume is None:

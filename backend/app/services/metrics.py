@@ -198,7 +198,7 @@ def render_prometheus(snapshot: MetricsSnapshot) -> bytes:
 
     admission = Gauge(
         "sms_send_admission",
-        "Send admission capacity band inferred from Outbox and overdue facts.",
+        "Persisted send admission state; expired or missing control state is closed.",
         ("state",),
         registry=registry,
     )

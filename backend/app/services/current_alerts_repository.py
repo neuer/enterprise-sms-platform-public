@@ -18,6 +18,11 @@ from app.services.current_alerts import (
     RawSpillAlertFact,
     UsageDriftFact,
 )
+from app.services.outbox import (
+    OUTBOX_CAPACITY_ACTIVE_SQL,
+    OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL,
+    OUTBOX_CAPACITY_AGE_SQL,
+)
 from app.services.queue_pause import parse_queue_pause_claim
 from app.services.runtime_policy import RuntimePolicy
 from app.settings import Settings, get_settings
@@ -125,7 +130,7 @@ class SqlCurrentAlertRepository:
 
                 operation_result = await connection.execute(
                     text(
-                        """
+                        f"""
                         SELECT balance.balance,balance.fetched_at balance_checked_at,
                           uncertain.*,callback.*,outbox.*,raw.*
                         FROM (
@@ -143,8 +148,10 @@ class SqlCurrentAlertRepository:
                         CROSS JOIN (
                           SELECT count(*) FILTER (WHERE state='dead') outbox_dead,
                             min(created_at) FILTER (WHERE state='dead') outbox_dead_since,
-                            count(*) FILTER (WHERE state<>'dead') outbox_active,
-                            min(created_at) FILTER (WHERE state<>'dead') outbox_oldest_active_at,
+                            count(*) FILTER (WHERE {OUTBOX_CAPACITY_ACTIVE_SQL}) outbox_active,
+                            min({OUTBOX_CAPACITY_AGE_SQL}) FILTER (
+                              WHERE {OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL}
+                            ) outbox_oldest_active_at,
                             count(*) FILTER (WHERE state<>'dead' AND queue='realtime')
                               realtime_queue,
                             count(*) FILTER (WHERE state<>'dead' AND queue='bulk') bulk_queue
