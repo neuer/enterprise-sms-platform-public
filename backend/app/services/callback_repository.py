@@ -717,6 +717,7 @@ class SqlCallbackRepository:
                             dedup_key=f"callback:{task_id}:attempt:{int(next_retry)}",
                         ),
                         available_delay_seconds=delay_s,
+                        capacity_wait="callback_retry",
                     )
         finally:
             await engine.dispose()

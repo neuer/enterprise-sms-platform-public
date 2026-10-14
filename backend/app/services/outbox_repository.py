@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -16,7 +16,7 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import current_correlation_id
 from app.core.runtime_resources import database_engine
 from app.services.outbox import (
-    OUTBOX_CAPACITY_ACTIVE_SQL,
+    OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL,
     OUTBOX_CAPACITY_AGE_SQL,
     OutboxClaim,
     OutboxContractConflict,
@@ -73,12 +73,23 @@ async def enqueue_outbox(
     spec: OutboxEventSpec,
     *,
     available_delay_seconds: int = 0,
+    capacity_wait: Literal["callback_retry"] | None = None,
 ) -> UUID:
     """在调用方业务事务中插入事件；同 dedup_key 必须保持完全相同合同。"""
 
     validate_spec(spec)
     if not 0 <= available_delay_seconds <= 604800:
         raise ValueError("invalid outbox availability delay")
+    if capacity_wait is not None and (
+        capacity_wait != "callback_retry"
+        or available_delay_seconds <= 0
+        or spec.event_type != "callback.ready"
+        or spec.aggregate_type != "callback_task"
+        or spec.task_name != "app.tasks.deliver_callback"
+        or spec.queue != "callback"
+        or not re.fullmatch(r"callback:[1-9][0-9]*:attempt:[1-9][0-9]*", spec.dedup_key)
+    ):
+        raise ValueError("invalid outbox capacity wait")
     event_id = uuid4()
     correlation_id = spec.correlation_id or current_correlation_id()
     assert correlation_id is not None
@@ -87,11 +98,13 @@ async def enqueue_outbox(
             """
             INSERT INTO outbox_event(
               id,correlation_id,dedup_key,event_type,aggregate_type,aggregate_id,
-              task_name,queue,args,max_attempts,next_attempt_at
+              task_name,queue,args,max_attempts,next_attempt_at,capacity_eligible_at
             ) VALUES(
               :id,:correlation_id,:dedup_key,:event_type,:aggregate_type,:aggregate_id,
               :task_name,:queue,CAST(:args AS jsonb),:max_attempts,
-              now()+make_interval(secs=>:available_delay_seconds)
+              now()+make_interval(secs=>:available_delay_seconds),
+              CASE WHEN :business_wait THEN now()+make_interval(
+                secs=>:available_delay_seconds) ELSE NULL END
             )
             ON CONFLICT(dedup_key) DO UPDATE
               SET dedup_key=outbox_event.dedup_key
@@ -111,6 +124,7 @@ async def enqueue_outbox(
             "args": json.dumps(spec.args, separators=(",", ":")),
             "max_attempts": spec.max_attempts,
             "available_delay_seconds": available_delay_seconds,
+            "business_wait": capacity_wait is not None,
         },
     )
     row = result.mappings().one()
@@ -386,6 +400,7 @@ class SqlOutboxRepository:
             """
             UPDATE outbox_event SET state='pending',
               attempts=GREATEST(0,attempts-1),next_attempt_at=:next_attempt_at,
+              capacity_eligible_at=:next_attempt_at,
               last_error='MarketWindowDeferred',
               lease_id=NULL,lease_expires_at=NULL,updated_at=now()
             WHERE id=:event_id AND state='processing' AND lease_id=:lease_id
@@ -436,7 +451,7 @@ class SqlOutboxRepository:
                             failed_attempts,
                           COALESCE(EXTRACT(epoch FROM (
                             now()-min({OUTBOX_CAPACITY_AGE_SQL})
-                              FILTER (WHERE {OUTBOX_CAPACITY_ACTIVE_SQL})
+                              FILTER (WHERE {OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL})
                           ))::integer,0) oldest_age_seconds
                         FROM outbox_event
                         """

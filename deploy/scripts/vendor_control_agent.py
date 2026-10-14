@@ -15,11 +15,13 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Awaitable, Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from threading import BoundedSemaphore, Lock
+from typing import Any, Protocol, TypeVar
 
 from vendor_control_journal import (
     JOURNALED_OPERATIONS,
@@ -38,6 +40,7 @@ from vendor_credential_store import (
     VendorCredentials as StoredVendorCredentials,
 )
 from vendor_seal_sessions import (
+    AgentLimits,
     SealedCredentialEnvelope,
     SealSessionError,
     SealSessionManager,
@@ -122,6 +125,14 @@ class SealSessions(Protocol):
         operation: str,
         actor: str,
     ) -> Any: ...
+
+    def is_active(self, session_id: str, *, operation: str, actor: str) -> bool: ...
+
+    def discard(self, session_id: str) -> None: ...
+
+    def mark_delivery_started(self, session_id: str) -> None: ...
+
+    def cleanup(self) -> None: ...
 
 
 class ControlJournal(Protocol):
@@ -417,6 +428,7 @@ class VendorControlAgent:
         state_path: Path | None = None,
         state_expected_uid: int = 0,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        limits: AgentLimits | None = None,
     ) -> None:
         self.runner = runner
         self.credential_store = credential_store
@@ -436,6 +448,7 @@ class VendorControlAgent:
         self.state_path = state_path
         self.state_expected_uid = state_expected_uid
         self.clock = clock
+        self.limits = limits or AgentLimits()
         try:
             configured = self.credential_store.status().configured
         except CredentialStoreError:
@@ -443,7 +456,9 @@ class VendorControlAgent:
         self._mode = "inactive" if configured else "setup_required"
         self._pause_kind: str | None = None
         self._recipient_count = 0
-        self._completed: dict[str, tuple[str, ControlResponse]] = {}
+        self._completed: dict[str, tuple[str, ControlResponse, tuple[str, str] | None]] = {}
+        self._completed_lock = Lock()
+        self._inflight: dict[str, tuple[str, tuple[str, str] | None]] = {}
 
     def _refresh_host_state(self) -> None:
         try:
@@ -776,9 +791,7 @@ class VendorControlAgent:
                     {},
                 )
             result = (
-                self.runner.run(
-                    operation, expected_pause_kind=request.body["pause_kind"]
-                )
+                self.runner.run(operation, expected_pause_kind=str(request.body["pause_kind"]))
                 if operation == "resume"
                 else self.runner.run(operation)
             )
@@ -922,6 +935,68 @@ class VendorControlAgent:
         peer_gid: int,
     ) -> ControlResponse:
         self._require_peer(peer_uid, peer_gid, request.operation)
+        if request.operation in {"health", "status"}:
+            return self._handle_reserved(request)
+        context = None
+        if request.operation == "create_seal_session":
+            operation, actor = request.body.get("operation"), request.body.get("actor")
+            if (
+                operation not in {"install_credentials", "rotate_credentials"}
+                or type(actor) is not str
+                or not actor
+                or len(actor.encode("utf-8")) > 256
+            ):
+                return ControlResponse(
+                    request.operation_id, "error", "CONTROL_OPERATION_REJECTED", {}
+                )
+            context = (str(operation), actor)
+        identity = (request.operation, context)
+        with self._completed_lock:
+            cached = self._completed.get(request.operation_id)
+            running = self._inflight.get(request.operation_id)
+            if (
+                cached is not None
+                and (cached[0], cached[2]) != identity
+                or running is not None
+                and running != identity
+            ):
+                return ControlResponse(request.operation_id, "error", "OPERATION_ID_CONFLICT", {})
+            if running is not None:
+                return ControlResponse(
+                    request.operation_id, "error", "CONTROL_OPERATION_IN_PROGRESS", {}
+                )
+            if cached is None:
+                if len(self._inflight) >= self.limits.max_inflight_operations:
+                    return ControlResponse(
+                        request.operation_id, "error", "CONTROL_OPERATION_REJECTED", {}
+                    )
+                self._inflight[request.operation_id] = identity
+        if cached is not None:
+            if context is not None and (
+                cached[1].status != "ok"
+                or not self.seal_sessions.is_active(
+                    str(cached[1].body.get("session_id", "")),
+                    operation=context[0],
+                    actor=context[1],
+                )
+            ):
+                return ControlResponse(
+                    request.operation_id, "error", "CONTROL_OPERATION_REJECTED", {}
+                )
+            return cached[1]
+        try:
+            return self._handle_reserved(request, context=context)
+        finally:
+            with self._completed_lock:
+                self._inflight.pop(request.operation_id, None)
+
+    def _handle_reserved(
+        self,
+        request: ControlRequest,
+        *,
+        context: tuple[str, str] | None = None,
+    ) -> ControlResponse:
+        """长操作只占自己的 operation 槽，绝不持有会话或缓存锁。"""
         if request.operation == "status" and self.journal is not None:
             try:
                 recorded = self.journal.get(request.operation_id)
@@ -940,16 +1015,6 @@ class VendorControlAgent:
                     {"operation_status": "not_found"},
                 )
             return self._journal_response(recorded)
-        cached = self._completed.get(request.operation_id)
-        if cached is not None:
-            if cached[0] == request.operation:
-                return cached[1]
-            return ControlResponse(
-                request.operation_id,
-                "error",
-                "OPERATION_ID_CONFLICT",
-                {},
-            )
         if request.operation in JOURNALED_OPERATIONS and self.journal is not None:
             try:
                 recorded, created = self.journal.begin(
@@ -1057,9 +1122,11 @@ class VendorControlAgent:
                 request,
                 self._safe_dispatch(request),
             )
-        if len(self._completed) >= _MAX_COMPLETED:
-            self._completed.pop(next(iter(self._completed)))
-        self._completed[request.operation_id] = (request.operation, response)
+        if request.operation not in {"health", "status"}:
+            with self._completed_lock:
+                if len(self._completed) >= _MAX_COMPLETED:
+                    self._completed.pop(next(iter(self._completed)))
+                self._completed[request.operation_id] = (request.operation, response, context)
         return response
 
 
@@ -1072,32 +1139,208 @@ def _peer_credentials(writer: asyncio.StreamWriter) -> tuple[int, int]:
     return uid, gid
 
 
+class ExecutorFull(RuntimeError):
+    """执行中与排队工作已达固定总预算。"""
+
+
+T = TypeVar("T")
+
+
+class AgentExecutor:
+    """提交前预留，真实线程完成才释放；协程取消不会补发名额。"""
+
+    def __init__(self, workers: int, pending: int, name: str) -> None:
+        self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix=name)
+        self._slots = BoundedSemaphore(pending)
+        self._lock = Lock()
+        self._closed = False
+        self.pending = 0
+        self.peak_pending = 0
+
+    async def run(self, work: Callable[[], T]) -> T:
+        with self._lock:
+            if self._closed or not self._slots.acquire(blocking=False):
+                raise ExecutorFull("控制执行容量暂不可用")
+            try:
+                future = self._pool.submit(work)
+            except BaseException:
+                self._slots.release()
+                raise
+            self.pending += 1
+            self.peak_pending = max(self.peak_pending, self.pending)
+
+        def finished(_future: object) -> None:
+            with self._lock:
+                self.pending -= 1
+                self._slots.release()
+
+        future.add_done_callback(finished)
+        wrapped = asyncio.wrap_future(future)
+        # 调用方已离开也观察异常，不把底层文本写入事件循环日志。
+        wrapped.add_done_callback(lambda item: None if item.cancelled() else item.exception())
+        return await asyncio.shield(wrapped)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+        self._pool.shutdown(wait=False, cancel_futures=True)
+
+
+class _ResultDelivery:
+    """仅在响应写入尚未开始时取消会话；写入开始后结果不确定，保留至 TTL。"""
+
+    def __init__(self, agent: VendorControlAgent, request: ControlRequest) -> None:
+        self.agent = agent
+        self.request = request
+        self._lock = Lock()
+        self._abandoned = False
+        self._started = False
+        self._result: ControlResponse | None = None
+
+    def _discard(self, response: ControlResponse | None) -> None:
+        if (
+            response is not None
+            and response.status == "ok"
+            and self.request.operation == "create_seal_session"
+        ):
+            self.agent.seal_sessions.discard(str(response.body["session_id"]))
+
+    def complete(self, response: ControlResponse) -> ControlResponse:
+        with self._lock:
+            self._result = response
+            abandoned = self._abandoned
+        if abandoned:
+            self._discard(response)
+        return response
+
+    def begin(self) -> None:
+        with self._lock:
+            self._started = True
+            response = self._result
+        if (
+            response is not None
+            and response.status == "ok"
+            and self.request.operation == "create_seal_session"
+        ):
+            self.agent.seal_sessions.mark_delivery_started(str(response.body["session_id"]))
+
+    def abandon(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self._abandoned = True
+            response = self._result
+        self._discard(response)
+
+
+class ControlServer:
+    """同步接入限额先于 task 创建；只读 peer 与业务 peer 各有连接预算。"""
+
+    def __init__(self, agent: VendorControlAgent, limits: AgentLimits | None = None) -> None:
+        self.agent = agent
+        self.limits = limits or agent.limits
+        self.connections = {"api": 0, "status": 0}
+        self.peak_connections = 0
+        self.tasks: set[asyncio.Task[None]] = set()
+        self.crypto = AgentExecutor(
+            self.limits.crypto_workers, self.limits.crypto_pending, "vendor-seal"
+        )
+        self.operations = AgentExecutor(
+            self.limits.operation_workers, self.limits.operation_pending, "vendor-operation"
+        )
+        self.status = AgentExecutor(
+            self.limits.status_workers, self.limits.status_pending, "vendor-status"
+        )
+        self.heartbeat = AgentExecutor(1, 1, "vendor-heartbeat")
+        self._closed = False
+
+    def accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            uid, gid = _peer_credentials(writer)
+            # 两种批准身份都可 health；解码后还必须按真实 operation 再授权。
+            self.agent._require_peer(uid, gid, "health")
+        except (PeerDenied, OSError):
+            writer.close()
+            return
+        lane = (
+            "api" if (uid, gid) == (self.agent.expected_uid, self.agent.expected_gid) else "status"
+        )
+        cap = self.limits.api_connections if lane == "api" else self.limits.status_connections
+        if self._closed or self.connections[lane] >= cap:
+            writer.close()
+            return
+        self.connections[lane] += 1
+        self.peak_connections = max(self.peak_connections, sum(self.connections.values()))
+        task = asyncio.create_task(_serve_client(self, reader, writer, uid=uid, gid=gid))
+        self.tasks.add(task)
+
+        def done(item: asyncio.Task[None]) -> None:
+            self.tasks.discard(item)
+            self.connections[lane] -= 1
+            writer.close()  # 包括在 coroutine 首次执行前就取消的情况。
+            if not item.cancelled():
+                item.exception()
+
+        task.add_done_callback(done)
+
+    def executor(self, operation: str) -> AgentExecutor:
+        if operation in {"health", "status"}:
+            return self.status
+        if operation == "create_seal_session":
+            return self.crypto
+        return self.operations
+
+    async def close(self) -> None:
+        self._closed = True
+        for task in tuple(self.tasks):
+            task.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        for pool in (self.crypto, self.operations, self.status, self.heartbeat):
+            pool.close()
+
+
 async def _serve_client(
-    agent: VendorControlAgent,
+    server: ControlServer,
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
+    *,
+    uid: int,
+    gid: int,
 ) -> None:
+    delivery: _ResultDelivery | None = None
     try:
-        uid, gid = _peer_credentials(writer)
-        header = await reader.readexactly(4)
-        declared = struct.unpack("!I", header)[0]
-        if declared < 1 or declared > MAX_FRAME_BYTES:
-            raise ProtocolError("请求帧长度无效")
-        request = decode_request(header + await reader.readexactly(declared))
-        response = await asyncio.to_thread(
-            agent.handle,
-            request,
-            peer_uid=uid,
-            peer_gid=gid,
-        )
+        # 同一个绝对读取期限覆盖 header 与 body，涓流字节不能刷新期限。
+        async with asyncio.timeout(server.limits.frame_timeout_s):
+            header = await reader.readexactly(4)
+            declared = struct.unpack("!I", header)[0]
+            if declared < 1 or declared > MAX_FRAME_BYTES:
+                raise ProtocolError("请求帧长度无效")
+            request = decode_request(header + await reader.readexactly(declared))
+        server.agent._require_peer(uid, gid, request.operation)
+        delivery = _ResultDelivery(server.agent, request)
+
+        def handle() -> ControlResponse:
+            return delivery.complete(server.agent.handle(request, peer_uid=uid, peer_gid=gid))
+
+        try:
+            response = await server.executor(request.operation).run(handle)
+        except ExecutorFull:
+            response = ControlResponse(
+                request.operation_id, "error", "CONTROL_OPERATION_REJECTED", {}
+            )
+        delivery.begin()
         writer.write(encode_response(response))
-        await writer.drain()
-    except (PeerDenied, ProtocolError, asyncio.IncompleteReadError, OSError):
+        async with asyncio.timeout(server.limits.write_timeout_s):
+            await writer.drain()
+    except (PeerDenied, ProtocolError, asyncio.IncompleteReadError, OSError, TimeoutError):
         pass
     finally:
+        if delivery is not None:
+            delivery.abandon()
         writer.close()
-        with suppress(OSError):
-            await writer.wait_closed()
+        with suppress(OSError, TimeoutError):
+            async with asyncio.timeout(server.limits.close_timeout_s):
+                await writer.wait_closed()
 
 
 def prepare_socket_directory(
@@ -1150,13 +1393,26 @@ async def heartbeat_loop(
     agent: HeartbeatWriter,
     *,
     sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    executor: AgentExecutor | None = None,
 ) -> None:
     """每 10 秒刷新安全投影；单次写失败不终止后续重试。"""
 
+    selected = executor or AgentExecutor(1, 1, "vendor-heartbeat")
+    try:
+        while True:
+            with suppress(Exception):
+                await selected.run(agent.write_heartbeat)
+            await sleeper(HEARTBEAT_INTERVAL_SECONDS)
+    finally:
+        if executor is None:
+            selected.close()
+
+
+async def session_cleanup_loop(sessions: SealSessions, limits: AgentLimits) -> None:
+    """无人再创建时也及时释放到期私钥引用。"""
     while True:
-        with suppress(Exception):
-            agent.write_heartbeat()
-        await sleeper(HEARTBEAT_INTERVAL_SECONDS)
+        sessions.cleanup()
+        await asyncio.sleep(limits.cleanup_interval_s)
 
 
 async def serve(agent: VendorControlAgent, *, socket_path: Path = CONTROL_SOCKET) -> None:
@@ -1169,20 +1425,27 @@ async def serve(agent: VendorControlAgent, *, socket_path: Path = CONTROL_SOCKET
         expected_uid=0,
         expected_gid=agent.expected_gid,
     )
+    resources = ControlServer(agent)
     server = await asyncio.start_unix_server(
-        lambda reader, writer: _serve_client(agent, reader, writer),
+        resources.accept,
         path=socket_path,
         limit=MAX_FRAME_BYTES + 4,
+        backlog=resources.limits.api_connections + resources.limits.status_connections,
     )
     secure_socket(socket_path, expected_uid=0, expected_gid=agent.expected_gid)
-    heartbeat = asyncio.create_task(heartbeat_loop(agent), name="vendor-control-heartbeat")
+    heartbeat = asyncio.create_task(
+        heartbeat_loop(agent, executor=resources.heartbeat),
+        name="vendor-control-heartbeat",
+    )
+    cleanup = asyncio.create_task(session_cleanup_loop(agent.seal_sessions, resources.limits))
     try:
         async with server:
             await server.serve_forever()
     finally:
         heartbeat.cancel()
-        with suppress(asyncio.CancelledError):
-            await heartbeat
+        cleanup.cancel()
+        await asyncio.gather(heartbeat, cleanup, return_exceptions=True)
+        await resources.close()
 
 
 def _build_parser() -> argparse.ArgumentParser:

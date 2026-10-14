@@ -1,6 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.110  2026-10-12
+-- v1.6.112  2026-10-14
+-- v1.6.112：准入容量滞回与有期限的恢复保持分别约束，不用原因码决定预算。
+-- v1.6.111：Outbox 业务等待计龄锚点独立于基础设施退避；NULL 保守取创建时刻。
 -- v1.6.110：业务事务内持有授权主体锁，连接故障不留下授权与业务的部分提交。
 -- v1.6.109：发送事务失败的固定分类计数，最小只追加/聚合读取权限。
 -- v1.6.108：轮询租约故障以固定原因记入 worker_lease_event。
@@ -1270,7 +1272,9 @@ CREATE TABLE send_admission_state (
     CONSTRAINT ck_send_admission_open_without_hold
       CHECK (state <> 'open' OR hold_until IS NULL),
     CONSTRAINT ck_send_admission_recovery_hold_state
-      CHECK (reason_code <> 'recovery_hold' OR state = 'degraded')
+      CHECK (reason_code <> 'recovery_hold' OR (state = 'degraded' AND hold_until IS NOT NULL)),
+    CONSTRAINT ck_send_admission_hysteresis_state
+      CHECK (reason_code <> 'capacity_hysteresis' OR state IN ('closed','degraded'))
 );
 CREATE TABLE send_runtime_heartbeat (
     component VARCHAR(32) PRIMARY KEY,
@@ -2249,6 +2253,13 @@ CREATE TABLE outbox_event (
     max_attempts   SMALLINT     NOT NULL DEFAULT 12
                    CHECK (max_attempts BETWEEN 1 AND 100),
     next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    capacity_eligible_at TIMESTAMPTZ
+      CONSTRAINT ck_outbox_capacity_clock CHECK (
+        capacity_eligible_at IS NULL OR (
+          capacity_eligible_at >= created_at
+          AND event_type IN ('callback.ready','chunk.ready')
+        )
+      ),
     lease_id       UUID,
     lease_expires_at TIMESTAMPTZ,
     published_at   TIMESTAMPTZ,
@@ -3492,7 +3503,7 @@ GRANT SELECT (state, action, source_channel, confirmed_at, approved_at,
     ON sms_uncertain_resolution TO sms_metrics;
 GRANT SELECT (generation, recovered, created_at)
     ON sms_uncertain_child TO sms_metrics;
-GRANT SELECT (state, state_epoch, hold_until, valid_until)
+GRANT SELECT (scope, state, state_epoch, hold_until, valid_until)
     ON send_admission_state TO sms_metrics;
 GRANT SELECT (component, last_heartbeat_at, last_success_at)
     ON send_runtime_heartbeat TO sms_metrics;
@@ -3506,7 +3517,8 @@ GRANT SELECT (kind, mismatched_dimensions, absolute_delta)
     ON usage_projection_drift TO sms_metrics;
 GRANT SELECT (lease_id, lease_expires_at)
     ON export_task TO sms_metrics;
-GRANT SELECT (queue, state, created_at, event_type, last_error, next_attempt_at)
+GRANT SELECT (queue, state, created_at, event_type, last_error, next_attempt_at,
+              capacity_eligible_at)
     ON outbox_event TO sms_metrics;
 GRANT SELECT (outcome, created_at)
     ON sms_vendor_attempt TO sms_metrics;

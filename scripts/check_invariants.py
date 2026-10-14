@@ -424,7 +424,7 @@ def check_vendor_live_invariants() -> None:
         '"operation": operation',
         '"actor": _context(actor)',
         '"expires_at": expires_at.astimezone(UTC).isoformat()',
-        "if (operation, actor) != (session[2], session[3])",
+        "if (operation, actor) != (session.operation, session.actor)",
     )
 
     uat_service = require_fragments(

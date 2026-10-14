@@ -137,7 +137,46 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0122_poll_lease_events",
         "0123_send_db_failure_events",
         "0124_business_authorization_lock",
+        "0125_outbox_capacity_clock",
+        "0126_admission_recovery_mode",
     ]
+
+
+@pytest.mark.parametrize(
+    "statement,accepted",
+    [
+        ("SET LOCAL lock_timeout='5s'", True),
+        ("SET LOCAL statement_timeout='30s'", True),
+        ("SET LOCAL statement_timeout='120000ms'", True),
+        ("SET LOCAL lock_timeout='1ms'", True),
+        ("SET LOCAL lock_timeout='0s'", False),
+        ("SET LOCAL statement_timeout='-1s'", False),
+        ("SET LOCAL statement_timeout='121s'", False),
+        ("SET LOCAL lock_timeout='120001ms'", False),
+        ("SET statement_timeout='30s'", False),
+        ("SET LOCAL statement_timeout=0", False),
+        ("SET LOCAL role='sms_owner'", False),
+        ("SET LOCAL statement_timeout='30s'; SET LOCAL role='sms_owner'", False),
+    ],
+)
+def test_only_bounded_transaction_local_timeouts_are_expand_only(
+    tmp_path: Path, statement: str, accepted: bool,
+) -> None:
+    (tmp_path / "0001_base.py").write_text(
+        "revision='0001_base'\ndown_revision=None\ndef upgrade():\n    pass\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "0002_timeout.py").write_text(
+        "from alembic import op\nrevision='0002_timeout'\n"
+        "down_revision='0001_base'\ndef upgrade():\n"
+        f"    op.execute({statement!r})\n",
+        encoding="utf-8",
+    )
+    if accepted:
+        assert len(check_expand_only(tmp_path, "0001_base", "0002_timeout")) == 1
+    else:
+        with pytest.raises(ExpandOnlyError, match="statically confirm"):
+            check_expand_only(tmp_path, "0001_base", "0002_timeout")
 
 
 def test_accepts_additive_row_security_controls(tmp_path: Path) -> None:

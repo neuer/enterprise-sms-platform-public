@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from app.services.send_admission import (
+    CapacityEvaluation,
     SendAdmissionFacts,
     SendAdmissionGuard,
     SendAdmissionLimits,
@@ -36,32 +37,55 @@ def facts(**overrides: Any) -> SendAdmissionFacts:
 
 
 def test_capacity_bands_use_outbox_not_broker() -> None:
-    assert evaluate_capacity(facts()) == ("open", "ok")
-    assert evaluate_capacity(facts(outbox_active=200)) == ("degraded", "outbox_backlog")
-    assert evaluate_capacity(facts(outbox_active=2000)) == ("closed", "outbox_backlog")
-    assert evaluate_capacity(facts(outbox_oldest_age_s=300)) == ("degraded", "outbox_oldest")
-    assert evaluate_capacity(facts(outbox_oldest_age_s=600)) == ("closed", "outbox_oldest")
-    assert evaluate_capacity(facts(outbox_dead=10)) == ("degraded", "outbox_dead")
-    assert evaluate_capacity(facts(outbox_dead=50)) == ("closed", "outbox_dead")
-    assert evaluate_capacity(facts(uncertain_overdue=20)) == ("degraded", "uncertain_overdue")
-    assert evaluate_capacity(facts(callback_dead=20)) == ("degraded", "callback_backlog")
-    assert evaluate_capacity(facts(callback_dead=200)) == ("closed", "callback_backlog")
-    assert evaluate_capacity(facts(vendor_failures=3)) == ("degraded", "vendor_failures")
-    assert evaluate_capacity(facts(realtime_paused=True)) == ("degraded", "queue_paused")
-    assert evaluate_capacity(facts(realtime_paused=True, bulk_paused=True)) == (
-        "closed",
-        "queues_paused",
+    assert evaluate_capacity(facts()) == CapacityEvaluation("open", "ok", False)
+    assert evaluate_capacity(facts(outbox_active=200)) == CapacityEvaluation(
+        "degraded", "outbox_backlog", False
     )
-    assert evaluate_capacity(facts(dispatcher_heartbeat_stale=True)) == (
-        "closed",
-        "dispatcher_heartbeat_stale",
+    assert evaluate_capacity(facts(outbox_active=2000)) == CapacityEvaluation(
+        "closed", "outbox_backlog", False
     )
-    assert evaluate_capacity(facts(realtime_heartbeat_stale=True)) == ("open", "ok")
-    assert evaluate_capacity(facts(bulk_heartbeat_stale=True)) == ("open", "ok")
-    assert evaluate_capacity(facts(realtime_heartbeat_stale=True, bulk_heartbeat_stale=True)) == (
-        "closed",
-        "send_lanes_heartbeat_stale",
+    assert evaluate_capacity(facts(outbox_oldest_age_s=300)) == CapacityEvaluation(
+        "degraded", "outbox_oldest", False
     )
+    assert evaluate_capacity(facts(outbox_oldest_age_s=600)) == CapacityEvaluation(
+        "closed", "outbox_oldest", False
+    )
+    assert evaluate_capacity(facts(outbox_dead=10)) == CapacityEvaluation(
+        "degraded", "outbox_dead", False
+    )
+    assert evaluate_capacity(facts(outbox_dead=50)) == CapacityEvaluation(
+        "closed", "outbox_dead", False
+    )
+    assert evaluate_capacity(facts(uncertain_overdue=20)) == CapacityEvaluation(
+        "degraded", "uncertain_overdue", False
+    )
+    assert evaluate_capacity(facts(callback_dead=20)) == CapacityEvaluation(
+        "degraded", "callback_backlog", False
+    )
+    assert evaluate_capacity(facts(callback_dead=200)) == CapacityEvaluation(
+        "closed", "callback_backlog", False
+    )
+    assert evaluate_capacity(facts(vendor_failures=3)) == CapacityEvaluation(
+        "degraded", "vendor_failures", False
+    )
+    assert evaluate_capacity(facts(realtime_paused=True)) == CapacityEvaluation(
+        "degraded", "queue_paused", False
+    )
+    assert evaluate_capacity(facts(realtime_paused=True, bulk_paused=True)) == CapacityEvaluation(
+        "closed", "queues_paused", False
+    )
+    assert evaluate_capacity(facts(dispatcher_heartbeat_stale=True)) == CapacityEvaluation(
+        "closed", "dispatcher_heartbeat_stale", False
+    )
+    assert evaluate_capacity(facts(realtime_heartbeat_stale=True)) == CapacityEvaluation(
+        "open", "ok", False
+    )
+    assert evaluate_capacity(facts(bulk_heartbeat_stale=True)) == CapacityEvaluation(
+        "open", "ok", False
+    )
+    assert evaluate_capacity(
+        facts(realtime_heartbeat_stale=True, bulk_heartbeat_stale=True)
+    ) == CapacityEvaluation("closed", "send_lanes_heartbeat_stale", False)
 
 
 def test_closed_recovery_creates_hold_and_returns_degraded() -> None:
@@ -153,20 +177,17 @@ def test_closed_recovery_creates_hold_and_returns_degraded() -> None:
 
 def test_recovery_hysteresis_holds_closed_then_degraded() -> None:
     recovering = facts(outbox_active=1200)
-    assert evaluate_capacity(recovering) == ("degraded", "outbox_backlog")
-    assert evaluate_capacity(recovering, previous_state="closed") == (
-        "closed",
-        "recovery_hold",
+    assert evaluate_capacity(recovering) == CapacityEvaluation("degraded", "outbox_backlog", False)
+    assert evaluate_capacity(recovering, previous_state="closed") == CapacityEvaluation(
+        "closed", "capacity_hysteresis", True
     )
     ramp = facts(outbox_active=120)
-    assert evaluate_capacity(ramp, previous_state="closed") == (
-        "degraded",
-        "recovery_hold",
+    assert evaluate_capacity(ramp, previous_state="closed") == CapacityEvaluation(
+        "degraded", "capacity_hysteresis", True
     )
-    assert evaluate_capacity(facts(outbox_active=50), previous_state="degraded") == (
-        "open",
-        "ok",
-    )
+    assert evaluate_capacity(
+        facts(outbox_active=50), previous_state="degraded"
+    ) == CapacityEvaluation("open", "ok", False)
 
 
 def test_degraded_allows_small_notice_but_rejects_market_and_bulk() -> None:
@@ -187,8 +208,8 @@ def test_degraded_allows_small_notice_but_rejects_market_and_bulk() -> None:
 @pytest.mark.parametrize(
     ("recipient_count", "allowed", "reason"),
     [
-        (1, True, "recovery_hold"),
-        (20, True, "recovery_hold"),
+        (1, True, "capacity_hysteresis"),
+        (20, True, "capacity_hysteresis"),
         (21, False, "recovery_volume"),
         (500, False, "recovery_volume"),
         (10_000, False, "recovery_volume"),
@@ -291,7 +312,7 @@ def test_lane_pause_closes_only_that_category() -> None:
 
 def test_lane_heartbeat_closes_only_that_category() -> None:
     bulk_only = facts(bulk_heartbeat_stale=True)
-    assert evaluate_capacity(bulk_only) == ("open", "ok")
+    assert evaluate_capacity(bulk_only) == CapacityEvaluation("open", "ok", False)
     notice = decide(bulk_only, category="notice", recipient_count=1)
     assert notice.allowed is True
     assert notice.reason == "ok"
@@ -317,7 +338,7 @@ def test_lane_heartbeat_closes_only_that_category() -> None:
 
 
 def test_snapshot_lane_heartbeat_does_not_close_the_other_lane() -> None:
-    snap = SendAdmissionSnapshot(1, 0.0, facts(bulk_heartbeat_stale=True), "open", "ok")
+    snap = SendAdmissionSnapshot(1, 0.0, facts(bulk_heartbeat_stale=True), "open", "ok", "normal")
     notice = authorize_from_snapshot(snap, category="notice", recipient_count=1)
     assert notice.allowed is True
     market = authorize_from_snapshot(snap, category="market", recipient_count=1)
@@ -329,6 +350,7 @@ def test_snapshot_lane_heartbeat_does_not_close_the_other_lane() -> None:
         facts(realtime_heartbeat_stale=True),
         "degraded",
         "recovery_hold",
+        "recovery",
     )
     verify = authorize_from_snapshot(hold, category="verify", recipient_count=1)
     assert verify.allowed is False
@@ -419,6 +441,101 @@ class ControlRepo(FakeFacts):
             "hold_until": values["hold_until"],
             "outcome": "saved",
         }
+
+
+@pytest.mark.asyncio
+async def test_capacity_hysteresis_has_no_fictitious_deadline() -> None:
+    now = datetime.now(UTC)
+    repo = ControlRepo(
+        facts(outbox_active=120),
+        row=_control_row(
+            now=now,
+            state="degraded",
+            reason="outbox_backlog",
+        ),
+    )
+    snap = await SendAdmissionGuard(repo).snapshot()
+    assert snap.reason == "capacity_hysteresis"
+    assert repo.saved[0]["hold_until"] is None
+
+
+@pytest.mark.asyncio
+async def test_active_hold_cost_survives_capacity_reason_change() -> None:
+    now = datetime.now(UTC)
+    repo = ControlRepo(
+        facts(outbox_active=220),
+        row=_control_row(
+            now=now,
+            state="degraded",
+            reason="recovery_hold",
+            hold_until=now + timedelta(seconds=45),
+        ),
+    )
+    guard = SendAdmissionGuard(repo)
+    with pytest.raises(SendAdmissionRejected) as error:
+        await guard.authorize(
+            category="notice",
+            channel="api",
+            recipient_count=1,
+            estimated_segments=21,
+            estimated_chunks=1,
+        )
+    assert error.value.reason == "recovery_segment_cost"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["capacity_hysteresis", "recovery_hold"])
+@pytest.mark.parametrize("count", [50, 120])
+async def test_stale_hysteresis_or_legacy_row_does_not_restart_timed_hold(reason, count) -> None:
+    now = datetime.now(UTC)
+    repo = ControlRepo(facts(outbox_active=count), row=_control_row(
+        now=now, state="degraded", reason=reason, valid_until=now-timedelta(seconds=1),
+    ))
+    snap = await SendAdmissionGuard(repo).snapshot()
+    assert snap.hold_until is None
+    assert snap.budget_mode == ("normal" if count == 50 else "recovery")
+    assert snap.reason == ("ok" if count == 50 else "capacity_hysteresis")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("winner_hold", [True, False])
+async def test_cas_winner_budget_is_rebuilt_and_cannot_weaken_hysteresis(winner_hold) -> None:
+    from app.services.send_admission_repository import AdmissionControlConflict
+
+    now = datetime.now(UTC)
+    winner = _control_row(now=now, state="degraded", reason="outbox_backlog", epoch=2,
+                          hold_until=now+timedelta(seconds=30) if winner_hold else None)
+
+    class Loser(ControlRepo):
+        async def save_control_state(self, **values):
+            raise AdmissionControlConflict(winner)
+
+    repo = Loser(facts(outbox_active=120), row=_control_row(
+        now=now, state="degraded", reason="capacity_hysteresis",
+    ))
+    guard = SendAdmissionGuard(repo)
+    if winner_hold:
+        snap = await guard.snapshot()
+        assert snap.reason == "outbox_backlog" and snap.budget_mode == "recovery"
+        assert snap.hold_until == winner["hold_until"]
+        with pytest.raises(SendAdmissionRejected) as error:
+            await guard.authorize(category="notice", channel="api", recipient_count=1,
+                                  estimated_segments=21)
+        assert error.value.reason == "recovery_segment_cost"
+    else:
+        with pytest.raises(SendAdmissionUnavailable):
+            await guard.snapshot()
+
+
+def test_invalid_snapshot_budget_mode_fails_closed() -> None:
+    from dataclasses import replace
+
+    snap = SendAdmissionSnapshot(1, 0.0, facts(), "degraded", "capacity_hysteresis", "recovery")
+    for mode in ("normal", "unknown"):
+        with pytest.raises(SendAdmissionUnavailable):
+            authorize_from_snapshot(
+                replace(snap, budget_mode=mode), category="notice", recipient_count=1,
+            )
 
 
 @pytest.mark.asyncio
@@ -1201,7 +1318,7 @@ def test_send_worker_heartbeat_components_follow_queue_flags() -> None:
 @pytest.mark.asyncio
 async def test_authorize_keeps_recovery_hold_from_snapshot() -> None:
     healthy = facts()
-    snap = SendAdmissionSnapshot(1, 0.0, healthy, "degraded", "recovery_hold")
+    snap = SendAdmissionSnapshot(1, 0.0, healthy, "degraded", "recovery_hold", "recovery")
     notice = authorize_from_snapshot(snap, category="notice", recipient_count=20)
     assert notice.allowed is True
     assert notice.state == "degraded"
@@ -1387,7 +1504,7 @@ class RecoveryBudgetFacts(FakeFacts):
 
 @pytest.mark.asyncio
 async def test_recovery_budget_is_shared_and_bound_to_epoch() -> None:
-    shared: dict[int, int] = {}
+    shared: dict[str, int] = {}
 
     class SharedBudget(RecoveryBudgetFacts):
         async def consume_recovery_budget(self, **values: object) -> bool:
@@ -1395,10 +1512,10 @@ async def test_recovery_budget_is_shared_and_bound_to_epoch() -> None:
             epoch = int(values["epoch"])
             assert epoch == self.epoch
             recipients = int(values["recipients"])
-            used = shared.get(epoch, 0)
+            used = shared.get("used", 0)
             if used + recipients > 20:
                 return False
-            shared[epoch] = used + recipients
+            shared["used"] = used + recipients
             return True
 
     first = SharedBudget(epoch=7)
@@ -1419,12 +1536,13 @@ async def test_recovery_budget_is_shared_and_bound_to_epoch() -> None:
     assert rejected.value.reason == "recovery_rate"
     assert rejected.value.retry_after_s == 1
     next_epoch = SharedBudget(epoch=8)
-    await SendAdmissionGuard(next_epoch).authorize(
-        category="notice",
-        channel="api",
-        recipient_count=20,
-        estimated_segments=20,
-    )
+    with pytest.raises(SendAdmissionRejected, match="发送通道暂时不可用"):
+        await SendAdmissionGuard(next_epoch).authorize(
+            category="notice",
+            channel="api",
+            recipient_count=20,
+            estimated_segments=20,
+        )
     assert next_epoch.consumed[0]["epoch"] == 8
 
 
@@ -1475,7 +1593,7 @@ async def test_recovery_budget_fail_closes_when_control_plane_down() -> None:
 
 
 @pytest.mark.asyncio
-async def test_repository_recovery_budget_uses_epoch_key() -> None:
+async def test_repository_recovery_budget_uses_shared_window_and_epoch_fence() -> None:
     from app.services.send_admission_repository import RECOVERY_BUDGET_LUA
 
     class EvalRedis:
@@ -1509,7 +1627,8 @@ async def test_repository_recovery_budget_uses_epoch_key() -> None:
     assert "INCRBY" not in script
     assert "HSET" in script
     assert key_count == 1
-    assert key == "admission:recovery:4"
+    assert key == "admission:recovery:window"
+    assert argv[6] == "4"
     assert argv[:3] == ["1", "20", "20"]
     redis.allowed = 0
     denied = await repository.consume_recovery_budget(

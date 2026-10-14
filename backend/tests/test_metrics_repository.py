@@ -64,7 +64,8 @@ class FakeEngine:
 
 
 @pytest.mark.asyncio
-async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
+@pytest.mark.parametrize("admission_state", ["open", "degraded", "closed", None])
+async def test_repository_loads_all_metrics_from_aggregate_facts_only(admission_state) -> None:
     connection = FakeConnection(
         [
             FakeResult([{"category": "verify", "rate": 1.5}]),
@@ -82,6 +83,7 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
                         "callback_dead": 5,
                         "callback_stalled": 2,
                         "export_stalled": 1,
+                        "admission_state": admission_state,
                     }
                 ]
             ),
@@ -190,6 +192,7 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
         uncertain_effect_usage_subject_errors=(("usage_subject_invalid", 1),),
         uncertain_effect_oldest_pending_seconds=12.0,
         uncertain_effect_child_recovered=3,
+        send_admission_state=admission_state or "closed",
     )
     assert not engine.disposed
     sql = "\n".join(call[0] for call in connection.calls).casefold()
@@ -205,7 +208,8 @@ async def test_repository_loads_all_metrics_from_aggregate_facts_only() -> None:
     assert "state in ('pending','leased','published','processing')" in sql
     assert "outbox_oldest_age" in sql
     assert "created_at" in sql
-    assert facts.send_admission_state == "open"
+    assert facts.send_admission_state == (admission_state or "closed")
+    assert "from send_admission_state" in sql and "valid_until>=now()" in sql
     assert facts.outbox_oldest_age_seconds == 0.0
     assert "asia/shanghai" in sql and "removed_freq" in sql
     assert "poll_report" in sql and "poll_reply" in sql and "status='success'" in sql

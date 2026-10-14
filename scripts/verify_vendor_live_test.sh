@@ -40,6 +40,7 @@ python3 scripts/check_invariants.py
       tests/test_prepare_runtime_secrets.py \
       tests/test_systemd_deployment.py \
       tests/test_vendor_control_agent.py \
+      tests/test_vendor_control_resources.py \
       tests/test_vendor_control_reload.py \
       tests/test_vendor_control_client.py \
       tests/test_vendor_control_journal.py \
@@ -70,6 +71,8 @@ python3 scripts/check_invariants.py
       tests/test_test_update_verify.py \
       tests/test_sms_compose_vendor_test.py
 )
+
+bash scripts/verify_vendor_control_uds.sh
 
 if [[ "${SMS_SKIP_VENDOR_POSTGRES_RECOVERY:-0}" != "1" ]]; then
   bash scripts/verify_vendor_postgres_recovery.sh

@@ -125,7 +125,9 @@ def _validate_request_body(operation: str, body: object) -> dict[str, object]:
             raise ProtocolError("operation body 字段无效")
         if typed["operation"] not in {"install_credentials", "rotate_credentials"}:
             raise ProtocolError("seal session 操作无效")
-        _require_safe_string(typed["actor"])
+        actor = _require_safe_string(typed["actor"])
+        if len(actor.encode("utf-8")) > 256:
+            raise ProtocolError("seal session 上下文无效")
         return typed
     if operation in {"install_credentials", "rotate_credentials"}:
         if fields != _CREDENTIAL_FIELDS:

@@ -185,7 +185,9 @@ async def test_state_updates_store_only_safe_code_and_error_type(
         spec: Any,
         *,
         available_delay_seconds: int = 0,
+        capacity_wait: str | None = None,
     ) -> object:
+        assert capacity_wait == "callback_retry"
         outbox_events.append((spec, available_delay_seconds))
         return object()
 
