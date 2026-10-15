@@ -19,6 +19,13 @@ if config.config_file_name is not None:
 target_metadata = None
 
 
+def set_migration_deadlines() -> None:
+    """从迁移事务首条操作起限制锁等待和单条 SQL 的执行时间。"""
+
+    context.execute("SET LOCAL lock_timeout='5s'")
+    context.execute("SET LOCAL statement_timeout='30s'")
+
+
 def run_migrations_offline() -> None:
     """在不建立连接时生成 SQL。"""
 
@@ -29,6 +36,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
     )
     with context.begin_transaction():
+        set_migration_deadlines()
         context.run_migrations()
 
 
@@ -37,6 +45,7 @@ def do_run_migrations(connection: Connection) -> None:
 
     context.configure(connection=connection, target_metadata=target_metadata)
     with context.begin_transaction():
+        set_migration_deadlines()
         context.run_migrations()
 
 
@@ -50,9 +59,11 @@ async def run_async_migrations() -> None:
         prefix="sqlalchemy.",
         poolclass=None,
     )
-    async with connectable.connect() as connection:
-        await connection.run_sync(do_run_migrations)
-    await connectable.dispose()
+    try:
+        async with connectable.connect() as connection:
+            await connection.run_sync(do_run_migrations)
+    finally:
+        await connectable.dispose()
 
 
 if context.is_offline_mode():

@@ -540,6 +540,7 @@ async def test_controlled_api_preauthorization_limits_once_and_is_reused_by_acce
         calls = 0
 
         async def authorize(self, **kwargs: object) -> None:
+            assert kwargs["app_id"] == 7
             self.calls += 1
 
     admission = RecordingAdmission()
@@ -951,6 +952,7 @@ async def test_accept_reauthorizes_admission_with_rendered_segment_cost() -> Non
         SendRequest("notice", ["13800138000"], content=long_content, biz_id="seg-1"),
     )
     assert len(guard.calls) == 2
+    assert all(call["app_id"] == 1 for call in guard.calls)
     assert guard.calls[0]["estimated_segments"] is None
     assert guard.calls[0]["recipient_count"] == 1
     assert int(guard.calls[1]["estimated_segments"] or 0) >= 2
@@ -2764,6 +2766,13 @@ async def test_uncertain_effect_principal_creates_child_after_verify() -> None:
         async def verify_uncertain_effect(self, principal: UncertainEffectPrincipal) -> None:
             self.verified.append(principal)
 
+    class RecordingGuard:
+        calls: list[int] = []
+
+        async def authorize(self, *, app_id: int, **_values: object) -> None:
+            self.calls.append(app_id)
+
+    guard = RecordingGuard()
     store = OpenStore()
     pipeline = SendPipeline(
         usage_ledger=FakeUsageLedger(),
@@ -2772,6 +2781,7 @@ async def test_uncertain_effect_principal_creates_child_after_verify() -> None:
         crypto=crypto(),
         publisher=FakePublisher(),
         config=PipelineConfig(),
+        admission_guard=guard,
     )
     result = await pipeline.accept(
         ApiAppContext(88, "system-uncertain-resend", "平台部", frozenset({"notice"})),
@@ -2789,6 +2799,7 @@ async def test_uncertain_effect_principal_creates_child_after_verify() -> None:
     assert store.verified[0].resolution_id == 4
     assert store.commands[0].principal.actor_name == "system_resend:4"
     assert store.commands[0].app_id == 88
+    assert guard.calls and set(guard.calls) == {88}
     assert store.commands[0].dept == "平台部"
 
 

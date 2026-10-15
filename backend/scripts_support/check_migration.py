@@ -868,6 +868,40 @@ def verify_worker_lease_privileges(container: str, database: str) -> None:
         raise RuntimeError("worker lease evidence privileges are unsafe")
 
 
+def verify_runtime_event_retention_privileges(container: str, database: str) -> None:
+    """仅发送角色能执行固定压缩函数，七个角色不能直接篡改观测与累计事实。"""
+    result = docker_psql(
+        container,
+        database,
+        """
+        WITH runtime(role_name) AS (
+          VALUES ('sms_auth'),('sms_accept'),('sms_send'),('sms_callback'),
+                 ('sms_export'),('sms_scheduler'),('sms_metrics')
+        ), event_tables(table_name) AS (
+          VALUES ('worker_lease_event'),('send_db_failure_event'),
+                 ('worker_lease_event_rollup'),('send_db_failure_event_rollup')
+        ) SELECT
+          (SELECT bool_and(NOT has_table_privilege(role_name,table_name,'UPDATE')
+                    AND NOT has_table_privilege(role_name,table_name,'DELETE')
+                    AND NOT has_table_privilege(role_name,table_name,'TRUNCATE'))
+           FROM runtime CROSS JOIN event_tables)::int,
+          (SELECT bool_and(NOT has_table_privilege(role_name,table_name,'INSERT'))
+           FROM runtime CROSS JOIN event_tables WHERE table_name LIKE '%_rollup')::int,
+          (SELECT bool_and(has_function_privilege(role_name,
+            'compact_runtime_events(text,timestamptz,integer)','EXECUTE')
+              = (role_name='sms_send')) FROM runtime)::int,
+          (SELECT prosecdef AND proowner=(SELECT oid FROM pg_roles WHERE rolname='sms_owner')
+              AND proconfig=ARRAY['search_path=pg_catalog']
+           FROM pg_proc
+           WHERE oid='compact_runtime_events(text,timestamptz,integer)'::regprocedure)::int,
+          has_column_privilege('sms_metrics','worker_lease_event_rollup','event_count','SELECT')::int,
+          has_column_privilege('sms_metrics','send_db_failure_event_rollup','event_count','SELECT')::int
+        """,
+    ).strip()
+    if result != "1|1|1|1|1|1":
+        raise RuntimeError("runtime event compaction privileges are unsafe")
+
+
 def verify_vendor_event_privileges(container: str, database: str) -> None:
     """发送角色对厂商事实只允许追加；投影可更新但不可删除。"""
 
@@ -1355,6 +1389,7 @@ def run_check() -> None:
             verify_outbox_privileges(container, database)
             verify_auth_session_policy_privileges(container, database)
             verify_worker_lease_privileges(container, database)
+            verify_runtime_event_retention_privileges(container, database)
             verify_vendor_event_privileges(container, database)
             verify_callback_revocation_boundary(container, database)
         docker_psql(

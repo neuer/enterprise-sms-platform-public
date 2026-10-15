@@ -6,6 +6,7 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 
@@ -228,6 +229,10 @@ def test_script_has_bounded_health_seed_and_dev_profile_contract() -> None:
         'sms-platform-${UID}/secrets}"' in source
     )
     assert "COMPOSE_PROFILES=dev" in source
+    assert (
+        'SMS_TRUSTED_PROXY_CONF="${SMS_TRUSTED_PROXY_CONF:-$ROOT/.test-update/trusted-proxies.conf}"'
+        in source
+    )
     assert "--profile dev" not in source
     assert 'docker compose -f "$COMPOSE_FILE"' not in source
     assert "LOCAL_HEALTH_ATTEMPTS" in source
@@ -240,3 +245,132 @@ def test_script_has_bounded_health_seed_and_dev_profile_contract() -> None:
     assert 'http://localhost:${MOCK_VENDOR_PORT}/_mock/state' in source
     assert "/__mock/state" not in source
     assert "cat $" not in source
+
+
+def startup_trace(tmp_path: Path, *, replies: list[tuple[int, str]], fail_at: str = ""):
+    """执行真实 up 控制流，仅把外部服务替换成可观测适配器。"""
+    import json
+
+    trace = tmp_path / "trace"
+    response = tmp_path / "responses.json"
+    response.write_text(json.dumps(replies), encoding="utf-8")
+    index = tmp_path / "index"
+    result = source_call(
+        """
+record() { printf '%s\\n' "$*" >> "$TRACE"; [[ "$*" != "$FAIL_AT" ]]; }
+require_commands() { record commands; }
+ensure_dev_env() { record env; }
+validate_dev_env() { record validate; }
+ensure_dev_secrets() { record secrets; }
+compose() {
+  record "compose $*" || return $?
+  if [[ "$1" == test-update ]]; then
+    python3 - "$REPLIES" "$INDEX" <<'PYTHON'
+import json, sys
+from pathlib import Path
+replies = json.loads(Path(sys.argv[1]).read_text())
+index = Path(sys.argv[2])
+position = int(index.read_text()) if index.exists() else 0
+status, reply = replies[min(position, len(replies) - 1)]
+index.write_text(str(position + 1))
+print(reply)
+raise SystemExit(status)
+PYTHON
+  fi
+}
+sleep() { record "sleep $*"; }
+wait_url() { record "health $1"; }
+seed_dev() { record seed; }
+print_ready() { record ready; }
+up
+""",
+        env={
+            "TRACE": str(trace),
+            "REPLIES": str(response),
+            "INDEX": str(index),
+            "FAIL_AT": fail_at,
+        },
+    )
+    return result, trace.read_text().splitlines()
+
+
+def cutover_reply(state: str, *, error: str = "", admission: str = "open", ok: bool = True):
+    import json
+
+    return json.dumps({"ok": ok, "state": state, "error": error, "admission_state": admission})
+
+
+def test_up_finishes_controlled_cutover_before_api_restart_seed_and_ready(tmp_path: Path) -> None:
+    waiting = cutover_reply("waiting_window", error="waiting for not_before", admission="closed")
+    active = cutover_reply("active_v2")
+    result, calls = startup_trace(tmp_path, replies=[(1, waiting), (0, active)])
+    assert result.returncode == 0, result.stderr
+    assert calls == [
+        "commands",
+        "env",
+        "validate",
+        "secrets",
+        "compose up -d --build",
+        "compose test-update writer-cutover",
+        "sleep 5",
+        "compose test-update writer-cutover",
+        "compose up -d api",
+        "health API",
+        "health Mock vendor",
+        "seed",
+        "ready",
+    ]
+    assert not any("down" in call or "HSET" in call for call in calls)
+
+
+def test_up_reentry_with_active_writer_does_not_wait(tmp_path: Path) -> None:
+    result, calls = startup_trace(tmp_path, replies=[(0, cutover_reply("active_v2"))])
+    assert result.returncode == 0, result.stderr
+    assert not any(call.startswith("sleep") for call in calls)
+    assert calls[-1] == "ready"
+
+
+@pytest.mark.parametrize(
+    "status,reply",
+    [
+        (1, ""),
+        (1, "not-json"),
+        (
+            1,
+            cutover_reply(
+                "preparing", error="cutover marker conflict", admission="closed", ok=False
+            ),
+        ),
+        (1, cutover_reply("waiting_window", error="waiting for not_before", admission="open")),
+        (0, cutover_reply("waiting_window", error="waiting for not_before", admission="closed")),
+        (0, cutover_reply("active_v2", admission="closed")),
+        (0, cutover_reply("active_v2", ok=False)),
+    ],
+)
+def test_up_cutover_failure_never_restarts_seeds_or_claims_ready(tmp_path: Path, status, reply):
+    result, calls = startup_trace(tmp_path, replies=[(status, reply)])
+    assert result.returncode != 0
+    assert calls[-1] == "compose test-update writer-cutover"
+    assert "seed" not in calls and "ready" not in calls
+
+
+def test_up_cutover_wait_is_bounded(tmp_path: Path) -> None:
+    waiting = cutover_reply("waiting_window", error="waiting for not_before", admission="closed")
+    result, calls = startup_trace(tmp_path, replies=[(1, waiting)])
+    assert result.returncode != 0
+    assert "窗口等待超时" in result.stderr
+    assert calls.count("compose test-update writer-cutover") == 16
+    assert calls.count("sleep 5") == 15
+    assert "seed" not in calls and "ready" not in calls
+
+
+@pytest.mark.parametrize(
+    "failure", ["compose up -d api", "health API", "health Mock vendor", "seed"]
+)
+def test_up_failure_after_cutover_does_not_claim_ready(tmp_path: Path, failure: str) -> None:
+    result, calls = startup_trace(
+        tmp_path, replies=[(0, cutover_reply("active_v2"))], fail_at=failure
+    )
+    assert result.returncode != 0
+    assert calls[-1] == failure
+    assert "ready" not in calls

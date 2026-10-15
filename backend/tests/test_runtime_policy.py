@@ -122,6 +122,10 @@ def test_runtime_policy_returns_typed_snapshot() -> None:
         ("usage_ledger_retention_days", "3651", "usage_ledger_retention_days"),
         ("export_retention_days", "91", "export_retention_days"),
         ("job_history_days", "366", "job_history_days"),
+        ("runtime_event_retention_days", "0", "runtime_event_retention_days"),
+        ("runtime_event_retention_days", "-1", "runtime_event_retention_days"),
+        ("runtime_event_retention_days", "366", "runtime_event_retention_days"),
+        ("runtime_event_retention_days", "invalid", "runtime_event_retention_days"),
     ),
 )
 def test_runtime_policy_rejects_resource_exhaustion_bounds(

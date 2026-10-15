@@ -19,6 +19,8 @@ CLEANUP_TABLES = (
     "imports",
     "idempotency",
     "jobs",
+    "worker_lease_events",
+    "send_db_failure_events",
     "callbacks",
     "callback_events",
     "usage_frequency",
@@ -37,6 +39,7 @@ class LifecyclePolicy:
     unmatched_days: int
     job_days: int
     usage_days: int = 90
+    runtime_event_days: int = 30
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +57,7 @@ class CleanupCounts:
     idempotency: int = 0
     jobs: int = 0
     usage: int = 0
+    runtime_events: int = 0
     has_more: bool = False
 
     @property

@@ -124,6 +124,14 @@ PostgreSQL 16 中验证：
 `send_db_observation_unavailable` 日志标记缺口，不能用该计数证明没有失败。
 结果落库耗尽重试或其他失败使用 `send_db_failure` 告警；详情不含 SQL、参数或厂商响应。
 
+0128 将过期 `worker_lease_event`、`send_db_failure_event` 明细压缩到各自的
+`*_rollup` 固定维度累计表。七个运行角色仍无明细 UPDATE/DELETE/TRUNCATE 或累计表写权限；
+仅 `sms_send` 能调用 `compact_runtime_events(text,timestamptz,integer)`，由固定
+`search_path=pg_catalog`、限定 public 表名的 owner 函数执行有界删除与同事务累加。
+PUBLIC 没有 EXECUTE，`sms_metrics` 仅获得累计维度和计数列 SELECT。
+不得把这一观测专用入口用于审计、业务事实或其他表；详见
+[运行观测事件保留](../docs/runbooks/runtime-event-retention.md)。
+
 0124 为 `sms_accept`、`sms_export` 授予受限函数
 `lock_business_authorization(bigint,bigint,bigint,text,text,text,text,text)` 的 EXECUTE。
 该 SECURITY DEFINER 函数固定 `search_path=pg_catalog`，所有业务表显式使用 public，

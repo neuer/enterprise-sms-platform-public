@@ -153,6 +153,9 @@ CONFIG_SPECS: dict[str, ConfigSpec] = {
         "60", "int", GROUP_SCHEDULING, minimum=5, maximum=1_440, beat_restart=True
     ),
     "job_history_days": ConfigSpec("30", "int", GROUP_LIFECYCLE, maximum=365),
+    "runtime_event_retention_days": ConfigSpec(
+        "30", "int", GROUP_LIFECYCLE, minimum=1, maximum=365
+    ),
     "usage_projection_reconcile_seconds": ConfigSpec(
         "300", "int", GROUP_SCHEDULING, minimum=60, maximum=86_400, beat_restart=True
     ),

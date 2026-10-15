@@ -329,6 +329,7 @@ class VendorTestUatService:
                     admission_guard = getattr(pipeline, "admission_guard", None)
                     if admission_guard is not None:
                         await admission_guard.authorize(
+                            app_id=app.app_id,
                             category=category,
                             channel="web",
                             recipient_count=1,

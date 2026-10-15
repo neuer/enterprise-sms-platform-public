@@ -14,7 +14,7 @@ lane-specific `503 DEPENDENCY_UNAVAILABLE`。
 | 两条发送 lane 均过期 | 全部拒绝 `send_lanes_heartbeat_stale` | 全部拒绝 |
 
 queue pause 使用同一映射：`realtime_paused` 只关 realtime，`bulk_paused` 只关 bulk。
-全局 backlog / callback / dispatcher 仍是共同依赖，写在快照的 `state/reason` 上；
+全局硬容量 / 到期处理年龄 / dispatcher 仍是共同依赖，写在快照的 `state/reason` 上；
 单 lane 心跳不把全局快照打成 CLOSED。
 
 ## 值班
@@ -33,7 +33,8 @@ queue pause 使用同一映射：`realtime_paused` 只关 realtime，`bulk_pause
 `outbox_event.capacity_eligible_at` 是业务可执行时刻，和 dispatcher 的
 `next_attempt_at` 基础设施重试时钟独立。回调合同内重试在同事务写入该锚点；
 营销窗口延期沿原执行租约 CAS 更新。领取、发布失败、执行失败、租约恢复不能
-向后移动锚点。未到期回调仍计入数量保护，但不提前累计逾期处理年龄；到期后
+向后移动锚点。未到期回调仍计入完整总量硬保护和所属应用保护，但不贡献全局软降级数量、
+不提前累计逾期处理年龄；到期后
 从该锚点持续计龄。authority busy 和任意故障退避不享受业务等待豁免。
 
 迁移 `0125_outbox_capacity_clock` 新增可空列，NULL 永远保守解释为 created_at，
@@ -85,3 +86,28 @@ hold 到期前营销仍拒绝。verify/notice 使用
 writer 与新窗口 writer。旧 Redis epoch 桶按原 TTL 自然过期。应用回退不回退
 schema，不删除新窗口或控制面事实来恢复服务；旧版无期限 recovery_hold 的写入
 会被 CHECK 拒绝并失败关闭，须通过受控恢复流程处理。
+
+## 回调应用隔离
+
+新发送先验证全局/lane/请求规模，再检查可信应用归属的回调事实。单应用
+pending/retrying（包括尚未分发和未来重试）达到200，或dead达到20，返回
+`503 DEPENDENCY_UNAVAILABLE`、内部reason=`app_callback_backlog`、Retry-After=5。
+两项都低于阈值后恢复到原全局检查；此门不创建独立恢复epoch或Redis预算。
+这是固定安全保护上限，应用上限严格小于全局硬上限，不新增动态业务配置。
+
+全局 `outbox_active` 和指标仍统计全部活跃Outbox；新增 `outbox_shared_active`
+只用于全局软降级及其半阈值滞回，排除 `callback.ready`。callback dead不再触发
+全局软降级。全局完整active达到2000、callback dead达到200仍全部关闭，硬状态
+按原半阈值、60秒保持和共享恢复预算恢复。到期回调超过300/600秒未处理、
+dispatcher故障、lane暂停及数据库/Redis不可确认仍按既有故障域拒绝。
+因此隔离仅在未触发平台硬容量和真实基础设施保护时成立。
+
+应用事实缓存最长5秒、每进程最多256个应用条目；缓存未命中加载与等待有界，
+过期或失败不得使用旧允许结果。应用id由服务端已认证上下文传递，API必须为
+正数；普通Web的服务端 `app_id=0` 无回调应用归属，只执行全局保护。
+受控UAT及有应用归属的人工/系统重发执行对应应用门。幂等成功重放仍直接返回
+原批次。回调重试时序、待处理及dead事实、submitted/uncertain处理均保持原合同。
+
+迁移0127仅新增callback_task应用/状态部分索引，不回填或删除事实，不扩大角色
+权限。按迁移/控制面受保护流程切换所有API，旧版混跑可能继续全局软拒绝；
+不得以清空回调或删除保护事实实现恢复。

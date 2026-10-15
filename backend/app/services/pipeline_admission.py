@@ -107,6 +107,7 @@ class SendAdmissionMixin:
         self,
         request: SendRequest,
         *,
+        app: ApiAppContext,
         estimated_segments: int | None = None,
         estimated_chunks: int | None = None,
     ) -> None:
@@ -116,6 +117,7 @@ class SendAdmissionMixin:
             len(request.protected_mobiles) if request.protected_mobiles else len(request.mobiles)
         )
         await self.admission_guard.authorize(
+            app_id=self._usage_app_id(app, request),
             category=request.category,
             channel=request.channel,
             recipient_count=max(1, recipient_count),

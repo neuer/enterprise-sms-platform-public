@@ -1,6 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
--- v1.6.112  2026-10-14
+-- v1.6.114  2026-10-15
+-- v1.6.114：运行观测明细有界压缩，历史累计值由固定维度归档保留。
+-- v1.6.113：回调按应用限制新发送，增加 active/dead 准入查询部分索引。
 -- v1.6.112：准入容量滞回与有期限的恢复保持分别约束，不用原因码决定预算。
 -- v1.6.111：Outbox 业务等待计龄锚点独立于基础设施退避；NULL 保守取创建时刻。
 -- v1.6.110：业务事务内持有授权主体锁，连接故障不留下授权与业务的部分提交。
@@ -2099,6 +2101,8 @@ CREATE UNIQUE INDEX uk_cb_batch_source_event
     WHERE event='batch.finished' AND source_report_event_key IS NOT NULL;
 CREATE INDEX idx_cb_pending ON callback_task(status, next_retry_at)
     WHERE status IN ('pending','retrying');
+CREATE INDEX idx_cb_app_admission ON callback_task(app_id,status)
+    WHERE status IN ('pending','retrying','dead');
 CREATE INDEX idx_cb_lease_expiry ON callback_task(lease_expires_at,id)
     WHERE lease_id IS NOT NULL;
 CREATE INDEX idx_cb_event_keys ON callback_task USING GIN(event_keys);
@@ -2155,7 +2159,7 @@ AFTER UPDATE OF callback_url,callback_secret_enc,
   callback_report_enabled,status ON app
 FOR EACH ROW EXECUTE FUNCTION revoke_callback_tasks_on_app_change();
 
--- worker 的无 PII 租约事实；只追加。poll_report/poll_reply 的 task_id=1 表示单例轮询源。
+-- worker 的无 PII 租约事实；运行角色只追加，过期明细仅由受限压缩函数归档。poll_report/poll_reply 的 task_id=1 表示单例轮询源。
 CREATE TABLE worker_lease_event (
     id          BIGSERIAL PRIMARY KEY,
     task_kind   VARCHAR(16) NOT NULL
@@ -2184,6 +2188,100 @@ CREATE TABLE send_db_failure_event (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_send_db_failure_event_metrics ON send_db_failure_event(phase,reason);
+
+-- 运行观测明细按保留期压缩，累计维度保留；只由固定函数维护。
+CREATE TABLE worker_lease_event_rollup (
+            task_kind VARCHAR(16) NOT NULL CHECK (task_kind IN (
+                'callback','export','raw','poll_report','poll_reply'
+            )),
+            event_type VARCHAR(24) NOT NULL CHECK (event_type IN (
+                'acquired','takeover','heartbeat_lost','fencing_miss','dead','manual_retry',
+                'extend_rejected','owner_lost','renewal_unavailable',
+                'release_unavailable','deadline_elapsed'
+            )),
+            event_count BIGINT NOT NULL CHECK (event_count>=0),
+            PRIMARY KEY (task_kind,event_type)
+        );
+
+CREATE TABLE send_db_failure_event_rollup (
+            phase VARCHAR(16) NOT NULL CHECK (phase IN ('claim','finalize')),
+            reason VARCHAR(24) NOT NULL CHECK (reason IN (
+                'cas_lost','db_deadlock','db_timeout','db_connection','unexpected'
+            )),
+            event_count BIGINT NOT NULL CHECK (event_count>=0),
+            PRIMARY KEY (phase,reason)
+        );
+
+CREATE INDEX idx_worker_lease_event_retention ON worker_lease_event(created_at,id);
+
+CREATE INDEX idx_send_db_failure_event_retention ON send_db_failure_event(created_at,id);
+
+CREATE FUNCTION compact_runtime_events(
+            p_stream text, p_cutoff timestamptz, p_limit integer
+        ) RETURNS bigint
+        LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+        DECLARE
+            retention_text text;
+            retention_days integer;
+            expiry timestamptz;
+            affected bigint;
+        BEGIN
+            IF p_stream IS NULL OR p_stream NOT IN ('worker_lease','send_db_failure')
+               OR p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 1000
+               OR p_cutoff IS NULL OR NOT isfinite(p_cutoff)
+               OR p_cutoff>clock_timestamp() THEN
+                RAISE EXCEPTION 'invalid runtime event compaction request' USING ERRCODE='22023';
+            END IF;
+            SELECT value INTO retention_text FROM public.sys_config
+            WHERE key='runtime_event_retention_days';
+            IF retention_text IS NULL OR retention_text !~ '^[0-9]{1,3}$' THEN
+                RAISE EXCEPTION 'invalid runtime event retention policy' USING ERRCODE='22023';
+            END IF;
+            retention_days := retention_text::integer;
+            IF retention_days NOT BETWEEN 1 AND 365 THEN
+                RAISE EXCEPTION 'invalid runtime event retention policy' USING ERRCODE='22023';
+            END IF;
+            expiry := p_cutoff-make_interval(days=>retention_days);
+            IF p_stream='worker_lease' THEN
+                WITH due AS MATERIALIZED (
+                    SELECT id FROM public.worker_lease_event WHERE created_at<expiry
+                    ORDER BY created_at,id LIMIT p_limit FOR UPDATE SKIP LOCKED
+                ), removed AS (
+                    DELETE FROM public.worker_lease_event e USING due
+                    WHERE e.id=due.id RETURNING e.task_kind,e.event_type
+                ), accumulated AS (
+                    INSERT INTO public.worker_lease_event_rollup(task_kind,event_type,event_count)
+                    SELECT task_kind,event_type,count(*) FROM removed
+                    GROUP BY task_kind,event_type ORDER BY task_kind,event_type
+                    ON CONFLICT (task_kind,event_type) DO UPDATE
+                    SET event_count=public.worker_lease_event_rollup.event_count
+                        +EXCLUDED.event_count
+                    RETURNING event_count
+                )
+                SELECT count(*) INTO affected FROM removed
+                WHERE (SELECT count(*) FROM accumulated)>=0;
+            ELSE
+                WITH due AS MATERIALIZED (
+                    SELECT id FROM public.send_db_failure_event WHERE created_at<expiry
+                    ORDER BY created_at,id LIMIT p_limit FOR UPDATE SKIP LOCKED
+                ), removed AS (
+                    DELETE FROM public.send_db_failure_event e USING due
+                    WHERE e.id=due.id RETURNING e.phase,e.reason
+                ), accumulated AS (
+                    INSERT INTO public.send_db_failure_event_rollup(phase,reason,event_count)
+                    SELECT phase,reason,count(*) FROM removed
+                    GROUP BY phase,reason ORDER BY phase,reason
+                    ON CONFLICT (phase,reason) DO UPDATE
+                    SET event_count=public.send_db_failure_event_rollup.event_count
+                        +EXCLUDED.event_count
+                    RETURNING event_count
+                )
+                SELECT count(*) INTO affected FROM removed
+                WHERE (SELECT count(*) FROM accumulated)>=0;
+            END IF;
+            RETURN affected;
+        END
+        $$;
 
 -- ─────────────── 余额 / 告警 ───────────────
 CREATE TABLE balance_snapshot (
@@ -2799,6 +2897,7 @@ INSERT INTO sys_config (key, value, value_type, description) VALUES
 ('anomaly_min_total',         '500',   'int',  '异常检测最小绝对量(双条件防小基数误报)'),
 ('anomaly_scan_minutes',      '60',    'int',  '异常扫描间隔(分钟)'),
 ('job_history_days',          '30',    'int',  'job_run 任务运行记录保留天数'),
+('runtime_event_retention_days','30',  'int',  '运行观测事件明细保留天数；累计值长期保留'),
 -- v1.6.27 新增
 ('usage_projection_reconcile_seconds','300','int','配额/频控投影漂移巡检间隔(重启beat生效)'),
 ('usage_ledger_retention_days','90',   'int',  '已过期配额/频控事实账本保留天数'),
@@ -3676,3 +3775,10 @@ END
 $$;
 REVOKE ALL ON FUNCTION lock_business_authorization(bigint,bigint,bigint,text,text,text,text,text) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION lock_business_authorization(bigint,bigint,bigint,text,text,text,text,text) TO sms_accept,sms_export;
+
+-- 观测压缩函数以 owner 短事务执行；运行角色不获得明细删除或累计表写权限。
+REVOKE ALL ON worker_lease_event_rollup,send_db_failure_event_rollup FROM PUBLIC;
+REVOKE ALL ON FUNCTION compact_runtime_events(text,timestamptz,integer) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION compact_runtime_events(text,timestamptz,integer) TO sms_send;
+GRANT SELECT(task_kind,event_type,event_count) ON worker_lease_event_rollup TO sms_metrics;
+GRANT SELECT(phase,reason,event_count) ON send_db_failure_event_rollup TO sms_metrics;

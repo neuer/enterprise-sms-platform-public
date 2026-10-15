@@ -14,7 +14,7 @@ from app.services.outbox import (
     OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL,
     OUTBOX_CAPACITY_AGE_SQL,
 )
-from app.services.send_admission import SendAdmissionFacts, SendAdmissionLimits
+from app.services.send_admission import AppCallbackFacts, SendAdmissionFacts, SendAdmissionLimits
 from app.settings import Settings, get_settings
 
 RECOVERY_BUDGET_LUA = """
@@ -85,6 +85,9 @@ class SqlSendAdmissionRepository:
                       (SELECT count(*) FROM outbox_event
                        WHERE {OUTBOX_CAPACITY_ACTIVE_SQL})
                         outbox_active,
+                      (SELECT count(*) FROM outbox_event
+                       WHERE ({OUTBOX_CAPACITY_ACTIVE_SQL})
+                         AND event_type <> 'callback.ready') outbox_shared_active,
                       (SELECT EXTRACT(EPOCH FROM (now()-min({OUTBOX_CAPACITY_AGE_SQL})))
                        FROM outbox_event
                        WHERE {OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL})
@@ -133,6 +136,7 @@ class SqlSendAdmissionRepository:
         enforce_heartbeat = bool(getattr(self.settings, "is_production", False))
         return SendAdmissionFacts(
             outbox_active=max(0, int(row["outbox_active"] or 0)),
+            outbox_shared_active=max(0, int(row["outbox_shared_active"] or 0)),
             outbox_oldest_age_s=max(0, int(oldest or 0)),
             outbox_dead=max(0, int(row["outbox_dead"] or 0)),
             uncertain_overdue=max(0, int(row["uncertain_overdue"] or 0)),
@@ -150,6 +154,25 @@ class SqlSendAdmissionRepository:
                 enforce_heartbeat and int(row["dispatcher_heartbeat_stale"] or 0) > 0
             ),
         )
+
+    async def load_app_callbacks(self, app_id: int) -> AppCallbackFacts:
+        """按已认证应用计算全部未完成回调和 dead，空结果不能掩盖数据库故障。"""
+
+        if type(app_id) is not int or app_id < 1:
+            raise ValueError("callback admission requires a positive application id")
+        async with asyncio.timeout(self.database_timeout_s), self._engine().connect() as connection:
+            row = (
+                await connection.execute(
+                    text("""
+                        SELECT count(*) FILTER (WHERE status IN ('pending','retrying')) active,
+                               count(*) FILTER (WHERE status='dead') dead
+                        FROM callback_task
+                        WHERE app_id=:app_id AND status IN ('pending','retrying','dead')
+                    """),
+                    {"app_id": app_id},
+                )
+            ).mappings().one()
+        return AppCallbackFacts(active=int(row["active"]), dead=int(row["dead"]))
 
     async def load_control_state(self) -> dict[str, Any] | None:
         engine = self._engine()
@@ -361,6 +384,7 @@ class SqlSendAdmissionRepository:
                             "reason": reason,
                             "version": version,
                             "outbox_active": facts.outbox_active,
+                            "outbox_shared_active": facts.outbox_shared_active,
                             "outbox_oldest_age_s": facts.outbox_oldest_age_s,
                             "outbox_dead": facts.outbox_dead,
                             "uncertain_overdue": facts.uncertain_overdue,

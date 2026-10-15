@@ -179,6 +179,7 @@ class SendPipeline(AcceptanceCommitMixin):
 
         if self.admission_guard is not None:
             await self.admission_guard.authorize(
+                app_id=app.app_id,
                 category=category,
                 channel="api",
                 recipient_count=1,
@@ -300,7 +301,7 @@ class SendPipeline(AcceptanceCommitMixin):
 
         try:
             if preauthorization is None:
-                await self._authorize_new_send(request)
+                await self._authorize_new_send(request, app=app)
             await self._consume_request_limit(app, request, preauthorization)
             renewal = self.idempotency.heartbeat(idem_scope, biz_id, token, lost)
             try:

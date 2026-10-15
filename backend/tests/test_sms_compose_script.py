@@ -3668,3 +3668,47 @@ def test_development_secrets_cannot_publish_non_development_api_port(
     assert result.returncode != 0
     assert command_lines(log) == []
     assert "configuration rejected" in result.stderr
+
+
+def test_explicit_local_development_launch_and_cutover_share_marker_context(fake_environment):
+    platform_root, log, environment = fake_environment
+    (platform_root / ".env").write_text("ENVIRONMENT=development\nSMS_EXTERNAL_TLS_MODE=0\n")
+    # 此 fixture 的 fake Docker 不运行服务；真实配置校验仍按官方入口执行。
+    shutil.copyfile(
+        ROOT / "deploy/scripts/development_api_port.py",
+        platform_root / "deploy/scripts/development_api_port.py",
+    )
+    shutil.copyfile(
+        ROOT / "deploy/docker-compose.development-api.yml",
+        platform_root / "deploy/docker-compose.development-api.yml",
+    )
+    subprocess.run(["git", "init", "-q", str(platform_root)], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(platform_root),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    for arguments in [("up", "-d"), ("test-update", "writer-cutover")]:
+        result = run_wrapper(
+            fake_environment,
+            *arguments,
+            extra_environment={"SMS_DEV_API_PORT": "1", "ENVIRONMENT": "development"},
+        )
+        assert result.returncode == 0, result.stderr
+    commands = [line for line in command_lines(log) if "writer_cutover.py" in line]
+    assert len(commands) == 2
+    assert all("--environment|development|--local-development" in line for line in commands)
+    assert "|check-launch|" in commands[0]
+    assert "|advance|" in commands[1]

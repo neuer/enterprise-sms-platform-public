@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from app.services.send_admission import (
+    AppCallbackFacts,
     CapacityEvaluation,
     SendAdmissionFacts,
     SendAdmissionGuard,
@@ -24,6 +25,7 @@ from app.services.send_admission_repository import SqlSendAdmissionRepository
 def facts(**overrides: Any) -> SendAdmissionFacts:
     values: dict[str, Any] = {
         "outbox_active": 0,
+        "outbox_shared_active": None,
         "outbox_oldest_age_s": 0,
         "outbox_dead": 0,
         "uncertain_overdue": 0,
@@ -60,7 +62,7 @@ def test_capacity_bands_use_outbox_not_broker() -> None:
         "degraded", "uncertain_overdue", False
     )
     assert evaluate_capacity(facts(callback_dead=20)) == CapacityEvaluation(
-        "degraded", "callback_backlog", False
+        "open", "ok", False
     )
     assert evaluate_capacity(facts(callback_dead=200)) == CapacityEvaluation(
         "closed", "callback_backlog", False
@@ -378,6 +380,9 @@ class FakeFacts:
         assert self.payload is not None
         return self.payload
 
+    async def load_app_callbacks(self, app_id: int) -> AppCallbackFacts:
+        return AppCallbackFacts(0, 0)
+
     async def record_transition(self, **values: object) -> None:
         self.transitions.append(values)
 
@@ -473,7 +478,7 @@ async def test_active_hold_cost_survives_capacity_reason_change() -> None:
     )
     guard = SendAdmissionGuard(repo)
     with pytest.raises(SendAdmissionRejected) as error:
-        await guard.authorize(
+        await guard.authorize(app_id=1,
             category="notice",
             channel="api",
             recipient_count=1,
@@ -519,7 +524,7 @@ async def test_cas_winner_budget_is_rebuilt_and_cannot_weaken_hysteresis(winner_
         assert snap.reason == "outbox_backlog" and snap.budget_mode == "recovery"
         assert snap.hold_until == winner["hold_until"]
         with pytest.raises(SendAdmissionRejected) as error:
-            await guard.authorize(category="notice", channel="api", recipient_count=1,
+            await guard.authorize(app_id=1, category="notice", channel="api", recipient_count=1,
                                   estimated_segments=21)
         assert error.value.reason == "recovery_segment_cost"
     else:
@@ -560,10 +565,10 @@ async def test_expired_snapshot_does_not_fail_open() -> None:
     repo = FakeFacts(facts())
     clock = SequenceClock([0.0, 0.0, 6.0, 6.0])
     guard = SendAdmissionGuard(repo, clock=clock)
-    await guard.authorize(category="notice", channel="api", recipient_count=1)
+    await guard.authorize(app_id=1, category="notice", channel="api", recipient_count=1)
     repo.error = RuntimeError("control plane down")
     with pytest.raises(SendAdmissionUnavailable) as error:
-        await guard.authorize(category="notice", channel="api", recipient_count=1)
+        await guard.authorize(app_id=1, category="notice", channel="api", recipient_count=1)
     assert error.value.reason == "snapshot_unavailable"
     assert error.value.retry_after_s == 5
 
@@ -576,7 +581,7 @@ async def test_transition_alert_failure_does_not_block_authorize() -> None:
 
     guard = SendAdmissionGuard(AlertBoom(facts(outbox_active=2000)))
     with pytest.raises(SendAdmissionRejected) as error:
-        await guard.authorize(category="verify", channel="api", recipient_count=1)
+        await guard.authorize(app_id=1, category="verify", channel="api", recipient_count=1)
     assert error.value.reason == "outbox_backlog"
     assert error.value.retry_after_s == 60
 
@@ -639,6 +644,7 @@ async def test_repository_loads_same_keys_as_current_alerts() -> None:
     connection = FakeConnection(
         {
             "outbox_active": 12,
+            "outbox_shared_active": 12,
             "outbox_oldest_age_s": 45.2,
             "outbox_dead": 1,
             "uncertain_overdue": 2,
@@ -661,6 +667,7 @@ async def test_repository_loads_same_keys_as_current_alerts() -> None:
 
     assert loaded == facts(
         outbox_active=12,
+        outbox_shared_active=12,
         outbox_oldest_age_s=45,
         outbox_dead=1,
         uncertain_overdue=2,
@@ -689,6 +696,7 @@ async def test_repository_loads_same_keys_as_current_alerts() -> None:
 async def test_repository_only_fail_closes_stale_heartbeats_in_production() -> None:
     row = {
         "outbox_active": 0,
+        "outbox_shared_active": 0,
         "outbox_oldest_age_s": 0,
         "outbox_dead": 0,
         "uncertain_overdue": 0,
@@ -729,6 +737,7 @@ async def test_repository_fail_closes_on_invalid_vendor_counter() -> None:
     connection = FakeConnection(
         {
             "outbox_active": 0,
+            "outbox_shared_active": 0,
             "outbox_oldest_age_s": 0,
             "outbox_dead": 0,
             "uncertain_overdue": 0,
@@ -980,7 +989,7 @@ async def test_bootstrap_with_existing_business_never_bypasses_hold() -> None:
     assert repo.saved[0]["reason"] == "recovery_hold"
     assert repo.saved[0]["hold_until"] == now + timedelta(seconds=60)
     with pytest.raises(SendAdmissionRejected) as rejected:
-        await SendAdmissionGuard(repo).authorize(
+        await SendAdmissionGuard(repo).authorize(app_id=1,
             category="market",
             channel="api",
             recipient_count=1,
@@ -1106,7 +1115,7 @@ async def test_raw_closed_overrides_any_bootstrap_marker() -> None:
     assert repo.saved[0]["state"] == "closed"
     assert repo.saved[0]["hold_until"] is None
     with pytest.raises(SendAdmissionRejected) as rejected:
-        await guard.authorize(category="verify", channel="api", recipient_count=1)
+        await guard.authorize(app_id=1, category="verify", channel="api", recipient_count=1)
     assert rejected.value.state == "closed"
     assert rejected.value.reason == "outbox_backlog"
 
@@ -1353,7 +1362,7 @@ async def test_authorize_keeps_recovery_hold_from_snapshot() -> None:
 
     guard = SendAdmissionGuard(RecoveryFacts())
     with pytest.raises(SendAdmissionRejected) as rejected:
-        await guard.authorize(category="market", channel="api", recipient_count=1)
+        await guard.authorize(app_id=1, category="market", channel="api", recipient_count=1)
     assert rejected.value.state == "degraded"
     assert rejected.value.reason == "degraded_bulk"
 
@@ -1520,14 +1529,14 @@ async def test_recovery_budget_is_shared_and_bound_to_epoch() -> None:
 
     first = SharedBudget(epoch=7)
     second = SharedBudget(epoch=7)
-    await SendAdmissionGuard(first).authorize(
+    await SendAdmissionGuard(first).authorize(app_id=1,
         category="notice",
         channel="api",
         recipient_count=20,
         estimated_segments=20,
     )
     with pytest.raises(SendAdmissionRejected) as rejected:
-        await SendAdmissionGuard(second).authorize(
+        await SendAdmissionGuard(second).authorize(app_id=1,
             category="verify",
             channel="api",
             recipient_count=1,
@@ -1537,7 +1546,7 @@ async def test_recovery_budget_is_shared_and_bound_to_epoch() -> None:
     assert rejected.value.retry_after_s == 1
     next_epoch = SharedBudget(epoch=8)
     with pytest.raises(SendAdmissionRejected, match="发送通道暂时不可用"):
-        await SendAdmissionGuard(next_epoch).authorize(
+        await SendAdmissionGuard(next_epoch).authorize(app_id=1,
             category="notice",
             channel="api",
             recipient_count=20,
@@ -1550,7 +1559,7 @@ async def test_recovery_budget_is_shared_and_bound_to_epoch() -> None:
 async def test_recovery_budget_fail_closes_when_control_plane_down() -> None:
     repo = RecoveryBudgetFacts(error=RuntimeError("control redis down"))
     with pytest.raises(SendAdmissionRejected) as error:
-        await SendAdmissionGuard(repo).authorize(
+        await SendAdmissionGuard(repo).authorize(app_id=1,
             category="notice",
             channel="api",
             recipient_count=1,
@@ -1584,7 +1593,7 @@ async def test_recovery_budget_fail_closes_when_control_plane_down() -> None:
             }
 
     with pytest.raises(SendAdmissionUnavailable):
-        await SendAdmissionGuard(PersistOnly()).authorize(
+        await SendAdmissionGuard(PersistOnly()).authorize(app_id=1,
             category="notice",
             channel="api",
             recipient_count=1,

@@ -958,7 +958,7 @@ def test_real_cutover_cli_rechecks_fence_and_reports_projection_failure(
     projected: list[object] = []
     monkeypatch.setattr(cli, "SubprocessRunner", lambda: runner)
     monkeypatch.setattr(cli, "CliRedis", lambda _: redis)
-    monkeypatch.setattr(cli, "write_local_marker", projected.append)
+    monkeypatch.setattr(cli, "write_local_marker", lambda marker, path: projected.append(marker))
     args = [
         "advance",
         "--root",
@@ -993,7 +993,7 @@ def test_real_cutover_cli_rechecks_fence_and_reports_projection_failure(
     redis.now_sec += 65
     assert cli.main(args) == 0
 
-    def fail_projection(_: object) -> None:
+    def fail_projection(_: object, path: Path) -> None:
         raise OSError("synthetic write failure")
 
     monkeypatch.setattr(cli, "write_local_marker", fail_projection)
@@ -1017,3 +1017,112 @@ def test_real_cutover_cli_rechecks_fence_and_reports_projection_failure(
     assert not executor.query_admission().owned
 
     assert read_cutover_marker(redis).release_binding == "U2"  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize("environment", ["production", "test"])
+def test_local_writer_projection_cannot_override_deployed_environment(
+    tmp_path, monkeypatch, environment
+):
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "deploy" / "scripts"))
+    import writer_cutover as cli
+
+    (tmp_path / ".env").write_text(f"ENVIRONMENT={environment}\n")
+    with pytest.raises(CutoverError, match="configuration rejected"):
+        cli.local_marker_path(root=tmp_path, environment="development", local_development=True)
+    assert (
+        cli.local_marker_path(root=tmp_path, environment=environment, local_development=False)
+        == cli.LOCAL_MARKER_PATH
+    )
+
+
+def test_local_writer_projection_is_project_scoped_and_used_for_launch(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "deploy" / "scripts"))
+    import writer_cutover as cli
+
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    paths = []
+    for name in ("first", "second"):
+        root = tmp_path / name
+        root.mkdir()
+        (root / ".env").write_text("ENVIRONMENT=development\n")
+        path = cli.local_marker_path(root=root, environment="development", local_development=True)
+        assert path == root / ".test-update/writer-cutover/state.json"
+        paths.append(path)
+    assert paths[0] != paths[1]
+    checked = []
+    monkeypatch.setattr(cli, "load_local_marker", lambda path: checked.append(path))
+    monkeypatch.setattr(cli._cutover(), "check_supported_launch", lambda **kwargs: None)
+    assert cli.main(["check-launch", "--root", str(tmp_path / "first"), "--local-development"]) == 0
+    assert checked == paths[:1]
+
+
+@pytest.mark.parametrize(
+    "configuration",
+    [
+        "ENVIRONMENT=development\nENVIRONMENT=production\n",
+        "ENVIRONMENT=${ENVIRONMENT}\n",
+        "ENVIRONMENT: development\n",
+        "",
+    ],
+)
+def test_local_writer_projection_rejects_ambiguous_actual_configuration(
+    tmp_path, monkeypatch, configuration
+):
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "deploy" / "scripts"))
+    import writer_cutover as cli
+
+    (tmp_path / ".env").write_text(configuration)
+    with pytest.raises(CutoverError, match="configuration rejected"):
+        cli.local_marker_path(root=tmp_path, environment="development", local_development=True)
+
+
+def test_local_writer_projection_rejects_fixed_root_mode_and_shell_conflicts(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "deploy" / "scripts"))
+    import writer_cutover as cli
+
+    for root, environment in [(Path("/opt/sms-platform"), "development"), (tmp_path, "production")]:
+        with pytest.raises(CutoverError, match="requires local development"):
+            cli.local_marker_path(root=root, environment=environment, local_development=True)
+    (tmp_path / ".env").write_text("ENVIRONMENT=development\n")
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    with pytest.raises(CutoverError, match="configuration rejected"):
+        cli.local_marker_path(root=tmp_path, environment="development", local_development=True)
+
+
+def test_local_writer_cli_persists_and_checks_the_same_projection(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "deploy" / "scripts"))
+    import writer_cutover as cli
+
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    (tmp_path / ".env").write_text("ENVIRONMENT=development\n")
+    redis = LuaRedis(1_778_201_800)
+    _seed_active_marker(redis)
+    marker = read_cutover_marker(redis)
+    assert marker is not None
+    monkeypatch.setattr(cli, "CliRedis", lambda _: redis)
+    monkeypatch.setattr(
+        cli._cutover(),
+        "run_writer_cutover",
+        lambda **kwargs: cli._cutover().CutoverResult(
+            True,
+            "active_v2",
+            marker.generation,
+            redis.now_sec,
+            "open",
+            "writer_cutover",
+            False,
+        ),
+    )
+    args = ["--root", str(tmp_path), "--local-development"]
+    assert (
+        cli.main(["advance", *args, "--release-binding", "local", "--compose", "docker", "compose"])
+        == 0
+    )
+    path = tmp_path / ".test-update/writer-cutover/state.json"
+    assert cli.load_local_marker(path) == marker
+    observed = []
+    monkeypatch.setattr(
+        cli._cutover(), "check_supported_launch", lambda **kwargs: observed.append(kwargs["marker"])
+    )
+    assert cli.main(["check-launch", *args]) == 0
+    assert observed == [marker]

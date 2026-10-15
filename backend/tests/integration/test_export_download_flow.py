@@ -546,3 +546,196 @@ async def test_expiry_while_waiting_for_export_row_lock_is_rechecked(flow):
         if not request.done():
             request.cancel()
         await asyncio.gather(request, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capacity", [1, 10])
+@pytest.mark.parametrize("revoke", [False, True])
+async def test_export_checks_out_auth_before_lock_under_real_pool_pressure(
+    flow, monkeypatch, capacity, revoke,
+):
+    """真实满池写事务先完成；等待后的导出仍拒绝已经撤销的主体。"""
+    from app.services.admin_invariant import lock_admin_invariant
+
+    token = await issue(flow)
+    pool = create_async_engine(
+        flow.repository.settings.database_url_for("auth"), pool_size=capacity, max_overflow=0,
+        pool_timeout=0.3, connect_args={"server_settings": {"statement_timeout": "5000"}},
+    )
+    requested = asyncio.Event()
+    checked_out = [asyncio.Event() for _ in range(capacity)]
+    revocation_committed = asyncio.Event()
+
+    class Managed:
+        @asynccontextmanager
+        async def begin(self):
+            requested.set()
+            async with pool.begin() as connection:
+                yield connection
+
+        async def dispose(self):
+            pass
+
+    monkeypatch.setattr("app.core.auth.export_authorization.database_engine", lambda _: Managed())
+
+    async def writer(index):
+        async with pool.begin() as connection:
+            checked_out[index].set()
+            await requested.wait()
+            if revoke and index != 0:
+                await revocation_committed.wait()
+            await lock_admin_invariant(connection)
+            if revoke and index == 0:
+                await connection.execute(text(
+                    "UPDATE user_account SET security_version=security_version+1 WHERE id=:id"
+                ), {"id": flow.account_id})
+        if revoke and index == 0:
+            revocation_committed.set()
+
+    writers = [asyncio.create_task(writer(i)) for i in range(capacity)]
+    try:
+        await asyncio.wait_for(asyncio.gather(*(event.wait() for event in checked_out)), 5)
+        assert pool.pool.checkedout() == capacity
+        response = await flow.client.get(url(flow), headers={"X-Export-Step-Up": token})
+        await asyncio.wait_for(asyncio.gather(*writers), 5)
+        assert response.status_code == (401 if revoke else 200), response.text
+        assert await audit_count(flow) == (0 if revoke else 1)
+        assert response.content.startswith(b"\xef\xbb\xbf") is not revoke
+        assert await remaining(flow, token) == 0
+        assert pool.pool.checkedout() == 0
+    finally:
+        for task in writers:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*writers, return_exceptions=True)
+        await pool.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_export_waiting_for_auth_pool_does_not_hold_lock_and_releases_on_failure(
+    flow, monkeypatch, cancel,
+):
+    """池耗尽或取消不取得业务锁，也不遗留连接或审计。"""
+    from app.core.auth.export_authorization import ExportDownloadAuthorization
+
+    pool = create_async_engine(
+        flow.repository.settings.database_url_for("auth"), pool_size=1, max_overflow=0,
+        pool_timeout=0.3,
+    )
+    requested = asyncio.Event()
+
+    class Managed:
+        @asynccontextmanager
+        async def begin(self):
+            requested.set()
+            async with pool.begin() as connection:
+                yield connection
+
+        async def dispose(self):
+            pass
+
+    monkeypatch.setattr("app.core.auth.export_authorization.database_engine", lambda _: Managed())
+
+    async def authorize():
+        async with flow.owner.begin() as business, lock_export_authorization(
+            flow.repository.settings, ExportDownloadAuthorization.from_claims(flow.claims),
+            business,
+        ):
+            pytest.fail("saturated auth pool must not grant download")
+
+    task = None
+    try:
+        async with pool.begin():
+            task = asyncio.create_task(authorize())
+            await asyncio.wait_for(requested.wait(), 5)
+            async with flow.owner.begin() as observer:
+                assert await observer.scalar(text(
+                    "SELECT pg_try_advisory_xact_lock(783692261159983410::bigint)"
+                ))
+            if cancel:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                with pytest.raises(ApiError) as failure:
+                    await asyncio.wait_for(task, 2)
+                assert failure.value.code == "AUTH_SESSION_UNAVAILABLE"
+                assert failure.value.status_code == 503
+        assert pool.pool.checkedout() == 0
+        assert await audit_count(flow) == 0
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await pool.dispose()
+
+
+@pytest.mark.asyncio
+async def test_export_business_lock_survives_auth_exit_until_audit_commit(flow, monkeypatch):
+    """认证事务退出后，业务事务提交前的撤销仍等待同一授权锁。"""
+    from app.services.admin_invariant import lock_admin_invariant
+
+    token = await issue(flow)
+    auth_exited = asyncio.Event()
+    commit_allowed = asyncio.Event()
+    writer_started = asyncio.Event()
+    writer_pid = None
+    seen_audits = None
+
+    @asynccontextmanager
+    async def pause_before_commit(*args):
+        async with lock_export_authorization(*args) as auth_connection:
+            yield auth_connection
+        auth_exited.set()
+        await commit_allowed.wait()
+
+    monkeypatch.setattr(
+        "app.services.export_repository.lock_export_authorization", pause_before_commit,
+    )
+
+    async def revoke():
+        nonlocal writer_pid, seen_audits
+        async with flow.owner.begin() as connection:
+            writer_pid = await connection.scalar(text("SELECT pg_backend_pid()"))
+            writer_started.set()
+            await lock_admin_invariant(connection)
+            seen_audits = await connection.scalar(text(
+                "SELECT count(*) FROM audit_log WHERE action='export_download' AND object_id=:id"
+            ), {"id": str(flow.task.public_id)})
+            await connection.execute(text(
+                "UPDATE user_account SET security_version=security_version+1 WHERE id=:id"
+            ), {"id": flow.account_id})
+
+    download = asyncio.create_task(
+        flow.client.get(url(flow), headers={"X-Export-Step-Up": token}),
+    )
+    writer = None
+    try:
+        await asyncio.wait_for(auth_exited.wait(), 5)
+        assert await audit_count(flow) == 0
+        writer = asyncio.create_task(revoke())
+        await asyncio.wait_for(writer_started.wait(), 5)
+        async with flow.owner.connect() as observer:
+            for _ in range(100):
+                waiting = await observer.scalar(text(
+                    "SELECT EXISTS(SELECT 1 FROM pg_locks WHERE pid=:pid "
+                    "AND locktype='advisory' AND NOT granted)"
+                ), {"pid": writer_pid})
+                if waiting:
+                    break
+                await asyncio.sleep(0.01)
+            else:
+                pytest.fail("revocation did not wait on the business authorization lock")
+        assert not writer.done()
+        commit_allowed.set()
+        response = await asyncio.wait_for(download, 5)
+        await asyncio.wait_for(writer, 5)
+        assert response.status_code == 200, response.text
+        assert seen_audits == 1 and await audit_count(flow) == 1
+    finally:
+        commit_allowed.set()
+        for task in (download, writer):
+            if task is not None and not task.done():
+                task.cancel()
+        await asyncio.gather(*(task for task in (download, writer) if task), return_exceptions=True)

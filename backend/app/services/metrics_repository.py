@@ -15,6 +15,24 @@ from app.services.outbox import (
 )
 from app.settings import Settings, get_settings
 
+# 明细与累计值必须在一条语句的同一 MVCC 快照内读取，压缩提交不能漏计或双计。
+WORKER_LEASE_EVENT_TOTALS_SQL = """
+    SELECT task_kind,event_type,sum(event_count) count FROM (
+        SELECT task_kind,event_type,count(event_type) event_count FROM worker_lease_event
+        GROUP BY task_kind,event_type
+        UNION ALL
+        SELECT task_kind,event_type,event_count FROM worker_lease_event_rollup
+    ) persisted GROUP BY task_kind,event_type ORDER BY task_kind,event_type
+"""
+SEND_DB_FAILURE_EVENT_TOTALS_SQL = """
+    SELECT phase,reason,sum(event_count) count FROM (
+        SELECT phase,reason,count(reason) event_count FROM send_db_failure_event
+        GROUP BY phase,reason
+        UNION ALL
+        SELECT phase,reason,event_count FROM send_db_failure_event_rollup
+    ) persisted GROUP BY phase,reason ORDER BY phase,reason
+"""
+
 
 class SqlMetricsRepository:
     """只投影平台聚合值，禁止读取手机号、正文或厂商错误原文。"""
@@ -132,14 +150,7 @@ class SqlMetricsRepository:
             )
 
             lease_events_result = await connection.execute(
-                text(
-                    """
-                        SELECT task_kind,event_type,count(event_type) count
-                        FROM worker_lease_event
-                        GROUP BY task_kind,event_type
-                        ORDER BY task_kind,event_type
-                        """
-                )
+                text(WORKER_LEASE_EVENT_TOTALS_SQL)
             )
             lease_events = tuple(
                 (
@@ -151,10 +162,7 @@ class SqlMetricsRepository:
             )
 
             send_db_result = await connection.execute(
-                text(
-                    "SELECT phase,reason,count(reason) count FROM send_db_failure_event "
-                    "GROUP BY phase,reason ORDER BY phase,reason"
-                )
+                text(SEND_DB_FAILURE_EVENT_TOTALS_SQL)
             )
             send_db_failures = tuple(
                 (str(row["phase"]), str(row["reason"]), max(0, int(row["count"])))

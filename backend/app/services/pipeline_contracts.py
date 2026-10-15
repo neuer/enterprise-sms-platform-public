@@ -78,6 +78,7 @@ class SendAdmissionPort(Protocol):
     async def authorize(
         self,
         *,
+        app_id: int,
         category: str,
         channel: str,
         recipient_count: int,

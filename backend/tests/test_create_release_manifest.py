@@ -345,6 +345,90 @@ def test_creates_self_validated_production_manifest(tmp_path: Path) -> None:
     assert output.stat().st_mode & 0o777 == 0o600
 
 
+@pytest.mark.parametrize("offline", [False, True])
+@pytest.mark.parametrize(
+    ("migration_from", "migration_target"),
+    [
+        ("0127_callback_app_admission", "0128_runtime_event_retention"),
+        ("0126_admission_recovery_mode", "0129_future"),
+        ("0128_runtime_event_retention", "0127_callback_app_admission"),
+        ("0130_future", "0126_admission_recovery_mode"),
+        ("unknown_revision", "0128_runtime_event_retention"),
+        ("0128_runtime_event_retention", "unknown_revision"),
+    ],
+)
+def test_incompatible_reader_generation_fails_before_evidence_or_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    offline: bool,
+    migration_from: str,
+    migration_target: str,
+) -> None:
+    output = tmp_path / "manifest.json"
+    output.write_bytes(b"existing release must remain intact\n")
+    original = output.read_bytes()
+
+    def unexpected_read(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("incompatible migration must fail before evidence access")
+
+    monkeypatch.setattr(manifest_module, "_read_private_json_with_hash_and_size", unexpected_read)
+    options: dict[str, Any] = {}
+    if offline:
+        options = {
+            "offline_archive_dir": tmp_path / "images",
+            "offline_index": tmp_path / "offline-image-index.json",
+            "signing_private_key": tmp_path / "signing-key",
+            "signing_key_id": "synthetic-key",
+        }
+    with pytest.raises(ManifestCreationError, match="runtime event reader"):
+        create_manifest(
+            release_report=tmp_path / "release-gate.json",
+            output=output,
+            release_id="reader-boundary",
+            migration_from=migration_from,
+            migration_target=migration_target,
+            changed=frozenset({"api", "web", "postgres", "redis"}),
+            **options,
+        )
+    assert output.read_bytes() == original
+    assert list(tmp_path.iterdir()) == [output]
+
+
+@pytest.mark.parametrize(
+    ("migration_from", "migration_target"),
+    [
+        ("0126_admission_recovery_mode", "0127_callback_app_admission"),
+        ("0128_runtime_event_retention", "0129_future"),
+        ("0128_runtime_event_retention", "0128_runtime_event_retention"),
+    ],
+)
+def test_creates_registry_manifest_within_reader_generation(
+    tmp_path: Path, migration_from: str, migration_target: str,
+) -> None:
+    report = _release_report(tmp_path / "release-gate.json", schema_revision=migration_target)
+    options: dict[str, Path] = {}
+    if migration_from != migration_target:
+        options = {
+            "backup_record": _private_json(tmp_path / "backup-change.json", {"passed": True}),
+            "restore_report": _private_json(tmp_path / "restore-report.json", {"passed": True}),
+        }
+    output = tmp_path / "manifest.json"
+    create_manifest(
+        release_report=report,
+        output=output,
+        release_id="reader-generation",
+        migration_from=migration_from,
+        migration_target=migration_target,
+        changed=frozenset({"api", "web"}),
+        **options,
+    )
+    manifest = json.loads(output.read_bytes())
+    assert manifest["migration"]["target"] == migration_target
+    assert manifest["migration"]["compatibility"] == (
+        "none" if migration_from == migration_target else "expand"
+    )
+
+
 def test_creates_signed_offline_production_manifest_and_closed_payloads(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

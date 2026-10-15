@@ -95,7 +95,7 @@ async def test_recovery_hysteresis_cas_reason_changes_share_one_real_budget() ->
                 None,
             )
             with pytest.raises(SendAdmissionRejected):
-                await guard.authorize(category="notice", channel="api", recipient_count=1)
+                await guard.authorize(app_id=1, category="notice", channel="api", recipient_count=1)
 
             class MetricsEngine:
                 @asynccontextmanager
@@ -118,7 +118,7 @@ async def test_recovery_hysteresis_cas_reason_changes_share_one_real_budget() ->
             initial = await first.snapshot()
             assert initial.reason == "recovery_hold" and initial.hold_until is not None
             assert initial.budget_mode == "recovery"
-            await first.authorize(
+            await first.authorize(app_id=1,
                 category="notice",
                 channel="api",
                 recipient_count=20,
@@ -135,7 +135,7 @@ async def test_recovery_hysteresis_cas_reason_changes_share_one_real_budget() ->
             assert updated.state_epoch > initial.state_epoch
             assert updated.budget_mode == "recovery"
             with pytest.raises(SendAdmissionRejected) as error:
-                await changed.authorize(
+                await changed.authorize(app_id=1,
                     category="notice",
                     channel="api",
                     recipient_count=1,
@@ -144,14 +144,14 @@ async def test_recovery_hysteresis_cas_reason_changes_share_one_real_budget() ->
                 )
             assert error.value.reason == "recovery_segment_cost"
             with pytest.raises(SendAdmissionRejected) as error:
-                await changed.authorize(
+                await changed.authorize(app_id=1,
                     category="notice", channel="api", recipient_count=1, estimated_segments=1
                 )
             assert error.value.reason == "recovery_rate"
             # 即使新版本的第一次扣款被拒，也推进围栏；旧缓存下一秒不可消费。
             clock.second += 1
             with pytest.raises(SendAdmissionRejected) as error:
-                await first.authorize(
+                await first.authorize(app_id=1,
                     category="notice", channel="api", recipient_count=1, estimated_segments=1
                 )
             assert error.value.reason == "recovery_rate"
@@ -161,7 +161,7 @@ async def test_recovery_hysteresis_cas_reason_changes_share_one_real_budget() ->
 
             async def accept(i: int) -> bool:
                 try:
-                    await (peer if i % 2 else changed).authorize(
+                    await (peer if i % 2 else changed).authorize(app_id=1,
                         category="notice",
                         channel="api",
                         recipient_count=1,

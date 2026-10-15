@@ -7,15 +7,12 @@ from datetime import datetime
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 
-from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.auth import ERROR_RESPONSE
 from app.api.authorization import ApproverActor
 from app.core.audit import audited
-from app.core.auth.jwt import JwtClaims
-from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.alert_repository import SqlAlertService
@@ -106,18 +103,6 @@ def get_approval_repository(_actor: ApproverActor) -> SqlApprovalRepository:
     return SqlApprovalRepository(settings, CryptoService.from_settings(settings))
 
 
-async def _approver(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> JwtClaims:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    if claims.role not in {"approver", "admin"}:
-        raise ApiError(403, "FORBIDDEN", "仅审批人可操作", None)
-    return claims
-
-
 @router.get(
     "",
     response_model=ApprovalPage,
@@ -125,8 +110,7 @@ async def _approver(
 )
 async def list_approvals(
     repository: Annotated[SqlApprovalRepository, Depends(get_approval_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    actor: ApproverActor,
     status: Annotated[ApprovalStatus, Query()] = "pending",
     category: Annotated[Literal["notice", "market"] | None, Query()] = None,
     dept: Annotated[str | None, Query(max_length=64)] = None,
@@ -139,7 +123,6 @@ async def list_approvals(
 ) -> dict[str, object]:
     """分页审批列表；正文不在列表解密，敏感读审计只保留在详情端点。"""
 
-    await _approver(facade, credentials)
     effective_sort = sort or ("expires_asc" if status == "pending" else "decided_desc")
     dept_pattern = f"%{dept}%" if dept is not None else None
     keyword = f"%{q}%" if q is not None else None
@@ -168,14 +151,12 @@ async def list_approvals(
 async def get_approval(
     id: int,
     request: Request,
+    actor: ApproverActor,
     auditor: Annotated[SensitiveReadAuditor, Depends(get_sensitive_read_auditor)],
     repository: Annotated[SqlApprovalRepository, Depends(get_approval_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> dict[str, object]:
     """审批单详情；唯一正文解密出口，逐条记录敏感读审计。"""
 
-    await _approver(facade, credentials)
     detail = await repository.get_detail(id)
     if detail is None:
         raise ApiError(404, "NOT_FOUND", "审批单不存在", None)
@@ -200,15 +181,13 @@ async def decide_approval(
     payload: DecisionRequest,
     request: Request,
     service: Annotated[ApprovalService, Depends(get_approval_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    actor: ApproverActor,
 ) -> DecisionOutcome:
-    claims = await _approver(facade, credentials)
     try:
         case = await service.decide(
             id,
             action=payload.action,
-            principal=claims.principal,
+            principal=actor.principal,
             reason=payload.reason,
         )
     except SelfApprovalDenied as error:

@@ -936,14 +936,18 @@ rotate_backend() {
   return "$rotate_status"
 }
 
-assert_writer_launch_allowed() {
-  local environment=development
-  if [[ "$SECRETS_MODE" == production ]]; then
-    environment=production
+writer_cutover_context() {
+  WRITER_CUTOVER_CONTEXT=(--environment "$SECRETS_MODE")
+  if [[ "$SECRETS_MODE" == development && "$HOST_BOOTSTRAP" == 0 &&
+        "$ROOT" != /opt/sms-platform && "${SMS_DEV_API_PORT:-0}" == 1 ]]; then
+    WRITER_CUTOVER_CONTEXT+=(--local-development)
   fi
+}
+
+assert_writer_launch_allowed() {
+  writer_cutover_context
   "${CONTROL_PYTHON[@]}" "$WRITER_CUTOVER" check-launch \
-    --root "$ROOT" \
-    --environment "$environment"
+    --root "$ROOT" "${WRITER_CUTOVER_CONTEXT[@]}"
 }
 
 start_stack() {
@@ -1589,7 +1593,8 @@ run_locked_test_update() {
     return
   fi
   if [[ "$command" == writer-cutover ]]; then
-    "${CONTROL_PYTHON[@]}" "$WRITER_CUTOVER" advance --root "$ROOT" \
+    writer_cutover_context
+    "${CONTROL_PYTHON[@]}" "$WRITER_CUTOVER" advance --root "$ROOT" "${WRITER_CUTOVER_CONTEXT[@]}" \
       --release-binding "writer-$(git -C "$ROOT" rev-parse HEAD)" \
       --compose "${COMPOSE[@]}"
     return

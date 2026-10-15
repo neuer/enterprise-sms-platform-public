@@ -7,14 +7,11 @@ from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Response
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
-from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.auth import ERROR_RESPONSE
 from app.api.authorization import AdminActor
 from app.core.audit import audited
-from app.core.auth.accounts import SecurityPrincipal
-from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.errors import ApiError
 from app.services.callback_repository import (
     CallbackRetryConflict,
@@ -58,23 +55,10 @@ def get_callback_repository(_actor: AdminActor) -> SqlCallbackRepository:
     return SqlCallbackRepository()
 
 
-async def _admin(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> SecurityPrincipal:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    if claims.role != "admin":
-        raise ApiError(403, "FORBIDDEN", "仅管理员可管理回调任务", None)
-    return claims.principal
-
-
 @router.get("", response_model=CallbackPageModel)
 async def list_callbacks(
     repository: Annotated[SqlCallbackRepository, Depends(get_callback_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    actor: AdminActor,
     status: Annotated[CallbackStatus | None, Query()] = None,
     app_id: Annotated[int | None, Query(ge=1)] = None,
     event: Annotated[Literal["batch.finished", "message.report"] | None, Query()] = None,
@@ -82,7 +66,6 @@ async def list_callbacks(
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
-    await _admin(facade, credentials)
     return await repository.list_page(
         status=status,
         app_id=app_id,
@@ -102,10 +85,9 @@ async def list_callbacks(
 async def retry_callback(
     id: int,
     repository: Annotated[SqlCallbackRepository, Depends(get_callback_repository)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    actor: AdminActor,
 ) -> Response:
-    principal = await _admin(facade, credentials)
+    principal = actor.principal
     try:
         await repository.manual_retry(id, principal=principal)
     except CallbackTaskNotFound as error:
