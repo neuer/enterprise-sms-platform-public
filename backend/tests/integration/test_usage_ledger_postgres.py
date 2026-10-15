@@ -179,14 +179,42 @@ async def _create_batch(
     return batch_id, batch_no
 
 
+def _same_day_frequency_clock(observed: datetime) -> datetime:
+    """同日归并场景只在午夜前回退一分钟，保持接近数据库真实时钟。"""
+    current = observed.replace(second=10, microsecond=0)
+    if shanghai_day(current)[1] != shanghai_day(current + timedelta(minutes=1))[1]:
+        current -= timedelta(minutes=1)
+    return current
+
+
+@pytest.mark.parametrize(
+    "observed,expected",
+    [
+        ("2026-10-15T15:58:57+00:00", "2026-10-15T15:58:10+00:00"),
+        ("2026-10-15T15:59:00+00:00", "2026-10-15T15:58:10+00:00"),
+        ("2026-10-15T15:59:59+00:00", "2026-10-15T15:58:10+00:00"),
+        ("2026-10-15T16:00:59+00:00", "2026-10-15T16:00:10+00:00"),
+        ("2026-12-31T15:59:59+00:00", "2026-12-31T15:58:10+00:00"),
+    ],
+)
+def test_same_day_frequency_clock_keeps_midnight_scenario_contract(
+    observed: str, expected: str,
+) -> None:
+    current = _same_day_frequency_clock(datetime.fromisoformat(observed))
+    assert current == datetime.fromisoformat(expected)
+    assert shanghai_day(current)[1] == shanghai_day(current + timedelta(minutes=1))[1]
+
+
 @pytest.mark.asyncio
 async def test_usage_facts_release_rebuild_rotation_and_drift_are_recoverable() -> None:
     database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
     engine = create_async_engine(database_url)
     settings = cast(Any, SimpleNamespace(database_url=database_url))
     redis = ProjectionRedis()
-    now = datetime.now(UTC).replace(second=10, microsecond=0)
+    now = _same_day_frequency_clock(datetime.now(UTC))
+    later = now + timedelta(minutes=1)
     date_key, usage_date, next_day = shanghai_day(now)
+    assert shanghai_day(later)[1] == usage_date
     nonce = uuid4().hex
     digest_v1 = "a" * 64
     digest_v2 = "b" * 64
@@ -382,7 +410,6 @@ async def test_usage_facts_release_rebuild_rotation_and_drift_are_recoverable() 
                 {"subject_id": split_subject_id, "phone_hmac": digest_v3},
             )
 
-        later = now + timedelta(minutes=1)
         second = await service.start_reservation(
             request_key=f"acceptance:{uuid4()}",
             app_id=app_id,
