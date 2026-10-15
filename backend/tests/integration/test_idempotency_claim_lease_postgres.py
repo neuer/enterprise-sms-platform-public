@@ -701,7 +701,7 @@ async def test_pipeline_rejection_immediately_releases_authoritative_claim(
         else SendAdmissionRejected("closed", "test", 30)
     )
 
-    async def reject(*_args: Any) -> None:
+    async def reject(*_args: Any, **_kwargs: Any) -> None:
         raise error
 
     if stage == "limit":

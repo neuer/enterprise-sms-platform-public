@@ -25,12 +25,12 @@ def test_current_live_test_ledger_migration_is_expand_only() -> None:
     assert [item.revision for item in checked] == ["0016_vendor_live_test_budget"]
 
 
-def test_current_server_migration_train_is_expand_only() -> None:
+def test_pre_compaction_server_migration_train_is_expand_only() -> None:
     migration_directory = ROOT / "backend/migrations/versions"
     checked = check_expand_only(
         migration_directory,
         "0021_approval_legacy_default",
-        find_migration_head(migration_directory),
+        "0127_callback_app_admission",
     )
 
     assert [item.revision for item in checked] == [
@@ -139,7 +139,21 @@ def test_current_server_migration_train_is_expand_only() -> None:
         "0124_business_authorization_lock",
         "0125_outbox_capacity_clock",
         "0126_admission_recovery_mode",
+        "0127_callback_app_admission",
     ]
+
+
+@pytest.mark.parametrize(
+    "migration_from", ["0021_approval_legacy_default", "0127_callback_app_admission"],
+)
+def test_runtime_event_compaction_refuses_expand_only_test_update(migration_from: str) -> None:
+    migration_directory = ROOT / "backend/migrations/versions"
+    with pytest.raises(ExpandOnlyError, match="0128_runtime_event_retention: destructive SQL"):
+        check_expand_only(
+            migration_directory,
+            migration_from,
+            find_migration_head(migration_directory),
+        )
 
 
 @pytest.mark.parametrize(

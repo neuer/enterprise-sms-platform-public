@@ -19,6 +19,11 @@ from app.services.housekeeping import (
 from app.services.idempotency_lifecycle import IDEMPOTENCY_LIVE_SQL
 from app.settings import Settings, get_settings
 
+RUNTIME_EVENT_STREAMS = {
+    "worker_lease_events": "worker_lease",
+    "send_db_failure_events": "send_db_failure",
+}
+
 # 固定 cutoff 同时约束对象到期、消费/解析租约，运行期间新到期对象留给下轮。
 IMPORT_ELIGIBLE = """
     t.expires_at<=CAST(:cutoff AS timestamptz)
@@ -173,7 +178,8 @@ class SqlHousekeepingRepository:
                     text("""
                     SELECT key,value FROM sys_config WHERE key IN (
                       'raw_log_retention_days','unmatched_retention_days',
-                      'job_history_days','usage_ledger_retention_days')
+                      'job_history_days','usage_ledger_retention_days',
+                      'runtime_event_retention_days')
                 """)
                 )
                 values = {str(row["key"]): int(row["value"]) for row in result.mappings()}
@@ -182,12 +188,15 @@ class SqlHousekeepingRepository:
                     values.get("unmatched_retention_days", 90),
                     values.get("job_history_days", 30),
                     values.get("usage_ledger_retention_days", 90),
+                    values.get("runtime_event_retention_days", 30),
                 )
                 if (
                     min(policy.raw_days, policy.unmatched_days, policy.job_days, policy.usage_days)
                     < 1
                 ):
                     raise ValueError("lifecycle retention values must be positive")
+                if not 1 <= policy.runtime_event_days <= 365:
+                    raise ValueError("invalid runtime event retention policy")
                 return policy
         finally:
             await engine.dispose()
@@ -257,6 +266,8 @@ class SqlHousekeepingRepository:
         cursor: CleanupCursor | None,
         limit: int,
     ) -> CleanupPage:
+        if table in RUNTIME_EVENT_STREAMS:
+            return await self._compact_runtime_events_page(table, cutoff=cutoff, limit=limit)
         if table not in PLANS or not 1 <= limit <= 1000:
             raise ValueError("invalid housekeeping page")
         plan = PLANS[table]
@@ -315,6 +326,30 @@ class SqlHousekeepingRepository:
                         usage=count if plan.count_field == "usage" else 0,
                     ),
                 )
+        finally:
+            await engine.dispose()
+
+    async def _compact_runtime_events_page(
+        self, table: str, *, cutoff: datetime, limit: int,
+    ) -> CleanupPage:
+        """以受限函数原子归档过期观测，不授予 worker 任意删除明细的权限。"""
+        if cutoff.utcoffset() is None or not 1 <= limit <= 1000:
+            raise ValueError("invalid runtime event compaction page")
+        engine = self._engine()
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(text("SET LOCAL lock_timeout='1s'"))
+                await connection.execute(text("SET LOCAL statement_timeout='5s'"))
+                result = await connection.execute(
+                    text("""
+                        SELECT public.compact_runtime_events(
+                            :stream, CAST(:cutoff AS timestamptz), :limit
+                        ) AS affected
+                    """),
+                    {"stream": RUNTIME_EVENT_STREAMS[table], "cutoff": cutoff, "limit": limit},
+                )
+                count = int(result.mappings().one()["affected"])
+                return CleanupPage(count, None, CleanupCounts(runtime_events=count))
         finally:
             await engine.dispose()
 

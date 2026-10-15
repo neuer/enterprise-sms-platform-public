@@ -41,20 +41,20 @@ async def lock_export_authorization(
     engine = database_engine(settings.database_url_for("auth"))
     principal = authorization.principal
     try:
-        valid = await business_connection.scalar(text("""
-            SELECT public.lock_business_authorization(
-                :account, :identity, :version, :provider, 'export', :role, :dept, :login
-            )
-        """), {
-            "account": principal.account_id, "identity": principal.identity_id,
-            "version": authorization.security_version, "provider": authorization.provider_code,
-            "role": principal.role, "dept": principal.dept, "login": principal.login_name,
-        })
-        if not valid:
-            raise ApiError(401, "UNAUTHORIZED", "授权状态已变化，请重新登录", None)
-        # 此连接只提供 JWT 最终复核读取；授权锁属于外层业务事务。
-        # 本连接退出失败时外层业务事务尚未提交，审计随之回滚。
+        # 先取得认证池连接，避免业务授权锁与认证写事务形成反向资源等待。
+        # 认证事务仍先退出；业务锁由外层事务持有到审计提交。
         async with engine.begin() as connection:
+            valid = await business_connection.scalar(text("""
+                SELECT public.lock_business_authorization(
+                    :account, :identity, :version, :provider, 'export', :role, :dept, :login
+                )
+            """), {
+                "account": principal.account_id, "identity": principal.identity_id,
+                "version": authorization.security_version, "provider": authorization.provider_code,
+                "role": principal.role, "dept": principal.dept, "login": principal.login_name,
+            })
+            if not valid:
+                raise ApiError(401, "UNAUTHORIZED", "授权状态已变化，请重新登录", None)
             yield connection
     except SQLAlchemyError:
         raise ApiError(503, "AUTH_SESSION_UNAVAILABLE", "下载授权状态暂不可用", None) from None

@@ -16,7 +16,7 @@ scripts/local_test.sh up
 scripts/local_test.sh status
 ```
 
-脚本会创建缺失的开发 `.env` 和 26 件 mock secrets，使用 dev profile 构建全栈，等待 API/mock 健康并执行幂等 `seed-dev`。已有 secret 内容不会被覆盖或打印。默认端口为：
+脚本会创建缺失的开发 `.env` 和 26 件 mock secrets，使用 dev profile 构建全栈，通过正式 writer 协调入口完成成本准入切换后重启 API，等待 API/mock 健康并执行幂等 `seed-dev`。已有 secret 内容不会被覆盖或打印。默认端口为：
 
 - Web 登录：<http://localhost:18180/login>
 - API 存活：<http://localhost:18100/livez>
@@ -40,6 +40,15 @@ WEB_PORT=28080 API_PORT=28000 MOCK_VENDOR_PORT=29028 scripts/local_test.sh up
 入口限额回归可运行 `python scripts/verify_nginx_admission.py`：使用候选 Dockerfile 的
 固定镜像摘要，在无外网、无宿主发布端口的临时容器中验证单来源/共享 NAT、全局、导入
 与受信代理边界。它不启动平台、不连接厂商，也不替代完整 G2 和最终镜像漏洞扫描。
+
+首次切换会停止 API writer，确认没有旧 writer/在途受理后，按 Redis 时间等待完整
+60 秒成本窗口与 5 秒安全余量。脚本只对已确认的窗口等待作有限重试，其他协调失败立即
+退出，不执行 seed 或打印整体就绪。保留数据后再次运行 `up` 可继续协调，同一版本已完成
+的切换保持幂等；不要为此 reset 或手工创建 Redis marker。
+
+本地开发的 writer 投影位于各仓库 `.test-update/writer-cutover/state.json`，启动检查与
+切换共用该路径，Nginx 代理配置也默认写入 `.test-update/trusted-proxies.conf`，无需写系统目录。
+该选择要求显式本地开发模式与实际 development 配置一致；共享测试、生产及固定部署入口继续使用部署专用路径。
 
 后续启动保留的数据卷使用 `up`：
 

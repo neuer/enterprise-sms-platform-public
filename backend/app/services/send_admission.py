@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -95,11 +96,24 @@ class SendAdmissionFacts:
     realtime_heartbeat_stale: bool = False
     bulk_heartbeat_stale: bool = False
     dispatcher_heartbeat_stale: bool = False
+    outbox_shared_active: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AppCallbackFacts:
+    """应用回调事实涵盖尚未分发、合法未来重试和 dead，不读取投递正文。"""
+
+    active: int
+    dead: int
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not int or value < 0 for value in (self.active, self.dead)):
+            raise ValueError("callback admission counts must be non-negative integers")
 
 
 @dataclass(frozen=True, slots=True)
 class SendAdmissionLimits:
-    """硬编码阈值；不写入 sys_config，避免扩大敏感配置授权面。"""
+    """固定安全保护上限；应用回调限制低于全局硬容量，不扩大动态配置面。"""
 
     degraded_outbox_active: int = 200
     closed_outbox_active: int = 2000
@@ -108,7 +122,8 @@ class SendAdmissionLimits:
     degraded_outbox_dead: int = 10
     closed_outbox_dead: int = 50
     degraded_uncertain: int = 20
-    degraded_callback_dead: int = 20
+    app_callback_active: int = 200
+    app_callback_dead: int = 20
     closed_callback_dead: int = 200
     degraded_vendor_failures: int = 3
     degraded_max_recipients: int = 20
@@ -121,6 +136,10 @@ class SendAdmissionLimits:
     snapshot_ttl_s: float = 5.0
 
     def __post_init__(self) -> None:
+        if not 0 < self.app_callback_active < self.closed_outbox_active:
+            raise ValueError("application callback active cap must be below the global hard cap")
+        if not 0 < self.app_callback_dead < self.closed_callback_dead:
+            raise ValueError("application callback dead cap must be below the global hard cap")
         if self.degraded_max_recipients < 1 or self.recovery_max_recipients < 1:
             raise ValueError("recipient caps must be positive")
         if self.recovery_max_recipients > self.degraded_max_recipients:
@@ -162,6 +181,8 @@ class SendAdmissionSnapshot:
 class SendAdmissionFactsPort(Protocol):
     async def load(self) -> SendAdmissionFacts: ...
 
+    async def load_app_callbacks(self, app_id: int) -> AppCallbackFacts: ...
+
     async def record_transition(
         self,
         *,
@@ -175,6 +196,12 @@ class SendAdmissionFactsPort(Protocol):
 
 def _age(facts: SendAdmissionFacts) -> int:
     return max(0, int(facts.outbox_oldest_age_s))
+
+
+def _shared_active(facts: SendAdmissionFacts) -> int:
+    """共享软保护排除回调，完整总量仍用于硬保护和指标。"""
+
+    return facts.outbox_active if facts.outbox_shared_active is None else facts.outbox_shared_active
 
 
 def _raw_capacity(
@@ -199,7 +226,7 @@ def _raw_capacity(
     if facts.callback_dead >= limits.closed_callback_dead:
         return "closed", "callback_backlog"
 
-    if facts.outbox_active >= limits.degraded_outbox_active:
+    if _shared_active(facts) >= limits.degraded_outbox_active:
         return "degraded", "outbox_backlog"
     if age >= limits.degraded_oldest_s:
         return "degraded", "outbox_oldest"
@@ -207,8 +234,6 @@ def _raw_capacity(
         return "degraded", "outbox_dead"
     if facts.uncertain_overdue >= limits.degraded_uncertain:
         return "degraded", "uncertain_overdue"
-    if facts.callback_dead >= limits.degraded_callback_dead:
-        return "degraded", "callback_backlog"
     if facts.vendor_failures >= limits.degraded_vendor_failures:
         return "degraded", "vendor_failures"
     if facts.realtime_paused or facts.bulk_paused:
@@ -236,11 +261,10 @@ def _in_degraded_hysteresis(
 ) -> bool:
     age = _age(facts)
     return (
-        facts.outbox_active >= limits.degraded_outbox_active // 2
+        _shared_active(facts) >= limits.degraded_outbox_active // 2
         or age >= limits.degraded_oldest_s // 2
         or facts.outbox_dead >= limits.degraded_outbox_dead // 2
         or facts.uncertain_overdue >= limits.degraded_uncertain // 2
-        or facts.callback_dead >= limits.degraded_callback_dead // 2
         or facts.vendor_failures >= max(1, limits.degraded_vendor_failures - 1)
         or facts.realtime_paused
         or facts.bulk_paused
@@ -444,6 +468,7 @@ class SendAdmissionGuard:
         limits: SendAdmissionLimits | None = None,
         clock: Callable[[], float] = monotonic,
         load_timeout_s: float = 2.0,
+        callback_clock: Callable[[], float] = monotonic,
     ) -> None:
         self.repository = repository
         self.limits = limits or SendAdmissionLimits()
@@ -452,6 +477,10 @@ class SendAdmissionGuard:
         self._lock = asyncio.Lock()
         self._snapshot: SendAdmissionSnapshot | None = None
         self._version = 0
+        self._callback_clock = callback_clock
+        self._callback_lock = asyncio.Lock()
+        self._callback_cache: OrderedDict[int, tuple[float, AppCallbackFacts]] = OrderedDict()
+        self._callback_cache_limit = 256
 
     def _fresh(self, now: float) -> SendAdmissionSnapshot | None:
         cached = self._snapshot
@@ -713,18 +742,57 @@ class SendAdmissionGuard:
         self._snapshot = None
         raise SendAdmissionUnavailable() from last_error
 
+    async def _authorize_app_callbacks(self, app_id: int) -> None:
+        """有界缓存应用事实；等待或查询超时不使用过期允许结果。"""
+
+        def cached() -> AppCallbackFacts | None:
+            item = self._callback_cache.get(app_id)
+            if item is None:
+                return None
+            loaded_at, facts = item
+            if self._callback_clock() - loaded_at >= min(self.limits.snapshot_ttl_s, 5.0):
+                self._callback_cache.pop(app_id, None)
+                return None
+            self._callback_cache.move_to_end(app_id)
+            return facts
+
+        facts = cached()
+        if facts is None:
+            try:
+                async with asyncio.timeout(self.load_timeout_s), self._callback_lock:
+                    facts = cached()
+                    if facts is None:
+                        started = self._callback_clock()
+                        facts = await self.repository.load_app_callbacks(app_id)
+                        if not isinstance(facts, AppCallbackFacts):
+                            raise ValueError("invalid callback admission facts")
+                        self._callback_cache[app_id] = (started, facts)
+                        self._callback_cache.move_to_end(app_id)
+                        while len(self._callback_cache) > self._callback_cache_limit:
+                            self._callback_cache.popitem(last=False)
+            except Exception as exc:
+                self._callback_cache.pop(app_id, None)
+                raise SendAdmissionUnavailable() from exc
+        if (
+            facts.active >= self.limits.app_callback_active
+            or facts.dead >= self.limits.app_callback_dead
+        ):
+            raise SendAdmissionRejected("closed", "app_callback_backlog", 5)
+
     async def authorize(
         self,
         *,
+        app_id: int,
         category: str,
         channel: str,
         recipient_count: int,
         estimated_segments: int | None = None,
         estimated_chunks: int | None = None,
     ) -> None:
-        """仅约束新发送。channel 只作无 PII 决策上下文，Web 与 API 同等积压。"""
+        """仅约束新发送；普通 Web 的服务端零应用上下文只受全局保护。"""
 
-        del channel
+        if type(app_id) is not int or app_id < 0 or (app_id == 0 and channel != "web"):
+            raise SendAdmissionUnavailable()
         snap = await self.snapshot()
         recipients = max(1, int(recipient_count))
         decision = authorize_from_snapshot(
@@ -741,6 +809,8 @@ class SendAdmissionGuard:
                 decision.reason,
                 decision.retry_after_s,
             )
+        if app_id > 0:
+            await self._authorize_app_callbacks(app_id)
         if snap.budget_mode != "recovery" or estimated_segments is None:
             return
         consume = getattr(self.repository, "consume_recovery_budget", None)

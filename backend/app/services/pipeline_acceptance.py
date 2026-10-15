@@ -245,7 +245,7 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
         if request.vendor_test_uat and recipient_count != 1:
             raise ValueError("真实联调 UAT 仅允许一个已登记号码")
         if not request.biz_id and preauthorization is None:
-            await self._authorize_new_send(request)
+            await self._authorize_new_send(request, app=app)
         if has_protected and not request.vendor_test_uat:
             raise ValueError("加密号码只能由真实联调 UAT 使用")
         if request.is_test and recipient_count > self.config.test_send_max:
@@ -293,6 +293,7 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
         batch_size = max(1, int(getattr(self.config, "vendor_batch_size", 500) or 500))
         await self._authorize_new_send(
             request,
+            app=app,
             estimated_segments=max(1, prepared.segments * recipient_count),
             estimated_chunks=max(1, ceil(recipient_count / batch_size)),
         )

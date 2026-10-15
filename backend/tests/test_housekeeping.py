@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.services.housekeeping import (
+    CLEANUP_TABLES,
     CleanupCounts,
     CleanupCursor,
     CleanupPage,
@@ -136,9 +137,10 @@ async def test_housekeeping_round_robin_uses_fixed_cutoff_keyset_and_round_budge
         max_pages=20,
     ).run(cutoff=CUTOFF)
     assert result.total == 19 * 7  # 一页独立文件阶段，其余为数据库页。
-    assert len({table for table, *_ in repository.pages[:13]}) == 13
+    table_count = len(CLEANUP_TABLES) - 1
+    assert len({table for table, *_ in repository.pages[:table_count]}) == table_count
     assert all(cutoff == CUTOFF and limit == 7 for _, cutoff, _, limit in repository.pages)
-    assert repository.pages[13][2] == (7,)
+    assert repository.pages[table_count][2] == (7,)
 
 
 @pytest.mark.asyncio

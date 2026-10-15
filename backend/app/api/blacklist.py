@@ -7,15 +7,12 @@ from datetime import datetime
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Path, Query, Request, Response
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 
-from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.auth import ERROR_RESPONSE
 from app.api.authorization import AdminActor
 from app.core.audit import audited
-from app.core.auth.accounts import SecurityPrincipal
-from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.services.blacklist import (
@@ -80,34 +77,16 @@ async def get_blacklist_service(_actor: AdminActor) -> AsyncIterator[BlacklistSe
         await redis.aclose()
 
 
-async def _admin(
-    request: Request,
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> SecurityPrincipal:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    if claims.role != "admin":
-        raise ApiError(403, "FORBIDDEN", "仅管理员可管理黑名单", None)
-    return claims.principal
-
-
 @router.get("", response_model=BlacklistPageModel)
 async def list_blacklist(
     service: Annotated[BlacklistService, Depends(get_blacklist_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(bearer_scheme),
-    ],
+    actor: AdminActor,
     request: Request,
     source: Annotated[BlacklistSource | None, Query()] = None,
     keyword: Annotated[str | None, Query(max_length=64)] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> BlacklistPageModel:
-    await _admin(request, facade, credentials)
     result = await service.list_page(source=source, keyword=keyword, page=page, size=size)
     return BlacklistPageModel(total=result.total, items=[_item(entry) for entry in result.items])
 
@@ -122,13 +101,9 @@ async def add_blacklist(
     payload: AddBlacklistRequest,
     request: Request,
     service: Annotated[BlacklistService, Depends(get_blacklist_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(bearer_scheme),
-    ],
+    actor: AdminActor,
 ) -> AddBlacklistResponse:
-    principal = await _admin(request, facade, credentials)
+    principal = actor.principal
     try:
         result = await service.add(
             payload.phones,
@@ -154,13 +129,9 @@ async def delete_blacklist(
     phone_hmac: Annotated[str, Path(pattern=r"^[0-9a-f]{64}$")],
     request: Request,
     service: Annotated[BlacklistService, Depends(get_blacklist_service)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(bearer_scheme),
-    ],
+    actor: AdminActor,
 ) -> Response:
-    principal = await _admin(request, facade, credentials)
+    principal = actor.principal
     if not await service.delete(
         phone_hmac,
         principal=principal,

@@ -3,6 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/writer_cutover.sh"
 ENV_FILE="${LOCAL_ENV_FILE:-$ROOT/.env}"
 SECRETS_DIR="${LOCAL_SECRETS_DIR:-$ROOT/deploy/secrets}"
 WEB_PORT="${WEB_PORT:-18180}"
@@ -173,6 +174,7 @@ compose() {
   SMS_PLATFORM_ROOT="$ROOT" \
   SMS_SECRETS_MODE=development \
   SMS_DEV_API_PORT=1 \
+  SMS_TRUSTED_PROXY_CONF="${SMS_TRUSTED_PROXY_CONF:-$ROOT/.test-update/trusted-proxies.conf}" \
   SMS_RUNTIME_ROOT="${SMS_RUNTIME_ROOT:-${TMPDIR:-/tmp}/sms-platform-${UID}/secrets}" \
   COMPOSE_PROFILES=dev \
     "$ROOT/deploy/sms-compose" "$@"
@@ -180,7 +182,7 @@ compose() {
 
 require_commands() {
   local command_name
-  for command_name in docker curl openssl awk install tail; do
+  for command_name in docker curl openssl awk install tail python3; do
     command -v "$command_name" >/dev/null || fail "缺少主机命令：$command_name"
   done
   docker compose version >/dev/null
@@ -263,6 +265,8 @@ up() {
   validate_dev_env
   ensure_dev_secrets
   compose up -d --build
+  activate_writer_cutover
+  compose up -d api
   wait_url API "http://localhost:${API_PORT}/readyz"
   wait_url 'Mock vendor' "http://localhost:${MOCK_VENDOR_PORT}/_mock/state"
   seed_dev

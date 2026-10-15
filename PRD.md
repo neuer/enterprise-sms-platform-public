@@ -320,6 +320,12 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - 仅影响存储与展示；实际下发厂商的是打码前原文
 #### FR-21 生命周期：业务消息、回复及号码明细 12 个月（月分区）；审计 36 个月（仅 sms_owner 按 DBA 变更单先加密归档校验再清理，应用代码无删除权）；raw 密文与 unmatched 报告 90 天；import/import_phone 24h；导出密文 7 天；数据库加密备份 35 天；批次汇总与报表长期。策略文本不证明自动清理、归档或备份任务已在生产执行，必须以实际任务记录、对象年龄和隔离恢复证据验收
 
+- worker 租约与发送数据库故障观测明细按 `runtime_event_retention_days`（默认 30，1–365）保留；
+  housekeeping 按既有短事务预算压缩过期行，并在同一事务保留固定维度历史累计值。
+  两项现有 Prometheus 指标的名称、类型与标签不变；查询在同一 SQL 快照合计明细与累计表。
+  保留期不保证清理故障时没有积压，实际执行以任务记录与对象年龄验收。首次压缩后只允许
+  兼容累计表的指标 reader，禁止把旧 reader 的镜像回退当作有效验收。
+
 ## 6. 非功能需求
 
 | 编号 | 要求 |
@@ -331,6 +337,22 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 | NFR-05 | 可观测：JSON 日志（手机号强制掩码）、`/livez`（进程存活）、`/readyz`（接流条件）、受 CIDR+Bearer 双重保护的 Prometheus/运维指标（双队列/速率/厂商错误/uncertain/回调失败/频控剔除数/Outbox积压、失败次数、最老事件年龄、dead-letter、用量投影漂移维度数与绝对差）；漂移日志、告警与解释输出不得包含手机号或 HMAC |
 | NFR-06 | 兼容：Chrome/Edge 最新版；Python 3.12、PostgreSQL 16、Redis 7 |
 | NFR-07 | 运行时边界：必须显式声明 `ENVIRONMENT=development|test|production`，模式与 DEBUG/Mock 组合不一致即启动失败；生产关闭 Swagger/ReDoc/OpenAPI；API client 与 Web user 路由必须声明认证 dependency 并由契约测试覆盖；QPS、导入大小/行数、超时与锁定时间必须有上界及跨字段校验 |
+
+### 发送准入的回调故障域
+
+回调故障按已认证应用隔离：同一应用pending/retrying回调达到200或dead达到20，
+拒绝该应用新发送，返回503 DEPENDENCY_UNAVAILABLE；包括未分发与未来重试的事实，
+最长5秒更新观察。两项均回落到上限以下后继续原全局/lane/成本准入。
+这些是固定安全保护上限，应用上限必须低于平台硬上限。
+普通Web服务端无应用上下文只受全局保护；有应用归属的API、UAT和授权重发不得绕过。
+幂等成功重放返回原批次，不生成新发送。
+
+全局完整活跃Outbox达到2000或callback dead达到200时仍关闭所有新发送；
+达到全局硬上限后的半阈值滞回、60秒保持和共享恢复预算保留。
+callback.ready不再贡献全局软降级数量，callback dead不再触发全局软降级；
+其完整数量仍在指标及硬保护中。到期处理积压、dispatcher/lane故障、暂停和
+数据库/Redis不可确认继续按既有合同失败关闭。应用隔离不豁免总容量与基础设施保护，
+不改变回调重试、事实保留和uncertain/submitted禁止自动重发的合同。
 
 ## 7. 厂商接口对接约定（摘要）
 

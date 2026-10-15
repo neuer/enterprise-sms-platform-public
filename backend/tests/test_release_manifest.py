@@ -148,6 +148,60 @@ def test_manifest_accepts_exact_four_image_schema(tmp_path: Path) -> None:
     assert manifest.images["web"].changed is True
 
 
+@pytest.mark.parametrize("offline", [False, True])
+@pytest.mark.parametrize(
+    ("migration_from", "migration_target"),
+    [
+        ("0127_callback_app_admission", "0128_runtime_event_retention"),
+        ("0126_admission_recovery_mode", "0129_future"),
+        ("0128_runtime_event_retention", "0127_callback_app_admission"),
+        ("0129_future", "0126_admission_recovery_mode"),
+        ("0127", "0128"),
+        ("unknown_revision", "0128_runtime_event_retention"),
+        ("0128_runtime_event_retention", "unknown_revision"),
+        ("unknown_revision", "other_unknown_revision"),
+    ],
+)
+def test_manifest_rejects_crossing_or_unknown_runtime_event_reader_boundary(
+    tmp_path: Path,
+    offline: bool,
+    migration_from: str,
+    migration_target: str,
+) -> None:
+    payload = _offline_manifest() if offline else _manifest(mode="production")
+    payload["migration"] = {
+        "from": migration_from, "target": migration_target, "compatibility": "expand",
+    }
+    with pytest.raises(ReleaseManifestError, match="runtime event reader"):
+        load_manifest(_write_manifest(tmp_path, payload))
+
+
+@pytest.mark.parametrize(
+    ("migration_from", "migration_target"),
+    [
+        ("0126_admission_recovery_mode", "0127_callback_app_admission"),
+        ("0128_runtime_event_retention", "0129_future"),
+        ("0129_future", "0130_future"),
+        ("0128_runtime_event_retention", "0128_runtime_event_retention"),
+    ],
+)
+def test_registry_manifest_preserves_releases_within_reader_generation(
+    tmp_path: Path, migration_from: str, migration_target: str,
+) -> None:
+    payload = _manifest(mode="production")
+    changed = migration_from != migration_target
+    payload["migration"] = {
+        "from": migration_from,
+        "target": migration_target,
+        "compatibility": "expand" if changed else "none",
+    }
+    if not changed:
+        payload["evidence"]["backup_restore_change"] = None
+    manifest = load_manifest(_write_manifest(tmp_path, payload))
+    assert manifest.migration_from == migration_from
+    assert manifest.migration_target == migration_target
+
+
 def test_manifest_accepts_strict_offline_production_v2(tmp_path: Path) -> None:
     manifest = load_manifest(_write_manifest(tmp_path, _offline_manifest()))
 

@@ -348,6 +348,14 @@ def service(
 async def test_uat_keeps_historical_recipient_encrypted_through_api_pipeline() -> None:
     uat, operations, recipients, pipeline = service()
 
+    class RecordingAdmission:
+        calls: list[dict[str, object]] = []
+
+        async def authorize(self, **values: object) -> None:
+            self.calls.append(values)
+
+    admission = RecordingAdmission()
+    pipeline.admission_guard = admission  # type: ignore[attr-defined]
     result = await uat.send(
         operation_id=OPERATION_ID,
         recipient_id=9,
@@ -365,6 +373,7 @@ async def test_uat_keeps_historical_recipient_encrypted_through_api_pipeline() -
     assert result.status == "running"
     assert result.batch_no == "batch-uat"
     assert recipients.resolved == [9]
+    assert admission.calls == [dict(app_id=7, category="verify", channel="web", recipient_count=1)]
     app, request = pipeline.calls[0]
     assert app.app_id == 7
     assert request.mobiles == ()

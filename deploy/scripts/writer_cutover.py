@@ -253,6 +253,27 @@ def _decode_eval_table(raw: str) -> object:
     return lines
 
 
+def local_marker_path(*, root: Path, environment: str, local_development: bool) -> Path:
+    """只为明确、经实际配置确认的本地开发选择项目隔离投影。"""
+
+    if not local_development:
+        return LOCAL_MARKER_PATH
+    if environment != "development" or root.resolve() == Path("/opt/sms-platform"):
+        raise _cutover().CutoverError("local writer marker requires local development")
+    import os
+
+    from development_api_port import enabled
+
+    try:
+        enabled(
+            root / ".env", mode=environment,
+            environ={**os.environ, "SMS_DEV_API_PORT": "1"},
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise _cutover().CutoverError("local writer marker configuration rejected") from exc
+    return root / ".test-update" / "writer-cutover" / "state.json"
+
+
 def load_local_marker(path: Path = LOCAL_MARKER_PATH) -> object | None:
     cutover = _cutover()
     if not path.is_file():
@@ -283,6 +304,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--root", type=Path, default=ROOT_CANDIDATE)
     parser.add_argument("--release-binding", default="")
     parser.add_argument("--environment", default="development")
+    parser.add_argument("--local-development", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     # REMAINDER：compose 前缀含 --env-file/-f，nargs="+" 会把它们当成未知可选参。
     parser.add_argument("--compose", nargs=argparse.REMAINDER, default=())
@@ -303,9 +325,16 @@ def main(argv: list[str] | None = None) -> int:
     root = args.root.resolve()
     _ensure_backend_path(root)
     cutover = _cutover()
+    try:
+        marker_path = local_marker_path(
+            root=root, environment=args.environment, local_development=args.local_development,
+        )
+    except cutover.CutoverError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     if args.command == "check-launch":
         try:
-            marker = load_local_marker()
+            marker = load_local_marker(marker_path)
             cutover.check_supported_launch(
                 root=root,
                 marker=marker,
@@ -329,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
             marker = cutover.read_cutover_marker(redis)
             if marker is not None:
                 try:
-                    write_local_marker(marker)
+                    write_local_marker(marker, marker_path)
                 except OSError:
                     print("local writer marker could not be persisted", file=sys.stderr)
                     return 1
@@ -393,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         marker = cutover.read_cutover_marker(redis)
         if marker is not None:
-            write_local_marker(marker)
+            write_local_marker(marker, marker_path)
     except (cutover.CutoverError, OSError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

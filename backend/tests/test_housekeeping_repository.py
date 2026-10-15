@@ -70,6 +70,45 @@ def repository(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("table", ("worker_lease_events", "send_db_failure_events"))
+async def test_runtime_compaction_uses_fixed_function_and_shared_page_budget(table: str) -> None:
+    repo, connection = repository([FakeResult(), FakeResult(), FakeResult([{"affected": 5}])])
+    result = await repo.cleanup_page(
+        table, LifecyclePolicy(90, 90, 30),
+        cutoff=datetime(2020, 1, 1, tzinfo=UTC), cursor=None, limit=5,
+    )
+    assert result.affected == result.counts.runtime_events == 5
+    assert result.cursor is None
+    assert "lock_timeout='1s'" in connection.calls[0][0]
+    assert "statement_timeout='5s'" in connection.calls[1][0]
+    assert "public.compact_runtime_events" in connection.calls[2][0]
+    assert connection.calls[2][1]["limit"] == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", (0, 1001))
+async def test_runtime_compaction_rejects_invalid_page_without_database(limit: int) -> None:
+    repo, connection = repository([])
+    with pytest.raises(ValueError, match="invalid runtime event compaction page"):
+        await repo.cleanup_page(
+            "worker_lease_events", LifecyclePolicy(90, 90, 30),
+            cutoff=datetime(2020, 1, 1, tzinfo=UTC), cursor=None, limit=limit,
+        )
+    assert not connection.calls
+
+
+@pytest.mark.asyncio
+async def test_runtime_compaction_rejects_naive_cutoff() -> None:
+    repo, connection = repository([])
+    with pytest.raises(ValueError, match="invalid runtime event compaction page"):
+        await repo.cleanup_page(
+            "worker_lease_events", LifecyclePolicy(90, 90, 30),
+            cutoff=datetime(2020, 1, 1), cursor=None, limit=5,
+        )
+    assert not connection.calls
+
+
+@pytest.mark.asyncio
 async def test_repository_loads_policy_and_lists_safe_import_file_metadata() -> None:
     repo, connection = repository(
         [

@@ -6,13 +6,11 @@ from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
-from app.api.auth import ERROR_RESPONSE, bearer_scheme
+from app.api.auth import ERROR_RESPONSE
 from app.api.authorization import AdminActor
 from app.core.audit import audited
-from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.errors import ApiError
 from app.services.sensitive import SensitiveWord, SensitiveWordManager, sensitive_word_index
 from app.services.sensitive_repository import SqlSensitiveWordRepository
@@ -49,28 +47,14 @@ def get_sensitive_word_manager(_actor: AdminActor) -> SensitiveWordManager:
     return SensitiveWordManager(SqlSensitiveWordRepository(), sensitive_word_index)
 
 
-async def _admin(
-    facade: AuthFacade,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> str:
-    if credentials is None or credentials.scheme.casefold() != "bearer":
-        raise ApiError(401, "UNAUTHORIZED", "缺少有效的 Bearer 令牌", None)
-    claims = await facade.verify(credentials.credentials)
-    if claims.role != "admin":
-        raise ApiError(403, "FORBIDDEN", "仅管理员可管理敏感词", None)
-    return claims.username
-
-
 @router.get("", response_model=SensitiveWordPageModel)
 async def list_sensitive_words(
     manager: Annotated[SensitiveWordManager, Depends(get_sensitive_word_manager)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    actor: AdminActor,
     keyword: Annotated[str | None, Query(max_length=64)] = None,
     page: Annotated[int, Query(ge=1)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> SensitiveWordPageModel:
-    await _admin(facade, credentials)
     result = await manager.list_page(keyword=keyword, page=page, size=size)
     return SensitiveWordPageModel(total=result.total, items=[_item(item) for item in result.items])
 
@@ -81,12 +65,10 @@ async def add_sensitive_words(
     payload: AddSensitiveWordsRequest,
     request: Request,
     manager: Annotated[SensitiveWordManager, Depends(get_sensitive_word_manager)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    actor: AdminActor,
 ) -> AddSensitiveWordsResponse:
-    actor = await _admin(facade, credentials)
     try:
-        result = await manager.add(payload.words, actor=actor)
+        result = await manager.add(payload.words, actor=actor.username)
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
     return AddSensitiveWordsResponse(
@@ -102,10 +84,8 @@ async def delete_sensitive_word(
     id: int,
     request: Request,
     manager: Annotated[SensitiveWordManager, Depends(get_sensitive_word_manager)],
-    facade: Annotated[AuthFacade, Depends(get_auth_facade)],
-    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    actor: AdminActor,
 ) -> Response:
-    actor = await _admin(facade, credentials)
-    if not await manager.delete(id, actor=actor):
+    if not await manager.delete(id, actor=actor.username):
         raise ApiError(404, "NOT_FOUND", "敏感词不存在", None)
     return Response(status_code=204)

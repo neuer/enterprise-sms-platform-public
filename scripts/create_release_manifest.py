@@ -31,7 +31,9 @@ from release_manifest import (  # noqa: E402
     OFFLINE_EXPAND_MIGRATIONS,
     OFFLINE_IMAGE_SOURCE,
     ONE_TIME_COLD_CUTOVER,
+    ReleaseManifestError,
     load_manifest_bytes,
+    require_compatible_runtime_event_reader,
 )
 
 _IMAGES = ("api", "web", "postgres", "redis")
@@ -597,6 +599,10 @@ def create_manifest(
 ) -> None:
     """读取最终证据，原子生成 registry v1 或离线归档 v2 清单。"""
 
+    try:
+        require_compatible_runtime_event_reader(migration_from, migration_target)
+    except ReleaseManifestError as exc:
+        raise ManifestCreationError(str(exc)) from exc
     if not changed.issubset(_IMAGES) or (not changed and not baseline):
         raise ManifestCreationError("changed images are invalid")
     if baseline and (changed or migration_from != migration_target):

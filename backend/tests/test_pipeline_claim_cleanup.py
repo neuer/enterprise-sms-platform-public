@@ -54,7 +54,7 @@ async def test_pre_heartbeat_failure_releases_owner(
     else:
         error = RuntimeError("task creation failed")
 
-    async def fail(*_args: Any) -> None:
+    async def fail(*_args: Any, **_kwargs: Any) -> None:
         raise error
 
     if stage == "create":
