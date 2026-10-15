@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import os
+import re
+import secrets
+import shutil
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,9 +17,14 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import event, text
+from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
+import app.settings
 from app.services.housekeeping import LifecyclePolicy
 from app.services.housekeeping_repository import SqlHousekeepingRepository
 from app.services.metrics_repository import (
@@ -42,6 +51,92 @@ ROLES = (
     "sms_auth", "sms_accept", "sms_send", "sms_callback",
     "sms_export", "sms_scheduler", "sms_metrics",
 )
+RETENTION_REVISION = "0128_runtime_event_retention"
+BACKEND = Path(__file__).resolve().parents[2]
+
+
+def migration_config(directory: Path, *, legacy_revision: str | None = None) -> Config:
+    """原样复制生产迁移；旧基线仅扣除本轮新增对象，不替换 env 或 revision 实现。"""
+    source = BACKEND / "migrations"
+    shutil.copytree(source, directory / "migrations", ignore=shutil.ignore_patterns("__pycache__"))
+    schema = (BACKEND.parent / "schema.sql").read_text(encoding="utf-8")
+    if legacy_revision is not None:
+        assert legacy_revision in {"0126_admission_recovery_mode", "0127_callback_app_admission"}
+        spec = importlib.util.spec_from_file_location(
+            "retention_schema_parser", source / "versions/0001_schema_v16.py",
+        )
+        assert spec and spec.loader
+        baseline = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(baseline)
+        # 系统参数的大 INSERT 只移除一个新 key，其他种子逐字保留。
+        schema, changed = re.subn(
+            r"^\('runtime_event_retention_days'.*\n", "", schema, flags=re.MULTILINE,
+        )
+        assert changed == 1
+        names: tuple[str, ...] = (
+            "worker_lease_event_rollup", "send_db_failure_event_rollup",
+            "idx_worker_lease_event_retention", "idx_send_db_failure_event_retention",
+            "compact_runtime_events",
+        )
+        if legacy_revision.startswith("0126_"):
+            names += ("idx_cb_app_admission",)
+        statements = baseline.split_sql_statements(schema)
+        removed = tuple(statement for statement in statements if any(n in statement for n in names))
+        # 0128 只新增两表、两索引、一函数和五条权限语句；0127 只新增一索引。
+        assert len(removed) == (11 if legacy_revision.startswith("0126_") else 10)
+        assert all(re.search(r"\b(?:CREATE|GRANT|REVOKE)\b", item) for item in removed)
+        schema = "".join(statement for statement in statements if statement not in removed)
+    (directory / "schema.sql").write_text(schema, encoding="utf-8")
+    config = Config()
+    config.set_main_option("script_location", str(directory / "migrations"))
+    return config
+
+
+@pytest.fixture
+async def migration_database(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> AsyncIterator[tuple[AsyncEngine, URL]]:
+    """只在官方临时集群内创建本测试独占库，结束时不用 FORCE 隐藏连接泄漏。"""
+    owner_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    baseline = os.environ.get("SMS_ISOLATED_TEST_DATABASE")
+    if (
+        not baseline or owner_url.host != "127.0.0.1"
+        or (
+            owner_url.database != baseline
+            and re.fullmatch(r"gate_[0-9a-f]{32}", owner_url.database or "") is None
+        )
+    ):
+        raise RuntimeError("retention migration tests require the official isolated database")
+    database = f"retention_{uuid4().hex}"
+    admin = create_async_engine(owner_url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+    async with admin.connect() as connection:
+        await connection.execute(text(f'CREATE DATABASE "{database}" TEMPLATE template0'))
+    url = owner_url.set(database=database)
+    owner = create_async_engine(url)
+    key_files = []
+    for name in ("data_aes_key", "data_hmac_key"):
+        path = tmp_path / name
+        path.write_bytes(base64.b64encode(secrets.token_bytes(32)))
+        path.chmod(0o600)
+        key_files.append(path)
+    settings = app.settings.Settings(
+        environment="test", debug=True, auth_mock=True, vendor_mock=True,
+        db_host="127.0.0.1", db_port=owner_url.port or 5432, db_name=database,
+        db_owner_password_file=Path(os.environ["DB_OWNER_PASSWORD_FILE"]),
+        data_aes_key_file=key_files[0], data_hmac_key_file=key_files[1],
+    )
+    monkeypatch.setattr(
+        app.settings, "get_settings", lambda: settings,
+    )
+    try:
+        yield owner, url
+    finally:
+        await owner.dispose()
+        try:
+            async with admin.connect() as connection:
+                await connection.execute(text(f'DROP DATABASE "{database}"'))
+        finally:
+            await admin.dispose()
 
 
 @pytest.fixture
@@ -141,7 +236,7 @@ async def test_compaction_is_bounded_preserves_recent_and_cumulative_metrics(
 
 @pytest.mark.parametrize("stream", STREAMS)
 @pytest.mark.concurrency
-async def test_compaction_concurrency_new_events_and_locked_rows_preserve_totals(
+async def test_concurrent_compactors_skip_locked_rows_and_resume(
     engines: tuple[AsyncEngine, AsyncEngine], stream: str,
 ) -> None:
     owner, runtime = engines
@@ -163,17 +258,104 @@ async def test_compaction_concurrency_new_events_and_locked_rows_preserve_totals
 
             results = await asyncio.gather(compact(), compact())
             assert sum(results) == 16
-            new_ids = await seed(owner, stream, old=1)
-            ids.extend(new_ids)
             async with owner.connect() as connection:
-                after = await totals(connection, stream)
-                key = (STREAMS[stream][5], STREAMS[stream][6])
-                assert after[key] == before[key] + 1
-        assert await compact() == 2
+                assert await totals(connection, stream) == before
+        assert await compact() == 1
         assert await compact() == 0
         async with owner.connect() as connection:
-            assert await totals(connection, stream) == after
+            assert await totals(connection, stream) == before
     finally:
+        await cleanup(owner, stream, ids)
+
+
+@pytest.mark.parametrize("stream", STREAMS)
+@pytest.mark.concurrency
+async def test_insert_commits_during_blocked_compaction_without_snapshot_count_drift(
+    engines: tuple[AsyncEngine, AsyncEngine], stream: str,
+) -> None:
+    """真实行锁证明压缩已经执行并等待，插入在解除屏障之前提交。"""
+    owner, runtime = engines
+    table, _, _, first, second, first_value, second_value = STREAMS[stream]
+    ids = await seed(owner, stream, old=2)
+    async with owner.begin() as connection:
+        await connection.execute(text(f"""
+            INSERT INTO {table}_rollup({first},{second},event_count)
+            VALUES(:first,:second,0) ON CONFLICT({first},{second}) DO NOTHING
+        """), {"first": first_value, "second": second_value})
+    started = asyncio.Event()
+    compacting_pid: int | None = None
+
+    async def compact() -> int:
+        nonlocal compacting_pid
+        async with runtime.begin() as connection:
+            compacting_pid = int((await connection.execute(
+                text("SELECT pg_backend_pid()")
+            )).scalar_one())
+            # 测试屏障有自身上限；生产 repository 的 1s/5s 另有真实超时验收。
+            await connection.execute(text("SET LOCAL lock_timeout='5s'"))
+            await connection.execute(text("SET LOCAL statement_timeout='10s'"))
+            started.set()
+            return int((await connection.execute(text("""
+                SELECT compact_runtime_events(:stream,:cutoff,10)
+            """), {"stream": stream, "cutoff": CUTOFF})).scalar_one())
+
+    compact_task: asyncio.Task[int] | None = None
+    try:
+        async with owner.connect() as snapshot:
+            snapshot = await snapshot.execution_options(isolation_level="REPEATABLE READ")
+            before = await totals(snapshot, stream)
+            async with owner.begin() as blocker:
+                blocker_pid = (await blocker.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+                await blocker.execute(text(f"""
+                    SELECT event_count FROM {table}_rollup
+                    WHERE {first}=:first AND {second}=:second FOR UPDATE
+                """), {"first": first_value, "second": second_value})
+                compact_task = asyncio.create_task(compact())
+                await asyncio.wait_for(started.wait(), timeout=3)
+
+                async def wait_for_database_barrier() -> None:
+                    async with owner.connect() as observer:
+                        while True:
+                            if compact_task is not None and compact_task.done():
+                                await compact_task
+                                raise AssertionError("compaction finished before database barrier")
+                            blocked = await observer.execute(text("""
+                                SELECT :blocker=ANY(pg_blocking_pids(:compacting))
+                            """), {"blocker": blocker_pid, "compacting": compacting_pid})
+                            if blocked.scalar_one():
+                                return
+                            await asyncio.sleep(0.01)
+
+                await asyncio.wait_for(wait_for_database_barrier(), timeout=3)
+                new_ids = await seed(owner, stream, old=1, recent=1)
+                ids.extend(new_ids)
+                assert not compact_task.done()
+                assert await totals(snapshot, stream) == before
+                async with owner.connect() as connection:
+                    after_insert = await totals(connection, stream)
+                primary = (first_value, second_value)
+                secondary = ("export" if stream == "worker_lease" else "finalize", second_value)
+                expected = dict(before)
+                expected[primary] = expected.get(primary, 0) + 1
+                expected[secondary] = expected.get(secondary, 0) + 1
+                assert after_insert == expected
+            # 原 SQL 快照看不到后插入行，本页只能压缩屏障前的两条。
+            assert await asyncio.wait_for(compact_task, timeout=5) == 2
+            assert await totals(snapshot, stream) == before
+            await snapshot.rollback()
+        async with owner.connect() as connection:
+            assert await totals(connection, stream) == expected
+            assert set((await connection.execute(
+                text(f"SELECT id FROM {table} WHERE id=ANY(:ids)"), {"ids": ids},
+            )).scalars()) == set(new_ids)
+        assert await compact() == 1
+        assert await compact() == 0
+        async with owner.connect() as connection:
+            assert await totals(connection, stream) == expected
+    finally:
+        if compact_task is not None and not compact_task.done():
+            compact_task.cancel()
+            await asyncio.gather(compact_task, return_exceptions=True)
         await cleanup(owner, stream, ids)
 
 
@@ -359,31 +541,108 @@ async def test_runtime_roles_cannot_bypass_compaction_and_metrics_can_read(
             await totals(connection, stream)
 
 
-async def test_downgrade_preserves_version_and_rejects_compacted_history(
-    engines: tuple[AsyncEngine, AsyncEngine], monkeypatch: Any,
+async def persisted_events(connection: AsyncConnection, stream: str) -> list[tuple[Any, ...]]:
+    table = STREAMS[stream][0]
+    result = await connection.execute(text(f"SELECT * FROM {table} ORDER BY id"))
+    return [tuple(row) for row in result]
+
+
+@pytest.mark.parametrize("legacy_revision", (
+    "0126_admission_recovery_mode", "0127_callback_app_admission",
+))
+async def test_real_upgrade_preserves_events_from_each_legacy_revision(
+    migration_database: tuple[AsyncEngine, URL], tmp_path: Path, legacy_revision: str,
 ) -> None:
-    owner, _ = engines
-    path = Path(__file__).parents[2] / "migrations/versions/0128_runtime_event_retention.py"
-    spec = importlib.util.spec_from_file_location("runtime_event_migration", path)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    statements: list[str] = []
-    monkeypatch.setattr(module, "op", SimpleNamespace(execute=statements.append))
-    module.downgrade()
-    async with owner.connect() as connection:
-        version = (await connection.execute(
-            text("SELECT version_num FROM alembic_version")
-        )).scalar_one()
-    async with owner.connect() as connection:
-        await connection.execute(text("""
-            INSERT INTO worker_lease_event_rollup(task_kind,event_type,event_count)
-            VALUES('raw','dead',1) ON CONFLICT(task_kind,event_type)
-            DO UPDATE SET event_count=worker_lease_event_rollup.event_count+1
-        """))
-        with pytest.raises(Exception, match="runtime event rollup requires a compatible reader"):
-            await connection.execute(text(statements[0]))
+    owner, _ = migration_database
+    config = migration_config(tmp_path, legacy_revision=legacy_revision)
+    await asyncio.to_thread(command.upgrade, config, legacy_revision)
     async with owner.connect() as connection:
         assert (await connection.execute(
             text("SELECT version_num FROM alembic_version")
-        )).scalar_one() == version
+        )).scalar_one() == legacy_revision
+        for relation in (
+            "worker_lease_event_rollup", "send_db_failure_event_rollup",
+            "idx_worker_lease_event_retention", "idx_send_db_failure_event_retention",
+        ):
+            assert (await connection.execute(
+                text("SELECT to_regclass(:name)"), {"name": relation},
+            )).scalar_one() is None
+        assert (await connection.execute(text("""
+            SELECT to_regprocedure('compact_runtime_events(text,timestamptz,integer)')
+        """))).scalar_one() is None
+        assert (await connection.execute(text("""
+            SELECT count(*) FROM sys_config WHERE key='runtime_event_retention_days'
+        """))).scalar_one() == 0
+        callback_index = (await connection.execute(
+            text("SELECT to_regclass('idx_cb_app_admission')")
+        )).scalar_one()
+        assert (callback_index is not None) == legacy_revision.startswith("0127_")
+    for stream in STREAMS:
+        await seed(owner, stream, old=3, recent=2)
+    async with owner.connect() as connection:
+        before = {stream: await persisted_events(connection, stream) for stream in STREAMS}
+    await asyncio.to_thread(command.upgrade, config, RETENTION_REVISION)
+    async with owner.connect() as connection:
+        assert (await connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        )).scalar_one() == RETENTION_REVISION
+        for stream, rows in before.items():
+            assert await persisted_events(connection, stream) == rows
+            assert sum((await totals(connection, stream)).values()) == len(rows) == 5
+            table = STREAMS[stream][0]
+            assert (await connection.execute(
+                text(f"SELECT count(*) FROM {table}_rollup")
+            )).scalar_one() == 0
+        assert (await connection.execute(
+            text("SELECT to_regclass('idx_cb_app_admission')")
+        )).scalar_one() is not None
+    for stream in STREAMS:
+        async with owner.begin() as connection:
+            assert (await connection.execute(text("""
+                SELECT compact_runtime_events(:stream,:cutoff,10)
+            """), {"stream": stream, "cutoff": CUTOFF})).scalar_one() == 3
+    async with owner.connect() as connection:
+        for stream in STREAMS:
+            assert sum((await totals(connection, stream)).values()) == 5
+            rows = await persisted_events(connection, stream)
+            assert len(rows) == 2
+            assert all(row in before[stream] for row in rows)
+
+
+async def test_real_alembic_downgrade_rejects_rollups_and_preserves_version_and_all_events(
+    migration_database: tuple[AsyncEngine, URL], tmp_path: Path,
+) -> None:
+    owner, _ = migration_database
+    config = migration_config(tmp_path)
+    await asyncio.to_thread(command.upgrade, config, RETENTION_REVISION)
+    for stream in STREAMS:
+        await seed(owner, stream, old=3, recent=2)
+        async with owner.begin() as connection:
+            assert (await connection.execute(text("""
+                SELECT compact_runtime_events(:stream,:cutoff,10)
+            """), {"stream": stream, "cutoff": CUTOFF})).scalar_one() == 3
+
+    async def snapshot() -> dict[str, Any]:
+        async with owner.connect() as connection:
+            result: dict[str, Any] = {
+                "version": (await connection.execute(
+                    text("SELECT version_num FROM alembic_version")
+                )).scalar_one(),
+            }
+            for stream, (table, *_) in STREAMS.items():
+                result[stream] = await persisted_events(connection, stream)
+                result[f"{stream}_rollup"] = [tuple(row) for row in await connection.execute(
+                    text(f"SELECT * FROM {table}_rollup ORDER BY 1,2")
+                )]
+                result[f"{stream}_totals"] = await totals(connection, stream)
+            return result
+
+    before = await snapshot()
+    assert before["version"] == RETENTION_REVISION
+    for stream in STREAMS:
+        assert len(before[stream]) == 2
+        assert sum(row[-1] for row in before[f"{stream}_rollup"]) == 3
+    with pytest.raises(DBAPIError, match="runtime event rollup requires a compatible reader"):
+        # 真实命令加载生产 env/0128；不是直接执行截取的 downgrade SQL。
+        await asyncio.to_thread(command.downgrade, config, "0127_callback_app_admission")
+    assert await snapshot() == before

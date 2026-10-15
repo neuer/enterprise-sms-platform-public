@@ -42,8 +42,9 @@ def _0075_backfill_sql() -> str:
     def _capture(statement: object, *_args: object, **_kwargs: object) -> None:
         captured.append(str(statement))
 
-    module.op.execute = _capture
-    module.upgrade()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(module.op, "execute", _capture)
+        module.upgrade()
     updates = [
         sql
         for sql in captured
