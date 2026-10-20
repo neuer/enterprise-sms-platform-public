@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { readViewSource } from "./view-source"
 import { readThemeCss, readWorkspaceCss } from "./workspace-css"
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
@@ -87,7 +88,7 @@ describe("跨页面一致性契约", () => {
 
   it("窄屏下状态列固定在右侧，不被横向滚动挤出视口", () => {
     for (const path of ["src/views/BatchView.vue", "src/views/AppManagementView.vue"]) {
-      expect(read(path)).toMatch(/<el-table-column label="状态" width="\d+" fixed="right">/)
+      expect(readViewSource(path)).toMatch(/<el-table-column label="状态" width="\d+" fixed="right">/)
     }
   })
 

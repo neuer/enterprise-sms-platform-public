@@ -10,7 +10,7 @@ export function readViewSource(path: string, seen = new Set<string>()): string {
   if (!full.endsWith(".vue")) return source
   const children = [...source.matchAll(/from\s+["'](\.[^"']+\.vue)["']/g)]
   const owned = children.filter((match) =>
-    /\/ops\/Ops|\/(?:ApiDemoDialog|SecurityDailyConfigDialog|AppDetailDrawer|AppEditorDrawer|User(?:Create|Role|PasswordReset)Drawer|SendPrecheckCards)\.vue$/.test(
+    /\/ops\/Ops|\/apps\/App|\/(?:ApiDemoDialog|SecurityDaily(?:ConfigDialog|OverviewPanel|ReportDetail)|AppDetailDrawer|AppEditorDrawer|User(?:Create|Role|PasswordReset)Drawer|SendPrecheckCards|SendResultCard|Login(?:Hero|ChatHead|ThreadItem)|(?:Batch|Sign|Template)DetailDrawer)\.vue$/.test(
       match[1],
     ),
   )

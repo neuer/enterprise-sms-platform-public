@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { readViewSource } from "./view-source"
 import { readThemeCss } from "./workspace-css"
 
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
@@ -68,7 +69,7 @@ describe("深色主题一致性守卫（前端打磨回归）", () => {
 
   it("登录会话随主题切换，成功与失败气泡在两套主题下都有配色", () => {
     const theme = readThemeCss()
-    expect(source("src/views/LoginView.vue")).toContain("item.tone ? `is-${item.tone}` : ''")
+    expect(readViewSource("src/views/LoginView.vue")).toContain("item.tone ? `is-${item.tone}` : ''")
     expect(theme).toMatch(/\.login-bubble\.is-ok\s*\{[^}]*color:\s*var\(--login-ok-ink\)/s)
     expect(theme).toMatch(/\.login-bubble\.is-err\s*\{[^}]*color:\s*var\(--login-err-ink\)/s)
     for (const token of ["--login-ok-ink", "--login-err-ink", "--egret-line"]) {
