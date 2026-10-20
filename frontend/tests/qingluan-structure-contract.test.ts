@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 
+import { readViewSource } from "./view-source"
 import { readThemeCss, readWorkspaceCss } from "./workspace-css"
 
 const source = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8")
@@ -70,7 +71,7 @@ describe("行点击开 Drawer 结构契约（el-table @row-click）", () => {
 })
 
 describe("登录页结构契约", () => {
-  const login = source("src/views/LoginView.vue")
+  const login = readViewSource("src/views/LoginView.vue")
   const theme = readThemeCss()
 
   it("桌面左白鹭右 480px 会话窗口，860px 以下白鹭收成会话上方一条，矮屏再让出并由对话名片承载", () => {
