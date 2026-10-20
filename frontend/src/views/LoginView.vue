@@ -10,8 +10,8 @@ import LoginEgret from "../components/LoginEgret.vue"
 import LoginHero from "../components/LoginHero.vue"
 import LoginThreadItem from "../components/LoginThreadItem.vue"
 import { useLatestRead } from "../composables/useLatestRead"
-import { useLoginDisplay } from "../composables/useLoginDisplay"
-import { useLoginThread } from "../composables/useLoginThread"
+import { useLoginDisplay } from "./login/useLoginDisplay"
+import { useLoginThread } from "./login/useLoginThread"
 import { errorText } from "../lib/error"
 import {
   DEFAULT_POLICY,

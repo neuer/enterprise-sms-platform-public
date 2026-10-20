@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { vRowActivate } from "../lib/directives"
 import { usePagedList } from "../composables/usePagedList"
-import { useBatchFilters } from "../composables/useBatchFilters"
+import { useBatchFilters } from "./batch/useBatchFilters"
 import ListPagination from "../components/ListPagination.vue"
 import FilterSeg from "../components/FilterSeg.vue"
 import BatchDetailDrawer from "../components/BatchDetailDrawer.vue"

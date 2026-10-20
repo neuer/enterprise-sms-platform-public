@@ -1,10 +1,10 @@
 import { computed, ref, watch, type Ref } from "vue"
 
-import { listApps, type ManagedApp } from "../api/apps"
-import type { BatchFilters } from "../api/queries"
-import { CATEGORY_OPTIONS, STATUS_LABELS } from "../lib/labels"
-import { rangeToIsoParams, toApiDateTime } from "../lib/time"
-import { useLatestRead } from "./useLatestRead"
+import { listApps, type ManagedApp } from "../../api/apps"
+import type { BatchFilters } from "../../api/queries"
+import { CATEGORY_OPTIONS, STATUS_LABELS } from "../../lib/labels"
+import { rangeToIsoParams, toApiDateTime } from "../../lib/time"
+import { useLatestRead } from "../../composables/useLatestRead"
 
 // 状态分组为前端推导；各组计数来自服务端分面 status_counts（不含状态条件本身）。
 // 单状态组的中文名直接引用 STATUS_LABELS 单点；「全部 / 进行中 / 其他终态」为多状态聚合组，lib 无对应键，保留局部文案。

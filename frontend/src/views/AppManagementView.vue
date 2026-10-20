@@ -25,7 +25,7 @@ import {
   type ManagedApp,
 } from "../api/apps"
 import { listConfigs } from "../api/admin"
-import { useAppDailyUsage } from "../composables/useAppDailyUsage"
+import { useAppDailyUsage } from "./apps/useAppDailyUsage"
 import { useLatestRead } from "../composables/useLatestRead"
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import AppListTable from "./apps/AppListTable.vue"

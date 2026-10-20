@@ -1,9 +1,9 @@
 import { ref } from "vue"
 
-import type { ManagedApp } from "../api/apps"
-import { getReport, type ReportRow } from "../api/reports"
-import { shanghaiDateKey } from "../lib/time"
-import { useLatestRead } from "./useLatestRead"
+import type { ManagedApp } from "../../api/apps"
+import { getReport, type ReportRow } from "../../api/reports"
+import { shanghaiDateKey } from "../../lib/time"
+import { useLatestRead } from "../../composables/useLatestRead"
 
 /** 应用管理今日用量联查：完整读完才发布，失败或取消不把部分结果显示为完整用量。 */
 export function useAppDailyUsage() {

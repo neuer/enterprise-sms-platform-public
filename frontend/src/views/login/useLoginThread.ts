@@ -1,6 +1,6 @@
 import { nextTick, ref, type Ref } from "vue"
 
-import type { Chip, Item, MineItem, NewItem, Part } from "../lib/loginConversation"
+import type { Chip, Item, MineItem, NewItem, Part } from "../../lib/loginConversation"
 
 /** 登录会话消息流：每次调用新建，只持有展示用气泡（密码气泡仅为固定圆点），不承载任何凭据。 */
 export function useLoginThread(netWarn: Ref<boolean>) {

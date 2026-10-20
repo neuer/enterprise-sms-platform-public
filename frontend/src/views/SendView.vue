@@ -13,7 +13,7 @@ import SendResultCard from "../components/SendResultCard.vue"
 import EmptyState from "../components/EmptyState.vue"
 import { useLatestRead } from "../composables/useLatestRead"
 import { useMobileLayout } from "../composables/useMobileLayout"
-import { useSendDraft } from "../composables/useSendDraft"
+import { useSendDraft } from "./send/useSendDraft"
 import { copyText } from "../lib/clipboard"
 import { formatDateTime } from "../lib/time"
 

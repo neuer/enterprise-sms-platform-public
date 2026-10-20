@@ -2,9 +2,9 @@ import type { UploadRequestOptions } from "element-plus"
 import { ElMessage } from "element-plus"
 import { computed, reactive, ref, toRef, watch } from "vue"
 
-import { ApiRequestError } from "../api/client"
-import { listSigns } from "../api/signs"
-import { listTemplates } from "../api/templates"
+import { ApiRequestError } from "../../api/client"
+import { listSigns } from "../../api/signs"
+import { listTemplates } from "../../api/templates"
 import {
   downloadImportInvalidFile,
   sendWebMessage,
@@ -14,17 +14,17 @@ import {
   type ImportResult,
   type SendResult,
   type WebMessagePayload,
-} from "../api/webMessages"
-import { useApprovedResources } from "./useApprovedResources"
-import { useDebouncedEntries } from "./useDebouncedEntries"
+} from "../../api/webMessages"
+import { useApprovedResources } from "../../composables/useApprovedResources"
+import { useDebouncedEntries } from "../../composables/useDebouncedEntries"
 import { useSendPreview } from "./useSendPreview"
-import { admissionReasonOf, admissionReasonText } from "../lib/admissionReason"
-import { saveBlob } from "../lib/download"
-import { errorText } from "../lib/error"
-import { newIdempotencyKey } from "../lib/idempotency"
-import { PHONE_RE } from "../lib/phone"
-import { renderPreview, splitPreviewParts } from "../lib/templatePreview"
-import { formatDateTime, toApiDateTime } from "../lib/time"
+import { admissionReasonOf, admissionReasonText } from "../../lib/admissionReason"
+import { saveBlob } from "../../lib/download"
+import { errorText } from "../../lib/error"
+import { newIdempotencyKey } from "../../lib/idempotency"
+import { PHONE_RE } from "../../lib/phone"
+import { renderPreview, splitPreviewParts } from "../../lib/templatePreview"
+import { formatDateTime, toApiDateTime } from "../../lib/time"
 
 // 与服务端 web_messages.py 的 50_000 上限同口径；客户端只提前提示，服务端仍为权威裁决（规则 40 上界）。
 const MAX_RECIPIENTS_PER_BATCH = 50_000

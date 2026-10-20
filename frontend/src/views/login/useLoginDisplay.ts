@@ -16,8 +16,8 @@ import {
   type ProgressStep,
   type ProviderCode,
   type Step,
-} from "../lib/loginConversation"
-import { formatHm } from "../lib/time"
+} from "../../lib/loginConversation"
+import { formatHm } from "../../lib/time"
 
 interface LoginDisplaySource {
   step: Ref<Step>

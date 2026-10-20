@@ -1,8 +1,8 @@
 import { computed, ref, watch, type ComputedRef, type Ref } from "vue"
 
-import { previewBilling, type BillingPreview, type Category } from "../api/webMessages"
-import type { FinalContentParts, RiskLine } from "../components/SendPrecheckCards.vue"
-import { errorText } from "../lib/error"
+import { previewBilling, type BillingPreview, type Category } from "../../api/webMessages"
+import type { FinalContentParts, RiskLine } from "../../components/SendPrecheckCards.vue"
+import { errorText } from "../../lib/error"
 
 /** 预检依赖的发送表单字段；与页面 form 同一 reactive 对象，只读。 */
 export interface SendPreviewForm {
