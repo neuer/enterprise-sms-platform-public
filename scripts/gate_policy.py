@@ -69,7 +69,6 @@ SPLIT_MODULE_UNRELATED = frozenset({"services/pipeline_repository.py"})
 # 文件回到默认上限内时必须删除条目。新增条目需要写明理由并经评审。
 _LEGACY_OVERSIZE = "D122 存量超限，待按职责拆分"
 _VENDOR_LIVE_FROZEN = "vendor-live 精确保护路径，首发后随部署工具解冻再拆"
-_FRONTEND_PHASE5 = "阶段 5 前端整理中，拆到 600 行内后删除"
 _CSS_LAYER_CONTRACT = "样式分层契约：每页一个分片，跨页共享组只在 shared.css"
 SIZE_BUDGET_EXCEPTIONS: Mapping[str, tuple[int, str]] = MappingProxyType(
     {
@@ -87,19 +86,15 @@ SIZE_BUDGET_EXCEPTIONS: Mapping[str, tuple[int, str]] = MappingProxyType(
         "backend/app/services/ops_repository.py": (1088, _LEGACY_OVERSIZE),
         "backend/app/services/callback_repository.py": (1078, _LEGACY_OVERSIZE),
         "backend/app/core/auth/jwt.py": (1044, _LEGACY_OVERSIZE),
-        "frontend/src/views/SendView.vue": (1009, _FRONTEND_PHASE5),
         "backend/app/services/report_ingest.py": (1000, _LEGACY_OVERSIZE),
         "backend/app/services/vendor_test_operation_repository.py": (1000, _VENDOR_LIVE_FROZEN),
         "backend/app/api/web_messages.py": (1000, _VENDOR_LIVE_FROZEN),
         "frontend/src/views/ConfigView.vue": (918, _VENDOR_LIVE_FROZEN),
         "backend/app/api/messages.py": (1000, _VENDOR_LIVE_FROZEN),
         "backend/app/settings.py": (1000, _VENDOR_LIVE_FROZEN),
-        "frontend/src/views/BatchView.vue": (899, _FRONTEND_PHASE5),
         "backend/app/cli.py": (1000, _VENDOR_LIVE_FROZEN),
         "frontend/src/styles/workspace/send.css": (1000, _CSS_LAYER_CONTRACT),
-        "frontend/src/views/SecurityDailyView.vue": (897, _FRONTEND_PHASE5),
         "backend/app/services/import_repository.py": (1000, _LEGACY_OVERSIZE),
-        "frontend/src/views/LoginView.vue": (888, _FRONTEND_PHASE5),
         "backend/app/tasks/send_repository.py": (1000, _VENDOR_LIVE_FROZEN),
         "backend/app/core/auth/runtime.py": (1000, _VENDOR_LIVE_FROZEN),
         "backend/app/tasks/send_repository_attempt.py": (1000, _VENDOR_LIVE_FROZEN),
@@ -108,10 +103,7 @@ SIZE_BUDGET_EXCEPTIONS: Mapping[str, tuple[int, str]] = MappingProxyType(
         "backend/app/services/metrics.py": (1000, _LEGACY_OVERSIZE),
         "frontend/src/styles/workspace/message-batch.css": (1000, _CSS_LAYER_CONTRACT),
         "backend/app/services/reply_ingest.py": (1000, _LEGACY_OVERSIZE),
-        "frontend/src/views/AppManagementView.vue": (766, _FRONTEND_PHASE5),
         "frontend/src/components/VendorTestConsole.vue": (684, _VENDOR_LIVE_FROZEN),
-        "frontend/src/views/SignView.vue": (644, _FRONTEND_PHASE5),
-        "frontend/src/views/TemplateView.vue": (614, _FRONTEND_PHASE5),
     }
 )
 
