@@ -28,6 +28,7 @@ GATE_CONTRACT_TESTS = (
     "tests/test_operations_coverage.py",
     "tests/test_call_order.py",
     "tests/test_single_implementation.py",
+    "tests/test_size_budget.py",
     "tests/test_gate_scripts.py",
 )
 ORDINARY_ROOT_DOCS = frozenset({"README.md", "CONTRIBUTING.md"})
@@ -62,6 +63,56 @@ SPLIT_MODULE_PARTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
 )
 # 与入口同前缀、但早于拆分就独立存在的模块，不属于对应逻辑模块。
 SPLIT_MODULE_UNRELATED = frozenset({"services/pipeline_repository.py"})
+
+# 应用源码体积预算例外（size_budget.py）：新文件 .vue ≤600 行、其余 ≤800 行。
+# 存量超限文件按 max(1000, D122 当时行数) 封顶，页面按当时行数封顶；上限只许下调，
+# 文件回到默认上限内时必须删除条目。新增条目需要写明理由并经评审。
+_LEGACY_OVERSIZE = "D122 存量超限，待按职责拆分"
+_VENDOR_LIVE_FROZEN = "vendor-live 精确保护路径，首发后随部署工具解冻再拆"
+_FRONTEND_PHASE5 = "阶段 5 前端整理中，拆到 600 行内后删除"
+SIZE_BUDGET_EXCEPTIONS: Mapping[str, tuple[int, str]] = MappingProxyType(
+    {
+        "frontend/src/styles/workspace/shared.css": (1612, _LEGACY_OVERSIZE),
+        "backend/app/services/security_daily_repository.py": (1421, _LEGACY_OVERSIZE),
+        "backend/app/tasks/send.py": (1408, _VENDOR_LIVE_FROZEN),
+        "backend/app/services/report_repository.py": (1254, _LEGACY_OVERSIZE),
+        "backend/app/services/send_inflight.py": (1247, _LEGACY_OVERSIZE),
+        "backend/app/core/auth/users.py": (1241, _LEGACY_OVERSIZE),
+        "backend/app/services/uncertain_resolution.py": (1217, _LEGACY_OVERSIZE),
+        "frontend/src/styles/theme/public-shell.css": (1216, _LEGACY_OVERSIZE),
+        "backend/app/core/auth/service.py": (1215, _LEGACY_OVERSIZE),
+        "backend/app/services/pipeline_repository.py": (1195, _LEGACY_OVERSIZE),
+        "backend/app/api/vendor_test.py": (1119, _VENDOR_LIVE_FROZEN),
+        "backend/app/services/ops_repository.py": (1088, _LEGACY_OVERSIZE),
+        "backend/app/services/callback_repository.py": (1078, _LEGACY_OVERSIZE),
+        "backend/app/core/auth/jwt.py": (1044, _LEGACY_OVERSIZE),
+        "frontend/src/views/SendView.vue": (1009, _FRONTEND_PHASE5),
+        "backend/app/services/report_ingest.py": (1000, _LEGACY_OVERSIZE),
+        "backend/app/services/vendor_test_operation_repository.py": (1000, _VENDOR_LIVE_FROZEN),
+        "backend/app/api/web_messages.py": (1000, _VENDOR_LIVE_FROZEN),
+        "frontend/src/views/ConfigView.vue": (918, _VENDOR_LIVE_FROZEN),
+        "backend/app/api/messages.py": (1000, _VENDOR_LIVE_FROZEN),
+        "backend/app/settings.py": (1000, _VENDOR_LIVE_FROZEN),
+        "frontend/src/views/BatchView.vue": (899, _FRONTEND_PHASE5),
+        "backend/app/cli.py": (1000, _VENDOR_LIVE_FROZEN),
+        "frontend/src/styles/workspace/send.css": (1000, _LEGACY_OVERSIZE),
+        "frontend/src/views/SecurityDailyView.vue": (897, _FRONTEND_PHASE5),
+        "backend/app/services/import_repository.py": (1000, _LEGACY_OVERSIZE),
+        "frontend/src/views/LoginView.vue": (888, _FRONTEND_PHASE5),
+        "backend/app/tasks/send_repository.py": (1000, _VENDOR_LIVE_FROZEN),
+        "backend/app/core/auth/runtime.py": (1000, _VENDOR_LIVE_FROZEN),
+        "backend/app/tasks/send_repository_attempt.py": (1000, _VENDOR_LIVE_FROZEN),
+        "backend/app/services/send_admission.py": (1000, _LEGACY_OVERSIZE),
+        "backend/app/services/export_file.py": (1000, _LEGACY_OVERSIZE),
+        "backend/app/services/metrics.py": (1000, _LEGACY_OVERSIZE),
+        "frontend/src/styles/workspace/message-batch.css": (1000, _LEGACY_OVERSIZE),
+        "backend/app/services/reply_ingest.py": (1000, _LEGACY_OVERSIZE),
+        "frontend/src/views/AppManagementView.vue": (766, _FRONTEND_PHASE5),
+        "frontend/src/components/VendorTestConsole.vue": (684, _VENDOR_LIVE_FROZEN),
+        "frontend/src/views/SignView.vue": (644, _FRONTEND_PHASE5),
+        "frontend/src/views/TemplateView.vue": (614, _FRONTEND_PHASE5),
+    }
+)
 
 
 def logical_module_files(entry: str) -> tuple[str, ...]:

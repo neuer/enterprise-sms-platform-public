@@ -9,7 +9,12 @@ import sys
 from pathlib import Path
 
 from call_order import first_reach_precedes
-from gate_policy import SPLIT_MODULE_PARTS, SPLIT_MODULE_UNRELATED, logical_module_files
+from gate_policy import (
+    SIZE_BUDGET_EXCEPTIONS,
+    SPLIT_MODULE_PARTS,
+    SPLIT_MODULE_UNRELATED,
+    logical_module_files,
+)
 from single_implementation import (
     billing_literal_lines,
     celery_task_tracking,
@@ -18,6 +23,7 @@ from single_implementation import (
     template_placeholder_lines,
     untracked_scheduled_tasks,
 )
+from size_budget import BUDGET_ROOTS, collect_sizes, size_budget_violations
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "backend" / "app"
@@ -1143,6 +1149,21 @@ def check_async_import_invariants() -> None:
     )
 
 
+def check_size_budget() -> None:
+    """应用源码体积预算：新文件不得超限，登记的存量超限文件只许缩小。"""
+
+    paths = [
+        path.relative_to(ROOT).as_posix()
+        for prefix, suffixes in BUDGET_ROOTS
+        for path in (ROOT / prefix).rglob("*")
+        if path.is_file() and path.name.endswith(suffixes)
+    ]
+    for path, message in size_budget_violations(
+        collect_sizes(ROOT, paths), SIZE_BUDGET_EXCEPTIONS
+    ):
+        fail(ROOT / path, message)
+
+
 def check_split_module_registry() -> None:
     """拆分模块的登记表必须与磁盘一致，且拆出文件继承入口的 vendor-live 保护。"""
 
@@ -1327,6 +1348,7 @@ check_vendor_live_invariants()
 check_single_implementation_invariants()
 check_protected_path_policy_invariants()
 check_split_module_registry()
+check_size_budget()
 check_outbox_invariants()
 check_usage_ledger_invariants()
 check_import_reservation_invariants()

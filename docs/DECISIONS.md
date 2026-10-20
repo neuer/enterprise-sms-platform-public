@@ -1731,6 +1731,15 @@
   `services/alert.emit_alert_best_effort`；`backend/pyproject.toml` 的 per-file-ignores 只
   登记启用时已有命中的 `app` 文件，条目只删不增，新文件必须捕获具体异常或显式重抛。
   测试、迁移与仓库脚本不受此约束。
+- 决策：月度对比用 `python3 scripts/governance_metrics.py [--ref <commit>]` 按同一口径从 Git
+  树计算（基线 `--ref 23aa16a` 可复现上列数值）。前端行数只统计 `src` 下 `.vue/.ts/.css`
+  （含生成类型），基线按此口径为 44157 行；上文 4.58 万含 `wc -l` 误计的二进制字体。
+- 决策：应用源码体积预算由 `scripts/size_budget.py` 接入 `check_invariants.py`。
+  `backend/app` 与 `frontend/src` 新文件 `.vue` 不超过 600 行、其余不超过 800 行；存量
+  超限文件登记在 `gate_policy.SIZE_BUDGET_EXCEPTIONS`，上限为 max(1000, 登记时行数)，
+  页面按登记时行数封顶。条目必须写明理由，上限只许下调，回到默认上限内即须删除。
+  vendor-live 精确保护路径（如 `tasks/send.py`、`ConfigView.vue`）拆分会让新文件脱离
+  保护清单，随部署工具解冻再做。
 - 保留：`HANDOVER.md` 第 1 节仍是生产移交清单的权威来源，并被测试更新合同和
   vendor-control-agent 只读路径引用，首发前不移动；`scripts/admin_write_client.py`
   与 `scripts/check_operations_coverage.py` 分别被 E2E/压测脚本和覆盖率门禁按模块名
