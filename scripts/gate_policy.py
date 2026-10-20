@@ -70,16 +70,17 @@ SPLIT_MODULE_UNRELATED = frozenset({"services/pipeline_repository.py"})
 _LEGACY_OVERSIZE = "D122 存量超限，待按职责拆分"
 _VENDOR_LIVE_FROZEN = "vendor-live 精确保护路径，首发后随部署工具解冻再拆"
 _FRONTEND_PHASE5 = "阶段 5 前端整理中，拆到 600 行内后删除"
+_CSS_LAYER_CONTRACT = "样式分层契约：每页一个分片，跨页共享组只在 shared.css"
 SIZE_BUDGET_EXCEPTIONS: Mapping[str, tuple[int, str]] = MappingProxyType(
     {
-        "frontend/src/styles/workspace/shared.css": (1612, _LEGACY_OVERSIZE),
+        "frontend/src/styles/workspace/shared.css": (1612, _CSS_LAYER_CONTRACT),
         "backend/app/services/security_daily_repository.py": (1421, _LEGACY_OVERSIZE),
         "backend/app/tasks/send.py": (1408, _VENDOR_LIVE_FROZEN),
         "backend/app/services/report_repository.py": (1254, _LEGACY_OVERSIZE),
         "backend/app/services/send_inflight.py": (1247, _LEGACY_OVERSIZE),
         "backend/app/core/auth/users.py": (1241, _LEGACY_OVERSIZE),
         "backend/app/services/uncertain_resolution.py": (1217, _LEGACY_OVERSIZE),
-        "frontend/src/styles/theme/public-shell.css": (1216, _LEGACY_OVERSIZE),
+        "frontend/src/styles/theme/public-shell.css": (1216, _CSS_LAYER_CONTRACT),
         "backend/app/core/auth/service.py": (1215, _LEGACY_OVERSIZE),
         "backend/app/services/pipeline_repository.py": (1195, _LEGACY_OVERSIZE),
         "backend/app/api/vendor_test.py": (1119, _VENDOR_LIVE_FROZEN),
@@ -95,7 +96,7 @@ SIZE_BUDGET_EXCEPTIONS: Mapping[str, tuple[int, str]] = MappingProxyType(
         "backend/app/settings.py": (1000, _VENDOR_LIVE_FROZEN),
         "frontend/src/views/BatchView.vue": (899, _FRONTEND_PHASE5),
         "backend/app/cli.py": (1000, _VENDOR_LIVE_FROZEN),
-        "frontend/src/styles/workspace/send.css": (1000, _LEGACY_OVERSIZE),
+        "frontend/src/styles/workspace/send.css": (1000, _CSS_LAYER_CONTRACT),
         "frontend/src/views/SecurityDailyView.vue": (897, _FRONTEND_PHASE5),
         "backend/app/services/import_repository.py": (1000, _LEGACY_OVERSIZE),
         "frontend/src/views/LoginView.vue": (888, _FRONTEND_PHASE5),
@@ -105,7 +106,7 @@ SIZE_BUDGET_EXCEPTIONS: Mapping[str, tuple[int, str]] = MappingProxyType(
         "backend/app/services/send_admission.py": (1000, _LEGACY_OVERSIZE),
         "backend/app/services/export_file.py": (1000, _LEGACY_OVERSIZE),
         "backend/app/services/metrics.py": (1000, _LEGACY_OVERSIZE),
-        "frontend/src/styles/workspace/message-batch.css": (1000, _LEGACY_OVERSIZE),
+        "frontend/src/styles/workspace/message-batch.css": (1000, _CSS_LAYER_CONTRACT),
         "backend/app/services/reply_ingest.py": (1000, _LEGACY_OVERSIZE),
         "frontend/src/views/AppManagementView.vue": (766, _FRONTEND_PHASE5),
         "frontend/src/components/VendorTestConsole.vue": (684, _VENDOR_LIVE_FROZEN),

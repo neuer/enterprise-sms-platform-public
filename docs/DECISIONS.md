@@ -1740,6 +1740,11 @@
   页面按登记时行数封顶。条目必须写明理由，上限只许下调，回到默认上限内即须删除。
   vendor-live 精确保护路径（如 `tasks/send.py`、`ConfigView.vue`）拆分会让新文件脱离
   保护清单，随部署工具解冻再做。
+- 推迟：`openapi.yaml` 按标签拆为 `openapi/` 源文件。测试更新分类对未登记的顶层路径
+  失败关闭，拆分后任何契约改动都无法走快速更新，需修改冻结的部署分类表，随部署工具
+  解冻再评估。超限的工作区样式（`shared.css`、`public-shell.css` 及页面分片）受
+  `docs/ui-design.md` 样式分层与 `css-layer-contract` 约束（每页一个分片、共享组只在
+  `shared.css`），保留为登记例外，不为缩短文件改动层级契约。
 - 保留：`HANDOVER.md` 第 1 节仍是生产移交清单的权威来源，并被测试更新合同和
   vendor-control-agent 只读路径引用，首发前不移动；`scripts/admin_write_client.py`
   与 `scripts/check_operations_coverage.py` 分别被 E2E/压测脚本和覆盖率门禁按模块名
