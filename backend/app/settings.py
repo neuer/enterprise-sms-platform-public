@@ -83,6 +83,18 @@ def read_secret_file(path: str | Path) -> str:
     return value
 
 
+def _require_readable_file(path: Path, label: str) -> None:
+    """确认挂载的 CA 文件存在且当前进程可读。"""
+
+    if not path.is_file():
+        raise ValueError(f"{label} must be a readable CA file")
+    try:
+        with path.open("rb"):
+            pass
+    except OSError as exc:
+        raise ValueError(f"{label} must be a readable CA file") from exc
+
+
 class Settings(BaseSettings):
     """运行配置；凭据字段只保存挂载文件路径。"""
 
@@ -246,8 +258,21 @@ class Settings(BaseSettings):
         return self.redis_ca_certs_file or self.ldap_ca_certs_file
 
     @model_validator(mode="after")
-    def reject_auth_mock_in_production(self) -> Self:
-        """生产环境禁止启用认证 mock。"""
+    def validate_runtime_boundaries(self) -> Self:
+        """按固定顺序校验运行边界；任一领域不合法即拒绝启动。"""
+
+        self._validate_runtime_mode()
+        self._validate_mounted_files()
+        self._validate_vendor_origins()
+        self._validate_redis_endpoints()
+        self._validate_database_pools()
+        self._validate_readiness_and_metrics()
+        self._validate_auth_session_policy()
+        self._validate_raw_spill_budget()
+        return self
+
+    def _validate_runtime_mode(self) -> None:
+        """生产禁止 DEBUG/Mock/通配主机；开发测试必须显式启用 Mock。"""
 
         if self.environment == "production":
             unsafe = {
@@ -275,22 +300,13 @@ class Settings(BaseSettings):
                 )
             if self.environment == "test" and not self.vendor_mock:
                 raise ValueError("test requires VENDOR_MOCK=1")
+
+    def _validate_mounted_files(self) -> None:
+        """生产 CA 必须可读；callback mTLS 成对配置；出站上限可解析。"""
+
         if self.is_production:
-            if not self.ldap_ca_certs_file.is_file():
-                raise ValueError("LDAP_CA_CERTS_FILE must be a readable CA file")
-            try:
-                with self.ldap_ca_certs_file.open("rb"):
-                    pass
-            except OSError as exc:
-                raise ValueError("LDAP_CA_CERTS_FILE must be a readable CA file") from exc
-            redis_ca_file = self.redis_ca_bundle_file
-            if not redis_ca_file.is_file():
-                raise ValueError("REDIS_CA_CERTS_FILE must be a readable CA file")
-            try:
-                with redis_ca_file.open("rb"):
-                    pass
-            except OSError as exc:
-                raise ValueError("REDIS_CA_CERTS_FILE must be a readable CA file") from exc
+            _require_readable_file(self.ldap_ca_certs_file, "LDAP_CA_CERTS_FILE")
+            _require_readable_file(self.redis_ca_bundle_file, "REDIS_CA_CERTS_FILE")
         if (self.callback_mtls_cert_file is None) != (
             self.callback_mtls_key_file is None
         ):
@@ -307,6 +323,10 @@ class Settings(BaseSettings):
         # 解析部署侧不可变上限；生产空 CIDR 表示默认拒绝全部 callback 出站。
         _ = self.callback_egress_networks
         _ = self.callback_egress_port_set
+
+    def _validate_vendor_origins(self) -> None:
+        """厂商地址只能是无凭据 origin；受控联调必须命中精确 HTTPS origin。"""
+
         live_vendor_url = urlsplit(self.vendor_live_test_origin)
         if (
             live_vendor_url.scheme != "https"
@@ -342,6 +362,10 @@ class Settings(BaseSettings):
             raise ValueError("VENDOR_BASE_URL must use HTTPS in production")
         if not self.alert_smtp_allowed_host_set:
             raise ValueError("ALERT_SMTP_ALLOWED_HOSTS must contain at least one host")
+
+    def _validate_redis_endpoints(self) -> None:
+        """broker/auth/control 三个故障域的端点与凭据文件必须互不相同。"""
+
         redis_hosts = (
             self.redis_broker_host,
             self.redis_auth_host,
@@ -389,6 +413,10 @@ class Settings(BaseSettings):
             raise ValueError(
                 "Redis broker, auth and control credential files must be distinct"
             )
+
+    def _validate_database_pools(self) -> None:
+        """各组件连接池、溢出、超时与语句超时必须在部署上界内。"""
+
         pool_sizes = (
             self.db_api_pool_size,
             self.db_worker_pool_size,
@@ -420,6 +448,10 @@ class Settings(BaseSettings):
             raise ValueError("DB_CONNECT_TIMEOUT_SECONDS must be between 0.1 and 30")
         if any(not 100 <= value <= 120_000 for value in timeouts):
             raise ValueError("DB statement timeouts must be between 100 and 120000 ms")
+
+    def _validate_readiness_and_metrics(self) -> None:
+        """就绪探针与指标采集的超时、并发和来源网段必须有上界。"""
+
         if not 0.1 <= self.readiness_timeout_seconds <= 10:
             raise ValueError("READINESS_TIMEOUT_SECONDS must be between 0.1 and 10")
         if not 0.01 <= self.readiness_queue_timeout_seconds <= 1:
@@ -438,6 +470,10 @@ class Settings(BaseSettings):
             )
         if not 1 <= self.metrics_snapshot_ttl_seconds <= 60:
             raise ValueError("METRICS_SNAPSHOT_TTL_SECONDS must be between 1 and 60")
+
+    def _validate_auth_session_policy(self) -> None:
+        """会话策略刷新间隔必须小于最大陈旧期，保证撤销能及时生效。"""
+
         if not 0.1 <= self.auth_session_policy_refresh_interval_s <= 60:
             raise ValueError(
                 "AUTH_SESSION_POLICY_REFRESH_INTERVAL_S must be between 0.1 and 60"
@@ -458,6 +494,10 @@ class Settings(BaseSettings):
                 "AUTH_SESSION_POLICY_REFRESH_INTERVAL_S must be less than "
                 "AUTH_SESSION_POLICY_MAX_STALENESS_S"
             )
+
+    def _validate_raw_spill_budget(self) -> None:
+        """raw spill 磁盘积压与恢复峰值不得超过 worker 内存预算。"""
+
         max_spill_bytes = 8 * 1024 * 1024 * 1024
         if not RAW_SPILL_MIN_TOTAL_BYTES <= self.raw_spill_max_total_bytes <= max_spill_bytes:
             raise ValueError(
@@ -518,7 +558,6 @@ class Settings(BaseSettings):
             )
         if not 0 <= self.raw_spill_cipherq_retention_s <= 30 * 86400:
             raise ValueError("RAW_SPILL_CIPHERQ_RETENTION_S must be between 0 and 30 days")
-        return self
 
     @property
     def database_url(self) -> URL:
