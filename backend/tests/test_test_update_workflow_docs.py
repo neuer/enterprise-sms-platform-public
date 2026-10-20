@@ -12,12 +12,16 @@ def read(path: str) -> str:
     return (ROOT / path).read_text(encoding="utf-8")
 
 
-def test_agents_is_the_single_engineering_contract() -> None:
+def test_agents_routes_test_deployment_contract_to_maintenance() -> None:
     agents = read("AGENTS.md")
     claude = read("CLAUDE.md")
+    maintenance = read("MAINTENANCE.md")
 
     assert "[AGENTS.md](AGENTS.md)" in claude
     assert len(claude.splitlines()) < 20
+    assert "开发与测试部署解耦" in agents
+    assert "(MAINTENANCE.md#按需测试部署)" in agents
+    section = maintenance.split("## 按需测试部署", 1)[1].split("\n## ", 1)[0]
     for phrase in (
         "开发与测试部署解耦",
         CANONICAL_COMMAND,
@@ -36,7 +40,7 @@ def test_agents_is_the_single_engineering_contract() -> None:
         "正式厂商 Key",
         "测试号码",
     ):
-        assert phrase in agents
+        assert phrase in section
 
 
 def test_runbook_defines_one_on_demand_test_deployment_workflow() -> None:
