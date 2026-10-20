@@ -104,7 +104,11 @@ scripts/test_update.sh apply --ref origin/main
 
 `apply` 已完成差异分类、必要 CI 验证、构建、远端切换、verify、operator Git 读路径复核和终态解析；
 只有远端返回 `state=verified` 且切换后 operator 再次通过 origin、HEAD、工作树检查才算成功。
-任一读路径检查失败都会拒绝记录部署成功。需要在变更前预览分类时可运行
+任一读路径检查失败都会拒绝记录部署成功。读路径预检必须以日常 SSH 更新用户完成远端 Git
+`origin`、HEAD 和工作树检查；root 能读而 operator 不能读不算通过，必须 fail closed。切换后
+控制面只对 Git tracked 工作树恢复 operator 的 group 读权限，忽略 secrets/data；operator 还必须
+以 `git diff --quiet` 读出干净的 tracked 内容和暂存区。普通无迁移更新只拒绝
+submitting/retrying 分片；high-risk 或迁移更新还必须拒绝 uncertain。需要在变更前预览分类时可运行
 `scripts/test_update.sh plan --ref origin/main`，需要稍后查看非敏感状态时再运行
 `scripts/test_update.sh status`，二者都不是每次部署的强制重复步骤。
 
