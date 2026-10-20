@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.services.approval import requires_approval
-from app.services.billing import calculate_quota_cost, calculate_segments
+from app.services.billing import calculate_quota_cost, calculate_segments, segment_capacity
 from app.services.category import SHANGHAI, coerce_market_dispatch
 from app.services.pipeline import prepare_content
 
@@ -78,14 +78,14 @@ def build_billing_preview(
     final_content = f"{sign_name or ''}{prepared.send_content}"
     length = len(final_content)
     segments = calculate_segments(final_content)
-    capacity = 70 if segments == 1 else 67
+    capacity = segment_capacity(segments)
     remaining = length
     parts: list[SegmentPart] = []
     for _ in range(segments):
         used = min(capacity, remaining)
         parts.append(SegmentPart(used, capacity, used < capacity))
         remaining -= used
-    next_boundary = 71 if segments == 1 else segments * 67 + 1
+    next_boundary = segments * capacity + 1
     deferred_reason: str | None = None
     if category == "market":
         _, deferred_reason, _ = coerce_market_dispatch(
