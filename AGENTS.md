@@ -6,8 +6,9 @@
 
 产品行为以 [PRD.md](PRD.md) 为准；接口、库表、厂商精确报文与 Mock 契约分别查
 [openapi.yaml](openapi.yaml)、[schema.sql](schema.sql) 与 [docs/vendor-api.md](docs/vendor-api.md)。
-平台错误语义见 [PRD 错误码表](PRD.md#platform-error-codes)；安全审查遵循 [SECURITY.md](SECURITY.md)。文档与实现冲突时记录具体差异，结合有效变更依据判断；
-不能用过期文档自动降低安全要求。
+平台错误语义见 [PRD 错误码表](PRD.md#platform-error-codes)；安全审查遵循 [SECURITY.md](SECURITY.md)。
+文档与实现冲突时记录具体差异，结合有效变更依据判断；不能用过期文档自动降低安全要求。
+下列规则的完整合同在链接文档中；精简措辞不代表放宽链接文档的任何要求。
 
 ## 技术栈（锁定，勿替换）
 
@@ -28,62 +29,61 @@
 
 ## 硬性规则
 
-1. **所有运行凭据默认只能通过 Docker secrets 文件挂载读取**：生产清单为厂商 SecretName/SecretKey、AES 数据密钥、HMAC 索引密钥、独立 API Key pepper keyring、JWT 密钥、LDAP bind 密码、DB owner 密码、auth/accept/send/callback/export/scheduler/metrics 七个独立数据库运行密码，以及 broker/auth/control 三个独立 Redis ACL 密码；禁止入环境变量明文、入日志或入普通 API 响应（callback_secret 仅允许 AES-GCM 密文入库）。安全日报是明确的产品例外：管理员可在 `/security-daily` 页面配置 Resend Key 和最多 3 个收件人，Key 允许以明文存入专用 `sys_config` 配置并由 API 同步到独立 mailer 的 `resend.json`；不得用于其他平台凭据，审计只记录 configured 状态和数量。另一个例外是管理员可在真实联调页面一次性输入厂商 SecretName/SecretKey：明文只可短暂存在于组件局部的**浏览器易失内存**，必须立即通过 WebCrypto 封装为仅 `vendor-control-agent` 可解密的密文；禁止任何浏览器持久化，禁止写入 Pinia、localStorage、sessionStorage、IndexedDB、Service Worker cache 或 URL，禁止进入普通 API 明文、数据库、队列、审计、日志、指标和错误详情，提交结束必须清空且不得回显值、长度、前缀、摘要或哈希。settings 读取后去除行尾换行，DB DSN 必须用 SQLAlchemy `URL.create` 组装，禁止字符串拼接导致转义或泄露
-2. **手机号永不明文持久化**：逐号码记录必须经 `services/crypto.py` 生成 `phone_enc`(AES-256-GCM) / `phone_hmac`(HMAC-SHA256 hex) / `phone_mask` / `key_version`；精确查询一律走 phone_hmac；文件、JSONB、缓存与日志同样不得留明文。对外解密只允许"详情按角色查看"与"授权导出"；内部受控解密白名单为 raw 解析/重放、callback 投递、发送下发、UAT 定位，以及退订入黑名单（reply optout：内存解密后经 `protect_phone` 重加密入库，不回写明文）。严禁把明文再次写入任何持久层
-3. 所有厂商 HTTP 必须经选定 adapter；当前生产 adapter 为 `vendor/zhihui.py`。业务代码不得直接 httpx 调厂商；统一超时 10s、连接池、结构化日志。仅当调用前确定性不可用，或协议明确拒绝且 `safe_to_failover=true` 时允许切换供应商；`uncertain`/`submitted` 后禁止自动切换任何供应商
-4. **Send 超时/网络异常 = 结果未知**：chunk 置 `uncertain`，**严禁自动重发或自动换供应商**；由 reconcile 任务通过 raw_vendor_log.custom_ids 索引定位并受控解密确认后修复；这是防重复下发的生命线
-5. **GetReport/GetReply 拉走即消费**：轮询任务必须先把完整响应 AES-GCM 加密落 `raw_vendor_log.payload_enc`，同时只保存不含手机号的 custom_ids 索引元数据；提交事务后再受控解密解析。解析失败保留 processed=false 可重放，raw 表禁止 JSONB 明文手机号
-6. 队列可靠性：PostgreSQL 为唯一事实源，Redis 仅投递通道；beat 单实例（启动抢 Redis 锁，抢不到即退出）；reconcile 每 5min 兜底重投，已 submitted/uncertain 的 chunk 绝不重投
-7. 幂等：`SETNX idem:{scope_kind}:{scope_id}:{biz_id} = batch_no EX 86400`；DB 使用 `idempotency_record` 的 `(scope_kind, scope_id, biz_id)` 唯一约束与 `expires_at` 兜底。`scope_kind='app'` 时 `scope_id` 必须绑定 `app_id`（`app_id IS NOT NULL AND scope_id = app_id::text`）；account/resend/web-legacy 等其它作用域不受该 CHECK 误伤。事务先删除同键过期记录，再创建批次和幂等记录；唯一冲突回查未过期原批次。`sms_batch.biz_id` 不得永久唯一，确保 24h 后可复用
-8. 手机号校验统一 `^1\d{10}$`（11 位）
-9. 状态机：
-   - batch: pending_approval→(queued|scheduled|rejected|expired)；scheduled→(queued|cancelled)；queued→sending→completed；sending→completed_unknown(uncertain 保守终态)；sending→balance_blocked→queued(人工恢复)
-   - chunk: pending→submitting→(submitted|failed|uncertain|split_capacity_blocked|failover_pending)；retrying→submitting；failover_pending→submitting（仅 claim_next_vendor_invoke CAS）；submitting→failover_pending（safe reject 且有合法下一候选）；submitting|failover_pending→failed（无下一候选或策略不允许）；submitting|split_capacity_blocked→failed（仅供应商 1006 原子拆分成功）；split_capacity_blocked 不得回呼厂商，由 reconcile 在有余量后重试同一 split generation；uncertain→submitted(仅 reconcile 证据)或 unknown_terminal(超过 uncertain_max_lifetime_hours)；禁止自动重发，禁止把旧 uncertain 改回 pending，禁止 uncertain 后自动切换供应商；failover_pending 不得按 submitting 超时转 uncertain
-   - 非法流转抛 409 STATE_CONFLICT
-10. 类别策略集中在 `services/category.py` 单点实现（队列路由/时间窗/黑名单开关/审批阈值/QPS 预留），禁止散落 if-else
-11. **配额/频控事实账本（v1.6.5）**：PostgreSQL `usage_reservation` 与明细表是唯一事实源，状态至少覆盖 reserved/committed/release_requested/released/uncertain；同一稳定请求、释放事件和投影版本必须受唯一约束。Redis 只保存带版本的绝对值投影，可从事实重建；marker 缺失、重建中或 Redis 不可确认时发送入口必须 503 失败关闭，禁止把缺失计数当零。驳回/过期/取消/全量剔除/入库失败/幂等复用统一以事务性 Outbox 请求释放，重复消费不得二次回补；号码频控仅 counted=true 的已接受号码计数，HMAC 轮换通过不可逆 alias 归并同一主体
-12. 审批回避：接口层校验 approver != applicant（403），DB CHECK 兜底
-13. 回调安全：URL 保存与出站前双重校验内网 CIDR 白名单；签名 `X-Sms-Signature = hex(HMAC-SHA256(callback_secret, f"{timestamp}.{raw_body}"))` + `X-Sms-Timestamp`；5s 超时；失败回调（含 4xx，不只 5xx）按 60/300/900/3600/3600s 重试 5 次后置 dead 并告警
-14. 写操作全部埋审计（`@audited` 装饰器），审计不得吞异常；**七个运行角色均无 audit_log UPDATE/DELETE/TRUNCATE 权限，且不得是 owner/超级用户；只读 metrics 也无 INSERT**（见 deploy/database-roles.md）。迁移只由独立 sms_owner/migrate 服务执行；应用代码中出现对 audit_log 的 UPDATE/DELETE 即为缺陷
-15. 时间一律 TIMESTAMPTZ / ISO8601 +08:00；禁 naive datetime
-16. API 错误统一 `{code, message, detail}`；禁止裸 500
-17. 库表变更只走 Alembic；手机号相关表新增列必须遵守规则 2 的三列规范
-18. **计费条计算只允许 `services/billing.py` 一处实现**（`1 if L≤70 else ceil(L/67)`，L=含签名与退订语的最终内容长度）；配额预扣/回补、预估、统计全部调用它，禁止散落重复实现
-19. 号码频控以规则 11 的 PostgreSQL 账本和版本化绝对值投影为准：verify 按号码全局计数，market 按应用与号码计数；窗口对齐分钟/上海自然日，app.freq_override 优先于 sys_config。号码只以 HMAC 参与，保留版本 alias 必须归并为同一主体。新业务复用 `UsageLedgerService`，不得以 Redis INCR+EXPIRE 作为唯一事实；`services/freq.py` 现存直接计数路径的兼容用途与退出需另按调用者及数据事实评估。
-20. 营销合规在流水线单点处理：market 内容缺退订语（unsubscribe_suffix）且 unsubscribe_auto_append=true 时自动追加（追加发生在计费条计算**之前**）；Web market 未勾选同意 → 422 CONSENT_REQUIRED；consent_confirmed 与操作人写入审计
-21. **审计载荷禁止包含手机号列表**（明文或密文皆禁），只允许号码数量与 batch_no 引用；出现即缺陷
-22. 模板渲染 `services/template.py` 单点实现：占位 `{1}..{n}` 全量替换，参数个数不符 422 TEMPLATE_PARAM_MISMATCH，渲染后长度>500 拒绝
-23. **模板厂商格式转换（v1.3）**：平台 `{n}` + var_specs(max_len) 提交 BindTemplate 时按序转为厂商 `{s<max_len>}`；渲染时校验每个参数长度 ≤ 对应 max_len（超长即拒，预防厂商 10002）；转换与校验只在 template.py 实现
-24. **首个本地管理员初始化（v1.6.1）**：仅空系统允许执行 `init-admin`；默认用户名 `admin`，命令生成 20 位临时密码并在事务提交后仅向当前 TTY 显示一次，首次登录必须修改密码。初始化只创建内置本地账号，与 AD/LDAP 不关联；禁止环境变量名单或其他隐藏提权路径。Codex 可通过 PTY 代执行并把当次密码转告操作者，但密码不得进入命令参数、日志、审计或持久化明文
-25. **契约回填（v1.4）**：任何接口的新增/字段变更，同一 commit 内回填 openapi.yaml；PR 自查项——实现与契约 diff 为零
-26. **认证方式与浏览器会话**：完整合同见 [PRD 用户与角色](PRD.md#auth-contract)。Web access JWT 走 `Authorization: Bearer`，access、用户快照及高风险短期令牌仅存易失内存；refresh 仅走受限 HttpOnly Cookie。按 Web Locks 能力选择 refresh/access_only，保留 tab binding、单次轮换与重放检测；Access-Only 不得 refresh/replay 或事后升级。会话撤销与权威状态故障失败关闭，AD 完整认证期限不得由 refresh 延长。
-27. **verify OTP 打码（v1.4）**：verify 类 content 入库/日志/回调前经 services/masking.py 等长星号替换 4–8 位连续数字（verify_otp_mask=true 时）；**计费与实际下发使用打码前原文**；打码只发生在持久化与外发展示边界
-28. **成功率口径（v1.4）**：`delivered/(delivered+failed)`，unknown/other 不入分母；唯一实现 services/stats.py，前端不得自行计算
-29. **任务必被追踪（v1.5）**：每个 Celery beat 任务必须以 `@tracked_job("job_name", expect_interval_s=N)` 包装并声明预期间隔；新增任务未包装即缺陷（会成为心跳巡检盲区）；心跳巡检运行在 api 进程内，禁止实现为 beat 任务
-30. **异常检测双条件（v1.5）**：突增告警必须同时满足 倍数阈值 与 绝对量下限（services 端断言），防小基数误报；verify 类异常一律 crit 且文案含处置建议
-31. **账号 Provider 体系**：显式选择 local/AD，失败不得回退；本地账号与 ldap_real（ldap3）共用规范化身份、失败阈值/IP 限流/JWT 层。`AUTH_MOCK=1` 只替换 AD 校验并走 seed-dev 身份，生产必须为 0。账号、版本化 AD 配置和临时密码合同见 [PRD 用户与角色](PRD.md#auth-contract)；Provider 预留未来 IAM 扩展，本期不实现 IAM。
-32. **告警 log-sink（v1.6）**：告警渠道配置为空 ⇒ 只落 alert_log+日志，不外呼；所有告警测试断言 alert_log 行，任何测试不得请求企微/SMTP
-33. **令牌桶算法（v1.6）**：单桶容量 vendor_qps、每秒整补；取令牌为 Redis Lua 原子操作，入参 lane∈{realtime,bulk}；bulk 仅当 剩余令牌 > reserved_realtime_qps 时可取，realtime 无此限制；唯一实现 core/ratelimit.py
-34. **beat 调度读取时机（v1.6）**：任务间隔在 beat 启动时读 sys_config（缺省用建表默认值），修改间隔需重启 beat 容器生效（界面提示此点）；禁止实现动态热更调度
-35. **迁移基准（v1.6）**：Alembic 首个迁移必须以 `schema.sql` 为唯一输入，在同一事务内通过内置解析器按顶层分号无损切分执行，并以逐字重组测试保证原文不变。此后变更必须**手写** Alembic 迁移，并同步回写 `schema.sql` 注释版本；`models/` 不承载声明式 SQLAlchemy metadata，**禁止**把 `alembic revision --autogenerate` 当作权威来源。`scripts_support/check_migration.py` 以 sms_owner 分别构建空库，比对 schema.sql 与完整 Alembic 两种建法的表/列/索引/约束集合，差异即失败；七个运行角色均不得具备 DDL 权限，未来表不得默认授权
-36. **前端资源自包含（v1.6）**：字体经 npm 包（@fontsource/ibm-plex-mono 等）或系统栈回退，构建产物不得引用任何运行时外部 CDN
-37. **敏感中间产物（v1.6）**：callback_task 只存消息引用与无 PII 元数据，投递时临时构造 body；import 号码逐条落 import_phone 三列；剔除清单只含 phone_mask+原因；decrypted 导出文件仍须 AES-GCM 密文落盘、下载时流式解密
-38. **真实联调控制台与受控 API UAT**：正式 Key、测试号码与生命周期操作仅由 admin 的 `/configs`「真实联调」页按 [FR-19a](PRD.md#vendor-uat-contract) 和 [受控手册](docs/runbooks/controlled-real-vendor-test.md) 执行。普通 API 不得获得 root、sudo 或 Docker Socket；live-test 普通发送返回 `VENDOR_TEST_CONSOLE_ONLY`。唯一应用侧真实发送例外为 `POST /api/v1/messages/uat-send`：有效 API Key、notice、单个 active 已登记号码；完整的限流、全版本 HMAC、维护租约、双 critical pause、每日 100 个计费条及 24h 幂等合同不得绕过。
-39. **开发与测试部署解耦**：完成功能与必要定向测试后提交并推送短生命周期分支，日常提交前运行 `scripts/dev_check.sh --changed`；测试服务器只在需要共享环境验收时更新，默认对合并后的精确 `origin/main` 执行 `scripts/test_update.sh apply --ref origin/main`，`plan` 仅用于可选预览，`status` 仅用于后续只读诊断。入口只构建受影响镜像，不得重复执行 CI/G2 或组件测试；high-risk、迁移或控制面更新必须在 `apply` 前验证目标 commit 精确且来源为 GitHub Actions 的 `ci-gate=success`。更新入口必须以日常 SSH 更新用户完成远端 Git `origin`、HEAD 和工作树读路径预检；root 能读而 operator 不能读不算通过，必须 fail closed。切换后控制面只对 Git tracked 工作树恢复 operator 的 group 读权限，忽略 secrets/data；operator 还必须以 `git diff --quiet` 读出干净的 tracked 内容和暂存区。只有远端最终返回 `state=verified`、apply 后 operator 再次通过 origin/HEAD/status 读路径预检，同时完成 tracked 工作树与暂存区的 diff 读路径复核，并完成对应表面验收才算成功。无迁移更新不得创建数据库 checkpoint，切换或验收失败时只允许自动回退到上一版应用镜像并记录 `rolled_back`；不得回退 schema。迁移、受保护状态异常或镜像回退失败时保持 fail closed。普通无迁移更新只拒绝 submitting/retrying；high-risk 或迁移更新还必须拒绝 uncertain。分支部署只作为明确的合并前验收例外；若其 tree 与后续 `origin/main` 完全一致且 main 的 `ci-gate` 成功，可用 `promote --ref origin/main` 免重建提升。始终保留 PostgreSQL 数据库、Docker volume 和运行态目录，任何初始化必须事先取得操作者明确确认。管理员初始化、正式厂商 Key 安装/轮换和测试号码管理是独立流程，不得夹带在快速更新中执行
-40. **显式运行时与认证边界**：必须设置 `ENVIRONMENT=development|test|production`，且与 DEBUG/Mock 组合不一致时启动失败；生产关闭 Swagger、ReDoc 与 OpenAPI。API client 与 Web user 路由必须分别声明 API Key/Bearer dependency，禁止以路径前缀或 Header 组合猜测认证类型；新增受保护路由遗漏 dependency 必须由契约测试阻断。QPS、导入大小/行数、超时与锁定时间必须有上界及跨字段约束
-41. **Redis 故障域与 ACL**：broker、auth、control 必须使用不同 endpoint tuple、独立 ACL 密码、进程/容器、AOF 与数据目录。生产默认 `managed`；单 VM `isolated-standalone` 仅在正式风险批准且业务接受整机故障最长停服 12 小时后启用，不能声称高可用。TLS/CA/主机名校验、容量、持久化、外部告警和最小权限完整合同见 [deploy/redis-ha.md](deploy/redis-ha.md)。API 不得获得 broker secret，worker-callback 不得获得 auth secret；auth 故障 fail closed，broker 失败由 PostgreSQL Outbox 保留事实，control 只从 PostgreSQL 重建。
+标注“静态门禁”的规则由 `scripts/check_invariants.py` 自动检查，新增同类规则优先落成测试或约束（D122）。
 
-42. **历史导出与 Broker 职责边界**：approver 的本人历史导出也必须匹配当前非空部门，
-角色/部门变更不得因历史创建权恢复跨部门或全局下载。broker 根种子仅宿主/服务端可读；
-worker/beat/dispatcher 使用按职责派生且独立挂载的 ACL 凭据，禁止共享 unacked/pidbox 或
-跨职责入队。消费入口固定白名单及数据库状态复核必须保留；跨队列恢复通过 Outbox。
-生产首次启用要求更换旧共享根种子、全停切换与真实职责拒绝矩阵，见 deploy/redis-ha.md。
+1. **运行凭据默认只通过 Docker secrets 文件读取**，清单与挂载边界见 [deploy/secrets.md](deploy/secrets.md)；禁止入环境变量明文、日志或普通 API 响应（callback_secret 仅允许 AES-GCM 密文入库）。settings 读取后去除行尾换行，DB DSN 必须用 SQLAlchemy `URL.create` 组装。仅有两项例外：
+   - 安全日报：管理员可在 `/security-daily` 配置 Resend Key 与最多 3 个收件人，Key 明文存专用 `sys_config` 并同步到独立 mailer；不得用于其他凭据，审计只记 configured 状态和数量（[PRD](PRD.md)）。
+   - 真实联调凭据：明文只可短暂存在于组件局部的**浏览器易失内存**，立即经 WebCrypto 封装为仅 `vendor-control-agent` 可解密的密文；禁止任何浏览器持久化，禁止写入 Pinia、localStorage、sessionStorage、IndexedDB、Service Worker cache 或 URL，禁止进入普通 API 明文、数据库、队列、审计、日志、指标和错误详情；提交结束必须清空且不回显任何派生信息（[受控联调手册](docs/runbooks/controlled-real-vendor-test.md)）。
+2. **手机号永不明文持久化**：逐号码记录必须经 `services/crypto.py` 生成 `phone_enc`/`phone_hmac`/`phone_mask`/`key_version`；精确查询走 phone_hmac；文件、JSONB、缓存与日志同样不得留明文。对外解密只允许“详情按角色查看”与“授权导出”；内部受控解密白名单为 raw 解析/重放、callback 投递、发送下发、UAT 定位，以及退订入黑名单（内存解密后经 `protect_phone` 重加密）。严禁把明文再次写入任何持久层（静态门禁：schema 四列）
+3. 所有厂商 HTTP 必须经选定 adapter（当前 `vendor/zhihui.py`），业务代码不得直接 httpx 调厂商（静态门禁）；统一超时 10s、连接池、结构化日志。仅当调用前确定性不可用，或协议明确拒绝且 `safe_to_failover=true` 时允许切换供应商；`uncertain`/`submitted` 后禁止自动切换
+4. **Send 超时/网络异常 = 结果未知**：chunk 置 `uncertain`，**严禁自动重发或自动换供应商**；由 reconcile 通过 raw_vendor_log.custom_ids 定位并受控解密确认后修复。这是防重复下发的生命线
+5. **GetReport/GetReply 拉走即消费**：先把完整响应 AES-GCM 加密落 `raw_vendor_log.payload_enc`，只另存不含手机号的 custom_ids 索引；提交后再受控解密解析，失败保留 processed=false 可重放；raw 表禁止 JSONB 明文（静态门禁）
+6. 队列可靠性：PostgreSQL 为唯一事实源，Redis 仅投递通道；beat 单实例（抢不到 Redis 锁即退出）；reconcile 每 5min 兜底重投，已 submitted/uncertain 的 chunk 绝不重投
+7. 幂等：`SETNX idem:{scope_kind}:{scope_id}:{biz_id} = batch_no EX 86400`，DB 以 `idempotency_record (scope_kind, scope_id, biz_id)` 唯一约束与 `expires_at` 兜底。`scope_kind='app'` 时 `scope_id = app_id::text` 且 app_id 非空，其它作用域不受该 CHECK 影响。事务先删同键过期记录再建批次与记录，唯一冲突回查未过期原批次；`sms_batch.biz_id` 不得永久唯一
+8. 手机号校验统一 `^1\d{10}$`（11 位）
+9. 状态机（非法流转抛 409 STATE_CONFLICT）：
+ - batch: pending_approval→(queued|scheduled|rejected|expired)；scheduled→(queued|cancelled)；queued→sending→completed；sending→completed_unknown(uncertain 保守终态)；sending→balance_blocked→queued(人工恢复)
+ - chunk: pending→submitting→(submitted|failed|uncertain|split_capacity_blocked|failover_pending)；retrying→submitting；failover_pending→submitting（仅 claim_next_vendor_invoke CAS）；submitting→failover_pending（safe reject 且有合法下一候选）；submitting|failover_pending→failed（无下一候选或策略不允许）；submitting|split_capacity_blocked→failed（仅供应商 1006 原子拆分成功）；split_capacity_blocked 不得回呼厂商，由 reconcile 在有余量后重试同一 split generation；uncertain→submitted(仅 reconcile 证据)或 unknown_terminal(超过 uncertain_max_lifetime_hours)
+ - 禁止自动重发，禁止把旧 uncertain 改回 pending，禁止 uncertain 后自动切换供应商；failover_pending 不得按 submitting 超时转 uncertain
+10. 类别策略（队列路由/时间窗/黑名单开关/审批阈值/QPS 预留）集中在 `services/category.py`，禁止散落 if-else
+11. **配额/频控事实账本**：PostgreSQL `usage_reservation` 与明细表是唯一事实源，状态至少覆盖 reserved/committed/release_requested/released/uncertain，稳定请求、释放事件和投影版本受唯一约束。Redis 只存带版本的绝对值投影，可从事实重建；marker 缺失、重建中或 Redis 不可确认时发送入口 503 失败关闭，禁止把缺失计数当零。驳回/过期/取消/全量剔除/入库失败/幂等复用统一经事务性 Outbox 请求释放，重复消费不得二次回补；号码频控仅计 counted=true 的已接受号码，HMAC 轮换经不可逆 alias 归并（[恢复手册](docs/runbooks/usage-ledger-recovery.md)）
+12. 审批回避：接口层校验 approver != applicant（403），DB CHECK 兜底
+13. 回调安全：URL 保存与出站前双重校验内网 CIDR 白名单；签名 `X-Sms-Signature = hex(HMAC-SHA256(callback_secret, f"{timestamp}.{raw_body}"))` + `X-Sms-Timestamp`；5s 超时；失败（含 4xx）按 60/300/900/3600/3600s 重试 5 次后置 dead 并告警
+14. 写操作全部埋审计（`@audited`），审计不得吞异常。七个运行角色均无 audit_log UPDATE/DELETE/TRUNCATE 权限且不得是 owner/超级用户，只读 metrics 也无 INSERT（[数据库角色](deploy/database-roles.md)）；迁移只由 sms_owner/migrate 执行；应用代码对 audit_log 的 UPDATE/DELETE 即缺陷（静态门禁）
+15. 时间一律 TIMESTAMPTZ / ISO8601 +08:00；禁 naive datetime（静态门禁）
+16. API 错误统一 `{code, message, detail}`；禁止裸 500
+17. 库表变更只走 Alembic；手机号相关表新增列必须遵守规则 2 的四列规范
+18. **计费条计算只允许 `services/billing.py`**（`1 if L≤70 else ceil(L/67)`，L=含签名与退订语的最终内容长度）；预扣/回补、预估、统计全部调用它（静态门禁，前后端）
+19. 号码频控以规则 11 的账本和版本化投影为准：verify 按号码全局计数，market 按应用与号码计数；窗口对齐分钟/上海自然日，app.freq_override 优先于 sys_config；号码只以 HMAC 参与，保留版本 alias 归并。新业务复用 `UsageLedgerService`，不得以 Redis INCR+EXPIRE 作为唯一事实；`services/freq.py` 现存直接计数路径的退出需按调用者及数据事实另行评估
+20. 营销合规在流水线单点处理：market 内容缺退订语且 unsubscribe_auto_append=true 时自动追加（在计费条计算**之前**）；Web market 未勾选同意 → 422 CONSENT_REQUIRED；consent_confirmed 与操作人写入审计
+21. **审计载荷禁止包含手机号列表**（明文或密文皆禁），只允许号码数量与 batch_no 引用（DB CHECK `ck_audit_payload_no_pii`）
+22. 模板渲染 `services/template.py` 单点实现：`{1}..{n}` 全量替换，参数个数不符 422 TEMPLATE_PARAM_MISMATCH，渲染后长度>500 拒绝（静态门禁：占位解析）
+23. **模板厂商格式转换**：平台 `{n}` + var_specs(max_len) 提交 BindTemplate 时按序转为厂商 `{s<max_len>}`；渲染时校验每个参数长度 ≤ max_len（预防厂商 10002）；只在 template.py 实现
+24. **首个本地管理员初始化**：仅空系统允许执行 `init-admin`；默认用户名 `admin`，生成 20 位临时密码并在事务提交后仅向当前 TTY 显示一次，首次登录必须修改密码。只创建内置本地账号，与 AD/LDAP 无关；禁止环境变量名单或其他隐藏提权路径。Codex 可通过 PTY 代执行并转告操作者，但密码不得进入命令参数、日志、审计或持久化明文
+25. **契约回填**：任何接口新增/字段变更，同一 commit 内回填 openapi.yaml；实现与契约 diff 为零
+26. **认证与浏览器会话**（完整合同见 [PRD 用户与角色](PRD.md#auth-contract)）：access JWT 走 `Authorization: Bearer`，access、用户快照及高风险短期令牌仅存易失内存；refresh 仅走受限 HttpOnly Cookie。按 Web Locks 能力选择 refresh/access_only，保留 tab binding、单次轮换与重放检测；会话撤销与权威状态故障失败关闭，AD 完整认证期限不得由 refresh 延长
+27. **verify OTP 打码**：verify 类 content 入库/日志/回调前经 services/masking.py 等长星号替换 4–8 位连续数字（verify_otp_mask=true 时）；**计费与实际下发使用打码前原文**
+28. **成功率口径**：`delivered/(delivered+failed)`，unknown/other 不入分母；唯一实现 services/stats.py，前端不得自行计算（静态门禁）
+29. **任务必被追踪**：每个 Celery beat 任务必须以 `@tracked_job("job_name", expect_interval_s=N)` 包装；心跳巡检运行在 api 进程内，禁止实现为 beat 任务（静态门禁：按启动调度表核对）
+30. **异常检测双条件**：突增告警必须同时满足倍数阈值与绝对量下限（services 端断言）；verify 类异常一律 crit 且文案含处置建议
+31. **账号 Provider**：显式选择 local/AD，失败不得回退；本地账号与 ldap_real（ldap3）共用规范化身份、失败阈值/IP 限流/JWT 层。`AUTH_MOCK=1` 只替换 AD 校验并走 seed-dev 身份，生产必须为 0。Provider 预留未来 IAM 扩展，本期不实现 IAM
+32. **告警 log-sink**：渠道配置为空 ⇒ 只落 alert_log+日志；告警测试断言 alert_log 行，任何测试不得请求企微/SMTP
+33. **令牌桶**：单桶容量 vendor_qps、每秒整补；Redis Lua 原子取令牌，lane∈{realtime,bulk}；bulk 仅当剩余令牌 > reserved_realtime_qps 时可取；唯一实现 core/ratelimit.py
+34. **beat 调度读取时机**：间隔在 beat 启动时读 sys_config，修改需重启 beat（界面提示）；禁止动态热更调度
+35. **迁移基准**：首个迁移以 `schema.sql` 为唯一输入，在同一事务内按顶层分号无损切分执行并逐字重组验证；此后**手写** Alembic 迁移并同步回写 `schema.sql`，`models/` 不承载声明式 SQLAlchemy metadata，禁止以 autogenerate 为权威；`scripts_support/check_migration.py` 比对两种建法的表/列/索引/约束，差异即失败；运行角色不得具备 DDL 权限，未来表不得默认授权
+36. **前端资源自包含**：字体经 npm 包或系统栈回退，构建产物不得引用运行时外部 CDN（静态门禁）
+37. **敏感中间产物**：callback_task 只存消息引用与无 PII 元数据；import 号码逐条落 import_phone 四列；剔除清单只含 phone_mask+原因；decrypted 导出文件仍须 AES-GCM 密文落盘、下载时流式解密
+38. **真实联调与受控 API UAT**：正式 Key、测试号码与生命周期操作仅由 admin 在 `/configs`「真实联调」页按 [FR-19a](PRD.md#vendor-uat-contract) 和 [受控手册](docs/runbooks/controlled-real-vendor-test.md) 执行；普通 API 不得获得 root、sudo 或 Docker Socket；live-test 普通发送返回 `VENDOR_TEST_CONSOLE_ONLY`。唯一应用侧真实发送例外 `POST /api/v1/messages/uat-send` 的限流、全版本 HMAC、维护租约、双 critical pause、每日 100 个计费条及 24h 幂等合同不得绕过
+39. **开发与测试部署解耦**（完整流程见 [MAINTENANCE 按需测试部署](MAINTENANCE.md#按需测试部署)）：完成功能与定向测试后推送短生命周期分支，提交前运行 `scripts/dev_check.sh --changed`。测试服务器只在需要共享验收时更新，默认对合并后的精确 `origin/main` 执行 `scripts/test_update.sh apply --ref origin/main`；`plan` 仅用于可选预览，`status` 仅用于后续只读诊断；入口不得重复执行 CI/G2。high-risk、迁移或控制面更新须先验证目标 commit 的 GitHub Actions `ci-gate=success`。只有远端返回 `state=verified`、apply 后 operator 再次通过 origin/HEAD/status 读路径预检并完成表面验收才算成功。无迁移更新不得创建数据库 checkpoint，失败只回退上一版应用镜像并记录 `rolled_back`，不得回退 schema；迁移或受保护状态异常保持 fail closed。分支部署只作合并前验收例外，tree 一致时用 `promote --ref origin/main` 提升。始终保留数据库、Docker volume 与运行态目录，任何初始化必须事先取得操作者明确确认；管理员初始化、正式厂商 Key 安装/轮换和测试号码管理是独立流程，不得夹带在快速更新中
+40. **显式运行时与认证边界**：必须设置 `ENVIRONMENT=development|test|production`，与 DEBUG/Mock 组合不一致时启动失败；生产关闭 Swagger、ReDoc 与 OpenAPI。API client 与 Web user 路由分别显式声明 API Key/Bearer dependency，禁止按路径或 Header 猜测；遗漏 dependency 由契约测试阻断。QPS、导入大小/行数、超时与锁定时间必须有上界及跨字段约束
+41. **Redis 故障域与 ACL**（完整合同见 [deploy/redis-ha.md](deploy/redis-ha.md)）：broker、auth、control 使用不同 endpoint、独立 ACL 密码、进程/容器、AOF 与数据目录；生产默认 `managed`，单 VM `isolated-standalone` 仅在正式风险批准且业务接受整机故障最长停服 12 小时后启用，不能声称高可用。API 不得获得 broker secret，worker-callback 不得获得 auth secret；auth 故障 fail closed，broker 失败由 PostgreSQL Outbox 保留事实，control 只从 PostgreSQL 重建
+42. **历史导出与 Broker 职责边界**：approver 的本人历史导出也必须匹配当前非空部门，角色/部门变更不得因历史创建权恢复跨部门或全局下载。worker/beat/dispatcher 使用按职责派生且独立挂载的 broker ACL 凭据，禁止共享 unacked/pidbox 或跨职责入队；消费入口固定白名单及数据库状态复核必须保留，跨队列恢复通过 Outbox；根种子与首次启用要求见 [deploy/redis-ha.md](deploy/redis-ha.md)
 
 ## 工作方式
 
-- 编码与提交使用本任务独立分支/worktree；本任务已有独立工作树时继续复用，新任务从共享主工作树开始时新建。只读任务无需新建。不得覆盖、暂存、搬走或清理其他会话的修改和未跟踪文件。
-- 保持 KISS，优先复用现有实现与入口。非平凡开发或交付先明确目标、风险域和 1–3 条验收；小修改直接完成并简要说明验证。不维护仓库任务清单。
-- 在用户已授权的阶段持续完成实现、必要验证和由本次改动引起的修复。常规实现选择及用户已明确要求的行为变更自主完成；仅对用户尚未决定且无法从 PRD 确定的产品选择、超出已有授权或未获授权的不可逆操作确认。需要确认时先准备完整、可审阅的结果。
-- 编码循环使用与改动相关的测试和局部检查；提交前运行 `scripts/dev_check.sh --changed`，并保留 Git hooks。通过后仅在新改动、失败或未解风险出现时扩大或重复验证。该命令按组件选择检查，并不保证只运行改动文件的测试；测试更新不重复 CI/G2，详见规则 39。
-- 已确认处于隔离 Mock 环境、不会触及真实服务或删除持久数据的定向测试，可在任务授权内运行、修复和重跑。创建 worktree 不代表 Docker 数据已隔离；reset、删除卷、管理员初始化、凭据操作及真实短信仍按各自授权和入口执行。
-- 不确定的产品决策先查 PRD；需要假设时在交付说明或 PR 中明确记录。代码保留类型注解，关键业务函数使用中文 docstring。涉及手机号的新代码遵守规则 2 与 4。
+- 编码与提交使用本任务独立分支/worktree；已有独立工作树时继续复用，新任务从共享主工作树开始时新建。只读任务无需新建。不得覆盖、暂存、搬走或清理其他会话的修改和未跟踪文件。
+- 保持 KISS，优先复用现有实现与入口。非平凡开发先明确目标、风险域和 1–3 条验收；小修改直接完成并简要说明验证。不维护仓库任务清单。
+- 在已授权阶段持续完成实现、必要验证和由本次改动引起的修复；仅对 PRD 无法确定的产品选择、超出授权或不可逆操作确认，确认前先准备完整、可审阅的结果。
+- 编码循环使用相关测试和局部检查；提交前运行 `scripts/dev_check.sh --changed` 并保留 Git hooks，通过后仅在新改动、失败或未解风险出现时扩大验证。缺陷按 D122 分级处理。
+- 已确认处于隔离 Mock 环境、不触及真实服务或持久数据的定向测试可在授权内运行和重跑。创建 worktree 不代表 Docker 数据已隔离；reset、删除卷、管理员初始化、凭据操作及真实短信按各自授权和入口执行。
+- 不确定的产品决策先查 PRD；需要假设时在交付说明或 PR 中记录。代码保留类型注解，关键业务函数使用中文 docstring。涉及手机号的新代码遵守规则 2 与 4。

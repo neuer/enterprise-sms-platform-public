@@ -47,7 +47,7 @@ def test_retained_packages_match_complete_dual_architecture_manifest() -> None:
 
 @pytest.mark.parametrize(
     "path",
-    ["deploy/vendor-apk/web/x86_64/libexpat-2.8.5-r0.apk", "deploy/install-retained-apk.sh"],
+    ["deploy/vendor-apk/web/x86_64/libexpat-2.9.0-r0.apk", "deploy/install-retained-apk.sh"],
 )
 def test_retained_package_changes_require_release_control(path: str) -> None:
     from classify_ci_changes import classify_paths

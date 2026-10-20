@@ -1704,3 +1704,32 @@
 - 迁移：生产旧名立即失去刷新资格，用户须重新登录。经过完整口令认证后仍可用旧值撤销原 Family，随后删除旧名；不保留双凭据认证窗口。重复同名/多个 Header/两个名称并存均拒绝，不依赖框架最后值覆盖。主动 Logout 在 Cookie 歧义时仍使用合法 Bearer 撤销当前会话。
 - 边界：服务只能清理约定的 host-only Path；其他 Domain/Path 导致的重复输入继续失败关闭。生产刷新对 HTTP 失败关闭。普通业务迟到 Bearer 错误不触碰 Cookie，access-only、同源、tab binding、轮换与 Web Storage 合同不变。
 - 回退：旧版本不识别生产新名，回退需要重新登录；禁止为无感回退永久接受双来源。真实浏览器证据须分别覆盖 HTTPS 生产与 HTTP 开发，HTTPX CookieJar 只作路由回归，不能证明浏览器前缀执行。
+
+## D122 复杂度治理基线、首发前冻结与修复分级
+
+- 背景：2026-10-20 全面评估认为安全与可靠性控制已基本到位，主要风险转为体量与流程膨胀。
+  基线（main `23aa16a`）：`backend/app` 约 8.97 万行 / 282 个模块，其中 26 个文件超过
+  800 行；后端测试约 19.1 万行 / 470 个文件；前端 `src` 约 4.58 万行，9 个页面或组件
+  超过 600 行；`scripts` 与 `deploy` 的 Python/Shell 约 8.28 万行；Alembic 迁移 128 个；
+  `backend/app` 中 `except Exception` 195 处；最近 150 次提交中 `fix` 占 100 次；
+  `AGENTS.md` 20887 字节。后续每月按同一口径对比，目标是上述体量只减不增、`fix`
+  占比低于一半。
+- 决策：生产首发完成前冻结 `deploy/`、发布、恢复、生命周期与测试更新工具，只修复
+  P0/P1 缺陷，不新增能力、不做结构重构；部署工具盘点与瘦身推迟到首发稳定后另行批准。
+- 决策：迁移基线压缩在生产首发并稳定、全部环境到达同一 head 且合规跨越 0128 兼容
+  边界后再评估，不作为首发前工作。
+- 决策：缺陷分级。P0/P1 为可能导致重复下发、手机号或凭据泄露、越权、审计缺失、
+  事实数据丢失或失败开放的问题，立即修复；其余问题（含对抗性审查的低风险发现）
+  先分级，按双周批次处理，不因单次审查触发结构性重构。
+- 决策：工程规则优先落成测试、数据库约束或 `scripts/check_invariants.py`，只有无法
+  静态或运行时判定时才增加 `AGENTS.md` 文字。本次新增 `scripts/single_implementation.py`：
+  计费字数常量只在 `services/billing.py`，成功率表达式只在 `services/stats.py`，平台占位
+  正则只在 `services/template.py`；beat 启动调度表中的每个任务都必须找到显式命名的
+  Celery 定义并带 `@tracked_job`（原固定模块名单检查保留）。`billing_preview` 的分段
+  容量改为复用 `billing.segment_capacity`，行为不变。
+- 保留：`HANDOVER.md` 第 1 节仍是生产移交清单的权威来源，并被测试更新合同和
+  vendor-control-agent 只读路径引用，首发前不移动；`scripts/admin_write_client.py`
+  与 `scripts/check_operations_coverage.py` 分别被 E2E/压测脚本和覆盖率门禁按模块名
+  导入，不是孤立脚本。
+- 待定：许可证口径（README“开源”表述与 `LICENSE` 保留全部权利）暂不处理，对外宣称
+  开源前必须先决定。

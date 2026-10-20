@@ -27,6 +27,7 @@ GATE_CONTRACT_TESTS = (
     "tests/test_frontend_coverage_gates.py",
     "tests/test_operations_coverage.py",
     "tests/test_call_order.py",
+    "tests/test_single_implementation.py",
     "tests/test_gate_scripts.py",
 )
 ORDINARY_ROOT_DOCS = frozenset({"README.md", "CONTRIBUTING.md"})

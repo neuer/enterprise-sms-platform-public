@@ -10,6 +10,14 @@ from pathlib import Path
 
 from call_order import first_reach_precedes
 from gate_policy import SPLIT_MODULE_PARTS, SPLIT_MODULE_UNRELATED, logical_module_files
+from single_implementation import (
+    billing_literal_lines,
+    celery_task_tracking,
+    scheduled_task_names,
+    success_rate_lines,
+    template_placeholder_lines,
+    untracked_scheduled_tasks,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "backend" / "app"
@@ -1280,7 +1288,43 @@ def check_protected_path_policy_invariants() -> None:
         )
 
 
+def check_single_implementation_invariants() -> None:
+    """计费、成功率、模板占位只允许单点实现；调度表中的每个 beat 任务都必须被追踪。"""
+
+    single_homes = (
+        (billing_literal_lines, APP / "services" / "billing.py", "计费条口径只允许在 billing.py"),
+        (success_rate_lines, APP / "services" / "stats.py", "成功率口径只允许在 stats.py"),
+        (
+            template_placeholder_lines,
+            APP / "services" / "template.py",
+            "平台占位 {n} 解析只允许在 template.py",
+        ),
+    )
+    tasks: dict[str, tuple[int, bool]] = {}
+    for path in sorted(APP.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        try:
+            for finder, home, message in single_homes:
+                if path != home:
+                    for line in finder(source):
+                        fail(path, message, line)
+            if path.parent == APP / "tasks":
+                tasks.update(celery_task_tracking(source))
+        except SyntaxError:
+            continue
+    scheduler = APP / "tasks" / "scheduler.py"
+    scheduled = scheduled_task_names(scheduler.read_text(encoding="utf-8"))
+    if not scheduled:
+        fail(scheduler, "无法从 beat 启动调度表解析任务名")
+    missing, untracked = untracked_scheduled_tasks(scheduled, tasks)
+    for name in missing:
+        fail(scheduler, f"beat 调度任务 {name} 找不到显式命名的 Celery 定义")
+    for name in untracked:
+        fail(scheduler, f"beat 调度任务 {name} 缺少 @tracked_job")
+
+
 check_vendor_live_invariants()
+check_single_implementation_invariants()
 check_protected_path_policy_invariants()
 check_split_module_registry()
 check_outbox_invariants()
