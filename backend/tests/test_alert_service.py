@@ -257,3 +257,45 @@ def test_smtp_protocol_enforces_absolute_deadline_and_aggregate_reply_limit() ->
     oversized.file = io.BytesIO(line * 9 + b"250 ok\r\n")
     with pytest.raises(smtplib.SMTPResponseException, match="Reply too large"):
         oversized.getreply()
+
+
+async def test_emit_alert_best_effort_skips_missing_sink_and_logs_failure_type(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    class FailingSink:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        async def emit(self, **values: Any) -> None:
+            self.calls.append(values)
+            raise RuntimeError("alert storage unavailable")
+
+    logger = logging.getLogger("tests.alert_best_effort")
+    event = {
+        "alert_type": "probe",
+        "level": "warn",
+        "title": "probe",
+        "detail": {"source": "report"},
+        "dedup_key": "probe:report",
+    }
+    await alert_module.emit_alert_best_effort(
+        None, logger=logger, log_message="probe alert unavailable", log_extra={}, **event
+    )
+    sink = FailingSink()
+    with caplog.at_level(logging.ERROR, logger="tests.alert_best_effort"):
+        await alert_module.emit_alert_best_effort(
+            sink,
+            logger=logger,
+            log_message="probe alert unavailable",
+            log_extra={"source": "report"},
+            **event,
+        )
+
+    assert sink.calls == [event]
+    [record] = caplog.records
+    assert record.getMessage() == "probe alert unavailable"
+    assert record.__dict__["source"] == "report"
+    assert record.__dict__["error_type"] == "RuntimeError"
+    assert "alert storage unavailable" not in caplog.text

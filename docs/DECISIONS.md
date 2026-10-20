@@ -1727,6 +1727,10 @@
   正则只在 `services/template.py`；beat 启动调度表中的每个任务都必须找到显式命名的
   Celery 定义并带 `@tracked_job`（原固定模块名单检查保留）。`billing_preview` 的分段
   容量改为复用 `billing.segment_capacity`，行为不变。
+- 决策：裸 `except Exception` 采用 Ruff `BLE001` 棘轮。“告警发送失败只记日志”统一走
+  `services/alert.emit_alert_best_effort`；`backend/pyproject.toml` 的 per-file-ignores 只
+  登记启用时已有命中的 `app` 文件，条目只删不增，新文件必须捕获具体异常或显式重抛。
+  测试、迁移与仓库脚本不受此约束。
 - 保留：`HANDOVER.md` 第 1 节仍是生产移交清单的权威来源，并被测试更新合同和
   vendor-control-agent 只读路径引用，首发前不移动；`scripts/admin_write_client.py`
   与 `scripts/check_operations_coverage.py` 分别被 E2E/压测脚本和覆盖率门禁按模块名
