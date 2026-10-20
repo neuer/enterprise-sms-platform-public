@@ -25,24 +25,15 @@ import {
   type ManagedApp,
 } from "../api/apps"
 import { listConfigs } from "../api/admin"
-import { getReport, type ReportRow } from "../api/reports"
+import { useAppDailyUsage } from "../composables/useAppDailyUsage"
 import { useLatestRead } from "../composables/useLatestRead"
-import CategoryTag from "../components/CategoryTag.vue"
-import EmptyState from "../components/EmptyState.vue"
-
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
-import {
-  callbackDisplay,
-  graceHoursLeft,
-  quotaPercent as quotaPercentOf,
-  quotaTone as quotaToneOf,
-} from "../lib/appDisplay"
+import AppListTable from "./apps/AppListTable.vue"
 import { copyText } from "../lib/clipboard"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction, captureCurrent } = useConfirmActions()
-import { formatNumber } from "../lib/format"
-import { roleNames, type MessageCategory } from "../lib/labels"
-import { formatDateTime, shanghaiDateKey } from "../lib/time"
+import { type MessageCategory } from "../lib/labels"
+import { formatDateTime } from "../lib/time"
 import { errorText } from "../lib/error"
 
 type SecretOperation = "create-app" | "rotate-api-key" | "rotate-callback-secret"
@@ -81,11 +72,8 @@ const rotatingCallbackId = ref<number | null>(null)
 // 行级动作在途守卫：进入即置位（confirm 之前），拦截确认框期间的重复点击。
 const revokingKeyId = ref<number | null>(null)
 const statusBusyId = ref<number | null>(null)
-/** 今日用量联查结果（dim_value = app.id 字符串）；完整联查成功前单元格显示「—」。 */
-const dailyUsage = ref<Map<string, ReportRow>>(new Map())
-const usageRead = useLatestRead()
+const { usageUnavailable, consumedOf, rateOf, loadDailyUsage } = useAppDailyUsage()
 const listRead = useLatestRead()
-const usageUnavailable = ref(true)
 
 /** 接口全量返回，关键词（名称/部门）、类别与状态过滤均为前端推导，不新增查询参数。 */
 const filtered = computed(() => {
@@ -102,43 +90,8 @@ const filtered = computed(() => {
   })
 })
 
-const enabledCount = computed(() => filtered.value.filter((item) => item.status === 1).length)
-const disabledCount = computed(() => filtered.value.length - enabledCount.value)
-
-const emptyTitle = computed(() => (items.value.length === 0 ? "当前没有接入应用" : "没有符合筛选条件的应用"))
-const emptyDescription = computed(() =>
-  items.value.length === 0
-    ? "创建应用后会得到一对 API Key / 回调密钥（仅展示一次）；类别、配额、限流与回调均可在详情中随时调整。"
-    : "重置类别或状态筛选、清空关键词后查看全部应用。",
-)
-
 /** 详情抽屉数据源跟随列表引用，写操作重查列表后自动刷新。 */
 const detail = computed(() => items.value.find((item) => item.id === detailId.value) ?? null)
-
-/** 停用应用整行降透明度，与密钥列「已随停用吊销」呼应。 */
-function rowClassName({ row }: { row: ManagedApp }): string {
-  return row.status ? "" : "apps-row-disabled"
-}
-
-/** 今日消耗（计费条）：联查成功但无记录为 0；联查失败返回 null，由界面显示「—」。 */
-function consumedOf(app: ManagedApp): number | null {
-  if (usageUnavailable.value) return null
-  return dailyUsage.value.get(String(app.id))?.total_segments ?? 0
-}
-
-/** 成功率直接取服务端口径（services/stats.py），前端不自行计算。 */
-function rateOf(app: ManagedApp): number | null {
-  if (usageUnavailable.value) return null
-  return dailyUsage.value.get(String(app.id))?.success_rate ?? null
-}
-
-function quotaPercent(app: ManagedApp): number | null {
-  return quotaPercentOf(consumedOf(app), app.daily_quota)
-}
-
-function quotaTone(app: ManagedApp): "" | "warn" | "over" {
-  return quotaToneOf(quotaPercent(app))
-}
 
 const demoOpen = ref(false)
 const demoApp = ref<ManagedApp | null>(null)
@@ -158,59 +111,6 @@ async function load(): Promise<void> {
     if (!signal.aborted) errorMessage.value = errorText(error, "应用列表加载失败")
   } finally {
     if (!signal.aborted) loading.value = false
-  }
-}
-
-/** 今日用量按应用维度读取有界分页；完整读完后发布，失败不把部分结果显示为完整用量。 */
-async function loadDailyUsage(): Promise<void> {
-  const signal = usageRead.start()
-  const today = shanghaiDateKey()
-  try {
-    const usage = new Map<string, ReportRow>()
-    const pageSize = 100
-    let expectedTotal: number | undefined
-    let currentPage = 1
-    while (true) {
-      const result = await getReport(
-        {
-          granularity: "day",
-          groupBy: "app",
-          category: "all",
-          start: today,
-          end: today,
-        },
-        { page: currentPage, size: pageSize },
-        signal,
-      )
-      if (signal.aborted) return
-      if (
-        !Array.isArray(result.items) ||
-        !Number.isSafeInteger(result.total) ||
-        result.total < 0 ||
-        result.size !== pageSize ||
-        result.page !== currentPage
-      ) {
-        throw new Error("用量统计响应无效")
-      }
-      expectedTotal ??= result.total
-      const expectedRows = Math.min(pageSize, expectedTotal - (currentPage - 1) * pageSize)
-      if (result.total !== expectedTotal || result.items.length !== expectedRows) {
-        throw new Error("用量统计分页不完整")
-      }
-      for (const row of result.items) {
-        if (usage.has(row.dim_value)) throw new Error("用量统计分页存在重复应用")
-        usage.set(row.dim_value, row)
-      }
-      if (currentPage * pageSize >= expectedTotal) break
-      currentPage += 1
-    }
-    if (usage.size !== expectedTotal) throw new Error("用量统计分页不完整")
-    dailyUsage.value = usage
-    usageUnavailable.value = false
-  } catch {
-    if (signal.aborted) return
-    dailyUsage.value = new Map()
-    usageUnavailable.value = true
   }
 }
 
@@ -623,105 +523,15 @@ onMounted(() => {
 
   <LoadErrorAlert class="apps-alert" :message="errorMessage" @retry="load" />
 
-  <section class="apps-results">
-    <el-table
-      v-loading="loading"
-      class="apps-table"
-      data-testid="app-table"
-      :data="filtered"
-      row-key="id"
-      :row-class-name="rowClassName"
-    >
-      <el-table-column label="应用" min-width="200">
-        <template #default="{ row }">
-          <span class="apps-name"
-            >{{ row.name }}<span class="apps-name-id">#{{ row.id }}</span></span
-          >
-          <span class="apps-cell-sub">{{ row.dept }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="允许类别" min-width="150">
-        <template #default="{ row }">
-          <div class="apps-categories">
-            <CategoryTag v-for="category in row.allowed_categories" :key="category" :category="category" />
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="今日消耗（计费条）" min-width="170">
-        <template #default="{ row }">
-          <div v-if="consumedOf(row) !== null" class="apps-quota-cell">
-            <span class="apps-quota-num">
-              {{ formatNumber(consumedOf(row) ?? 0) }}
-              <small>/ {{ row.daily_quota === 0 ? "不限量" : formatNumber(row.daily_quota) }}</small>
-            </span>
-            <span v-if="quotaPercent(row) !== null" class="apps-quota-bar">
-              <i :class="quotaTone(row)" :style="{ width: `${quotaPercent(row)}%` }"></i>
-            </span>
-          </div>
-          <span v-else class="apps-cell-none">—</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="限流/分" width="90">
-        <template #default="{ row }">
-          <span class="apps-mono">{{ formatNumber(row.rate_limit_per_min) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="密钥" min-width="200">
-        <template #default="{ row }">
-          <div class="apps-key-cell">
-            <template v-if="row.status === 1">
-              <span class="apps-key-prefix">{{ row.api_key_prefix }}••••</span>
-              <span v-if="graceHoursLeft(row) !== null" class="apps-key-tag apps-key-tag--grace">
-                旧 Key 宽限 · 余 {{ graceHoursLeft(row) }}h
-              </span>
-              <span v-else class="apps-key-tag">单 Key 运行</span>
-            </template>
-            <span v-else class="apps-key-tag apps-key-tag--revoked">已随停用吊销</span>
-          </div>
-        </template>
-      </el-table-column>
-      <el-table-column label="回调" min-width="170">
-        <template #default="{ row }">
-          <template v-if="row.callback_url">
-            <span class="apps-callback-url" :title="row.callback_url">{{ callbackDisplay(row.callback_url) }}</span>
-            <span class="apps-cell-sub">
-              明细回调 {{ row.callback_report_enabled ? "开启" : "关闭" }} · 密钥{{
-                row.callback_secret_configured ? "已配置" : "未配置"
-              }}
-            </span>
-          </template>
-          <span v-else class="apps-cell-none">未配置</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="状态" width="80" fixed="right">
-        <template #default="{ row }">
-          <el-tag :type="row.status ? 'success' : 'info'">{{ row.status ? "启用" : "停用" }}</el-tag>
-        </template>
-      </el-table-column>
-      <el-table-column label="操作" width="80" fixed="right">
-        <template #default="{ row }">
-          <el-button :data-testid="`app-detail-${row.id}`" link type="primary" @click="openDetail(row)">详情</el-button>
-        </template>
-      </el-table-column>
-      <template #empty>
-        <div class="apps-empty">
-          <EmptyState :title="emptyTitle" :description="emptyDescription" />
-          <el-button
-            v-if="!items.length"
-            class="apps-empty-action"
-            type="primary"
-            :disabled="secretOperation !== null"
-            @click="openCreate"
-            >新建应用</el-button
-          >
-        </div>
-      </template>
-    </el-table>
-    <footer class="apps-foot">
-      <span>共 {{ filtered.length }} 个应用 · 启用 {{ enabledCount }} · 停用 {{ disabledCount }}</span>
-      <span class="apps-foot-role">读写：{{ roleNames(["admin"]) }} · 今日消耗取自每日统计汇总</span>
-    </footer>
-  </section>
+  <AppListTable
+    :items="items"
+    :filtered="filtered"
+    :loading="loading"
+    :secret-busy="secretOperation !== null"
+    :consumed-of="consumedOf"
+    @create="openCreate"
+    @detail="openDetail"
+  />
 
   <AppDetailDrawer
     v-model="detailOpen"
