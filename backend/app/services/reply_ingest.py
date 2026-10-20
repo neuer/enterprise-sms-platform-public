@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
+from app.services.alert import emit_alert_best_effort
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
 from app.services.raw_lease import (
@@ -259,21 +260,17 @@ class ReplyIngestService:
         )
 
     async def _alert_consume_gap(self, error_type: str) -> None:
-        if self.alerts is None:
-            return
-        try:
-            await self.alerts.emit(
-                alert_type="vendor_raw_persist_failed",
-                level="crit",
-                title="厂商拉走即消费响应未能落库，需人工介入",
-                detail={"source": "reply", "error_type": error_type},
-                dedup_key="vendor_raw_persist_failed:reply",
-            )
-        except Exception as exc:
-            LOGGER.error(
-                "vendor raw persist alert unavailable",
-                extra={"source": "reply", "error_type": type(exc).__name__},
-            )
+        await emit_alert_best_effort(
+            self.alerts,
+            logger=LOGGER,
+            log_message="vendor raw persist alert unavailable",
+            log_extra={"source": "reply"},
+            alert_type="vendor_raw_persist_failed",
+            level="crit",
+            title="厂商拉走即消费响应未能落库，需人工介入",
+            detail={"source": "reply", "error_type": error_type},
+            dedup_key="vendor_raw_persist_failed:reply",
+        )
 
     async def _alert_truncated(self) -> None:
         await self._emit_capture_alert(
@@ -302,19 +299,17 @@ class ReplyIngestService:
                 extra={"source": "reply"},
             )
             return
-        try:
-            await self.alerts.emit(
-                alert_type="vendor_raw_stream_quarantined",
-                level="crit",
-                title="raw spill terminal 不完整，已认证 chunk 已隔离为截断事实",
-                detail={"source": "reply", "stream_id": stream_id},
-                dedup_key=f"vendor_raw_stream_quarantined:reply:{stream_id}",
-            )
-        except Exception as exc:
-            LOGGER.error(
-                "vendor raw quarantine alert unavailable",
-                extra={"source": "reply", "error_type": type(exc).__name__},
-            )
+        await emit_alert_best_effort(
+            self.alerts,
+            logger=LOGGER,
+            log_message="vendor raw quarantine alert unavailable",
+            log_extra={"source": "reply"},
+            alert_type="vendor_raw_stream_quarantined",
+            level="crit",
+            title="raw spill terminal 不完整，已认证 chunk 已隔离为截断事实",
+            detail={"source": "reply", "stream_id": stream_id},
+            dedup_key=f"vendor_raw_stream_quarantined:reply:{stream_id}",
+        )
 
     async def _alert_oversized_complete(self) -> None:
         await self._emit_capture_alert(
@@ -353,47 +348,41 @@ class ReplyIngestService:
                 extra={"source": "reply"},
             )
             return
-        try:
-            await self.alerts.emit(
-                alert_type="vendor_raw_nonactive_quarantine",
-                level="crit",
-                title="raw spill 不可恢复对象已隔离到非活动配额，活动拉取容量已释放",
-                detail={
-                    "source": "reply",
-                    "isolated": isolated,
-                    "temps_reclaimed": temps,
-                    "unauthenticated_partial": int(
-                        getattr(result, "unauthenticated_partial", 0) or 0
-                    ),
-                    "orphans": int(getattr(result, "orphans", 0) or 0),
-                    "quarantine_expired": expired,
-                    "quarantine_capacity_dropped": dropped,
-                    "key_unavailable": key_unavailable,
-                    "transient_io": transient_io,
-                    "auth_failed": auth_failed,
-                },
-                dedup_key="vendor_raw_nonactive_quarantine:reply",
-            )
-        except Exception as exc:
-            LOGGER.error(
-                "vendor raw nonactive quarantine alert unavailable",
-                extra={"source": "reply", "error_type": type(exc).__name__},
-            )
+        await emit_alert_best_effort(
+            self.alerts,
+            logger=LOGGER,
+            log_message="vendor raw nonactive quarantine alert unavailable",
+            log_extra={"source": "reply"},
+            alert_type="vendor_raw_nonactive_quarantine",
+            level="crit",
+            title="raw spill 不可恢复对象已隔离到非活动配额，活动拉取容量已释放",
+            detail={
+                "source": "reply",
+                "isolated": isolated,
+                "temps_reclaimed": temps,
+                "unauthenticated_partial": int(getattr(result, "unauthenticated_partial", 0) or 0),
+                "orphans": int(getattr(result, "orphans", 0) or 0),
+                "quarantine_expired": expired,
+                "quarantine_capacity_dropped": dropped,
+                "key_unavailable": key_unavailable,
+                "transient_io": transient_io,
+                "auth_failed": auth_failed,
+            },
+            dedup_key="vendor_raw_nonactive_quarantine:reply",
+        )
         if dropped < 1:
             return
-        try:
-            await self.alerts.emit(
-                alert_type="vendor_raw_quarantine_capacity",
-                level="crit",
-                title="raw spill 非活动隔离已达容量，已丢弃最旧无 PII 证据",
-                detail={"source": "reply", "dropped": dropped},
-                dedup_key="vendor_raw_quarantine_capacity:reply",
-            )
-        except Exception as exc:
-            LOGGER.error(
-                "vendor raw quarantine capacity alert unavailable",
-                extra={"source": "reply", "error_type": type(exc).__name__},
-            )
+        await emit_alert_best_effort(
+            self.alerts,
+            logger=LOGGER,
+            log_message="vendor raw quarantine capacity alert unavailable",
+            log_extra={"source": "reply"},
+            alert_type="vendor_raw_quarantine_capacity",
+            level="crit",
+            title="raw spill 非活动隔离已达容量，已丢弃最旧无 PII 证据",
+            detail={"source": "reply", "dropped": dropped},
+            dedup_key="vendor_raw_quarantine_capacity:reply",
+        )
 
     async def _alert_cipherq_manifest_only(self, result: Any) -> None:
         """清单无密文必须有确定终态告警；载荷不含路径或密文。"""
@@ -401,19 +390,17 @@ class ReplyIngestService:
         dropped = int(getattr(result, "cipherq_manifest_only", 0) or 0)
         if dropped < 1 or self.alerts is None:
             return
-        try:
-            await self.alerts.emit(
-                alert_type="vendor_raw_cipherq_manifest_only",
-                level="crit",
-                title="raw spill cipherq 清单缺少密文，已记确定终态",
-                detail={"source": "reply", "dropped": dropped},
-                dedup_key="vendor_raw_cipherq_manifest_only:reply",
-            )
-        except Exception as exc:
-            LOGGER.error(
-                "vendor raw cipherq manifest-only alert unavailable",
-                extra={"source": "reply", "error_type": type(exc).__name__},
-            )
+        await emit_alert_best_effort(
+            self.alerts,
+            logger=LOGGER,
+            log_message="vendor raw cipherq manifest-only alert unavailable",
+            log_extra={"source": "reply"},
+            alert_type="vendor_raw_cipherq_manifest_only",
+            level="crit",
+            title="raw spill cipherq 清单缺少密文，已记确定终态",
+            detail={"source": "reply", "dropped": dropped},
+            dedup_key="vendor_raw_cipherq_manifest_only:reply",
+        )
 
     async def _alert_header_only(self, result: Any) -> None:
         """超龄 header-only 回收必须可观测，避免配额耗尽后静默停轮询。"""
@@ -421,47 +408,37 @@ class ReplyIngestService:
         cleaned = int(getattr(result, "header_cleaned", getattr(result, "total", result)) or 0)
         if cleaned < 1 or self.alerts is None:
             return
-        try:
-            await self.alerts.emit(
-                alert_type="vendor_raw_header_only",
-                level="crit",
-                title="raw spill 存在超龄 header-only 残留，已回收以免耗尽拉取配额",
-                detail={
-                    "source": "reply",
-                    "cleaned": cleaned,
-                    "header_only": int(getattr(result, "header_only", 0) or 0),
-                    "partial_header": int(getattr(result, "partial_header", 0) or 0),
-                    "corrupt_header": int(getattr(result, "corrupt_header", 0) or 0),
-                    "incomplete_frames": int(getattr(result, "incomplete_frames", 0) or 0),
-                },
-                dedup_key="vendor_raw_header_only:reply",
-            )
-        except Exception as exc:
-            LOGGER.error(
-                "vendor raw header-only alert unavailable",
-                extra={"source": "reply", "error_type": type(exc).__name__},
-            )
+        await emit_alert_best_effort(
+            self.alerts,
+            logger=LOGGER,
+            log_message="vendor raw header-only alert unavailable",
+            log_extra={"source": "reply"},
+            alert_type="vendor_raw_header_only",
+            level="crit",
+            title="raw spill 存在超龄 header-only 残留，已回收以免耗尽拉取配额",
+            detail={
+                "source": "reply",
+                "cleaned": cleaned,
+                "header_only": int(getattr(result, "header_only", 0) or 0),
+                "partial_header": int(getattr(result, "partial_header", 0) or 0),
+                "corrupt_header": int(getattr(result, "corrupt_header", 0) or 0),
+                "incomplete_frames": int(getattr(result, "incomplete_frames", 0) or 0),
+            },
+            dedup_key="vendor_raw_header_only:reply",
+        )
 
     async def _emit_capture_alert(self, *, alert_type: str, title: str) -> None:
-        if self.alerts is None:
-            return
-        try:
-            await self.alerts.emit(
-                alert_type=alert_type,
-                level="crit",
-                title=title,
-                detail={"source": "reply"},
-                dedup_key=f"{alert_type}:reply",
-            )
-        except Exception as exc:
-            LOGGER.error(
-                "vendor raw capture alert unavailable",
-                extra={
-                    "source": "reply",
-                    "alert_type": alert_type,
-                    "error_type": type(exc).__name__,
-                },
-            )
+        await emit_alert_best_effort(
+            self.alerts,
+            logger=LOGGER,
+            log_message="vendor raw capture alert unavailable",
+            log_extra={"source": "reply", "alert_type": alert_type},
+            alert_type=alert_type,
+            level="crit",
+            title=title,
+            detail={"source": "reply"},
+            dedup_key=f"{alert_type}:reply",
+        )
 
     async def _spill_write(
         self,
@@ -498,20 +475,17 @@ class ReplyIngestService:
                 "raw spill write failed",
                 extra={"source": "reply", "error_type": type(exc).__name__},
             )
-            if self.alerts is not None:
-                try:
-                    await self.alerts.emit(
-                        alert_type="vendor_raw_spill_failed",
-                        level="crit",
-                        title="raw spill 写盘失败，崩溃兜底暂不可用",
-                        detail={"source": "reply", "error_type": type(exc).__name__},
-                        dedup_key="vendor_raw_spill_failed:reply",
-                    )
-                except Exception as alert_exc:
-                    LOGGER.error(
-                        "raw spill alert unavailable",
-                        extra={"source": "reply", "error_type": type(alert_exc).__name__},
-                    )
+            await emit_alert_best_effort(
+                self.alerts,
+                logger=LOGGER,
+                log_message="raw spill alert unavailable",
+                log_extra={"source": "reply"},
+                alert_type="vendor_raw_spill_failed",
+                level="crit",
+                title="raw spill 写盘失败，崩溃兜底暂不可用",
+                detail={"source": "reply", "error_type": type(exc).__name__},
+                dedup_key="vendor_raw_spill_failed:reply",
+            )
             return None
 
     async def _commit_raw(
@@ -634,9 +608,7 @@ class ReplyIngestService:
         started_at = time.monotonic()
         budget = getattr(self.spill, "recover_budget", None) or RecoverRoundBudget()
         for record in iter_records_for_recover(self.spill, self.crypto, "reply"):
-            if budget.exhausted(
-                recovered=attempted, used_bytes=used_bytes, started_at=started_at
-            ):
+            if budget.exhausted(recovered=attempted, used_bytes=used_bytes, started_at=started_at):
                 break
             size = int(getattr(record, "recover_weight_bytes", 0) or len(record.payload_enc))
             if not spill_file_identity_matches(record):
@@ -787,9 +759,7 @@ class ReplyIngestService:
         token = lease or getattr(self.repository, "_leases", {}).get(raw_id)
         async with bind_raw_lease_heartbeat(self.repository, token) as beat:
             try:
-                if not isinstance(data, list) or any(
-                    not isinstance(item, dict) for item in data
-                ):
+                if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
                     raise ValueError("GetReply.data must be an object array")
                 # custom_ids 索引元数据在共享路径重建，恢复/重放的 raw 同样可见。
                 custom_ids = await self.repository.filter_known_custom_ids(
@@ -836,24 +806,21 @@ class ReplyIngestService:
                     f"skipped {skipped} invalid reply items",
                     **({} if lease is None else {"lease": lease}),
                 )
-                if self.alerts is not None:
-                    try:
-                        await self.alerts.emit(
-                            alert_type="raw_item_skipped",
-                            level="crit",
-                            title="厂商上行回复存在无法解析的条目，raw 保持可重放",
-                            detail={
-                                "raw_id": raw_id,
-                                "skipped_count": skipped,
-                                "source": "reply",
-                            },
-                            dedup_key=f"raw_item_skipped:reply:{raw_id}",
-                        )
-                    except Exception as exc:
-                        LOGGER.error(
-                            "raw skip alert unavailable",
-                            extra={"raw_id": raw_id, "error_type": type(exc).__name__},
-                        )
+                await emit_alert_best_effort(
+                    self.alerts,
+                    logger=LOGGER,
+                    log_message="raw skip alert unavailable",
+                    log_extra={"raw_id": raw_id},
+                    alert_type="raw_item_skipped",
+                    level="crit",
+                    title="厂商上行回复存在无法解析的条目，raw 保持可重放",
+                    detail={
+                        "raw_id": raw_id,
+                        "skipped_count": skipped,
+                        "source": "reply",
+                    },
+                    dedup_key=f"raw_item_skipped:reply:{raw_id}",
+                )
                 return len(data)
             mark_kwargs: dict[str, Any] = {}
             if lease is not None:

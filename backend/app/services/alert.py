@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import smtplib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from email.message import EmailMessage
@@ -86,9 +86,7 @@ class _DeadlineSmtp(smtplib.SMTP):
             try:
                 code = int(line[:3])
             except ValueError:
-                raise smtplib.SMTPServerDisconnected(
-                    "Server sent an invalid SMTP reply"
-                ) from None
+                raise smtplib.SMTPServerDisconnected("Server sent an invalid SMTP reply") from None
             if line[3:4] != b"-":
                 break
         return code, b"\n".join(item[4:] for item in lines)
@@ -345,9 +343,7 @@ class AlertService:
             from app.settings import get_settings
 
             allowed_smtp_hosts = get_settings().alert_smtp_allowed_host_set
-        self.allowed_smtp_hosts = frozenset(
-            host.casefold() for host in allowed_smtp_hosts
-        )
+        self.allowed_smtp_hosts = frozenset(host.casefold() for host in allowed_smtp_hosts)
         self.repository = repository
         self.wecom = wecom or WeComChannel()
         self.smtp = smtp or SmtpChannel(self.allowed_smtp_hosts)
@@ -373,9 +369,7 @@ class AlertService:
         )
         routing: AlertRouting | None = None
         if getattr(self.repository, "uses_outbox", False):
-            wecom_configured, smtp_configured = (
-                await self.repository.load_channel_availability()
-            )
+            wecom_configured, smtp_configured = await self.repository.load_channel_availability()
         else:
             routing = safe_alert_routing(
                 await self.repository.load_routing(),
@@ -431,3 +425,43 @@ class AlertService:
                     "smtp alert delivery failed",
                     extra={"alert_id": alert_id, "error_type": type(exc).__name__},
                 )
+
+
+class AlertSink(Protocol):
+    async def emit(
+        self,
+        *,
+        alert_type: str,
+        level: str,
+        title: str,
+        detail: dict[str, Any],
+        dedup_key: str,
+    ) -> None: ...
+
+
+async def emit_alert_best_effort(
+    alerts: AlertSink | None,
+    *,
+    logger: logging.Logger,
+    log_message: str,
+    log_extra: Mapping[str, object],
+    alert_type: str,
+    level: str,
+    title: str,
+    detail: dict[str, Any],
+    dedup_key: str,
+) -> None:
+    """告警是观测旁路：未注入或发送失败时只记录异常类型，不影响调用方主流程。"""
+
+    if alerts is None:
+        return
+    try:
+        await alerts.emit(
+            alert_type=alert_type,
+            level=level,
+            title=title,
+            detail=detail,
+            dedup_key=dedup_key,
+        )
+    except Exception as exc:
+        logger.error(log_message, extra={**log_extra, "error_type": type(exc).__name__})

@@ -10,6 +10,7 @@ from app.core.jobtrack import tracked_job
 from app.core.redis_lock import HeartbeatLock
 from app.core.runtime_resources import redis_client
 from app.core.worker_runtime import run_worker_async
+from app.services.alert import emit_alert_best_effort
 from app.services.alert_repository import SqlAlertService
 from app.services.crypto import CryptoService
 from app.services.poll_lease_events import SqlPollLeaseEvents
@@ -24,19 +25,17 @@ LOGGER = logging.getLogger(__name__)
 
 
 async def _alert_lease_lost(alerts: SqlAlertService, source: str) -> None:
-    try:
-        await alerts.emit(
-            alert_type="poll_lock_expired",
-            level="warn",
-            title="轮询租约无法确认，已在安全点停止新拉取",
-            detail={"source": source},
-            dedup_key=f"poll_lock_expired:{source}",
-        )
-    except Exception as exc:
-        LOGGER.error(
-            "poll lock alert unavailable",
-            extra={"source": source, "error_type": type(exc).__name__},
-        )
+    await emit_alert_best_effort(
+        alerts,
+        logger=LOGGER,
+        log_message="poll lock alert unavailable",
+        log_extra={"source": source},
+        alert_type="poll_lock_expired",
+        level="warn",
+        title="轮询租约无法确认，已在安全点停止新拉取",
+        detail={"source": source},
+        dedup_key=f"poll_lock_expired:{source}",
+    )
 
 
 async def _watch_lease(
