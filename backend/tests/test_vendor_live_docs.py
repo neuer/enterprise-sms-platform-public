@@ -124,12 +124,15 @@ def test_authoritative_contracts_lock_page_only_vendor_test_security_boundary() 
     ):
         assert phrase in approved_documents
 
+    runbook = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(encoding="utf-8")
+    credential_section = runbook.split("## 页面安装凭据", 1)[1].split("\n## ", 1)[0]
+    assert "controlled-real-vendor-test.md#页面安装凭据" in agent_contract
     for phrase in (
         "浏览器易失内存",
         "浏览器持久化",
         "普通 API 明文",
     ):
-        assert phrase in agent_contract
+        assert phrase in credential_section
 
     assert "完整设计证据保存在受限归档" in decisions
     assert "](plans/" not in decisions

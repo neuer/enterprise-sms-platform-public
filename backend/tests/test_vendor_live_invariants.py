@@ -102,8 +102,11 @@ def test_control_plane_schemas_have_no_plain_recipient_content_or_secret_fields(
 
 
 def test_page_only_vendor_test_contract_keeps_plaintext_outside_volatile_browser_memory() -> None:
-    contract = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    runbook = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(encoding="utf-8")
+    contract = runbook.split("## 页面安装凭据", 1)[1].split("\n## ", 1)[0]
 
+    assert "controlled-real-vendor-test.md#页面安装凭据" in agents
     assert "浏览器易失内存" in contract
     assert "WebCrypto" in contract
     assert "禁止写入 Pinia、localStorage、sessionStorage、IndexedDB" in contract

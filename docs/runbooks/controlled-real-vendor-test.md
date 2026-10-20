@@ -162,6 +162,8 @@ inactive/unknown 为成功硬判据。失败只保持入口关闭，不回退 HT
 
 禁止把凭据放入 Pinia、localStorage、sessionStorage、IndexedDB、Service Worker cache、URL、浏览器错误报告或分析工具。状态接口只返回 `configured`、generation 状态与安装时间等安全投影。
 
+上述浏览器边界是 AGENTS 规则 1 的唯一凭据例外，权威措辞如下：明文只可短暂存在于组件局部的**浏览器易失内存**，必须立即通过 WebCrypto 封装为仅 `vendor-control-agent` 可解密的密文；禁止任何浏览器持久化，禁止写入 Pinia、localStorage、sessionStorage、IndexedDB、Service Worker cache 或 URL，禁止进入普通 API 明文、数据库、队列、审计、日志、指标和错误详情，提交结束必须清空且不得回显值、长度、前缀、摘要或哈希。
+
 已配置环境的页面轮换必须走完整事务：取得 lifecycle lock → 读取并保留既有 manual/critical/daily pause，若无暂停才创建本次 activation pause → 停止发送进程与 Outbox dispatcher → 再次确认 submitting/retrying/uncertain 活跃计数全部为零 → 创建加密 checkpoint → 在 root 私有目录持久化只含 previous/new generation 名称与 phase 的 `rotation-state.json` → 原子切换 pending generation → 重新生成运行时 secrets → 校验 Compose 并强制重建 API、四个 worker、Outbox dispatcher 与 beat → 只用 GetBalance 探测 → 成功后提交事务并只清除本次轮换自己创建的 activation pause。事务文件与 pending 指针必须保留到新运行态探针成功；文件中禁止出现凭据值或其派生信息。切换后的任一步失败，必须先写入独立的 rotation-failed critical 键，即使已有 manual pause 也不能被遮蔽；随后回切旧 generation、重新生成运行时 secrets、校验 Compose、重建旧服务并再次执行 GetBalance，旧运行态探针成功后才能清理事务。任一回退步骤失败都保留事务与 critical 暂停，最终仍报告本次轮换失败。不得只替换宿主凭据文件而让旧容器继续持有旧挂载。
 
 agent 每次接收新的凭据 envelope 前都会先通过固定 wrapper 执行恢复：存在 `rotation-state.json` 时，在同一 lifecycle lock 内保持独立 critical 暂停、停止发送进程、回切 previous generation、重新生成运行时 secrets、校验 Compose、重建旧服务并用 GetBalance 验证，成功后才清理事务；只有不存在事务时，才把尚未切换的孤儿 pending generation 丢弃。事务未恢复时人工 resume 必须 fail closed，不能只凭一次探针清除暂停。页面只得到 `recovered/rotated` 安全状态。不得手工删除事务或 pending 指针、读取 generation 内容或跳过恢复直接重试。

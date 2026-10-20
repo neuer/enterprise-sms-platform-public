@@ -94,6 +94,15 @@ Alembic 的在线执行和离线 SQL 都在迁移事务开始时设置 `lock_tim
 
 ## 按需测试部署
 
+本节是 AGENTS 规则 39“开发与测试部署解耦”的权威合同，核心要求：
+
+- 默认对合并后的精确 `origin/main` 执行 `scripts/test_update.sh apply --ref origin/main`；`plan` 仅用于可选预览，`status` 仅用于后续只读诊断；入口只构建受影响镜像，不得重复执行 CI/G2 或组件测试。
+- high-risk、迁移或控制面更新必须在 `apply` 前验证目标 commit 精确且来源为 GitHub Actions 的 `ci-gate=success`。
+- 只有远端最终返回 `state=verified`、apply 后 operator 再次通过 origin/HEAD/status 读路径预检，同时完成 tracked 工作树与暂存区的 diff 读路径复核及对应表面验收才算成功。
+- 无迁移更新不得创建数据库 checkpoint，切换或验收失败时只允许自动回退到上一版应用镜像并记录 `rolled_back`；不得回退 schema。迁移、受保护状态异常或镜像回退失败时保持 fail closed。
+- 分支部署只作为明确的合并前验收例外；tree 与后续 `origin/main` 完全一致且 main 的 `ci-gate` 成功时，可用 `promote --ref origin/main` 免重建提升。
+- 始终保留 PostgreSQL 数据库、Docker volume 和运行态目录，任何初始化必须事先取得操作者明确确认。管理员初始化、正式厂商 Key 安装/轮换和测试号码管理是独立流程，不得夹带在快速更新中执行。
+
 测试部署与日常开发解耦。只有需要共享环境、浏览器或真实接口验收的功能才部署；纯文档、
 纯测试和不改变行为的重构无需部署。默认等待 PR 合并后，更新精确的 `origin/main`：
 
