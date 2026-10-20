@@ -4,14 +4,26 @@
     {
       "component": "web",
       "architecture": "x86_64",
-      "filename": "libexpat-2.8.5-r0.apk",
-      "sha256": "2e56946bc495cbed9eb1ad70859a79cba9db6420016453e065a0628848b32c7e",
+      "filename": "libexpat-2.9.0-r0.apk",
+      "sha256": "32b127f31e0a919110a18a7f0bb3780d8fb66ba4d8d61b2d301d633f0e319d0e",
       "package": "libexpat",
-      "version": "2.8.5-r0",
+      "version": "2.9.0-r0",
       "license": "MIT",
       "repository": "v3.24/main",
       "origin": "dl-cdn.alpinelinux.org/alpine",
-      "retrieved": "2026-10-11"
+      "retrieved": "2026-10-20"
+    },
+    {
+      "component": "web",
+      "architecture": "x86_64",
+      "filename": "libx11-1.8.14-r0.apk",
+      "sha256": "016efc189c6d566061ffe206ed0780e32686c1a8c832a3917d35d2c66d61a40f",
+      "package": "libx11",
+      "version": "1.8.14-r0",
+      "license": "X11",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-20"
     },
     {
       "component": "web",
@@ -40,14 +52,26 @@
     {
       "component": "web",
       "architecture": "aarch64",
-      "filename": "libexpat-2.8.5-r0.apk",
-      "sha256": "568a12a4889a00711d1c80c197a5540ee1cdec26c1c59da38f8342ad69e7eff9",
+      "filename": "libexpat-2.9.0-r0.apk",
+      "sha256": "7128bfe18b8a315b9cf90ddf0beffeee454648ae72ff7898ff7d7b09803a559d",
       "package": "libexpat",
-      "version": "2.8.5-r0",
+      "version": "2.9.0-r0",
       "license": "MIT",
       "repository": "v3.24/main",
       "origin": "dl-cdn.alpinelinux.org/alpine",
-      "retrieved": "2026-10-11"
+      "retrieved": "2026-10-20"
+    },
+    {
+      "component": "web",
+      "architecture": "aarch64",
+      "filename": "libx11-1.8.14-r0.apk",
+      "sha256": "d460c111c1fc40e8f84367907b3e50a58a2b19c3e9d54f7c1f0e4aea7a376e3b",
+      "package": "libx11",
+      "version": "1.8.14-r0",
+      "license": "X11",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-20"
     },
     {
       "component": "web",
