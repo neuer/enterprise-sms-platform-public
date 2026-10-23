@@ -86,4 +86,33 @@ describe("useChart 尺寸调度", () => {
     expect(chart.dispose).toHaveBeenCalledTimes(1)
     expect(observer!.disconnected).toBe(true)
   })
+
+  it("窗口变化按元素矩形 resize，卸载时取消尚未执行的帧", async () => {
+    const wrapper = mountChart()
+    await flushPromises()
+    vi.spyOn(wrapper.element, "getBoundingClientRect").mockReturnValue({
+      width: 240,
+      height: 120,
+      x: 0,
+      y: 0,
+      top: 0,
+      left: 0,
+      right: 240,
+      bottom: 120,
+      toJSON() {
+        return {}
+      },
+    })
+    window.dispatchEvent(new Event("resize"))
+    expect(chart.resize).not.toHaveBeenCalled()
+    runFrame()
+    expect(chart.resize).toHaveBeenCalledTimes(1)
+    expect(chart.resize).toHaveBeenCalledWith({ width: 240, height: 120 })
+
+    FakeObserver.latest!.notify(300, 80)
+    expect(frame).toBeTypeOf("function")
+    wrapper.unmount()
+    expect(frame).toBeNull()
+    expect(chart.dispose).toHaveBeenCalledTimes(1)
+  })
 })

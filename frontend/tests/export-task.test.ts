@@ -135,6 +135,39 @@ describe("导出任务流 useExportTask", () => {
     expect(reportsApi.getExportTask.mock.calls.length).toBe(callsAtPause + 1)
   })
 
+  it("401 停止跟踪并提示重新登录", async () => {
+    reportsApi.getExportTask.mockRejectedValue(new ApiRequestError(401, "UNAUTHORIZED", "raw"))
+    const controller = mountController()
+    await controller.start(() => Promise.resolve(task()))
+    expect(controller.exportTracking.value).toBe("terminal")
+    expect(controller.exportError.value).toBe("登录状态已失效，导出跟踪已停止。")
+    expect(controller.exportError.value).not.toContain("raw")
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(reportsApi.getExportTask).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([404, 410])("%s 停止跟踪并说明任务不可继续", async (status) => {
+    reportsApi.getExportTask.mockRejectedValue(new ApiRequestError(status, "GONE", "raw"))
+    const controller = mountController()
+    await controller.start(() => Promise.resolve(task()))
+    expect(controller.exportTracking.value).toBe("terminal")
+    expect(controller.exportError.value).toBe("导出任务不存在或已过期，无法继续跟踪。")
+    expect(controller.exportError.value).not.toContain("raw")
+  })
+
+  it("5xx 状态查询保留任务并自动重试", async () => {
+    reportsApi.getExportTask
+      .mockRejectedValueOnce(new ApiRequestError(500, "UNAVAILABLE", "raw"))
+      .mockResolvedValueOnce(task({ status: "done", row_count: 3, download_url: "/download" }))
+    const controller = mountController()
+    await controller.start(() => Promise.resolve(task()))
+    expect(controller.exportTracking.value).toBe("tracking")
+    expect(controller.exportError.value).toBe("导出状态暂时查询失败，将自动重试同一任务。")
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(controller.exportTask.value?.status).toBe("done")
+    expect(controller.exportError.value).toBe("")
+  })
+
   it("403 停止跟踪并说明原因", async () => {
     reportsApi.getExportTask.mockRejectedValue(new ApiRequestError(403, "FORBIDDEN", "raw"))
     const controller = mountController()
