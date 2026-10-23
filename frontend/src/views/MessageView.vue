@@ -339,6 +339,7 @@ async function revealSearched(): Promise<string> {
       </el-table-column>
       <template #empty>
         <EmptyState
+          v-if="!errorMessage"
           :title="searched ? '未找到符合条件的记录' : '尚未查询号码记录'"
           :description="
             searched
@@ -348,6 +349,16 @@ async function revealSearched(): Promise<string> {
         />
       </template>
     </el-table>
+    <EmptyState
+      v-if="!loading && !errorMessage && items.length === 0"
+      class="message-query-empty"
+      :title="searched ? '未找到符合条件的记录' : '尚未查询号码记录'"
+      :description="
+        searched
+          ? '该号码在所选时间范围内没有收发记录；可扩大时间范围，或核对号码后重试。'
+          : '输入完整手机号后，这里会出现该号码跨批次的收发轨迹；切换到时间线可一屏还原「我们发了什么、用户回了什么」。'
+      "
+    />
     <div class="query-mobile-list">
       <article v-for="item in items" :key="item.id">
         <header>
@@ -408,7 +419,7 @@ async function revealSearched(): Promise<string> {
       >事件过多，仅显示最近 500 条；缩小时间范围可查看完整轨迹。</p
     >
     <EmptyState
-      v-if="!timeline?.events.length"
+      v-if="!loading && !errorMessage && !timeline?.events.length"
       :title="searched ? '该号码在所选条件下没有事件' : '尚未生成号码时间线'"
       :description="searched ? '可调整时间范围后重试。' : '输入完整手机号后，下行与用户回复会按日期排列。'"
     />

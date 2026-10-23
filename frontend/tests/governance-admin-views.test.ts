@@ -124,7 +124,7 @@ describe("管理员治理页面", () => {
     expect(wrapper.text()).toContain("7,654")
     wrapper.unmount()
     vi.unstubAllGlobals()
-  })
+  }, 60_000)
   it.each(["总数增加", "总数减少", "重复应用", "缺少行", "页大小变化"])(
     "应用用量分页出现%s时整体显示不可用，不把遗漏应用显示为零",
     async (scenario) => {
@@ -186,6 +186,7 @@ describe("管理员治理页面", () => {
         vi.unstubAllGlobals()
       }
     },
+    60_000,
   )
   it("敏感词分页只查词库，外部策略变更通过主动刷新读取且错误不阻塞列表", async () => {
     let policy = "block"

@@ -27,6 +27,7 @@ defineProps<{
   canDecrypt: boolean
   canScheduleOps: boolean
   canResendFailed: boolean
+  detailUnconfirmed: boolean
   cancelling: boolean
   resending: boolean
 }>()
@@ -37,6 +38,7 @@ const emit = defineEmits<{
   trace: [sourceBatchNo: string]
   filterDetails: []
   detailPageChange: []
+  retryDetail: []
 }>()
 
 const detailStatusOptions = MESSAGE_STATUS_OPTIONS
@@ -52,7 +54,8 @@ async function revealPhone(messageId: number): Promise<string> {
   <el-drawer v-model="open" size="min(560px, 92vw)" :teleported="false" class="batch-drawer">
     <template #header>
       <div v-if="selected" class="batch-drawer-head">
-        <StatusTag :status="selected.status" />
+        <StatusTag v-if="!detailUnconfirmed" :status="selected.status" />
+        <el-tag v-else type="info">状态待确认</el-tag>
         <code>{{ selected.batch_no }}</code>
         <small
           >创建于 {{ formatDateTime(selected.created_at) }} · {{ channelLabel[selected.channel] || selected.channel }} ·
@@ -62,18 +65,33 @@ async function revealPhone(messageId: number): Promise<string> {
       <span v-else>批次详情</span>
     </template>
     <template v-if="selected">
+      <el-alert
+        v-if="detailUnconfirmed"
+        class="batch-status-unconfirmed"
+        type="warning"
+        :closable="false"
+        title="暂时无法确认该批次的最新状态，取消和改期已暂停。"
+        data-testid="batch-status-unconfirmed"
+        show-icon
+      >
+        <el-button link type="primary" data-testid="retry-batch-detail" @click="emit('retryDetail')"
+          >重新读取</el-button
+        >
+      </el-alert>
       <div v-if="canWrite" class="batch-actions">
         <el-button
+          v-if="canScheduleOps"
           type="danger"
           plain
           :loading="cancelling"
-          :disabled="!canScheduleOps || cancelling"
+          :disabled="cancelling"
           data-testid="cancel-batch"
           @click="emit('cancel')"
           >取消批次</el-button
         >
         <el-button
-          :disabled="!canScheduleOps || cancelling || resending"
+          v-if="canScheduleOps"
+          :disabled="cancelling || resending"
           data-testid="reschedule-batch"
           @click="emit('reschedule')"
           >改期</el-button

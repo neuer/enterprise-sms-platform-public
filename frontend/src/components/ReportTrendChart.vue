@@ -4,7 +4,9 @@ import { BarChart } from "echarts/charts"
 import { GridComponent, TooltipComponent } from "echarts/components"
 import * as echarts from "echarts/core"
 import { CanvasRenderer } from "echarts/renderers"
-import { ref, watch } from "vue"
+import { onBeforeUnmount, ref, watch } from "vue"
+
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 
 import type { ReportGranularity, ReportTrend, ReportTrendMetric } from "../api/reports"
 import { useChart } from "../composables/useChart"
@@ -21,6 +23,32 @@ const props = defineProps<{
   granularity?: ReportGranularity
 }>()
 const root = ref<HTMLElement | null>(null)
+let tooltipHost: HTMLDivElement | null = null
+
+/** 趋势浮层挂到卡片外，避免 el-card 的 overflow 裁切；主题色仍读根上的图表令牌。 */
+function tooltipParent(): HTMLElement {
+  if (!tooltipHost) {
+    tooltipHost = document.createElement("div")
+    tooltipHost.className = "report-trend-tooltip-host"
+    tooltipHost.style.position = "fixed"
+    tooltipHost.style.left = "0"
+    tooltipHost.style.top = "0"
+    tooltipHost.style.width = "0"
+    tooltipHost.style.height = "0"
+    tooltipHost.style.overflow = "visible"
+    tooltipHost.style.zIndex = "4000"
+    tooltipHost.style.pointerEvents = "none"
+    document.body.appendChild(tooltipHost)
+  }
+  tooltipHost.dataset.theme = document.documentElement.dataset.theme || ""
+  return tooltipHost
+}
+
+function retireTooltip(): void {
+  tooltipHost?.replaceChildren()
+  tooltipHost?.remove()
+  tooltipHost = null
+}
 
 /** 横轴周期列表：日粒度且范围 ≤62 天时把空日补零（日期枚举下沉 lib/time 单点），否则按数据出现的周期排序。 */
 function periods(): string[] {
@@ -45,6 +73,31 @@ const { render } = useChart(root, (chart) => {
       grid: { top: 4, right: 4, bottom: 2, left: 2, containLabel: true },
       tooltip: {
         trigger: "axis",
+        triggerOn: "mousemove|click",
+        enterable: true,
+        confine: false,
+        appendTo: tooltipParent,
+        extraCssText: "max-height:min(70vh,240px);overflow:auto;white-space:normal;pointer-events:auto;z-index:4000;",
+        position: (
+          point: number[],
+          _params: unknown,
+          _dom: unknown,
+          _rect: unknown,
+          size: { contentSize: number[] },
+        ) => {
+          const chartRect = root.value?.getBoundingClientRect()
+          const originX = chartRect?.left ?? 0
+          const originY = chartRect?.top ?? 0
+          const boxWidth = size.contentSize[0] || 220
+          const boxHeight = Math.min(size.contentSize[1] || 160, window.innerHeight * 0.7)
+          let left = point[0] + 12
+          let top = point[1] + 12
+          if (originX + left + boxWidth > window.innerWidth - 8) left = point[0] - boxWidth - 12
+          if (originY + top + boxHeight > window.innerHeight - 8) top = point[1] - boxHeight - 12
+          if (originX + left < 8) left = 8 - originX
+          if (originY + top < 8) top = 8 - originY
+          return [left, top]
+        },
         axisPointer: { type: "shadow" },
         valueFormatter: (value: unknown) => formatNumber(Number(value)),
         ...theme.tooltip,
@@ -86,6 +139,11 @@ const { render } = useChart(root, (chart) => {
 
 // 查询结果每次整体替换（result 重新赋值），引用变化即代表数据变化，无需深比较。
 watch(() => [props.trend, props.metric, props.start, props.end, props.granularity], render)
+window.addEventListener(SESSION_CLEARING_EVENT, retireTooltip)
+onBeforeUnmount(() => {
+  window.removeEventListener(SESSION_CLEARING_EVENT, retireTooltip)
+  retireTooltip()
+})
 </script>
 
 <template><div ref="root" class="report-trend-chart" role="img" aria-label="按维度堆叠的发送趋势"></div></template>

@@ -67,6 +67,30 @@ export interface WebMessagePayload {
  */
 export type SendResult = paths["/api/v1/web/messages/send"]["post"]["responses"]["200"]["content"]["application/json"]
 
+/**
+ * 把异步导入的机器码换成可操作的中文。IMPORT_TOO_LARGE 在库里同时覆盖字节与行数，
+ * 状态接口不再区分具体原因，因此不能写成单一的「仅字节」或「仅行数」。
+ * 未知码不回显原始载荷。
+ */
+export function importFailureMessage(code: string | null | undefined): string {
+  switch (code) {
+    case "IMPORT_TOO_LARGE":
+      return "文件大小或号码行数超过上限，请拆分后重新上传。"
+    case "IMPORT_FORMAT_INVALID":
+      return "文件格式无法解析，请改用 CSV 或 XLSX 后重新上传。"
+    case "IMPORT_PARSE_FAILED":
+      return "号码文件解析失败，请检查内容后重新上传。"
+    case "IMPORT_PENDING":
+    case "IMPORT_RETRY_PENDING":
+      return "号码文件仍在后台处理，请稍后重试。"
+    case "IMPORT_STAGE_FAILED":
+    case "IMPORT_QUEUE_UNAVAILABLE":
+      return "号码文件暂未受理，请稍后重新上传。"
+    default:
+      return "号码文件处理失败，请重新上传或稍后再试。"
+  }
+}
+
 export async function uploadPhones(file: File, signal?: AbortSignal): Promise<ImportResult> {
   const form = new FormData()
   form.append("file", file)
@@ -75,7 +99,7 @@ export async function uploadPhones(file: File, signal?: AbortSignal): Promise<Im
   let delay = 250
   while (result.status === "pending" || result.status === "processing") {
     if (Date.now() >= deadline) {
-      throw new ApiRequestError(0, "IMPORT_PENDING", "号码文件仍在后台解析，请稍后重试")
+      throw new ApiRequestError(0, "IMPORT_PENDING", importFailureMessage("IMPORT_PENDING"))
     }
     signal?.throwIfAborted()
     await new Promise((resolve) => window.setTimeout(resolve, delay))
@@ -86,7 +110,8 @@ export async function uploadPhones(file: File, signal?: AbortSignal): Promise<Im
     delay = Math.min(1_000, delay * 2)
   }
   if (result.status === "failed") {
-    throw new ApiRequestError(0, "IMPORT_FAILED", result.error || "号码文件解析失败，请检查格式后重试")
+    const code = result.error || "IMPORT_FAILED"
+    throw new ApiRequestError(0, code, importFailureMessage(result.error))
   }
   return result
 }
