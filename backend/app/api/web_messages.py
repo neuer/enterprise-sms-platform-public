@@ -13,7 +13,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.authorization import (
@@ -50,9 +50,11 @@ from app.services.import_repository import (
 )
 from app.services.imports import ImportFormatError, ImportLimits, ImportParser, ImportTooLarge
 from app.services.operations_query import (
+    SHANGHAI,
     OperationsQueryService,
     QueryNotFound,
     SqlOperationsQueryRepository,
+    shanghai_isoformat,
 )
 from app.services.pipeline import (
     BatchResponse,
@@ -222,6 +224,8 @@ class MessageQueryPageModel(BaseModel):
 
 
 class TimelineEventModel(BaseModel):
+    """号码时间线事件。JSON 边界统一写成上海时区，不改变绝对时刻。"""
+
     ts: datetime
     direction: Literal["out", "in"]
     category: str | None
@@ -229,6 +233,13 @@ class TimelineEventModel(BaseModel):
     content: str
     status: str | None
     sender: str | None
+
+    @field_serializer("ts", when_used="json")
+    def serialize_ts(self, value: datetime) -> datetime:
+        """外发与上行共用这一路径；JSON 再按上海时刻的 ISO8601 写出。"""
+
+        shanghai_isoformat(value)
+        return value.astimezone(SHANGHAI)
 
 
 class TimelineModel(BaseModel):

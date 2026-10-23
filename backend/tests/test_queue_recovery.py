@@ -12,6 +12,7 @@ from app.core.correlation import correlation_scope
 from app.services.ops import (
     PausedBatch,
     QueueRecoveryService,
+    QueueResumeCheck,
     QueueResumeConflict,
     QueueSnapshot,
 )
@@ -21,9 +22,28 @@ ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
 
 
 class FakeRepository:
-    def __init__(self, snapshot: QueueSnapshot, events: list[str]) -> None:
+    def __init__(
+        self,
+        snapshot: QueueSnapshot,
+        events: list[str],
+        *,
+        batches: tuple[PausedBatch, ...] | None = None,
+        clear_ok: bool = True,
+    ) -> None:
         self.snapshot = snapshot
         self.events = events
+        self.batches = (
+            batches
+            if batches is not None
+            else (
+                PausedBatch("NOTICE-1", "notice"),
+                PausedBatch("MARKET-1", "market"),
+            )
+        )
+        self.clear_ok = clear_ok
+        self.last_force: bool | None = None
+        self.last_check: QueueResumeCheck | None = None
+        self.cleared_with: QueueSnapshot | None = None
 
     async def queue_snapshot(self) -> QueueSnapshot:
         return self.snapshot
@@ -34,16 +54,18 @@ class FakeRepository:
         actor: str,
         ip: str,
         principal: SecurityPrincipal,
+        force: bool,
+        check: QueueResumeCheck,
     ) -> tuple[PausedBatch, ...]:
+        self.last_force = force
+        self.last_check = check
         self.events.append(f"db:{actor}:{ip}:{principal.account_id}")
-        return (
-            PausedBatch("NOTICE-1", "notice"),
-            PausedBatch("MARKET-1", "market"),
-        )
+        return self.batches
 
     async def clear_queue_pauses(self, snapshot: QueueSnapshot) -> bool:
         self.events.append("clear")
-        return True
+        self.cleared_with = snapshot
+        return self.clear_ok
 
 
 class FakeSender:
@@ -192,6 +214,14 @@ async def test_resume_repository_binds_live_principal_before_update(
             actor="admin01",
             ip="10.0.0.8",
             principal=ADMIN,
+            force=False,
+            check=QueueResumeCheck(
+                force=False,
+                realtime_pause_reason="balance",
+                bulk_pause_reason="balance",
+                balance_known=True,
+                balance_meets_threshold=True,
+            ),
         )
 
     assert batches == (PausedBatch("NOTICE-1", "notice"),)
@@ -217,7 +247,19 @@ async def test_resume_repository_binds_live_principal_before_update(
     assert audit_params["account_id"] == 1
     assert audit_params["identity_id"] == 10
     assert audit_params["actor"] == "admin01"
-    assert json.loads(str(audit_params["after"])) == {"resumed_batches": 1}
+    payload = json.loads(str(audit_params["after"]))
+    assert payload == {
+        "force": False,
+        "realtime_pause_reason": "balance",
+        "bulk_pause_reason": "balance",
+        "balance_known": True,
+        "balance_meets_threshold": True,
+        "resumed_batches": 1,
+        "effect": "db_batches_requeued",
+    }
+    assert "claim" not in payload
+    assert "realtime_claim" not in payload
+    assert "phone" not in str(audit_params).lower()
     assert "phone" not in str(audit_params).lower()
 
 
@@ -232,6 +274,14 @@ async def test_resume_repository_fails_closed_when_actor_does_not_match_principa
             actor="other-admin",
             ip="10.0.0.8",
             principal=ADMIN,
+            force=True,
+            check=QueueResumeCheck(
+                force=True,
+                realtime_pause_reason="vendor_account",
+                bulk_pause_reason="none",
+                balance_known=False,
+                balance_meets_threshold=False,
+            ),
         )
 
     assert connection.calls == []
@@ -242,3 +292,86 @@ def test_resume_repository_source_does_not_use_legacy_unattributed_insert() -> N
     assert "bind_connection_audit_subject" in source
     assert "insert_audit" in source
     assert "jsonb_build_object('resumed_batches'" not in source
+    assert "queue_snapshot" not in source
+    assert "redis" not in source
+
+
+@pytest.mark.asyncio
+async def test_resume_passes_the_same_check_snapshot_without_raw_claims() -> None:
+    events: list[str] = []
+    repository = FakeRepository(
+        QueueSnapshot(
+            "999:4",
+            "999",
+            20000,
+            10000,
+            realtime_claim="999:4:raw-generation",
+            bulk_claim=b"999:8",
+        ),
+        events,
+    )
+    service = QueueRecoveryService(repository, FakeSender(events))
+
+    result = await service.resume(
+        force=False, actor="admin01", ip="10.0.0.8", principal=ADMIN
+    )
+
+    assert result.resumed_batches == 2
+    assert repository.last_force is False
+    check = repository.last_check
+    assert check is not None
+    assert check.force is False
+    assert check.realtime_pause_reason == "balance"
+    assert check.bulk_pause_reason == "balance"
+    assert check.balance_known is True
+    assert check.balance_meets_threshold is True
+    rendered = repr(check)
+    assert "raw-generation" not in rendered
+    assert repository.cleared_with is repository.snapshot
+
+
+@pytest.mark.asyncio
+async def test_force_resume_records_non_balance_reason_and_low_balance() -> None:
+    events: list[str] = []
+    repository = FakeRepository(
+        QueueSnapshot("1000", None, 1, 10000, realtime_claim="1000:77"),
+        events,
+        batches=(),
+    )
+    result = await QueueRecoveryService(repository, FakeSender(events)).resume(
+        force=True, actor="admin01", ip="10.0.0.8", principal=ADMIN
+    )
+
+    assert result.resumed_batches == 0
+    assert repository.last_force is True
+    check = repository.last_check
+    assert check is not None
+    assert check == QueueResumeCheck(
+        force=True,
+        realtime_pause_reason="vendor_account",
+        bulk_pause_reason="none",
+        balance_known=True,
+        balance_meets_threshold=False,
+    )
+    assert "77" not in repr(check)
+    assert events == ["db:admin01:10.0.0.8:1", "clear",]
+
+
+@pytest.mark.asyncio
+async def test_redis_cleanup_conflict_is_not_described_as_external_success() -> None:
+    events: list[str] = []
+    repository = FakeRepository(
+        QueueSnapshot("1000", "1000", None, 10000, realtime_claim="1000:3"),
+        events,
+        clear_ok=False,
+    )
+    service = QueueRecoveryService(repository, FakeSender(events))
+
+    with pytest.raises(QueueResumeConflict, match="暂停状态已更新"):
+        await service.resume(force=True, actor="admin01", ip="10.0.0.8", principal=ADMIN)
+
+    assert events == ["db:admin01:10.0.0.8:1", "clear"]
+    assert repository.last_check is not None
+    assert repository.last_check.force is True
+    assert repository.last_check.balance_known is False
+    assert "claim" not in repository.last_check.__slots__
