@@ -400,6 +400,41 @@ async def test_sql_timeline_caps_events_and_marks_truncated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sql_timeline_rejects_naive_timestamps() -> None:
+    repository = SqlOperationsQueryRepository(crypto=crypto())
+    connection = FakeConnection(
+        [
+            FakeResult(rows=[]),
+            FakeResult(scalar=1),
+            FakeResult(
+                rows=[
+                    {
+                        "ts": datetime(2026, 7, 12, 8, 0),
+                        "direction": "in",
+                        "category": "notice",
+                        "batch_no": "BATCH-1",
+                        "batch_content_enc": None,
+                        "reply_content_enc": b"unused",
+                        "content_object_id": "e" * 64,
+                        "status": None,
+                        "sender": "用户",
+                    }
+                ]
+            ),
+        ]
+    )
+    bind(repository, connection)
+
+    with pytest.raises(ValueError, match="timezone"):
+        await repository.timeline(
+            phone_hmacs=("a" * 64,),
+            start=None,
+            end=None,
+            scope=BatchAccessScope(dept="平台部"),
+        )
+
+
+@pytest.mark.asyncio
 async def test_authorized_phone_audits_reference_only_in_same_transaction() -> None:
     repository = SqlOperationsQueryRepository()
     protected = crypto().protect_phone("13800138000")

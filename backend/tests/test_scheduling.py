@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -140,3 +142,113 @@ async def test_outbox_cancel_does_not_apply_a_second_direct_refund() -> None:
     )
 
     assert quota.calls == []
+
+
+class _Rows:
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+
+    def one_or_none(self) -> dict[str, object] | None:
+        return self.rows[0] if self.rows else None
+
+
+class _Result:
+    def __init__(self, rows: list[dict[str, object]] | None = None) -> None:
+        self.rows = rows or []
+
+    def mappings(self) -> _Rows:
+        return _Rows(self.rows)
+
+
+class _Connection:
+    def __init__(self, row: dict[str, object] | None) -> None:
+        self.calls: list[tuple[str, Any]] = []
+        self.row = row
+
+    async def execute(self, statement: object, params: Any = None) -> _Result:
+        sql = str(statement)
+        self.calls.append((sql, params))
+        if "batch_reschedule" in sql:
+            raise RuntimeError("synthetic audit failure")
+        if "SELECT" in sql and self.row is not None:
+            return _Result([self.row])
+        return _Result()
+
+
+class _Context:
+    def __init__(self, connection: _Connection) -> None:
+        self.connection = connection
+
+    async def __aenter__(self) -> _Connection:
+        return self.connection
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+
+class _Engine:
+    def __init__(self, connection: _Connection) -> None:
+        self.connection = connection
+
+    def begin(self) -> _Context:
+        return _Context(self.connection)
+
+    async def dispose(self) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_reschedule_audit_uses_shanghai_text_and_keeps_aware_column() -> None:
+    scheduled_at = datetime(2026, 7, 12, 0, 30, tzinfo=UTC)
+    connection = _Connection(
+        {"id": 9, "channel": "web", "had_approval": True},
+    )
+    repository = SqlSchedulingRepository()
+    repository._engine = lambda: _Engine(connection)  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="synthetic audit failure"):
+        await repository.reschedule(
+            "a" * 32,
+            BatchAccessScope(all_departments=True),
+            scheduled_at,
+            approval_expire_hours=6,
+        )
+
+    update = next(params for sql, params in connection.calls if "UPDATE sms_batch" in sql)
+    assert update["scheduled_at"] == scheduled_at
+    assert update["status"] == "pending_approval"
+    idem = next(
+        params for sql, params in connection.calls if "idempotency_record" in sql
+    )
+    assert idem["scheduled_at"] == scheduled_at
+    assert "CAST(:scheduled_at AS timestamptz)" in connection.calls[2][0]
+    approval = next(sql for sql, _params in connection.calls if "UPDATE approval" in sql)
+    assert "CAST(:expire_hours AS integer)" in approval
+    audit_sql = connection.calls[-1][0]
+    assert "CAST(:scheduled_at AS text)" in audit_sql
+    assert connection.calls[-1][1]["scheduled_at"] == scheduled_at.astimezone(
+        ZoneInfo("Asia/Shanghai")
+    ).isoformat()
+    assert connection.calls[-1][1]["scheduled_at"].endswith("+08:00")
+    assert isinstance(update["scheduled_at"], datetime)
+
+
+@pytest.mark.asyncio
+async def test_reschedule_without_reapproval_still_types_the_audit_clock() -> None:
+    scheduled_at = datetime(2026, 10, 23, 16, 0, tzinfo=UTC) + timedelta(0)
+    connection = _Connection({"id": 3, "channel": "api", "had_approval": False})
+    repository = SqlSchedulingRepository()
+    repository._engine = lambda: _Engine(connection)  # type: ignore[method-assign]
+    raised = False
+    try:
+        await repository.reschedule(
+            "b" * 32,
+            BatchAccessScope(app_id=4),
+            scheduled_at,
+            approval_expire_hours=24,
+        )
+    except RuntimeError:
+        raised = True
+    assert raised
+    assert all("UPDATE approval" not in sql for sql, _params in connection.calls)
+    assert connection.calls[-1][1]["scheduled_at"] == "2026-10-24T00:00:00+08:00"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -26,6 +27,15 @@ class QueryNotFound(LookupError):
 
 TIMELINE_EVENT_LIMIT = 500
 MAX_PAGE_SIZE = 100
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def shanghai_isoformat(value: datetime) -> str:
+    """把有时区时刻写成上海 ISO8601，不改变绝对时间。"""
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("timestamp must include timezone")
+    return value.astimezone(SHANGHAI).isoformat()
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,6 +397,11 @@ class SqlOperationsQueryRepository:
                 events: list[TimelineEvent] = []
                 for row in events_result.mappings():
                     values = dict(row)
+                    timestamp = values["ts"]
+                    if not isinstance(timestamp, datetime):
+                        raise ValueError("timeline timestamp is invalid")
+                    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                        raise ValueError("timeline timestamp must include timezone")
                     object_id = str(values.pop("content_object_id"))
                     batch_content = values.pop("batch_content_enc")
                     reply_content = values.pop("reply_content_enc")
@@ -403,9 +418,6 @@ class SqlOperationsQueryRepository:
                             object_id,
                         )
                     )
-                    timestamp = values["ts"]
-                    if not isinstance(timestamp, datetime):
-                        raise ValueError("timeline timestamp is invalid")
                     events.append(
                         TimelineEvent(
                             ts=timestamp,

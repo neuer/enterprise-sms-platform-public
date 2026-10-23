@@ -38,6 +38,7 @@ from app.services.pipeline import (
     PipelineConfig,
     SendPipeline,
     SendRequest,
+    SensitiveWord,
     StoredBatch,
     VendorTestConsoleOnly,
 )
@@ -2100,6 +2101,124 @@ async def test_sensitive_audit_policy_records_count_and_allows_send() -> None:
         SendRequest("verify", ["13800138000"], content="敏感内容"),
     )
     assert store.sensitive_audits == [(7, 2)]
+    assert store.commands
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("category", "content", "channel", "consent"),
+    [
+        ("notice", "系统通知", "api", False),
+        ("verify", "验证码123456", "api", False),
+        ("market", "营销活动回T退订", "api", False),
+        ("notice", "系统通知", "web", False),
+        ("market", "营销活动回T退订", "web", True),
+    ],
+)
+async def test_sensitive_audit_accepts_notice_verify_and_market(
+    category: str,
+    content: str,
+    channel: str,
+    consent: bool,
+) -> None:
+    store = FakeStore()
+    store.sensitive_hits_result = ["敏感"]
+    publisher = FakePublisher()
+    pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        publisher=publisher,
+        config=PipelineConfig(sensitive_hit_action="audit"),
+    )
+    await pipeline.accept(
+        ApiAppContext(7, "app", "平台部", frozenset({category})),
+        SendRequest(
+            category,
+            ["13800138000"],
+            content=content,
+            channel=channel,
+            consent_confirmed=consent,
+            actor=ADMIN if channel == "web" else None,
+        ),
+    )
+    assert store.sensitive_audits == [(7, 1)]
+    assert len(store.commands) == 1
+    assert store.commands[0].category == category
+
+
+@pytest.mark.asyncio
+async def test_sensitive_block_still_rejects_without_a_batch() -> None:
+    store = FakeStore()
+    store.sensitive_hits_result = ["禁词"]
+    publisher = FakePublisher()
+    pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        publisher=publisher,
+        config=PipelineConfig(sensitive_hit_action="block"),
+    )
+    with pytest.raises(SensitiveWord):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "平台部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知"),
+        )
+    assert store.commands == []
+    assert store.sensitive_audits == []
+    assert publisher.events == []
+
+
+@pytest.mark.asyncio
+async def test_sensitive_miss_does_not_write_hit_audit() -> None:
+    store = FakeStore()
+    pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
+        store=store,
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(sensitive_hit_action="audit"),
+    )
+    await pipeline.accept(
+        ApiAppContext(7, "app", "平台部", frozenset({"verify"})),
+        SendRequest("verify", ["13800138000"], content="普通验证码"),
+    )
+    assert store.sensitive_audits == []
+    assert store.commands
+
+
+@pytest.mark.asyncio
+async def test_sensitive_audit_failure_releases_claim_without_send_side_effects() -> None:
+    class FailingAudit(FakeStore):
+        async def audit_sensitive_hit(self, app_id: int, hit_count: int) -> None:
+            raise RuntimeError("synthetic audit failure")
+
+    store = FailingAudit()
+    store.sensitive_hits_result = ["敏感"]
+    ledger = FakeUsageLedger()
+    publisher = FakePublisher()
+    idempotency = FakeIdempotency()
+    pipeline = SendPipeline(
+        usage_ledger=ledger,
+        store=store,
+        idempotency=idempotency,
+        crypto=crypto(),
+        publisher=publisher,
+        config=PipelineConfig(sensitive_hit_action="audit"),
+    )
+    with pytest.raises(RuntimeError, match="synthetic audit failure"):
+        await pipeline.accept(
+            ApiAppContext(7, "app", "平台部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="biz-audit"),
+        )
+    assert store.commands == []
+    assert publisher.events == []
+    assert ledger.started == []
+    assert ledger.quota == []
+    assert idempotency.released == ["claim-token"]
 
 
 @pytest.mark.asyncio

@@ -235,6 +235,8 @@ class SqlReplyQueryRepository:
         principal: SecurityPrincipal,
         ip: str,
     ) -> bool:
+        """按部门约束把回复号码解密后重新加密写入黑名单，并同事务审计。"""
+
         if self.crypto is None:
             raise RuntimeError("reply crypto service is required")
         engine = self._engine()
@@ -248,7 +250,10 @@ class SqlReplyQueryRepository:
                         JOIN reply_event e ON e.event_key=r.event_key
                         LEFT JOIN sms_batch b ON b.id=r.batch_id
                         WHERE r.id=:reply_id
-                          AND (:dept IS NULL OR b.dept=:dept)
+                          AND (
+                            CAST(:dept AS varchar(128)) IS NULL
+                            OR b.dept=CAST(:dept AS varchar(128))
+                          )
                         """
                     ),
                     {"reply_id": reply_id, "dept": dept},
