@@ -48,10 +48,18 @@ class FakeConnection:
     def __init__(self, results: list[FakeResult]) -> None:
         self.results = results
         self.calls: list[tuple[str, Any]] = []
+        self.options: dict[str, object] = {}
 
     async def execute(self, statement: object, params: Any = None) -> FakeResult:
         self.calls.append((str(statement), params))
         return self.results.pop(0)
+
+    async def execution_options(self, **options: object) -> FakeConnection:
+        self.options = options
+        return self
+
+    def begin(self) -> FakeContext:
+        return FakeContext(self)
 
 
 class FakeContext:
@@ -223,7 +231,7 @@ async def test_claim_is_atomic_four_hour_dedup_and_does_not_persist_webhook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repository = SqlAlertRepository(credential_cipher=PRIVATE_CIPHER)
-    connection = FakeConnection([FakeResult(scalar=42)])
+    connection = FakeConnection([FakeResult(), FakeResult(scalar=42)])
     engine = bind(repository, connection)
     outbox_events: list[Any] = []
 
@@ -244,11 +252,17 @@ async def test_claim_is_atomic_four_hour_dedup_and_does_not_persist_webhook(
     )
 
     assert claimed == 42
-    sql, params = connection.calls[0]
-    assert "RETURNING id" in sql
-    assert "pg_advisory_xact_lock" in sql
-    assert "make_interval(hours => :dedup_hours)" in sql
-    assert "WHERE dedup_key = :dedup_key" in sql
+    assert connection.options["isolation_level"] == "READ COMMITTED"
+    lock_sql, lock_params = connection.calls[0]
+    insert_sql, params = connection.calls[1]
+    assert "pg_advisory_xact_lock" in lock_sql
+    assert "INSERT" not in lock_sql
+    assert lock_params == {"dedup_key": "balance_low"}
+    assert "WITH dedup_lock" not in insert_sql
+    assert "pg_advisory_xact_lock" not in insert_sql
+    assert "RETURNING id" in insert_sql
+    assert "make_interval(hours => :dedup_hours)" in insert_sql
+    assert "WHERE dedup_key = CAST(:dedup_key AS varchar(128))" in insert_sql
     assert "webhook" not in str(params).casefold()
     assert params["detail"] == '{"balance": 5000}'
     assert params["dedup_hours"] == 4
@@ -256,3 +270,33 @@ async def test_claim_is_atomic_four_hour_dedup_and_does_not_persist_webhook(
     assert outbox_events[0].event_type == "alert.delivery"
     assert outbox_events[0].args == (42, "wecom")
     assert engine.disposed
+
+
+@pytest.mark.asyncio
+async def test_duplicate_or_log_sink_claim_does_not_enqueue_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = SqlAlertRepository()
+    connection = FakeConnection([FakeResult(), FakeResult(scalar=None)])
+    bind(repository, connection)
+    outbox_events: list[Any] = []
+
+    async def outbox(_connection: object, spec: Any, **_: object) -> object:
+        outbox_events.append(spec)
+        return object()
+
+    monkeypatch.setattr(alert_repository_module, "enqueue_outbox", outbox)
+
+    claimed = await repository.claim(
+        alert_type="balance_low",
+        level="warn",
+        title="余额低",
+        detail={"balance": 5000},
+        channels="log-sink",
+        dedup_key="balance_low",
+        dedup_hours=4,
+    )
+
+    assert claimed is None
+    assert outbox_events == []
+    assert "make_interval(hours => :dedup_hours)" in connection.calls[1][0]

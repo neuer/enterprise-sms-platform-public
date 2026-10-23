@@ -25,6 +25,7 @@ from app.services.ops import (
     JobRecord,
     OpsPage,
     PausedBatch,
+    QueueResumeCheck,
     QueueSnapshot,
     RawLogQuery,
     RawLogRecord,
@@ -32,6 +33,7 @@ from app.services.ops import (
     UncertainRecord,
     UnmatchedQuery,
     UnmatchedRecord,
+    queue_resume_facts,
 )
 from app.services.queue_pause import parse_queue_pause_claim
 from app.services.raw_lease import (
@@ -253,12 +255,10 @@ class SqlOpsRepository:
         actor: str,
         ip: str,
         principal: SecurityPrincipal,
+        force: bool,
+        check: QueueResumeCheck,
     ) -> tuple[PausedBatch, ...]:
-        """队列恢复与审计必须同事务：显式绑定人类主体后再改状态并落库。
-
-        独立 `engine.begin()` 不能只靠 begin 事件里的 ContextVar 签名。
-        主体来自已验证 JWT，与 actor 不一致时在 UPDATE 之前 fail closed。
-        """
+        """同事务恢复批次，并按本次检查写入数据库效果审计。"""
 
         if principal.actor_name != actor:
             raise RuntimeError("queue resume audit principal unavailable")
@@ -294,7 +294,7 @@ class SqlOpsRepository:
                         action="queue_resume",
                         object_type="queue",
                         object_id="all",
-                        after={"resumed_batches": len(batches)},
+                        after=queue_resume_facts(check, len(batches), force=force),
                     ),
                 )
                 return batches

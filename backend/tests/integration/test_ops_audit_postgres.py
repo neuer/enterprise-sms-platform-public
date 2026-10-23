@@ -23,6 +23,7 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import correlation_scope
 from app.core.runtime_resources import close_runtime_resources
 from app.services.crypto import EncryptionContext
+from app.services.ops import QueueResumeCheck
 from app.services.ops_repository import SqlOpsRepository
 from app.services.raw_lease import RawLeaseLost
 from app.services.raw_parse import (
@@ -107,6 +108,19 @@ async def accept_runtime(
     finally:
         await close_runtime_resources()
         await owner.dispose()
+
+
+def _checked_resume(*, force: bool = False) -> dict[str, object]:
+    return {
+        "force": force,
+        "check": QueueResumeCheck(
+            force=force,
+            realtime_pause_reason="balance" if not force else "vendor_account",
+            bulk_pause_reason="balance" if not force else "none",
+            balance_known=True,
+            balance_meets_threshold=not force,
+        ),
+    }
 
 
 def _repository(accept_url: URL) -> SqlOpsRepository:
@@ -456,6 +470,7 @@ async def test_sms_accept_trigger_rejects_unattributed_audit_and_forged_actor(
                 actor="forged-admin",
                 ip="10.0.0.8",
                 principal=principal,
+                **_checked_resume(),
             )
         assert await _batch_status(owner, batch_no) == "balance_blocked"
         async with owner.connect() as connection:
@@ -503,6 +518,7 @@ async def test_sms_accept_queue_resume_audit_failure_leaves_queue_unchanged(
                 actor=principal.login_name,
                 ip="10.0.0.8",
                 principal=principal,
+                **_checked_resume(force=True),
             )
         assert await _batch_status(owner, batch_no) == "balance_blocked"
         async with owner.connect() as connection:
@@ -524,6 +540,7 @@ async def test_sms_accept_queue_resume_audit_failure_leaves_queue_unchanged(
                 actor=principal.login_name,
                 ip="10.0.0.8",
                 principal=principal,
+                **_checked_resume(force=True),
             )
         assert [item.batch_no for item in resumed] == [batch_no]
         assert await _batch_status(owner, batch_no) == "queued"
@@ -548,6 +565,10 @@ async def test_sms_accept_queue_resume_audit_failure_leaves_queue_unchanged(
         assert int(retry_row["actor_account_id"]) == principal.account_id
         assert int(retry_row["actor_identity_id"]) == principal.identity_id
         assert int(retry_row["after_val"]["resumed_batches"]) == 1
+        assert retry_row["after_val"]["force"] is True
+        assert retry_row["after_val"]["effect"] == "db_batches_requeued"
+        assert retry_row["after_val"]["realtime_pause_reason"] == "vendor_account"
+        assert "claim" not in retry_row["after_val"]
     finally:
         await _cleanup(owner, batch_no=batch_no, principal=principal)
 
@@ -570,11 +591,13 @@ async def test_sms_accept_queue_resume_retry_and_concurrency_write_jwt_audit(
                     actor=principal.login_name,
                     ip="10.0.0.8",
                     principal=principal,
+                    **_checked_resume(),
                 ),
                 repository.resume_batches(
                     actor=principal.login_name,
                     ip="10.0.0.8",
                     principal=principal,
+                    **_checked_resume(),
                 ),
             )
         resumed = (*first, *second)
@@ -605,8 +628,70 @@ async def test_sms_accept_queue_resume_retry_and_concurrency_write_jwt_audit(
         assert all(int(item["actor_identity_id"]) == principal.identity_id for item in audits)
         assert all(item["correlation_id"] == correlation_id for item in audits)
         assert sum(int(item["after_val"]["resumed_batches"]) for item in audits) == 1
+        assert {item["after_val"]["force"] for item in audits} == {False}
+        assert {item["after_val"]["effect"] for item in audits} == {"db_batches_requeued"}
     finally:
         await _cleanup(owner, batch_no=batch_no, principal=principal)
+
+
+@pytest.mark.asyncio
+async def test_sms_accept_queue_resume_zero_batches_keep_safe_and_force_intent(
+    accept_runtime: tuple[AsyncEngine, URL],
+) -> None:
+    owner, accept_url = accept_runtime
+    login = f"ops-zero-{uuid4().hex[:12]}"
+    principal = await _create_admin(owner, login=login)
+    repository = _repository(accept_url)
+    correlation_id = uuid4()
+    try:
+        with correlation_scope(correlation_id):
+            safe = await repository.resume_batches(
+                actor=principal.login_name,
+                ip="10.1.0.9",
+                principal=principal,
+                **_checked_resume(force=False),
+            )
+            forced = await repository.resume_batches(
+                actor=principal.login_name,
+                ip="10.1.0.9",
+                principal=principal,
+                **_checked_resume(force=True),
+            )
+        assert safe == ()
+        assert forced == ()
+        async with owner.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT actor,ip::text AS ip,correlation_id,object_type,
+                          object_id,after_val
+                        FROM audit_log
+                        WHERE action='queue_resume' AND actor_account_id=:account_id
+                        ORDER BY id
+                        """
+                    ),
+                    {"account_id": principal.account_id},
+                )
+            ).mappings().all()
+        assert [item["after_val"]["force"] for item in rows] == [False, True]
+        assert [item["after_val"]["resumed_batches"] for item in rows] == [0, 0]
+        assert rows[0]["after_val"]["realtime_pause_reason"] == "balance"
+        assert rows[1]["after_val"]["realtime_pause_reason"] == "vendor_account"
+        assert rows[1]["after_val"]["balance_meets_threshold"] is False
+        for item in rows:
+            assert str(item["actor"]) == login
+            assert str(item["ip"]).split("/", 1)[0] == "10.1.0.9"
+            assert item["correlation_id"] == correlation_id
+            assert item["object_type"] == "queue"
+            assert item["object_id"] == "all"
+            assert item["after_val"]["effect"] == "db_batches_requeued"
+            encoded = json.dumps(dict(item["after_val"]), ensure_ascii=False)
+            assert "claim" not in encoded
+            assert "999:" not in encoded
+            assert "phone" not in encoded
+    finally:
+        await _cleanup(owner, principal=principal)
 
 
 @pytest.mark.asyncio

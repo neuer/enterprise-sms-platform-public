@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 
 from app.api import web_messages as module
+from app.api.web_messages import TimelineEventModel
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import get_auth_facade
@@ -207,6 +211,62 @@ def test_message_search_and_timeline_return_masked_contract() -> None:
         "message_content_read",
         "message_content_read",
     ]
+    parsed = datetime.fromisoformat(timeline.json()["events"][0]["ts"])
+    assert parsed.utcoffset() == timedelta(hours=8)
+    assert parsed.timestamp() == datetime(2026, 7, 12, 8, 0, tzinfo=UTC).timestamp()
+
+
+def test_openapi_requires_shanghai_offset_for_every_timestamp() -> None:
+    contract = Path(__file__).resolve().parents[2].joinpath("openapi.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "所有时间均为 ISO8601 +08:00" in contract
+    timeline = contract.split("/api/v1/web/messages/timeline:", 1)[1].split(
+        "/api/v1/web/messages/{id}/phone/decrypt:", 1
+    )[0]
+    assert "ts: { type: string, format: date-time }" in timeline
+
+
+def test_timeline_json_keeps_epoch_across_shanghai_midnight_and_mixed_zones() -> None:
+    shanghai = ZoneInfo("Asia/Shanghai")
+    tokyo = timezone(timedelta(hours=9))
+    instants = (
+        datetime(2026, 7, 12, 8, 0, tzinfo=UTC),
+        datetime(2026, 10, 22, 16, 0, tzinfo=UTC),
+        datetime(2026, 10, 22, 15, 30, tzinfo=UTC),
+        datetime(2026, 7, 12, 1, 0, tzinfo=tokyo),
+        datetime(2026, 7, 12, 16, 0, tzinfo=shanghai),
+    )
+    payload = [
+        TimelineEventModel(
+            ts=instant,
+            direction="out" if index % 2 == 0 else "in",
+            category="notice" if index != 1 else "verify",
+            batch_no=None,
+            content="摘要",
+            status=None,
+            sender=None,
+        ).model_dump(mode="json")
+        for index, instant in enumerate(instants)
+    ]
+    for instant, event in zip(instants, payload, strict=True):
+        parsed = datetime.fromisoformat(event["ts"])
+        assert parsed.utcoffset() == timedelta(hours=8)
+        assert parsed.timestamp() == instant.timestamp()
+        assert "+08:00" in event["ts"]
+    assert payload[1]["ts"] == "2026-10-23T00:00:00+08:00"
+    assert payload[2]["ts"] == "2026-10-22T23:30:00+08:00"
+
+    with pytest.raises(ValueError, match="timezone"):
+        TimelineEventModel(
+            ts=datetime(2026, 7, 12, 8, 0),
+            direction="in",
+            category=None,
+            batch_no=None,
+            content="摘要",
+            status=None,
+            sender=None,
+        ).model_dump(mode="json")
 
 
 def test_message_search_rejects_invalid_filters() -> None:

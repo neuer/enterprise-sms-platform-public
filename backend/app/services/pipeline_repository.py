@@ -314,7 +314,7 @@ class SqlPipelineStore:
                           object_id,after_val
                         )
                         VALUES(:actor,'api_app',:app_id,'sensitive_hit','app',:object_id,
-                          jsonb_build_object('hit_count',:hit_count))
+                          jsonb_build_object('hit_count', CAST(:hit_count AS integer)))
                         """
                 ),
                 {
