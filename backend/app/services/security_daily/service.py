@@ -108,6 +108,10 @@ class SecurityDailyRepository(Protocol):
         self, report_id: int
     ) -> SecurityDailyDeliveryRequest | None: ...
 
+    async def get_delivery_request(
+        self, request_id: UUID
+    ) -> SecurityDailyDeliveryRequest | None: ...
+
     async def request_delivery(
         self,
         report: SecurityDailyReportRecord,
@@ -221,6 +225,8 @@ class SecurityDailyService:
     """编排日报查询、UI 配置和独立 mailer 投递请求。"""
 
     _PENDING_DELIVERY_RECOVERY_DELAY = timedelta(minutes=5)
+    # 与历史补扫的 7 个自然日上限对齐，避免无限期重放同一未发布请求。
+    _PENDING_DELIVERY_RECOVERY_DEADLINE = timedelta(days=7)
 
     def __init__(
         self,
@@ -432,6 +438,14 @@ class SecurityDailyService:
         system: bool = False,
         payload_override: dict[str, Any] | None = None,
     ) -> SecurityDailyDeliveryRequest:
+        """发布与 request_id 成对的投递证据，新重试不受旧结果抑制。
+
+        仓储返回新请求后，只在它与已检查的 latest 是同一请求时沿用旧 evidence。
+        新 request_id 会重新 inspect，并按 missing/published/claimed/result/unknown
+        处理；unknown 禁止盲重试。claimed/result/unknown 的提前返回保留，
+        以免破坏原子发布、认领、结果回写和 Resend 幂等。
+        """
+
         automatic = await self.repository.auto_delivery_configuration() if system else None
         enabled = automatic.enabled if automatic is not None else (await self.overview()).enabled
         if not enabled:
@@ -456,12 +470,11 @@ class SecurityDailyService:
         if action == "retry" and (record.last_error or "").startswith("投递结果未知"):
             raise SecurityDailyStateConflict("投递结果未知，禁止盲目重试")
         latest = await self.repository.latest_delivery_request(record.id)
-        evidence = "missing"
-        if latest is not None:
-            try:
-                evidence = await self.control.inspect_delivery(latest.request_id)
-            except SecurityDailyControlError:
-                evidence = "unknown"
+        checked_evidence = (
+            await self._inspect_delivery_evidence(latest.request_id)
+            if latest is not None
+            else "missing"
+        )
         if automatic is not None:
             if (
                 automatic.publish_state != "file_committed"
@@ -480,10 +493,17 @@ class SecurityDailyService:
             principal=principal,
             ip=ip,
             system=system,
-            control_evidence=evidence,
+            control_evidence=checked_evidence,
             recipient_set_digest=digest,
             expected_config_version=version,
         )
+        if latest is not None and request.request_id == latest.request_id:
+            evidence = checked_evidence
+        else:
+            evidence = await self._inspect_delivery_evidence(request.request_id)
+        if evidence == "unknown" and (latest is None or request.request_id != latest.request_id):
+            await self.repository.mark_request_unknown(request.request_id, "投递结果未知")
+            raise SecurityDailyControlError("投递结果未知")
         if evidence in {"claimed", "result", "unknown"}:
             return request
         resubmit_pending = request.idempotent and request.state == "pending" and action == "send"
@@ -502,6 +522,106 @@ class SecurityDailyService:
                 return request
             raise
         return request
+
+    async def recover_pending_delivery(
+        self, request_id: UUID
+    ) -> SecurityDailyDeliveryRequest | None:
+        """在有界期限内补发同一尚未投递的人工或自动请求。
+
+        只恢复可证明尚未投递的 missing/published，并复用原 request_id。
+        claimed、result、unknown 沿用现有协议，不新建投递代次。配置版本或
+        收件人摘要不一致时停在围栏外，不在恢复扫描里执行 supersede。
+        """
+
+        request = await self.repository.get_delivery_request(request_id)
+        if request is None or not request.delivery_id.isdigit():
+            return None
+        requested_at = request.requested_at
+        if requested_at.tzinfo is None or requested_at.utcoffset() is None:
+            return None
+        age = self.clock() - requested_at
+        if (
+            age < self._PENDING_DELIVERY_RECOVERY_DELAY
+            or age > self._PENDING_DELIVERY_RECOVERY_DEADLINE
+        ):
+            return None
+        report = await self.repository.get_report(int(request.delivery_id))
+        if report is None or report.delivery_status in {"sent", "unknown"}:
+            return None
+        if request.state in {"sent", "unknown"}:
+            return None
+        if request.state == "failed" and not (request.error or "").startswith("独立投递器不可用"):
+            return None
+        if request.state not in {"pending", "failed"}:
+            return None
+        latest = await self.repository.latest_delivery_request(report.id)
+        if latest is None or latest.request_id != request.request_id:
+            return None
+        evidence = await self._inspect_delivery_evidence(request.request_id)
+        if evidence == "unknown":
+            if request.state == "pending":
+                await self.repository.mark_request_unknown(request.request_id, "投递结果未知")
+            return None
+        if evidence == "claimed":
+            return None
+        if evidence == "result":
+            result = await self.control.result(request.request_id)
+            if result is None:
+                return None
+            if result.report_date != request.report_date:
+                raise SecurityDailyControlError("安全日报投递结果日期不匹配")
+            await self.repository.apply_control_result(result)
+            return None
+        if evidence not in {"missing", "published"}:
+            return None
+        current = await self.repository.auto_delivery_configuration()
+        if not self._delivery_fence_matches(current, request):
+            return None
+        submit_payload = report.payload
+        if report.generation_status != "ready" or submit_payload is None:
+            submit_payload = _problem_payload(
+                report.report_date,
+                period_start=report.period_start,
+                period_end=report.period_end,
+                generated_at=self.clock(),
+                reason=report.last_error or "证据源不可用",
+            )
+        try:
+            await self.control.submit(request, submit_payload)
+        except SecurityDailyControlError:
+            if await self._submit_still_accepted(request.request_id):
+                return request
+            raise
+        return request
+
+    @staticmethod
+    def _delivery_fence_matches(
+        current: SecurityDailyAutoDeliveryConfiguration,
+        request: SecurityDailyDeliveryRequest,
+    ) -> bool:
+        """版本和收件人摘要必须同时落在当前已发布配置内。"""
+
+        digest_matches = not (
+            len(request.recipient_set_digest) == 64
+            and len(current.recipient_set_digest) == 64
+            and request.recipient_set_digest != current.recipient_set_digest
+        )
+        return (
+            current.enabled
+            and current.resend_configured
+            and current.recipient_count >= 1
+            and current.publish_state == "file_committed"
+            and current.config_version == request.config_version
+            and digest_matches
+        )
+
+    async def _inspect_delivery_evidence(self, request_id: UUID) -> str:
+        """读取单个请求的控制面证据；读失败是 unknown，不能当成 missing。"""
+
+        try:
+            return await self.control.inspect_delivery(request_id)
+        except SecurityDailyControlError:
+            return "unknown"
 
     async def _publish_configuration(
         self,

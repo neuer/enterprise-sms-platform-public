@@ -26,10 +26,12 @@ export interface UsePagedListOptions<T, R extends PagedListResult<T>> {
   formatError?: (error: unknown) => string
   /** 错误改走 ElMessage 浮层而非 errorMessage 内联（详情抽屉遮挡页面 alert 的场景）。 */
   toastError?: boolean
-  /** 发起加载前清空 items/total（安全日报列表的既有语义）。 */
+  /** 发起加载前清空展示行，但保留上次权威 total，避免分页组件把当前页钳回第 1 页。 */
   clearOnLoad?: boolean
   /** 加载失败时清空 items/total（号码搜索、安全日报的既有语义）；默认保留上一次成功结果。 */
   clearOnError?: boolean
+  /** 与列表页脚相同的页大小。有值时，空页或总数缩小由这里改一次，不靠分页组件回跳。 */
+  pageSize?: number
   /** 重置筛选回调：reset() 先调用它再回第一页重查。 */
   resetFilters?: () => void
 }
@@ -71,26 +73,39 @@ export function usePagedList<R extends PagedListResult<unknown>>(
     loading.value = false
   }
 
-  async function load(loadOptions: { silent?: boolean } = {}): Promise<void> {
+  async function load(loadOptions: { silent?: boolean; correction?: boolean } = {}): Promise<void> {
     const token = ++loadToken
     const signal = read.start()
+    const requestedPage = page.value
     if (!loadOptions.silent) loading.value = true
     errorMessage.value = ""
-    if (options.clearOnLoad) {
-      items.value = []
-      total.value = 0
-    }
+    if (options.clearOnLoad) items.value = []
     try {
-      const result = await options.fetcher(page.value, signal)
+      const result = await options.fetcher(requestedPage, signal)
       if (signal.aborted || token !== loadToken || result === null) return
-      items.value = result.items
+      const pageSize = options.pageSize
+      let nextPage = typeof result.page === "number" ? result.page : requestedPage
+      let needsCorrection = false
+      if (typeof pageSize === "number" && pageSize > 0) {
+        const lastPage = result.total <= 0 ? 1 : Math.max(1, Math.ceil(result.total / pageSize))
+        if (nextPage > lastPage) {
+          nextPage = lastPage
+          needsCorrection = nextPage !== requestedPage && !loadOptions.correction
+        }
+      }
+      // 先改页码再写 total，避免 ElPagination 看到越界页后自己发一次加载。
+      if (page.value !== nextPage) page.value = nextPage
       total.value = result.total
-      if (typeof result.page === "number") page.value = result.page
-      options.onLoaded?.(result)
+      if (!needsCorrection) {
+        items.value = result.items
+        options.onLoaded?.(result)
+      }
+      if (needsCorrection) await load({ silent: loadOptions.silent, correction: true })
     } catch (error) {
       if (signal.aborted || token !== loadToken) return
       if (options.clearOnError) {
         items.value = []
+        page.value = 1
         total.value = 0
       }
       const message = options.formatError ? options.formatError(error) : errorText(error, options.errorMessage)

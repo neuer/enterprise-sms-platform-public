@@ -3,13 +3,11 @@ import { computed } from "vue"
 
 import type { SecurityDailyReport } from "../api/securityDaily"
 import {
+  describeSecurityDailyReport,
   displayMoment,
   displayPeriod,
-  generationLabel,
   priorityLabels,
   priorityType,
-  reportDeliveryLabel,
-  reportDeliveryTagType,
   statusLabel,
   tagType,
 } from "../lib/securityDailyDisplay"
@@ -32,6 +30,7 @@ const emit = defineEmits<{
 const coverageGaps = computed(
   () => props.selected.payload?.coverage.filter((item) => item.tone !== "good" || item.status !== "完整") ?? [],
 )
+const statusCopy = computed(() => describeSecurityDailyReport(props.selected))
 </script>
 
 <template>
@@ -43,10 +42,8 @@ const coverageGaps = computed(
         <el-tag :type="selected.generation_source === 'manual' ? 'warning' : 'info'" size="small">{{
           selected.generation_source === "manual" ? "手动生成" : "自动生成"
         }}</el-tag>
-        <el-tag :type="tagType(selected.generation_status)" size="small">{{
-          generationLabel(selected.generation_status)
-        }}</el-tag>
-        <el-tag :type="reportDeliveryTagType(selected)" size="small">{{ reportDeliveryLabel(selected) }}</el-tag>
+        <el-tag :type="tagType(selected.generation_status)" size="small">{{ statusCopy.generationLabel }}</el-tag>
+        <el-tag :type="statusCopy.deliveryTagType" size="small">{{ statusCopy.deliveryLabel }}</el-tag>
       </div>
       <p class="security-detail-period"
         >统计窗口 <time>{{ displayPeriod(selected.period_start, selected.period_end) }}</time></p
@@ -54,16 +51,17 @@ const coverageGaps = computed(
     </div>
     <div class="security-detail-actions"
       ><el-button plain :loading="previewLoading" @click="emit('preview')">安全预览</el-button
-      ><el-button v-if="canSend" type="primary" :loading="delivering" @click="emit('deliver', 'send')"
-        >手动投递</el-button
-      ><el-button v-if="canRetry" type="warning" :loading="delivering" @click="emit('deliver', 'retry')"
-        >重试投递</el-button
-      ></div
+      ><el-button v-if="canSend" type="primary" :loading="delivering" @click="emit('deliver', 'send')">{{
+        statusCopy.sendActionLabel
+      }}</el-button
+      ><el-button v-if="canRetry" type="warning" :loading="delivering" @click="emit('deliver', 'retry')">{{
+        statusCopy.retryActionLabel
+      }}</el-button></div
     >
   </div>
   <el-alert
-    v-if="!selected.payload"
-    title="数据不可用：当前没有可展示的脱敏结构化报告，不生成或投递邮件。"
+    v-if="statusCopy.detailNotice"
+    :title="statusCopy.detailNotice"
     type="warning"
     show-icon
     :closable="false"

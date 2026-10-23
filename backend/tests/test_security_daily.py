@@ -149,6 +149,7 @@ class FakeRepository:
         self.pending_requests: list[tuple[UUID, date]] = []
         self.requests: list[SecurityDailyDeliveryRequest] = []
         self.existing_request: SecurityDailyDeliveryRequest | None = None
+        self.delivery_by_id: dict[UUID, SecurityDailyDeliveryRequest] = {}
         self.delivery_failed: list[tuple[int, str]] = []
         self.ingested: list[dict[str, object]] = []
         self.config = SecurityDailyConfiguration(
@@ -295,6 +296,9 @@ class FakeRepository:
         if report_id != self.record.id:
             return None
         return self.existing_request
+
+    async def get_delivery_request(self, request_id: UUID) -> SecurityDailyDeliveryRequest | None:
+        return self.delivery_by_id.get(request_id)
 
     async def request_delivery(
         self,
@@ -1527,3 +1531,277 @@ async def test_unknown_delivery_evidence_blocks_resubmit() -> None:
 
     assert request.request_id == existing.request_id
     assert control.submitted == []
+
+
+class EvidenceControl(FakeControl):
+    def __init__(self) -> None:
+        super().__init__()
+        self.by_id: dict[UUID, str] = {}
+        self.results: dict[UUID, SecurityDailyControlResult] = {}
+
+    async def inspect_delivery(self, request_id: UUID) -> str:
+        evidence = self.by_id.get(request_id, "missing")
+        if evidence == "unknown":
+            raise SecurityDailyControlError("投递证据不可读")
+        return evidence
+
+    async def result(self, request_id: UUID) -> SecurityDailyControlResult | None:
+        return self.results.get(request_id)
+
+
+class ResultInspectControl(FakeControl):
+    async def inspect_delivery(self, request_id: UUID) -> str:
+        del request_id
+        return "result"
+
+
+class RetryAfterResultRepository(FakeRepository):
+    def __init__(self) -> None:
+        item = replace(record(), delivery_status="failed", retry_count=0, last_error="受控投递失败")
+        super().__init__(item)
+        self.old_request = SecurityDailyDeliveryRequest(
+            request_id=uuid4(),
+            report_date=item.report_date,
+            action="send",
+            state="failed",
+            requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+            idempotent=True,
+            config_version=1,
+            delivery_id=str(item.id),
+            delivery_generation=1,
+            recipient_set_digest="a" * 64,
+            error="受控投递失败",
+        )
+        self.existing_request = self.old_request
+
+    async def request_delivery(self, report, action, **kwargs):  # type: ignore[no-untyped-def]
+        del kwargs
+        if action != "retry":
+            raise AssertionError(action)
+        created = SecurityDailyDeliveryRequest(
+            request_id=uuid4(),
+            report_date=report.report_date,
+            action="retry",
+            state="pending",
+            requested_at=datetime(2026, 7, 16, 8, 5, tzinfo=SHANGHAI),
+            idempotent=False,
+            config_version=1,
+            delivery_id=str(report.id),
+            delivery_generation=1,
+            recipient_set_digest="a" * 64,
+        )
+        self.requests.append(created)
+        self.record = replace(self.record, delivery_status="pending", retry_count=1)
+        return created
+
+
+def _recovery_case(
+    source: str,
+    *,
+    state: str = "pending",
+    error: str | None = None,
+    evidence: str = "missing",
+    minutes: int = 10,
+    days: int = 0,
+    version: int = 1,
+    digest: str = "a" * 64,
+) -> tuple[SecurityDailyService, FakeRepository, EvidenceControl, SecurityDailyDeliveryRequest]:
+    item = replace(
+        record(),
+        generation_source=source,  # type: ignore[arg-type]
+        delivery_status="pending" if state == "pending" else "failed",
+        last_error=error,
+    )
+    requested_at = datetime(2026, 7, 16, 8, tzinfo=SHANGHAI)
+    clock = requested_at + timedelta(minutes=minutes, days=days)
+    delivery = SecurityDailyDeliveryRequest(
+        request_id=uuid4(),
+        report_date=item.report_date,
+        action="send",
+        state=state,  # type: ignore[arg-type]
+        requested_at=requested_at,
+        idempotent=True,
+        config_version=version,
+        delivery_id=str(item.id),
+        delivery_generation=1,
+        recipient_set_digest=digest,
+        error=error,
+    )
+    repository = FakeRepository(item)
+    repository.existing_request = delivery
+    repository.delivery_by_id[delivery.request_id] = delivery
+    control = EvidenceControl()
+    control.by_id[delivery.request_id] = evidence
+    service = SecurityDailyService(repository, control, clock=lambda: clock)
+    return service, repository, control, delivery
+
+
+@pytest.mark.asyncio
+async def test_same_request_result_does_not_publish_again() -> None:
+    item = record()
+    existing = SecurityDailyDeliveryRequest(
+        request_id=uuid4(),
+        report_date=item.report_date,
+        action="send",
+        state="pending",
+        requested_at=datetime(2026, 7, 16, 8, tzinfo=SHANGHAI),
+        idempotent=True,
+        delivery_id=str(item.id),
+    )
+    repository = FakeRepository(replace(item, delivery_status="pending"))
+    repository.existing_request = existing
+    control = ResultInspectControl()
+    service = SecurityDailyService(repository, control)
+
+    request = await service.request_delivery(1, "send", principal=_admin(), ip="127.0.0.1")
+
+    assert request.request_id == existing.request_id
+    assert control.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_retry_publishes_new_request_file_despite_old_result(tmp_path: Path) -> None:
+    repository = RetryAfterResultRepository()
+    control_dir = tmp_path / "control"
+    (control_dir / "results").mkdir(parents=True)
+    old_id = repository.old_request.request_id
+    (control_dir / "results" / f"{old_id}.json").write_text(
+        json.dumps(
+            {
+                "request_id": str(old_id),
+                "report_date": "2026-07-15",
+                "state": "failed",
+                "completed_at": "2026-07-16T08:02:00+08:00",
+                "error": "受控投递失败",
+            }
+        ),
+        encoding="utf-8",
+    )
+    control = FileSecurityDailyControl(control_dir, tmp_path / "config")
+    service = SecurityDailyService(repository, control)
+
+    request = await service.request_delivery(1, "retry", principal=_admin(), ip="127.0.0.1")
+
+    published = control_dir / "requests" / f"{request.request_id}.json"
+    body = json.loads(published.read_text(encoding="utf-8"))
+    assert request.request_id != old_id
+    assert request.idempotent is False
+    assert repository.record.retry_count == 1
+    assert len(repository.requests) == 1
+    assert body["request_id"] == str(request.request_id)
+    assert body["config_version"] == request.config_version
+    assert body["delivery_generation"] == request.delivery_generation
+    assert body["recipient_set_digest"] == request.recipient_set_digest
+    assert body["action"] == "retry"
+    assert "re_test_value" not in published.read_text(encoding="utf-8")
+    old_result = json.loads(
+        (control_dir / "results" / f"{old_id}.json").read_text(encoding="utf-8")
+    )
+    assert old_result["state"] == "failed"
+    assert old_result["request_id"] == str(old_id)
+    assert not (control_dir / "results" / f"{request.request_id}.json").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["auto", "manual"])
+@pytest.mark.parametrize("evidence", ["missing", "published"])
+async def test_recover_republishes_same_unpublished_request(source: str, evidence: str) -> None:
+    service, repository, control, delivery = _recovery_case(source, evidence=evidence)
+
+    recovered = await service.recover_pending_delivery(delivery.request_id)
+
+    assert recovered is not None
+    assert recovered.request_id == delivery.request_id
+    assert control.submitted[0][0].request_id == delivery.request_id
+    assert control.submitted[0][0].config_version == delivery.config_version
+    assert control.submitted[0][0].delivery_generation == delivery.delivery_generation
+    assert control.submitted[0][0].recipient_set_digest == delivery.recipient_set_digest
+    assert repository.requests == []
+
+
+@pytest.mark.asyncio
+async def test_recover_publish_exception_reuses_same_failed_request() -> None:
+    service, repository, control, delivery = _recovery_case(
+        "manual",
+        state="failed",
+        error="独立投递器不可用",
+    )
+
+    recovered = await service.recover_pending_delivery(delivery.request_id)
+
+    assert recovered is not None
+    assert recovered.request_id == delivery.request_id
+    assert len(control.submitted) == 1
+    assert repository.requests == []
+
+
+@pytest.mark.asyncio
+async def test_recover_skips_claimed_result_and_unknown() -> None:
+    claimed_service, _, claimed_control, claimed = _recovery_case("auto", evidence="claimed")
+    assert await claimed_service.recover_pending_delivery(claimed.request_id) is None
+    assert claimed_control.submitted == []
+
+    result_service, result_repository, result_control, pending = _recovery_case(
+        "manual", evidence="result"
+    )
+    result_control.results[pending.request_id] = SecurityDailyControlResult(
+        request_id=pending.request_id,
+        report_date=pending.report_date,
+        state="sent",
+        completed_at=datetime(2026, 7, 16, 8, 2, tzinfo=SHANGHAI),
+    )
+    assert await result_service.recover_pending_delivery(pending.request_id) is None
+    assert result_control.submitted == []
+    assert result_repository.applied_results[0].state == "sent"
+    assert result_repository.requests == []
+
+    unknown_service, unknown_repository, unknown_control, unknown = _recovery_case(
+        "auto", evidence="unknown"
+    )
+    assert await unknown_service.recover_pending_delivery(unknown.request_id) is None
+    assert unknown_control.submitted == []
+    assert unknown_repository.unknowns[0] == (unknown.request_id, "投递结果未知")
+    assert unknown_repository.requests == []
+
+
+@pytest.mark.asyncio
+async def test_recover_respects_deadline_and_config_fence() -> None:
+    young, _, young_control, young_request = _recovery_case("manual", minutes=4)
+    assert await young.recover_pending_delivery(young_request.request_id) is None
+    assert young_control.submitted == []
+
+    expired, _, expired_control, expired_request = _recovery_case("auto", days=8)
+    assert await expired.recover_pending_delivery(expired_request.request_id) is None
+    assert expired_control.submitted == []
+
+    versioned, version_repository, version_control, version_request = _recovery_case(
+        "manual", version=2
+    )
+    assert await versioned.recover_pending_delivery(version_request.request_id) is None
+    assert version_control.submitted == []
+    assert version_repository.requests == []
+
+    recipients, _, recipient_control, recipient_request = _recovery_case("auto", digest="b" * 64)
+    assert await recipients.recover_pending_delivery(recipient_request.request_id) is None
+    assert recipient_control.submitted == []
+
+
+@pytest.mark.asyncio
+async def test_recover_does_not_republish_when_newer_request_exists() -> None:
+    service, repository, control, delivery = _recovery_case("manual")
+    newer = SecurityDailyDeliveryRequest(
+        request_id=uuid4(),
+        report_date=delivery.report_date,
+        action="retry",
+        state="pending",
+        requested_at=delivery.requested_at + timedelta(minutes=1),
+        idempotent=True,
+        delivery_id=delivery.delivery_id,
+        delivery_generation=2,
+        recipient_set_digest=delivery.recipient_set_digest,
+    )
+    repository.existing_request = newer
+
+    assert await service.recover_pending_delivery(delivery.request_id) is None
+    assert control.submitted == []
+    assert repository.requests == []

@@ -48,6 +48,10 @@ from app.services.security_daily import (
     validate_security_daily_payload,
 )
 from app.services.security_daily.contract import security_daily_write_parameters
+from app.services.security_daily_delivery_lookup import (
+    fetch_delivery_request,
+    fetch_latest_delivery_request,
+)
 from app.settings import Settings, get_settings
 
 SENDER_DOMAIN = "reports.neuer.cn"
@@ -861,40 +865,12 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             await engine.dispose()
 
     async def latest_delivery_request(self, report_id: int) -> SecurityDailyDeliveryRequest | None:
-        engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
-                        SELECT request_id,report_date,action,state,requested_at,
-                               config_version,
-                               COALESCE(delivery_generation,1) AS delivery_generation,
-                               COALESCE(recipient_set_digest,'') AS recipient_set_digest
-                        FROM security_daily_delivery_request
-                        WHERE report_id=:report_id
-                        ORDER BY requested_at DESC LIMIT 1
-                        """
-                    ),
-                    {"report_id": report_id},
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return None
-                return SecurityDailyDeliveryRequest(
-                    request_id=UUID(str(row["request_id"])),
-                    report_date=row["report_date"],
-                    action=cast(DeliveryAction, str(row["action"])),
-                    state=cast(DeliveryRequestState, str(row["state"])),
-                    requested_at=row["requested_at"],
-                    idempotent=True,
-                    config_version=int(row["config_version"]),
-                    delivery_id=str(report_id),
-                    delivery_generation=int(row["delivery_generation"]),
-                    recipient_set_digest=str(row["recipient_set_digest"]),
-                )
-        finally:
-            await engine.dispose()
+        return await fetch_latest_delivery_request(self._engine, report_id)
+
+    async def get_delivery_request(self, request_id: UUID) -> SecurityDailyDeliveryRequest | None:
+        """按 request_id 读取原投递请求，人工报告和自动报告共用这一入口。"""
+
+        return await fetch_delivery_request(self._engine, request_id)
 
     async def request_delivery(
         self,
