@@ -11,7 +11,11 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
+from app.core.auth.accounts import (
+    ActorPrincipal,
+    SecurityPrincipal,
+    UncertainEffectPrincipal,
+)
 from app.core.runtime_resources import (
     bind_connection_system_audit,
     database_engine,
@@ -36,6 +40,7 @@ from app.services.import_repository import consume_import_reservation
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.pipeline import AcceptCommitConflict, BatchCommand, BatchResponse, StoredBatch
+from app.services.pipeline_sensitive_audit import audit_sensitive_hit
 from app.services.runtime_policy import CONFIG_SPECS
 from app.services.sensitive import SENSITIVE_WORD_REVISION_KEY, sensitive_word_index
 from app.services.template import render_template
@@ -304,26 +309,11 @@ class SqlPipelineStore:
             result = await connection.execute(text("SELECT word FROM sensitive_word"))
             return [str(value) for value in result.scalars()]
 
-    async def audit_sensitive_hit(self, app_id: int, hit_count: int) -> None:
+    async def audit_sensitive_hit(self, principal: ActorPrincipal, hit_count: int) -> None:
+        """沿真实认证主体记录命中数量；受控重发额外核对双人决议与来源。"""
+
         async with self._engine().begin() as connection:
-            await connection.execute(
-                text(
-                    """
-                        INSERT INTO audit_log(
-                          actor,actor_subject_kind,actor_app_id,action,object_type,
-                          object_id,after_val
-                        )
-                        VALUES(:actor,'api_app',:app_id,'sensitive_hit','app',:object_id,
-                          jsonb_build_object('hit_count', CAST(:hit_count AS integer)))
-                        """
-                ),
-                {
-                    "actor": f"app:{app_id}",
-                    "app_id": app_id,
-                    "object_id": str(app_id),
-                    "hit_count": hit_count,
-                },
-            )
+            await audit_sensitive_hit(connection, principal, hit_count)
 
     async def reserve_idempotency_claim(
         self,
@@ -981,7 +971,14 @@ class SqlPipelineStore:
                 if completed is None:
                     raise RuntimeError("idempotency claim lost")
         if command.status == "pending_approval":
-            if not isinstance(command.principal, SecurityPrincipal):
+            applicant = command.principal
+            if isinstance(applicant, UncertainEffectPrincipal):
+                from app.services.uncertain_approval import load_approval_applicant
+
+                if uncertain is None:
+                    raise ValueError("待审批重发缺少已验证处置单")
+                applicant = await load_approval_applicant(connection, uncertain)
+            if not isinstance(applicant, SecurityPrincipal):
                 raise ValueError("待审批批次缺少稳定申请主体")
             if command.approval_threshold is None:
                 raise ValueError("待审批批次缺少触发阈值快照")
@@ -1000,9 +997,9 @@ class SqlPipelineStore:
                 ),
                 {
                     "batch_id": batch_id,
-                    "applicant": command.principal.login_name,
-                    "applicant_account_id": command.principal.account_id,
-                    "applicant_identity_id": command.principal.identity_id,
+                    "applicant": applicant.login_name,
+                    "applicant_account_id": applicant.account_id,
+                    "applicant_identity_id": applicant.identity_id,
                     "dept": command.dept,
                     "trigger_threshold": command.approval_threshold,
                     "expire_hours": command.approval_expire_hours,

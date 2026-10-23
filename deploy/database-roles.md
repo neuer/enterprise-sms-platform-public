@@ -153,3 +153,10 @@ PUBLIC 没有 EXECUTE，`sms_metrics` 仅获得累计维度和计数列 SELECT�
 撤销 PUBLIC 执行权限；仅验证当前主体并在调用者业务事务中加锁、返回布尔结果。
 不授予身份表直接 SELECT/INSERT/UPDATE/DELETE，不返回凭据或身份记录。
 授权锁随业务事务一起提交或回滚，不能以另一个 auth 连接的生存状态代替此保证。
+
+0131 为重发审批增加只读视图 `uncertain_resend_approval_applicant`，仅向 `sms_send`
+暴露同一 resolution/generation 的确认人账号、身份和事件时登录名；不开放审计载荷或
+`auth_identity` 表。待审批子批次的申请人取唯一确认事实，系统发送审计仍归 system，
+保留按稳定账号回避自审批；旧决议缺失可信确认审计时失败关闭。
+同一迁移仅允许 realtime 的 `system_resend:<id>` 写 `sensitive_hit`，数据库核对
+批准状态、generation、来源分片/批次与两个有效管理员；不扩大普通 API 或其他系统动作。

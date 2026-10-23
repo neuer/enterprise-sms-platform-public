@@ -1,10 +1,10 @@
 import { onScopeDispose, readonly, ref, type Ref } from "vue"
 
-/** 跟随共享 CSS 的 760px 断点，仅挂载当前列表布局，离开页面时释放监听。 */
-export function useMobileLayout(): Readonly<Ref<boolean>> {
+/** 跟随对应 CSS 断点（默认 760px），仅挂载当前列表布局，离开页面时释放监听。 */
+export function useMobileLayout(breakpoint = 760): Readonly<Ref<boolean>> {
   const media =
     typeof window !== "undefined" && typeof window.matchMedia === "function"
-      ? window.matchMedia("(max-width: 760px)")
+      ? window.matchMedia(`(max-width: ${breakpoint}px)`)
       : undefined
   const isMobile = ref(media?.matches ?? false)
   const update = (event: MediaQueryListEvent): void => {

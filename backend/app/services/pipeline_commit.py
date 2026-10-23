@@ -73,7 +73,7 @@ class AcceptanceCommitMixin(AcceptanceStagesMixin):
                 notice_threshold=self.config.approval_threshold,
                 market_threshold=self.config.market_approval_threshold,
             ):
-                if not isinstance(request.actor, SecurityPrincipal):
+                if not isinstance(request.actor, (SecurityPrincipal, UncertainEffectPrincipal)):
                     raise ValueError("Web 审批申请人不能为空")
                 status = "pending_approval"
             approval_threshold = (

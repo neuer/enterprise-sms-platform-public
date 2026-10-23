@@ -165,6 +165,25 @@ class UncertainResolutionService:
                 )
             raise
 
+    async def apply_outbox_effect(self, resolution_id: int) -> UncertainResolution:
+        """人工介入是持久业务终态；确认事实后结束投递，暂时故障仍交给 Outbox 重试。"""
+
+        try:
+            return await self.apply_effect(resolution_id)
+        except Exception:
+            engine = self._engine()
+            try:
+                async with engine.connect() as connection:
+                    row = (await connection.execute(text("""
+                        SELECT * FROM sms_uncertain_resolution
+                        WHERE id=:id AND state='manual_intervention_required'
+                    """), {"id": resolution_id})).mappings().one_or_none()
+                if row is not None:
+                    return _row(row)
+            finally:
+                await engine.dispose()
+            raise
+
     async def _mark_applying(self, resolution_id: int) -> UncertainResolution:
         engine = self._engine()
         try:
