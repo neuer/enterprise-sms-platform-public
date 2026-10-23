@@ -49,7 +49,8 @@ async def report_engine() -> AsyncIterator[AsyncEngine]:
                 CREATE TABLE stat_daily(
                   stat_date date,dim_type text,dim_value text,category text,
                   total bigint,total_segments bigint,delivered bigint,
-                  failed bigint,unknown_cnt bigint
+                  failed bigint,unknown_cnt bigint,
+                  test_scope text NOT NULL DEFAULT 'all'
                 )
             """))
         yield engine
@@ -67,7 +68,9 @@ async def seed(engine: AsyncEngine, *, apps: int, days: int) -> None:
               CASE WHEN n%2=0 THEN 'A' ELSE 'B' END FROM generate_series(1,:apps) n
         """), {"apps": apps})
         await connection.execute(text("""
-            INSERT INTO stat_daily
+            INSERT INTO stat_daily(
+              stat_date,dim_type,dim_value,category,total,total_segments,delivered,failed,unknown_cnt
+            )
             SELECT DATE '2024-01-01'+d,'app',n::text,'all',n,n*2,n-1,1,0
             FROM generate_series(1,:apps) n CROSS JOIN generate_series(0,:last_day) d
         """), {"apps": apps, "last_day": days-1})

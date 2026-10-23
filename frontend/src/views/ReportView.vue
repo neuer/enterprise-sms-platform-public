@@ -45,6 +45,8 @@ const dateRange = computed({
 const granularity = ref<ReportGranularity>("day")
 const groupBy = ref<ReportGroupBy>("app")
 const category = ref<ReportCategory>("all")
+type ReportAudience = "all" | "normal" | "test"
+const audience = ref<ReportAudience>("all")
 const result = ref<ReportResult | null>(null)
 const {
   exportTask,
@@ -60,13 +62,41 @@ const pageSize = DEFAULT_PAGE_SIZE
 const applied = ref<ReportFilters | null>(null)
 
 const canDecrypt = computed(() => result.value?.can_export_decrypted === true)
-const filters = computed<ReportFilters>(() => ({
-  granularity: granularity.value,
-  groupBy: groupBy.value,
-  category: category.value,
-  start: dateRange.value[0],
-  end: dateRange.value[1],
-}))
+
+function audienceToIsTest(value: ReportAudience): boolean | undefined {
+  if (value === "test") return true
+  if (value === "normal") return false
+  return undefined
+}
+
+function reportQuery(
+  base: Pick<ReportFilters, "granularity" | "groupBy" | "category" | "start" | "end">,
+  value: ReportAudience,
+): ReportFilters {
+  const query: ReportFilters = {
+    granularity: base.granularity,
+    groupBy: base.groupBy,
+    category: base.category,
+    start: base.start,
+    end: base.end,
+  }
+  const isTest = audienceToIsTest(value)
+  if (isTest !== undefined) query.isTest = isTest
+  return query
+}
+
+const filters = computed<ReportFilters>(() =>
+  reportQuery(
+    {
+      granularity: granularity.value,
+      groupBy: groupBy.value,
+      category: category.value,
+      start: dateRange.value[0],
+      end: dateRange.value[1],
+    },
+    audience.value,
+  ),
+)
 const filtersDirty = computed(
   () => applied.value !== null && JSON.stringify(applied.value) !== JSON.stringify(filters.value),
 )
@@ -100,6 +130,11 @@ const granularityOptions: Array<{ label: string; value: ReportGranularity }> = [
 const groupByOptions: Array<{ label: string; value: ReportGroupBy }> = [
   { label: "应用", value: "app" },
   { label: "部门", value: "dept" },
+]
+const audienceOptions: Array<{ label: string; value: ReportAudience }> = [
+  { label: "全部", value: "all" },
+  { label: "普通", value: "normal" },
+  { label: "测试", value: "test" },
 ]
 const metricOptions: Array<{ label: string; value: ReportTrendMetric }> = [
   { label: "消息数", value: "total" },
@@ -254,11 +289,19 @@ async function load(query: ReportFilters = filters.value, requestedPage = 1): Pr
   await loadPage()
 }
 
-/** 恢复默认筛选（近 30 天 · 日粒度 · 按应用 · 全类别）并立即重查；日期范围按当下重新求值。 */
+function changeAudience(next: ReportAudience): void {
+  if (audience.value === next) return
+  audience.value = next
+  const base = applied.value ?? filters.value
+  void load(reportQuery(base, next), 1)
+}
+
+/** 恢复默认筛选（近 30 天 · 日粒度 · 按应用 · 全类别 · 全部发送）并立即重查；日期范围按当下重新求值。 */
 function resetFilters(): void {
   granularity.value = "day"
   groupBy.value = "app"
   category.value = "all"
+  audience.value = "all"
   dateRange.value = defaultDateRange()
   void load()
 }
@@ -292,6 +335,16 @@ onMounted(() => void load())
     <div class="report-fld">
       <span>维度</span>
       <FilterSeg v-model="groupBy" :options="groupByOptions" button-testid-prefix="report-group" label="维度" />
+    </div>
+    <div class="report-fld">
+      <span>发送</span>
+      <FilterSeg
+        :model-value="audience"
+        :options="audienceOptions"
+        label="发送类型"
+        button-testid-prefix="report-audience"
+        @update:model-value="changeAudience"
+      />
     </div>
     <div class="report-fld">
       <span>类别</span>

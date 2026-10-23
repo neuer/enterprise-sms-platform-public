@@ -1,5 +1,10 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.115  2026-10-23
+-- v1.6.115：stat_daily.test_scope 区分 all/test/normal。历史混合行只标 all，
+--          不得默认成 normal。stat_scope_day 与当日分层快照同事务写入，
+--          空日也要有标记。先部署显式 test_scope 读取者，确认旧读取者退出后
+--          才写入三层并按日补算；应用回退不能回到会把多层相加的版本。
 -- v1.6.114  2026-10-15
 -- v1.6.114：运行观测明细有界压缩，历史累计值由固定维度归档保留。
 -- v1.6.113：回调按应用限制新发送，增加 active/dead 准入查询部分索引。
@@ -2722,12 +2727,14 @@ CREATE TABLE stat_daily (
     dim_value   VARCHAR(128) NOT NULL DEFAULT '',
     category    VARCHAR(8)   NOT NULL DEFAULT 'all'
                 CHECK (category IN ('verify','notice','market','all')),
+    test_scope  VARCHAR(8)   NOT NULL DEFAULT 'all',
     total       INTEGER      NOT NULL DEFAULT 0,
     total_segments INTEGER   NOT NULL DEFAULT 0,   -- 计费条汇总(与厂商账单对账)
     delivered   INTEGER      NOT NULL DEFAULT 0,
     failed      INTEGER      NOT NULL DEFAULT 0,
     unknown_cnt INTEGER      NOT NULL DEFAULT 0,
-    PRIMARY KEY (stat_date, dim_type, dim_value, category)
+    PRIMARY KEY (stat_date, dim_type, dim_value, category, test_scope),
+    CONSTRAINT ck_stat_daily_test_scope CHECK (test_scope IN ('all','test','normal'))
 );
 
 -- 晚到回执/人工修复触达的消息归属日脏集；聚合任务在固定近 5 天窗口
@@ -2735,6 +2742,16 @@ CREATE TABLE stat_daily (
 CREATE TABLE stat_dirty_date (
     stat_date  DATE PRIMARY KEY,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 某一上海自然日的 test_scope 分层已在同一事务写完。无消息的日期也必须有标记；
+-- 过滤请求遇到没有当前版本标记的日期要返回未就绪，不能把缺层当成 0。
+-- 版本 1 表示 all/test/normal。只有 all 的历史行在补算前没有标记。
+CREATE TABLE stat_scope_day (
+    stat_date            DATE NOT NULL PRIMARY KEY,
+    aggregation_version  INTEGER NOT NULL,
+    completed_at         TIMESTAMPTZ NOT NULL,
+    CONSTRAINT ck_stat_scope_day_version CHECK (aggregation_version >= 1)
 );
 
 -- ─────────────── 服务器安全日报 ───────────────
@@ -3447,6 +3464,7 @@ GRANT INSERT, UPDATE ON
 TO sms_accept;
 GRANT INSERT ON sms_resend_action TO sms_accept;
 GRANT SELECT, INSERT ON stat_dirty_date TO sms_accept;
+GRANT SELECT ON stat_scope_day TO sms_accept;
 GRANT INSERT, UPDATE ON
     security_daily_report, security_daily_delivery_request TO sms_accept;
 GRANT SELECT, INSERT, DELETE, UPDATE ON security_daily_recipient TO sms_accept;
@@ -3525,6 +3543,7 @@ GRANT SELECT, INSERT, UPDATE ON idempotency_claim TO sms_send;
 GRANT INSERT ON idempotency_record TO sms_send;
 GRANT USAGE, SELECT ON SEQUENCE idempotency_claim_id_seq, idempotency_record_id_seq TO sms_send;
 GRANT SELECT, INSERT, DELETE ON stat_dirty_date TO sms_send;
+GRANT SELECT, INSERT, UPDATE ON stat_scope_day TO sms_send;
 GRANT INSERT ON
     report_event, reply_event, worker_lease_event, audit_log
 TO sms_send;

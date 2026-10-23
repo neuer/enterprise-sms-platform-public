@@ -18,8 +18,9 @@ class FakeConnection:
         self.calls: list[tuple[str, Any]] = []
 
     async def execute(self, statement: object, params: Any = None) -> FakeResult:
-        self.calls.append((str(statement), params))
-        return FakeResult(8 if len(self.calls) == 4 else 0)
+        sql = str(statement)
+        self.calls.append((sql, params))
+        return FakeResult(8 if "INSERT INTO stat_daily" in sql else 0)
 
 
 class FakeContext:
@@ -54,7 +55,7 @@ async def test_day_rebuild_is_locked_atomic_and_contains_all_rollups() -> None:
 
     assert await repository.aggregate_day(date(2026, 7, 12)) == 8
 
-    assert len(connection.calls) == 4
+    assert len(connection.calls) == 5
     lock_sql, lock_params = connection.calls[0]
     assert "pg_advisory_xact_lock" in lock_sql
     assert lock_params == {"lock_key": date(2026, 7, 12).toordinal()}
@@ -71,9 +72,18 @@ async def test_day_rebuild_is_locked_atomic_and_contains_all_rollups() -> None:
     assert "sum(f.segments*f.total)" in insert_sql
     assert "GROUP BY m.batch_id" in insert_sql
     assert "m.status IN ('unknown','other')" in insert_sql
+    assert "b.is_test" in insert_sql
+    assert "CAST('all' AS varchar(8))" in insert_sql
+    assert "THEN 'test' ELSE 'normal'" in insert_sql
+    assert "s.test_scope" in insert_sql
     assert params == {
         "stat_date": date(2026, 7, 12),
         "start_at": datetime(2026, 7, 11, 16, 0, tzinfo=UTC),
         "end_at": datetime(2026, 7, 12, 16, 0, tzinfo=UTC),
     }
+    marker_sql, marker_params = connection.calls[4]
+    assert "INSERT INTO stat_scope_day" in marker_sql
+    assert "ON CONFLICT (stat_date)" in marker_sql
+    assert marker_params == {"stat_date": date(2026, 7, 12), "scope_version": 1}
+    assert "DEFAULT 'normal'" not in insert_sql
     assert engine.disposed

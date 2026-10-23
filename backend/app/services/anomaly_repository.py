@@ -76,6 +76,7 @@ class SqlAnomalyRepository:
                           COALESCE(sum(total_segments),0) seven_day_total
                         FROM stat_daily
                         WHERE dim_type='app'
+                          AND test_scope='all'
                           AND category IN ('verify','notice','market')
                           AND stat_date BETWEEN :start_date AND :end_date
                         GROUP BY dim_value,category

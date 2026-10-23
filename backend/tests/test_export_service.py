@@ -109,12 +109,21 @@ class FakeRepository:
 
     async def precheck_downloadable(self, public_id, *, principal, retention_days):
         return await self.get_accessible(
-            public_id, principal=principal, retention_days=retention_days,
+            public_id,
+            principal=principal,
+            retention_days=retention_days,
         )
 
     async def get_downloadable_and_audit(
-        self, public_id, *, authorization, expected, check_file, recheck_session,
-        ip, retention_days,
+        self,
+        public_id,
+        *,
+        authorization,
+        expected,
+        check_file,
+        recheck_session,
+        ip,
+        retention_days,
     ):
         principal = authorization.principal
         await recheck_session(None)
@@ -241,8 +250,12 @@ async def test_download_access_is_rechecked_and_transactionally_audited() -> Non
         pass
 
     task = await service.get_downloadable(
-        PUBLIC_ID, authorization=ExportDownloadAuthorization(actor, 1, "local"),
-        expected=expected, check_file=lambda: None, recheck_session=recheck, ip="10.0.0.8",
+        PUBLIC_ID,
+        authorization=ExportDownloadAuthorization(actor, 1, "local"),
+        expected=expected,
+        check_file=lambda: None,
+        recheck_session=recheck,
+        ip="10.0.0.8",
     )
 
     assert task.public_id == PUBLIC_ID
@@ -325,6 +338,14 @@ async def test_export_rejects_phone_in_metadata_before_query(field: str, marker:
     assert repository.calls == []
 
 
+def test_export_filter_keeps_false_and_legacy_rows_stay_unfiltered() -> None:
+    current = ExportFilterSet(None, None, None, None, None, None, (), None, is_test=False)
+    assert current.safe_json()["is_test"] is False
+    assert ExportFilterSet.from_safe_json(current.safe_json()).is_test is False
+    legacy = {"dataset": "message"}
+    assert ExportFilterSet.from_safe_json(legacy).is_test is None
+
+
 def test_persisted_export_filters_cannot_bypass_metadata_validation() -> None:
     for field in ("status", "batch_no", "scope_dept"):
         with pytest.raises(ValueError):
@@ -344,6 +365,8 @@ async def test_non_admin_empty_scope_never_creates_export(role: str, dept: str) 
     object.__setattr__(legacy, "dept", dept)
     with pytest.raises(ExportForbidden):
         await service.create(
-            ExportRequestFilters(), decrypted=False, principal=legacy,
+            ExportRequestFilters(),
+            decrypted=False,
+            principal=legacy,
         )
     assert repository.calls == []

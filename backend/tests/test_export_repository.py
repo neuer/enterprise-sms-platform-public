@@ -129,6 +129,8 @@ async def test_count_is_bounded_at_100001_and_uses_only_safe_filters() -> None:
     assert "CAST(:status AS varchar(10)) IS NULL" in sql
     assert "CAST(:app_id AS bigint) IS NULL" in sql
     assert "CAST(:batch_no AS char(32)) IS NULL" in sql
+    assert "CAST(:is_test AS boolean) IS NULL OR b.is_test=CAST(:is_test AS boolean)" in sql
+    assert params["is_test"] is None
     assert "13800138000" not in repr(params)
 
 

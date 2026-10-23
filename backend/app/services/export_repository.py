@@ -50,7 +50,8 @@ EXPORT_ACCESS_PREDICATE = """
                           )
 """
 
-DOWNLOADABLE_SELECT = """
+DOWNLOADABLE_SELECT = (
+    """
     SELECT id,public_id,status,decrypted,row_count,file_path,created_at,
       finished_at+make_interval(days=>:retention_days) expires_at,scope_dept
     FROM export_task
@@ -59,8 +60,9 @@ DOWNLOADABLE_SELECT = """
       AND scope_resolved AND status='done' AND file_path IS NOT NULL
       AND finished_at IS NOT NULL
       AND finished_at+make_interval(days=>:retention_days)>clock_timestamp()
-""" + EXPORT_ACCESS_PREDICATE
-
+"""
+    + EXPORT_ACCESS_PREDICATE
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +100,7 @@ def _message_where() -> str:
       AND (CAST(:status AS varchar(10)) IS NULL OR m.status=:status)
       AND (CAST(:app_id AS bigint) IS NULL OR b.app_id=:app_id)
       AND (CAST(:batch_no AS char(32)) IS NULL OR b.batch_no=:batch_no)
+      AND (CAST(:is_test AS boolean) IS NULL OR b.is_test=CAST(:is_test AS boolean))
       AND (:has_phone=false OR m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[])))
     """
 
@@ -113,7 +116,7 @@ def _unmatched_where() -> str:
 
 
 def _params(filters: ExportFilterSet) -> dict[str, object]:
-    return {
+    params: dict[str, object] = {
         "scope_dept": filters.scope_dept,
         "start": filters.start,
         "end": filters.end,
@@ -125,6 +128,10 @@ def _params(filters: ExportFilterSet) -> dict[str, object]:
         "has_phone": bool(filters.phone_hmacs),
         "phone_hmacs": list(filters.phone_hmacs),
     }
+    if filters.dataset != "unmatched":
+        # false 必须绑定；不能用 truthy 判断丢掉普通消息。
+        params["is_test"] = filters.is_test
+    return params
 
 
 def _task(row: Any) -> ExportTaskInfo:
@@ -285,14 +292,21 @@ class SqlExportRepository:
             await engine.dispose()
 
     async def _downloadable_row(
-        self, connection: Any, public_id: UUID, *, principal: SecurityPrincipal,
-        retention_days: int, locked: bool,
+        self,
+        connection: Any,
+        public_id: UUID,
+        *,
+        principal: SecurityPrincipal,
+        retention_days: int,
+        locked: bool,
     ) -> Any:
         result = await connection.execute(
             text(DOWNLOADABLE_SELECT + (" FOR SHARE" if locked else "")),
             {
-                "public_id": str(public_id), "actor_account_id": principal.account_id,
-                "actor_role": principal.role, "actor_dept": principal.dept,
+                "public_id": str(public_id),
+                "actor_account_id": principal.account_id,
+                "actor_role": principal.role,
+                "actor_dept": principal.dept,
                 "retention_days": retention_days,
             },
         )
@@ -308,7 +322,11 @@ class SqlExportRepository:
         return row
 
     async def precheck_downloadable(
-        self, public_id: UUID, *, principal: SecurityPrincipal, retention_days: int,
+        self,
+        public_id: UUID,
+        *,
+        principal: SecurityPrincipal,
+        retention_days: int,
     ) -> ExportTaskInfo | None:
         """与最终授权复用同一条件，只读且不留下下载审计。"""
 
@@ -316,17 +334,26 @@ class SqlExportRepository:
         try:
             async with engine.connect() as connection:
                 row = await self._downloadable_row(
-                    connection, public_id, principal=principal,
-                    retention_days=retention_days, locked=False,
+                    connection,
+                    public_id,
+                    principal=principal,
+                    retention_days=retention_days,
+                    locked=False,
                 )
                 return _task(row) if row is not None else None
         finally:
             await engine.dispose()
 
     async def get_downloadable_and_audit(
-        self, public_id: UUID, *, authorization: ExportDownloadAuthorization,
-        expected: ExportTaskInfo, check_file: Callable[[], None],
-        recheck_session: Callable[[AsyncConnection], Awaitable[None]], ip: str, retention_days: int,
+        self,
+        public_id: UUID,
+        *,
+        authorization: ExportDownloadAuthorization,
+        expected: ExportTaskInfo,
+        check_file: Callable[[], None],
+        recheck_session: Callable[[AsyncConnection], Awaitable[None]],
+        ip: str,
+        retention_days: int,
     ) -> ExportTaskInfo | None:
         """持有认证状态锁提交下载开始审计；同一预检资源获准后即释放所有事务。"""
 
@@ -340,8 +367,11 @@ class SqlExportRepository:
                 ) as auth_connection,
             ):
                 row = await self._downloadable_row(
-                    connection, public_id, principal=principal,
-                    retention_days=retention_days, locked=True,
+                    connection,
+                    public_id,
+                    principal=principal,
+                    retention_days=retention_days,
+                    locked=True,
                 )
                 if row is None or _task(row) != expected:
                     return None

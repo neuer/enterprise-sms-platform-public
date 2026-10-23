@@ -11,7 +11,7 @@ from cryptography.exceptions import InvalidTag
 from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SecretStr, field_validator
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 from starlette.concurrency import run_in_threadpool
@@ -57,6 +57,7 @@ from app.services.reporting import (
     Granularity,
     GroupBy,
     ReportCategory,
+    ReportFilterNotReady,
     ReportingResult,
     ReportingService,
     ReportMetric,
@@ -68,6 +69,14 @@ from app.settings import get_settings
 from app.tasks import register_task_modules
 
 router = APIRouter(prefix="/api/v1/web/reports", tags=["reports"])
+
+
+def _blank_is_test_means_all(value: object) -> object:
+    """查询串里的空值与未传一样，表示不按测试标记过滤。"""
+
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    return value
 
 
 class ExportFiltersModel(BaseModel):
@@ -82,6 +91,7 @@ class ExportFiltersModel(BaseModel):
     dept: str | None = Field(default=None, max_length=128)
     batch_no: str | None = Field(default=None, max_length=32)
     phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
+    is_test: bool | None = None
 
     @field_validator("batch_no", "dept")
     @classmethod
@@ -316,8 +326,6 @@ def get_export_codec(_actor: WebActor) -> ExportFileCodec:
     )
 
 
-
-
 def _request_filters(value: ExportFiltersModel) -> ExportRequestFilters:
     return ExportRequestFilters(**value.model_dump())
 
@@ -467,7 +475,7 @@ async def get_dashboard(
 @router.get(
     "/stats",
     response_model=ReportingModel,
-    responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE},
+    responses={400: ERROR_RESPONSE, 401: ERROR_RESPONSE, 503: ERROR_RESPONSE},
 )
 async def get_reporting_stats(
     service: Annotated[ReportingService, Depends(get_reporting_service)],
@@ -476,6 +484,7 @@ async def get_reporting_stats(
     granularity: Granularity = "day",
     group_by: GroupBy = "app",
     category: ReportCategory = "all",
+    is_test: Annotated[bool | None, BeforeValidator(_blank_is_test_means_all), Query()] = None,
     start: date | None = None,
     end: date | None = None,
     page: Annotated[int, Query(ge=1, le=1_000_000)] = 1,
@@ -498,7 +507,19 @@ async def get_reporting_stats(
             sort=sort,
             order=order,
             metric=metric,
+            is_test=is_test,
         )
+    except ReportFilterNotReady as error:
+        raise ApiError(
+            503,
+            "REPORT_FILTER_NOT_READY",
+            "筛选数据尚未就绪",
+            {
+                "start": error.start.isoformat(),
+                "end": error.end.isoformat(),
+                "missing_date": error.missing_date.isoformat(),
+            },
+        ) from None
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
     return _reporting_response(result)
@@ -602,7 +623,8 @@ class _ExportDownloadResponse(StreamingResponse):
     def __init__(self, resource: PreparedExportDownload, public_id: UUID) -> None:
         self.resource = resource
         super().__init__(
-            resource.iter_decrypted(), media_type="text/csv; charset=utf-8",
+            resource.iter_decrypted(),
+            media_type="text/csv; charset=utf-8",
             headers={
                 "Cache-Control": "no-store",
                 "Content-Disposition": f'attachment; filename="sms-export-{public_id}.csv"',
@@ -618,13 +640,18 @@ class _ExportDownloadResponse(StreamingResponse):
 
 
 async def _prepare_export_download(
-    codec: ExportFileCodec, task: ExportTaskInfo,
+    codec: ExportFileCodec,
+    task: ExportTaskInfo,
 ) -> PreparedExportDownload:
     if task.file_path is None:
         raise ExportNotFound("导出文件不存在或已过期")
-    work = asyncio.create_task(run_in_threadpool(
-        codec.prepare_download, task.file_path, expected_task_id=task.id,
-    ))
+    work = asyncio.create_task(
+        run_in_threadpool(
+            codec.prepare_download,
+            task.file_path,
+            expected_task_id=task.id,
+        )
+    )
     try:
         return await asyncio.shield(work)
     except BaseException:
@@ -632,6 +659,7 @@ async def _prepare_export_download(
         def close_late(result: asyncio.Task[PreparedExportDownload]) -> None:
             if not result.cancelled() and result.exception() is None:
                 result.result().close()
+
         work.add_done_callback(close_late)
         raise
 
@@ -651,7 +679,8 @@ async def download_export(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     auth: Annotated[AuthFacade, Depends(get_auth_facade)],
     export_step_up_token: Annotated[
-        str | None, Header(alias="X-Export-Step-Up", min_length=1, max_length=256),
+        str | None,
+        Header(alias="X-Export-Step-Up", min_length=1, max_length=256),
     ] = None,
 ) -> StreamingResponse:
     prepared: PreparedExportDownload | None = None
@@ -666,20 +695,27 @@ async def download_export(
         if task.decrypted:
             assert export_step_up_token is not None
             await step_up_service.consume(
-                export_step_up_token, claims=claims, ip=_ip(request), public_id=public_id,
+                export_step_up_token,
+                claims=claims,
+                ip=_ip(request),
+                public_id=public_id,
             )
         authorization = ExportDownloadAuthorization.from_claims(claims)
 
         async def recheck_session(connection: AsyncConnection) -> None:
             if credentials is None:
                 raise ApiError(401, "UNAUTHORIZED", "登录会话已失效", None)
+
             async def load_authority(account_id: int, identity_id: int) -> PlatformAccount:
                 return await load_security_session_from_connection(
-                    connection, account_id, identity_id,
+                    connection,
+                    account_id,
+                    identity_id,
                 )
 
             fresh = await auth.verify(
-                credentials.credentials, security_session_loader=load_authority,
+                credentials.credentials,
+                security_session_loader=load_authority,
             )
             if (
                 ExportDownloadAuthorization.from_claims(fresh) != authorization
@@ -688,8 +724,12 @@ async def download_export(
                 raise ApiError(401, "UNAUTHORIZED", "登录会话已变化", None)
 
         await service.get_downloadable(
-            public_id, authorization=authorization, expected=task,
-            check_file=prepared.assert_current, recheck_session=recheck_session, ip=_ip(request),
+            public_id,
+            authorization=authorization,
+            expected=task,
+            check_file=prepared.assert_current,
+            recheck_session=recheck_session,
+            ip=_ip(request),
         )
         response = _ExportDownloadResponse(prepared, public_id)
         response_owns_resource = True

@@ -31,6 +31,8 @@ export interface ReportFilters {
   category: ReportCategory
   start: string
   end: string
+  /** 未传表示全部；false 必须写入查询串，不能用 truthy 判断丢掉。 */
+  isTest?: boolean
 }
 
 export type ReportSort = "period_start" | "total" | "total_segments" | "success_rate"
@@ -60,6 +62,7 @@ export function getReport(
     order: options.order ?? "desc",
     metric: options.metric ?? "total",
   })
+  if (filters.isTest !== undefined) query.set("is_test", filters.isTest ? "true" : "false")
   return apiRequest<ReportResult>(`/reports/stats?${query}`, { method: "GET", signal })
 }
 
@@ -72,6 +75,7 @@ export function createDetailExport(filters: ReportFilters, decrypted: boolean): 
         start: `${filters.start}T00:00:00+08:00`,
         end_exclusive: nextShanghaiMidnight(filters.end),
         category: filters.category === "all" ? null : filters.category,
+        ...(filters.isTest !== undefined ? { is_test: filters.isTest } : {}),
       },
       decrypted,
     }),

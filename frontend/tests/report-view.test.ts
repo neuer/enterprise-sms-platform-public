@@ -239,12 +239,15 @@ describe("统计报表页", () => {
 
     const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
-    expect(wrapper.findAll(".report-filter-bar .filter-seg")).toHaveLength(2)
+    expect(wrapper.findAll(".report-filter-bar .filter-seg")).toHaveLength(3)
     expect(wrapper.findAllComponents({ name: "ElSegmented" })).toHaveLength(0)
     expect(wrapper.text()).toContain("统计报表")
     expect(wrapper.text()).toContain("当前口径")
     expect(wrapper.text()).toContain("周期")
     expect(wrapper.text()).toContain("维度")
+    expect(wrapper.get("[data-testid='report-audience-all']").text()).toBe("全部")
+    expect(wrapper.get("[data-testid='report-audience-normal']").text()).toBe("普通")
+    expect(wrapper.get("[data-testid='report-audience-test']").text()).toBe("测试")
     expect(wrapper.text()).toContain("15")
     expect(wrapper.text()).toContain("19")
     expect(wrapper.text()).toContain("78.6%")
@@ -463,6 +466,69 @@ describe("统计报表页", () => {
     expect(wrapper.text()).toContain("重新查询")
     wrapper.unmount()
     vi.unstubAllGlobals()
+  })
+})
+
+describe("发送类型筛选", () => {
+  it("三态发出不同查询，false 参数保留，快速切换不被旧响应覆盖", async () => {
+    type FakeResponse = ReturnType<typeof response>
+    const pending: Array<{
+      url: string
+      signal: AbortSignal | undefined
+      resolve: (value: FakeResponse) => void
+    }> = []
+    const fetch = vi.fn((url: string, init?: RequestInit) => {
+      const text = String(url)
+      if (!text.includes("is_test=")) return Promise.resolve(response(report))
+      return new Promise<FakeResponse>((resolve) => {
+        pending.push({ url: text, signal: init?.signal ?? undefined, resolve })
+      })
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
+    try {
+      await flushPromises()
+      const firstUrl = String(fetch.mock.calls[0][0])
+      expect(new URL(firstUrl, "http://localhost").searchParams.has("is_test")).toBe(false)
+
+      await wrapper.get("[data-testid='report-audience-test']").trigger("click")
+      await flushPromises()
+      await wrapper.get("[data-testid='report-audience-normal']").trigger("click")
+      await flushPromises()
+
+      expect(pending).toHaveLength(2)
+      const testQuery = new URL(pending[0].url, "http://localhost").searchParams
+      const normalQuery = new URL(pending[1].url, "http://localhost").searchParams
+      expect(testQuery.get("is_test")).toBe("true")
+      expect(testQuery.get("page")).toBe("1")
+      expect(normalQuery.get("is_test")).toBe("false")
+      expect(normalQuery.get("page")).toBe("1")
+      expect(pending[0].signal?.aborted).toBe(true)
+
+      pending[0].resolve(
+        response({
+          ...report,
+          summary: { ...report.summary, total: 5 },
+          items: [{ ...report.items[0], dim_label: "测试层标记" }],
+        }),
+      )
+      await flushPromises()
+      expect(wrapper.text()).not.toContain("测试层标记")
+
+      pending[1].resolve(
+        response({
+          ...report,
+          summary: { ...report.summary, total: 6 },
+          items: [{ ...report.items[0], dim_label: "普通层标记" }],
+        }),
+      )
+      await flushPromises()
+      expect(wrapper.text()).toContain("普通层标记")
+      expect(wrapper.text()).not.toContain("测试层标记")
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
   })
 })
 

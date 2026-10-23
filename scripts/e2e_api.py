@@ -2080,6 +2080,7 @@ class UatSuite:
                 "CAST(unknown_cnt AS text),';' ORDER BY stat_date),'') "
                 "FROM stat_daily WHERE dim_type='app' "
                 "AND dim_value=CAST(:'app_id' AS varchar(128)) AND category='verify' "
+                "AND test_scope='all' "
                 "AND stat_date BETWEEN current_date-7 AND current_date-1",
                 app_id=app_id_raw,
             )
@@ -2087,6 +2088,7 @@ class UatSuite:
         baseline_delete = (
             "DELETE FROM stat_daily WHERE dim_type='app' "
             "AND dim_value=CAST(:'app_id' AS varchar(128)) AND category='verify' "
+            "AND test_scope='all' "
             "AND stat_date BETWEEN current_date-7 AND current_date-1"
         )
 
@@ -2094,10 +2096,10 @@ class UatSuite:
             self._probe().psql_execute(baseline_delete, app_id=app_id_raw)
             for stat_date, total, segments, delivered, failed, unknown in baseline_snapshot:
                 self._probe().psql_execute(
-                    "INSERT INTO stat_daily(stat_date,dim_type,dim_value,category,"
+                    "INSERT INTO stat_daily(stat_date,dim_type,dim_value,category,test_scope,"
                     "total,total_segments,delivered,failed,unknown_cnt) VALUES("
                     "CAST(:'stat_date' AS date),'app',"
-                    "CAST(:'app_id' AS varchar(128)),'verify',"
+                    "CAST(:'app_id' AS varchar(128)),'verify','all',"
                     "CAST(:'total' AS integer),CAST(:'segments' AS integer),"
                     "CAST(:'delivered' AS integer),CAST(:'failed' AS integer),"
                     "CAST(:'unknown' AS integer))",
@@ -2112,11 +2114,11 @@ class UatSuite:
 
         self.rollback.defer(restore_baseline)
         self._probe().psql_execute(
-            "INSERT INTO stat_daily(stat_date,dim_type,dim_value,category,total,"
+            "INSERT INTO stat_daily(stat_date,dim_type,dim_value,category,test_scope,total,"
             "total_segments,delivered,failed,unknown_cnt) "
             "SELECT current_date-days_ago,'app',CAST(:'app_id' AS varchar(128)),"
-            "'verify',1,1,1,0,0 FROM generate_series(1,7) AS series(days_ago) "
-            "ON CONFLICT(stat_date,dim_type,dim_value,category) DO UPDATE "
+            "'verify','all',1,1,1,0,0 FROM generate_series(1,7) AS series(days_ago) "
+            "ON CONFLICT(stat_date,dim_type,dim_value,category,test_scope) DO UPDATE "
             "SET total=1,total_segments=1,delivered=1,failed=0,unknown_cnt=0",
             app_id=app_id_raw,
         )
