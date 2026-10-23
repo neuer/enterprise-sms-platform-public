@@ -145,6 +145,8 @@ describe("统计报表页", () => {
       const hint = wrapper.get("[data-testid='report-freshness-hint']")
       expect(hint.text()).toContain("每 5 分钟聚合")
       expect(hint.text()).toContain("仪表盘")
+      expect(hint.text()).not.toContain("实时")
+      expect(wrapper.get("[data-testid='report-batch-status-link']").attributes("href")).toBe("/batches")
       expect(hint.text()).toContain("Web 手工发送按「部门」维度归集")
 
       // 切到部门维度：应用归属条款隐去，当日口径条款保留
@@ -433,7 +435,8 @@ describe("统计报表页", () => {
     // 150 次 × 2s ≈ 5 分钟兜底：到达上限后停止轮询并给出中文超时提示
     await vi.advanceTimersByTimeAsync(298_000)
     expect(statusCalls()).toBe(150)
-    expect(wrapper.text()).toContain("导出结果等待超时（已超过 5 分钟），请稍后重新发起导出")
+    expect(wrapper.text()).toContain("导出结果等待超时（已超过 5 分钟）。同一任务仍在后台，可重新查询，不必再次创建。")
+    expect(wrapper.find("[data-testid='export-retry-tracking']").exists()).toBe(true)
 
     await vi.advanceTimersByTimeAsync(30_000)
     expect(statusCalls()).toBe(150)
@@ -594,6 +597,44 @@ describe("报表趋势图", () => {
       "其他",
     ])
     expect(option.series[5].data).toEqual([30])
+    expect(typeof option.tooltip.appendTo).toBe("function")
+    expect(option.tooltip.confine).toBe(false)
+    expect(String(option.tooltip.extraCssText)).toContain("max-height")
     wrapper.unmount()
+  })
+
+  it("手机排序控件把四个字段交给服务端，并重置到第一页", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      const query = new URL(url, "http://localhost").searchParams
+      return response({
+        ...report,
+        total: 41,
+        page: Number(query.get("page") ?? "1"),
+        items: report.items,
+      })
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
+    try {
+      await flushPromises()
+      wrapper.findComponent(ElPagination).vm.$emit("current-change", 2)
+      await flushPromises()
+      await wrapper.get("[data-testid='report-mobile-sort-field']").setValue("success_rate")
+      await flushPromises()
+      const sorted = new URL(String(fetch.mock.calls.at(-1)?.[0]), "http://localhost").searchParams
+      expect(sorted.get("sort")).toBe("success_rate")
+      expect(sorted.get("order")).toBe("desc")
+      expect(sorted.get("page")).toBe("1")
+      await wrapper.get("[data-testid='report-mobile-sort-order']").trigger("click")
+      await flushPromises()
+      const flipped = new URL(String(fetch.mock.calls.at(-1)?.[0]), "http://localhost").searchParams
+      expect(flipped.get("sort")).toBe("success_rate")
+      expect(flipped.get("order")).toBe("asc")
+      expect(flipped.get("page")).toBe("1")
+      expect(wrapper.get("[data-testid='report-mobile-sort-order']").text()).toContain("升序")
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
   })
 })

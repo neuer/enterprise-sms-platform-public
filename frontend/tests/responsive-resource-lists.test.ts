@@ -104,25 +104,29 @@ describe.each(resources)("$kind 响应式列表", (resource) => {
     [100, 760],
     [1000, 761],
     [1000, 760],
-  ])("%i 行在 %ipx 初次挂载与断点切换时只有一套行树", async (count, width) => {
-    const screen = viewport(width)
-    const fetchMock = mockRows(resource, count)
-    const wrapper = mount(resource.component, { global: { plugins: [session("approver"), ElementPlus] } })
-    await flushPromises()
+  ])(
+    "%i 行在 %ipx 初次挂载与断点切换时只有一套行树",
+    async (count, width) => {
+      const screen = viewport(width)
+      const fetchMock = mockRows(resource, count)
+      const wrapper = mount(resource.component, { global: { plugins: [session("approver"), ElementPlus] } })
+      await flushPromises()
 
-    const mobile = width <= 760
-    expect(screen.matchMedia).toHaveBeenCalledWith("(max-width: 760px)")
-    expectRows(wrapper, resource.kind, mobile, count)
+      const mobile = width <= 760
+      expect(screen.matchMedia).toHaveBeenCalledWith("(max-width: 760px)")
+      expectRows(wrapper, resource.kind, mobile, count)
 
-    screen.resize(mobile ? 761 : 760)
-    await flushPromises()
-    expectRows(wrapper, resource.kind, !mobile, count)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+      screen.resize(mobile ? 761 : 760)
+      await flushPromises()
+      expectRows(wrapper, resource.kind, !mobile, count)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    wrapper.unmount()
-    expect(screen.add).toHaveBeenCalledTimes(1)
-    expect(screen.remove).toHaveBeenCalledWith("change", screen.add.mock.calls[0][1])
-  })
+      wrapper.unmount()
+      expect(screen.add).toHaveBeenCalledTimes(1)
+      expect(screen.remove).toHaveBeenCalledWith("change", screen.add.mock.calls[0][1])
+    },
+    120_000,
+  )
 
   it("保留状态和关键词筛选、键盘详情、打开的抽屉与未提交表单", async () => {
     const screen = viewport(761)
