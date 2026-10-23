@@ -57,6 +57,7 @@ from app.services.report_ingest import ReportIngestService
 from app.services.report_repository import SqlReportRepository
 from app.services.uncertain_resolution import (
     UncertainResolutionConflict,
+    UncertainResolutionForbidden,
     UncertainResolutionNotFound,
     UncertainResolutionService,
 )
@@ -536,6 +537,7 @@ def _resolution_service() -> UncertainResolutionService:
 async def propose_uncertain_resolution(
     chunk_id: int,
     payload: UncertainResolutionRequestModel,
+    request: Request,
     claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> UncertainResolutionModel:
@@ -544,9 +546,14 @@ async def propose_uncertain_resolution(
             chunk_id,
             payload.action,
             claims.principal,
+            ip=_ip(request),
+            security_version=claims.security_version,
+            provider_code=claims.provider_code,
         )
     except UncertainResolutionNotFound:
         raise ApiError(404, "NOT_FOUND", "分片不存在或未进入保守终态", None) from None
+    except UncertainResolutionForbidden as error:
+        raise ApiError(403, "FORBIDDEN", str(error), None) from None
     except UncertainResolutionConflict as error:
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
     return UncertainResolutionModel.model_validate(item, from_attributes=True)
@@ -566,6 +573,7 @@ async def propose_uncertain_resolution(
 @audited("uncertain_resolve_confirm")
 async def confirm_uncertain_resolution(
     resolution_id: int,
+    request: Request,
     claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> UncertainResolutionModel:
@@ -574,10 +582,14 @@ async def confirm_uncertain_resolution(
         item = await service.confirm(
             resolution_id,
             claims.principal,
-            actor=claims.principal,
+            ip=_ip(request),
+            security_version=claims.security_version,
+            provider_code=claims.provider_code,
         )
     except UncertainResolutionNotFound:
         raise ApiError(404, "NOT_FOUND", "处置单不存在", None) from None
+    except UncertainResolutionForbidden as error:
+        raise ApiError(403, "FORBIDDEN", str(error), None) from None
     except UncertainResolutionConflict as error:
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
     return UncertainResolutionModel.model_validate(item, from_attributes=True)
