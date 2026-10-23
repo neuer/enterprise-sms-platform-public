@@ -26,6 +26,8 @@ MAX_HISTORICAL_PENDING_DATES_PER_RUN = 7
 class _AutoDeliveryService(Protocol):
     async def submit_auto_delivery(self, report_date: date) -> object | None: ...
 
+    async def recover_pending_delivery(self, request_id: UUID) -> object | None: ...
+
 
 class _PendingDeliveryRepository(Protocol):
     async def pending_delivery_requests(self) -> tuple[tuple[UUID, date], ...]: ...
@@ -37,12 +39,19 @@ async def submit_security_daily_deliveries(
     *,
     current_report_date: date,
 ) -> None:
-    """提交当日日报，并有限补扫历史待处理请求。"""
+    """提交当日自动日报，并按 request_id 有界恢复尚未发布的人工或自动请求。
+
+    日期补扫仍只覆盖自动报告，且最多回看 7 个自然日。崩溃在数据库提交之后、
+    控制文件发布之前时，恢复扫描复用原 request_id，不按日期另开代次。
+    """
 
     await service.submit_auto_delivery(current_report_date)
+    pending = await repository.pending_delivery_requests()
+    for request_id, _pending_date in pending:
+        await service.recover_pending_delivery(request_id)
     submitted_dates = {current_report_date}
     historical_dates = 0
-    for _, pending_date in await repository.pending_delivery_requests():
+    for _, pending_date in pending:
         if pending_date in submitted_dates:
             continue
         if historical_dates >= MAX_HISTORICAL_PENDING_DATES_PER_RUN:

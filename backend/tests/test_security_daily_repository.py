@@ -636,3 +636,92 @@ async def test_request_delivery_opens_new_generation_after_sent_config_change(
         if "SET delivery_status='pending',retry_count" in sql
     )
     assert report_update["delivery_generation"] == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_inserts_new_request_even_when_old_evidence_is_result() -> None:
+    repo, connection = repository(
+        [
+            FakeResult(),
+            FakeResult(scalar="3"),
+            FakeResult(
+                [
+                    {
+                        "delivery_status": "failed",
+                        "retry_count": 1,
+                        "delivery_generation": 1,
+                    }
+                ]
+            ),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(),
+        ]
+    )
+
+    request = await repo.request_delivery(
+        report(delivery_status="failed", retry_count=1),
+        "retry",
+        principal=SecurityPrincipal(1, 2, "admin", "security", "admin"),
+        ip="127.0.0.1",
+        control_evidence="result",
+        recipient_set_digest="a" * 64,
+        expected_config_version=3,
+    )
+
+    assert request.idempotent is False
+    assert request.action == "retry"
+    assert request.delivery_generation == 1
+    insert = next(
+        params
+        for sql, params in connection.calls
+        if "INSERT INTO security_daily_delivery_request" in sql
+    )
+    assert insert["request_id"] == request.request_id
+    assert insert["delivery_generation"] == 1
+    report_update = next(
+        params
+        for sql, params in connection.calls
+        if "SET delivery_status='pending',retry_count" in sql
+    )
+    assert report_update["retry_count"] == 2
+    assert report_update["delivery_generation"] == 1
+
+
+@pytest.mark.asyncio
+async def test_get_delivery_request_reads_manual_or_auto_by_request_id() -> None:
+    request_id = uuid4()
+    requested_at = datetime(2026, 8, 13, 8, tzinfo=SHANGHAI)
+    repo, connection = repository(
+        [
+            FakeResult(
+                [
+                    {
+                        "request_id": request_id,
+                        "report_id": 10086,
+                        "report_date": date(2026, 8, 12),
+                        "action": "retry",
+                        "state": "pending",
+                        "requested_at": requested_at,
+                        "config_version": 3,
+                        "delivery_generation": 2,
+                        "recipient_set_digest": "ab" * 32,
+                        "error": None,
+                    }
+                ]
+            )
+        ]
+    )
+
+    found = await repo.get_delivery_request(request_id)
+
+    sql = connection.calls[0][0]
+    assert "WHERE request_id=:request_id" in sql
+    assert "generation_source" not in sql
+    assert found is not None
+    assert found.request_id == request_id
+    assert found.delivery_id == "10086"
+    assert found.action == "retry"
+    assert found.delivery_generation == 2
+    assert found.recipient_set_digest == "ab" * 32
+    assert found.requested_at == requested_at

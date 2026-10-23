@@ -1,4 +1,5 @@
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils"
+import { describeSecurityDailyReport } from "../src/lib/securityDailyDisplay"
 import ElementPlus, { ElMessageBox } from "element-plus"
 import { createPinia } from "pinia"
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -484,7 +485,31 @@ describe("安全日报页面", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("当前没有可展示的脱敏结构化报告")
+    expect(wrapper.text()).toContain("问题通报等待投递")
+    expect(wrapper.text()).not.toContain("不生成或投递邮件")
     expect(wrapper.text()).not.toContain("攻击尝试 0")
+    wrapper.unmount()
+  })
+
+  it("数据不可用且问题通报已投递时分别说明生成与投递", async () => {
+    api.getSecurityDailyReport.mockResolvedValue({
+      ...reports[4],
+      delivery_status: "sent",
+      delivered_at: "2026-07-18T08:05:00+08:00",
+    })
+    const wrapper = mount(SecurityDailyView, { global: { plugins: [createPinia(), ElementPlus] } })
+    await flushPromises()
+    await wrapper
+      .findAll("button")
+      .filter((button) => button.text().includes("查看详情"))
+      .at(4)!
+      .trigger("click")
+    await flushPromises()
+
+    expect(wrapper.text()).toContain("数据不可用")
+    expect(wrapper.text()).toContain("问题通报已投递")
+    expect(wrapper.text()).not.toContain("不生成或投递邮件")
+    expect(wrapper.text()).not.toContain("不会投递")
     wrapper.unmount()
   })
 
@@ -894,5 +919,30 @@ describe("安全日报页面", () => {
     expect(wrapper.text()).toContain("配置状态不可用")
     expect(wrapper.text()).not.toContain("下次")
     wrapper.unmount()
+  })
+})
+
+describe("安全日报状态说明", () => {
+  it.each([
+    ["unavailable", "sent", "问题通报已投递", "日报已生成"],
+    ["unavailable", "pending", "问题通报等待投递", "邮件已投递"],
+    ["unavailable", "failed", "问题通报投递失败", "邮件已投递"],
+    ["ready", "sent", "邮件已投递", "问题通报"],
+    ["ready", "failed", "邮件投递失败", "不生成或投递"],
+  ] as const)("%s + %s 的生成事实和投递事实不互相否定", (generation, delivery, present, absent) => {
+    const copy = describeSecurityDailyReport({
+      generation_status: generation,
+      delivery_status: delivery,
+      payload: null,
+    })
+    const text = `${copy.generationFact} ${copy.deliveryFact} ${copy.detailNotice ?? ""} ${copy.sendActionLabel} ${copy.retryActionLabel}`
+    expect(text).toContain(present)
+    expect(text).not.toContain(absent)
+    expect(text).not.toContain("不生成或投递邮件")
+    if (generation === "unavailable") {
+      expect(copy.detailNotice).toContain("没有完整日报数据")
+      expect(copy.generationFact).not.toContain("已投递")
+    }
+    if (generation === "ready") expect(copy.detailNotice).toBeNull()
   })
 })
