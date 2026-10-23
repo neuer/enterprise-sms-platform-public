@@ -13,7 +13,12 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.core.apikey import ApiAppContext
-from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
+from app.core.auth.accounts import (
+    ActorPrincipal,
+    ApplicationPrincipal,
+    SecurityPrincipal,
+    UncertainEffectPrincipal,
+)
 from app.services.app_ratelimit import ApplicationRateLimitExceeded
 from app.services.category import CategoryNotAllowed, policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
@@ -216,7 +221,7 @@ class FakeStore:
     def __init__(self) -> None:
         self.commands: list[Any] = []
         self.sensitive_hits_result: list[str] = []
-        self.sensitive_audits: list[tuple[int, int]] = []
+        self.sensitive_audits: list[tuple[ActorPrincipal, int]] = []
         self.response = BatchResponse(
             "existing",
             True,
@@ -240,8 +245,8 @@ class FakeStore:
     async def sensitive_hits(self, content: str) -> list[str]:
         return self.sensitive_hits_result
 
-    async def audit_sensitive_hit(self, app_id: int, hit_count: int) -> None:
-        self.sensitive_audits.append((app_id, hit_count))
+    async def audit_sensitive_hit(self, principal: ActorPrincipal, hit_count: int) -> None:
+        self.sensitive_audits.append((principal, hit_count))
 
     async def save(self, command: Any) -> StoredBatch:
         self.commands.append(command)
@@ -2100,7 +2105,7 @@ async def test_sensitive_audit_policy_records_count_and_allows_send() -> None:
         ApiAppContext(7, "app", "平台部", frozenset({"verify"})),
         SendRequest("verify", ["13800138000"], content="敏感内容"),
     )
-    assert store.sensitive_audits == [(7, 2)]
+    assert store.sensitive_audits == [(ApplicationPrincipal(7, "app", "平台部"), 2)]
     assert store.commands
 
 
@@ -2143,7 +2148,9 @@ async def test_sensitive_audit_accepts_notice_verify_and_market(
             actor=ADMIN if channel == "web" else None,
         ),
     )
-    assert store.sensitive_audits == [(7, 1)]
+    assert store.sensitive_audits == [
+        (ADMIN if channel == "web" else ApplicationPrincipal(7, "app", "平台部"), 1),
+    ]
     assert len(store.commands) == 1
     assert store.commands[0].category == category
 
@@ -2193,7 +2200,7 @@ async def test_sensitive_miss_does_not_write_hit_audit() -> None:
 @pytest.mark.asyncio
 async def test_sensitive_audit_failure_releases_claim_without_send_side_effects() -> None:
     class FailingAudit(FakeStore):
-        async def audit_sensitive_hit(self, app_id: int, hit_count: int) -> None:
+        async def audit_sensitive_hit(self, principal: ActorPrincipal, hit_count: int) -> None:
             raise RuntimeError("synthetic audit failure")
 
     store = FailingAudit()

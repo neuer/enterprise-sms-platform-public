@@ -33,8 +33,8 @@ function tooltipParent(): HTMLElement {
     tooltipHost.style.position = "fixed"
     tooltipHost.style.left = "0"
     tooltipHost.style.top = "0"
-    tooltipHost.style.width = "0"
-    tooltipHost.style.height = "0"
+    tooltipHost.style.width = "100vw"
+    tooltipHost.style.height = "100vh"
     tooltipHost.style.overflow = "visible"
     tooltipHost.style.zIndex = "4000"
     tooltipHost.style.pointerEvents = "none"
@@ -77,19 +77,23 @@ const { render } = useChart(root, (chart) => {
         enterable: true,
         confine: false,
         appendTo: tooltipParent,
-        extraCssText: "max-height:min(70vh,240px);overflow:auto;white-space:normal;pointer-events:auto;z-index:4000;",
+        extraCssText:
+          "max-width:calc(100vw - 16px);max-height:min(70vh,240px);overflow:auto;white-space:normal;pointer-events:auto;z-index:4000;",
         position: (
           point: number[],
           _params: unknown,
-          _dom: unknown,
+          dom: HTMLElement,
           _rect: unknown,
           size: { contentSize: number[] },
         ) => {
+          dom.tabIndex = 0
+          dom.setAttribute("role", "region")
+          dom.setAttribute("aria-label", "趋势明细，可滚动查看全部维度")
           const chartRect = root.value?.getBoundingClientRect()
           const originX = chartRect?.left ?? 0
           const originY = chartRect?.top ?? 0
           const boxWidth = size.contentSize[0] || 220
-          const boxHeight = Math.min(size.contentSize[1] || 160, window.innerHeight * 0.7)
+          const boxHeight = Math.min(size.contentSize[1] || 160, window.innerHeight * 0.7, 240)
           let left = point[0] + 12
           let top = point[1] + 12
           if (originX + left + boxWidth > window.innerWidth - 8) left = point[0] - boxWidth - 12

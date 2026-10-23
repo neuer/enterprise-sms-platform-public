@@ -638,3 +638,73 @@ describe("报表趋势图", () => {
     }
   })
 })
+
+describe("报表响应式布局与浮层", () => {
+  it("切换到手机时卸载表格，返回桌面保留排序且不重复查询", async () => {
+    let change: (event: { matches: boolean }) => void = () => undefined
+    const remove = vi.fn()
+    const media = {
+      matches: false,
+      addEventListener: vi.fn((_type, callback) => {
+        change = callback
+      }),
+      removeEventListener: remove,
+    }
+    const matchMedia = vi.fn((query: string) =>
+      query === "(max-width: 640px)" ? media : { ...media, addEventListener: vi.fn() },
+    )
+    vi.stubGlobal("matchMedia", matchMedia)
+    const fetch = vi.fn(async () => response(report))
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
+    try {
+      await flushPromises()
+      expect(matchMedia).toHaveBeenCalledWith("(max-width: 640px)")
+      expect(wrapper.find(".report-table").exists()).toBe(true)
+      change({ matches: true })
+      await flushPromises()
+      expect(wrapper.find(".report-table").exists()).toBe(false)
+      await wrapper.get("[data-testid='report-mobile-sort-field']").setValue("success_rate")
+      await flushPromises()
+      const calls = fetch.mock.calls.length
+      change({ matches: false })
+      await flushPromises()
+      expect(wrapper.find(".report-table").exists()).toBe(true)
+      expect(wrapper.find("th.descending").text()).toContain("成功率")
+      expect(fetch.mock.calls.length).toBe(calls)
+    } finally {
+      wrapper.unmount()
+      expect(remove).toHaveBeenCalledWith("change", change)
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("浮层坐标容器具有视口尺寸，支持键盘滚动且卸载时移除", async () => {
+    vi.stubGlobal("innerWidth", 390)
+    vi.stubGlobal("innerHeight", 600)
+    const wrapper = mount(ReportTrendChart, { props: { trend: report.trend, metric: "total" } })
+    try {
+      await flushPromises()
+      const option = chart.setOption.mock.calls.at(-1)?.[0]
+      const host = option.tooltip.appendTo()
+      expect(host.style.width).toBe("100vw")
+      expect(host.style.height).toBe("100vh")
+      expect(document.body.contains(host)).toBe(true)
+      vi.spyOn(wrapper.element, "getBoundingClientRect").mockReturnValue({ left: 16, top: 350 } as DOMRect)
+      const tooltip = document.createElement("div")
+      const [x, y] = option.tooltip.position([340, 180], null, tooltip, null, { contentSize: [260, 240] })
+      expect(16 + x).toBeGreaterThanOrEqual(8)
+      expect(16 + x + 260).toBeLessThanOrEqual(382)
+      expect(350 + y).toBeGreaterThanOrEqual(8)
+      expect(350 + y + 240).toBeLessThanOrEqual(592)
+      expect(tooltip.tabIndex).toBe(0)
+      expect(tooltip.getAttribute("aria-label")).toContain("可滚动")
+      wrapper.unmount()
+      expect(document.body.contains(host)).toBe(false)
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
+  })
+})

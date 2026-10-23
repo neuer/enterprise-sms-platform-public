@@ -223,10 +223,10 @@ async def _apply_uncertain_effect(resolution_id: int, event_id: str) -> int:
     async def effect(claim: OutboxClaim) -> int:
         if claim.args != (resolution_id,):
             raise ValueError("uncertain effect outbox args mismatch")
-        await UncertainResolutionService(
+        result = await UncertainResolutionService(
             CryptoService.from_settings(get_settings())
-        ).apply_effect(resolution_id)
-        return 1
+        ).apply_outbox_effect(resolution_id)
+        return int(result.state in {"closed", "effect_applied"})
 
     return await OutboxExecutor(SqlOutboxRepository(get_settings())).run(
         UUID(event_id),

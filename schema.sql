@@ -3284,6 +3284,29 @@ BEGIN
                   'operator:usage-projection-cli')
                 AND NEW.action='usage_projection_rebuild')))))
       OR (context_domain='realtime' AND session_user='sms_send' AND (
+          (NEW.action='sensitive_hit' AND NEW.object_type='sms_uncertain_resolution'
+           AND NEW.actor ~ '^system_resend:[1-9][0-9]*$'
+           AND jsonb_typeof(NEW.after_val->'hit_count')='number'
+           AND EXISTS (
+             SELECT 1 FROM sms_uncertain_resolution r
+             JOIN sms_chunk c ON c.id=r.chunk_id AND c.batch_id=r.batch_id
+             JOIN sms_batch b ON b.id=r.batch_id
+             JOIN user_account proposer ON proposer.id=r.proposer_account_id
+             JOIN user_account confirmer ON confirmer.id=r.confirmer_account_id
+             WHERE NEW.actor='system_resend:' || r.id::text
+               AND NEW.object_id=r.id::text
+               AND NEW.after_val->>'effect_generation'=r.effect_generation::text
+               AND r.action='resend_new_batch'
+               AND r.state IN ('approved','effect_pending','applying','retryable_effect_error')
+               AND r.proposer_account_id<>r.confirmer_account_id
+               AND proposer.status=1 AND proposer.role='admin'
+               AND confirmer.status=1 AND confirmer.role='admin'
+               AND c.status='unknown_terminal'
+               AND b.channel=r.source_channel AND b.category=r.source_category
+               AND b.dept=r.source_dept
+               AND b.app_id IS NOT DISTINCT FROM r.source_app_id
+           ))
+          OR
           (NEW.action='message_send' AND NEW.object_type='batch'
            AND NEW.actor ~ '^system_resend:[1-9][0-9]*$'
            AND NEW.after_val @> '{"uncertain_resend": true}'::jsonb
@@ -3533,6 +3556,20 @@ GRANT USAGE, SELECT ON SEQUENCE
     sms_uncertain_resolution_id_seq, send_inflight_reservation_id_seq,
     send_inflight_reconcile_fact_id_seq
 TO sms_accept;
+
+CREATE VIEW uncertain_resend_approval_applicant AS
+SELECT r.id AS resolution_id,r.effect_generation,
+       a.actor_account_id AS account_id,a.actor_identity_id AS identity_id,
+       a.actor AS login_name
+FROM sms_uncertain_resolution r
+JOIN audit_log a ON a.object_id=r.id::text
+  AND a.object_type='sms_uncertain_resolution'
+  AND a.action='uncertain_resolve_confirm' AND a.actor_subject_kind='human'
+  AND a.actor_account_id=r.confirmer_account_id
+  AND a.actor_identity_id IS NOT NULL
+  AND a.after_val->>'generation'=r.effect_generation::text;
+REVOKE ALL ON uncertain_resend_approval_applicant FROM PUBLIC;
+GRANT SELECT ON uncertain_resend_approval_applicant TO sms_send;
 
 -- 发送、拉取、对账、统计与业务 worker。
 GRANT SELECT ON

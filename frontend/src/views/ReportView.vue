@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useMobileLayout } from "../composables/useMobileLayout"
 import { usePagedList } from "../composables/usePagedList"
 import ListPagination from "../components/ListPagination.vue"
 import FilterSeg from "../components/FilterSeg.vue"
@@ -43,6 +44,7 @@ import { daysAgoDateKey, shanghaiDateKey } from "../lib/time"
 import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
+const isMobile = useMobileLayout(640)
 
 // 默认范围：Asia/Shanghai 日历口径的近 30 天（含今天）；旧实现 setDate+toISOString 存在时区 off-by-one。
 // 每次调用重新求值，保证「重置」回到当下口径的近 30 天而不是模块加载时刻。
@@ -512,10 +514,11 @@ onMounted(() => void load())
             @toggle="toggleSortOrder"
           />
           <el-table
-            v-if="loading || pagedItems.length"
+            v-if="!isMobile && (loading || pagedItems.length)"
             ref="reportTable"
             :data="pagedItems"
             class="report-table"
+            :fit="false"
             :row-key="reportRowKey"
             :default-sort="{ prop: sortState.prop, order: sortState.order }"
             @sort-change="onSortChange"

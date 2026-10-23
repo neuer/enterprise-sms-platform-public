@@ -822,7 +822,7 @@ async def test_sensitive_hit_audit_stores_integer_and_failure_leaves_no_row(
             audit_principal_scope(principal),
             pytest.raises(DBAPIError),
         ):
-            await store.audit_sensitive_hit(app_id, 4)
+            await store.audit_sensitive_hit(principal, 4)
         async with owner.connect() as connection:
             failed = int(
                 (
@@ -843,7 +843,7 @@ async def test_sensitive_hit_audit_stores_integer_and_failure_leaves_no_row(
             await connection.execute(text("GRANT INSERT ON audit_log TO sms_accept"))
     try:
         with correlation_scope(), audit_principal_scope(principal):
-            await store.audit_sensitive_hit(app_id, 3)
+            await store.audit_sensitive_hit(principal, 3)
         async with owner.connect() as connection:
             row = (
                 await connection.execute(
@@ -867,3 +867,25 @@ async def test_sensitive_hit_audit_stores_integer_and_failure_leaves_no_row(
                 text("DELETE FROM audit_log WHERE actor_app_id=:app_id"), {"app_id": app_id}
             )
             await connection.execute(text("DELETE FROM app WHERE id=:id"), {"id": app_id})
+
+
+@pytest.mark.asyncio
+async def test_sensitive_audit_web_principal_matches_authenticated_context(
+    accept_runtime: tuple[AsyncEngine, URL],
+) -> None:
+    owner, accept_url = accept_runtime
+    principal = await _admin(owner, f"sens-web-{uuid4().hex[:10]}")
+    store = SqlPipelineStore(_settings(accept_url))
+    with correlation_scope(), audit_principal_scope(principal):
+        await store.audit_sensitive_hit(principal, 2)
+    async with owner.connect() as connection:
+        row = (await connection.execute(text("""
+            SELECT actor_subject_kind,actor_account_id,actor_identity_id,
+              actor_app_id,role,after_val
+            FROM audit_log WHERE action='sensitive_hit' AND actor_account_id=:account
+        """), {"account": principal.account_id})).mappings().one()
+    assert dict(row) == {
+        "actor_subject_kind": "human", "actor_account_id": principal.account_id,
+        "actor_identity_id": principal.identity_id, "actor_app_id": None,
+        "role": "admin", "after_val": {"hit_count": 2},
+    }

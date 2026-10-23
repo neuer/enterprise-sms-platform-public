@@ -147,6 +147,7 @@ _VENDOR_LIVE_PROTECTED_EXACT = (
             "backend/app/services/pipeline_commit.py",
             "backend/app/services/pipeline_contracts.py",
             "backend/app/services/pipeline_idempotency.py",
+            "backend/app/services/pipeline_sensitive_audit.py",
             "backend/app/services/reconcile_repository.py",
             "backend/app/services/vendor_control_client.py",
             "backend/app/services/vendor_control_state.py",

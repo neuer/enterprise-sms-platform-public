@@ -43,6 +43,7 @@ SPLIT_MODULE_PARTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
             "services/pipeline_commit.py",
             "services/pipeline_contracts.py",
             "services/pipeline_idempotency.py",
+            "services/pipeline_sensitive_audit.py",
         ),
         "services/usage_ledger.py": (
             "services/usage_ledger_common.py",

@@ -18,6 +18,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from app.core.apikey import ApiAppContext
+from app.core.auth.accounts import ApplicationPrincipal
 from app.core.bounded_executor import run_bounded
 from app.core.sensitive_text import reject_phone_in_text
 from app.services.billing import calculate_segments
@@ -365,7 +366,12 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
         if hits and self.config.sensitive_hit_action == "block":
             raise SensitiveWord("内容命中敏感词")
         if hits and self.config.sensitive_hit_action == "audit":
-            await self.store.audit_sensitive_hit(app.app_id, len(hits))
+            principal = request.actor
+            if principal is None and request.channel == "api":
+                principal = ApplicationPrincipal(app.app_id, app.name, app.dept)
+            if principal is None:
+                raise ValueError("敏感词审计缺少稳定主体")
+            await self.store.audit_sensitive_hit(principal, len(hits))
         unique_phones = list(dict.fromkeys(request.mobiles))
         removed_duplicate = len(request.mobiles) - len(unique_phones)
         protected: list[ProtectedPhone] = []

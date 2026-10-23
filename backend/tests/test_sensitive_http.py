@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
 import pytest
 
+from app.core.auth.accounts import ApplicationPrincipal, SecurityPrincipal
+from app.core.correlation import correlation_scope
 from app.core.sensitive_http import sensitive_http_request
 from app.services.pipeline_repository import SqlPipelineStore
 
@@ -48,7 +51,7 @@ class _AuditConnection:
 
     async def execute(self, statement: object, params: Any = None) -> _AuditResult:
         self.calls.append((str(statement), params))
-        if params and "hit_count" in params and params["hit_count"] == 0:
+        if params and json.loads(params.get("after") or "{}").get("hit_count") == 0:
             raise RuntimeError("synthetic audit failure")
         return _AuditResult()
 
@@ -73,23 +76,25 @@ class _AuditEngine:
 
 
 @pytest.mark.asyncio
-async def test_sensitive_hit_audit_casts_integer_count_and_propagates_failure() -> None:
+@pytest.mark.parametrize("principal", [
+    ApplicationPrincipal(7, "app", "平台部"),
+    SecurityPrincipal(2, 3, "qa-auditor", "平台部", "admin"),
+])
+async def test_sensitive_hit_audit_preserves_principal_count_and_failure(
+    principal: ApplicationPrincipal | SecurityPrincipal,
+) -> None:
     connection = _AuditConnection()
     store = SqlPipelineStore()
     store._engine = lambda: _AuditEngine(connection)  # type: ignore[method-assign]
-
-    await store.audit_sensitive_hit(7, 2)
-
+    with correlation_scope():
+        await store.audit_sensitive_hit(principal, 2)
     sql, params = connection.calls[0]
-    assert "CAST(:hit_count AS integer)" in sql
-    assert "jsonb_build_object" in sql
-    assert params["hit_count"] == 2
-    assert isinstance(params["hit_count"], int)
-    assert params["actor"] == "app:7"
+    assert json.loads(params["after"]) == {"hit_count": 2}
+    assert params["actor"] == principal.actor_name
+    assert params["subject_kind"] == principal.subject_kind
+    assert params["account_id"] == principal.actor_account_id
+    assert params["identity_id"] == principal.actor_identity_id
+    assert params["app_id"] == principal.actor_app_id
     assert "word" not in sql
-    lowered = str(params).casefold()
-    assert "phone" not in lowered
-    assert "content" not in lowered
-
-    with pytest.raises(RuntimeError, match="synthetic audit failure"):
-        await store.audit_sensitive_hit(7, 0)
+    with correlation_scope(), pytest.raises(RuntimeError, match="synthetic audit failure"):
+        await store.audit_sensitive_hit(principal, 0)
