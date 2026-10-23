@@ -2114,3 +2114,36 @@ def test_security_daily_delivery_generation_migration_is_expand_only() -> None:
     spec.loader.exec_module(module)
     assert module.revision == "0080_security_daily_delivery_generation"
     assert module.down_revision == "0079_security_daily_publish_outbox"
+
+
+def test_manual_raw_replay_privileges_match_schema_and_forward_migration() -> None:
+    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    revision = BACKEND / "migrations/versions/0129_sms_accept_raw_replay.py"
+    source = revision.read_text(encoding="utf-8")
+    grants = (
+        "GRANT UPDATE (custom_ids, item_count) ON raw_vendor_log TO sms_accept",
+        "GRANT UPDATE (late_evidence_at) ON sms_chunk TO sms_accept",
+        "GRANT UPDATE (projection_changed) ON report_event_projection TO sms_accept",
+        "GRANT UPDATE (message_ids, message_times, event_keys)",
+        "GRANT SELECT (vendor_id, chunk_id, outcome) ON sms_vendor_attempt TO sms_accept",
+        "sms_reply_id_seq, unmatched_report_id_seq",
+    )
+    for fragment in grants:
+        assert fragment in schema
+        assert fragment in source
+    grants_only = "\n".join(
+        line for line in source.splitlines() if "GRANT " in line or "REVOKE " in line
+    )
+    assert "ON ALL TABLES" not in source
+    assert "ON ALL SEQUENCES" not in source
+    assert "payload_enc" not in grants_only
+    assert "system_replay_audit_state" not in grants_only
+    assert "GRANT UPDATE (status" not in source
+    assert "GRANT UPDATE (id" not in source
+
+    spec = importlib.util.spec_from_file_location("raw_replay_privileges", revision)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0129_sms_accept_raw_replay"
+    assert module.down_revision == "0128_runtime_event_retention"

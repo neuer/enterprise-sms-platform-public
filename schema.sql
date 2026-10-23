@@ -3463,6 +3463,44 @@ GRANT UPDATE (
     processing_started_at, processing_lease_id, processing_lease_epoch,
     processing_lease_expires_at
 ) ON raw_vendor_log TO sms_accept;
+-- 0129：人工 RAW 重放只补现有语句已经写入的列。事件事实没有 UPDATE/DELETE。
+-- 匹配报告子查询只读 sms_vendor_attempt 的 vendor_id、chunk_id、outcome。
+GRANT UPDATE (custom_ids, item_count) ON raw_vendor_log TO sms_accept;
+GRANT UPDATE (late_evidence_at) ON sms_chunk TO sms_accept;
+GRANT INSERT (
+    event_key, raw_id, vendor_task_id, custom_id,
+    phone_enc, phone_hmac, phone_mask, key_version,
+    report_status, message_status, report_desc, report_time
+) ON report_event TO sms_accept;
+GRANT INSERT (
+    event_key, batch_id, message_id, message_created_at, projection_changed
+) ON report_event_projection TO sms_accept;
+GRANT UPDATE (projection_changed) ON report_event_projection TO sms_accept;
+GRANT INSERT (
+    event_key, event_key_version, raw_id, vendor_task_id, custom_id,
+    phone_enc, phone_hmac, phone_mask, key_version,
+    ext_code, content, content_enc, is_optout, reply_time
+) ON reply_event TO sms_accept;
+GRANT INSERT (
+    event_key, vendor_task_id, batch_id,
+    phone_enc, phone_hmac, phone_mask, key_version,
+    ext_code, content, reply_time
+) ON sms_reply TO sms_accept;
+GRANT INSERT (
+    event_key, vendor_task_id, custom_id,
+    phone_enc, phone_hmac, phone_mask,
+    key_version, report_status, report_desc, report_time
+) ON unmatched_report TO sms_accept;
+GRANT INSERT (
+    event_key, batch_id, message_id, message_created_at,
+    message_status, report_desc, report_time
+) ON callback_report_event TO sms_accept;
+GRANT UPDATE (message_ids, message_times, event_keys)
+ON callback_task TO sms_accept;
+GRANT USAGE, SELECT ON SEQUENCE
+    sms_reply_id_seq, unmatched_report_id_seq
+TO sms_accept;
+GRANT SELECT (vendor_id, chunk_id, outcome) ON sms_vendor_attempt TO sms_accept;
 GRANT INSERT ON worker_lease_event TO sms_accept;
 GRANT USAGE, SELECT ON SEQUENCE worker_lease_event_id_seq TO sms_accept;
 GRANT USAGE, SELECT ON SEQUENCE

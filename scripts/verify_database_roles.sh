@@ -129,6 +129,45 @@ result="$(
        AND has_table_privilege('sms_callback','job_run','UPDATE')
        AND NOT has_table_privilege('sms_callback','job_run','DELETE')
        AND NOT has_table_privilege('sms_callback','job_run','TRUNCATE')),
+      (has_column_privilege('sms_accept','raw_vendor_log','custom_ids','UPDATE')
+       AND has_column_privilege('sms_accept','raw_vendor_log','item_count','UPDATE')
+       AND NOT has_column_privilege('sms_accept','raw_vendor_log','payload_enc','UPDATE')
+       AND NOT has_column_privilege('sms_accept','raw_vendor_log','payload_sha256','UPDATE')
+       AND NOT has_column_privilege('sms_accept','raw_vendor_log','source','UPDATE')
+       AND NOT has_column_privilege(
+         'sms_accept','raw_vendor_log','system_replay_audit_state','UPDATE')
+       AND has_column_privilege('sms_accept','sms_chunk','late_evidence_at','UPDATE')
+       AND NOT has_column_privilege('sms_accept','sms_chunk','status','UPDATE')
+       AND NOT has_column_privilege('sms_accept','sms_chunk','id','UPDATE')
+       AND NOT has_table_privilege('sms_accept','sms_chunk','UPDATE')
+       AND has_column_privilege('sms_accept','report_event','event_key','INSERT')
+       AND NOT has_table_privilege('sms_accept','report_event','UPDATE')
+       AND NOT has_table_privilege('sms_accept','report_event','DELETE')
+       AND NOT has_table_privilege('sms_accept','reply_event','UPDATE')
+       AND NOT has_table_privilege('sms_accept','reply_event','DELETE')
+       AND has_column_privilege(
+         'sms_accept','report_event_projection','projection_changed','UPDATE')
+       AND NOT has_column_privilege(
+         'sms_accept','report_event_projection','batch_id','UPDATE')
+       AND has_column_privilege('sms_accept','callback_task','message_ids','UPDATE')
+       AND has_column_privilege('sms_accept','callback_task','message_times','UPDATE')
+       AND has_column_privilege('sms_accept','callback_task','event_keys','UPDATE')
+       AND NOT has_column_privilege('sms_accept','callback_task','url','UPDATE')
+       AND NOT has_column_privilege(
+         'sms_accept','callback_task','callback_secret_enc','UPDATE')
+       AND NOT has_column_privilege('sms_accept','callback_task','status','UPDATE')
+       AND has_sequence_privilege('sms_accept','sms_reply_id_seq','USAGE')
+       AND has_sequence_privilege('sms_accept','sms_reply_id_seq','SELECT')
+       AND has_sequence_privilege('sms_accept','unmatched_report_id_seq','USAGE')
+       AND has_sequence_privilege('sms_accept','unmatched_report_id_seq','SELECT')
+       AND has_column_privilege('sms_accept','sms_vendor_attempt','vendor_id','SELECT')
+       AND NOT has_table_privilege('sms_accept','sms_vendor_attempt','INSERT')
+       AND NOT has_table_privilege('sms_accept','sms_vendor_attempt','UPDATE')
+       AND NOT has_table_privilege('sms_accept','audit_log','UPDATE')
+       AND NOT has_table_privilege('sms_accept','audit_log','DELETE')
+       AND NOT has_table_privilege('sms_accept','audit_log','TRUNCATE')
+       AND NOT has_table_privilege('sms_metrics','audit_log','INSERT')
+       AND NOT has_column_privilege('sms_metrics','sms_chunk','late_evidence_at','UPDATE')),
       (SELECT NOT rolcanlogin FROM pg_roles WHERE rolname='sms_app'),
       (NOT EXISTS (
         SELECT 1 FROM information_schema.role_table_grants
@@ -136,7 +175,7 @@ result="$(
       ));
   "
 )"
-  [ "$result" = "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t" ] || {
+  [ "$result" = "t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t|t" ] || {
   echo "数据库运行角色矩阵异常: $result" >&2
   exit 1
 }

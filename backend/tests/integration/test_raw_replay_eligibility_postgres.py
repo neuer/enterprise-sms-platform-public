@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 
 from app.services.raw_parse import persist_column_values
@@ -259,5 +260,83 @@ async def test_http_encoding_json_and_transient_matrix_on_postgres() -> None:
                 assert stale == [transient_id, crash_id]
             finally:
                 await transaction.rollback()
+    finally:
+        await engine.dispose()
+
+
+def _sqlstate(error: DBAPIError) -> str | None:
+    state = getattr(error.orig, "sqlstate", None)
+    if state:
+        return str(state)
+    return "42501" if "42501" in str(error) else None
+
+
+@pytest.mark.asyncio
+async def test_sms_accept_replay_grants_reject_widening_and_keep_metrics_readonly() -> None:
+    """正式角色只拿到人工重放现有语句的列权限；metrics 仍只读。"""
+
+    assert os.environ.get("ENVIRONMENT") == "test"
+    engine = create_async_engine(make_url(os.environ["OUTBOX_POSTGRES_DSN"]))
+    try:
+        async with engine.connect() as connection:
+            allowed = await connection.scalar(
+                text(
+                    """
+                    SELECT
+                      has_column_privilege(
+                        'sms_accept','raw_vendor_log','custom_ids','UPDATE')
+                      AND has_column_privilege(
+                        'sms_accept','raw_vendor_log','item_count','UPDATE')
+                      AND NOT has_column_privilege(
+                        'sms_accept','raw_vendor_log','payload_enc','UPDATE')
+                      AND NOT has_column_privilege(
+                        'sms_accept','raw_vendor_log','payload_sha256','UPDATE')
+                      AND NOT has_column_privilege(
+                        'sms_accept','raw_vendor_log','source','UPDATE')
+                      AND NOT has_column_privilege(
+                        'sms_accept','raw_vendor_log','system_replay_audit_state','UPDATE')
+                      AND has_column_privilege(
+                        'sms_accept','sms_chunk','late_evidence_at','UPDATE')
+                      AND NOT has_column_privilege('sms_accept','sms_chunk','status','UPDATE')
+                      AND NOT has_column_privilege('sms_accept','sms_chunk','id','UPDATE')
+                      AND NOT has_table_privilege('sms_accept','sms_chunk','UPDATE')
+                      AND NOT has_table_privilege('sms_accept','report_event','UPDATE')
+                      AND NOT has_table_privilege('sms_accept','report_event','DELETE')
+                      AND NOT has_table_privilege('sms_accept','reply_event','UPDATE')
+                      AND NOT has_table_privilege('sms_accept','reply_event','DELETE')
+                      AND NOT has_table_privilege('sms_accept','audit_log','UPDATE')
+                      AND NOT has_table_privilege('sms_accept','audit_log','DELETE')
+                      AND NOT has_table_privilege('sms_accept','audit_log','TRUNCATE')
+                      AND NOT has_table_privilege('sms_metrics','audit_log','INSERT')
+                      AND NOT has_table_privilege('sms_metrics','sms_chunk','UPDATE')
+                      AND NOT rolsuper
+                    FROM pg_roles WHERE rolname='sms_accept'
+                    """
+                )
+            )
+            assert allowed is True
+            await connection.rollback()
+            denied = (
+                "UPDATE raw_vendor_log SET payload_enc=payload_enc WHERE false",
+                "UPDATE sms_chunk SET status=status WHERE false",
+                "UPDATE sms_chunk SET id=id WHERE false",
+                "UPDATE report_event SET report_desc=report_desc WHERE false",
+                "DELETE FROM report_event WHERE false",
+                "UPDATE reply_event SET content=content WHERE false",
+                "DELETE FROM reply_event WHERE false",
+                "UPDATE audit_log SET action=action WHERE false",
+                "DELETE FROM audit_log WHERE false",
+                "TRUNCATE TABLE audit_log",
+                "CREATE TABLE sms_accept_ddl_probe(id integer)",
+            )
+            for statement in denied:
+                transaction = await connection.begin()
+                try:
+                    await connection.execute(text("SET LOCAL ROLE sms_accept"))
+                    with pytest.raises(DBAPIError) as caught:
+                        await connection.execute(text(statement))
+                    assert _sqlstate(caught.value) == "42501"
+                finally:
+                    await transaction.rollback()
     finally:
         await engine.dispose()
