@@ -698,3 +698,73 @@ async def test_returning_expiry_bounds_retry_after_stale_in_memory_expiry() -> N
                     {"id": raw_id},
                 )
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_sms_accept_stale_lease_cannot_commit_metadata() -> None:
+    """被接管的 lease 即使以 sms_accept 提交，也不能改索引元数据。"""
+
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    engine = create_async_engine(database_url)
+    raw_id: int | None = None
+    try:
+        async with engine.begin() as connection:
+            raw_id = int(
+                (
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO raw_vendor_log(
+                              source,payload_enc,payload_sha256,custom_ids,item_count,
+                              processing_lease_id,processing_lease_epoch,
+                              processing_lease_expires_at
+                            ) VALUES (
+                              'report',:payload,:sha,'{}',0,
+                              gen_random_uuid(),1,now()+interval '5 minutes'
+                            ) RETURNING id
+                            """
+                        ),
+                        {"payload": b"ciphertext-only", "sha": "c" * 64},
+                    )
+                ).scalar_one()
+            )
+            await connection.execute(text("SET LOCAL ROLE sms_accept"))
+            result = await connection.execute(
+                text(
+                    """
+                    UPDATE raw_vendor_log
+                    SET custom_ids=CAST(:custom_ids AS text[]),item_count=:item_count
+                    WHERE id=:id
+                      AND processing_lease_id=CAST(:lease_id AS uuid)
+                      AND processing_lease_epoch=:epoch
+                    """
+                ),
+                {
+                    "id": raw_id,
+                    "custom_ids": [],
+                    "item_count": 9,
+                    "lease_id": "00000000-0000-4000-8000-000000000099",
+                    "epoch": 1,
+                },
+            )
+            assert result.rowcount == 0
+        async with engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        "SELECT item_count,cardinality(custom_ids) ids "
+                        "FROM raw_vendor_log WHERE id=:id"
+                    ),
+                    {"id": raw_id},
+                )
+            ).mappings().one()
+        assert int(row["item_count"]) == 0
+        assert int(row["ids"]) == 0
+    finally:
+        if raw_id is not None:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM raw_vendor_log WHERE id=:id"),
+                    {"id": raw_id},
+                )
+        await engine.dispose()

@@ -10,6 +10,7 @@ from app.services.outbox import OutboxEventSpec
 from app.services.pipeline import SendRequest
 from app.services.uncertain_resolution import (
     UncertainResolutionConflict,
+    UncertainResolutionForbidden,
     UncertainResolutionService,
     _apply_not_accepted,
     _load_resend_context,
@@ -61,13 +62,22 @@ class FakeResult:
 
 
 class FakeConnection:
-    def __init__(self, results: list[FakeResult]) -> None:
+    def __init__(
+        self, results: list[FakeResult], *, authorized: bool = True
+    ) -> None:
         self.results = results
         self.calls: list[tuple[str, object]] = []
+        self.authorized = authorized
 
     async def execute(self, statement: object, params: object = None) -> FakeResult:
         self.calls.append((str(statement), params))
         sql = " ".join(str(statement).split())
+        if "lock_business_authorization" in sql:
+            return FakeResult(scalar=self.authorized)
+        if "txid_current" in sql:
+            return FakeResult({"database_user": "sms_accept", "txid": 1})
+        if "set_config" in sql or "INSERT INTO audit_log" in sql:
+            return FakeResult()
         if sql == "SELECT chunk_id,batch_id FROM sms_uncertain_resolution WHERE id=:id":
             return FakeResult({"chunk_id": 9, "batch_id": 3})
         if sql in {
@@ -144,7 +154,12 @@ async def test_same_admin_cannot_confirm_own_proposal(
     connection = FakeConnection([FakeResult(_resolution())])
 
     with pytest.raises(UncertainResolutionConflict, match="确认人不能是提案人"):
-        await service(monkeypatch, connection).confirm(4, PROPOSER)
+        await service(monkeypatch, connection).confirm(4, PROPOSER, ip="192.0.2.10")
+
+    assert not any(
+        isinstance(params, dict) and params.get("action") == "uncertain_resolve_confirm"
+        for _statement, params in connection.calls
+    )
 
 
 @pytest.mark.asyncio
@@ -152,6 +167,7 @@ async def test_second_admin_confirm_only_enqueues_effect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import app.services.uncertain_resolution as module
+    import app.services.uncertain_resolution_decision as decision
 
     enqueued: list[OutboxEventSpec] = []
 
@@ -164,7 +180,7 @@ async def test_second_admin_confirm_only_enqueues_effect(
         released.append(_kwargs)
         return True
 
-    monkeypatch.setattr(module, "enqueue_outbox", fake_enqueue)
+    monkeypatch.setattr(decision, "enqueue_outbox", fake_enqueue)
     monkeypatch.setattr(module, "request_usage_release_for_batch", fake_release)
     pending = {**_resolution(), "state": "effect_pending", "confirmer_account_id": 2}
     connection = FakeConnection(
@@ -185,8 +201,18 @@ async def test_second_admin_confirm_only_enqueues_effect(
     sql = "\n".join(call[0] for call in connection.calls)
     assert "effect_pending" in sql
     assert "source_dept" in sql
-    assert connection.calls[-1][1]["dept"] == "平台部"
+    update = next(params for statement, params in connection.calls if "effect_pending" in statement)
+    assert isinstance(update, dict)
+    assert update["dept"] == "平台部"
     assert "SET status='pending'" not in sql
+    audit = next(
+        params
+        for _statement, params in connection.calls
+        if isinstance(params, dict) and params.get("action") == "uncertain_resolve_confirm"
+    )
+    assert audit["actor"] == CONFIRMER.login_name
+    assert "phone" not in str(audit["before"]).casefold()
+    assert "phone" not in str(audit["after"]).casefold()
 
 
 @pytest.mark.asyncio
@@ -200,11 +226,21 @@ async def test_propose_requires_unknown_terminal_chunk(
         ]
     )
 
-    item = await service(monkeypatch, connection).propose(9, "confirm_accepted", PROPOSER)
+    item = await service(monkeypatch, connection).propose(
+        9, "confirm_accepted", PROPOSER, ip="192.0.2.10"
+    )
 
-    assert "unknown_terminal" in connection.calls[0][0]
+    sql = "\n".join(call[0] for call in connection.calls)
+    assert "unknown_terminal" in sql
     assert item.action == "confirm_accepted"
-    assert "pending" not in connection.calls[0][0]
+    assert "SET status='pending'" not in sql
+    audit = next(
+        params
+        for _statement, params in connection.calls
+        if isinstance(params, dict) and params.get("action") == "uncertain_resolve_propose"
+    )
+    assert audit["object_id"] == 4
+    assert "confirm_accepted" in str(audit["after"])
 
 
 @pytest.mark.asyncio
@@ -220,6 +256,11 @@ async def test_second_propose_on_same_chunk_conflicts(
 
     with pytest.raises(UncertainResolutionConflict, match="该分片已有处置单"):
         await service(monkeypatch, connection).propose(9, "keep_unknown", PROPOSER)
+
+    assert not any(
+        isinstance(params, dict) and params.get("action") == "uncertain_resolve_propose"
+        for _statement, params in connection.calls
+    )
 
 
 @pytest.mark.asyncio
@@ -508,6 +549,68 @@ def test_subject_errors_are_manual_and_unavailable_is_retryable() -> None:
     assert _manual_effect_error(UncertainResolutionConflict("处置 generation 已变化")) == (
         "generation_mismatch"
     )
+
+
+@pytest.mark.asyncio
+async def test_three_resolution_actions_record_proposer_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for action in ("confirm_accepted", "confirm_not_accepted", "resend_new_batch"):
+        connection = FakeConnection(
+            [
+                FakeResult({"id": 9, "batch_id": 3}),
+                FakeResult(_resolution(action=action)),
+            ]
+        )
+        item = await service(monkeypatch, connection).propose(
+            9, action, PROPOSER, ip="192.0.2.11"
+        )
+        assert item.action == action
+        audit = next(
+            params
+            for _statement, params in connection.calls
+            if isinstance(params, dict) and params.get("action") == "uncertain_resolve_propose"
+        )
+        assert action in str(audit["after"])
+        assert "phone" not in str(audit["before"]).casefold()
+        assert "phone" not in str(audit["after"]).casefold()
+
+
+@pytest.mark.asyncio
+async def test_revoked_admin_is_rejected_before_resolution_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection(
+        [FakeResult({"id": 9, "batch_id": 3})], authorized=False
+    )
+
+    with pytest.raises(UncertainResolutionForbidden):
+        await service(monkeypatch, connection).propose(9, "keep_unknown", PROPOSER)
+
+    sql = "\n".join(call[0] for call in connection.calls)
+    assert "INSERT INTO sms_uncertain_resolution" not in sql
+    assert "uncertain_resolve_propose" not in sql
+
+
+@pytest.mark.asyncio
+async def test_audit_failure_propagates_for_the_same_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.services.uncertain_resolution_decision as decision
+
+    async def fail_audit(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(decision, "insert_audit", fail_audit)
+    connection = FakeConnection(
+        [
+            FakeResult({"id": 9, "batch_id": 3}),
+            FakeResult(_resolution(action="keep_unknown")),
+        ]
+    )
+
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        await service(monkeypatch, connection).propose(9, "keep_unknown", PROPOSER)
 
 
 def test_http_send_model_rejects_usage_subject() -> None:

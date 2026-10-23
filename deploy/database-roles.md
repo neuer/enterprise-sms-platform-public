@@ -132,6 +132,21 @@ PUBLIC 没有 EXECUTE，`sms_metrics` 仅获得累计维度和计数列 SELECT�
 不得把这一观测专用入口用于审计、业务事实或其他表；详见
 [运行观测事件保留](../docs/runbooks/runtime-event-retention.md)。
 
+0129 只给 `sms_accept` 补人工 RAW 重放现有语句已经写入的列，不把受理角色扩成
+`sms_send`。`raw_vendor_log` 新增 `UPDATE(custom_ids,item_count)`，租约 CAS 仍用
+已有的 lease 列；不授予 payload 密文、指纹、`source` 或
+`system_replay_audit_state`。`sms_chunk` 只有 `UPDATE(late_evidence_at)`，供合法
+迟到报告证据和 `SELECT … FOR UPDATE` 行锁，没有 status、id、发送尝试或路由列，
+也没有表级 UPDATE。`report_event`、`reply_event`、`sms_reply`、`unmatched_report`、
+`report_event_projection`、`callback_report_event` 按当前 INSERT 列授予 INSERT，
+事件事实没有 UPDATE/DELETE。`report_event_projection` 另有
+`UPDATE(projection_changed)`；`callback_task` 另有
+`UPDATE(message_ids,message_times,event_keys)`，不包含 url、密钥、投递状态或重试列。
+序列只增加 `sms_reply_id_seq` 与 `unmatched_report_id_seq` 的 USAGE/SELECT。
+匹配报告读取 `sms_vendor_attempt(vendor_id,chunk_id,outcome)`，该表没有写入权限。
+`sms_chunk` 的这一列授权同时让 unknown 处置沿用既有 chunk→batch→resolution
+锁序；它不授予 chunk.status，也不能代替处置审计。
+
 0124 为 `sms_accept`、`sms_export` 授予受限函数
 `lock_business_authorization(bigint,bigint,bigint,text,text,text,text,text)` 的 EXECUTE。
 该 SECURITY DEFINER 函数固定 `search_path=pg_catalog`，所有业务表显式使用 public，

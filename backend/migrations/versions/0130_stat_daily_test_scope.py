@@ -16,7 +16,7 @@
 from alembic import op
 
 revision = "0130_stat_daily_test_scope"
-down_revision = "0128_runtime_event_retention"
+down_revision = "0129_sms_accept_raw_replay"
 branch_labels = None
 depends_on = None
 

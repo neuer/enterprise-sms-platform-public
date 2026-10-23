@@ -541,3 +541,16 @@ async def test_system_audit_failure_does_not_reprocess_and_raises_incomplete() -
     assert raised.value.raw_id == 9
     assert raised.value.lease_epoch == 1
     assert events == []
+
+
+def test_manual_replay_metadata_update_only_writes_index_columns() -> None:
+    from app.services.raw_lease import FENCED_METADATA_SQL
+
+    normalized = " ".join(FENCED_METADATA_SQL.split())
+    assert normalized == (
+        "UPDATE raw_vendor_log "
+        "SET custom_ids=CAST(:custom_ids AS text[]),item_count=:item_count "
+        "WHERE id=:id "
+        "AND processing_lease_id=CAST(:lease_id AS uuid) "
+        "AND processing_lease_epoch=:epoch"
+    )

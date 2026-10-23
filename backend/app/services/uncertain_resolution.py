@@ -9,16 +9,10 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.apikey import APP_SEND_POLICY_COLUMNS, ApiAppContext, load_app_send_policy
-from app.core.auth.accounts import (
-    ActorPrincipal,
-    SecurityPrincipal,
-    UncertainEffectPrincipal,
-)
+from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
 from app.core.runtime_resources import database_engine
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.idempotency import IdempotencyScope, uncertain_resend_biz_id
-from app.services.outbox import OutboxEventSpec
-from app.services.outbox_repository import enqueue_outbox
 from app.services.pipeline import SendRequest
 from app.services.uncertain_source import prepare_source_proof
 from app.services.usage_ledger import request_usage_release_for_batch
@@ -62,6 +56,10 @@ class UncertainResolutionNotFound(LookupError):
     """处置单或分片不存在。"""
 
 
+class UncertainResolutionForbidden(PermissionError):
+    """已验证主体不再具备当前管理员授权。"""
+
+
 class SourceMessageStateChanged(UncertainResolutionConflict):
     """源消息或其接收人证明已变化，需要重新人工判断。"""
 
@@ -101,141 +99,46 @@ class UncertainResolutionService:
         chunk_id: int,
         action: str,
         principal: SecurityPrincipal,
+        *,
+        ip: str = "192.0.2.10",
+        security_version: int = 1,
+        provider_code: str = "local",
     ) -> UncertainResolution:
-        if action not in RESOLUTION_ACTIONS:
-            raise ValueError("invalid uncertain resolution action")
-        engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                chunk = (
-                    await connection.execute(
-                        text(
-                            """
-                            SELECT c.id,c.batch_id
-                            FROM sms_chunk c
-                            WHERE c.id=:chunk_id AND c.status='unknown_terminal'
-                            FOR UPDATE
-                            """
-                        ),
-                        {"chunk_id": chunk_id},
-                    )
-                ).mappings().one_or_none()
-                if chunk is None:
-                    raise UncertainResolutionNotFound
-                inserted = (
-                    await connection.execute(
-                        text(
-                            """
-                            INSERT INTO sms_uncertain_resolution(
-                              chunk_id,batch_id,action,proposer_account_id
-                            ) VALUES (:chunk_id,:batch_id,:action,:account_id)
-                            ON CONFLICT (chunk_id) DO NOTHING
-                            RETURNING id,chunk_id,batch_id,action,state,
-                              proposer_account_id,confirmer_account_id,
-                              child_batch_id,effect_generation,effect_error
-                            """
-                        ),
-                        {
-                            "chunk_id": chunk_id,
-                            "batch_id": int(chunk["batch_id"]),
-                            "action": action,
-                            "account_id": principal.account_id,
-                        },
-                    )
-                ).mappings().one_or_none()
-                if inserted is None:
-                    raise UncertainResolutionConflict("该分片已有处置单")
-                return _row(inserted)
-        finally:
-            await engine.dispose()
+        """提案与审计同一事务；授权失效或审计失败都不留下处置单。"""
+
+        from app.services.uncertain_resolution_decision import propose_resolution
+
+        return await propose_resolution(
+            self._engine(),
+            chunk_id,
+            action,
+            principal,
+            ip=ip,
+            security_version=security_version,
+            provider_code=provider_code,
+        )
 
     async def confirm(
         self,
         resolution_id: int,
         principal: SecurityPrincipal,
         *,
-        actor: ActorPrincipal | None = None,
+        ip: str = "192.0.2.10",
+        security_version: int = 1,
+        provider_code: str = "local",
     ) -> UncertainResolution:
-        del actor
-        engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await _lock_resolution_source(connection, resolution_id)
-                current = (
-                    await connection.execute(
-                        text(
-                            """
-                            SELECT r.id,r.chunk_id,r.batch_id,r.action,r.state,
-                              r.proposer_account_id,r.confirmer_account_id,
-                              r.child_batch_id,r.effect_generation,r.effect_error,
-                              b.app_id,b.channel,b.category,b.dept
-                            FROM sms_uncertain_resolution r
-                            JOIN sms_batch b ON b.id=r.batch_id
-                            WHERE r.id=:id
-                            """
-                        ),
-                        {"id": resolution_id},
-                    )
-                ).mappings().one_or_none()
-                if current is None:
-                    raise UncertainResolutionNotFound
-                if str(current["state"]) != "proposed":
-                    raise UncertainResolutionConflict("处置单已确认")
-                if int(current["proposer_account_id"]) == principal.account_id:
-                    raise UncertainResolutionConflict("确认人不能是提案人")
-                try:
-                    source_dept = require_source_dept(current["dept"])
-                except ValueError as exc:
-                    raise UncertainResolutionConflict(str(exc)) from exc
-                updated = (
-                    await connection.execute(
-                        text(
-                            """
-                            UPDATE sms_uncertain_resolution
-                            SET state='effect_pending',
-                                confirmer_account_id=:account_id,
-                                confirmed_at=now(),
-                                approved_at=now(),
-                                source_app_id=:app_id,
-                                source_channel=:channel,
-                                source_category=:category,
-                                source_dept=:dept
-                            WHERE id=:id AND state='proposed'
-                            RETURNING id,chunk_id,batch_id,action,state,
-                              proposer_account_id,confirmer_account_id,
-                              child_batch_id,effect_generation,effect_error,
-                              source_app_id,source_channel,source_category,
-                              source_dept
-                            """
-                        ),
-                        {
-                            "id": resolution_id,
-                            "account_id": principal.account_id,
-                            "app_id": current["app_id"],
-                            "channel": current["channel"],
-                            "category": current["category"],
-                            "dept": source_dept,
-                        },
-                    )
-                ).mappings().one_or_none()
-                if updated is None:
-                    raise UncertainResolutionConflict("处置单已确认")
-                generation = int(updated["effect_generation"])
-                await enqueue_outbox(
-                    connection,
-                    OutboxEventSpec(
-                        event_type="uncertain.effect",
-                        aggregate_type="sms_uncertain_resolution",
-                        aggregate_id=str(resolution_id),
-                        task_name="app.tasks.outbox.apply_uncertain_effect",
-                        queue="realtime",
-                        args=(resolution_id,),
-                        dedup_key=f"uncertain.effect:{resolution_id}:{generation}",
-                    ),
-                )
-                return _row(updated)
-        finally:
-            await engine.dispose()
+        """确认、effect Outbox 与审计同一事务；失败整体回滚。"""
+
+        from app.services.uncertain_resolution_decision import confirm_resolution
+
+        return await confirm_resolution(
+            self._engine(),
+            resolution_id,
+            principal,
+            ip=ip,
+            security_version=security_version,
+            provider_code=provider_code,
+        )
 
     async def apply_effect(self, resolution_id: int) -> UncertainResolution:
         """由 Outbox worker 幂等执行已批准处置；HTTP 路径不得直接调用 Pipeline。"""
