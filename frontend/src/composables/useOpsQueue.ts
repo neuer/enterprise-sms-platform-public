@@ -50,7 +50,8 @@ export function useOpsQueue() {
           body: forceResume.value
             ? h("p", ["FORCE 已开启：将", h("strong", "绕过余额与暂停原因守卫"), "，实时与批量队列立即恢复投递。"])
             : h("p", "仅在余额达标且暂停码为 999 时恢复，不满足条件时服务端拒绝。"),
-          auditNote: "恢复行为、force 取值与操作人将写入审计日志。",
+          auditNote:
+            "审计记录数据库已恢复的批次，包含 force、原暂停原因、余额检查是否可用、是否达到阈值和恢复数量，不包含原始暂停声明。",
           confirmText: "恢复队列",
         }))
       )

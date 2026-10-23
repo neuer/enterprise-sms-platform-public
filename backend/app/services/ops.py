@@ -238,6 +238,92 @@ class QueueResumeResult:
     paused_codes: tuple[str, ...]
 
 
+# 审计只保留有限原因，不回写原始 Redis 声明。
+PAUSE_REASONS = frozenset(
+    {
+        "none",
+        "balance",
+        "vendor_account",
+        "account_disabled",
+        "missing_default",
+        "missing_sms_account",
+        "sms_business_inactive",
+        "other",
+    }
+)
+_PAUSE_REASON_BY_CODE = {
+    "999": "balance",
+    "1000": "vendor_account",
+    "1009": "account_disabled",
+    "5000": "missing_default",
+    "10003": "missing_sms_account",
+    "10004": "sms_business_inactive",
+}
+QUEUE_RESUME_DB_EFFECT = "db_batches_requeued"
+
+
+def queue_pause_reason(code: str | None) -> str:
+    """把已解析的暂停原因码收成有限枚举。"""
+
+    if code is None:
+        return "none"
+    return _PAUSE_REASON_BY_CODE.get(code, "other")
+
+
+@dataclass(frozen=True, slots=True)
+class QueueResumeCheck:
+    """同一次恢复检查的低敏感事实，不含原始声明或凭据。"""
+
+    force: bool
+    realtime_pause_reason: str
+    bulk_pause_reason: str
+    balance_known: bool
+    balance_meets_threshold: bool
+
+
+def queue_resume_facts(
+    check: QueueResumeCheck,
+    resumed_batches: int,
+    *,
+    force: bool,
+) -> dict[str, object]:
+    """把同一次检查收成审计载荷；只描述已提交的数据库恢复。"""
+
+    if type(force) is not bool or check.force is not force:
+        raise RuntimeError("queue resume force does not match the checked snapshot")
+    if (
+        check.realtime_pause_reason not in PAUSE_REASONS
+        or check.bulk_pause_reason not in PAUSE_REASONS
+    ):
+        raise ValueError("invalid queue pause reason")
+    return {
+        "force": check.force,
+        "realtime_pause_reason": check.realtime_pause_reason,
+        "bulk_pause_reason": check.bulk_pause_reason,
+        "balance_known": check.balance_known,
+        "balance_meets_threshold": check.balance_meets_threshold,
+        "resumed_batches": resumed_batches,
+        "effect": QUEUE_RESUME_DB_EFFECT,
+    }
+
+
+def queue_resume_check(snapshot: QueueSnapshot, *, force: bool) -> QueueResumeCheck:
+    """用本次已读快照生成审计事实，不重新读取 Redis。"""
+
+    if type(force) is not bool:
+        raise TypeError("force must be a bool")
+    balance = snapshot.balance
+    return QueueResumeCheck(
+        force=force,
+        realtime_pause_reason=queue_pause_reason(
+            parse_queue_pause_claim(snapshot.realtime_code)
+        ),
+        bulk_pause_reason=queue_pause_reason(parse_queue_pause_claim(snapshot.bulk_code)),
+        balance_known=balance is not None,
+        balance_meets_threshold=balance is not None and balance >= snapshot.threshold,
+    )
+
+
 class QueueRecoveryRepository(Protocol):
     async def queue_snapshot(self) -> QueueSnapshot: ...
 
@@ -247,6 +333,8 @@ class QueueRecoveryRepository(Protocol):
         actor: str,
         ip: str,
         principal: SecurityPrincipal,
+        force: bool,
+        check: QueueResumeCheck,
     ) -> tuple[PausedBatch, ...]: ...
 
     async def clear_queue_pauses(self, snapshot: QueueSnapshot) -> bool: ...
@@ -296,10 +384,13 @@ class QueueRecoveryService:
                 raise QueueResumeConflict("厂商余额尚未达到恢复阈值")
             if any(code != "999" for code in codes):
                 raise QueueResumeConflict("非余额熔断必须显式设置 force=true")
+        check = queue_resume_check(snapshot, force=force)
         batches = await self.repository.resume_batches(
             actor=actor,
             ip=ip,
             principal=principal,
+            force=force,
+            check=check,
         )
         if not await self.repository.clear_queue_pauses(snapshot):
             raise QueueResumeConflict("暂停状态已更新，请刷新后重新核验")

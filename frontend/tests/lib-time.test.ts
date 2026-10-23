@@ -25,6 +25,13 @@ describe("时间格式化单点（Asia/Shanghai）", () => {
     expect(formatDateTime("2026-01-01T17:30:00Z")).toBe("2026-01-02 01:30:00")
   })
 
+  it("已带 +08:00 的时间线时刻按绝对时间显示，不再叠加 8 小时", () => {
+    expect(formatDateTime("2026-10-23T00:00:00+08:00")).toBe("2026-10-23 00:00:00")
+    expect(formatDateTime("2026-10-22T16:00:00+00:00")).toBe("2026-10-23 00:00:00")
+    expect(shanghaiDateKey(new Date("2026-10-23T00:00:00+08:00"))).toBe("2026-10-23")
+    expect(shanghaiDateKey(new Date("2026-10-22T16:00:00Z"))).toBe("2026-10-23")
+  })
+
   it("formatDateTimeMinute / formatHm / formatHms 截断到对应精度", () => {
     expect(formatDateTimeMinute(instant)).toBe("09-05 10:03")
     expect(formatHm(instant)).toBe("10:03")

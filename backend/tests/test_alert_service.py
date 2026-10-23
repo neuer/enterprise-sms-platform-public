@@ -299,3 +299,60 @@ async def test_emit_alert_best_effort_skips_missing_sink_and_logs_failure_type(
     assert record.__dict__["source"] == "report"
     assert record.__dict__["error_type"] == "RuntimeError"
     assert "alert storage unavailable" not in caplog.text
+
+
+class RememberingRepository:
+    def __init__(self) -> None:
+        self.claims: list[dict[str, Any]] = []
+
+    async def load_routing(self) -> AlertRouting:
+        return EMPTY
+
+    async def claim(self, **values: Any) -> int | None:
+        self.claims.append(values)
+        seen = [item["dedup_key"] for item in self.claims]
+        if seen.count(values["dedup_key"]) > 1:
+            return None
+        return len(self.claims)
+
+
+@pytest.mark.asyncio
+async def test_same_window_key_dedups_and_new_shanghai_day_key_claims_again() -> None:
+    repository = RememberingRepository()
+    wecom = FakeWeCom()
+    smtp = FakeSmtp()
+    service = AlertService(repository, wecom=wecom, smtp=smtp)
+
+    await service.emit(
+        alert_type="anomaly",
+        level="crit",
+        title="验证码发送量异常",
+        detail={"recommendation": "建议：核查该应用调用来源，必要时停用 API Key 或轮换。"},
+        dedup_key="anomaly:7:verify:2026-10-22",
+        dedup_hours=24,
+    )
+    await service.emit(
+        alert_type="anomaly",
+        level="crit",
+        title="验证码发送量异常",
+        detail={"recommendation": "建议：核查该应用调用来源，必要时停用 API Key 或轮换。"},
+        dedup_key="anomaly:7:verify:2026-10-22",
+        dedup_hours=24,
+    )
+    await service.emit(
+        alert_type="anomaly",
+        level="warn",
+        title="发送量异常",
+        detail={"category": "notice"},
+        dedup_key="anomaly:7:notice:2026-10-23",
+        dedup_hours=24,
+    )
+
+    assert [item["dedup_key"] for item in repository.claims] == [
+        "anomaly:7:verify:2026-10-22",
+        "anomaly:7:verify:2026-10-22",
+        "anomaly:7:notice:2026-10-23",
+    ]
+    assert {item["dedup_hours"] for item in repository.claims} == {24}
+    assert wecom.calls == []
+    assert smtp.calls == []

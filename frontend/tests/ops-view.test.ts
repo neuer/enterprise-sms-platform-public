@@ -298,7 +298,7 @@ describe("统一运维中心", () => {
     sessionStorage.setItem("sms_token", "jwt-ops")
     const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
     vi.stubGlobal("fetch", fetch)
-    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     const wrapper = await mountOps()
     await flushPromises()
 
@@ -350,6 +350,13 @@ describe("统一运维中心", () => {
         ([url, init]) => String(url).includes("/queue/resume?force=true") && init?.method === "POST",
       ),
     ).toBe(true)
+    const auditNote = vnodeText(confirm.mock.calls.at(-1)?.[0])
+    expect(auditNote).toContain("force")
+    expect(auditNote).toContain("原暂停原因")
+    expect(auditNote).toContain("余额检查是否可用")
+    expect(auditNote).toContain("是否达到阈值")
+    expect(auditNote).toContain("恢复数量")
+    expect(auditNote).toContain("不包含原始暂停声明")
 
     wrapper.unmount()
     sessionStorage.removeItem("sms_token")

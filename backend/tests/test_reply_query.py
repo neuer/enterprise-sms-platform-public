@@ -358,6 +358,8 @@ async def test_sql_optout_reprotects_phone_and_persists_all_hmac_aliases() -> No
     sql, params = connection.calls[0]
     assert "JOIN reply_event" in sql
     assert "batch_id IS NOT NULL" not in sql
+    assert "CAST(:dept AS varchar(128)) IS NULL" in sql
+    assert "b.dept=CAST(:dept AS varchar(128))" in sql
     assert params == {"reply_id": 5, "dept": "研发部"}
     assert any("INSERT INTO blacklist(" in call[0] for call in connection.calls)
     alias_call = next(
@@ -367,3 +369,70 @@ async def test_sql_optout_reprotects_phone_and_persists_all_hmac_aliases() -> No
     audit_call = connection.calls[-1]
     assert "INSERT INTO audit_log" in audit_call[0]
     assert "phone" not in str(audit_call[1].get("after"))
+
+
+@pytest.mark.asyncio
+async def test_sql_optout_types_null_department_and_keeps_the_constraint() -> None:
+    repository = SqlReplyQueryRepository(crypto=crypto())
+    connection = FakeConnection([FakeResult(rows=[])])
+    bind(repository, connection)
+
+    assert (
+        await repository.optout(
+            8,
+            dept=None,
+            principal=PRINCIPAL,
+            ip="10.0.0.8",
+        )
+        is False
+    )
+
+    sql, params = connection.calls[0]
+    assert "CAST(:dept AS varchar(128)) IS NULL" in sql
+    assert "b.dept=CAST(:dept AS varchar(128))" in sql
+    assert params == {"reply_id": 8, "dept": None}
+    assert len(connection.calls) == 1
+    assert "INSERT INTO blacklist(" not in sql
+
+
+@pytest.mark.asyncio
+async def test_sql_optout_audit_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service_crypto = crypto()
+    protected = service_crypto.protect_phone("13800138000", table="reply_event")
+    repository = SqlReplyQueryRepository(crypto=service_crypto)
+    connection = FakeConnection(
+        [
+            FakeResult(
+                rows=[
+                    {
+                        "phone_enc": protected.phone_enc,
+                        "phone_hmac": protected.phone_hmac,
+                        "phone_mask": protected.phone_mask,
+                        "key_version": protected.key_version,
+                    }
+                ]
+            ),
+            FakeResult(rows=[]),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(),
+            FakeResult(rows=[{"database_user": "sms_accept", "txid": 7}]),
+            FakeResult(),
+        ]
+    )
+    bind(repository, connection)
+
+    async def fail(_connection: object, _event: object) -> None:
+        raise RuntimeError("synthetic audit failure")
+
+    monkeypatch.setattr("app.services.blacklist_repository.insert_audit", fail)
+
+    with pytest.raises(RuntimeError, match="synthetic audit failure"):
+        await repository.optout(
+            5,
+            dept="研发部",
+            principal=PRINCIPAL,
+            ip="10.0.0.8",
+        )
