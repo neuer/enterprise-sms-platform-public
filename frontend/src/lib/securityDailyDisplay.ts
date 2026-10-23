@@ -86,11 +86,95 @@ export function deliveryLabel(value: string): string {
   return deliveryLabels[value as DeliveryStatus] ?? "数据不可用"
 }
 
-export function isHistoricSupersededSent(report: SecurityDailyReport): boolean {
+export function isHistoricSupersededSent(report: {
+  delivered_at?: string | null
+  last_error?: string | null
+}): boolean {
   return Boolean(report.delivered_at && (report.last_error ?? "").includes("配置已更新"))
 }
 
-export function reportDeliveryLabel(report: SecurityDailyReport): string {
+export interface SecurityDailyStatusCopy {
+  generationLabel: string
+  deliveryLabel: string
+  /** 内容生成事实，不含投递结果。 */
+  generationFact: string
+  /** 投递事实。数据不可用时说明问题通报，不宣称邮件不会发出。 */
+  deliveryFact: string
+  /** 没有完整结构化报告时的详情说明；就绪报告为 null。 */
+  detailNotice: string | null
+  sendActionLabel: string
+  retryActionLabel: string
+  deliveryTagType: "success" | "warning" | "danger" | "info"
+}
+
+/** 列表、详情、按钮和结果消息共用的生成/投递说明。 */
+export function describeSecurityDailyReport(report: {
+  generation_status: string
+  delivery_status: string
+  delivered_at?: string | null
+  last_error?: string | null
+  payload?: SecurityDailyReport["payload"] | null
+}): SecurityDailyStatusCopy {
+  const problemNotice = report.generation_status === "unavailable" || report.generation_status === "failed"
+  const generationFact =
+    report.generation_status === "unavailable"
+      ? "数据不可用：当前没有完整日报数据，当前没有可展示的脱敏结构化报告"
+      : report.generation_status === "failed"
+        ? "生成失败：当前没有可展示的脱敏结构化报告"
+        : report.generation_status === "ready"
+          ? "日报已生成"
+          : report.generation_status === "pending"
+            ? "日报正在生成"
+            : generationLabel(report.generation_status)
+  const channel = problemNotice ? "问题通报" : "邮件"
+  let deliveryFact = `${channel}${deliveryPhrase(report.delivery_status)}`
+  if (report.delivery_status === "failed" && isHistoricSupersededSent(report)) {
+    deliveryFact = "历史投递已完成"
+  }
+  const detailNotice = report.generation_status === "ready" ? null : `${generationFact}。${deliveryFact}。`
+  return {
+    generationLabel: generationLabel(report.generation_status),
+    deliveryLabel: reportDeliveryLabel(report),
+    generationFact,
+    deliveryFact,
+    detailNotice,
+    sendActionLabel: "手动投递",
+    retryActionLabel: "重试投递",
+    deliveryTagType: reportDeliveryTagType(report),
+  }
+}
+
+function deliveryPhrase(status: string): string {
+  if (status === "sent") return "已投递"
+  if (status === "pending") return "等待投递"
+  if (status === "sending") return "投递中"
+  if (status === "failed") return "投递失败"
+  if (status === "unknown") return "投递结果未知"
+  if (status === "not_sent") return "尚未投递"
+  return "状态不可用"
+}
+
+/** 立即生成结束后的提示：生成事实和投递事实分开，避免把问题通报说成不会投递。 */
+export function securityDailyGenerationMessage(report: {
+  generation_status: string
+  delivery_status: string
+  delivered_at?: string | null
+  last_error?: string | null
+  payload?: SecurityDailyReport["payload"] | null
+}): string {
+  const copy = describeSecurityDailyReport(report)
+  if (report.generation_status === "ready") {
+    return "安全日报已生成 · 已新增一条记录（不覆盖历史）并提交邮件投递 · 本次操作已记入审计"
+  }
+  const reason = report.last_error?.trim() || copy.generationFact
+  return `${reason}。${copy.deliveryFact} · 本次操作已记入审计`
+}
+
+export function reportDeliveryLabel(report: {
+  delivery_status: string
+  delivered_at?: string | null
+  last_error?: string | null
+}): string {
   if (report.delivery_status === "sent") return "已投递"
   if (report.delivery_status === "failed" && isHistoricSupersededSent(report)) {
     return "历史投递已完成"
@@ -98,7 +182,11 @@ export function reportDeliveryLabel(report: SecurityDailyReport): string {
   return deliveryLabel(report.delivery_status)
 }
 
-export function reportDeliveryTagType(report: SecurityDailyReport): "success" | "warning" | "danger" | "info" {
+export function reportDeliveryTagType(report: {
+  delivery_status: string
+  delivered_at?: string | null
+  last_error?: string | null
+}): "success" | "warning" | "danger" | "info" {
   if (report.delivery_status === "sent") return "success"
   if (report.delivery_status === "failed" && isHistoricSupersededSent(report)) return "success"
   return tagType(report.delivery_status)

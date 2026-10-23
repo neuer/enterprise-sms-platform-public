@@ -369,6 +369,7 @@ class SecurityDailyDeliveryRequest:
     delivery_id: str = ""
     delivery_generation: int = 1
     recipient_set_digest: str = ""
+    error: str | None = None
 
     def __post_init__(self) -> None:
         if (

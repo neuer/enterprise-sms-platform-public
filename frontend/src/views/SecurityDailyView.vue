@@ -34,12 +34,11 @@ import SecurityDailyReportDetail from "../components/SecurityDailyReportDetail.v
 import {
   deliveryLabels,
   deliverySegOptions,
+  describeSecurityDailyReport,
   displayMoment,
-  generationLabel,
   generationSegOptions,
   isHistoricSupersededSent,
-  reportDeliveryLabel,
-  reportDeliveryTagType,
+  securityDailyGenerationMessage,
   statusLabel,
   statusSegOptions,
   tagType,
@@ -135,6 +134,7 @@ const {
   formatError: (error) => apiErrorMessage(error, "安全日报列表暂不可用，请刷新重试"),
   clearOnLoad: true,
   clearOnError: true,
+  pageSize: filters.pageSize,
 })
 
 const overviewRead = useLatestRead()
@@ -214,9 +214,9 @@ async function generateReport(): Promise<void> {
     await refresh()
     await openReport(report.id)
     if (report.generation_status === "ready") {
-      ElMessage.success("安全日报已生成 · 已新增一条记录（不覆盖历史）并提交邮件投递 · 本次操作已记入审计")
+      ElMessage.success(securityDailyGenerationMessage(report))
     } else {
-      ElMessage.warning(`${report.last_error ?? "证据源不可用，已新增记录并发送问题通报"} · 本次操作已记入审计`)
+      ElMessage.warning(securityDailyGenerationMessage(report))
     }
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, "安全日报生成失败，请刷新重试"))
@@ -298,6 +298,10 @@ async function requestDelivery(action: "send" | "retry"): Promise<void> {
   } finally {
     delivering.value = false
   }
+}
+
+function reportCopy(report: SecurityDailyReport) {
+  return describeSecurityDailyReport(report)
 }
 
 function canSend(report: SecurityDailyReport): boolean {
@@ -475,14 +479,14 @@ onMounted(() => void refresh())
         <el-table-column label="生成" width="110"
           ><template #default="scope"
             ><el-tag :type="tagType(scope.row.generation_status)" size="small">{{
-              generationLabel(scope.row.generation_status)
+              reportCopy(scope.row).generationLabel
             }}</el-tag></template
           ></el-table-column
         >
         <el-table-column label="投递" width="125"
           ><template #default="scope"
-            ><el-tag :type="reportDeliveryTagType(scope.row)" size="small">{{
-              reportDeliveryLabel(scope.row)
+            ><el-tag :type="reportCopy(scope.row).deliveryTagType" size="small">{{
+              reportCopy(scope.row).deliveryLabel
             }}</el-tag></template
           ></el-table-column
         >

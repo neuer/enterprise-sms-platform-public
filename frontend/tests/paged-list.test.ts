@@ -1,6 +1,9 @@
-import { ElMessage } from "element-plus"
+import { flushPromises, mount } from "@vue/test-utils"
+import ElementPlus, { ElMessage } from "element-plus"
+import { defineComponent, onMounted, ref } from "vue"
 import { vi } from "vitest"
 
+import ListPagination from "../src/components/ListPagination.vue"
 import { usePagedList } from "../src/composables/usePagedList"
 
 interface Row {
@@ -200,3 +203,162 @@ describe("usePagedList", () => {
 async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0))
 }
+
+const PAGE_SIZE = 20
+const SYNTHETIC_ROWS = Array.from({ length: 48 }, (_, index) => ({ id: index + 1 }))
+
+function pageOf(page: number, total = SYNTHETIC_ROWS.length) {
+  const start = (page - 1) * PAGE_SIZE
+  return { items: SYNTHETIC_ROWS.slice(start, start + PAGE_SIZE), total, page }
+}
+
+const PagedHarness = defineComponent({
+  components: { ListPagination },
+  props: {
+    fetcher: { type: Function, required: true },
+  },
+  setup(props) {
+    const page = ref(1)
+    const list = usePagedList({
+      page,
+      fetcher: (requestedPage, signal) =>
+        props.fetcher(requestedPage, signal) as Promise<{ items: { id: number }[]; total: number; page: number }>,
+      errorMessage: "列表加载失败",
+      clearOnLoad: true,
+      clearOnError: true,
+      pageSize: PAGE_SIZE,
+    })
+    onMounted(() => void list.load())
+    function search(): void {
+      page.value = 1
+      void list.load()
+    }
+    return { page, total: list.total, load: list.load, search, errorMessage: list.errorMessage, pageSize: PAGE_SIZE }
+  },
+  template: `
+    <div>
+      <span data-testid="page">{{ page }}</span>
+      <span data-testid="total">{{ total }}</span>
+      <p data-testid="error">{{ errorMessage }}</p>
+      <ListPagination v-model:page="page" :total="total" :page-size="pageSize" @change="load" />
+    </div>
+  `,
+})
+
+async function clickPage(wrapper: ReturnType<typeof mount>, pageNumber: number): Promise<void> {
+  const target = wrapper.findAll(".el-pager li").find((item) => item.text().trim() === String(pageNumber))
+  expect(target).toBeTruthy()
+  await target!.trigger("click")
+  await flushPromises()
+}
+
+describe("usePagedList 与真实 ElPagination", () => {
+  it("48 条合成数据从第 1 页进入第 2 页后停留，刷新高页不回跳", async () => {
+    const calls: number[] = []
+    let gate: ReturnType<typeof deferred<{ items: { id: number }[]; total: number; page: number }>> | null = null
+    const wrapper = mount(PagedHarness, {
+      props: {
+        fetcher: async (page: number) => {
+          calls.push(page)
+          if (gate) return gate.promise
+          return pageOf(page)
+        },
+      },
+      global: { plugins: [ElementPlus] },
+    })
+    await flushPromises()
+    expect(calls).toEqual([1])
+    expect(wrapper.get("[data-testid=page]").text()).toBe("1")
+    expect(wrapper.get("[data-testid=total]").text()).toBe("48")
+    expect(wrapper.find(".el-pagination").exists()).toBe(true)
+
+    gate = deferred()
+    await clickPage(wrapper, 2)
+    expect(wrapper.get("[data-testid=page]").text()).toBe("2")
+    expect(wrapper.get("[data-testid=total]").text()).toBe("48")
+    expect(calls).toEqual([1, 2])
+    gate.resolve(pageOf(2))
+    gate = null
+    await flushPromises()
+    expect(calls).toEqual([1, 2])
+    expect(wrapper.get("[data-testid=page]").text()).toBe("2")
+
+    await wrapper.vm.load()
+    await flushPromises()
+    expect(calls).toEqual([1, 2, 2])
+    expect(wrapper.get("[data-testid=page]").text()).toBe("2")
+    wrapper.unmount()
+  })
+
+  it("快速从第 2 页切到第 3 页只保留最后一次结果", async () => {
+    const calls: number[] = []
+    const second = deferred<{ items: { id: number }[]; total: number; page: number }>()
+    const third = deferred<{ items: { id: number }[]; total: number; page: number }>()
+    let release = false
+    const wrapper = mount(PagedHarness, {
+      props: {
+        fetcher: async (page: number) => {
+          calls.push(page)
+          if (!release) return pageOf(page)
+          if (page === 2) return second.promise
+          if (page === 3) return third.promise
+          return pageOf(page)
+        },
+      },
+      global: { plugins: [ElementPlus] },
+    })
+    await flushPromises()
+    release = true
+    await clickPage(wrapper, 2)
+    await clickPage(wrapper, 3)
+    third.resolve(pageOf(3))
+    await flushPromises()
+    second.resolve(pageOf(2))
+    await flushPromises()
+    await flushPromises()
+    expect(calls).toEqual([1, 2, 3])
+    expect(wrapper.get("[data-testid=page]").text()).toBe("3")
+    wrapper.unmount()
+  })
+
+  it("筛选显式回到第 1 页，总数缩小只矫正一次，读取失败不循环", async () => {
+    const calls: number[] = []
+    let total = 48
+    let fail = false
+    const wrapper = mount(PagedHarness, {
+      props: {
+        fetcher: async (page: number) => {
+          calls.push(page)
+          if (fail) throw new Error("读取失败")
+          return pageOf(page, total)
+        },
+      },
+      global: { plugins: [ElementPlus] },
+    })
+    await flushPromises()
+    await clickPage(wrapper, 2)
+    await wrapper.vm.search()
+    await flushPromises()
+    expect(calls.at(-1)).toBe(1)
+    expect(wrapper.get("[data-testid=page]").text()).toBe("1")
+
+    await clickPage(wrapper, 3)
+    const beforeShrink = calls.length
+    total = 25
+    await wrapper.vm.load()
+    await flushPromises()
+    await flushPromises()
+    expect(calls.slice(beforeShrink)).toEqual([3, 2])
+    expect(wrapper.get("[data-testid=page]").text()).toBe("2")
+    expect(wrapper.get("[data-testid=total]").text()).toBe("25")
+
+    const beforeFailure = calls.length
+    fail = true
+    await wrapper.vm.load()
+    await flushPromises()
+    await flushPromises()
+    expect(calls.slice(beforeFailure)).toEqual([2])
+    expect(wrapper.get("[data-testid=error]").text()).toBe("读取失败")
+    wrapper.unmount()
+  })
+})
