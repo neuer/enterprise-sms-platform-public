@@ -83,6 +83,12 @@
   margin: -8px 4px 12px;
   color: var(--tx-3);
   font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.report-freshness-hint .report-batch-link {
+  margin-left: 6px;
+  color: var(--verdi-text);
 }
 
 /* 导出状态条：内联跟随筛选条，仅有任务时出现 */
@@ -380,7 +386,17 @@
 .report-trend-chart {
   flex: 1 1 auto;
   width: 100%;
+  min-width: 0;
+  height: 170px;
   min-height: 170px;
+}
+
+.report-mobile-sort {
+  display: none;
+}
+
+.report-detail-empty {
+  padding: 12px 8px 20px;
 }
 
 .report-table-card .el-card__body {
@@ -434,6 +450,43 @@
 
   .report-table {
     display: none;
+  }
+
+  .report-mobile-sort {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 14px 0;
+  }
+
+  .report-mobile-sort label {
+    display: flex;
+    flex: 1;
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+    color: var(--tx-2);
+    font-size: var(--fs-sm);
+  }
+
+  .report-mobile-sort select,
+  .report-mobile-sort button {
+    min-height: 44px;
+    color: var(--tx);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+  }
+
+  .report-mobile-sort select {
+    flex: 1;
+    min-width: 0;
+    padding: 0 8px;
+  }
+
+  .report-mobile-sort button {
+    flex: 0 0 auto;
+    padding: 0 12px;
   }
 
   .report-mobile-list {

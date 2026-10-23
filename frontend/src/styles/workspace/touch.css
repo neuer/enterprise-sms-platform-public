@@ -15,7 +15,8 @@
   .security-daily-date .el-input__wrapper,
   .el-drawer__close-btn,
   .el-dialog__headerbtn,
-  .el-message-box__headerbtn {
+  .el-message-box__headerbtn,
+  .navigation-close {
     min-height: 44px;
   }
 
@@ -30,7 +31,8 @@
   .ops-tabs button,
   .el-drawer__close-btn,
   .el-dialog__headerbtn,
-  .el-message-box__headerbtn {
+  .el-message-box__headerbtn,
+  .navigation-close {
     min-width: 44px;
   }
 
@@ -138,5 +140,16 @@
 
   .el-input-number.is-controls-right .el-input__wrapper {
     padding-right: 15px;
+  }
+}
+
+/* 移动抽屉的关闭钮在 959px 即出现；命中区跟抽屉断点，不跟 760px 触屏规则。 */
+@media (max-width: 959px) {
+  .navigation-close {
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
   }
 }

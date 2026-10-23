@@ -29,7 +29,8 @@ import { buildCompose, channelLabel, composePct, describeCompose, shortBatchNo }
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
 import { formatNumber } from "../lib/format"
-import { formatDateTime, formatDateTimeMinute, toApiDateTime } from "../lib/time"
+import { formatDateTime, formatDateTimeMinute } from "../lib/time"
+import { useBatchScheduleOps } from "./batch/useBatchScheduleOps"
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
 import { useSessionStore } from "../stores/session"
@@ -41,9 +42,6 @@ const route = useRoute()
 const drawer = ref(false)
 const selected = ref<BatchItem | null>(null)
 const detailStatus = ref("")
-const rescheduleOpen = ref(false)
-const scheduledAt = ref("")
-const rescheduling = ref(false)
 const canWrite = computed(() => session.canWrite)
 const canDecrypt = computed(() => session.canDecrypt)
 const isAdmin = computed(() => session.isAdmin)
@@ -129,10 +127,36 @@ const {
   toastError: true,
 })
 
+const {
+  detailUnconfirmed,
+  canScheduleOps,
+  cancelling,
+  rescheduling,
+  rescheduleOpen,
+  scheduledAt,
+  resetDetailFlags,
+  cancelSelected,
+  openReschedule,
+  saveReschedule,
+  retrySelectedRead,
+} = useBatchScheduleOps({
+  selected,
+  drawer,
+  canWrite,
+  openToken: () => openToken,
+  startRead: () => batchRead.start(),
+  getBatch,
+  reloadList: load,
+  confirmAuditedAction,
+  cancelBatch,
+  rescheduleBatch,
+})
+
 async function openBatch(item: BatchItem): Promise<void> {
   const token = ++openToken
   const signal = batchRead.start()
   drawer.value = true
+  resetDetailFlags()
   selected.value = item
   details.value = []
   detailTotal.value = 0
@@ -153,72 +177,9 @@ function filterDetails(): void {
   void loadDetails()
 }
 
-const canScheduleOps = computed(() => canWrite.value && selected.value?.status === "scheduled")
 const canResendFailed = computed(
   () => canWrite.value && selected.value?.channel === "web" && (selected.value?.failed ?? 0) > 0,
 )
-
-const cancelling = ref(false)
-async function cancelSelected(): Promise<void> {
-  if (!selected.value || !canScheduleOps.value || cancelling.value) return
-  const target = selected.value
-  const batch = target.batch_no
-  cancelling.value = true
-  try {
-    if (
-      !(await confirmAuditedAction({
-        isCurrent: () => selected.value === target && canScheduleOps.value,
-        title: "确认取消",
-        body: `取消批次 ${batch}？配额将按规则回补。`,
-        auditNote: "取消行为与操作人将写入审计日志。",
-        confirmText: "确认取消",
-      }))
-    )
-      return
-    await cancelBatch(batch)
-    drawer.value = false
-    ElMessage.success("批次已取消 · 本次操作已记入审计")
-    await load()
-  } catch (error) {
-    ElMessage.error(errorText(error, "取消失败"))
-  } finally {
-    cancelling.value = false
-  }
-}
-
-function openReschedule(): void {
-  if (!canScheduleOps.value) return
-  scheduledAt.value = selected.value?.scheduled_at || ""
-  rescheduleOpen.value = true
-}
-
-async function saveReschedule(): Promise<void> {
-  if (!selected.value || !scheduledAt.value || rescheduling.value) return
-  const target = selected.value
-  const batch = target.batch_no
-  if (
-    !(await confirmAuditedAction({
-      isCurrent: () => selected.value === target && canScheduleOps.value,
-      title: "确认改期",
-      body: `批次 ${batch} 将改到新的定时时间，并重新执行审批判定；到达新时间前批次保持「已排期」。`,
-      auditNote: "改期行为与操作人将写入审计日志。",
-      confirmText: "确认改期",
-    }))
-  )
-    return
-  rescheduling.value = true
-  try {
-    await rescheduleBatch(batch, toApiDateTime(new Date(scheduledAt.value)))
-    rescheduleOpen.value = false
-    drawer.value = false
-    ElMessage.success("批次已改期并重新执行审批判定 · 本次操作已记入审计")
-    await load()
-  } catch (error) {
-    ElMessage.error(errorText(error, "改期失败"))
-  } finally {
-    rescheduling.value = false
-  }
-}
 
 const resending = ref(false)
 async function resendFailed(): Promise<void> {
@@ -550,8 +511,10 @@ watch(drawer, (open) => {
     :can-decrypt="canDecrypt"
     :can-schedule-ops="canScheduleOps"
     :can-resend-failed="canResendFailed"
+    :detail-unconfirmed="detailUnconfirmed"
     :cancelling="cancelling"
     :resending="resending"
+    @retry-detail="retrySelectedRead"
     @cancel="cancelSelected"
     @reschedule="openReschedule"
     @resend="resendFailed"

@@ -13,7 +13,7 @@ COPY frontend .
 COPY VERSION /VERSION
 RUN VITE_APP_VERSION="$(tr -d '\n' < /VERSION)" npm run build
 
-FROM nginx:stable-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
+FROM nginx:stable-alpine@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951
 
 # Retained signed packages; installation never consults a mutable mirror.
 RUN --network=none --mount=type=bind,source=deploy/vendor-apk/web,target=/apks,ro \

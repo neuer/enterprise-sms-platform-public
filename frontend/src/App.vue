@@ -2,7 +2,8 @@
 import { formatNumber } from "./lib/format"
 import { ElConfigProvider, ElMessage } from "element-plus"
 import zhCn from "element-plus/es/locale/lang/zh-cn"
-import { computed, defineAsyncComponent, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { computed, defineAsyncComponent, nextTick, onBeforeMount, onBeforeUnmount, onMounted, ref, watch } from "vue"
+import { SESSION_CLEARING_EVENT } from "./api/sessionEvents"
 import { useRoute, useRouter } from "vue-router"
 import { getBalance } from "./api/dashboard"
 import { usePolling } from "./composables/usePolling"
@@ -24,6 +25,14 @@ const publicRoute = computed(() => Boolean(route.meta.public))
 const pageTitle = computed(() => String(route.meta.title || "仪表盘"))
 const pageGroup = computed(() => String(route.meta.group || "概览"))
 const navigationOpen = ref(false)
+const drawerQuery = typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 959px)") : null
+const mobileDrawer = ref(drawerQuery?.matches ?? false)
+const sidebarRoot = ref<HTMLElement | null>(null)
+const navCloseButton = ref<HTMLButtonElement | null>(null)
+const navToggleButton = ref<HTMLButtonElement | null>(null)
+let navTrigger: HTMLElement | null = null
+const lockWorkspace = computed(() => mobileDrawer.value && navigationOpen.value)
+const lockSidebar = computed(() => mobileDrawer.value && !navigationOpen.value)
 const currentBalance = ref<number | null>(null)
 const passwordDialogOpen = ref(false)
 const themeMode = ref<ThemeMode>(getTheme())
@@ -93,8 +102,87 @@ function closeNavigation(): void {
   navigationOpen.value = false
 }
 
+function focusPageHeading(): void {
+  const heading = document.querySelector<HTMLElement>("main h1")
+  if (!heading) return
+  heading.tabIndex = -1
+  heading.focus()
+}
+
+function closeNavigationFromUser(): void {
+  const trigger = navTrigger
+  navigationOpen.value = false
+  void nextTick(() => {
+    if (
+      trigger &&
+      trigger.isConnected &&
+      !trigger.hasAttribute("disabled") &&
+      !trigger.closest("[inert]") &&
+      mobileDrawer.value
+    ) {
+      trigger.focus()
+      return
+    }
+    focusPageHeading()
+  })
+}
+
+function openNavigation(event: MouseEvent): void {
+  if (navigationOpen.value) {
+    closeNavigationFromUser()
+    return
+  }
+  navTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : navToggleButton.value
+  navigationOpen.value = true
+}
+
+function handleDrawerChange(event: MediaQueryListEvent): void {
+  mobileDrawer.value = event.matches
+  if (!event.matches) navigationOpen.value = false
+}
+
+function handleNavSessionClear(): void {
+  navigationOpen.value = false
+  navTrigger = null
+}
+
+function focusableNavItems(): HTMLElement[] {
+  const root = sidebarRoot.value
+  if (!root) return []
+  return [...root.querySelectorAll<HTMLElement>("a[href], button:not([disabled])")].filter(
+    (element) => !element.hasAttribute("disabled") && element.tabIndex !== -1 && !element.closest("[inert]"),
+  )
+}
+
+function visibleOverlayOpen(): boolean {
+  return [...document.querySelectorAll<HTMLElement>(".el-overlay")].some((overlay) => {
+    if (overlay.getAttribute("aria-hidden") === "true") return false
+    return overlay.style.display !== "none" && overlay.style.visibility !== "hidden"
+  })
+}
+
 function handleKeydown(event: KeyboardEvent): void {
-  if (event.key === "Escape") closeNavigation()
+  if (!navigationOpen.value) return
+  if (event.key === "Escape") {
+    if (visibleOverlayOpen()) return
+    event.preventDefault()
+    closeNavigationFromUser()
+    return
+  }
+  if (!mobileDrawer.value || event.key !== "Tab") return
+  const items = focusableNavItems()
+  if (!items.length) return
+  const first = items[0]
+  const last = items[items.length - 1]
+  const active = document.activeElement
+  const root = sidebarRoot.value
+  if (event.shiftKey && (active === first || !root?.contains(active))) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && (active === last || !root?.contains(active))) {
+    event.preventDefault()
+    first.focus()
+  }
 }
 
 function handleDashboardBalance(event: Event): void {
@@ -138,7 +226,22 @@ watch([authenticatedShell, dashboardRoute, () => session.role], () => {
   if (!authenticatedShell.value || session.role !== "admin" || dashboardRoute.value) balanceRead.cancel()
   if (!authenticatedShell.value || session.role !== "admin") currentBalance.value = null
 })
-watch(() => route.fullPath, closeNavigation)
+watch(
+  () => route.fullPath,
+  async () => {
+    const wasOpen = navigationOpen.value && mobileDrawer.value
+    closeNavigation()
+    navTrigger = null
+    if (!wasOpen) return
+    await nextTick()
+    focusPageHeading()
+  },
+)
+watch(lockWorkspace, async (locked) => {
+  if (!locked) return
+  await nextTick()
+  navCloseButton.value?.focus()
+})
 watch(
   authenticatedShell,
   (authed) => {
@@ -160,7 +263,9 @@ onMounted(() => {
   window.addEventListener("sms:session-refreshed", handleSessionRefreshed)
   window.addEventListener("storage", handleSessionStorageSignal)
   window.addEventListener("pageshow", handlePageShow)
-  window.addEventListener("keydown", handleKeydown)
+  window.addEventListener("keydown", handleKeydown, true)
+  window.addEventListener(SESSION_CLEARING_EVENT, handleNavSessionClear)
+  drawerQuery?.addEventListener("change", handleDrawerChange)
   balancePolling.start()
 })
 onBeforeUnmount(() => {
@@ -171,7 +276,9 @@ onBeforeUnmount(() => {
   window.removeEventListener("sms:session-refreshed", handleSessionRefreshed)
   window.removeEventListener("storage", handleSessionStorageSignal)
   window.removeEventListener("pageshow", handlePageShow)
-  window.removeEventListener("keydown", handleKeydown)
+  window.removeEventListener("keydown", handleKeydown, true)
+  window.removeEventListener(SESSION_CLEARING_EVENT, handleNavSessionClear)
+  drawerQuery?.removeEventListener("change", handleDrawerChange)
   window.removeEventListener("sms:dashboard-balance", handleDashboardBalance)
   approvalBadge.stop()
 })
@@ -203,14 +310,29 @@ async function handlePasswordChanged(): Promise<void> {
       <router-view />
     </div>
     <div v-else :class="['app-shell', { 'navigation-open': navigationOpen }]">
-      <aside id="primary-navigation" class="sidebar" aria-label="应用导航">
+      <aside
+        id="primary-navigation"
+        ref="sidebarRoot"
+        class="sidebar"
+        aria-label="应用导航"
+        :inert="lockSidebar ? true : undefined"
+        :aria-hidden="lockSidebar ? 'true' : undefined"
+      >
         <div class="brand" data-testid="brand">
           <span class="brand-mark" aria-hidden="true">鸾</span>
           <div>
             <strong>青鸾</strong>
             <small>SMS PLATFORM · XTC</small>
           </div>
-          <button class="navigation-close" type="button" aria-label="关闭导航" @click="closeNavigation">×</button>
+          <button
+            ref="navCloseButton"
+            class="navigation-close"
+            data-testid="navigation-close"
+            type="button"
+            aria-label="关闭导航"
+            @click="closeNavigationFromUser"
+            >×</button
+          >
         </div>
 
         <nav aria-label="主导航">
@@ -239,19 +361,24 @@ async function handlePasswordChanged(): Promise<void> {
         type="button"
         aria-label="关闭导航"
         tabindex="-1"
-        @click="closeNavigation"
+        @click="closeNavigationFromUser"
       ></button>
 
-      <div class="workspace">
+      <div
+        class="workspace"
+        :inert="lockWorkspace ? true : undefined"
+        :aria-hidden="lockWorkspace ? 'true' : undefined"
+      >
         <header class="topbar">
           <button
+            ref="navToggleButton"
             class="navigation-toggle"
             data-testid="navigation-toggle"
             type="button"
             aria-label="打开主导航"
             aria-controls="primary-navigation"
             :aria-expanded="navigationOpen"
-            @click="navigationOpen = !navigationOpen"
+            @click="openNavigation"
           >
             <span aria-hidden="true"></span>
             <span aria-hidden="true"></span>
