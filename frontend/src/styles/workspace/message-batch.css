@@ -714,12 +714,20 @@
   margin-left: auto;
 }
 
+.message-query-empty {
+  display: none;
+}
+
 @media (max-width: 760px) {
   .message-heading {
     align-items: stretch;
   }
   .query-table {
     display: none;
+  }
+  .message-query-empty {
+    display: block;
+    padding: 8px 4px 16px;
   }
   /* 手机卡片本身带边框与底色，外层台账面板退为透明，避免卡片套卡片 */
   .batch-ledger {

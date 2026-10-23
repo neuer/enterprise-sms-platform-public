@@ -37,10 +37,12 @@ const {
   exportTask,
   exportBusy,
   exportError,
+  exportTracking,
   start: startExportTask,
+  retryTracking: retryExportTracking,
   download: downloadExportFile,
 } = useExportTask({
-  timeoutMessage: "导出状态查询超时（已超过 5 分钟），请稍后重新发起导出",
+  timeoutMessage: "导出状态查询超时（已超过 5 分钟）。同一任务仍在后台，可重新查询，不必再次创建。",
 })
 
 const unmatchedEmpty = computed(() =>
@@ -187,6 +189,13 @@ watch(
               link
               @click="downloadUnmatchedExport"
               >下载 CSV</el-button
+            ><el-button
+              v-if="exportTracking === 'paused'"
+              data-testid="unmatched-export-retry"
+              type="primary"
+              link
+              @click="retryExportTracking"
+              >重新查询</el-button
             ></div
           ></template
         ></el-alert

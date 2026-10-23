@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { ElMessage } from "element-plus"
 
-import { ref, watch } from "vue"
+import { nextTick, onScopeDispose, ref, watch } from "vue"
 
 import { listJobs, triggerJob, type JobItem } from "../../api/ops"
+
+import { defaultSessionDocument, type SessionOperationOrigin } from "../../api/sessionDocument"
 
 import { useConfirmActions } from "../../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
@@ -46,8 +48,83 @@ const snapshotLoading = ref(false)
 const snapshotError = ref("")
 const loading = snapshotLoading
 const errorMessage = snapshotError
-// 触发在途守卫：确认框结束后到请求返回前拦截重复点击，避免同一任务被重复投递。
-const triggeringJobName = ref<string | null>(null)
+// 确认待决与写请求分开：确认阶段只防重复提交，不把触发按钮提前变成不可聚焦的 loading。
+const confirmingJobName = ref<string | null>(null)
+const writingJobName = ref<string | null>(null)
+let pageMounted = true
+onScopeDispose(() => {
+  pageMounted = false
+})
+
+function triggerElement(event?: Event): HTMLElement | null {
+  const current = event?.currentTarget
+  if (current instanceof HTMLElement) return current.closest("button") ?? current
+  const target = event?.target
+  if (target instanceof Element) {
+    const button = target.closest("button")
+    if (button instanceof HTMLElement) return button
+  }
+  const active = document.activeElement
+  if (active instanceof HTMLElement) {
+    const button = active.closest("button")
+    if (button instanceof HTMLElement) return button
+  }
+  return null
+}
+
+function triggerUsable(element: HTMLElement | null): element is HTMLElement {
+  if (!element?.isConnected) return false
+  if (element.closest("[inert]")) return false
+  let node: HTMLElement | null = element
+  while (node) {
+    if (node.hidden || node.style.display === "none") return false
+    node = node.parentElement
+  }
+  return !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true"
+}
+
+/** 当前页的安全入口。会话或页面已经换掉时，不把焦点拉回旧的任务按钮。 */
+function focusCurrentPage(): void {
+  const heading = document.querySelector<HTMLElement>("main h1, .workspace h1, .page-heading h1, h1")
+  const target = heading?.isConnected ? heading : document.querySelector<HTMLElement>("main, .workspace")
+  if (!target?.isConnected) return
+  if (target.tabIndex < 0) target.tabIndex = -1
+  target.focus()
+}
+
+async function restoreTriggerFocus(
+  element: HTMLElement | null,
+  origin: SessionOperationOrigin,
+  pageCurrent: () => boolean,
+): Promise<void> {
+  await nextTick()
+  await new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 0)
+  })
+  const started = performance.now()
+  while (performance.now() - started < 400) {
+    const open = [...document.querySelectorAll<HTMLElement>(".el-overlay.is-message-box")].some(
+      (overlay) => overlay.style.display !== "none" && overlay.getAttribute("aria-hidden") !== "true",
+    )
+    if (!open) break
+    await new Promise<void>((resolve) => {
+      const timer = window.setTimeout(resolve, 32)
+      window.requestAnimationFrame(() => {
+        window.clearTimeout(timer)
+        resolve()
+      })
+    })
+  }
+  // 关闭动画结束后再落焦点，避免被确认框的焦点锁盖掉。
+  await new Promise<void>((resolve) => {
+    window.setTimeout(resolve, 0)
+  })
+  if (pageCurrent() && defaultSessionDocument.isOriginCurrent(origin) && triggerUsable(element)) {
+    element.focus()
+    return
+  }
+  focusCurrentPage()
+}
 async function load(_tab?: string): Promise<void> {
   if (!props.active) return
   const signal = snapshotRead.start()
@@ -63,21 +140,32 @@ async function load(_tab?: string): Promise<void> {
   }
 }
 
-async function trigger(item: JobItem): Promise<void> {
+async function trigger(item: JobItem, event?: Event): Promise<void> {
   item = { ...item }
-  if (triggeringJobName.value) return
-  // 进函数即置 busy（confirm 之前），确认框期间拦截重复点击。
-  triggeringJobName.value = item.job_name
+  if (confirmingJobName.value || writingJobName.value) return
+  const triggerEl = triggerElement(event)
+  const origin = defaultSessionDocument.captureOrigin()
+  confirmingJobName.value = item.job_name
+  let confirmed = false
   try {
-    if (
-      !(await confirmAuditedAction({
-        title: "确认任务触发",
-        body: `手动触发 ${item.job_name} 将立即投递一次执行，不改变 beat 既有调度。`,
-        auditNote: "触发行为与操作人将写入审计日志。",
-        confirmText: "确认触发",
-      }))
-    )
-      return
+    confirmed = await confirmAuditedAction({
+      title: "确认任务触发",
+      body: `手动触发 ${item.job_name} 将立即投递一次执行，不改变 beat 既有调度。`,
+      auditNote: "触发行为与操作人将写入审计日志。",
+      confirmText: "确认触发",
+    })
+  } catch {
+    confirmed = false
+  } finally {
+    confirmingJobName.value = null
+  }
+  if (!confirmed) {
+    await restoreTriggerFocus(triggerEl, origin, () => pageMounted && props.active)
+    return
+  }
+  if (!pageMounted || !props.active || !defaultSessionDocument.isOriginCurrent(origin)) return
+  writingJobName.value = item.job_name
+  try {
     await triggerJob(item.job_name)
     ElMessage.success("任务已投递 · 本次操作已记入审计")
     // 触发后重查心跳：让操作者立刻看到 last_status/耗时变化，而不是停留在旧快照。
@@ -85,7 +173,7 @@ async function trigger(item: JobItem): Promise<void> {
   } catch (error) {
     ElMessage.error(errorText(error, "任务触发失败"))
   } finally {
-    triggeringJobName.value = null
+    writingJobName.value = null
   }
 }
 watch(
@@ -138,9 +226,13 @@ watch(
               ><el-button
                 link
                 type="primary"
-                :loading="triggeringJobName === row.job_name"
-                :disabled="Boolean(triggeringJobName) && triggeringJobName !== row.job_name"
-                @click="trigger(row)"
+                :loading="writingJobName === row.job_name"
+                :disabled="
+                  (Boolean(confirmingJobName) && confirmingJobName !== row.job_name) ||
+                  (Boolean(writingJobName) && writingJobName !== row.job_name)
+                "
+                :data-testid="`job-trigger-${row.job_name}`"
+                @click="trigger(row, $event)"
                 >手动触发</el-button
               ></template
             ></el-table-column
@@ -158,9 +250,13 @@ watch(
             ><el-button
               link
               type="primary"
-              :loading="triggeringJobName === item.job_name"
-              :disabled="Boolean(triggeringJobName) && triggeringJobName !== item.job_name"
-              @click="trigger(item)"
+              :loading="writingJobName === item.job_name"
+              :disabled="
+                (Boolean(confirmingJobName) && confirmingJobName !== item.job_name) ||
+                (Boolean(writingJobName) && writingJobName !== item.job_name)
+              "
+              :data-testid="`job-trigger-mobile-${item.job_name}`"
+              @click="trigger(item, $event)"
               >手动触发</el-button
             ></article
           ><EmptyState v-if="!loading && !jobs.length" :title="JOBS_EMPTY.title" :description="JOBS_EMPTY.description"

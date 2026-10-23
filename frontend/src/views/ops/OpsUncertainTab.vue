@@ -87,18 +87,18 @@ const resolutionBusy = ref(false)
 async function proposeResolution(item: UncertainItem, action: UncertainResolutionAction): Promise<void> {
   item = { ...item }
   if (resolutionBusy.value) return
-  // 进函数即置 busy（confirm 之前），确认框期间拦截重复点击。
+  // 进函数即置 busy（confirm 之前），确认框期间拦截重复点击；取消、关闭和异常都在 finally 放开。
   resolutionBusy.value = true
-  if (
-    !(await confirmAuditedAction({
-      title: "确认提出处置",
-      body: `对批次 ${item.batch_no} 提出「${resolutionLabel(action)}」。确认后须另一名管理员复核；重发只会创建新批次，不会把旧分片改回待发送。`,
-      auditNote: "提出行为与操作人将写入审计日志。",
-      confirmText: "确认提出",
-    }))
-  )
-    return
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "确认提出处置",
+        body: `对批次 ${item.batch_no} 提出「${resolutionLabel(action)}」。确认后须另一名管理员复核；重发只会创建新批次，不会把旧分片改回待发送。`,
+        auditNote: "提出行为与操作人将写入审计日志。",
+        confirmText: "确认提出",
+      }))
+    )
+      return
     await proposeUncertainResolution(item.chunk_id, action)
     ElMessage.success("已提出处置 · 本次操作已记入审计")
     await load("uncertain")
@@ -113,16 +113,16 @@ async function confirmResolution(item: UncertainItem): Promise<void> {
   item = { ...item }
   if (item.resolution_id == null || resolutionBusy.value) return
   resolutionBusy.value = true
-  if (
-    !(await confirmAuditedAction({
-      title: "确认处置",
-      body: `确认批次 ${item.batch_no} 的处置「${resolutionLabel(item.resolution_action)}」。提案人不能确认自己的单。`,
-      auditNote: "确认行为与操作人将写入审计日志。",
-      confirmText: "确认处置",
-    }))
-  )
-    return
   try {
+    if (
+      !(await confirmAuditedAction({
+        title: "确认处置",
+        body: `确认批次 ${item.batch_no} 的处置「${resolutionLabel(item.resolution_action)}」。提案人不能确认自己的单。`,
+        auditNote: "确认行为与操作人将写入审计日志。",
+        confirmText: "确认处置",
+      }))
+    )
+      return
     await confirmUncertainResolution(item.resolution_id)
     ElMessage.success("处置已确认 · 本次操作已记入审计")
     await load("uncertain")
