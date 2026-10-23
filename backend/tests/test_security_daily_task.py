@@ -22,9 +22,13 @@ SHANGHAI = timezone(timedelta(hours=8), name="Asia/Shanghai")
 class FakeDeliveryService:
     def __init__(self) -> None:
         self.submitted: list[date] = []
+        self.recovered: list[UUID] = []
 
     async def submit_auto_delivery(self, report_date: date) -> None:
         self.submitted.append(report_date)
+
+    async def recover_pending_delivery(self, request_id: UUID) -> None:
+        self.recovered.append(request_id)
 
 
 class FakePendingRepository:
@@ -58,6 +62,9 @@ async def test_delivery_sweep_includes_unique_historical_pending_dates() -> None
         date(2026, 8, 6),
         date(2026, 8, 5),
     ]
+    pending = await FakePendingRepository().pending_delivery_requests()
+    assert service.recovered == [request_id for request_id, _pending_date in pending]
+    assert len({request_id for request_id, _pending_date in pending}) == len(pending)
 
 
 class FakeRepository:
@@ -285,9 +292,7 @@ async def test_generation_injects_platform_audit_evidence_and_recomputes_gaps(
     assert [row["action"] for row in payload["audit"]] == ["config_update", "login"]
     assert payload["audit"][0]["tone"] == "warn"
     assert payload["audit"][0]["source_ip"] == "198.51.100.7"
-    assert payload["audit"][1]["source_ip"] == (
-        "2606:4700:4700:1111::/64（IPv6，脱敏）"
-    )
+    assert payload["audit"][1]["source_ip"] == ("2606:4700:4700:1111::/64（IPv6，脱敏）")
     assert repository.audit.events[1].source_ip == native_ipv6
     audit_coverage = next(item for item in payload["coverage"] if item["source"] == "管理审计")
     assert audit_coverage["status"] == "完整"
