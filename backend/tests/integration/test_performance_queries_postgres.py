@@ -174,9 +174,9 @@ async def facts() -> AsyncIterator[
 
 def _expected_stats(
     batches: list[dict[str, Any]], messages: list[dict[str, Any]]
-) -> dict[tuple[str, str, str], tuple[int, ...]]:
+) -> dict[tuple[str, str, str, str], tuple[int, ...]]:
     by_id = {row["id"]: row for row in batches}
-    totals: dict[tuple[str, str, str], list[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])
+    totals: dict[tuple[str, str, str, str], list[int]] = defaultdict(lambda: [0, 0, 0, 0, 0])
     for message in messages:
         if message["created_at"].astimezone(SHANGHAI).date() != DAY:
             continue
@@ -184,14 +184,16 @@ def _expected_stats(
         dimensions = [("all", ""), ("dept", batch["dept"])]
         if batch["app_id"] is not None:
             dimensions.append(("app", str(batch["app_id"])))
-        for dimension in dimensions:
-            for category in (batch["category"], "all"):
-                bucket = totals[(*dimension, category)]
-                bucket[0] += 1
-                bucket[1] += batch["segments"]
-                bucket[2] += message["status"] == "delivered"
-                bucket[3] += message["status"] == "failed"
-                bucket[4] += message["status"] in {"unknown", "other"}
+        scopes = ("all", "test" if batch["is_test"] else "normal")
+        for scope in scopes:
+            for dimension in dimensions:
+                for category in (batch["category"], "all"):
+                    bucket = totals[(*dimension, category, scope)]
+                    bucket[0] += 1
+                    bucket[1] += batch["segments"]
+                    bucket[2] += message["status"] == "delivered"
+                    bucket[3] += message["status"] == "failed"
+                    bucket[4] += message["status"] in {"unknown", "other"}
     return {key: tuple(value) for key, value in totals.items()}
 
 
@@ -215,13 +217,19 @@ async def test_stats_actual_sql_matches_facts_and_expands_only_batch_totals(fact
         await repository.aggregate_day(DAY)
         rows = (await bound.connection.execute(text("SELECT * FROM stat_daily"))).mappings()
         actual = {
-            (row["dim_type"], row["dim_value"], row["category"]): tuple(
+            (row["dim_type"], row["dim_value"], row["category"], row["test_scope"]): tuple(
                 row[column]
                 for column in ("total", "total_segments", "delivered", "failed", "unknown_cnt")
             )
             for row in rows
         }
         assert actual == _expected_stats(batches, messages)
+        for index in range(5):
+            combined = (
+                actual[("all", "", "all", "test")][index]
+                + actual[("all", "", "all", "normal")][index]
+            )
+            assert combined == actual[("all", "", "all", "all")][index]
     await repository.aggregate_day(DAY + timedelta(days=3))
     assert (
         await bound.connection.scalar(

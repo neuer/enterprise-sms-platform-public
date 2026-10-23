@@ -113,6 +113,7 @@ class SqlDashboardRepository:
                         FROM stat_daily
                         WHERE stat_date=:today AND dim_type=:dim_type
                           AND dim_value=:dim_value
+                          AND test_scope='all'
                           AND category IN ('verify','notice','market')
                         ORDER BY category
                         """
@@ -138,6 +139,7 @@ class SqlDashboardRepository:
                         WHERE stat_date BETWEEN :start_date AND :today
                           AND dim_type=:dim_type
                           AND dim_value=:dim_value
+                          AND test_scope='all'
                           AND category IN ('verify','notice','market')
                         ORDER BY stat_date,category
                         """

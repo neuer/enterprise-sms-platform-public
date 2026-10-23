@@ -43,6 +43,7 @@ class ExportRequestFilters:
     phone: str | None = None
     dataset: Literal["message", "unmatched"] = "message"
     end_exclusive: datetime | None = None
+    is_test: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +58,7 @@ class ExportFilterSet:
     scope_dept: str | None
     dataset: Literal["message", "unmatched"] = "message"
     end_exclusive: datetime | None = None
+    is_test: bool | None = None
 
     def __post_init__(self) -> None:
         """所有构造与历史任务重载统一拒绝不安全过滤元数据。"""
@@ -72,6 +74,8 @@ class ExportFilterSet:
             raise ValueError("invalid export status")
         if self.category is not None and self.category not in {"verify", "notice", "market"}:
             raise ValueError("invalid export category")
+        if self.is_test is not None and self.is_test not in {True, False}:
+            raise ValueError("invalid export is_test")
         reject_phone_in_text(self.batch_no, field_name="batch_no")
         reject_phone_in_text(self.scope_dept, field_name="dept")
 
@@ -91,6 +95,7 @@ class ExportFilterSet:
             "batch_no": self.batch_no,
             "phone_hmacs": list(self.phone_hmacs),
             "scope_dept": self.scope_dept,
+            "is_test": self.is_test,
         }
 
     @classmethod
@@ -104,6 +109,9 @@ class ExportFilterSet:
         raw_hmacs = value.get("phone_hmacs") or []
         if not isinstance(raw_hmacs, list):
             raise ValueError("invalid persisted export phone_hmacs")
+        raw_is_test = value.get("is_test")
+        if raw_is_test is not None and raw_is_test not in {True, False}:
+            raise ValueError("invalid persisted export is_test")
         return cls(
             start=moment("start"),
             end=moment("end"),
@@ -115,6 +123,7 @@ class ExportFilterSet:
             scope_dept=(str(value["scope_dept"]) if value.get("scope_dept") is not None else None),
             dataset=value["dataset"],
             end_exclusive=moment("end_exclusive"),
+            is_test=raw_is_test,
         )
 
 
@@ -162,7 +171,11 @@ class ExportRepository(Protocol):
     ) -> ExportTaskInfo | None: ...
 
     async def precheck_downloadable(
-        self, public_id: UUID, *, principal: SecurityPrincipal, retention_days: int,
+        self,
+        public_id: UUID,
+        *,
+        principal: SecurityPrincipal,
+        retention_days: int,
     ) -> ExportTaskInfo | None: ...
 
 
@@ -222,6 +235,7 @@ class ExportService:
             scope_dept,
             filters.dataset,
             filters.end_exclusive,
+            filters.is_test,
         )
 
     async def create(
@@ -289,12 +303,17 @@ class ExportService:
         return task
 
     async def precheck_downloadable(
-        self, public_id: UUID, *, principal: SecurityPrincipal,
+        self,
+        public_id: UUID,
+        *,
+        principal: SecurityPrincipal,
     ) -> ExportTaskInfo:
         """仅读取当前可下载条件，不消费令牌、不记下载审计。"""
 
         task = await self.repository.precheck_downloadable(
-            public_id, principal=principal, retention_days=self.retention_days,
+            public_id,
+            principal=principal,
+            retention_days=self.retention_days,
         )
         if task is None:
             raise ExportNotFound("导出文件不存在或已过期")

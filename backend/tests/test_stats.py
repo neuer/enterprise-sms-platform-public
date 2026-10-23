@@ -20,6 +20,9 @@ class FakeRepository:
     async def list_dirty_dates(self) -> tuple[date, ...]:
         return self.dirty
 
+    async def list_scope_backfill_dates(self) -> tuple[date, ...]:
+        return ()
+
     async def clear_dirty_date(self, stat_date: date) -> None:
         self.cleared.append(stat_date)
 

@@ -167,9 +167,11 @@ async def test_repository_loads_scoped_business_and_global_operational_facts() -
     assert facts.test_send_max == 5
     stats_sql, stats_params = connection.calls[0]
     assert "dim_type=:dim_type" in stats_sql
+    assert "test_scope='all'" in stats_sql
     assert stats_params["dim_type"] == "dept" and stats_params["dim_value"] == "业务一部"
     trend_sql, trend_params = connection.calls[1]
     assert "BETWEEN :start_date AND :today" in trend_sql
+    assert "test_scope='all'" in trend_sql
     assert trend_params["start_date"] == date(2026, 7, 6)
     assert trend_params["dim_type"] == "dept" and trend_params["dim_value"] == "业务一部"
     balance_sql = connection.calls[3][0]

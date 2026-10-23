@@ -7,13 +7,11 @@ import { computed, onMounted, ref } from "vue"
 import {
   createDetailExport,
   getReport,
-  type ExportTask,
   type ReportCategory,
   type ReportFilters,
   type ReportGranularity,
   type ReportGroupBy,
   type ReportResult,
-  type ReportRow,
   type ReportTrendMetric,
 } from "../api/reports"
 import ReportMobileSort from "../components/ReportMobileSort.vue"
@@ -22,8 +20,24 @@ import EmptyState from "../components/EmptyState.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import { useExportTask } from "../composables/useExportTask"
-import { CHART_DIM_VARS } from "../lib/chartTheme"
-import { formatNumber, formatPercent } from "../lib/format"
+import { formatNumber } from "../lib/format"
+import {
+  audienceOptions,
+  composeWidth,
+  dimColor,
+  formatRate,
+  granularityLabel,
+  granularityOptions,
+  groupByOptions,
+  metricOptions,
+  rankWidth,
+  rateClass,
+  reportQuery,
+  reportRowKey,
+  shareOf,
+  statusLabel,
+  type ReportAudience,
+} from "./report/reportModel"
 import { CATEGORY_OPTIONS, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import { daysAgoDateKey, shanghaiDateKey } from "../lib/time"
 import { useSessionStore } from "../stores/session"
@@ -46,6 +60,7 @@ const dateRange = computed({
 const granularity = ref<ReportGranularity>("day")
 const groupBy = ref<ReportGroupBy>("app")
 const category = ref<ReportCategory>("all")
+const audience = ref<ReportAudience>("all")
 const result = ref<ReportResult | null>(null)
 const {
   exportTask,
@@ -65,13 +80,19 @@ const pageSize = DEFAULT_PAGE_SIZE
 const applied = ref<ReportFilters | null>(null)
 
 const canDecrypt = computed(() => result.value?.can_export_decrypted === true)
-const filters = computed<ReportFilters>(() => ({
-  granularity: granularity.value,
-  groupBy: groupBy.value,
-  category: category.value,
-  start: dateRange.value[0],
-  end: dateRange.value[1],
-}))
+
+const filters = computed<ReportFilters>(() =>
+  reportQuery(
+    {
+      granularity: granularity.value,
+      groupBy: groupBy.value,
+      category: category.value,
+      start: dateRange.value[0],
+      end: dateRange.value[1],
+    },
+    audience.value,
+  ),
+)
 const filtersDirty = computed(
   () => applied.value !== null && JSON.stringify(applied.value) !== JSON.stringify(filters.value),
 )
@@ -83,7 +104,6 @@ const scopeLabel = computed(() => {
   return "数据权限口径加载中"
 })
 
-const granularityLabel: Record<ReportGranularity, string> = { day: "日", week: "周", month: "月" }
 /** 报表与仪表盘消息统计都读 stat_daily（aggregate_stats 每 5 分钟滚动重建，含当日）。
     范围含今日时说明快照延迟，并给出批次列表入口；不把仪表盘说成实时进度。
     「应用」维度只含 API 应用发送（Web 手工发送 app_id 为空，按部门归集），同样需要明示。 */
@@ -99,26 +119,6 @@ const reportHints = computed(() => {
   }
   return hints
 })
-const granularityOptions: Array<{ label: string; value: ReportGranularity }> = [
-  { label: "日", value: "day" },
-  { label: "周", value: "week" },
-  { label: "月", value: "month" },
-]
-const groupByOptions: Array<{ label: string; value: ReportGroupBy }> = [
-  { label: "应用", value: "app" },
-  { label: "部门", value: "dept" },
-]
-const metricOptions: Array<{ label: string; value: ReportTrendMetric }> = [
-  { label: "消息数", value: "total" },
-  { label: "计费条", value: "total_segments" },
-]
-const statusLabel: Record<ExportTask["status"], string> = {
-  pending: "等待生成",
-  running: "生成中",
-  done: "已完成",
-  failed: "生成失败",
-}
-
 const dimLabel = computed(() => (result.value?.group_by === "dept" ? "部门" : "应用"))
 
 /** 周期级消息数汇总（纯加法），用于 KPI 的均值与峰值。 */
@@ -150,11 +150,6 @@ const rangeDays = computed(() => {
   return Math.round(ms / 86_400_000) + 1
 })
 const trendLegend = computed(() => result.value?.trend.series ?? [])
-
-function dimColor(index: number): string {
-  // 图例色块是 DOM 元素，用 var() 引用令牌即可随主题自动切换
-  return `var(${CHART_DIM_VARS[index % CHART_DIM_VARS.length]})`
-}
 
 const averageLabel = computed(() => {
   const grain = result.value?.granularity
@@ -210,42 +205,6 @@ function changeMetric(next: ReportTrendMetric): void {
   void load(applied.value ?? filters.value, page.value)
 }
 
-/** 明细行稳定键：周期 × 维度值，与移动端列表同一口径。 */
-function reportRowKey(row: ReportRow): string {
-  return `${row.period_start}-${row.dim_value}`
-}
-
-/** 成功率展示换算（ratio→百分比文本）走 lib/format 单点；口径仍只用服务端 success_rate。 */
-function formatRate(rate: number): string {
-  return formatPercent(rate)
-}
-
-/** 成功率芯片着色阈值（≥98 绿 / 95–98 黄 / <95 红）：纯展示逻辑，口径仍来自服务端。 */
-function rateClass(rate: number): string {
-  if (rate >= 0.98) return "g"
-  if (rate >= 0.95) return "y"
-  return "r"
-}
-
-/** 构成占比（加法 + 除法，非成功率口径）。 */
-function shareOf(value: number, total = result.value?.summary.total ?? 0): string {
-  if (total === 0) return formatPercent(0)
-  return formatPercent(value / total)
-}
-
-function composeWidth(value: number): string {
-  const total = result.value?.summary.total ?? 0
-  if (total === 0 || value === 0) return "0%"
-  return `${Math.max((value / total) * 100, 0.4)}%`
-}
-
-function rankWidth(total: number): string {
-  const metric = result.value?.metric ?? "total"
-  const max = Math.max(0, ...(result.value?.dim_summary.map((item) => item[metric]) ?? []))
-  if (max === 0) return "0%"
-  return `${Math.max((total / max) * 100, 2)}%`
-}
-
 let requestedFilters: ReportFilters
 const {
   page,
@@ -281,11 +240,19 @@ async function load(query: ReportFilters = filters.value, requestedPage = 1): Pr
   await loadPage()
 }
 
-/** 恢复默认筛选（近 30 天 · 日粒度 · 按应用 · 全类别）并立即重查；日期范围按当下重新求值。 */
+function changeAudience(next: ReportAudience): void {
+  if (audience.value === next) return
+  audience.value = next
+  const base = applied.value ?? filters.value
+  void load(reportQuery(base, next), 1)
+}
+
+/** 恢复默认筛选（近 30 天 · 日粒度 · 按应用 · 全类别 · 全部发送）并立即重查；日期范围按当下重新求值。 */
 function resetFilters(): void {
   granularity.value = "day"
   groupBy.value = "app"
   category.value = "all"
+  audience.value = "all"
   dateRange.value = defaultDateRange()
   void load()
 }
@@ -319,6 +286,16 @@ onMounted(() => void load())
     <div class="report-fld">
       <span>维度</span>
       <FilterSeg v-model="groupBy" :options="groupByOptions" button-testid-prefix="report-group" label="维度" />
+    </div>
+    <div class="report-fld">
+      <span>发送</span>
+      <FilterSeg
+        :model-value="audience"
+        :options="audienceOptions"
+        label="发送类型"
+        button-testid-prefix="report-audience"
+        @update:model-value="changeAudience"
+      />
     </div>
     <div class="report-fld">
       <span>类别</span>
@@ -417,24 +394,24 @@ onMounted(() => void load())
         <div class="compose-strip" aria-label="结果构成">
           <i
             class="d"
-            :style="{ width: composeWidth(result.summary.delivered) }"
+            :style="{ width: composeWidth(result.summary.delivered, result.summary.total) }"
             :title="`送达 ${formatNumber(result.summary.delivered)}`"
           ></i
           ><i
             class="f"
-            :style="{ width: composeWidth(result.summary.failed) }"
+            :style="{ width: composeWidth(result.summary.failed, result.summary.total) }"
             :title="`失败 ${formatNumber(result.summary.failed)}`"
           ></i
           ><i
             class="u"
-            :style="{ width: composeWidth(result.summary.unknown) }"
+            :style="{ width: composeWidth(result.summary.unknown, result.summary.total) }"
             :title="`未知 ${formatNumber(result.summary.unknown)}`"
           ></i>
         </div>
         <div class="kpi-kv compose-shares"
-          ><span>送达 {{ shareOf(result.summary.delivered) }}</span
-          ><span>失败 {{ shareOf(result.summary.failed) }}</span
-          ><span>未知 {{ shareOf(result.summary.unknown) }}</span></div
+          ><span>送达 {{ shareOf(result.summary.delivered, result.summary.total) }}</span
+          ><span>失败 {{ shareOf(result.summary.failed, result.summary.total) }}</span
+          ><span>未知 {{ shareOf(result.summary.unknown, result.summary.total) }}</span></div
         >
       </el-card>
     </section>
@@ -487,7 +464,12 @@ onMounted(() => void load())
           <li v-for="(dim, index) in result.dim_summary" :key="`${dim.is_other}-${dim.dim_value}`">
             <span class="rank-name" :title="dim.dim_label">{{ dim.dim_label }}</span>
             <div class="rank-track"
-              ><i :style="{ width: rankWidth(dim[result.metric]), background: dimColor(index) }"></i
+              ><i
+                :style="{
+                  width: rankWidth(dim[result.metric], result.dim_summary, result.metric),
+                  background: dimColor(index),
+                }"
+              ></i
             ></div>
             <span class="rank-num">
               <b>{{ formatNumber(dim[result.metric]) }}</b>

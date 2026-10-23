@@ -416,7 +416,8 @@ async def test_export_half_open_day_includes_fractional_last_second(dataset):
       FROM (VALUES ('2026-01-31 23:59:59.999999+08'::timestamptz),
                    ('2026-02-01 00:00:00+08'::timestamptz)) moments(stamp)
     ) {alias} CROSS JOIN (SELECT ''::text AS dept, ''::text AS category,
-                            1::bigint AS app_id, ''::text AS batch_no) b
+                            1::bigint AS app_id, ''::text AS batch_no,
+                            false::boolean AS is_test) b
     WHERE {predicate}"""
     try:
         async with engine.connect() as connection:

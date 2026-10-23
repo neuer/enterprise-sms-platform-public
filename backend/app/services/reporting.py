@@ -16,6 +16,29 @@ ReportCategory = Literal["verify", "notice", "market", "all"]
 ReportSort = Literal["period_start", "total", "total_segments", "success_rate"]
 ReportOrder = Literal["asc", "desc"]
 ReportMetric = Literal["total", "total_segments"]
+TestScope = Literal["all", "test", "normal"]
+
+
+class ReportFilterNotReady(RuntimeError):
+    """筛选范围内有日期尚未完成 test/normal 分层补算。"""
+
+    def __init__(self, start: date, end: date, missing_date: date) -> None:
+        super().__init__("筛选数据尚未就绪")
+        self.start = start
+        self.end = end
+        self.missing_date = missing_date
+
+
+def resolve_test_scope(is_test: bool | None) -> TestScope:
+    """未传或空为 all；true 为 test；false 为 normal。"""
+
+    if is_test is None:
+        return "all"
+    if is_test is True:
+        return "test"
+    if is_test is False:
+        return "normal"
+    raise ValueError("invalid report is_test")
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +54,13 @@ class ReportingQuery:
     sort: ReportSort = "period_start"
     order: ReportOrder = "desc"
     metric: ReportMetric = "total"
+    is_test: bool | None = None
+
+    @property
+    def test_scope(self) -> TestScope:
+        """未传为全部，true 仅测试，false 仅普通。"""
+
+        return resolve_test_scope(self.is_test)
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,6 +181,7 @@ class ReportingService:
         sort: ReportSort = "period_start",
         order: ReportOrder = "desc",
         metric: ReportMetric = "total",
+        is_test: bool | None = None,
     ) -> ReportingResult:
         require_account_department(role, dept)
         if not 1 <= page <= 1_000_000 or not 1 <= size <= 100:
@@ -159,6 +190,7 @@ class ReportingService:
             raise ValueError("invalid report sort")
         if order not in {"asc", "desc"} or metric not in {"total", "total_segments"}:
             raise ValueError("invalid report order or metric")
+        resolve_test_scope(is_test)
         now = self.clock()
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("reporting clock must be timezone-aware")
@@ -175,7 +207,12 @@ class ReportingService:
             resolved_start,
             resolved_end,
             None if role in {"approver", "admin"} else dept,
-            page, size, sort, order, metric,
+            page,
+            size,
+            sort,
+            order,
+            metric,
+            is_test,
         )
         data = await self.repository.query(query)
         totals = data.dimensions
@@ -211,5 +248,10 @@ class ReportingService:
                 )
                 for item in data.items
             ),
-            data.total, page, size, metric, data.dimension_total, data.trend,
+            data.total,
+            page,
+            size,
+            metric,
+            data.dimension_total,
+            data.trend,
         )

@@ -269,6 +269,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 #### FR-17 统计报表
 - **成功率口径（v1.4，全端统一）**：`成功率 = delivered / (delivered + failed)`；unknown/other 不进分母，单列展示。实现集中于 services/stats.py
 - 日/周/月 × 应用/部门 × 类别：消息数、**计费条数**、成功率；stat_daily 聚合
+- 测试过滤：未传或空为全部，true 仅测试批次，false 仅普通批次。`stat_daily.test_scope` 取 all/test/normal 并进入主键；升级时历史混合行只标 all。all 与 test/normal 在同一个按日事务写入，空日也记录完成标记。筛选遇到未完成补算的日期返回 503 `REPORT_FILTER_NOT_READY`，不得把缺层当成 0。仪表盘与异常检测只读 all
 - 仪表盘：今日分类别消息数与计费条、成功率、余额曲线、待审批、告警、uncertain 数、unmatched 数（v1.4）
 
 ### 5.8 系统管理
@@ -497,6 +498,7 @@ callback.ready不再贡献全局软降级数量，callback dead不再触发全�
 | IMPORT_UNAVAILABLE | 503 | 导入登记超时或导入面不可用 |
 | SECURITY_DAILY_UNAVAILABLE | 503 | 安全日报控制面或数据源不可用 |
 | USAGE_PROJECTION_UNAVAILABLE | 503 | 配额/频控事实投影缺失、重建中或 Redis 不可确认 |
+| REPORT_FILTER_NOT_READY | 503 | 报表按测试或普通筛选时，范围内有日期尚未完成分层补算 |
 | BALANCE_BLOCKED | 503 | 批次/队列状态与熔断结果（余额不足暂停）；不是普通发送 HTTP 响应 |
 
 注：幂等命中不是错误，返回 200 + `idempotent: true`；营销窗外转定时不是错误，返回 200 + `deferred_reason`。

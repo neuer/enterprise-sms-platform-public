@@ -117,7 +117,24 @@ async def test_elevated_scope_and_date_range_validation() -> None:
         dept="平台部",
     )
     assert repository.queries[0].scope_dept is None
+    assert repository.queries[0].is_test is None
+    assert repository.queries[0].test_scope == "all"
     assert elevated.can_export_decrypted is True
+
+    scoped = await service.get(
+        granularity="day",
+        group_by="dept",
+        category="notice",
+        start=date(2026, 7, 1),
+        end=date(2026, 7, 2),
+        role="viewer",
+        dept="业务一部",
+        is_test=False,
+    )
+    assert repository.queries[-1].scope_dept == "业务一部"
+    assert repository.queries[-1].is_test is False
+    assert repository.queries[-1].test_scope == "normal"
+    assert scoped.summary.success_rate == 0.8
 
     with pytest.raises(ValueError, match="366"):
         await service.get(
