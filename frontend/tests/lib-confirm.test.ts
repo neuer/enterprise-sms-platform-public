@@ -1,8 +1,9 @@
 import { createPinia, setActivePinia } from "pinia"
 import { useSessionStore } from "../src/stores/session"
 import { ElMessageBox } from "element-plus"
-import { effectScope, h, type VNode } from "vue"
+import { effectScope, h, nextTick, type VNode } from "vue"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { SESSION_CLEARING_EVENT } from "../src/api/sessionEvents"
 
 import { confirmAction, confirmAuditedAction, useConfirmActions } from "../src/lib/confirm"
 
@@ -18,6 +19,8 @@ function vnodeText(node: unknown): string {
 
 describe("确认对话框单点 lib/confirm", () => {
   afterEach(() => {
+    window.dispatchEvent(new Event(SESSION_CLEARING_EVENT))
+    ElMessageBox.close()
     vi.restoreAllMocks()
   })
 
@@ -99,7 +102,10 @@ describe("确认对话框单点 lib/confirm", () => {
     const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     await confirmAction({ title: "确认重发", body: "失败号码将生成新批次。" })
     const [, , options] = confirm.mock.calls[0] as [unknown, unknown, Record<string, unknown>]
-    expect(options).toEqual({ type: "warning" })
+    expect(options).toMatchObject({ type: "warning" })
+    expect(options.confirmButtonText).toBeUndefined()
+    expect(options.cancelButtonText).toBeUndefined()
+    expect(String(options.customClass)).toMatch(/^confirm-request confirm-owned-\d+$/)
   })
 
   it("confirmAction 取消 / 关闭返回 false", async () => {
@@ -128,4 +134,59 @@ it.each(["session", "dispose", "target"])("确认期间 %s 改变会撤销旧确
   expect(await pending).toBe(false)
   scope.stop()
   vi.restoreAllMocks()
+})
+
+it("真实确认框在会话清理时立即关闭，且不调用全局 close", async () => {
+  setActivePinia(createPinia())
+  const closeAll = vi.spyOn(ElMessageBox, "close")
+  const scope = effectScope()
+  const actions = scope.run(useConfirmActions)!
+  const prompt = ElMessageBox.prompt("请输入当前密码", "二次认证")
+  const pending = actions.confirmAuditedAction({
+    title: "确认取消",
+    body: "取消批次 BATCH-OLD？配额将按规则回补。",
+    auditNote: "取消行为与操作人将写入审计日志。",
+    confirmText: "确认取消",
+  })
+  await nextTick()
+  expect(document.body.textContent).toContain("取消批次 BATCH-OLD")
+  expect(document.body.textContent).toContain("请输入当前密码")
+  useSessionStore().clear()
+  expect(await pending).toBe(false)
+  expect(document.body.textContent).not.toContain("BATCH-OLD")
+  expect(document.body.textContent).toContain("请输入当前密码")
+  expect(closeAll).not.toHaveBeenCalled()
+
+  useSessionStore().role = "admin"
+  const next = actions.confirmAction({ title: "新会话", body: "新的确认 BATCH-NEW 仍然打开" })
+  await nextTick()
+  expect(document.body.textContent).toContain("BATCH-NEW")
+  await nextTick()
+  expect(document.body.textContent).toContain("BATCH-NEW")
+  expect(closeAll).not.toHaveBeenCalled()
+  scope.stop()
+  await next
+  prompt.catch(() => undefined)
+  ElMessageBox.close()
+})
+
+it("页面销毁只取消本页确认和待显示队列，另一页的确认继续显示", async () => {
+  const scopeA = effectScope()
+  const scopeB = effectScope()
+  const actionsA = scopeA.run(useConfirmActions)!
+  const actionsB = scopeB.run(useConfirmActions)!
+  const pendingA = actionsA.confirmAction({ title: "甲", body: "批次甲的业务文案" })
+  const pendingB = actionsB.confirmAction({ title: "乙", body: "批次乙的业务文案" })
+  await nextTick()
+  expect(document.body.textContent).toContain("批次甲的业务文案")
+  expect(document.body.textContent).not.toContain("批次乙的业务文案")
+  scopeA.stop()
+  expect(await pendingA).toBe(false)
+  await nextTick()
+  expect(document.body.textContent).not.toContain("批次甲的业务文案")
+  expect(document.body.textContent).toContain("批次乙的业务文案")
+  scopeB.stop()
+  expect(await pendingB).toBe(false)
+  await nextTick()
+  expect(document.body.textContent).not.toContain("批次乙的业务文案")
 })

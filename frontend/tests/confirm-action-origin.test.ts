@@ -1,6 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils"
 import ElementPlus, { ElMessageBox } from "element-plus"
 import { createPinia, setActivePinia } from "pinia"
+import { nextTick } from "vue"
 import { afterEach, expect, it, vi } from "vitest"
 import { useSessionStore } from "../src/stores/session"
 import type { BatchItem } from "../src/api/queries"
@@ -131,4 +132,39 @@ it("确认启用后读取配置期间卸载，不发出最终写入", async () =
   resolve({ id: 99 } as ManagedApp)
   await pending
   expect(api.updateApp).not.toHaveBeenCalled()
+})
+
+it("真实批次确认在强制下线后立即消失，后续新确认不被全局关闭", async () => {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  useSessionStore().role = "admin"
+  const closeAll = vi.spyOn(ElMessageBox, "close")
+  const wrapper = mount(BatchView, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    selected: BatchItem
+    cancelSelected: () => Promise<void>
+  }
+  vm.selected = { batch_no: "original", status: "scheduled", channel: "web", failed: 1 } as BatchItem
+  const pending = vm.cancelSelected()
+  await nextTick()
+  expect(document.body.textContent).toContain("取消批次 original")
+  useSessionStore().clear()
+  await pending
+  expect(api.cancelBatch).not.toHaveBeenCalled()
+  expect(document.body.textContent).not.toContain("配额将按规则回补")
+  expect(closeAll).not.toHaveBeenCalled()
+
+  useSessionStore().role = "admin"
+  vm.selected = { batch_no: "fresh", status: "scheduled", channel: "web", failed: 1 } as BatchItem
+  const next = vm.cancelSelected()
+  await nextTick()
+  expect(document.body.textContent).toContain("fresh")
+  await nextTick()
+  expect(document.body.textContent).toContain("fresh")
+  expect(closeAll).not.toHaveBeenCalled()
+  useSessionStore().clear()
+  await next
+  wrapper.unmount()
+  ElMessageBox.close()
 })

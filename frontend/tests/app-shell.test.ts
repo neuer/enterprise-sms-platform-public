@@ -377,6 +377,8 @@ describe("应用骨架", () => {
     await toggle.trigger("click")
     expect(wrapper.get(".app-shell").classes()).toContain("navigation-open")
     expect(toggle.attributes("aria-expanded")).toBe("true")
+    expect(wrapper.get(".workspace").attributes("inert")).toBeUndefined()
+    expect(wrapper.get("#primary-navigation").attributes("inert")).toBeUndefined()
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }))
     await flushPromises()
@@ -389,6 +391,125 @@ describe("应用骨架", () => {
     expect(wrapper.get(".app-shell").classes()).not.toContain("navigation-open")
 
     wrapper.unmount()
+  })
+
+  it("移动抽屉打开后背景不可聚焦，Tab 在导航内循环", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("max-width: 959px"),
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }))
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/dashboard", component: { template: "<main><h1>仪表盘</h1></main>" } },
+        { path: "/:pathMatch(.*)*", component: { template: "<div />" } },
+      ],
+    })
+    const pinia = createPinia()
+    useSessionStore(pinia).apply("jwt", {
+      account_id: 1,
+      identity_id: 11,
+      provider_code: "local",
+      username: "admin01",
+      display_name: "开发管理员",
+      dept: "平台技术部",
+      role: "admin",
+    })
+    await router.push("/dashboard")
+    await router.isReady()
+    const wrapper = mount(App, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    try {
+      await wrapper.get("[data-testid='navigation-toggle']").trigger("click")
+      await flushPromises()
+      expect(wrapper.get(".workspace").attributes("inert")).toBe("true")
+      expect(wrapper.get("#primary-navigation").attributes("inert")).toBeUndefined()
+      const close = wrapper.get("[data-testid='navigation-close']").element as HTMLButtonElement
+      expect(document.activeElement).toBe(close)
+      const items = [
+        ...wrapper.get("#primary-navigation").element.querySelectorAll<HTMLElement>("a[href], button:not([disabled])"),
+      ]
+      items[items.length - 1].focus()
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }))
+      expect(document.activeElement).toBe(items[0])
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+      await flushPromises()
+      expect(wrapper.get(".app-shell").classes()).not.toContain("navigation-open")
+      expect(wrapper.get(".workspace").attributes("inert")).toBeUndefined()
+    } finally {
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("移动关闭按钮的样式命中区至少 44 像素，桌面打开导航不锁工作区", async () => {
+    const { readFileSync } = await import("node:fs")
+    const { resolve } = await import("node:path")
+    const source = readFileSync(resolve(process.cwd(), "src/styles/workspace/touch.css"), "utf8")
+    expect(source).toMatch(/\.navigation-close\s*\{[^}]*min-width:\s*44px/)
+    expect(source).toMatch(/\.navigation-close\s*\{[^}]*min-height:\s*44px/)
+    expect(source).toMatch(/flex:\s*0\s+0\s+44px/)
+    const style = document.createElement("style")
+    style.textContent = `.navigation-close{flex:0 0 44px;width:44px;height:44px;min-width:44px;min-height:44px;display:inline-flex}`
+    document.head.append(style)
+    const original = HTMLElement.prototype.getBoundingClientRect
+    HTMLElement.prototype.getBoundingClientRect = function getBoundingClientRect() {
+      const computed = getComputedStyle(this)
+      const width = Number.parseFloat(computed.width) || Number.parseFloat(computed.minWidth) || 0
+      const height = Number.parseFloat(computed.height) || Number.parseFloat(computed.minHeight) || 0
+      return {
+        x: 0,
+        y: 0,
+        left: 0,
+        top: 0,
+        right: width,
+        bottom: height,
+        width,
+        height,
+        toJSON() {
+          return {}
+        },
+      } as DOMRect
+    }
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("max-width: 959px"),
+      media: query,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+    }))
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [{ path: "/dashboard", component: { template: "<main><h1>仪表盘</h1></main>" } }],
+    })
+    const pinia = createPinia()
+    useSessionStore(pinia).apply("jwt", {
+      account_id: 1,
+      identity_id: 11,
+      provider_code: "local",
+      username: "admin01",
+      display_name: "开发管理员",
+      dept: "平台技术部",
+      role: "admin",
+    })
+    await router.push("/dashboard")
+    await router.isReady()
+    const wrapper = mount(App, { attachTo: document.body, global: { plugins: [pinia, router] } })
+    try {
+      const close = wrapper.get("[data-testid='navigation-close']").element as HTMLElement
+      const rect = close.getBoundingClientRect()
+      expect(rect.width).toBeGreaterThanOrEqual(44)
+      expect(rect.height).toBeGreaterThanOrEqual(44)
+      await wrapper.get("[data-testid='navigation-toggle']").trigger("click")
+      await flushPromises()
+      expect(wrapper.get(".workspace").attributes("inert")).toBe("true")
+      expect(wrapper.get("#primary-navigation").attributes("inert")).toBeUndefined()
+    } finally {
+      HTMLElement.prototype.getBoundingClientRect = original
+      style.remove()
+      wrapper.unmount()
+      vi.unstubAllGlobals()
+    }
   })
 
   it("收到统一未授权事件时清除会话并返回登录页", async () => {

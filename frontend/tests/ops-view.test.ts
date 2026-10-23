@@ -1,19 +1,56 @@
 import { flushPromises, mount } from "@vue/test-utils"
 import ElementPlus, { ElMessage, ElMessageBox } from "element-plus"
-import { createPinia } from "pinia"
+import { createPinia, setActivePinia } from "pinia"
 import { createMemoryHistory, createRouter } from "vue-router"
 import { vi } from "vitest"
+import { useSessionStore } from "../src/stores/session"
 
 import OpsView from "../src/views/OpsView.vue"
 
-async function mountOps(query: Record<string, string> = {}) {
+async function mountOps(query: Record<string, string> = {}, options: { attach?: boolean } = {}) {
+  const pinia = createPinia()
+  setActivePinia(pinia)
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [{ path: "/ops", component: { template: "<div />" } }],
   })
   await router.push({ path: "/ops", query })
   await router.isReady()
-  return mount(OpsView, { global: { plugins: [createPinia(), ElementPlus, router] } })
+  return mount(OpsView, {
+    attachTo: options.attach ? document.body : undefined,
+    global: { plugins: [pinia, ElementPlus, router] },
+  })
+}
+
+function messageBoxButton(label: string): HTMLButtonElement {
+  const button = [...document.querySelectorAll<HTMLButtonElement>(".el-overlay .el-message-box button")].find(
+    (item) => {
+      const overlay = item.closest(".el-overlay") as HTMLElement | null
+      return overlay?.style.display !== "none" && item.textContent?.includes(label)
+    },
+  )
+  if (!button) throw new Error(`确认框中没有「${label}」`)
+  return button
+}
+
+function visibleConfirmBoxes(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(".el-message-box.confirm-request")].filter((node) => {
+    const overlay = node.closest(".el-overlay") as HTMLElement | null
+    return Boolean(overlay) && overlay?.style.display !== "none" && overlay?.getAttribute("aria-hidden") !== "true"
+  })
+}
+
+function visibleConfirmText(): string {
+  return visibleConfirmBoxes()
+    .map((node) => node.textContent ?? "")
+    .join("")
+}
+
+function cleanupConfirms(): void {
+  window.dispatchEvent(new Event("sms:session-clearing"))
+  document.querySelectorAll(".el-overlay").forEach((node) => {
+    if (node.querySelector(".el-message-box")) node.remove()
+  })
 }
 
 const publicId = "c0a80101-0000-4000-8000-000000000134"
@@ -507,7 +544,7 @@ describe("统一运维中心", () => {
     // 150 次 × 2s ≈ 5 分钟兜底：到达上限后停止轮询并给出中文超时提示
     await vi.advanceTimersByTimeAsync(298_000)
     expect(statusCalls()).toBe(150)
-    expect(wrapper.text()).toContain("导出状态查询超时（已超过 5 分钟），请稍后重新发起导出")
+    expect(wrapper.text()).toContain("导出状态查询超时（已超过 5 分钟）。同一任务仍在后台，可重新查询，不必再次创建。")
 
     await vi.advanceTimersByTimeAsync(30_000)
     expect(statusCalls()).toBe(150)
@@ -710,5 +747,174 @@ it("拆分后的页签切换取消旧读取，迟到失败不污染当前页签�
   expect(reads[1].signal.aborted).toBe(true)
   reads[1].resolve(response({ items: [], total: 0, page: 1, page_size: 20 }))
   await flushPromises()
+  vi.unstubAllGlobals()
+})
+
+function uncertainTerminalFetch() {
+  return vi.fn(async (input: string, init?: RequestInit) => {
+    const url = String(input)
+    if (url.includes("/chunks/uncertain") && (init?.method || "GET") === "GET") {
+      return response({
+        items: [
+          {
+            chunk_id: 9,
+            batch_no: "BATCH-9",
+            custom_id: "CUSTOM-9",
+            phone_count: 2,
+            vendor_code: null,
+            uncertain_since: "2026-07-12T08:00:00+08:00",
+            age_seconds: 260000,
+            status: "unknown_terminal",
+            resolution_id: null,
+            resolution_action: null,
+            resolution_state: null,
+            proposer_account_id: null,
+          },
+        ],
+        total: 1,
+        page: 1,
+        page_size: 20,
+      })
+    }
+    if (url.includes("/chunks/9/resolution") && init?.method === "POST") return response({ id: 8 })
+    return response(result(url, init?.method || "GET"))
+  })
+}
+
+it.each(["取消", "关闭", "Escape"] as const)("未知处置经%s退出后释放忙锁且不写请求", async (exit) => {
+  const fetch = uncertainTerminalFetch()
+  vi.stubGlobal("fetch", fetch)
+  const wrapper = await mountOps({ tab: "uncertain" }, { attach: true })
+  try {
+    await flushPromises()
+    const propose = () => wrapper.get("[data-testid='uncertain-propose-keep_unknown']").trigger("click")
+    await propose()
+    await flushPromises()
+    expect(visibleConfirmText()).toContain("不会把旧分片改回待发送")
+    if (exit === "取消") messageBoxButton("取消").click()
+    else if (exit === "关闭") {
+      const box = visibleConfirmBoxes()[0]
+      const close = box?.querySelector<HTMLButtonElement>(".el-message-box__headerbtn, button[aria-label]")
+      if (!close) throw new Error(`关闭按钮缺失：${box?.innerHTML ?? "无对话框"}`)
+      close.click()
+    } else document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }))
+    await flushPromises()
+    expect(visibleConfirmText()).not.toContain("不会把旧分片改回待发送")
+    expect(fetch.mock.calls.some(([url, init]) => String(url).includes("/resolution") && init?.method === "POST")).toBe(
+      false,
+    )
+    await propose()
+    await flushPromises()
+    expect(visibleConfirmText()).toContain("确认提出处置")
+  } finally {
+    wrapper.unmount()
+    cleanupConfirms()
+    vi.unstubAllGlobals()
+  }
+})
+
+it("卸载未知处置页时关闭确认且不提交，确认成功只提交一次", async () => {
+  const fetch = uncertainTerminalFetch()
+  vi.stubGlobal("fetch", fetch)
+  const wrapper = await mountOps({ tab: "uncertain" }, { attach: true })
+  await flushPromises()
+  await wrapper.get("[data-testid='uncertain-propose-keep_unknown']").trigger("click")
+  await flushPromises()
+  expect(visibleConfirmText()).toContain("不会把旧分片改回待发送")
+  wrapper.unmount()
+  await flushPromises()
+  expect(visibleConfirmText()).not.toContain("不会把旧分片改回待发送")
+  expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false)
+
+  const again = await mountOps({ tab: "uncertain" }, { attach: true })
+  await flushPromises()
+  await again.get("[data-testid='uncertain-propose-keep_unknown']").trigger("click")
+  await again.get("[data-testid='uncertain-propose-keep_unknown']").trigger("click")
+  await flushPromises()
+  expect(visibleConfirmBoxes()).toHaveLength(1)
+  messageBoxButton("确认提出").click()
+  await flushPromises()
+  const posts = fetch.mock.calls.filter(
+    ([url, init]) => String(url).includes("/chunks/9/resolution") && init?.method === "POST",
+  )
+  expect(posts).toHaveLength(1)
+  again.unmount()
+  cleanupConfirms()
+  vi.unstubAllGlobals()
+})
+
+it("取消任务确认后焦点回到触发按钮，确认期间按钮保持可聚焦", async () => {
+  const fetch = vi.fn(async (input: string, init?: RequestInit) =>
+    response(result(String(input), init?.method || "GET")),
+  )
+  vi.stubGlobal("fetch", fetch)
+  const wrapper = await mountOps({ tab: "jobs" }, { attach: true })
+  await flushPromises()
+  const button = wrapper.get("[data-testid='job-trigger-poll_report']")
+  ;(button.element as HTMLButtonElement).focus()
+  await button.trigger("click")
+  await button.trigger("click")
+  await flushPromises()
+  expect(visibleConfirmText()).toContain("立即投递一次执行")
+  expect(button.classes()).not.toContain("is-loading")
+  expect(button.attributes("disabled")).toBeUndefined()
+  expect(visibleConfirmBoxes()).toHaveLength(1)
+  messageBoxButton("取消").click()
+  await flushPromises()
+  await vi.waitFor(() => {
+    expect(document.activeElement).toBe(button.element)
+  })
+  expect(fetch.mock.calls.some(([url, init]) => String(url).includes("/trigger") && init?.method === "POST")).toBe(
+    false,
+  )
+  wrapper.unmount()
+  cleanupConfirms()
+  vi.unstubAllGlobals()
+})
+
+it("任务确认期间会话失效不提交，焦点留在当前页标题", async () => {
+  const fetch = vi.fn(async (input: string, init?: RequestInit) =>
+    response(result(String(input), init?.method || "GET")),
+  )
+  vi.stubGlobal("fetch", fetch)
+  const wrapper = await mountOps({ tab: "jobs" }, { attach: true })
+  await flushPromises()
+  const button = wrapper.get("[data-testid='job-trigger-poll_report']")
+  await button.trigger("click")
+  await flushPromises()
+  useSessionStore().clear()
+  await flushPromises()
+  expect(visibleConfirmText()).not.toContain("立即投递一次执行")
+  expect(fetch.mock.calls.some(([url, init]) => String(url).includes("/trigger") && init?.method === "POST")).toBe(
+    false,
+  )
+  await vi.waitFor(() => {
+    expect(document.activeElement?.tagName).toBe("H1")
+  })
+  expect(document.activeElement).not.toBe(button.element)
+  wrapper.unmount()
+  cleanupConfirms()
+  vi.unstubAllGlobals()
+})
+
+it("离开任务页后取消确认，焦点不回到已隐藏的触发按钮", async () => {
+  const fetch = vi.fn(async (input: string, init?: RequestInit) =>
+    response(result(String(input), init?.method || "GET")),
+  )
+  vi.stubGlobal("fetch", fetch)
+  const wrapper = await mountOps({ tab: "jobs" }, { attach: true })
+  await flushPromises()
+  const button = wrapper.get("[data-testid='job-trigger-poll_report']")
+  await button.trigger("click")
+  await flushPromises()
+  await wrapper.get("#ops-tab-alerts").trigger("click")
+  messageBoxButton("取消").click()
+  await flushPromises()
+  await vi.waitFor(() => {
+    expect(document.activeElement?.tagName).toBe("H1")
+  })
+  expect(document.activeElement).not.toBe(button.element)
+  wrapper.unmount()
+  cleanupConfirms()
   vi.unstubAllGlobals()
 })

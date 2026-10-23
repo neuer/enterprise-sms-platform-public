@@ -16,6 +16,7 @@ import {
   type ReportRow,
   type ReportTrendMetric,
 } from "../api/reports"
+import ReportMobileSort from "../components/ReportMobileSort.vue"
 import ReportTrendChart from "../components/ReportTrendChart.vue"
 import EmptyState from "../components/EmptyState.vue"
 
@@ -50,9 +51,13 @@ const {
   exportTask,
   exportBusy: exportLoading,
   exportError,
+  exportTracking,
   start: startExportTask,
+  retryTracking: retryExportTracking,
   download: downloadExportFile,
-} = useExportTask({ timeoutMessage: "导出结果等待超时（已超过 5 分钟），请稍后重新发起导出" })
+} = useExportTask({
+  timeoutMessage: "导出结果等待超时（已超过 5 分钟）。同一任务仍在后台，可重新查询，不必再次创建。",
+})
 const decrypted = ref(false)
 const metric = ref<ReportTrendMetric>("total")
 const pageSize = DEFAULT_PAGE_SIZE
@@ -79,13 +84,15 @@ const scopeLabel = computed(() => {
 })
 
 const granularityLabel: Record<ReportGranularity, string> = { day: "日", week: "周", month: "月" }
-/** 报表读 stat_daily 聚合快照（aggregate_stats 每 5 分钟滚动重建，含当日）；
-    范围含今日时提示口径，避免与仪表盘实时计数矛盾时被误读为数据丢失。
+/** 报表与仪表盘消息统计都读 stat_daily（aggregate_stats 每 5 分钟滚动重建，含当日）。
+    范围含今日时说明快照延迟，并给出批次列表入口；不把仪表盘说成实时进度。
     「应用」维度只含 API 应用发送（Web 手工发送 app_id 为空，按部门归集），同样需要明示。 */
 const reportHints = computed(() => {
   const hints: string[] = []
   if (dateRange.value[1] >= shanghaiDateKey()) {
-    hints.push("报表为每 5 分钟聚合的统计快照，当日数据可能滞后数分钟；实时进度以仪表盘为准。")
+    hints.push(
+      "报表及仪表盘的消息数、计费条与成功率为每 5 分钟聚合的统计快照，当日数据可能滞后。单批次状态请查看批次列表。",
+    )
   }
   if (groupBy.value === "app") {
     hints.push("「应用」维度仅统计 API 应用发送，Web 手工发送按「部门」维度归集。")
@@ -161,14 +168,34 @@ const sortState = ref<{ prop: SortProp; order: "ascending" | "descending" }>({
   prop: "period_start",
   order: "descending",
 })
+const reportTable = ref<{ sort: (prop: string, order: "ascending" | "descending") => void } | null>(null)
+let syncingSort = false
+
+function applySort(prop: SortProp, order: "ascending" | "descending"): void {
+  if (prop === sortState.value.prop && order === sortState.value.order) return
+  sortState.value = { prop, order }
+  syncingSort = true
+  reportTable.value?.sort(prop, order)
+  syncingSort = false
+  void load(applied.value ?? filters.value)
+}
 
 function onSortChange(event: { prop: SortProp; order: "ascending" | "descending" | null }): void {
+  if (syncingSort) return
   const next = event.order
     ? { prop: event.prop, order: event.order }
     : { prop: "period_start" as const, order: "descending" as const }
   if (next.prop === sortState.value.prop && next.order === sortState.value.order) return
   sortState.value = next
   void load(applied.value ?? filters.value)
+}
+
+function onMobileSortField(value: string): void {
+  applySort(value as SortProp, sortState.value.order)
+}
+
+function toggleSortOrder(): void {
+  applySort(sortState.value.prop, sortState.value.order === "ascending" ? "descending" : "ascending")
 }
 
 const pagedItems = computed(() => result.value?.items ?? [])
@@ -321,6 +348,13 @@ onMounted(() => void load())
   <p v-if="filtersDirty" class="report-dirty-hint">筛选条件已变更，点击「查询」刷新结果。</p>
   <p v-if="reportHints.length" class="report-freshness-hint" data-testid="report-freshness-hint">
     {{ reportHints.join(" ") }}
+    <a
+      v-if="dateRange[1] >= shanghaiDateKey()"
+      class="report-batch-link"
+      data-testid="report-batch-status-link"
+      href="/batches"
+      >查看批次状态</a
+    >
   </p>
 
   <div v-if="exportTask || exportError" class="export-strip" data-testid="export-strip">
@@ -334,6 +368,14 @@ onMounted(() => void load())
       <small v-if="exportTask.expires_at">保留至 {{ exportTask.expires_at.slice(0, 10) }}</small>
       <el-button v-if="exportTask.download_url" link type="primary" class="export-download" @click="download"
         >下载 CSV ↓</el-button
+      >
+      <el-button
+        v-if="exportTracking === 'paused'"
+        link
+        type="primary"
+        data-testid="export-retry-tracking"
+        @click="retryExportTracking"
+        >重新查询</el-button
       >
     </template>
     <el-alert v-if="exportError" :title="exportError" type="error" :closable="false" class="export-strip-error" />
@@ -473,67 +515,81 @@ onMounted(() => void load())
           <span>共 {{ result.total }} 行</span>
         </div>
       </template>
-      <el-table
-        v-loading="loading"
-        :data="pagedItems"
-        class="report-table"
-        :row-key="reportRowKey"
-        :default-sort="{ prop: 'period_start', order: 'descending' }"
-        @sort-change="onSortChange"
-      >
-        <el-table-column prop="period_start" label="周期" width="120" sortable="custom" />
-        <el-table-column prop="dim_label" :label="dimLabel" min-width="140" />
-        <el-table-column prop="total" label="消息数" width="100" align="right" sortable="custom"
-          ><template #default="{ row }">{{ formatNumber(row.total) }}</template></el-table-column
-        >
-        <el-table-column prop="total_segments" label="计费条" width="100" align="right" sortable="custom"
-          ><template #default="{ row }">{{ formatNumber(row.total_segments) }}</template></el-table-column
-        >
-        <el-table-column prop="delivered" label="送达" width="90" align="right"
-          ><template #default="{ row }">{{ formatNumber(row.delivered) }}</template></el-table-column
-        >
-        <el-table-column prop="failed" label="失败" width="80" align="right"
-          ><template #default="{ row }">{{ formatNumber(row.failed) }}</template></el-table-column
-        >
-        <el-table-column prop="unknown" label="未知" width="80" align="right"
-          ><template #default="{ row }">{{ formatNumber(row.unknown) }}</template></el-table-column
-        >
-        <el-table-column prop="success_rate" label="成功率" width="110" align="right" sortable="custom"
-          ><template #default="{ row }"
-            ><span class="rate-chip" :class="rateClass(row.success_rate)">{{
-              formatRate(row.success_rate)
-            }}</span></template
-          ></el-table-column
-        >
-        <template #empty
-          ><EmptyState title="暂无明细数据" description="调整日期、类别或分组方式后重新查询。"
-        /></template>
-      </el-table>
-      <!-- 分页常驻（§7.8e/8f 同型限制已退役）：空结果时分页器以 0 总数正常展示 -->
-      <ListPagination
-        v-model:page="page"
-        :total="result.total"
-        :page-size="pageSize"
-        :show-count="false"
-        class="report-pager"
-        @change="changePage(page)"
-      ></ListPagination>
-      <div class="report-mobile-list"
-        ><article v-for="item in pagedItems" :key="`${item.period_start}-${item.dim_value}`"
-          ><header
-            ><time>{{ item.period_start }}</time
-            ><strong>{{ item.dim_label }}</strong></header
-          ><dl
-            ><div
-              ><dt>消息数</dt><dd>{{ item.total }}</dd></div
-            ><div
-              ><dt>计费条</dt><dd>{{ item.total_segments }}</dd></div
-            ><div
-              ><dt>成功率</dt><dd>{{ formatRate(item.success_rate) }}</dd></div
-            ></dl
-          ><p>送达 {{ item.delivered }} · 失败 {{ item.failed }} · 未知 {{ item.unknown }}</p></article
-        ></div
-      >
+      <div v-loading="loading" class="report-detail-body">
+        <EmptyState
+          v-if="!loading && result.total === 0"
+          class="report-detail-empty"
+          title="暂无明细数据"
+          description="调整日期、类别或分组方式后重新查询。"
+        />
+        <template v-else>
+          <ReportMobileSort
+            :prop="sortState.prop"
+            :order="sortState.order"
+            @field="onMobileSortField"
+            @toggle="toggleSortOrder"
+          />
+          <el-table
+            v-if="loading || pagedItems.length"
+            ref="reportTable"
+            :data="pagedItems"
+            class="report-table"
+            :row-key="reportRowKey"
+            :default-sort="{ prop: sortState.prop, order: sortState.order }"
+            @sort-change="onSortChange"
+          >
+            <el-table-column prop="period_start" label="周期" width="120" sortable="custom" />
+            <el-table-column prop="dim_label" :label="dimLabel" min-width="140" />
+            <el-table-column prop="total" label="消息数" width="100" align="right" sortable="custom"
+              ><template #default="{ row }">{{ formatNumber(row.total) }}</template></el-table-column
+            >
+            <el-table-column prop="total_segments" label="计费条" width="100" align="right" sortable="custom"
+              ><template #default="{ row }">{{ formatNumber(row.total_segments) }}</template></el-table-column
+            >
+            <el-table-column prop="delivered" label="送达" width="90" align="right"
+              ><template #default="{ row }">{{ formatNumber(row.delivered) }}</template></el-table-column
+            >
+            <el-table-column prop="failed" label="失败" width="80" align="right"
+              ><template #default="{ row }">{{ formatNumber(row.failed) }}</template></el-table-column
+            >
+            <el-table-column prop="unknown" label="未知" width="80" align="right"
+              ><template #default="{ row }">{{ formatNumber(row.unknown) }}</template></el-table-column
+            >
+            <el-table-column prop="success_rate" label="成功率" width="110" align="right" sortable="custom"
+              ><template #default="{ row }"
+                ><span class="rate-chip" :class="rateClass(row.success_rate)">{{
+                  formatRate(row.success_rate)
+                }}</span></template
+              ></el-table-column
+            >
+          </el-table>
+          <ListPagination
+            v-if="result.total > 0"
+            v-model:page="page"
+            :total="result.total"
+            :page-size="pageSize"
+            :show-count="false"
+            class="report-pager"
+            @change="changePage(page)"
+          ></ListPagination>
+          <div class="report-mobile-list"
+            ><article v-for="item in pagedItems" :key="`${item.period_start}-${item.dim_value}`"
+              ><header
+                ><time>{{ item.period_start }}</time
+                ><strong>{{ item.dim_label }}</strong></header
+              ><dl
+                ><div
+                  ><dt>消息数</dt><dd>{{ item.total }}</dd></div
+                ><div
+                  ><dt>计费条</dt><dd>{{ item.total_segments }}</dd></div
+                ><div
+                  ><dt>成功率</dt><dd>{{ formatRate(item.success_rate) }}</dd></div
+                ></dl
+              ><p>送达 {{ item.delivered }} · 失败 {{ item.failed }} · 未知 {{ item.unknown }}</p></article
+            ></div
+          >
+        </template>
+      </div>
     </el-card>
   </template>
 </template>
