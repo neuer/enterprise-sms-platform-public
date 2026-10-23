@@ -122,59 +122,72 @@ class SqlAlertRepository:
         dedup_key: str,
         dedup_hours: int,
     ) -> int | None:
+        """先取得事务咨询锁，再在 READ COMMITTED 新快照上插入去重告警。
+
+        锁与 NOT EXISTS 必须分成两条语句。放在同一条 INSERT/CTE 里时，
+        语句快照在加锁前就已取定，并发声明会各插入一行。只有插入胜者
+        才在同一事务写入告警 Outbox。
+        """
+
         engine = self._engine()
         try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
-                        WITH dedup_lock AS (
-                          SELECT pg_advisory_xact_lock(
-                            hashtextextended(:dedup_key, 0)
-                          )
-                        )
-                        INSERT INTO alert_log (
-                          alert_type,level,title,detail,channels,dedup_key
-                        )
-                        SELECT :alert_type,:level,:title,CAST(:detail AS jsonb),
-                               :channels,:dedup_key
-                        FROM dedup_lock
-                        WHERE NOT EXISTS (
-                          SELECT 1 FROM alert_log
-                          WHERE dedup_key = :dedup_key
-                            AND created_at > now() - make_interval(hours => :dedup_hours)
-                        )
-                        RETURNING id
-                        """
-                    ),
-                    {
-                        "alert_type": alert_type,
-                        "level": level,
-                        "title": title,
-                        "detail": json.dumps(detail, ensure_ascii=False, sort_keys=True),
-                        "channels": channels,
-                        "dedup_key": dedup_key,
-                        "dedup_hours": dedup_hours,
-                    },
+            async with engine.connect() as connection:
+                connection = await connection.execution_options(
+                    isolation_level="READ COMMITTED"
                 )
-                claimed = result.scalar_one_or_none()
-                if claimed is not None:
-                    for channel in ("wecom", "smtp"):
-                        if channel not in channels.split(","):
-                            continue
-                        await enqueue_outbox(
-                            connection,
-                            OutboxEventSpec(
-                                event_type="alert.delivery",
-                                aggregate_type="alert_log",
-                                aggregate_id=str(claimed),
-                                task_name="app.tasks.outbox.deliver_alert",
-                                queue="callback",
-                                args=(int(claimed), channel),
-                                dedup_key=f"alert:{claimed}:{channel}",
-                            ),
-                        )
-                return int(claimed) if claimed is not None else None
+                async with connection.begin():
+                    await connection.execute(
+                        text(
+                            "SELECT pg_advisory_xact_lock("
+                            "hashtextextended(:dedup_key, 0))"
+                        ),
+                        {"dedup_key": dedup_key},
+                    )
+                    result = await connection.execute(
+                        text(
+                            """
+                            INSERT INTO alert_log (
+                              alert_type,level,title,detail,channels,dedup_key
+                            )
+                            SELECT :alert_type,:level,:title,CAST(:detail AS jsonb),
+                                   :channels,CAST(:dedup_key AS varchar(128))
+                            WHERE NOT EXISTS (
+                              SELECT 1 FROM alert_log
+                              WHERE dedup_key = CAST(:dedup_key AS varchar(128))
+                                AND created_at > now()
+                                  - make_interval(hours => :dedup_hours)
+                            )
+                            RETURNING id
+                            """
+                        ),
+                        {
+                            "alert_type": alert_type,
+                            "level": level,
+                            "title": title,
+                            "detail": json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                            "channels": channels,
+                            "dedup_key": dedup_key,
+                            "dedup_hours": dedup_hours,
+                        },
+                    )
+                    claimed = result.scalar_one_or_none()
+                    if claimed is not None:
+                        for channel in ("wecom", "smtp"):
+                            if channel not in channels.split(","):
+                                continue
+                            await enqueue_outbox(
+                                connection,
+                                OutboxEventSpec(
+                                    event_type="alert.delivery",
+                                    aggregate_type="alert_log",
+                                    aggregate_id=str(claimed),
+                                    task_name="app.tasks.outbox.deliver_alert",
+                                    queue="callback",
+                                    args=(int(claimed), channel),
+                                    dedup_key=f"alert:{claimed}:{channel}",
+                                ),
+                            )
+                    return int(claimed) if claimed is not None else None
         finally:
             await engine.dispose()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -20,6 +21,16 @@ from app.services.outbox_repository import enqueue_outbox
 from app.services.scheduling import ScheduledBatch
 from app.services.usage_ledger import request_usage_release_for_batch
 from app.settings import Settings, get_settings
+
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _shanghai_iso(value: datetime) -> str:
+    """把有时区时刻写成上海 ISO8601，供审计 JSON 使用。"""
+
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("scheduled_at must include timezone")
+    return value.astimezone(SHANGHAI).isoformat()
 
 
 class SqlSchedulingRepository:
@@ -207,7 +218,10 @@ class SqlSchedulingRepository:
         *,
         approval_expire_hours: int,
     ) -> bool:
+        """在同一事务内改期、延长幂等并写入上海时区审计时间。"""
+
         predicate, scope_params = scope.sql()
+        audit_scheduled_at = _shanghai_iso(scheduled_at)
         engine = self._engine()
         try:
             async with engine.begin() as connection:
@@ -256,7 +270,7 @@ class SqlSchedulingRepository:
                             """
                             UPDATE approval SET status='pending',approver=NULL,reason=NULL,
                               decided_at=NULL,
-                              expires_at=now()+make_interval(hours=>:expire_hours)
+                              expires_at=now()+make_interval(hours=>CAST(:expire_hours AS integer))
                             WHERE batch_id=:id
                             """
                         ),
@@ -267,13 +281,15 @@ class SqlSchedulingRepository:
                         """
                         INSERT INTO audit_log(actor,action,object_type,object_id,after_val)
                         VALUES(:actor,'batch_reschedule','batch',:batch_no,
-                          jsonb_build_object('scheduled_at',:scheduled_at))
+                          jsonb_build_object(
+                            'scheduled_at', CAST(:scheduled_at AS text)
+                          ))
                         """
                     ),
                     {
                         "actor": self._actor(scope),
                         "batch_no": batch_no,
-                        "scheduled_at": scheduled_at.isoformat(),
+                        "scheduled_at": audit_scheduled_at,
                     },
                 )
                 return True
