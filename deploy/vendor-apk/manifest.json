@@ -4,6 +4,18 @@
     {
       "component": "web",
       "architecture": "x86_64",
+      "filename": "brotli-libs-1.2.1-r0.apk",
+      "sha256": "62a7e37e43bbfc1f8525a00ad2125fd5897135dc93b849733884cb78ffd8e26c",
+      "package": "brotli-libs",
+      "version": "1.2.1-r0",
+      "license": "MIT",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-24"
+    },
+    {
+      "component": "web",
+      "architecture": "x86_64",
       "filename": "libexpat-2.9.0-r0.apk",
       "sha256": "32b127f31e0a919110a18a7f0bb3780d8fb66ba4d8d61b2d301d633f0e319d0e",
       "package": "libexpat",
@@ -48,6 +60,18 @@
       "repository": "v3.24/main",
       "origin": "dl-cdn.alpinelinux.org/alpine",
       "retrieved": "2026-10-11"
+    },
+    {
+      "component": "web",
+      "architecture": "aarch64",
+      "filename": "brotli-libs-1.2.1-r0.apk",
+      "sha256": "f802b9d5a329c216f02e73607cb8f662c434767e41686367ac0afcf6d0d45d64",
+      "package": "brotli-libs",
+      "version": "1.2.1-r0",
+      "license": "MIT",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-24"
     },
     {
       "component": "web",
