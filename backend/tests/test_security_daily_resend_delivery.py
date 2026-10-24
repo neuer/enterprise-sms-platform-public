@@ -9,7 +9,7 @@ import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -205,6 +205,20 @@ def test_recipient_validation_fails_closed(recipients: tuple[str, ...]) -> None:
 
     with pytest.raises(module.ResendConfigurationError, match="recipient"):
         client.send(report, recipients=recipients)
+
+
+@pytest.mark.parametrize("length", [255, 4096, 1_000_000])
+def test_mailer_recipient_length_guard_precedes_regex(
+    length: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _module()
+
+    def unexpected_match(_value: str) -> None:
+        pytest.fail("overlong mailer recipient reached the regex")
+
+    monkeypatch.setattr(module, "EMAIL_PATTERN", SimpleNamespace(fullmatch=unexpected_match))
+    with pytest.raises(module.ResendConfigurationError, match="recipient address is invalid"):
+        module._validate_recipients((" \t" + "!" * length + "\u3000",))
 
 
 def test_default_https_transport_is_fixed_to_resend_without_proxy_or_redirect(
