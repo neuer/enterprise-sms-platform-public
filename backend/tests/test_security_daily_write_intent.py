@@ -10,12 +10,52 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.errors import ApiError
 from app.services.admin_step_up import admin_intent
+from app.services.security_daily import contract
 from app.services.security_daily.contract import (
+    SecurityDailyConfigurationError,
     SecurityDailyConfigurationUpdate,
     SecurityDailyStateConflict,
     security_daily_write_parameters,
+    validate_resend_recipients,
 )
 from app.services.security_daily.service import SecurityDailyService
+
+
+@pytest.mark.parametrize("length", [255, 4096, 1_000_000])
+def test_recipient_length_guard_precedes_regex(
+    length: int, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_match(_value: str) -> None:
+        pytest.fail("overlong recipient reached the regex")
+
+    monkeypatch.setattr(
+        contract, "RESEND_EMAIL_PATTERN", SimpleNamespace(fullmatch=unexpected_match)
+    )
+    with pytest.raises(SecurityDailyConfigurationError, match="收件人地址无效"):
+        validate_resend_recipients((" \t" + "!" * length + "\u3000",))
+
+
+def test_recipient_count_guard_precedes_regex(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected_match(_value: str) -> None:
+        pytest.fail("excess recipient count reached the regex")
+
+    monkeypatch.setattr(
+        contract, "RESEND_EMAIL_PATTERN", SimpleNamespace(fullmatch=unexpected_match)
+    )
+    with pytest.raises(SecurityDailyConfigurationError, match="最多 3 个"):
+        validate_resend_recipients(("owner@example.test",) * 4)
+
+
+def test_recipient_guards_preserve_supported_addresses() -> None:
+    longest = "a" * 64 + "@" + "b" * 63 + "." + "c" * 63 + "." + "d" * 61
+    assert len(longest) == 254
+    addresses = (longest, "Ops+daily@example.test", ".a..@example.test")
+    assert validate_resend_recipients(tuple(f" \t{item}\u3000" for item in addresses)) == addresses
+    assert validate_resend_recipients(()) == ()
+    with pytest.raises(SecurityDailyConfigurationError, match="收件人地址无效"):
+        validate_resend_recipients(("!" * 65 + "@example.test",))
+    with pytest.raises(SecurityDailyConfigurationError, match="不能重复"):
+        validate_resend_recipients(("Ops@example.test", "ops@EXAMPLE.test"))
 
 
 @pytest.mark.parametrize("key,action", [(None, "keep"), ("", "clear"), ("re_synthetic", "replace")])
