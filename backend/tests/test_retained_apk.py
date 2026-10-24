@@ -45,6 +45,20 @@ def test_retained_packages_match_complete_dual_architecture_manifest() -> None:
         assert sorted((directory / "SHA256SUMS").read_text().splitlines()) == sorted(lines)
 
 
+@pytest.mark.parametrize("architecture", ["x86_64", "aarch64"])
+def test_web_retains_fixed_brotli_decoder_for_each_architecture(architecture: str) -> None:
+    """固定 Nginx 基底的 Brotli 解码器必须由双架构安全修复包覆盖。"""
+    manifest = json.loads((ASSETS / "manifest.json").read_text())
+    versions = [
+        record["version"]
+        for record in manifest["packages"]
+        if record["component"] == "web"
+        and record["architecture"] == architecture
+        and record["package"] == "brotli-libs"
+    ]
+    assert versions == ["1.2.1-r0"]
+
+
 @pytest.mark.parametrize(
     "path",
     ["deploy/vendor-apk/web/x86_64/libexpat-2.9.0-r0.apk", "deploy/install-retained-apk.sh"],
