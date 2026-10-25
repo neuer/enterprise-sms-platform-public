@@ -38,6 +38,10 @@ class AppNotFound(RuntimeError):
     """目标应用不存在。"""
 
 
+class AppNameConflict(RuntimeError):
+    """应用名称唯一约束冲突。"""
+
+
 class CallbackValidationUnavailable(RuntimeError):
     """DNS/同步校验执行预算暂时不可用。"""
 
@@ -277,6 +281,10 @@ class AppManagementService:
     def _validate(self, config: AppCreate | AppUpdate) -> None:
         if isinstance(config, AppCreate) and (not config.name or len(config.name) > 64):
             raise InvalidAppConfig("应用名称长度无效")
+        if config.default_sign is not None and len(config.default_sign) > 32:
+            raise InvalidAppConfig("默认签名最长 32 字")
+        if config.callback_url is not None and len(config.callback_url) > 256:
+            raise InvalidAppConfig("回调 URL 最长 256 字")
         if not config.dept or len(config.dept) > 128:
             raise InvalidAppConfig("部门长度无效")
         if not config.allowed_categories or not config.allowed_categories.issubset(

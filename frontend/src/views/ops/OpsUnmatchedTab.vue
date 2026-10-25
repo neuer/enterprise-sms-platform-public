@@ -23,6 +23,7 @@ import LoadErrorAlert from "../../components/LoadErrorAlert.vue"
 
 import PhoneMask from "../../components/PhoneMask.vue"
 
+import ExportPasswordDialog from "../../components/ExportPasswordDialog.vue"
 import { useExportTask } from "../../composables/useExportTask"
 
 const props = defineProps<{ active: boolean }>()
@@ -41,6 +42,10 @@ const {
   start: startExportTask,
   retryTracking: retryExportTracking,
   download: downloadExportFile,
+  passwordPrompt: exportPasswordPrompt,
+  updateExportPassword,
+  confirmExportPassword,
+  cancelExportPassword,
 } = useExportTask({
   timeoutMessage: "导出状态查询超时（已超过 5 分钟）。同一任务仍在后台，可重新查询，不必再次创建。",
 })
@@ -121,6 +126,14 @@ watch(
 )
 </script>
 <template>
+  <ExportPasswordDialog
+    v-if="exportPasswordPrompt"
+    :open="exportPasswordPrompt.open"
+    :password="exportPasswordPrompt.password"
+    @update:password="updateExportPassword"
+    @confirm="confirmExportPassword"
+    @cancel="cancelExportPassword"
+  />
   <div>
     <LoadErrorAlert class="ops-alert" :message="errorMessage" @retry="load()" />
     <section

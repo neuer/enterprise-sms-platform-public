@@ -42,7 +42,7 @@ function removedTotal(result: SendResult): number {
 
 <template>
   <div class="send-result" data-testid="send-result">
-    <header><i></i>已受理 · {{ sendStatusLabel(result.status) }}</header>
+    <header> <i></i>{{ result.idempotent ? "返回历史批次" : "已受理" }} · {{ sendStatusLabel(result.status) }} </header>
     <div class="batch-row">
       <code>{{ result.batch_no }}</code>
       <button type="button" :disabled="busy" @click="emit('copy')">{{ copied ? "已复制" : "复制批次号" }}</button>

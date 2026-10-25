@@ -20,8 +20,10 @@ import ReportTrendChart from "../components/ReportTrendChart.vue"
 import EmptyState from "../components/EmptyState.vue"
 
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
+import ExportPasswordDialog from "../components/ExportPasswordDialog.vue"
 import { useExportTask } from "../composables/useExportTask"
 import { formatNumber } from "../lib/format"
+import { countReportPeriods } from "../lib/time"
 import {
   audienceOptions,
   composeWidth,
@@ -72,6 +74,10 @@ const {
   start: startExportTask,
   retryTracking: retryExportTracking,
   download: downloadExportFile,
+  passwordPrompt: exportPasswordPrompt,
+  updateExportPassword,
+  confirmExportPassword,
+  cancelExportPassword,
 } = useExportTask({
   timeoutMessage: "导出结果等待超时（已超过 5 分钟）。同一任务仍在后台，可重新查询，不必再次创建。",
 })
@@ -133,8 +139,11 @@ const periodTotals = computed(() => {
   ])
 })
 const periodAverage = computed(() => {
-  if (!result.value || periodTotals.value.length === 0) return null
-  return Math.round(result.value.summary.total / periodTotals.value.length)
+  const current = result.value
+  if (!current) return null
+  const periodCount = countReportPeriods(current.start, current.end, current.granularity)
+  if (periodCount === null || periodCount < 1) return null
+  return Math.round(current.summary.total / periodCount)
 })
 const periodPeak = computed(() => {
   if (periodTotals.value.length === 0) return null
@@ -271,6 +280,14 @@ onMounted(() => void load())
 </script>
 
 <template>
+  <ExportPasswordDialog
+    v-if="exportPasswordPrompt"
+    :open="exportPasswordPrompt.open"
+    :password="exportPasswordPrompt.password"
+    @update:password="updateExportPassword"
+    @confirm="confirmExportPassword"
+    @cancel="cancelExportPassword"
+  />
   <section class="page-heading report-heading">
     <div>
       <p class="eyebrow">ANALYTICS / 统计报表</p>

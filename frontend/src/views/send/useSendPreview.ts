@@ -52,8 +52,9 @@ export function useSendPreview(options: SendPreviewOptions) {
   )
   const lastPreviewKey = ref("")
   let previewTimer: number | undefined
-  // 预检请求真实取消：新预览取代在途旧请求，不只是丢弃迟到响应。
+  // 预检请求真实取消：代际区分内容相同的两次请求，避免 A→B→A 把旧取消当成当前结果。
   let previewAbort: AbortController | undefined
+  let previewGeneration = 0
 
   const previewReady = computed(
     () =>
@@ -75,7 +76,24 @@ export function useSendPreview(options: SendPreviewOptions) {
     )
   }
 
+  function isCurrentPreview(generation: number, controller: AbortController, key: string): boolean {
+    return (
+      !isDisposed() &&
+      generation === previewGeneration &&
+      previewAbort === controller &&
+      !controller.signal.aborted &&
+      key === previewKey.value
+    )
+  }
+
+  function retirePreview(): void {
+    previewGeneration += 1
+    previewAbort?.abort()
+    previewAbort = undefined
+  }
+
   async function runPreview(key: string): Promise<void> {
+    const generation = ++previewGeneration
     previewAbort?.abort()
     const controller = new AbortController()
     previewAbort = controller
@@ -92,7 +110,8 @@ export function useSendPreview(options: SendPreviewOptions) {
         },
         controller.signal,
       )
-      if (isDisposed() || key !== previewKey.value) return
+      if (!isCurrentPreview(generation, controller, key)) return
+      previewError.value = ""
       if (isValidPreview(result)) {
         preview.value = result
         lastPreviewKey.value = key
@@ -101,17 +120,18 @@ export function useSendPreview(options: SendPreviewOptions) {
         lastPreviewKey.value = ""
       }
     } catch (error) {
-      if (isDisposed() || key !== previewKey.value) return
+      if (!isCurrentPreview(generation, controller, key)) return
+      if (error instanceof DOMException && error.name === "AbortError") return
       previewError.value = errorText(error, "预检失败")
     } finally {
-      if (!isDisposed() && key === previewKey.value) previewLoading.value = false
+      if (isCurrentPreview(generation, controller, key)) previewLoading.value = false
     }
   }
 
   watch(previewKey, () => {
     window.clearTimeout(previewTimer)
     if (!previewReady.value) {
-      previewAbort?.abort()
+      retirePreview()
       preview.value = null
       previewError.value = ""
       previewLoading.value = false
@@ -194,9 +214,9 @@ export function useSendPreview(options: SendPreviewOptions) {
     return lines
   })
 
-  /** 卸载时取消在途预检请求。 */
+  /** 卸载时取消在途预检请求，并作废其代际。 */
   function abortPreview(): void {
-    previewAbort?.abort()
+    retirePreview()
   }
 
   /** 卸载时清除待触发的防抖定时器。 */

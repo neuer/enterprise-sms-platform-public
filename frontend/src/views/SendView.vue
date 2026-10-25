@@ -8,6 +8,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue"
 import { useRouter } from "vue-router"
 
 import { getDashboard } from "../api/dashboard"
+import CodePointInput from "../components/CodePointInput.vue"
 import SendPrecheckCards from "../components/SendPrecheckCards.vue"
 import SendResultCard from "../components/SendResultCard.vue"
 import EmptyState from "../components/EmptyState.vue"
@@ -23,6 +24,7 @@ const router = useRouter()
 const {
   form,
   imported,
+  consumedImportNotice,
   importState,
   importFilename,
   importError,
@@ -331,6 +333,9 @@ onBeforeUnmount(() => {
                 <button type="button" :disabled="busy" @click="resetImport">重新上传</button>
               </div>
             </div>
+            <p v-if="consumedImportNotice" class="test-limit-hint" data-testid="consumed-import-notice">
+              {{ consumedImportNotice }}
+            </p>
             <p class="import-meta">
               {{ importFilename || "导入文件" }} · 解析完成 · 导入包 24 小时内有效（至
               {{ formatExpiry(imported.expires_at) }}）· 频控剔除在受理时判定
@@ -355,13 +360,14 @@ onBeforeUnmount(() => {
             :disabled="busy"
           />
         </header>
-        <el-input
+        <CodePointInput
           v-if="form.contentMode === 'content'"
           v-model="form.content"
-          type="textarea"
+          multiline
           :rows="4"
-          maxlength="500"
+          :max-code-points="500"
           aria-label="短信内容，最终内容含签名与退订语不超过 500 字"
+          test-id="send-content"
           :disabled="busy"
         />
         <div v-else class="template-fields">
@@ -377,13 +383,13 @@ onBeforeUnmount(() => {
           </el-select>
           <template v-if="selectedTemplate">
             <div class="tpl-params">
-              <el-input
+              <CodePointInput
                 v-for="spec in selectedTemplate.var_specs"
                 :key="spec.pos"
                 v-model="templateParams[spec.pos - 1]"
-                data-testid="template-param"
-                :maxlength="spec.max_len"
+                :max-code-points="spec.max_len"
                 :placeholder="`参数 {${spec.pos}}，最多 ${spec.max_len} 字`"
+                test-id="template-param"
                 :disabled="busy"
               />
             </div>

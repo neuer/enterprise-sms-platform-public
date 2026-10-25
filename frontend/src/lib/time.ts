@@ -156,6 +156,63 @@ export function rangeToIsoParams(range: readonly [Date, Date] | null): { start?:
   }
 }
 
+export type ReportPeriodGranularity = "day" | "week" | "month"
+
+interface CivilDate {
+  year: number
+  month: number
+  day: number
+}
+
+/** 严格解析 YYYY-MM-DD。年份 0–99 用 setUTCFullYear，避免 Date.UTC 的 1900 偏移。 */
+function parseCivilDate(value: string): CivilDate | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return null
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const date = new Date(0)
+  date.setUTCFullYear(year, month - 1, day)
+  date.setUTCHours(0, 0, 0, 0)
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null
+  return { year, month, day }
+}
+
+function civilUtc(date: CivilDate): Date {
+  const value = new Date(0)
+  value.setUTCFullYear(date.year, date.month - 1, date.day)
+  value.setUTCHours(0, 0, 0, 0)
+  return value
+}
+
+function civilOrdinal(date: CivilDate): number {
+  return Math.floor(civilUtc(date).getTime() / 86_400_000)
+}
+
+/** PostgreSQL date_trunc('week')：周一为一周起点。 */
+function mondayOrdinal(date: CivilDate): number {
+  const weekday = civilUtc(date).getUTCDay()
+  const delta = weekday === 0 ? 6 : weekday - 1
+  return civilOrdinal(date) - delta
+}
+
+/**
+ * 统计已查询闭区间内的周期数，含零发送日/周/月。
+ * 只接受结果上的 start/end/granularity，O(1)，不受图表 62 天补零上限影响。
+ */
+export function countReportPeriods(start: string, end: string, granularity: ReportPeriodGranularity): number | null {
+  const first = parseCivilDate(start)
+  const last = parseCivilDate(end)
+  if (!first || !last) return null
+  const startOrdinal = civilOrdinal(first)
+  const endOrdinal = civilOrdinal(last)
+  if (endOrdinal < startOrdinal) return null
+  if (granularity === "day") return endOrdinal - startOrdinal + 1
+  if (granularity === "week") return (mondayOrdinal(last) - mondayOrdinal(first)) / 7 + 1
+  if (granularity === "month") return last.year * 12 + last.month - (first.year * 12 + first.month) + 1
+  return null
+}
+
 /** 严格日历日的星期；以纯 UTC 日历运算避免浏览器时区偏移。 */
 export function dateKeyWeekday(value: string, empty = "—"): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return empty

@@ -1,4 +1,5 @@
 import {
+  countReportPeriods,
   dateKeyWeekday,
   daysAgoDateKey,
   enumerateDateKeys,
@@ -107,4 +108,18 @@ describe("严格日历星期", () => {
   it.each(["", "2026-02-29", "2026-02-30", "2026-13-01", "2026-1-01", "invalid"])("拒绝非法日期 %s", (day) =>
     expect(dateKeyWeekday(day)).toBe("—"),
   )
+})
+
+describe("报表周期计数", () => {
+  it("按完整查询区间计入零发送周期", () => {
+    expect(countReportPeriods("2026-01-01", "2026-01-30", "day")).toBe(30)
+    expect(countReportPeriods("2024-02-28", "2024-03-01", "day")).toBe(3)
+    expect(countReportPeriods("2026-02-30", "2026-03-01", "day")).toBeNull()
+    expect(countReportPeriods("2026-10-25", "2026-10-26", "week")).toBe(2)
+    expect(countReportPeriods("2026-10-26", "2026-11-01", "week")).toBe(1)
+    expect(countReportPeriods("2026-12-31", "2027-01-01", "week")).toBe(1)
+    expect(countReportPeriods("2026-01-31", "2026-02-01", "month")).toBe(2)
+    expect(countReportPeriods("2026-01-01", "2026-12-31", "day")).toBe(365)
+    expect(countReportPeriods("0001-01-01", "0001-01-03", "day")).toBe(3)
+  })
 })

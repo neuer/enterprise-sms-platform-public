@@ -24,6 +24,7 @@ from app.core.auth.roles import Role
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
+from app.core.query_bounds import PAGE_MAX
 from app.services.admin_step_up import admin_intent
 from app.services.user_management import (
     LastAdminProtected,
@@ -81,7 +82,6 @@ class LocalUserCreateModel(StrictModel):
         max_length=128,
         json_schema_extra={"writeOnly": True},
     )
-
 
     @field_validator("dept", mode="before")
     @classmethod
@@ -260,11 +260,11 @@ async def list_users(
     provider_code: Annotated[str | None, Query(max_length=64)] = None,
     role: Role | None = None,
     status: Annotated[int | None, Query(ge=0, le=1)] = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> UserPageModel:
-    return _page_model(
-        await service.list(
+    try:
+        page_result = await service.list(
             keyword,
             provider_code,
             role,
@@ -272,7 +272,9 @@ async def list_users(
             page,
             page_size,
         )
-    )
+    except ValueError as error:
+        raise ApiError(400, "INVALID_PARAM", str(error), None) from None
+    return _page_model(page_result)
 
 
 @router.post(

@@ -11,13 +11,14 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.admin_authorization import AdminAuthorization, hold_admin_authorization
 from app.core.errors import ApiError
 from app.core.runtime_resources import database_engine
 from app.services.app_contract import AppCreateRequest, AppUpdateRequest, canonical_app_revision
-from app.services.app_management import AppNotFound
+from app.services.app_management import AppNameConflict, AppNotFound
 from app.services.callback_authority import ensure_callback_authority_idle
 from app.settings import Settings, get_settings
 
@@ -33,6 +34,34 @@ api_key_prev_prefix AS old_key_prefix,
 api_key_prev_expires AS old_key_expires_at,
 (callback_secret_enc IS NOT NULL) AS callback_secret_configured
 """
+
+
+def _is_app_name_conflict(error: IntegrityError) -> bool:
+    """只把 app_name_key 的 23505 转成领域冲突，其他约束继续失败关闭。"""
+
+    state: str | None = None
+    constraint: str | None = None
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if state is None:
+            for attr in ("sqlstate", "pgcode"):
+                value = getattr(current, attr, None)
+                if isinstance(value, str) and value:
+                    state = value
+                    break
+        if constraint is None:
+            value = getattr(current, "constraint_name", None)
+            if isinstance(value, str) and value:
+                constraint = value
+            else:
+                diag = getattr(current, "diag", None)
+                nested = getattr(diag, "constraint_name", None)
+                if isinstance(nested, str) and nested:
+                    constraint = nested
+        current = getattr(current, "orig", None) or current.__cause__
+    return state == "23505" and constraint == "app_name_key"
 
 
 def _safe_row(row: Any) -> dict[str, Any]:
@@ -189,9 +218,10 @@ class SqlAppRepository:
                 expected_updated_at=None,
                 values=values,
             ) as connection:
-                result = await connection.execute(
-                    text(
-                        """
+                try:
+                    result = await connection.execute(
+                        text(
+                            """
                         INSERT INTO app (
                           name, dept, api_key_hash, api_key_prefix,
                           api_key_hash_version, api_key_hash_algorithm,
@@ -217,22 +247,28 @@ class SqlAppRepository:
                           :callback_secret_enc, :callback_report_enabled, :actor
                         ) RETURNING id
                         """
-                    ),
-                    values
-                    | {
-                        "api_key_hash_version": values.get("api_key_hash_version"),
-                        "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
-                        or (
-                            "api_pepper" if values.get("api_key_hash_version") is not None else None
                         ),
-                        "freq_override": (
-                            json.dumps(values["freq_override"])
-                            if values["freq_override"] is not None
-                            else None
-                        ),
-                        "allowed_ips": list(values["allowed_ips"]),
-                    },
-                )
+                        values
+                        | {
+                            "api_key_hash_version": values.get("api_key_hash_version"),
+                            "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
+                            or (
+                                "api_pepper"
+                                if values.get("api_key_hash_version") is not None
+                                else None
+                            ),
+                            "freq_override": (
+                                json.dumps(values["freq_override"])
+                                if values["freq_override"] is not None
+                                else None
+                            ),
+                            "allowed_ips": list(values["allowed_ips"]),
+                        },
+                    )
+                except IntegrityError as error:
+                    if _is_app_name_conflict(error):
+                        raise AppNameConflict("应用名称已存在") from error
+                    raise
                 app_id = int(result.scalar_one())
                 await self._audit(
                     connection,

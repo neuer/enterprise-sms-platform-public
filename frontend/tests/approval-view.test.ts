@@ -95,6 +95,10 @@ function listCalls(fetchMock: ReturnType<typeof stubApprovalsFetch>): string[] {
   return fetchMock.mock.calls.map((call) => String(call[0])).filter((url) => routeOf(url) === "list")
 }
 
+function latestPage(calls: string[]): string {
+  return [...calls].reverse().find((url) => url.includes("size=20")) ?? ""
+}
+
 // 已挂载实例登记：afterEach 统一卸载，确保轮询/倒计时 interval 不泄漏到后续用例
 // （真实 30s 轮询若在全量慢跑时跨用例触发，会打到当前用例的全局 fetch stub 上）
 const mountedWrappers: Array<{ unmount(): void }> = []
@@ -165,7 +169,7 @@ describe("审批中心", () => {
     const wrapper = mountApproverView()
     await flushPromises()
 
-    const initial = listCalls(fetchMock).at(-1)!
+    const initial = latestPage(listCalls(fetchMock))
     expect(initial).toContain("status=pending")
     expect(initial).toContain("page=1")
     expect(initial).toContain("size=20")
@@ -178,28 +182,29 @@ describe("审批中心", () => {
     selects[0].vm.$emit("update:modelValue", "market")
     selects[0].vm.$emit("change", "market")
     await flushPromises()
-    expect(listCalls(fetchMock).at(-1)).toContain("category=market")
+    expect(latestPage(listCalls(fetchMock))).toContain("category=market")
+    expect(listCalls(fetchMock).some((url) => url.includes("size=1") && !url.includes("category="))).toBe(true)
 
     const deptInput = wrapper.get("[data-testid='approval-dept-filter']")
     await deptInput.setValue("财务部")
     await deptInput.trigger("change")
     await flushPromises()
-    expect(listCalls(fetchMock).at(-1)).toContain(`dept=${encodeURIComponent("财务部")}`)
+    expect(latestPage(listCalls(fetchMock))).toContain(`dept=${encodeURIComponent("财务部")}`)
 
     const qInput = wrapper.get("[data-testid='approval-q-filter']")
     await qInput.setValue("zhangw")
     await qInput.trigger("change")
     await flushPromises()
-    expect(listCalls(fetchMock).at(-1)).toContain("q=zhangw")
+    expect(latestPage(listCalls(fetchMock))).toContain("q=zhangw")
 
     selects[1].vm.$emit("update:modelValue", "created_desc")
     selects[1].vm.$emit("change", "created_desc")
     await flushPromises()
-    expect(listCalls(fetchMock).at(-1)).toContain("sort=created_desc")
+    expect(latestPage(listCalls(fetchMock))).toContain("sort=created_desc")
 
     await wrapper.get("[data-testid='approval-status-approved']").trigger("click")
     await flushPromises()
-    const decided = listCalls(fetchMock).at(-1)!
+    const decided = latestPage(listCalls(fetchMock))
     expect(decided).toContain("status=approved")
     expect(decided).toContain("sort=decided_desc")
     expect(decided).toContain("page=1")

@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import bind_connection_audit_subject, database_engine
 from app.services.blacklist import BlacklistEntry, BlacklistPage, BlacklistUpsertResult
 from app.settings import Settings, get_settings
@@ -186,6 +187,7 @@ class SqlBlacklistRepository:
         page: int,
         size: int,
     ) -> BlacklistPage:
+        ensure_page_offset(page, size)
         where = ""
         params: dict[str, Any] = {"limit": size, "offset": (page - 1) * size}
         conditions: list[str] = []

@@ -224,6 +224,8 @@ async def test_reschedule_audit_uses_shanghai_text_and_keeps_aware_column() -> N
     assert "CAST(:scheduled_at AS timestamptz)" in connection.calls[2][0]
     approval = next(sql for sql, _params in connection.calls if "UPDATE approval" in sql)
     assert "CAST(:expire_hours AS integer)" in approval
+    assert "approver_account_id=NULL" in approval
+    assert "approver_identity_id=NULL" in approval
     audit_sql = connection.calls[-1][0]
     assert "CAST(:scheduled_at AS text)" in audit_sql
     assert connection.calls[-1][1]["scheduled_at"] == scheduled_at.astimezone(

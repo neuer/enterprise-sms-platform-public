@@ -14,6 +14,7 @@ from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
 from app.core.auth.department import normalize_account_department
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
 from app.core.auth.temporary_password import TEMPORARY_PASSWORD_EXPIRY_SQL
+from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import database_engine
 from app.services.admin_invariant import ensure_effective_admin
 from app.services.user_management import (
@@ -87,6 +88,7 @@ class SqlUserManagementRepository:
         return database_engine(self.settings.database_url_for("auth"))
 
     async def list(self, query: UserQuery) -> UserPage:
+        ensure_page_offset(query.page, query.page_size)
         clauses: list[str] = []
         params: dict[str, object] = {
             "limit": query.page_size,

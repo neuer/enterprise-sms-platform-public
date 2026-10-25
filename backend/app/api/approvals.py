@@ -15,6 +15,7 @@ from app.api.authorization import ApproverActor
 from app.core.audit import audited
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
+from app.core.query_bounds import PAGE_MAX
 from app.services.alert_repository import SqlAlertService
 from app.services.approval import ApprovalService, SelfApprovalDenied, StateConflict
 from app.services.approval_repository import SqlApprovalRepository
@@ -115,10 +116,8 @@ async def list_approvals(
     category: Annotated[Literal["notice", "market"] | None, Query()] = None,
     dept: Annotated[str | None, Query(max_length=64)] = None,
     q: Annotated[str | None, Query(max_length=64)] = None,
-    sort: Annotated[
-        Literal["expires_asc", "created_desc", "decided_desc"] | None, Query()
-    ] = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    sort: Annotated[Literal["expires_asc", "created_desc", "decided_desc"] | None, Query()] = None,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     size: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> dict[str, object]:
     """分页审批列表；正文不在列表解密，敏感读审计只保留在详情端点。"""
@@ -126,15 +125,18 @@ async def list_approvals(
     effective_sort = sort or ("expires_asc" if status == "pending" else "decided_desc")
     dept_pattern = f"%{dept}%" if dept is not None else None
     keyword = f"%{q}%" if q is not None else None
-    result = await repository.list_page(
-        status=status,
-        dept=dept_pattern,
-        category=category,
-        q=keyword,
-        sort=effective_sort,
-        page=page,
-        size=size,
-    )
+    try:
+        result = await repository.list_page(
+            status=status,
+            dept=dept_pattern,
+            category=category,
+            q=keyword,
+            sort=effective_sort,
+            page=page,
+            size=size,
+        )
+    except ValueError as error:
+        raise ApiError(400, "INVALID_PARAM", str(error), None) from None
     counts = await repository.counts(dept=dept_pattern, category=category, q=keyword)
     return {
         "total": result["total"],

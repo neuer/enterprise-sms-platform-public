@@ -280,6 +280,7 @@ PYTHON
 }
 sleep() { record "sleep $*"; }
 wait_url() { record "health $1"; }
+check_mock_catalog() { record catalog; }
 seed_dev() { record seed; }
 print_ready() { record ready; }
 up
@@ -317,6 +318,7 @@ def test_up_finishes_controlled_cutover_before_api_restart_seed_and_ready(tmp_pa
         "compose up -d api",
         "health API",
         "health Mock vendor",
+        "catalog",
         "seed",
         "ready",
     ]

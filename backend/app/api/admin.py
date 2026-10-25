@@ -18,6 +18,7 @@ from app.core.auth.runtime import get_auth_facade
 from app.core.auth.session_policy import AuthSessionPolicy
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
+from app.core.query_bounds import PAGE_MAX
 from app.services.admin import (
     AdminService,
     AuditQuery,
@@ -121,7 +122,7 @@ async def list_audit_logs(
     object_id: Annotated[str | None, Query(max_length=64)] = None,
     start: datetime | None = None,
     end: datetime | None = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> AuditPageModel:
     try:

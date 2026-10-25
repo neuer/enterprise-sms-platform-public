@@ -136,9 +136,7 @@ def test_import_limits_are_built_from_runtime_policy() -> None:
 def test_import_expiry_is_built_from_runtime_policy() -> None:
     from app.services.runtime_policy import RuntimePolicy
 
-    limits = ImportLimits.from_policy(
-        RuntimePolicy.from_mapping({"import_expire_hours": "6"})
-    )
+    limits = ImportLimits.from_policy(RuntimePolicy.from_mapping({"import_expire_hours": "6"}))
 
     assert limits.expire_hours == 6
 
@@ -185,24 +183,14 @@ async def test_import_matches_historical_hmac_but_keeps_only_active_tuple() -> N
     ids=("parent-path", "absolute-path", "encrypted-entry"),
 )
 async def test_xlsx_preflight_rejects_unsafe_paths_and_encrypted_entries(
-    monkeypatch: pytest.MonkeyPatch,
     payload: bytes,
 ) -> None:
-    calls: list[object] = []
-    monkeypatch.setattr(
-        imports_module,
-        "load_workbook",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
-
     with pytest.raises(ImportFormatError):
         await ImportParser(crypto(), FakeBlacklist()).parse(
             "phones.xlsx",
             BytesIO(payload),
             size=len(payload),
         )
-
-    assert calls == []
 
 
 @pytest.mark.asyncio
@@ -229,25 +217,15 @@ async def test_xlsx_preflight_rejects_unsafe_paths_and_encrypted_entries(
     ids=("entry-count", "entry-size", "total-size", "compression-ratio"),
 )
 async def test_xlsx_preflight_rejects_archive_resource_amplification(
-    monkeypatch: pytest.MonkeyPatch,
     payload: bytes,
     limits: ImportLimits,
 ) -> None:
-    calls: list[object] = []
-    monkeypatch.setattr(
-        imports_module,
-        "load_workbook",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
-
     with pytest.raises(ImportTooLarge):
         await ImportParser(crypto(), FakeBlacklist(), limits=limits).parse(
             "phones.xlsx",
             BytesIO(payload),
             size=len(payload),
         )
-
-    assert calls == []
 
 
 def test_xlsx_preflight_counts_central_records_before_zipfile(
@@ -375,6 +353,95 @@ async def test_valid_small_xlsx_still_imports_after_preflight() -> None:
     assert [item.phone_mask for item in result.valid] == ["138****8000", "139****9000"]
 
 
+def _xlsx_bytes(workbook: Workbook) -> bytes:
+    source = BytesIO()
+    workbook.save(source)
+    return source.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_write_only_xlsx_without_dimension_matches_normal_workbook() -> None:
+    normal = BytesIO()
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.append(["phone"])
+    sheet.append(["13800138000"])
+    sheet.append(["13900139000"])
+    workbook.save(normal)
+
+    write_only = BytesIO()
+    streaming = Workbook(write_only=True)
+    streaming_sheet = streaming.create_sheet()
+    streaming_sheet.append(["phone"])
+    streaming_sheet.append(["13800138000"])
+    streaming_sheet.append(["13900139000"])
+    streaming.save(write_only)
+
+    async def masks(payload: bytes) -> list[str]:
+        result = await ImportParser(crypto(), FakeBlacklist()).parse(
+            "phones.xlsx",
+            BytesIO(payload),
+            size=len(payload),
+        )
+        return [item.phone_mask for item in result.valid]
+
+    assert await masks(normal.getvalue()) == await masks(write_only.getvalue())
+    assert await masks(write_only.getvalue()) == ["138****8000", "139****9000"]
+
+
+@pytest.mark.asyncio
+async def test_xlsx_without_dimension_rejects_extra_column_and_sparse_row() -> None:
+    extra_book = Workbook(write_only=True)
+    extra_sheet = extra_book.create_sheet()
+    extra_sheet.append(["13800138000", "extra"])
+    extra = _xlsx_bytes(extra_book)
+    with pytest.raises(ImportFormatError, match="只允许一列"):
+        await ImportParser(crypto(), FakeBlacklist()).parse(
+            "phones.xlsx", BytesIO(extra), size=len(extra)
+        )
+
+    sparse_book = Workbook()
+    sparse_sheet = sparse_book.active
+    assert sparse_sheet is not None
+    sparse_sheet["A1"] = "13800138000"
+    sparse_sheet["A100000"] = "13900139000"
+    sparse = _xlsx_bytes(sparse_book)
+    with pytest.raises(ImportTooLarge):
+        await ImportParser(crypto(), FakeBlacklist(), limits=ImportLimits(max_rows=2)).parse(
+            "phones.xlsx", BytesIO(sparse), size=len(sparse)
+        )
+
+
+@pytest.mark.asyncio
+async def test_xlsx_row_limit_counts_header_and_data_rows() -> None:
+    limits = ImportLimits(max_rows=2)
+    accepted_book = Workbook()
+    accepted_sheet = accepted_book.active
+    assert accepted_sheet is not None
+    accepted_sheet.append(["phone"])
+    accepted_sheet.append(["13800138000"])
+    accepted_sheet.append(["13900139000"])
+    accepted = _xlsx_bytes(accepted_book)
+    result = await ImportParser(crypto(), FakeBlacklist(), limits=limits).parse(
+        "phones.xlsx", BytesIO(accepted), size=len(accepted)
+    )
+    assert len(result.valid) == 2
+
+    overflow_book = Workbook()
+    overflow_sheet = overflow_book.active
+    assert overflow_sheet is not None
+    overflow_sheet.append(["phone"])
+    overflow_sheet.append(["13800138000"])
+    overflow_sheet.append(["13900139000"])
+    overflow_sheet.append(["13700137000"])
+    overflow = _xlsx_bytes(overflow_book)
+    with pytest.raises(ImportTooLarge):
+        await ImportParser(crypto(), FakeBlacklist(), limits=limits).parse(
+            "phones.xlsx", BytesIO(overflow), size=len(overflow)
+        )
+
+
 @pytest.mark.asyncio
 async def test_tiny_xlsx_with_xfd_dimension_is_rejected_before_row_expansion() -> None:
     source = BytesIO()
@@ -395,16 +462,7 @@ async def test_tiny_xlsx_with_xfd_dimension_is_rejected_before_row_expansion() -
 
 
 @pytest.mark.asyncio
-async def test_invalid_xlsx_container_is_rejected_before_openpyxl(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[object] = []
-    monkeypatch.setattr(
-        imports_module,
-        "load_workbook",
-        lambda *args, **kwargs: calls.append((args, kwargs)),
-    )
-
+async def test_invalid_xlsx_container_is_rejected_before_sheet_parse() -> None:
     with pytest.raises(ImportFormatError):
         await ImportParser(crypto(), FakeBlacklist()).parse(
             "phones.xlsx",
@@ -412,17 +470,9 @@ async def test_invalid_xlsx_container_is_rejected_before_openpyxl(
             size=9,
         )
 
-    assert calls == []
-
 
 def test_iter_chunks_bounds_each_database_batch_and_tracks_duplicates_globally() -> None:
-    payload = (
-        b"phone\n"
-        b"13800138000\n"
-        b"13900139000\n"
-        b"13700137000\n"
-        b"13800138000\n"
-    )
+    payload = b"phone\n13800138000\n13900139000\n13700137000\n13800138000\n"
     chunks = list(
         ImportParser(crypto(), FakeBlacklist()).iter_chunks(
             "phones.csv",

@@ -12,6 +12,13 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
 
+from app.vendor.mock_catalog import (
+    CatalogError,
+    CatalogSnapshot,
+    MockCatalogStore,
+    catalog_from_env,
+)
+
 PHONE_PATTERN = re.compile(r"^1\d{10}$")
 FAILED_REPORT_PREFIX = "1990000"
 NO_REPORT_PREFIX = "1991000"
@@ -49,34 +56,107 @@ class MockControl(BaseModel):
     clear_callbacks: bool = False
     retain_callback_count: int | None = None
     reset: bool = False
+    reset_catalog: bool = False
 
 
 class MockState:
-    """单进程 mock 状态；锁只保护极短的内存变更。"""
+    """单进程 mock 状态；目录序列可持久化，正文和报文只留在内存。"""
 
-    def __init__(self) -> None:
+    def __init__(self, catalog: MockCatalogStore | None = None) -> None:
         self.lock = RLock()
-        self.reset()
+        self.catalog = catalog or catalog_from_env()
+        self.catalog_status = "missing"
+        self.catalog_error = ""
+        self.template_ids: dict[int, int] = {}
+        self.sign_ids: dict[int, int] = {}
+        self.template_contents: dict[int, str] = {}
+        self.sign_contents: dict[int, str] = {}
+        self.template_sequence = 0
+        self.sign_sequence = 0
+        self._reset_volatile_unlocked()
+        try:
+            loaded = self.catalog.load()
+        except CatalogError as error:
+            self.catalog_status = "invalid"
+            self.catalog_error = str(error)
+            return
+        self.catalog_status = loaded.status
+        self.template_sequence = loaded.snapshot.template_sequence
+        self.sign_sequence = loaded.snapshot.sign_sequence
+        self.template_ids = dict(loaded.snapshot.templates)
+        self.sign_ids = dict(loaded.snapshot.signs)
+
+    def _reset_volatile_unlocked(self) -> None:
+        self.next_send_code: int | None = None
+        self.next_send_times = 0
+        self.latency_ms = 0
+        self.send_latency_ms = 0
+        self.balance = DEFAULT_BALANCE
+        self.task_sequence = 0
+        self.send_calls: list[dict[str, Any]] = []
+        self.pending_reports: list[dict[str, Any]] = []
+        self.consumed_reports: list[dict[str, Any]] = []
+        self.pending_replies: list[dict[str, Any]] = []
+        self.template_contents = {}
+        self.sign_contents = {}
+        self.callback_failures = 0
+        self.callback_status = 500
+        self.callbacks: list[dict[str, Any]] = []
 
     def reset(self) -> None:
-        with getattr(self, "lock", RLock()):
-            self.next_send_code: int | None = None
-            self.next_send_times = 0
-            self.latency_ms = 0
-            self.send_latency_ms = 0
-            self.balance = DEFAULT_BALANCE
-            self.task_sequence = 0
+        """日常故障注入：清空易失队列，保留已持久的模板/签名编号。"""
+
+        with self.lock:
+            self._reset_volatile_unlocked()
+
+    def reset_catalog_state(self) -> None:
+        """显式清空目录。只能与数据库成对重置一起使用。"""
+
+        with self.lock:
+            if self.catalog_status == "invalid":
+                raise CatalogError(self.catalog_error or "Mock 目录无效")
+            self._reset_volatile_unlocked()
+            self.template_ids = {}
+            self.sign_ids = {}
             self.template_sequence = 0
             self.sign_sequence = 0
-            self.send_calls: list[dict[str, Any]] = []
-            self.pending_reports: list[dict[str, Any]] = []
-            self.consumed_reports: list[dict[str, Any]] = []
-            self.pending_replies: list[dict[str, Any]] = []
-            self.templates: dict[int, str] = {}
-            self.signs: dict[int, str] = {}
-            self.callback_failures = 0
-            self.callback_status = 500
-            self.callbacks: list[dict[str, Any]] = []
+            self.catalog.save(CatalogSnapshot.empty())
+            self.catalog_status = "ok"
+            self.catalog_error = ""
+
+    def _allocate(self, kind: str, content: str) -> int | None:
+        """先原子保存新序列，再把编号交给调用方。失败不消耗已返回的编号。"""
+
+        if self.catalog_status == "invalid":
+            return None
+        if kind == "template":
+            next_id = self.template_sequence + 1
+            templates = dict(self.template_ids)
+            templates[next_id] = 1
+            signs = dict(self.sign_ids)
+            snapshot = CatalogSnapshot(next_id, self.sign_sequence, templates, signs)
+        else:
+            next_id = self.sign_sequence + 1
+            signs = dict(self.sign_ids)
+            signs[next_id] = 1
+            templates = dict(self.template_ids)
+            snapshot = CatalogSnapshot(self.template_sequence, next_id, templates, signs)
+        try:
+            self.catalog.save(snapshot)
+        except CatalogError as error:
+            self.catalog_status = "invalid"
+            self.catalog_error = str(error)
+            return None
+        self.template_sequence = snapshot.template_sequence
+        self.sign_sequence = snapshot.sign_sequence
+        self.template_ids = templates
+        self.sign_ids = signs
+        self.catalog_status = "ok"
+        if kind == "template":
+            self.template_contents[next_id] = content
+        else:
+            self.sign_contents[next_id] = content
+        return next_id
 
 
 STATE = MockState()
@@ -172,8 +252,7 @@ async def get_report(_: dict[str, Any]) -> dict[str, Any]:
         ]
         STATE.consumed_reports.extend(ready)
         data = [
-            {key: value for key, value in item.items() if not key.startswith("_")}
-            for item in ready
+            {key: value for key, value in item.items() if not key.startswith("_")} for item in ready
         ]
     return _envelope(data)
 
@@ -203,9 +282,10 @@ async def bind_template(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(content, str) or not content:
         return _envelope(code=5000, msg="missing templateContent")
     with STATE.lock:
-        STATE.template_sequence += 1
-        STATE.templates[STATE.template_sequence] = content
-        return _envelope(STATE.template_sequence)
+        template_id = STATE._allocate("template", content)
+    if template_id is None:
+        return _envelope(code=5000, msg="mock catalog invalid")
+    return _envelope(template_id)
 
 
 @app.post("/Sms/Api/GetTemplateState")
@@ -218,7 +298,7 @@ async def get_template_state(payload: dict[str, Any]) -> dict[str, Any]:
         data = [
             {"id": item, "checkType": 1, "checkRemark": None}
             for item in ids
-            if item in STATE.templates
+            if item in STATE.template_ids
         ]
     return _envelope(data)
 
@@ -230,9 +310,10 @@ async def bind_sign(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(name, str) or not name:
         return _envelope(code=5000, msg="missing signName")
     with STATE.lock:
-        STATE.sign_sequence += 1
-        STATE.signs[STATE.sign_sequence] = name
-        return _envelope(STATE.sign_sequence)
+        sign_id = STATE._allocate("sign", name)
+    if sign_id is None:
+        return _envelope(code=5000, msg="mock catalog invalid")
+    return _envelope(sign_id)
 
 
 @app.post("/Sms/Api/GetSignState")
@@ -245,7 +326,7 @@ async def get_sign_state(payload: dict[str, Any]) -> dict[str, Any]:
         data = [
             {"id": item, "checkType": 1, "checkRemark": None}
             for item in ids
-            if item in STATE.signs
+            if item in STATE.sign_ids
         ]
     return _envelope(data)
 
@@ -254,6 +335,11 @@ async def get_sign_state(payload: dict[str, Any]) -> dict[str, Any]:
 async def configure_mock(control: MockControl) -> dict[str, Any]:
     """应用测试注入；手机号仅可进入进程内队列，不在响应中回显。"""
 
+    if control.reset_catalog:
+        try:
+            STATE.reset_catalog_state()
+        except CatalogError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
     if control.reset:
         STATE.reset()
     with STATE.lock:
@@ -319,10 +405,7 @@ async def configure_mock(control: MockControl) -> dict[str, Any]:
 def _public_state() -> dict[str, Any]:
     with STATE.lock:
         send_calls = [
-            item
-            | {
-                "mobile": ",".join(_mask_phone(phone) for phone in item["mobile"].split(","))
-            }
+            item | {"mobile": ",".join(_mask_phone(phone) for phone in item["mobile"].split(","))}
             for item in STATE.send_calls
         ]
         return {
@@ -334,7 +417,16 @@ def _public_state() -> dict[str, Any]:
             "pending_reports": len(STATE.pending_reports),
             "pending_replies": len(STATE.pending_replies),
             "send_calls": send_calls,
-            "template_contents": list(STATE.templates.values()),
+            "template_contents": list(STATE.template_contents.values()),
+            "catalog": {
+                "persistent": bool(getattr(STATE.catalog, "persistent", False)),
+                "status": STATE.catalog_status,
+                "error": STATE.catalog_error or None,
+                "template_sequence": STATE.template_sequence,
+                "sign_sequence": STATE.sign_sequence,
+                "template_count": len(STATE.template_ids),
+                "sign_count": len(STATE.sign_ids),
+            },
             "callback_failures": STATE.callback_failures,
             "callback_status": STATE.callback_status,
             "callback_count": len(STATE.callbacks),

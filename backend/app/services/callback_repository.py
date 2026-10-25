@@ -13,6 +13,7 @@ from sqlalchemy import text
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import current_correlation_id
+from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import database_engine
 from app.services.callback import (
     BatchFinishedData,
@@ -21,10 +22,7 @@ from app.services.callback import (
     CallbackTaskRef,
     MessageReportData,
 )
-from app.services.callback_authority import (
-    CallbackAuthorityBusy,
-    lock_callback_authority,
-)
+from app.services.callback_authority import CallbackAuthorityBusy, lock_callback_authority
 from app.services.callback_worker import CallbackClaim, CallbackLeaseLost
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
@@ -330,6 +328,7 @@ class SqlCallbackRepository:
         page: int,
         size: int = 20,
     ) -> dict[str, object]:
+        ensure_page_offset(page, size)
         where = """
           (CAST(:status AS varchar(10)) IS NULL
             OR t.status=CAST(:status AS varchar(10)))

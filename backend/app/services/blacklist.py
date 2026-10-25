@@ -12,6 +12,7 @@ from typing import Any, Protocol, TypeVar
 from redis.exceptions import LockError, RedisError
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.query_bounds import ensure_page_offset
 from app.core.sensitive_text import reject_phone_in_text
 from app.services.crypto import PHONE_PATTERN, CryptoService
 
@@ -231,6 +232,7 @@ class BlacklistService:
             raise ValueError("invalid blacklist source")
         if page < 1 or not 1 <= size <= MAX_PAGE_SIZE:
             raise ValueError("invalid pagination")
+        ensure_page_offset(page, size)
         keyword = (keyword or "").strip() or None
         return await self.repository.list_page(
             source=source,

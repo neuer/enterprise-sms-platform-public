@@ -29,6 +29,7 @@ from app.core.bounded_executor import ExecutorBackpressure, run_bounded
 from app.core.client_ip import trusted_client_ip
 from app.core.correlation import correlation_headers
 from app.core.errors import ApiError
+from app.core.query_bounds import PAGE_MAX, SIGNED_BIGINT_MAX
 from app.core.runtime_resources import redis_client
 from app.core.sensitive_text import reject_phone_business_id
 from app.services.batch_query import BatchAccessScope, BatchQueryService
@@ -95,7 +96,7 @@ class WebContentModel(BaseModel):
                     "not": {"required": ["content"]},
                 },
             ]
-        }
+        },
     )
 
     category: Category
@@ -305,9 +306,6 @@ async def get_import_parser(_actor: WriterActor) -> AsyncIterator[ImportParser]:
     )
 
 
-
-
-
 def _query_scope(claims: JwtClaims, requested_dept: str | None = None) -> BatchAccessScope:
     if claims.role in {"approver", "admin"}:
         return (
@@ -350,8 +348,6 @@ async def _pipeline_for(claims: JwtClaims) -> AsyncIterator[SendPipeline]:
         store=store,
         idempotency=IdempotencyCoordinator(redis, store),
         crypto=crypto,
-
-
         publisher=CeleryQueuePublisher(),
         templates=SqlTemplateRenderer(settings),
         signs=SignResolver(SqlSignRepository(settings)),
@@ -453,20 +449,16 @@ async def list_web_batches(
     category: Annotated[Literal["verify", "notice", "market"] | None, Query()] = None,
     status: Annotated[str | None, Query(max_length=128)] = None,
     channel: Annotated[Literal["api", "web"] | None, Query()] = None,
-    app_id: Annotated[int | None, Query(ge=1)] = None,
+    app_id: Annotated[int | None, Query(ge=1, le=SIGNED_BIGINT_MAX)] = None,
     dept: Annotated[str | None, Query(max_length=128)] = None,
     is_test: Annotated[bool | None, Query()] = None,
     batch_no: Annotated[str | None, Query(max_length=64)] = None,
     start: Annotated[datetime | None, Query()] = None,
     end: Annotated[datetime | None, Query()] = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
-    statuses = (
-        tuple(part.strip() for part in status.split(",") if part.strip())
-        if status
-        else None
-    )
+    statuses = tuple(part.strip() for part in status.split(",") if part.strip()) if status else None
     try:
         result = await service.list_batches(
             scope=_query_scope(claims, dept),

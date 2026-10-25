@@ -426,7 +426,12 @@ services:
       context: ..
       dockerfile: backend/Dockerfile
     command: uvicorn app.vendor.mock_server:app --host 0.0.0.0 --port 9028
-    environment: { TZ: Asia/Shanghai }
+    environment:
+      TZ: Asia/Shanghai
+      # 仅开发 profile 持久化模板/签名编号；正文与凭据不写入该目录。
+      MOCK_CATALOG_PATH: /var/lib/sms/mock-catalog/catalog.json
+    volumes:
+      - ${SMS_MOCK_CATALOG_DIR:-../.test-update/mock-vendor-catalog}:/var/lib/sms/mock-catalog
     user: "10001:10001"
     pids_limit: 128
     mem_limit: 512m

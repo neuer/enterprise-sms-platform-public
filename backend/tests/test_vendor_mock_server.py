@@ -14,7 +14,10 @@ AUTH = {"secretName": "dev-name", "secretKey": "dev-key"}
 @pytest.fixture(autouse=True)
 def reset_mock() -> None:
     with TestClient(mock_module.app) as client:
-        assert client.post("/_mock/state", json={"reset": True}).status_code == 200
+        assert client.post(
+            "/_mock/state",
+            json={"reset": True, "reset_catalog": True},
+        ).status_code == 200
 
 
 def post(client: TestClient, path: str, payload: dict[str, Any] | None = None) -> Any:

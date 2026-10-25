@@ -1,5 +1,5 @@
 import { flushPromises } from "@vue/test-utils"
-import { ElMessage, ElMessageBox } from "element-plus"
+import { ElMessage } from "element-plus"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { effectScope } from "vue"
 import { ApiRequestError } from "../src/api/client"
@@ -194,12 +194,11 @@ describe("导出任务流 useExportTask", () => {
     const done = task({ status: "done", download_url: "/download" })
     reportsApi.getExportTask.mockResolvedValue(done)
     reportsApi.downloadExport.mockResolvedValue(new Blob(["csv"]))
-    const prompt = vi.spyOn(ElMessageBox, "prompt")
     const controller = mountController()
     await controller.start(() => Promise.resolve(task()))
     await controller.download("sms-report")
 
-    expect(prompt).not.toHaveBeenCalled()
+    expect(controller.passwordPrompt.value).toBeNull()
     expect(reportsApi.issueExportStepUp).not.toHaveBeenCalled()
     expect(reportsApi.downloadExport).toHaveBeenCalledWith(
       controller.exportTask.value,
@@ -215,10 +214,14 @@ describe("导出任务流 useExportTask", () => {
     reportsApi.getExportTask.mockResolvedValue(done)
     reportsApi.issueExportStepUp.mockResolvedValue({ token: "single-use-token", expires_in: 300 })
     reportsApi.downloadExport.mockResolvedValue(new Blob(["csv"]))
-    vi.spyOn(ElMessageBox, "prompt").mockResolvedValue({ value: "current-password", action: "confirm" } as never)
     const controller = mountController()
     await controller.start(() => Promise.resolve(task()))
-    await controller.download("sms-report")
+    const pending = controller.download("sms-report")
+    expect(controller.passwordPrompt.value?.open).toBe(true)
+    controller.updateExportPassword("current-password")
+    controller.confirmExportPassword()
+    await pending
+    expect(controller.passwordPrompt.value).toBeNull()
 
     expect(reportsApi.issueExportStepUp).toHaveBeenCalledWith(done.id, "current-password", expect.any(AbortSignal))
     expect(reportsApi.downloadExport).toHaveBeenCalledWith(
@@ -232,11 +235,12 @@ describe("导出任务流 useExportTask", () => {
   it("取消密码框安静退出：不下载、不报错", async () => {
     const done = task({ status: "done", decrypted: true, download_url: "/download" })
     reportsApi.getExportTask.mockResolvedValue(done)
-    vi.spyOn(ElMessageBox, "prompt").mockRejectedValue("cancel" as never)
     const error = vi.spyOn(ElMessage, "error")
     const controller = mountController()
     await controller.start(() => Promise.resolve(task()))
-    await controller.download("sms-report")
+    const pending = controller.download("sms-report")
+    controller.cancelExportPassword()
+    await pending
 
     expect(reportsApi.issueExportStepUp).not.toHaveBeenCalled()
     expect(reportsApi.downloadExport).not.toHaveBeenCalled()
@@ -295,16 +299,11 @@ describe("下载绑定原会话、任务和页面", () => {
     const scope = effectScope()
     const controller = scope.run(mountController)!
     controller.exportTask.value = task({ status: "done", decrypted: true, download_url: "/download" })
-    let resolve!: (value: never) => void
-    vi.spyOn(ElMessageBox, "prompt").mockImplementation(
-      () =>
-        new Promise((done) => {
-          resolve = done
-        }) as never,
-    )
     const pending = controller.download("synthetic")
+    controller.updateExportPassword("synthetic-password")
     useSessionStore().clear()
-    resolve({ value: "synthetic-password", action: "confirm" } as never)
+    expect(controller.passwordPrompt.value).toBeNull()
+    controller.confirmExportPassword()
     await pending
     expect(reportsApi.issueExportStepUp).not.toHaveBeenCalled()
     expect(reportsApi.downloadExport).not.toHaveBeenCalled()
