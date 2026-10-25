@@ -11,6 +11,7 @@ from app.services.reporting import (
     ReportingService,
     ReportingTotals,
     ReportingTrend,
+    default_report_start,
 )
 
 
@@ -24,7 +25,8 @@ class FakeRepository:
             (ReportingDimSummary("7", "OA应用", 10, 12, 8, 2, 1, 0.8),),
             ReportingTrend(),
             (ReportingTotals(date(2026, 7, 1), "7", "OA应用", 10, 12, 8, 2, 1),),
-            1, 1,
+            1,
+            1,
         )
 
 
@@ -47,9 +49,7 @@ async def test_defaults_to_recent_thirty_shanghai_days_and_dept_scope() -> None:
     )
 
     assert repository.queries == [
-        ReportingQuery(
-            "day", "app", "all", date(2026, 6, 13), date(2026, 7, 12), "业务一部"
-        )
+        ReportingQuery("day", "app", "all", date(2026, 6, 13), date(2026, 7, 12), "业务一部")
     ]
     assert result.items[0].success_rate == 0.8
     assert result.summary.total_segments == 12
@@ -73,7 +73,8 @@ async def test_full_range_summary_is_independent_of_current_detail_page() -> Non
                 ),
                 ReportingTrend(),
                 (ReportingTotals(date(2026, 7, 1), "7", "OA应用", 10, 12, 8, 2, 1),),
-                4, 3,
+                4,
+                3,
             )
 
     service = ReportingService(MultiDimRepository())
@@ -156,3 +157,27 @@ async def test_elevated_scope_and_date_range_validation() -> None:
             role="viewer",
             dept="业务一部",
         )
+
+
+@pytest.mark.asyncio
+async def test_default_window_clamps_at_date_min_without_overflow() -> None:
+    repository = FakeRepository()
+    service = ReportingService(repository, clock=lambda: datetime(2026, 7, 12, tzinfo=UTC))
+    for end, expected in (
+        (date.min, date.min),
+        (date(1, 1, 29), date.min),
+        (date(1, 1, 30), date(1, 1, 1)),
+    ):
+        repository.queries.clear()
+        await service.get(
+            granularity="day",
+            group_by="app",
+            category="all",
+            start=None,
+            end=end,
+            role="admin",
+            dept="",
+        )
+        assert repository.queries[-1].start == expected
+        assert repository.queries[-1].end == end
+    assert default_report_start(date(2026, 7, 12)) == date(2026, 6, 13)

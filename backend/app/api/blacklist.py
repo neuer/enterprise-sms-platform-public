@@ -15,6 +15,7 @@ from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
+from app.core.query_bounds import PAGE_MAX
 from app.services.blacklist import (
     BlacklistEntry,
     BlacklistService,
@@ -84,10 +85,13 @@ async def list_blacklist(
     request: Request,
     source: Annotated[BlacklistSource | None, Query()] = None,
     keyword: Annotated[str | None, Query(max_length=64)] = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> BlacklistPageModel:
-    result = await service.list_page(source=source, keyword=keyword, page=page, size=size)
+    try:
+        result = await service.list_page(source=source, keyword=keyword, page=page, size=size)
+    except ValueError as error:
+        raise ApiError(400, "INVALID_PARAM", str(error), None) from None
     return BlacklistPageModel(total=result.total, items=[_item(entry) for entry in result.items])
 
 

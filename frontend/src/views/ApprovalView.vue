@@ -160,6 +160,7 @@ function deciderLabel(item: ApprovalListItem): string | null {
 
 const detailRead = useLatestRead()
 let detailToken = 0
+let listEpoch = 0
 
 const {
   items,
@@ -171,8 +172,9 @@ const {
   search,
   reset: resetFilters,
 } = usePagedList({
-  fetcher: (page, signal) =>
-    listApprovals(
+  fetcher: (page, signal) => {
+    listEpoch = approvalBadge.epoch
+    return listApprovals(
       {
         status: status.value,
         page,
@@ -183,11 +185,16 @@ const {
         sort: sort.value,
       },
       signal,
-    ),
+    )
+  },
   errorMessage: "审批列表加载失败",
   onLoaded: (result) => {
     counts.value = result.counts
-    approvalBadge.pending = result.counts.pending
+    approvalBadge.syncFromList(
+      result.counts.pending,
+      { category: category.value, dept: dept.value, q: q.value },
+      listEpoch,
+    )
     lastUpdatedAt.value = new Date().toISOString()
   },
   /** 清空状态/类别/部门/申请人筛选；排序随状态位回到 pending 默认的临期优先。 */

@@ -170,6 +170,9 @@ ensure_dev_secrets() {
 }
 
 compose() {
+  local catalog_dir="${SMS_MOCK_CATALOG_DIR:-$ROOT/.test-update/mock-vendor-catalog}"
+  install -d -m 0777 "$catalog_dir"
+  SMS_MOCK_CATALOG_DIR="$catalog_dir" \
   WEB_PORT="$WEB_PORT" API_PORT="$API_PORT" MOCK_VENDOR_PORT="$MOCK_VENDOR_PORT" \
   SMS_PLATFORM_ROOT="$ROOT" \
   SMS_SECRETS_MODE=development \
@@ -211,6 +214,33 @@ prepare() {
     chmod 0777 "$nginx_log_dir"
   fi
   printf '开发配置与 secrets 已准备完成\n'
+}
+
+check_mock_catalog() {
+  local state_file catalog_status template_count sign_count db_counts db_templates db_signs
+  state_file="$(mktemp)"
+  if ! curl -fsS "http://localhost:${MOCK_VENDOR_PORT}/_mock/state" >"$state_file"; then
+    rm -f "$state_file"
+    printf 'Mock 目录：无法读取（厂商模拟未就绪）\n'
+    return 1
+  fi
+  catalog_status="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["catalog"]["status"])' "$state_file")"
+  template_count="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["catalog"]["template_count"])' "$state_file")"
+  sign_count="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["catalog"]["sign_count"])' "$state_file")"
+  rm -f "$state_file"
+  if [[ "$catalog_status" == "invalid" ]]; then
+    fail "Mock 厂商目录损坏或版本不受支持，已停止绑定验收。不要静默把序列回零。隔离测试环境在获得完整重置授权后，执行 scripts/local_test.sh reset 成对重建数据库与目录。"
+    return 1
+  fi
+  db_counts="$(compose exec -T postgres sh -ec 'export PGPASSWORD="$(cat /run/secrets/db_owner_password)"; exec psql -U sms_owner -d "${POSTGRES_DB:-sms}" -Atqc "SELECT (SELECT count(*) FROM sms_template WHERE vendor_template_id IS NOT NULL), (SELECT count(*) FROM sms_sign WHERE vendor_sign_id IS NOT NULL)"')" \
+    || fail "无法核对数据库中的厂商模板/签名绑定"
+  db_templates="${db_counts%%|*}"
+  db_signs="${db_counts##*|}"
+  if [[ "$template_count" == "0" && "$sign_count" == "0" && ( "$db_templates" != "0" || "$db_signs" != "0" ) ]]; then
+    fail "Mock 目录为空，但数据库仍有厂商模板或签名绑定。继续绑定会复用编号。请在隔离测试环境获得完整重置授权后执行 scripts/local_test.sh reset；不要改死信、放宽唯一约束或删除未知卷。"
+    return 1
+  fi
+  printf 'Mock 目录：%s（模板 %s，签名 %s）\n' "$catalog_status" "$template_count" "$sign_count"
 }
 
 wait_url() {
@@ -269,6 +299,7 @@ up() {
   compose up -d api
   wait_url API "http://localhost:${API_PORT}/readyz"
   wait_url 'Mock vendor' "http://localhost:${MOCK_VENDOR_PORT}/_mock/state"
+  check_mock_catalog
   seed_dev
   print_ready
 }
@@ -284,6 +315,7 @@ status() {
     && printf 'API traffic: ready\n' || printf 'API traffic: not ready\n'
   curl -fsS "http://localhost:${MOCK_VENDOR_PORT}/_mock/state" >/dev/null \
     && printf 'Mock vendor: healthy\n' || printf 'Mock vendor: unavailable\n'
+  check_mock_catalog || true
 }
 
 down() {
@@ -297,6 +329,10 @@ reset() {
   validate_dev_env
   ensure_dev_secrets
   compose down -v
+  local catalog_dir="${SMS_MOCK_CATALOG_DIR:-$ROOT/.test-update/mock-vendor-catalog}"
+  case "$catalog_dir" in
+    "$ROOT"/.test-update/*) rm -rf -- "$catalog_dir" ;;
+  esac
   up
 }
 

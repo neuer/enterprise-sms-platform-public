@@ -27,6 +27,7 @@ from app.services.app_contract import (
 from app.services.app_management import (
     AppCreate,
     AppManagementService,
+    AppNameConflict,
     AppNotFound,
     AppUpdate,
     CallbackUrlValidator,
@@ -124,6 +125,8 @@ async def get_app_management_service(_actor: AdminActor) -> AppManagementService
 def _translate(error: Exception) -> ApiError:
     if isinstance(error, AppNotFound):
         return ApiError(404, "NOT_FOUND", "应用不存在", None)
+    if isinstance(error, AppNameConflict):
+        return ApiError(409, "STATE_CONFLICT", "应用名称已存在", None)
     if isinstance(error, InvalidAppConfig):
         return ApiError(400, "INVALID_PARAM", str(error), None)
     if isinstance(error, CallbackValidationUnavailable):
@@ -189,7 +192,12 @@ async def create_app(
         )
         _no_store(response)
         return result
-    except (AppNotFound, InvalidAppConfig, CallbackValidationUnavailable) as error:
+    except (
+        AppNotFound,
+        AppNameConflict,
+        InvalidAppConfig,
+        CallbackValidationUnavailable,
+    ) as error:
         raise _translate(error) from None
 
 

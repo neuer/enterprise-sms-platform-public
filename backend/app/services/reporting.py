@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from typing import Literal, Protocol
 
 from app.core.auth.department import require_account_department
@@ -27,6 +27,16 @@ class ReportFilterNotReady(RuntimeError):
         self.start = start
         self.end = end
         self.missing_date = missing_date
+
+
+def default_report_start(resolved_end: date) -> date:
+    """省略 start 时向前 29 天；用序数夹取，避免 date.min 附近 timedelta 下溢。"""
+
+    earliest = date.min.toordinal()
+    ordinal = resolved_end.toordinal() - 29
+    if ordinal < earliest:
+        ordinal = earliest
+    return date.fromordinal(ordinal)
 
 
 def resolve_test_scope(is_test: bool | None) -> TestScope:
@@ -195,7 +205,7 @@ class ReportingService:
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("reporting clock must be timezone-aware")
         resolved_end = end or now.astimezone(SHANGHAI).date()
-        resolved_start = start or resolved_end - timedelta(days=29)
+        resolved_start = start or default_report_start(resolved_end)
         if resolved_start > resolved_end:
             raise ValueError("report start must not be later than end")
         if (resolved_end - resolved_start).days > 365:

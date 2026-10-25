@@ -86,6 +86,7 @@ def test_contract_has_exact_project_names_and_fixed_devices() -> None:
         "sms-platform_exportdata": "/var/lib/sms-platform/runtime/exports",
         "sms-platform_rawspill": "/var/lib/sms-platform/runtime/raw-spill",
         "sms-platform_beatdata": None,
+        "sms-platform_mock-vendor-catalog": None,
     }
 
 
@@ -103,7 +104,7 @@ def test_compose_volume_sets_match_the_closed_production_contract() -> None:
 
     assert set(base["volumes"]) == logical_names
     assert set(overlay["volumes"]) == bind_names
-    assert logical_names - bind_names == {"beatdata"}
+    assert logical_names - bind_names == {"beatdata", "mock-vendor-catalog"}
 
 
 def test_all_missing_volumes_are_allowed_for_later_compose_creation() -> None:

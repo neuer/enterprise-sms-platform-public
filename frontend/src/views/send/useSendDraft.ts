@@ -17,9 +17,11 @@ import {
 } from "../../api/webMessages"
 import { useApprovedResources } from "../../composables/useApprovedResources"
 import { useDebouncedEntries } from "../../composables/useDebouncedEntries"
+import { usePolling } from "../../composables/usePolling"
 import { useSendPreview } from "./useSendPreview"
 import { admissionReasonOf, admissionReasonText } from "../../lib/admissionReason"
 import { saveBlob } from "../../lib/download"
+import { CONTENT_CODE_POINT_MAX, exceedsCodePoints } from "../../lib/codePoints"
 import { errorText } from "../../lib/error"
 import { newIdempotencyKey } from "../../lib/idempotency"
 import { PHONE_RE } from "../../lib/phone"
@@ -60,6 +62,11 @@ export function useSendDraft() {
   })
 
   const imported = ref<ImportResult | null>(null)
+  const consumedImportId = ref<string | null>(null)
+  const consumedImportNotice = ref("")
+  let invalidDownloadGeneration = 0
+  let invalidDownloadAbort: AbortController | null = null
+  const nowMs = ref(Date.now())
   const importState = ref<"idle" | "parsing" | "ready" | "failed">("idle")
   const importFilename = ref("")
   const importError = ref("")
@@ -111,8 +118,20 @@ export function useSendDraft() {
   // 黑名单与频控剔除只有服务端受理时可判定，预检不做虚假精确。
   const previewCount = computed(() => (form.source === "import" ? recipientCount.value : dedupedCount.value))
 
+  const contentTooLong = computed(
+    () => form.contentMode === "content" && exceedsCodePoints(form.content, CONTENT_CODE_POINT_MAX),
+  )
+  const templateParamsTooLong = computed(() => {
+    const specs = selectedTemplate.value?.var_specs ?? []
+    return templateParams.value.some((value, index) => {
+      const spec = specs.find((item) => item.pos === index + 1)
+      return spec !== undefined && exceedsCodePoints(value ?? "", spec.max_len)
+    })
+  })
   const contentReady = computed(() =>
-    form.contentMode === "content" ? form.content.trim().length > 0 : Number(form.templateId) > 0,
+    form.contentMode === "content"
+      ? form.content.trim().length > 0 && !contentTooLong.value
+      : Number(form.templateId) > 0 && !templateParamsTooLong.value,
   )
 
   const testLimitExceeded = computed(
@@ -127,7 +146,7 @@ export function useSendDraft() {
       form.scheduleEnabled &&
       !!form.scheduledAt &&
       Number.isFinite(Date.parse(form.scheduledAt)) &&
-      Date.parse(form.scheduledAt) <= Date.now(),
+      Date.parse(form.scheduledAt) <= nowMs.value,
   )
 
   const sendDisabled = computed(
@@ -140,6 +159,11 @@ export function useSendDraft() {
       testLimitExceeded.value ||
       recipientLimitExceeded.value ||
       scheduleInPast.value ||
+      contentTooLong.value ||
+      templateParamsTooLong.value ||
+      (form.source === "import" &&
+        consumedImportId.value !== null &&
+        imported.value?.import_id === consumedImportId.value) ||
       (form.scheduleEnabled && (!form.scheduledAt || !Number.isFinite(Date.parse(form.scheduledAt)))),
   )
   const scheduledAtValue = computed(() => (form.scheduleEnabled && form.scheduledAt ? form.scheduledAt : ""))
@@ -174,6 +198,7 @@ export function useSendDraft() {
 
   // 表单任何实质变更（含号码文本、模板参数按下标原地编辑、导入包切换）都作废上一受理结果并轮换幂等键；
   // 多源逐项浅比较，不再对 mobilesText 等大字段做全量 JSON 序列化。
+  let applyingConsumedReset = false
   watch(
     [
       () => form.category,
@@ -193,6 +218,18 @@ export function useSendDraft() {
       () => JSON.stringify(templateParams.value),
     ],
     () => {
+      if (applyingConsumedReset) return
+      const currentImportId = imported.value?.import_id ?? null
+      if (consumedImportId.value && currentImportId === consumedImportId.value) {
+        applyingConsumedReset = true
+        imported.value = null
+        importState.value = "idle"
+        importFilename.value = ""
+        importError.value = ""
+        consumedImportNotice.value = "此导入包已用于已有批次，请重新上传后发送新批次"
+        consumedImportId.value = null
+        applyingConsumedReset = false
+      }
       draftRevision += 1
       idempotencyKey.value = newIdempotencyKey()
       sendResult.value = null
@@ -227,13 +264,34 @@ export function useSendDraft() {
     templateParams.value = template?.var_specs.map(() => "") || []
   }
 
-  /** 下载导入剔除清单（只含掩码与原因）。 */
+  function cancelInvalidDownload(): void {
+    invalidDownloadGeneration += 1
+    invalidDownloadAbort?.abort()
+    invalidDownloadAbort = null
+  }
+
+  /** 下载导入剔除清单（只含掩码与原因）；迟到响应必须仍属于快照中的导入包。 */
   async function downloadInvalidFile(): Promise<void> {
-    if (!imported.value?.invalid_download_url) return
+    const current = imported.value
+    if (!current?.invalid_download_url || !current.import_id) return
+    const snapshotId = current.import_id
+    const snapshotUrl = current.invalid_download_url
+    const generation = ++invalidDownloadGeneration
+    invalidDownloadAbort?.abort()
+    const controller = new AbortController()
+    invalidDownloadAbort = controller
+    const stillCurrent = () =>
+      !disposed &&
+      generation === invalidDownloadGeneration &&
+      !controller.signal.aborted &&
+      imported.value?.import_id === snapshotId
     try {
-      const blob = await downloadImportInvalidFile(imported.value.invalid_download_url)
-      saveBlob(blob, `sms-import-${imported.value.import_id}-invalid.csv`)
+      const blob = await downloadImportInvalidFile(snapshotUrl, controller.signal)
+      if (!stillCurrent()) return
+      saveBlob(blob, `sms-import-${snapshotId}-invalid.csv`)
     } catch (error) {
+      if (!stillCurrent()) return
+      if (error instanceof DOMException && error.name === "AbortError") return
       errorMessage.value = errorText(error, "剔除清单下载失败")
     }
   }
@@ -264,16 +322,22 @@ export function useSendDraft() {
   /** 丢弃导入结果，回到待上传状态。 */
   function resetImport(): void {
     if (busy.value || disposed) return
+    cancelInvalidDownload()
     imported.value = null
     importState.value = "idle"
     importFilename.value = ""
     importError.value = ""
+    consumedImportId.value = null
+    consumedImportNotice.value = ""
   }
 
   /** 上传号码文件并由服务端解析；代际守卫丢弃被取代的迟到结果。 */
   async function handleUpload(options: UploadRequestOptions): Promise<void> {
     if (busy.value || disposed) return
     const generation = ++requestGeneration
+    cancelInvalidDownload()
+    consumedImportId.value = null
+    consumedImportNotice.value = ""
     uploadAbort?.abort()
     const controller = new AbortController()
     uploadAbort = controller
@@ -300,9 +364,34 @@ export function useSendDraft() {
   }
 
   /** 提交发送：组包携带当前幂等键，代际与草稿修订号守卫丢弃过期响应。 */
+  function scheduleExpiredNow(): boolean {
+    return (
+      form.scheduleEnabled &&
+      !!form.scheduledAt &&
+      Number.isFinite(Date.parse(form.scheduledAt)) &&
+      Date.parse(form.scheduledAt) <= Date.now()
+    )
+  }
+
   async function submit(): Promise<void> {
     // 大文本粘贴后 300ms 防抖窗口内也可能点击提交：先落盘最新解析，再做禁用校验与组包。
     flushMobilesParse()
+    if (scheduleExpiredNow()) {
+      nowMs.value = Date.now()
+      errorMessage.value = "定时时间早于当前时刻；请选择未来的发送时间，或取消定时立即发送。"
+      return
+    }
+    if (
+      (form.contentMode === "content" && exceedsCodePoints(form.content, CONTENT_CODE_POINT_MAX)) ||
+      templateParamsTooLong.value
+    ) {
+      errorMessage.value = "内容超过字符上限，未发送"
+      return
+    }
+    if (form.source === "import" && consumedImportId.value && imported.value?.import_id === consumedImportId.value) {
+      consumedImportNotice.value = "此导入包已用于已有批次，请重新上传后发送新批次"
+      return
+    }
     if (sendDisabled.value || disposed) return
     const generation = ++requestGeneration
     const revision = draftRevision
@@ -324,7 +413,13 @@ export function useSendDraft() {
       const result = await sendWebMessage(payload)
       if (disposed || generation !== requestGeneration || revision !== draftRevision) return
       sendResult.value = result
-      submittedSummary.value = `${payload.category === "market" ? "营销短信" : "通知短信"} · ${payload.import_id ? "文件导入" : "手工粘贴"} · ${payload.scheduled_at ? formatDateTime(payload.scheduled_at) : "立即受理"}`
+      if (payload.import_id && imported.value?.import_id === payload.import_id) {
+        consumedImportId.value = payload.import_id
+      }
+      const scheduleText = result.scheduled_at ? formatDateTime(result.scheduled_at) : "立即受理"
+      submittedSummary.value = result.idempotent
+        ? `历史批次 · ${scheduleText}`
+        : `${payload.category === "market" ? "营销短信" : "通知短信"} · ${payload.import_id ? "文件导入" : "手工粘贴"} · ${scheduleText}`
     } catch (error) {
       if (disposed || generation !== requestGeneration || revision !== draftRevision) return
       // 准入 503 附 reason 时给出中文解释与运维中心出口；未知 reason 回退通用文案不吞诊断。
@@ -354,6 +449,8 @@ export function useSendDraft() {
     form.isTest = false
     form.consentConfirmed = false
     form.remark = ""
+    consumedImportId.value = null
+    consumedImportNotice.value = ""
     resetImport()
     sendResult.value = null
     preview.value = null
@@ -363,6 +460,9 @@ export function useSendDraft() {
   /** 会话清空或卸载时作废在途请求并清空全部易失草稿。 */
   function clearSessionDraft(): void {
     requestGeneration += 1
+    cancelInvalidDownload()
+    consumedImportId.value = null
+    consumedImportNotice.value = ""
     busy.value = false
     resetForAnother()
     errorMessage.value = ""
@@ -375,7 +475,22 @@ export function useSendDraft() {
 
   function markDisposed(): void {
     disposed = true
+    cancelInvalidDownload()
+    consumedImportId.value = null
   }
+
+  const scheduleClock = usePolling(
+    () => {
+      nowMs.value = Date.now()
+      return false
+    },
+    {
+      intervalMs: 1000,
+      immediate: true,
+      enabled: () => form.scheduleEnabled && !!form.scheduledAt && Number.isFinite(Date.parse(form.scheduledAt)),
+    },
+  )
+  scheduleClock.start()
 
   function abortUpload(): void {
     uploadAbort?.abort()
@@ -384,6 +499,9 @@ export function useSendDraft() {
   return {
     form,
     imported,
+    consumedImportNotice,
+    contentTooLong,
+    templateParamsTooLong,
     importState,
     importFilename,
     importError,

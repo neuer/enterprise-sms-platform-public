@@ -11,6 +11,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import database_engine
 from app.services.approval import ApprovalCase
 from app.services.callback_repository import enqueue_batch_finished
@@ -154,6 +155,7 @@ class SqlApprovalRepository:
     ) -> dict[str, object]:
         """分页查询审批列表；列表不取密文正文，正文仅详情端点按需解密。"""
 
+        ensure_page_offset(page, size)
         filters, params = _list_filters(dept=dept, category=category, q=q)
         params.update({"status": status, "limit": size, "offset": (page - 1) * size})
         source = f"{CASE_SOURCE} WHERE p.status=:status{filters}"

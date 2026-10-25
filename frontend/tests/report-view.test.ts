@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import ElementPlus, { ElDatePicker, ElMessageBox, ElPagination } from "element-plus"
+import ElementPlus, { ElDatePicker, ElPagination } from "element-plus"
 import { createPinia } from "pinia"
 import { vi } from "vitest"
 
@@ -325,10 +325,9 @@ describe("统计报表页", () => {
         revokeObjectURL: vi.fn(),
       }),
     )
-    vi.spyOn(ElMessageBox, "prompt").mockResolvedValue({ value: "current-password", action: "confirm" } as never)
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined)
 
-    const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
+    const wrapper = mount(ReportView, { attachTo: document.body, global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
     await wrapper.get(".el-checkbox input").setValue(true)
     await wrapper
@@ -340,6 +339,13 @@ describe("统计报表页", () => {
       .findAll("button")
       .find((item) => item.text().includes("下载 CSV"))!
       .trigger("click")
+    await flushPromises()
+    const field = document.body.querySelector("[data-testid='export-password-input']")
+    expect(field).not.toBeNull()
+    const password = (field instanceof HTMLInputElement ? field : field?.querySelector("input")) as HTMLInputElement
+    password.value = "current-password"
+    password.dispatchEvent(new Event("input", { bubbles: true }))
+    document.body.querySelector<HTMLButtonElement>("[data-testid='export-password-confirm']")?.click()
     await flushPromises()
 
     expect(fetch.mock.calls[3][0]).toBe(`/api/v1/web/reports/export/${publicId}/step-up`)

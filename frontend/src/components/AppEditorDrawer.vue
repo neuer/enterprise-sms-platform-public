@@ -155,6 +155,10 @@ function submit(): void {
     ElMessage.warning("请填写应用名、部门并选择至少一个类别")
     return
   }
+  if ([...form.callback_url].length > 256) {
+    ElMessage.warning("回调 URL 最长 256 个字符")
+    return
+  }
   let body: AppPayload
   try {
     body = payload()
@@ -318,8 +322,8 @@ onMounted(() => {
           />
         </el-form-item>
         <el-form-item label="回调 URL">
-          <el-input v-model="form.callback_url" placeholder="https://" />
-          <small class="field-rule">须落在内网 CIDR 白名单，生产仅 HTTPS；留空表示不推送回调。</small>
+          <el-input v-model="form.callback_url" placeholder="https://" data-testid="callback-url-input" />
+          <small class="field-rule">最长 256 个字符，须落在内网 CIDR 白名单，生产仅 HTTPS；留空表示不推送回调。</small>
         </el-form-item>
         <el-form-item label="明细回调">
           <el-switch v-model="form.callback_report_enabled" />

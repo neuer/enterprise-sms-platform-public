@@ -204,6 +204,9 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
     reports_api = read("frontend/src/api/reports.ts")
     types_gen = read("frontend/src/api/types.gen.ts")
     export_task = read("frontend/src/composables/useExportTask.ts")
+    export_dialog = read("frontend/src/components/ExportPasswordDialog.vue")
+    report_view = read("frontend/src/views/ReportView.vue")
+    ops_unmatched = read("frontend/src/views/ops/OpsUnmatchedTab.vue")
     credential_dialog = read("frontend/src/components/VendorCredentialDialog.vue")
     vendor_seal = read("frontend/src/lib/vendorSeal.ts")
 
@@ -216,7 +219,11 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
     assert "issueExportStepUp" in reports_api
     assert '"X-Export-Step-Up"' in reports_api
     assert "issueExportStepUp" in export_task
-    assert 'inputType: "password"' in export_task
+    assert "ElMessageBox" not in export_task
+    assert 'type="password"' in export_dialog
+    assert "destroy-on-close" in export_dialog
+    assert "ExportPasswordDialog" in report_view
+    assert "ExportPasswordDialog" in ops_unmatched
     # 操作类型枚举与审计字段经 types.gen.ts 生成类型承载（批次 K 迁移后字面量不再出现在手写 API 层）
     assert "reset_configuration" in admin_api or "reset_configuration" in types_gen
     assert "correlation_id" in admin_api or "correlation_id" in types_gen

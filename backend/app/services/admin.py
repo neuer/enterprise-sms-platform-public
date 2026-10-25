@@ -13,6 +13,7 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.admin_authorization import AdminAuthorization
 from app.core.auth.backends import SessionStateUnavailable
 from app.core.auth.session_policy import AuthSessionPolicy
+from app.core.query_bounds import ensure_page_offset
 from app.services.alert import validate_alert_destinations
 from app.services.app_contract import canonical_app_revision
 from app.services.runtime_policy import (
@@ -307,6 +308,10 @@ class AdminService:
         ):
             if value is not None and len(value) > limit:
                 raise InvalidAdminQuery(f"{label} 过滤值过长")
+        try:
+            ensure_page_offset(query.page, query.page_size)
+        except ValueError as error:
+            raise InvalidAdminQuery("page or size is out of bounds") from error
         return await self.repository.list_audits(query)
 
     async def list_audit_actions(self) -> tuple[str, ...]:

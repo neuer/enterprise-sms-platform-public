@@ -144,6 +144,7 @@ function handleDrawerChange(event: MediaQueryListEvent): void {
 function handleNavSessionClear(): void {
   navigationOpen.value = false
   navTrigger = null
+  approvalBadge.clear()
 }
 
 function focusableNavItems(): HTMLElement[] {
@@ -214,11 +215,12 @@ const balancePolling = usePolling(refreshBalance, {
 })
 
 function syncApprovalBadgePolling(): void {
-  // 审批页有自己的 30s 列表轮询并回写 badge.pending，角标轮询在该路由暂停以避免重复请求。
+  // 审批页自己刷新角标；全局轮询在该路由暂停。筛选列表不得把局部计数写进导航。
   if (authenticatedShell.value && approverRole.value && !approvalRoute.value) {
     approvalBadge.start()
   } else {
     approvalBadge.stop()
+    if (!authenticatedShell.value || !approverRole.value) approvalBadge.clear()
   }
 }
 

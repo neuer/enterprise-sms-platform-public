@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from app.core.query_bounds import ensure_bigint_id, ensure_page_offset
 from app.core.runtime_resources import database_engine
 from app.services.content_protection import decrypt_batch_display_content
 from app.services.crypto import CryptoService
@@ -102,8 +103,8 @@ class BatchQueryService:
         供前端状态分组 chips 在任意状态筛选下都显示完整分布。
         """
 
-        if page < 1 or size < 1:
-            raise ValueError("page and size must be positive")
+        ensure_page_offset(page, size)
+        ensure_bigint_id(app_id)
         for moment in (start, end):
             if moment is not None and (moment.tzinfo is None or moment.utcoffset() is None):
                 raise ValueError("query time must include timezone")
@@ -149,8 +150,7 @@ class BatchQueryService:
                     base_params,
                 )
                 status_counts = {
-                    str(row["status"]): int(row["n"])
-                    for row in counts_result.mappings()
+                    str(row["status"]): int(row["n"]) for row in counts_result.mappings()
                 }
                 # 分面已覆盖同一权限和非状态筛选；复用它计算选中状态的总数。
                 selected_statuses = set(statuses) if statuses else set(status_counts)

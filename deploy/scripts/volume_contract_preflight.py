@@ -53,6 +53,8 @@ VOLUME_REQUIREMENTS = (
     VolumeRequirement("exportdata", "/var/lib/sms-platform/runtime/exports"),
     VolumeRequirement("rawspill", "/var/lib/sms-platform/runtime/raw-spill"),
     VolumeRequirement("beatdata", None),
+    # 仅 dev profile 的 mock-vendor 使用；不绑定生产宿主机目录。
+    VolumeRequirement("mock-vendor-catalog", None),
 )
 REQUIREMENTS_BY_NAME = {requirement.name: requirement for requirement in VOLUME_REQUIREMENTS}
 

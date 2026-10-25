@@ -3,8 +3,9 @@ import { useVendorResourceList } from "../composables/useVendorResourceList"
 import { useLatestRead } from "../composables/useLatestRead"
 import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
-import { computed, onMounted, ref } from "vue"
+import { computed, onMounted, onScopeDispose, ref, watch } from "vue"
 
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 import { listApps, type ManagedApp } from "../api/apps"
 import {
   adoptExistingSign,
@@ -35,7 +36,19 @@ const EDITOR_FOOTNOTE = "提交后进入厂商人工审核，期间不可修改�
 const session = useSessionStore()
 const isMobile = useMobileLayout()
 
-const saving = ref(false)
+let editorGeneration = 0
+const savingGeneration = ref<number | null>(null)
+const saving = computed(() => savingGeneration.value !== null && savingGeneration.value === editorGeneration)
+
+function invalidateEditor(): void {
+  editorGeneration += 1
+}
+
+window.addEventListener(SESSION_CLEARING_EVENT, invalidateEditor)
+onScopeDispose(() => {
+  invalidateEditor()
+  window.removeEventListener(SESSION_CLEARING_EVENT, invalidateEditor)
+})
 const syncingId = ref<number | null>(null)
 const detail = ref<SmsSign | null>(null)
 const detailOpen = ref(false)
@@ -135,12 +148,18 @@ function openDetail(item: SmsSign): void {
 }
 
 function resetEditor(item?: SmsSign): void {
+  invalidateEditor()
   editingSource.value = item ?? null
   name.value = item?.name ?? ""
   editorOpen.value = true
 }
 
+watch(editorOpen, (open) => {
+  if (!open) invalidateEditor()
+})
+
 async function submit(): Promise<void> {
+  if (saving.value) return
   if (!name.value.trim()) {
     ElMessage.warning("请填写签名名称")
     return
@@ -149,21 +168,30 @@ async function submit(): Promise<void> {
     ElMessage.warning(nameIssue.value)
     return
   }
-  saving.value = true
+  const generation = editorGeneration
+  const submittedName = name.value.trim()
+  const editingId = editingSource.value?.id ?? null
+  savingGeneration.value = generation
   try {
-    if (editingSource.value === null) {
-      await createSign(name.value.trim())
-      ElMessage.success("签名已加入厂商审核队列")
-    } else {
-      await updateSign(editingSource.value.id, name.value.trim())
-      ElMessage.success("签名已重新提交厂商审核")
+    if (editingId === null) await createSign(submittedName)
+    else await updateSign(editingId, submittedName)
+    if (generation !== editorGeneration) {
+      ElMessage.success(`签名「${submittedName}」已提交，当前编辑未改动`)
+      await load()
+      return
     }
+    ElMessage.success(editingId === null ? "签名已加入厂商审核队列" : "签名已重新提交厂商审核")
     editorOpen.value = false
     await load()
   } catch (error) {
-    ElMessage.error(errorText(error, "签名提交失败"))
+    const message = errorText(error, "签名提交失败")
+    if (generation !== editorGeneration) {
+      ElMessage.error(`签名「${submittedName}」提交失败：${message}`)
+      return
+    }
+    ElMessage.error(message)
   } finally {
-    saving.value = false
+    if (savingGeneration.value === generation) savingGeneration.value = null
   }
 }
 
@@ -479,7 +507,7 @@ onMounted(load)
         <code v-if="editingSource">平台 #{{ editingSource.id }} · 重新提交将生成新的厂商编号</code>
       </div>
     </template>
-    <el-form label-position="top" class="sign-form">
+    <el-form label-position="top" class="sign-form" :disabled="saving">
       <el-alert
         v-if="editingSource?.vendor_state === 'rejected' && editingSource.vendor_reject_reason"
         :title="`上次厂商驳回：${editingSource.vendor_reject_reason}`"

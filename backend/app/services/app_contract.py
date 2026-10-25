@@ -40,7 +40,7 @@ class AppCreateRequest(BaseModel):
     name: str
     dept: str
     allowed_categories: list[Category] = ["notice"]
-    default_sign: str | None = None
+    default_sign: str | None = Field(default=None, max_length=32)
     daily_quota: int = Field(default=0, ge=0, le=100_000_000)
     rate_limit_per_min: int = Field(default=60, ge=1, le=60_000)
     recipient_limit_per_min: int = Field(default=10_000, ge=1, le=100_000_000)
@@ -57,7 +57,7 @@ class AppCreateRequest(BaseModel):
     ip_allowlist_exempt_until: datetime | None = None
     unlimited_quota_exempt_until: datetime | None = None
     admission_exempt_note: str | None = Field(default=None, max_length=200)
-    callback_url: str | None = None
+    callback_url: str | None = Field(default=None, max_length=256)
     callback_report_enabled: bool = False
 
 
@@ -65,7 +65,7 @@ class AppUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     dept: str
     allowed_categories: list[Category]
-    default_sign: str | None = None
+    default_sign: str | None = Field(default=None, max_length=32)
     daily_quota: int = Field(ge=0, le=100_000_000)
     rate_limit_per_min: int = Field(ge=1, le=60_000)
     recipient_limit_per_min: int = Field(default=10_000, ge=1, le=100_000_000)
@@ -82,7 +82,7 @@ class AppUpdateRequest(BaseModel):
     ip_allowlist_exempt_until: datetime | None = None
     unlimited_quota_exempt_until: datetime | None = None
     admission_exempt_note: str | None = Field(default=None, max_length=200)
-    callback_url: str | None = None
+    callback_url: str | None = Field(default=None, max_length=256)
     callback_report_enabled: bool = False
     status: Literal[0, 1] = 1
 

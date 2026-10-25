@@ -13,6 +13,7 @@ from app.core.auth.admin_authorization import AdminAuthorization, hold_admin_aut
 from app.core.auth.session_policy import AuthSessionPolicy
 from app.core.auth.session_policy_sync import POLICY_SELECT, policy_from_mapping
 from app.core.errors import ApiError
+from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import bind_connection_audit_subject, database_engine
 from app.services.admin import (
     SENSITIVE_CONFIG_KEYS,
@@ -276,6 +277,7 @@ class SqlAdminRepository:
         self,
         query: AuditQuery,
     ) -> tuple[tuple[AuditRecord, ...], int]:
+        ensure_page_offset(query.page, query.page_size)
         where = """
           (CAST(:actor AS varchar(64)) IS NULL OR actor=:actor)
           AND (CAST(:actor_account_id AS bigint) IS NULL

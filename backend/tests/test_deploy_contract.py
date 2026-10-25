@@ -564,12 +564,14 @@ def test_export_ciphertext_volume_is_shared_only_by_api_and_bulk_worker() -> Non
       /var/lib/sms/imports \\
       /var/lib/sms/exports \\
       /var/lib/sms/raw-spill \\
+      /var/lib/sms/mock-catalog \\
     && chown -R sms:sms /var/lib/sms \\
     && chmod 0700 \\
       /var/lib/sms/beat \\
       /var/lib/sms/imports \\
       /var/lib/sms/exports \\
-      /var/lib/sms/raw-spill
+      /var/lib/sms/raw-spill \\
+      /var/lib/sms/mock-catalog
 """
         in dockerfile
     )

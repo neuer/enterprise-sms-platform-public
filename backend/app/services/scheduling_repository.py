@@ -120,9 +120,7 @@ class SqlSchedulingRepository:
                             dedup_key=f"scheduled:{batch_no}:ready",
                         ),
                     )
-                    claimed.append(
-                        ScheduledBatch(batch_no, category, outbox_persisted=True)
-                    )
+                    claimed.append(ScheduledBatch(batch_no, category, outbox_persisted=True))
                 return claimed
         finally:
             await self._dispose_task_engine(engine)
@@ -269,7 +267,8 @@ class SqlSchedulingRepository:
                         text(
                             """
                             UPDATE approval SET status='pending',approver=NULL,reason=NULL,
-                              decided_at=NULL,
+                              decided_at=NULL,approver_account_id=NULL,
+                              approver_identity_id=NULL,
                               expires_at=now()+make_interval(hours=>CAST(:expire_hours AS integer))
                             WHERE batch_id=:id
                             """

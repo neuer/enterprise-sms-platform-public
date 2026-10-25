@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import csv
+import re
 import struct
 from collections.abc import Iterator
 from dataclasses import dataclass
 from io import StringIO, TextIOWrapper
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Protocol
+from typing import BinaryIO, Protocol, cast
+from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
-
-from openpyxl import load_workbook
 
 from app.services.crypto import CryptoService
 from app.services.runtime_policy import RuntimePolicy
@@ -133,12 +133,7 @@ def _preflight_central_directory(source: BinaryIO, limits: ImportLimits) -> None
             central,
             cursor + 28,
         )
-        record_size = (
-            _CENTRAL_DIRECTORY_HEADER_BYTES
-            + filename_size
-            + extra_size
-            + comment_size
-        )
+        record_size = _CENTRAL_DIRECTORY_HEADER_BYTES + filename_size + extra_size + comment_size
         if record_size > remaining:
             raise ImportFormatError("XLSX 中央目录记录被截断")
         actual_entries += 1
@@ -147,6 +142,254 @@ def _preflight_central_directory(source: BinaryIO, limits: ImportLimits) -> None
         cursor += record_size
     if actual_entries != declared_entries:
         raise ImportFormatError("XLSX 中央目录条目计数不一致")
+
+
+_CELL_REF = re.compile(r"^([A-Z]+)([1-9][0-9]{0,6})$")
+
+
+def _xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _column_index(letters: str) -> int:
+    value = 0
+    for char in letters:
+        if not "A" <= char <= "Z":
+            raise ImportFormatError("XLSX 单元格坐标无效")
+        value = value * 26 + (ord(char) - 64)
+        if value > 16_384:
+            raise ImportFormatError("XLSX 只允许一列手机号")
+    if value < 1:
+        raise ImportFormatError("XLSX 单元格坐标无效")
+    return value
+
+
+class _LimitedReader:
+    """限制单条目继续解压的字节数；到达上限后再读到数据即拒绝。"""
+
+    def __init__(self, raw: BinaryIO, limit: int) -> None:
+        self.raw = raw
+        self.limit = limit
+        self.read_bytes = 0
+
+    def read(self, size: int = -1) -> bytes:
+        if size < 0 or size > 1024 * 1024:
+            size = 1024 * 1024
+        if self.read_bytes >= self.limit:
+            if self.raw.read(1):
+                raise ImportTooLarge("XLSX 工作表解压后过大")
+            return b""
+        chunk = self.raw.read(min(size, self.limit - self.read_bytes))
+        self.read_bytes += len(chunk)
+        return chunk
+
+
+def _relationship_id(element: ElementTree.Element) -> str | None:
+    for key, value in element.attrib.items():
+        if key == "id" or key.endswith("}id"):
+            return value
+    return None
+
+
+def _safe_sheet_path(target: str) -> str:
+    normalized = target.split("?", 1)[0].replace("\\", "/")
+    if normalized.startswith("/"):
+        name = normalized.lstrip("/")
+    else:
+        name = str(PurePosixPath("xl") / normalized)
+    path = PurePosixPath(name)
+    if not name.startswith("xl/") or ".." in path.parts or path.is_absolute():
+        raise ImportFormatError("XLSX 工作表路径无效")
+    return name
+
+
+def _active_sheet_path(archive: ZipFile) -> str:
+    try:
+        workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
+    except (KeyError, ElementTree.ParseError, OSError) as error:
+        raise ImportFormatError("XLSX 工作簿无效") from error
+    sheets = [item for item in workbook.iter() if _xml_local_name(item.tag) == "sheet"]
+    if not sheets:
+        raise ImportFormatError("XLSX 不包含工作表")
+    views = [item for item in workbook.iter() if _xml_local_name(item.tag) == "workbookView"]
+    index = 0
+    if views:
+        raw_index = views[0].attrib.get("activeTab", "0")
+        if not raw_index.isascii() or not raw_index.isdecimal():
+            raise ImportFormatError("XLSX 工作表索引无效")
+        index = int(raw_index)
+    if index < 0 or index >= len(sheets):
+        index = 0
+    relation_id = _relationship_id(sheets[index])
+    if not relation_id:
+        raise ImportFormatError("XLSX 工作表关系无效")
+    try:
+        relationships = ElementTree.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    except (KeyError, ElementTree.ParseError, OSError) as error:
+        raise ImportFormatError("XLSX 工作表关系无效") from error
+    for item in relationships.iter():
+        if _xml_local_name(item.tag) != "Relationship":
+            continue
+        if item.attrib.get("Id") != relation_id:
+            continue
+        target = item.attrib.get("Target")
+        if not target:
+            raise ImportFormatError("XLSX 工作表路径无效")
+        return _safe_sheet_path(target)
+    raise ImportFormatError("XLSX 工作表关系无效")
+
+
+def _shared_strings(archive: ZipFile, limits: ImportLimits) -> list[str]:
+    if "xl/sharedStrings.xml" not in archive.namelist():
+        return []
+    cap = (limits.max_rows + 1) * 4
+    strings: list[str] = []
+    total_chars = 0
+    with archive.open("xl/sharedStrings.xml") as raw:
+        reader = _LimitedReader(cast(BinaryIO, raw), limits.max_entry_uncompressed_bytes)
+        try:
+            for _event, element in ElementTree.iterparse(reader, events=("end",)):
+                if _xml_local_name(element.tag) != "si":
+                    continue
+                text = "".join(
+                    (node.text or "") for node in element.iter() if _xml_local_name(node.tag) == "t"
+                )
+                total_chars += len(text)
+                strings.append(text)
+                element.clear()
+                if len(strings) > cap or total_chars > cap * 64:
+                    raise ImportTooLarge("XLSX 共享字符串过多")
+        except ElementTree.ParseError as error:
+            raise ImportFormatError("XLSX 工作表格式无效") from error
+    return strings
+
+
+def _cell_text(element: ElementTree.Element, shared: list[str]) -> str:
+    kind = element.attrib.get("t", "")
+    if kind == "inlineStr":
+        return "".join(
+            (node.text or "") for node in element.iter() if _xml_local_name(node.tag) == "t"
+        )
+    value = next(
+        (
+            node.text
+            for node in element
+            if _xml_local_name(node.tag) == "v" and node.text is not None
+        ),
+        None,
+    )
+    if kind == "s":
+        if value is None or not value.isascii() or not value.isdecimal():
+            raise ImportFormatError("XLSX 共享字符串引用无效")
+        index = int(value)
+        if index >= len(shared):
+            raise ImportFormatError("XLSX 共享字符串引用无效")
+        return shared[index]
+    return value or ""
+
+
+def _iter_xlsx_rows(source: BinaryIO, limits: ImportLimits) -> Iterator[tuple[int, str]]:
+    """按实际单元格坐标有界读取第一列；缺失或伪造的 dimension 都不能放宽列/行上限。"""
+
+    max_physical_row = limits.max_rows + 1
+    max_cells = max_physical_row * 4
+    try:
+        with ZipFile(source) as archive:
+            sheet_name = _active_sheet_path(archive)
+            try:
+                sheet_info = archive.getinfo(sheet_name)
+            except KeyError as error:
+                raise ImportFormatError("XLSX 不包含工作表") from error
+            if sheet_info.file_size > limits.max_entry_uncompressed_bytes:
+                raise ImportTooLarge("XLSX 单个条目解压后过大")
+            shared = _shared_strings(archive, limits)
+            values: dict[int, str] = {}
+            last_row = 0
+            seen_cells = 0
+            physical_rows = 0
+            current_row = 0
+            cells_in_row = 0
+            dimension_end_row: int | None = None
+            with archive.open(sheet_name) as raw:
+                reader = _LimitedReader(cast(BinaryIO, raw), limits.max_entry_uncompressed_bytes)
+                try:
+                    for event, element in ElementTree.iterparse(reader, events=("start", "end")):
+                        name = _xml_local_name(element.tag)
+                        if event == "start" and name == "row":
+                            physical_rows += 1
+                            if physical_rows > max_physical_row:
+                                raise ImportTooLarge("XLSX 行数超过上限")
+                            raw_row = element.attrib.get("r", "")
+                            if raw_row:
+                                if not raw_row.isascii() or not raw_row.isdecimal():
+                                    raise ImportFormatError("XLSX 单元格坐标无效")
+                                current_row = int(raw_row)
+                            else:
+                                current_row += 1
+                            cells_in_row = 0
+                            if current_row > max_physical_row:
+                                raise ImportTooLarge("XLSX 行数超过上限")
+                            continue
+                        if event != "end":
+                            continue
+                        if name == "dimension":
+                            ref = element.attrib.get("ref", "")
+                            end = ref.split(":")[-1].upper()
+                            match = _CELL_REF.fullmatch(end)
+                            if ref and match is None:
+                                raise ImportFormatError("XLSX 维度无效")
+                            if match is not None:
+                                column = _column_index(match.group(1))
+                                row_number = int(match.group(2))
+                                if column > 1:
+                                    raise ImportFormatError("XLSX 只允许一列手机号")
+                                if row_number > max_physical_row:
+                                    raise ImportTooLarge("XLSX 行数超过上限")
+                                dimension_end_row = row_number
+                            element.clear()
+                            continue
+                        if name == "row":
+                            element.clear()
+                            continue
+                        if name != "c":
+                            continue
+                        seen_cells += 1
+                        if seen_cells > max_cells:
+                            raise ImportTooLarge("XLSX 单元格过多")
+                        cells_in_row += 1
+                        ref = element.attrib.get("r", "").upper()
+                        if ref:
+                            match = _CELL_REF.fullmatch(ref)
+                            if match is None:
+                                raise ImportFormatError("XLSX 单元格坐标无效")
+                            column = _column_index(match.group(1))
+                            row_number = int(match.group(2))
+                        else:
+                            column = cells_in_row
+                            row_number = current_row
+                        text = _cell_text(element, shared).strip()
+                        element.clear()
+                        if row_number > max_physical_row:
+                            raise ImportTooLarge("XLSX 行数超过上限")
+                        if column > 1:
+                            if text:
+                                raise ImportFormatError("XLSX 只允许一列手机号")
+                            continue
+                        if row_number < 1:
+                            raise ImportFormatError("XLSX 单元格坐标无效")
+                        values[row_number] = text
+                        last_row = max(last_row, row_number)
+                except ElementTree.ParseError as error:
+                    raise ImportFormatError("XLSX 工作表格式无效") from error
+            end_row = dimension_end_row if dimension_end_row is not None else last_row
+            if end_row > max_physical_row:
+                raise ImportTooLarge("XLSX 行数超过上限")
+            for row_number in range(1, end_row + 1):
+                yield row_number, values.get(row_number, "")
+    except (ImportFormatError, ImportTooLarge):
+        raise
+    except (BadZipFile, OSError, RuntimeError, struct.error) as error:
+        raise ImportFormatError("XLSX 压缩包格式无效") from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,9 +430,7 @@ class ImportResult:
         output = StringIO()
         writer = csv.writer(output)
         writer.writerow(["phone_mask", "source_row", "reason"])
-        writer.writerows(
-            (item.phone_mask, item.source_row, item.reason) for item in self.removed
-        )
+        writer.writerows((item.phone_mask, item.source_row, item.reason) for item in self.removed)
         return output.getvalue()
 
 
@@ -229,28 +470,7 @@ class ImportParser:
                 wrapper.detach()
             return
         if suffix == ".xlsx":
-            workbook = load_workbook(source, read_only=True, data_only=True)
-            try:
-                sheet = workbook.active
-                if sheet is None:
-                    raise ImportFormatError("XLSX 不包含工作表")
-                if sheet.max_column > 1:
-                    raise ImportFormatError("XLSX 只允许一列手机号")
-                if sheet.max_row > self.limits.max_rows + 1:
-                    raise ImportTooLarge("XLSX 行数超过上限")
-                for row_no, row in enumerate(
-                    sheet.iter_rows(
-                        min_row=1,
-                        max_row=self.limits.max_rows + 1,
-                        min_col=1,
-                        max_col=1,
-                        values_only=True,
-                    ),
-                    start=1,
-                ):
-                    yield row_no, str(row[0]).strip() if row and row[0] is not None else ""
-            finally:
-                workbook.close()
+            yield from _iter_xlsx_rows(source, self.limits)
             return
         raise ImportFormatError("仅支持 csv/xlsx 文件")
 
@@ -295,8 +515,7 @@ class ImportParser:
                     if entry.file_size > self.limits.max_entry_uncompressed_bytes:
                         raise ImportTooLarge("XLSX 单个条目解压后过大")
                     entry_ratio_limit = (
-                        max(1, entry.compress_size)
-                        * self.limits.max_compression_ratio
+                        max(1, entry.compress_size) * self.limits.max_compression_ratio
                     )
                     if entry.file_size > entry_ratio_limit:
                         raise ImportTooLarge("XLSX 单个条目压缩比过高")
@@ -338,9 +557,7 @@ class ImportParser:
             }
             for item in chunk.valid:
                 if item.phone_hmac in blocked_active:
-                    removed.append(
-                        RemovedPhone(item.phone_mask, item.source_row, "blacklist")
-                    )
+                    removed.append(RemovedPhone(item.phone_mask, item.source_row, "blacklist"))
                 else:
                     valid.append(item)
             removed.extend(chunk.removed)
@@ -388,9 +605,7 @@ class ImportParser:
                 removed.append(RemovedPhone("***********", source_row, "invalid"))
                 continue
             if protected.phone_hmac in seen:
-                removed.append(
-                    RemovedPhone(protected.phone_mask, source_row, "duplicate")
-                )
+                removed.append(RemovedPhone(protected.phone_mask, source_row, "duplicate"))
                 continue
             seen.add(protected.phone_hmac)
             candidates_by_active[protected.phone_hmac] = frozenset(

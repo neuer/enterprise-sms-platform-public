@@ -13,6 +13,7 @@ from app.api.auth import ERROR_RESPONSE
 from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.errors import ApiError
+from app.core.query_bounds import PAGE_MAX
 from app.services.callback_repository import (
     CallbackRetryConflict,
     CallbackTaskNotFound,
@@ -63,17 +64,20 @@ async def list_callbacks(
     app_id: Annotated[int | None, Query(ge=1)] = None,
     event: Annotated[Literal["batch.finished", "message.report"] | None, Query()] = None,
     batch_no: Annotated[str | None, Query(max_length=32)] = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
-    return await repository.list_page(
-        status=status,
-        app_id=app_id,
-        event=event,
-        batch_no=batch_no,
-        page=page,
-        size=size,
-    )
+    try:
+        return await repository.list_page(
+            status=status,
+            app_id=app_id,
+            event=event,
+            batch_no=batch_no,
+            page=page,
+            size=size,
+        )
+    except ValueError as error:
+        raise ApiError(400, "INVALID_PARAM", str(error), None) from None
 
 
 @router.post(

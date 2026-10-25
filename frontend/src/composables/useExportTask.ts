@@ -1,6 +1,6 @@
 import { defaultSessionDocument } from "../api/sessionDocument"
 import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
-import { ElMessage, ElMessageBox } from "element-plus"
+import { ElMessage } from "element-plus"
 import { watch, getCurrentScope, onScopeDispose, ref, type Ref } from "vue"
 
 import { ApiRequestError } from "../api/client"
@@ -35,21 +35,17 @@ export interface ExportTaskController {
    * step-up 单次令牌（密码只存局部易失变量，用完即清）；取消 / 关闭密码框安静退出。
    */
   download: (filenamePrefix: string) => Promise<void>
+  /** 本实例持有的明文密码框；页面用受控对话框渲染，不用全局 MessageBox。 */
+  passwordPrompt: Ref<ExportPasswordPrompt | null>
+  updateExportPassword: (value: string) => void
+  confirmExportPassword: () => void
+  cancelExportPassword: () => void
 }
 
-/** 明文导出 step-up 密码框：确认返回密码，取消 / 关闭返回 null（不视为错误）。 */
-async function promptExportPassword(): Promise<string | null> {
-  try {
-    const prompt = await ElMessageBox.prompt("明文导出属于高风险操作，请重新输入当前认证源密码。", "下载明文导出", {
-      inputType: "password",
-      inputPlaceholder: "当前密码",
-      confirmButtonText: "验证并下载",
-      cancelButtonText: "取消",
-    })
-    return prompt.value
-  } catch {
-    return null
-  }
+export interface ExportPasswordPrompt {
+  operationId: number
+  open: boolean
+  password: string
 }
 
 /**
@@ -82,6 +78,55 @@ export function useExportTask(options: UseExportTaskOptions): ExportTaskControll
   let failureStreak = 0
   let resumeFlight: Promise<void> | null = null
   let downloadController: AbortController | undefined
+  let operationSeq = 0
+  const passwordPrompt = ref<ExportPasswordPrompt | null>(null)
+  const promptWaiters = new Map<number, { resolve: (value: string | null) => void; settled: boolean }>()
+
+  function settlePrompt(operationId: number, value: string | null): void {
+    const waiter = promptWaiters.get(operationId)
+    if (!waiter || waiter.settled) return
+    waiter.settled = true
+    if (passwordPrompt.value?.operationId === operationId) {
+      passwordPrompt.value = { ...passwordPrompt.value, password: "", open: false }
+      passwordPrompt.value = null
+    }
+    waiter.resolve(value)
+    promptWaiters.delete(operationId)
+  }
+
+  function cancelOwnedPrompt(operationId: number): void {
+    settlePrompt(operationId, null)
+  }
+
+  function updateExportPassword(value: string): void {
+    if (!passwordPrompt.value) return
+    passwordPrompt.value = { ...passwordPrompt.value, password: value }
+  }
+
+  function confirmExportPassword(): void {
+    const current = passwordPrompt.value
+    if (!current) return
+    settlePrompt(current.operationId, current.password)
+  }
+
+  function cancelExportPassword(): void {
+    const current = passwordPrompt.value
+    if (!current) return
+    cancelOwnedPrompt(current.operationId)
+  }
+
+  function promptOwned(signal: AbortSignal): Promise<string | null> {
+    const operationId = ++operationSeq
+    const promise = new Promise<string | null>((resolve) => {
+      promptWaiters.set(operationId, { resolve, settled: false })
+    })
+    passwordPrompt.value = { operationId, open: true, password: "" }
+    const cancel = () => cancelOwnedPrompt(operationId)
+    if (signal.aborted) cancel()
+    else signal.addEventListener("abort", cancel, { once: true })
+    return promise
+  }
+
   watch(
     () => exportTask.value?.id,
     () => downloadController?.abort(),
@@ -89,6 +134,8 @@ export function useExportTask(options: UseExportTaskOptions): ExportTaskControll
   )
 
   function invalidate(): void {
+    const operationId = passwordPrompt.value?.operationId
+    if (operationId !== undefined) cancelOwnedPrompt(operationId)
     lifecycle.cancel()
     downloadController?.abort()
     polling.stop()
@@ -231,7 +278,7 @@ export function useExportTask(options: UseExportTaskOptions): ExportTaskControll
     let stepUpToken: string | undefined
     try {
       if (task.decrypted) {
-        password = await promptExportPassword()
+        password = await promptOwned(controller.signal)
         if (password === null || !live()) return
         stepUpToken = (await issueExportStepUp(task.id, password, controller.signal)).token
         password = null
@@ -249,5 +296,17 @@ export function useExportTask(options: UseExportTaskOptions): ExportTaskControll
     }
   }
 
-  return { exportTask, exportError, exportTracking, exportBusy, start, retryTracking, download }
+  return {
+    exportTask,
+    exportError,
+    exportTracking,
+    exportBusy,
+    start,
+    retryTracking,
+    download,
+    passwordPrompt,
+    updateExportPassword,
+    confirmExportPassword,
+    cancelExportPassword,
+  }
 }

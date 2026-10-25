@@ -80,6 +80,8 @@ scripts/local_test.sh down    # 停止容器，保留数据卷
 
 `scripts/local_test.sh reset` 会删除本地测试卷并重新 seed；仅在操作者明确要求重建该环境数据时使用，不作为首次运行、修复测试或处理登录失败的默认步骤。
 
+`scripts/local_test.sh` 把开发 profile 的 mock-vendor 模板/签名编号和审核状态写在 `.test-update/mock-vendor-catalog`（可用 `SMS_MOCK_CATALOG_DIR` 覆盖），并在启动前把该目录设为可写。未设置该变量时，Compose 使用命名卷 `mock-vendor-catalog`；镜像内目录属主是 10001，避免把宿主目录建成 root 后容器无法写入。普通 `down`/`up`/`restart` 与 PostgreSQL 卷一起保留这些编号，避免重启后从 1 重新分配并与旧绑定冲突。该目录只含版本、序列和 ID/状态，不含模板正文、签名文本、短信、号码或凭据。`/_mock/state` 的 `reset` 只清易失队列；`reset_catalog` 才会清空目录。目录损坏、过大或版本不受支持时，`up`/`status` 会停止绑定验收，不会把序列静默回零。首次迁移到该目录时，若数据库里已有厂商编号而目录为空，同样停止验收。只有在隔离测试环境、并且明确授权成对重建时，才执行 `scripts/local_test.sh reset`（同时删除数据库卷和该目录卷）。不要为了继续验收去改死信、放宽厂商编号唯一约束或删除未知卷。
+
 注意：本地 Mock 栈没有 vendor-control-agent 容器。管理员打开「系统参数 → 真实联调」页签时，控制状态读取会按 fail-closed 设计写入 `queue:paused:vendor-test-agent-stale:*` 安全闩锁——发送入口仍受理（queued），但 worker 停止下发。该状态现在会在「运维中心 → 队列恢复」与当前告警中可见；本地环境需要继续发送时，用 `docker compose -f deploy/docker-compose.yml exec -T redis-control sh -c 'export REDISCLI_AUTH="$(cat /run/secrets/redis_control_password)"; redis-cli --user sms_control --no-auth-warning DEL queue:paused:vendor-test-agent-stale:realtime queue:paused:vendor-test-agent-stale:bulk'` 清除（仅限本地 Mock；生产该闩锁由「真实联调」页的认证恢复流程解除，不得手工清键）。
 
 查看安全日志时禁止开启 shell trace，也不要输出 `deploy/secrets/` 或 `dev-apikeys.txt` 内容：
