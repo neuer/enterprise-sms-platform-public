@@ -329,6 +329,10 @@ reset() {
   validate_dev_env
   ensure_dev_secrets
   compose down -v
+  local catalog_dir="${SMS_MOCK_CATALOG_DIR:-$ROOT/.test-update/mock-vendor-catalog}"
+  case "$catalog_dir" in
+    "$ROOT"/.test-update/*) rm -rf -- "$catalog_dir" ;;
+  esac
   up
 }
 

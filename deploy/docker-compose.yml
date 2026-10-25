@@ -431,7 +431,9 @@ services:
       # 仅开发 profile 持久化模板/签名编号；正文与凭据不写入该目录。
       MOCK_CATALOG_PATH: /var/lib/sms/mock-catalog/catalog.json
     volumes:
-      - ${SMS_MOCK_CATALOG_DIR:-../.test-update/mock-vendor-catalog}:/var/lib/sms/mock-catalog
+      # 未覆盖时使用命名卷，首次创建继承镜像内 10001 目录权限。
+      # 宿主相对路径会被 Docker 建成 root 目录，容器内无法写入目录。
+      - ${SMS_MOCK_CATALOG_DIR:-mock-vendor-catalog}:/var/lib/sms/mock-catalog
     user: "10001:10001"
     pids_limit: 128
     mem_limit: 512m
@@ -493,6 +495,7 @@ volumes:
   exportdata:
   rawspill:
   beatdata:
+  mock-vendor-catalog:
 
 networks:
   default: {}
