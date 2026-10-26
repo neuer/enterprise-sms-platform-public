@@ -37,12 +37,12 @@ const isMobile = useMobileLayout()
 // 测试环境未安装路由时 useRouter 返回 undefined，「用于发送」跳转入口做空值守卫。
 const router = useRouter()
 
-let editorGeneration = 0
+const editorGeneration = ref(0)
 const savingGeneration = ref<number | null>(null)
-const saving = computed(() => savingGeneration.value !== null && savingGeneration.value === editorGeneration)
+const saving = computed(() => savingGeneration.value !== null && savingGeneration.value === editorGeneration.value)
 
 function invalidateEditor(): void {
-  editorGeneration += 1
+  editorGeneration.value += 1
 }
 
 window.addEventListener(SESSION_CLEARING_EVENT, invalidateEditor)
@@ -160,7 +160,7 @@ async function submit(): Promise<void> {
     ElMessage.warning(contentIssue.value)
     return
   }
-  const generation = editorGeneration
+  const generation = editorGeneration.value
   const submittedName = form.name.trim()
   const editingId = editingSource.value?.id ?? null
   savingGeneration.value = generation
@@ -172,7 +172,7 @@ async function submit(): Promise<void> {
     }
     if (editingId === null) await createTemplate(payload)
     else await updateTemplate(editingId, payload)
-    if (generation !== editorGeneration) {
+    if (generation !== editorGeneration.value) {
       ElMessage.success(`模板「${submittedName}」已提交，当前编辑未改动`)
       await load()
       return
@@ -182,7 +182,7 @@ async function submit(): Promise<void> {
     await load()
   } catch (error) {
     const message = errorText(error, "模板提交失败")
-    if (generation !== editorGeneration) {
+    if (generation !== editorGeneration.value) {
       ElMessage.error(`模板「${submittedName}」提交失败：${message}`)
       return
     }

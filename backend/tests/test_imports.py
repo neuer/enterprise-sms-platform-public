@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import struct
 from io import BytesIO
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -357,6 +358,51 @@ def _xlsx_bytes(workbook: Workbook) -> bytes:
     source = BytesIO()
     workbook.save(source)
     return source.getvalue()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("dimension", ["A1", "A1:A2", "A1:A4"])
+@pytest.mark.parametrize("header", [True, False])
+async def test_underreported_xlsx_dimension_preserves_actual_rows(
+    dimension: str, header: bool
+) -> None:
+    """伪造的小维度不得漏掉实际号码、剔除项或原始行号。"""
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    first = "199" + "0" * 7 + "1"
+    second = "199" + "0" * 7 + "2"
+    if header:
+        sheet.append(["phone"])
+    for value in [first, "alpha", first, None, second]:
+        sheet.append([value])
+    original = _xlsx_bytes(workbook)
+    with ZipFile(BytesIO(original)) as archive:
+        altered = xlsx_archive(
+            [
+                (
+                    name,
+                    re.sub(
+                        rb'<dimension ref="[^"]*"\s*/>',
+                        f'<dimension ref="{dimension}"/>'.encode(),
+                        archive.read(name),
+                    )
+                    if name == "xl/worksheets/sheet1.xml"
+                    else archive.read(name),
+                )
+                for name in archive.namelist()
+            ]
+        )
+    parser = ImportParser(crypto(), FakeBlacklist())
+    expected = await parser.parse("phones.xlsx", BytesIO(original), size=len(original))
+    actual = await parser.parse("phones.xlsx", BytesIO(altered), size=len(altered))
+    assert [(x.source_row, x.phone_hmac) for x in actual.valid] == [
+        (x.source_row, x.phone_hmac) for x in expected.valid
+    ]
+    assert actual.removed == expected.removed
+    assert len(actual.valid) == 2
+    assert actual.invalid == 2
+    assert actual.duplicate == 1
 
 
 @pytest.mark.asyncio

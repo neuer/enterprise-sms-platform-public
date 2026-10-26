@@ -333,14 +333,14 @@ onBeforeUnmount(() => {
                 <button type="button" :disabled="busy" @click="resetImport">重新上传</button>
               </div>
             </div>
-            <p v-if="consumedImportNotice" class="test-limit-hint" data-testid="consumed-import-notice">
-              {{ consumedImportNotice }}
-            </p>
             <p class="import-meta">
               {{ importFilename || "导入文件" }} · 解析完成 · 导入包 24 小时内有效（至
               {{ formatExpiry(imported.expires_at) }}）· 频控剔除在受理时判定
             </p>
           </div>
+          <p v-if="consumedImportNotice" class="test-limit-hint" data-testid="consumed-import-notice" role="status">
+            {{ consumedImportNotice }}
+          </p>
         </div>
       </section>
 
