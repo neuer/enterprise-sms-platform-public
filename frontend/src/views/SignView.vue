@@ -36,12 +36,12 @@ const EDITOR_FOOTNOTE = "提交后进入厂商人工审核，期间不可修改�
 const session = useSessionStore()
 const isMobile = useMobileLayout()
 
-let editorGeneration = 0
+const editorGeneration = ref(0)
 const savingGeneration = ref<number | null>(null)
-const saving = computed(() => savingGeneration.value !== null && savingGeneration.value === editorGeneration)
+const saving = computed(() => savingGeneration.value !== null && savingGeneration.value === editorGeneration.value)
 
 function invalidateEditor(): void {
-  editorGeneration += 1
+  editorGeneration.value += 1
 }
 
 window.addEventListener(SESSION_CLEARING_EVENT, invalidateEditor)
@@ -168,14 +168,14 @@ async function submit(): Promise<void> {
     ElMessage.warning(nameIssue.value)
     return
   }
-  const generation = editorGeneration
+  const generation = editorGeneration.value
   const submittedName = name.value.trim()
   const editingId = editingSource.value?.id ?? null
   savingGeneration.value = generation
   try {
     if (editingId === null) await createSign(submittedName)
     else await updateSign(editingId, submittedName)
-    if (generation !== editorGeneration) {
+    if (generation !== editorGeneration.value) {
       ElMessage.success(`签名「${submittedName}」已提交，当前编辑未改动`)
       await load()
       return
@@ -185,7 +185,7 @@ async function submit(): Promise<void> {
     await load()
   } catch (error) {
     const message = errorText(error, "签名提交失败")
-    if (generation !== editorGeneration) {
+    if (generation !== editorGeneration.value) {
       ElMessage.error(`签名「${submittedName}」提交失败：${message}`)
       return
     }

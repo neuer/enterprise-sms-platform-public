@@ -77,24 +77,20 @@ function onCompositionStart(): void {
   composing.value = true
 }
 
-function onCompositionEnd(event: Event): void {
+function onCompositionEnd(): void {
+  // 使用组件事件，确保 Element Plus 提交组合结果前已解除输入保护。
+  // 独立原生监听器之间可能执行微任务，使其先把 DOM 重置为旧模型。
   composing.value = false
-  const element = event.target
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) onInput(element.value)
 }
 
 function bind(element: HTMLInputElement | HTMLTextAreaElement): void {
   element.addEventListener("beforeinput", onBeforeInput)
   element.addEventListener("paste", onPaste)
-  element.addEventListener("compositionstart", onCompositionStart)
-  element.addEventListener("compositionend", onCompositionEnd)
 }
 
 function unbind(element: HTMLInputElement | HTMLTextAreaElement): void {
   element.removeEventListener("beforeinput", onBeforeInput)
   element.removeEventListener("paste", onPaste)
-  element.removeEventListener("compositionstart", onCompositionStart)
-  element.removeEventListener("compositionend", onCompositionEnd)
 }
 
 function rebind(): void {
@@ -124,6 +120,8 @@ onBeforeUnmount(() => {
       :aria-label="ariaLabel"
       :data-testid="testId"
       @update:model-value="onInput"
+      @compositionstart="onCompositionStart"
+      @compositionend="onCompositionEnd"
     />
     <p v-if="exceeded" class="code-point-exceeded" data-testid="code-point-exceeded" role="alert">
       已超过 {{ maxCodePoints }} 个字符，超限内容未写入。

@@ -381,7 +381,8 @@ def _iter_xlsx_rows(source: BinaryIO, limits: ImportLimits) -> Iterator[tuple[in
                         last_row = max(last_row, row_number)
                 except ElementTree.ParseError as error:
                     raise ImportFormatError("XLSX 工作表格式无效") from error
-            end_row = dimension_end_row if dimension_end_row is not None else last_row
+            # 声明维度可保留尾部空行，但不能截断已验证坐标的真实单元格。
+            end_row = max(last_row, dimension_end_row or 0)
             if end_row > max_physical_row:
                 raise ImportTooLarge("XLSX 行数超过上限")
             for row_number in range(1, end_row + 1):

@@ -55,6 +55,55 @@ beforeEach(() => {
 })
 
 describe("提交快照与草稿生命周期", () => {
+  it("消费后编辑在真实发送页显示重新上传说明，新导入清除说明", async () => {
+    const { wrapper, vm } = await setup()
+    const draft = wrapper.vm as unknown as {
+      form: { source: string; content: string }
+      imported: {
+        import_id: string
+        valid: number
+        invalid: number
+        duplicate: number
+        blacklisted: number
+        expires_at: string
+      } | null
+      importState: string
+      handleUpload: (options: { file: File; onSuccess: () => void }) => Promise<void>
+    }
+    const imported = {
+      import_id: "synthetic-import-a",
+      valid: 1,
+      invalid: 0,
+      duplicate: 0,
+      blacklisted: 0,
+      expires_at: "2099-01-01T00:00:00+08:00",
+    }
+    try {
+      draft.form.source = "import"
+      draft.imported = imported
+      draft.importState = "ready"
+      await flushPromises()
+      api.sendWebMessage.mockResolvedValue(result())
+      await vm.submit()
+      draft.form.content = "编辑后的通知"
+      await flushPromises()
+      expect(draft.imported).toBeNull()
+      expect(draft.importState).toBe("idle")
+      expect(wrapper.get('[data-testid="consumed-import-notice"]').isVisible()).toBe(true)
+      expect(wrapper.get('[data-testid="consumed-import-notice"]').text()).toContain("请重新上传")
+      expect(wrapper.get('[data-testid="send-button"]').attributes("disabled")).toBeDefined()
+      await vm.submit()
+      expect(api.sendWebMessage).toHaveBeenCalledTimes(1)
+      api.uploadPhones.mockResolvedValue({ ...imported, import_id: "synthetic-import-b" })
+      await draft.handleUpload({ file: new File(["phone\nalpha"], "synthetic.csv"), onSuccess: () => undefined })
+      await flushPromises()
+      expect(wrapper.find('[data-testid="consumed-import-notice"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="import-ready"]').exists()).toBe(true)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it("在途锁定全部输入、分段选择和重置，响应附带原提交摘要", async () => {
     let resolve!: (value: SendResult) => void
     api.sendWebMessage.mockImplementation(
