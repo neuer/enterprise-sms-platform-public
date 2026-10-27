@@ -1937,7 +1937,7 @@ paths:
   /api/v1/web/admin/configs:
     get:
       tags: [admin]
-      summary: 系统参数列表
+      summary: 系统参数列表（与 PUT 相同的通用目录，不含安全日报专用键和 __ 内部键）
       security: [{ BearerAuth: [] }]
       responses:
         '200':
@@ -1949,7 +1949,7 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
     put:
       tags: [admin]
-      summary: 修改系统参数（记审计）
+      summary: 修改系统参数（记审计；成功响应与 GET 为同一通用目录）
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: X-Admin-Step-Up, in: header, required: false, schema: { anyOf: [{ type: string, minLength: 1, maxLength: 256 }, { type: 'null' }] }, description: 当前配置批次用途绑定的单次授权 }
