@@ -122,7 +122,7 @@ worker-bulk 对 `security-report-control` 为可写挂载（用于提交投递�
 ```bash
 sudo install -d -o root -g root -m 0750 \
   /opt/sms-platform/deploy/security-report-control/incoming
-sudo install -m 0644 deploy/systemd/security-report-collector.test.service \
+sudo install -m 0644 deploy/security-report/security-report-collector.test.service \
   /etc/systemd/system/security-report-collector.service
 sudo install -m 0644 deploy/systemd/security-report-collector.timer /etc/systemd/system/
 sudo systemctl daemon-reload
