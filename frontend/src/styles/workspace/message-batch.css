@@ -257,6 +257,10 @@
 .compose-o {
   background: color-mix(in srgb, var(--tx-3) 45%, var(--panel));
 }
+.compose-x {
+  background: var(--tx-3);
+  opacity: 0.35;
+}
 .compose--lg {
   height: 9px;
   margin-top: 0;

@@ -293,6 +293,8 @@ async def test_sql_search_projects_mask_only_and_applies_department_scope() -> N
     assert all(item[1]["category"] == "notice" for item in search_calls)
     assert all(item[1]["status"] == "delivered" for item in search_calls)
     assert "phone_mask" in sql
+    assert "m.status='pending' AND b.status IN ('cancelled','rejected','expired')" in sql
+    assert "needs_review" in sql
     assert "phone_enc" not in sql and "phone_hmac AS" not in sql
     assert "13800138000" not in repr(connection.calls)
     assert all(

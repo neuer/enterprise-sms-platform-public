@@ -1,8 +1,15 @@
 <script setup lang="ts">
 import { decryptMessagePhone, type BatchItem, type BatchMessage } from "../api/queries"
-import { activeOf, buildCompose as composeOf, channelLabel, composePct, describeCompose } from "../lib/batchDisplay"
+import {
+  activeOf,
+  buildCompose as composeOf,
+  channelLabel,
+  composePct,
+  describeCompose,
+  terminalUnsent,
+} from "../lib/batchDisplay"
 import { formatNumber, formatPercent } from "../lib/format"
-import { DEFAULT_PAGE_SIZE, MESSAGE_STATUS_OPTIONS, STATUS_LABELS } from "../lib/labels"
+import { DEFAULT_PAGE_SIZE, DISPLAY_STATUS_OPTIONS, STATUS_LABELS } from "../lib/labels"
 import { codePointLength } from "../lib/codePoints"
 import { formatDateTime } from "../lib/time"
 import CategoryTag from "./CategoryTag.vue"
@@ -43,7 +50,7 @@ const emit = defineEmits<{
   retryDetail: []
 }>()
 
-const detailStatusOptions = MESSAGE_STATUS_OPTIONS
+const detailStatusOptions = DISPLAY_STATUS_OPTIONS
 
 /** 行内授权查看：仅把明文返回给 PhoneReveal 内存展示，视图不落明文状态。 */
 async function revealPhone(messageId: number): Promise<string> {
@@ -120,6 +127,7 @@ async function revealPhone(messageId: number): Promise<string> {
           <i class="compose-f" :style="{ width: composePct(composeOf(selected).failed, selected) }"></i>
           <i class="compose-u" :style="{ width: composePct(composeOf(selected).unknown, selected) }"></i>
           <i class="compose-o" :style="{ width: composePct(composeOf(selected).other, selected) }"></i>
+          <i class="compose-x" :style="{ width: composePct(terminalUnsent(composeOf(selected)), selected) }"></i>
         </div>
         <div class="batch-hero-nums">
           <div
@@ -162,6 +170,12 @@ async function revealPhone(messageId: number): Promise<string> {
             }}</small></div
           >
         </div>
+        <p v-if="terminalUnsent(composeOf(selected)) > 0" class="batch-note" data-testid="unsent-terminal"
+          >未下发已终止 {{ formatNumber(terminalUnsent(composeOf(selected))) }}：取消
+          {{ formatNumber(composeOf(selected).cancelled) }}，驳回 {{ formatNumber(composeOf(selected).rejected) }}，过期
+          {{ formatNumber(composeOf(selected).expired) }}，待核对
+          {{ formatNumber(composeOf(selected).needs_review) }}。这些号码不再计入待处理。</p
+        >
         <p class="batch-hero-quotas"
           >受理 <b>{{ formatNumber(selected.total) }}</b> · 计费条 <b>{{ formatNumber(selected.quota_cost) }}</b> · 单条
           <b>{{ selected.segments }}</b> 条 · 频控剔除 <b>{{ formatNumber(selected.removed_freq_limit) }}</b></p
@@ -266,7 +280,8 @@ async function revealPhone(messageId: number): Promise<string> {
               v-else
               :value="row.phone" /></template></el-table-column
         ><el-table-column label="状态" width="100"
-          ><template #default="{ row }"><StatusTag :status="row.status" /></template></el-table-column
+          ><template #default="{ row }"
+            ><StatusTag :status="row.display_status || row.status" /></template></el-table-column
         ><el-table-column prop="report_desc" label="回执" min-width="150" /><el-table-column
           label="回执时间"
           min-width="178"

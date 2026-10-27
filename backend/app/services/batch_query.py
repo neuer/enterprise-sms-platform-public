@@ -13,6 +13,12 @@ from app.core.query_bounds import ensure_bigint_id, ensure_page_offset
 from app.core.runtime_resources import database_engine
 from app.services.content_protection import decrypt_batch_display_content
 from app.services.crypto import CryptoService
+from app.services.message_display import (
+    MESSAGE_DISPLAY_STATUS_SQL,
+    display_count,
+    display_status_predicate,
+    ensure_display_status,
+)
 from app.settings import Settings, get_settings
 
 
@@ -72,12 +78,16 @@ class BatchQueryService:
     def _message_status_counts_join() -> str:
         """按批次一次聚合未持久化在 sms_batch 上的消息状态计数。"""
 
-        return """
+        return f"""
             LEFT JOIN LATERAL (
               SELECT
-                CAST(count(*) FILTER (WHERE m.status='pending') AS integer) AS pending,
-                CAST(count(*) FILTER (WHERE m.status='sent') AS integer) AS sent,
-                CAST(count(*) FILTER (WHERE m.status='other') AS integer) AS other
+                {display_count("pending")},
+                {display_count("sent")},
+                {display_count("other")},
+                {display_count("cancelled")},
+                {display_count("rejected")},
+                {display_count("expired")},
+                {display_count("needs_review")}
               FROM sms_message m WHERE m.batch_id=b.id
             ) message_counts ON TRUE
         """
@@ -173,6 +183,8 @@ class BatchQueryService:
                           b.removed_freq AS removed_freq_limit,b.delivered,b.failed,
                           b.unknown_cnt AS unknown,message_counts.pending,
                           message_counts.sent,message_counts.other,
+                          message_counts.cancelled,message_counts.rejected,
+                          message_counts.expired,message_counts.needs_review,
                           b.scheduled_at,b.created_at
                         FROM batch_page b LEFT JOIN app a ON a.id=b.app_id
                         LEFT JOIN sms_batch original ON original.id=b.resend_of
@@ -209,6 +221,8 @@ class BatchQueryService:
                           b.removed_freq AS removed_freq_limit,b.delivered,b.failed,
                           b.unknown_cnt AS unknown,message_counts.pending,
                           message_counts.sent,message_counts.other,
+                          message_counts.cancelled,message_counts.rejected,
+                          message_counts.expired,message_counts.needs_review,
                           b.scheduled_at,b.created_at
                         FROM sms_batch b
                         LEFT JOIN app a ON a.id=b.app_id
@@ -232,12 +246,18 @@ class BatchQueryService:
         scope: BatchAccessScope,
         *,
         status: str | None,
+        display_status: str | None = None,
         page: int,
         size: int,
     ) -> dict[str, object]:
         ensure_page_offset(page, size)
         predicate, scope_params = scope.sql()
         status_predicate = "" if status is None else "AND m.status=:status"
+        display_predicate = (
+            ""
+            if display_status is None
+            else f"AND {display_status_predicate()}"
+        )
         params: dict[str, object] = {
             "batch_no": batch_no,
             "offset": (page - 1) * size,
@@ -246,11 +266,14 @@ class BatchQueryService:
         }
         if status is not None:
             params["status"] = status
+        if display_status is not None:
+            ensure_display_status(display_status)
+            params["display_status"] = display_status
         source = f"""
             FROM sms_message m
             JOIN sms_batch b ON b.id=m.batch_id
             LEFT JOIN sms_chunk c ON c.id=m.chunk_id
-            WHERE b.batch_no=:batch_no AND {predicate} {status_predicate}
+            WHERE b.batch_no=:batch_no AND {predicate} {status_predicate} {display_predicate}
         """
         engine = self._engine()
         try:
@@ -259,8 +282,9 @@ class BatchQueryService:
                 result = await connection.execute(
                     text(
                         f"""
-                        SELECT m.id,m.phone_mask AS phone,m.status,c.vendor_task_id,
-                          m.report_desc,m.report_time
+                        SELECT m.id,m.phone_mask AS phone,m.status,b.status AS batch_status,
+                          ({MESSAGE_DISPLAY_STATUS_SQL}) AS display_status,
+                          c.vendor_task_id,m.report_desc,m.report_time
                         {source}
                         ORDER BY m.id
                         OFFSET :offset LIMIT :size

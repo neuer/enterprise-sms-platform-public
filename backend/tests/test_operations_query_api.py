@@ -246,6 +246,8 @@ def test_timeline_json_keeps_epoch_across_shanghai_midnight_and_mixed_zones() ->
             content="摘要",
             status=None,
             sender=None,
+            batch_status=None,
+            display_status=None,
         ).model_dump(mode="json")
         for index, instant in enumerate(instants)
     ]
@@ -266,6 +268,8 @@ def test_timeline_json_keeps_epoch_across_shanghai_midnight_and_mixed_zones() ->
             content="摘要",
             status=None,
             sender=None,
+            batch_status=None,
+            display_status=None,
         ).model_dump(mode="json")
 
 

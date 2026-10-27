@@ -23,6 +23,7 @@ from app.services.export import (
     ExportFilterSet,
     ExportTaskInfo,
 )
+from app.services.message_display import MESSAGE_DISPLAY_STATUS_SQL
 from app.settings import Settings, get_settings
 
 # 状态与下载复用同一当前主体授权条件，历史文件不继承旧角色/部门权限。
@@ -91,18 +92,25 @@ class ExportLeaseRef:
 
 
 def _message_where() -> str:
-    return """
+    return (
+        """
       (CAST(:scope_dept AS varchar(128)) IS NULL OR b.dept=:scope_dept)
       AND (CAST(:start AS timestamptz) IS NULL OR m.created_at>=:start)
       AND (CAST(:end AS timestamptz) IS NULL OR m.created_at<=:end)
       AND (CAST(:end_exclusive AS timestamptz) IS NULL OR m.created_at<:end_exclusive)
       AND (CAST(:category AS varchar(8)) IS NULL OR b.category=:category)
       AND (CAST(:status AS varchar(10)) IS NULL OR m.status=:status)
+      AND (CAST(:display_status AS varchar(16)) IS NULL OR (
+        """
+        + MESSAGE_DISPLAY_STATUS_SQL
+        + """
+      ) = :display_status)
       AND (CAST(:app_id AS bigint) IS NULL OR b.app_id=:app_id)
       AND (CAST(:batch_no AS char(32)) IS NULL OR b.batch_no=:batch_no)
       AND (CAST(:is_test AS boolean) IS NULL OR b.is_test=CAST(:is_test AS boolean))
       AND (:has_phone=false OR m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[])))
     """
+    )
 
 
 def _unmatched_where() -> str:
@@ -123,6 +131,7 @@ def _params(filters: ExportFilterSet) -> dict[str, object]:
         "end_exclusive": filters.end_exclusive,
         "category": filters.category,
         "status": filters.status,
+        "display_status": filters.display_status,
         "app_id": filters.app_id,
         "batch_no": filters.batch_no,
         "has_phone": bool(filters.phone_hmacs),
@@ -755,8 +764,9 @@ class SqlExportRepository:
             statement = text(
                 f"""
                 SELECT m.id,m.created_at,trim(b.batch_no) batch_no,b.category,
-                  {phone_columns},m.status,m.report_desc,m.report_time,
-                  b.display_content_enc
+                  {phone_columns},m.status,b.status AS batch_status,
+                  ({MESSAGE_DISPLAY_STATUS_SQL}) AS display_status,
+                  m.report_desc,m.report_time,b.display_content_enc
                 FROM sms_message m JOIN sms_batch b ON b.id=m.batch_id
                 WHERE {_message_where()}
                 ORDER BY m.created_at,m.id LIMIT {MAX_EXPORT_ROWS + 1}

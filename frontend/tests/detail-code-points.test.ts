@@ -29,6 +29,10 @@ function batch(content: string): BatchItem {
     failed: 0,
     unknown: 0,
     other: 0,
+    cancelled: 0,
+    rejected: 0,
+    expired: 0,
+    needs_review: 0,
     scheduled_at: null,
     created_at: "2026-10-27T08:00:00+08:00",
   }

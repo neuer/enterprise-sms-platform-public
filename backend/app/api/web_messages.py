@@ -116,6 +116,20 @@ class WebContentModel(BaseModel):
         return self
 
 
+DisplayStatus = Literal[
+    "pending",
+    "sent",
+    "delivered",
+    "failed",
+    "unknown",
+    "other",
+    "cancelled",
+    "rejected",
+    "expired",
+    "needs_review",
+]
+
+
 class MessageSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -124,6 +138,7 @@ class MessageSearchRequest(BaseModel):
     end: datetime | None = None
     category: Literal["verify", "notice", "market"] | None = None
     status: Literal["pending", "sent", "delivered", "failed", "unknown", "other"] | None = None
+    display_status: DisplayStatus | None = None
     page: int = Field(default=1, ge=1, le=PAGE_MAX)
     size: int = Field(default=20, ge=1, le=100)
 
@@ -203,6 +218,8 @@ class MessageQueryModel(BaseModel):
     id: int
     phone: str
     status: str
+    batch_status: str
+    display_status: DisplayStatus
     report_desc: str | None
     report_time: datetime | None
     created_at: datetime
@@ -234,6 +251,8 @@ class TimelineEventModel(BaseModel):
     content: str
     status: str | None
     sender: str | None
+    batch_status: str | None
+    display_status: str | None
 
     @field_serializer("ts", when_used="json")
     def serialize_ts(self, value: datetime) -> datetime:
@@ -505,6 +524,7 @@ async def search_web_messages(
             end=payload.end,
             category=payload.category,
             status=payload.status,
+            display_status=payload.display_status,
             page=payload.page,
             size=payload.size,
             scope=_query_scope(claims),
@@ -530,6 +550,8 @@ async def search_web_messages(
                 id=item.id,
                 phone=item.phone_mask,
                 status=item.status,
+                batch_status=item.batch_status,
+                display_status=item.display_status or item.status,
                 report_desc=item.report_desc,
                 report_time=item.report_time,
                 created_at=item.created_at,
@@ -586,6 +608,8 @@ async def message_timeline(
                 content=item.content,
                 status=item.status,
                 sender=item.sender,
+                batch_status=item.batch_status,
+                display_status=item.display_status,
             )
             for item in result.events
         ],

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CATEGORY_OPTIONS, MESSAGE_STATUS_OPTIONS, BLACKLIST_SOURCE_LABELS } from "../lib/labels"
+import { CATEGORY_OPTIONS, DISPLAY_STATUS_OPTIONS, BLACKLIST_SOURCE_LABELS } from "../lib/labels"
 import { rangeToIsoParams, SHANGHAI_CIVIL_VALUE_FORMAT, type ShanghaiCivilRange } from "../lib/time"
 import { computed, ref } from "vue"
 
@@ -52,7 +52,7 @@ const displayMask = computed(() => items.value[0]?.phone || searchedMask.value)
 const phoneError = computed(() => phoneProblem(phone.value.trim()))
 
 const categoryOptions = CATEGORY_OPTIONS
-const statusOptions = MESSAGE_STATUS_OPTIONS
+const statusOptions = DISPLAY_STATUS_OPTIONS
 
 const groupedEvents = computed(() => {
   const groups = new Map<string, TimelineEvent[]>()
@@ -108,7 +108,7 @@ const {
           start,
           end,
           category: category.value || undefined,
-          status: status.value || undefined,
+          display_status: status.value || undefined,
           page,
         },
         signal,
@@ -334,7 +334,7 @@ async function revealSearched(): Promise<string> {
       </el-table-column>
       <el-table-column label="状态" width="150">
         <template #default="{ row }">
-          <StatusTag :status="row.status" />
+          <StatusTag :status="row.display_status || row.status" />
           <p v-if="showReport(row)" class="report-desc" :title="reportTip(row)">{{ row.report_desc }}</p>
         </template>
       </el-table-column>
@@ -368,7 +368,7 @@ async function revealSearched(): Promise<string> {
         <header>
           <CategoryTag v-if="isCategory(item.category)" :category="item.category" />
           <span v-else>{{ CATEGORY_LABELS[item.category] || item.category }}</span>
-          <StatusTag :status="item.status" />
+          <StatusTag :status="item.display_status || item.status" />
         </header>
         <p>{{ item.content }}</p>
         <p v-if="showReport(item)" class="report-desc">{{ item.report_desc }}</p>
@@ -446,7 +446,7 @@ async function revealSearched(): Promise<string> {
             CATEGORY_LABELS[event.category || ""] || "平台下行"
           }}</span>
           <strong v-else>↩ 用户回复</strong>
-          <StatusTag v-if="event.status" :status="event.status" />
+          <StatusTag v-if="event.display_status || event.status" :status="event.display_status || event.status || ''" />
           <time>{{ formatDateTime(event.ts).slice(11) }}</time>
         </header>
         <p>{{ event.content }}</p>

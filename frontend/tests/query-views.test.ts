@@ -318,7 +318,7 @@ describe("批次与号码查询", () => {
     detailSelect.vm.$emit("update:modelValue", "failed")
     detailSelect.vm.$emit("change", "failed")
     await flushPromises()
-    expect(fetch.mock.calls[4][0]).toBe("/api/v1/messages/batches/BATCH-9/details?page=1&size=20&status=failed")
+    expect(fetch.mock.calls[4][0]).toBe("/api/v1/messages/batches/BATCH-9/details?page=1&size=20&display_status=failed")
 
     wrapper.unmount()
     vi.unstubAllGlobals()
@@ -388,11 +388,11 @@ describe("批次与号码查询", () => {
     detailSelect.vm.$emit("update:modelValue", "sent")
     detailSelect.vm.$emit("change", "sent")
     await flushPromises()
-    expect(fetch.mock.calls[3][0]).toBe("/api/v1/messages/batches/BATCH-10/details?page=1&size=20&status=sent")
+    expect(fetch.mock.calls[3][0]).toBe("/api/v1/messages/batches/BATCH-10/details?page=1&size=20&display_status=sent")
 
     await wrapper.find(".batch-detail-pagination .btn-next").trigger("click")
     await flushPromises()
-    expect(fetch.mock.calls[4][0]).toBe("/api/v1/messages/batches/BATCH-10/details?page=2&size=20&status=sent")
+    expect(fetch.mock.calls[4][0]).toBe("/api/v1/messages/batches/BATCH-10/details?page=2&size=20&display_status=sent")
     wrapper.unmount()
     vi.unstubAllGlobals()
   })
@@ -749,7 +749,7 @@ describe("批次与号码查询", () => {
     expect(JSON.parse(String(fetch.mock.calls[2][1].body))).toEqual({
       phone: "13800138000",
       category: "notice",
-      status: "failed",
+      display_status: "failed",
       page: 1,
     })
     expect(String(fetch.mock.calls[2][0])).not.toContain("?")
@@ -761,7 +761,7 @@ describe("批次与号码查询", () => {
     expect(JSON.parse(String(fetch.mock.calls[3][1].body))).toEqual({
       phone: "13800138000",
       category: "notice",
-      status: "failed",
+      display_status: "failed",
       page: 2,
     })
     vi.unstubAllGlobals()
