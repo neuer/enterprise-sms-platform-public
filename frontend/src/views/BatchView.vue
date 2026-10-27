@@ -29,7 +29,7 @@ import { buildCompose, channelLabel, composePct, describeCompose, shortBatchNo }
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
 import { formatNumber } from "../lib/format"
-import { formatDateTime, formatDateTimeMinute } from "../lib/time"
+import { formatDateTime, formatDateTimeMinute, SHANGHAI_CIVIL_VALUE_FORMAT } from "../lib/time"
 import { useBatchScheduleOps } from "./batch/useBatchScheduleOps"
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
@@ -286,6 +286,7 @@ watch(drawer, (open) => {
         v-model="range"
         type="datetimerange"
         format="YYYY-MM-DD HH:mm"
+        :value-format="SHANGHAI_CIVIL_VALUE_FORMAT"
         popper-class="qingluan-date-popper"
         start-placeholder="创建开始"
         end-placeholder="创建结束"

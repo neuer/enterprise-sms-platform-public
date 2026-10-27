@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { rangeToIsoParams } from "../lib/time"
+import {
+  dateForShanghaiClock,
+  dateForShanghaiDayStart,
+  rangeToIsoParams,
+  SHANGHAI_CIVIL_VALUE_FORMAT,
+  trailingShanghaiRange,
+  type ShanghaiCivilRange,
+} from "../lib/time"
 import { vRowActivate } from "../lib/directives"
 import { computed, onMounted, reactive, ref } from "vue"
 
@@ -42,7 +49,7 @@ const filters = reactive({
 })
 const selected = ref<AuditItem | null>(null)
 const drawer = ref(false)
-const timeRange = ref<[Date, Date] | null>(null)
+const timeRange = ref<ShanghaiCivilRange | null>(null)
 const actionOptions = ref<string[]>([])
 // 更多筛选（低频精确字段：稳定账号 ID / 关联 ID，收进气泡）
 const moreOpen = ref(false)
@@ -85,18 +92,10 @@ const {
 })
 
 const timeShortcuts = [
-  { text: "最近 1 小时", value: () => [new Date(Date.now() - 3_600_000), new Date()] as [Date, Date] },
-  {
-    text: "今天",
-    value: () => {
-      const end = new Date()
-      const start = new Date()
-      start.setHours(0, 0, 0, 0)
-      return [start, end] as [Date, Date]
-    },
-  },
-  { text: "最近 7 天", value: () => [new Date(Date.now() - 7 * 86_400_000), new Date()] as [Date, Date] },
-  { text: "最近 30 天", value: () => [new Date(Date.now() - 30 * 86_400_000), new Date()] as [Date, Date] },
+  { text: "最近 1 小时", value: () => trailingShanghaiRange(3_600_000) },
+  { text: "今天", value: () => [dateForShanghaiDayStart(), dateForShanghaiClock(new Date())] as [Date, Date] },
+  { text: "最近 7 天", value: () => trailingShanghaiRange(7 * 86_400_000) },
+  { text: "最近 30 天", value: () => trailingShanghaiRange(30 * 86_400_000) },
 ]
 
 const filtering = computed(
@@ -287,6 +286,7 @@ onMounted(() => {
         data-testid="audit-time-range"
         type="datetimerange"
         :shortcuts="timeShortcuts"
+        :value-format="SHANGHAI_CIVIL_VALUE_FORMAT"
         format="YYYY-MM-DD HH:mm"
         popper-class="qingluan-date-popper"
         start-placeholder="开始时间"
