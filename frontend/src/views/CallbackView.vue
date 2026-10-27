@@ -3,6 +3,7 @@ import { ElMessage } from "element-plus"
 import { computed, onMounted, reactive, ref } from "vue"
 
 import { listApps, type ManagedApp } from "../api/apps"
+import { ApiRequestError } from "../api/client"
 import {
   listCallbacks,
   retryCallback,
@@ -22,6 +23,7 @@ import { useConfirmActions } from "../lib/confirm"
 import { vRowActivate } from "../lib/directives"
 const { confirmAuditedAction } = useConfirmActions()
 import { errorText } from "../lib/error"
+import { callbackRetryReason } from "../lib/callbackRetry"
 import { formatDateTime } from "../lib/time"
 
 withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
@@ -166,6 +168,7 @@ async function retry(item: CallbackTask): Promise<void> {
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "手动重推失败"))
+    if (error instanceof ApiRequestError && error.status === 409) await load()
   } finally {
     retryingId.value = null
   }
@@ -334,13 +337,19 @@ onMounted(() => {
               >详情</el-button
             >
             <el-button
-              v-if="row.status === 'dead'"
+              v-if="row.manual_retry_allowed"
               :data-testid="`callback-retry-${row.id}`"
               link
               type="danger"
               :loading="retryingId === row.id"
               @click.stop="retry(row)"
               >手动重推</el-button
+            >
+            <small
+              v-else-if="row.status === 'dead'"
+              class="retry-blocked"
+              :data-testid="`callback-retry-block-${row.id}`"
+              >{{ callbackRetryReason(row) }}</small
             >
           </template>
         </el-table-column>
@@ -386,13 +395,19 @@ onMounted(() => {
                 >详情</el-button
               >
               <el-button
-                v-if="item.status === 'dead'"
+                v-if="item.manual_retry_allowed"
                 :data-testid="`mobile-callback-retry-${item.id}`"
                 link
                 type="danger"
                 :loading="retryingId === item.id"
                 @click="retry(item)"
                 >手动重推</el-button
+              >
+              <small
+                v-else-if="item.status === 'dead'"
+                class="retry-blocked"
+                :data-testid="`mobile-callback-retry-block-${item.id}`"
+                >{{ callbackRetryReason(item) }}</small
               >
             </span>
           </footer>
@@ -482,12 +497,18 @@ onMounted(() => {
         <small>目标 URL、签名密钥与消息 body 不进入本页；重推行为与操作人写入审计日志。</small>
         <div>
           <el-button
-            v-if="selected?.status === 'dead'"
+            v-if="selected?.manual_retry_allowed"
             :data-testid="`drawer-callback-retry-${selected.id}`"
             type="danger"
             :loading="retryingId === selected.id"
             @click="retry(selected)"
             >手动重推</el-button
+          >
+          <small
+            v-else-if="selected?.status === 'dead'"
+            class="retry-blocked"
+            :data-testid="`drawer-callback-retry-block-${selected.id}`"
+            >{{ callbackRetryReason(selected) }}</small
           >
         </div>
       </div>
