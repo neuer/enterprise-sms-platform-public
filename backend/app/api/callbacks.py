@@ -14,6 +14,10 @@ from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.errors import ApiError
 from app.core.query_bounds import PAGE_MAX
+from app.services.callback_batch_event import (
+    FinishedRecoveryRejected,
+    FinishedRecoveryService,
+)
 from app.services.callback_repository import CallbackTaskNotFound, SqlCallbackRepository
 from app.services.callback_retry_eligibility import CallbackRetryConflict
 
@@ -49,9 +53,17 @@ class CallbackTaskModel(BaseModel):
             "config_changed",
             "detail_disabled",
             "not_dead",
+            "legacy_snapshot_unavailable",
         ]
         | None
     )
+    finished_snapshot: Literal["current", "legacy", "missing"] | None
+
+
+class FinishedRecoveryModel(BaseModel):
+    task_id: int
+    event_id: UUID
+    created: bool
 
 
 class CallbackPageModel(BaseModel):
@@ -62,6 +74,10 @@ class CallbackPageModel(BaseModel):
 
 def get_callback_repository(_actor: AdminActor) -> SqlCallbackRepository:
     return SqlCallbackRepository()
+
+
+def get_finished_recovery(_actor: AdminActor) -> FinishedRecoveryService:
+    return FinishedRecoveryService()
 
 
 @router.get("", response_model=CallbackPageModel)
@@ -112,3 +128,32 @@ async def retry_callback(
             {"reason": error.reason},
         ) from None
     return Response(status_code=200)
+
+
+@router.post(
+    "/{id}/recover-finished",
+    response_model=FinishedRecoveryModel,
+    responses={403: ERROR_RESPONSE, 404: ERROR_RESPONSE, 409: ERROR_RESPONSE},
+)
+@audited("callback_finished_recover")
+async def recover_finished_callback(
+    id: int,
+    recovery: Annotated[FinishedRecoveryService, Depends(get_finished_recovery)],
+    actor: AdminActor,
+) -> FinishedRecoveryModel:
+    try:
+        result = await recovery.recover(id, principal=actor.principal)
+        return FinishedRecoveryModel(
+            task_id=result.task_id,
+            event_id=result.event_id,
+            created=result.created,
+        )
+    except FinishedRecoveryRejected as error:
+        if error.missing:
+            raise ApiError(404, "NOT_FOUND", str(error), {"reason": error.reason}) from None
+        raise ApiError(
+            409,
+            "STATE_CONFLICT",
+            str(error),
+            {"reason": error.reason},
+        ) from None

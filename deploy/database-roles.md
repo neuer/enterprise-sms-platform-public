@@ -160,3 +160,8 @@ PUBLIC 没有 EXECUTE，`sms_metrics` 仅获得累计维度和计数列 SELECT�
 保留按稳定账号回避自审批；旧决议缺失可信确认审计时失败关闭。
 同一迁移仅允许 realtime 的 `system_resend:<id>` 写 `sensitive_hit`，数据库核对
 批准状态、generation、来源分片/批次与两个有效管理员；不扩大普通 API 或其他系统动作。
+
+0134 增加 `callback_batch_event`。`sms_accept` 与 `sms_send` 在原终态入队事务里追加快照，
+`sms_callback` 只为缺少可信快照的旧任务追加一条新事件。三个角色都没有 UPDATE。
+`sms_send` 保留 DELETE，供终态 `callback_task` 清理时级联删除快照；未终结任务和仍被
+补发事件引用的原任务不进入清理。触发器拒绝任何 UPDATE。快照不含手机号、正文或回调 body。

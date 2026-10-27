@@ -6,6 +6,7 @@ import { listApps, type ManagedApp } from "../api/apps"
 import { ApiRequestError } from "../api/client"
 import {
   listCallbacks,
+  recoverFinishedCallback,
   retryCallback,
   type CallbackEvent,
   type CallbackStatus,
@@ -174,6 +175,31 @@ async function retry(item: CallbackTask): Promise<void> {
   }
 }
 
+async function recover(item: CallbackTask): Promise<void> {
+  if (retryingId.value !== null) return
+  retryingId.value = item.id
+  try {
+    if (
+      !(await confirmAuditedAction({
+        title: "确认补发新事件",
+        body: `将按当前批次汇总为 CB-${item.id} 创建一条新的批次终态，使用新的事件 ID。旧事件不会被改写。应用需仍启用且回调配置完整，否则不会创建。`,
+        auditNote: "补发行为、操作人与新旧任务 id 将写入审计日志。",
+        confirmText: "补发新事件",
+      }))
+    )
+      return
+    const result = await recoverFinishedCallback(item.id)
+    ElMessage.success(
+      result.created ? "已补发新的批次终态事件 · 本次操作已记入审计" : "该历史事件已经补发过，未再次创建",
+    )
+    await load()
+  } catch (error) {
+    ElMessage.error(errorText(error, "补发新事件失败"))
+  } finally {
+    retryingId.value = null
+  }
+}
+
 onMounted(() => {
   void loadApps()
   void load()
@@ -274,7 +300,10 @@ onMounted(() => {
     >
     <div
       ><span>手动重推</span
-      ><p>仅 dead 任务可重推：重置为待投递并清零重试计数，需应用启用且回调 URL / 密钥未变更。</p></div
+      ><p
+        >仅 dead 任务可重推：重置为待投递并清零重试计数，需应用启用且回调 URL /
+        密钥未变更。批次终态在创建时冻结。迟到回执另建新事件，不改写已经投出的同一事件。</p
+      ></div
     >
   </aside>
 
@@ -346,7 +375,7 @@ onMounted(() => {
               >手动重推</el-button
             >
             <small
-              v-else-if="row.status === 'dead'"
+              v-else-if="row.status === 'dead' || row.finished_snapshot === 'legacy'"
               class="retry-blocked"
               :data-testid="`callback-retry-block-${row.id}`"
               >{{ callbackRetryReason(row) }}</small
@@ -404,7 +433,7 @@ onMounted(() => {
                 >手动重推</el-button
               >
               <small
-                v-else-if="item.status === 'dead'"
+                v-else-if="item.status === 'dead' || item.finished_snapshot === 'legacy'"
                 class="retry-blocked"
                 :data-testid="`mobile-callback-retry-block-${item.id}`"
                 >{{ callbackRetryReason(item) }}</small
@@ -505,10 +534,18 @@ onMounted(() => {
             >手动重推</el-button
           >
           <small
-            v-else-if="selected?.status === 'dead'"
+            v-else-if="selected?.status === 'dead' || selected?.finished_snapshot === 'legacy'"
             class="retry-blocked"
             :data-testid="`drawer-callback-retry-block-${selected.id}`"
             >{{ callbackRetryReason(selected) }}</small
+          >
+          <el-button
+            v-if="selected?.finished_snapshot === 'legacy'"
+            :data-testid="`drawer-callback-recover-${selected.id}`"
+            type="primary"
+            :loading="retryingId === selected.id"
+            @click="recover(selected)"
+            >补发新事件</el-button
           >
         </div>
       </div>

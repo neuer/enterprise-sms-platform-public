@@ -6,6 +6,7 @@ const RETRY_BLOCK_TEXT: Record<string, string> = {
   config_changed: "回调地址或密钥已变化，不能重推这条旧任务",
   detail_disabled: "明细回调已关闭，不能重推这条旧任务",
   not_dead: "仅 dead 回调可手动重推",
+  legacy_snapshot_unavailable: "历史汇总没有可信快照，已停止按旧事件重推。打开详情可按当前汇总补发新事件。",
 }
 
 export function callbackRetryReason(task: {

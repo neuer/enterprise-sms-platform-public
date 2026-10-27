@@ -2311,6 +2311,7 @@ def run_check() -> None:
             "legacy_single_build",
             """
             DROP INDEX uk_cb_batch_source_event;
+            DROP TABLE IF EXISTS callback_batch_event;
             ALTER TABLE callback_task DROP CONSTRAINT fk_cb_source_report_event;
             ALTER TABLE callback_task DROP COLUMN source_report_event_key;
             ALTER TABLE sms_message DROP CONSTRAINT fk_message_report_event;

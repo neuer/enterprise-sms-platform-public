@@ -2361,7 +2361,7 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [id, event_id, correlation_id, app_id, app_name, event, batch_no, reference_count, status, retry_count, next_retry_at, lease_id, lease_expires_at, takeover_count, stalled, last_http_code, last_error, created_at, finished_at, manual_retry_allowed, retry_block_reason]
+                      required: [id, event_id, correlation_id, app_id, app_name, event, batch_no, reference_count, status, retry_count, next_retry_at, lease_id, lease_expires_at, takeover_count, stalled, last_http_code, last_error, created_at, finished_at, manual_retry_allowed, retry_block_reason, finished_snapshot]
                       properties:
                         id: { type: integer }
                         event_id: { type: string, format: uuid, description: 跨重试稳定的接收方幂等事件 ID }
@@ -2383,7 +2383,8 @@ paths:
                         created_at: { type: string, format: date-time }
                         finished_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
                         manual_retry_allowed: { type: boolean, description: 与手动重推同一资格；true 才可提交 }
-                        retry_block_reason: { anyOf: [{ type: string, enum: [config_revoked, app_disabled, config_changed, detail_disabled, not_dead] }, { type: 'null' }], description: 不可重推时的稳定原因，不包含 URL 或密钥 }
+                        retry_block_reason: { anyOf: [{ type: string, enum: [config_revoked, app_disabled, config_changed, detail_disabled, not_dead, legacy_snapshot_unavailable] }, { type: 'null' }], description: 不可重推时的稳定原因，不包含 URL 或密钥 }
+                        finished_snapshot: { anyOf: [{ type: string, enum: [current, legacy, missing] }, { type: 'null' }], description: batch.finished 是否已有不可变汇总。legacy 只能补发新事件，不能改写旧 event_id }
 
   /api/v1/web/admin/callbacks/{id}/retry:
     post:
@@ -2397,7 +2398,33 @@ paths:
         '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: STATE_CONFLICT。detail.reason 为 config_revoked、app_disabled、config_changed、detail_disabled 或 not_dead
+          description: STATE_CONFLICT。detail.reason 为 config_revoked、app_disabled、config_changed、detail_disabled、not_dead 或 legacy_snapshot_unavailable
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /api/v1/web/admin/callbacks/{id}/recover-finished:
+    post:
+      tags: [admin]
+      summary: 为缺少可信快照的批次终态补发新事件
+      description: 不改写旧 event_id。按当前批次汇总新建一条 batch.finished。重复调用返回已创建的事件。
+      security: [{ BearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: integer } }
+      responses:
+        '200':
+          description: 新事件已创建，或返回此前补发的同一事件
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [task_id, event_id, created]
+                properties:
+                  task_id: { type: integer }
+                  event_id: { type: string, format: uuid }
+                  created: { type: boolean }
+        '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: STATE_CONFLICT。detail.reason 为 not_legacy、app_unavailable 或 batch_not_terminal
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   /api/v1/web/admin/jobs:
@@ -2975,6 +3002,7 @@ webhooks:
         签名头：X-Sms-Timestamp（Unix秒）、X-Sms-Signature = HMAC-SHA256(callback_secret, timestamp + "." + rawBody) 的 hex。
         版本头：X-Sms-Signature-Version 固定为事件创建时的协议版本；X-Sms-Secret-Version 是该事件固化密钥的 key version。冻结密钥只在当前回调配置仍匹配时用于重试；轮换密钥、变更 URL 或停用应用会永久撤销尚未终结的旧任务，恢复配置也不能重推。
         接收方须验签且校验时间戳偏差 ≤ 300s，返回 2xx 视为成功；否则（含 4xx）按 60/300/900/3600/3600s 重试共5次。
+        同一 event_id 的 total、delivered、failed、unknown、unknown_count、manual_resolution_required、status 与 finished_at 在事件创建时冻结。自动重试不回读批次当前计数或 updated_at。迟到回执另建新 event_id。没有可信快照的历史事件停止按原 event_id 重试，管理员只能按当前汇总补发一条新事件。
       requestBody:
         content:
           application/json:

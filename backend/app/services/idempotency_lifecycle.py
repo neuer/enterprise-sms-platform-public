@@ -23,6 +23,12 @@ RESULT_WORK_PROTECTED_SQL = """
       AND t.status NOT IN ('done','dead')
   )
   OR EXISTS (
+    SELECT 1 FROM callback_batch_event e
+    JOIN callback_task snapshot_task ON snapshot_task.id=e.task_id
+    WHERE e.batch_id=b.id
+      AND snapshot_task.status NOT IN ('done','dead')
+  )
+  OR EXISTS (
     SELECT 1 FROM vendor_test_operation operation
     WHERE operation.operation_type='uat_send'
       AND operation.status IN ('requested','running')
