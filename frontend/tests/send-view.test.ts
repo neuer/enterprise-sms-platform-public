@@ -519,6 +519,46 @@ describe("人工发送工作台", () => {
     sessionStorage.removeItem("sms_token")
   })
 
+  it("窗外营销测试发送显示立即发送，关闭测试后才显示安排发送", async () => {
+    sessionStorage.setItem("sms_token", "jwt")
+    vi.useFakeTimers()
+    vi.stubGlobal("fetch", stubPreviewFetch({ ...basePreview, deferred_reason: "market_window" }))
+    const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    const vm = wrapper.vm as unknown as {
+      form: {
+        mobilesText: string
+        content: string
+        category: "notice" | "market"
+        consentConfirmed: boolean
+        isTest: boolean
+      }
+    }
+    vm.form.category = "market"
+    vm.form.consentConfirmed = true
+    vm.form.isTest = true
+    vm.form.mobilesText = "13800138000"
+    vm.form.content = "活动通知"
+    await wrapper.vm.$nextTick()
+    await vi.advanceTimersByTimeAsync(650)
+    await flushPromises()
+
+    const button = wrapper.get("[data-testid='send-button']")
+    expect(button.text()).toContain("立即发送")
+    expect(button.text()).not.toContain("安排发送")
+
+    vm.form.isTest = false
+    await wrapper.vm.$nextTick()
+    expect(button.text()).not.toContain("安排发送")
+    await vi.advanceTimersByTimeAsync(650)
+    await flushPromises()
+    expect(button.text()).toContain("安排发送")
+    wrapper.unmount()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+    sessionStorage.removeItem("sms_token")
+  })
+
   it("配额投影不可用时降级展示而不阻断预检", async () => {
     sessionStorage.setItem("sms_token", "jwt")
     vi.useFakeTimers()

@@ -121,7 +121,7 @@ export async function downloadImportInvalidFile(url: string, signal?: AbortSigna
 }
 
 export async function previewBilling(
-  payload: Omit<WebMessagePayload, "mobiles" | "import_id" | "is_test" | "scheduled_at" | "remark" | "biz_id"> & {
+  payload: Omit<WebMessagePayload, "mobiles" | "import_id" | "scheduled_at" | "remark" | "biz_id"> & {
     accepted_count: number
   },
   signal?: AbortSignal,
