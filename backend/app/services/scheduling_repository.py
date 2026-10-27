@@ -284,26 +284,35 @@ class SqlSchedulingRepository:
                     ),
                     {"id": row["id"], "scheduled_at": effective},
                 )
+                generation: int | None = None
                 if needs_reapproval:
                     await connection.execute(
+                        text("SELECT id FROM approval WHERE batch_id=:id FOR UPDATE"),
+                        {"id": row["id"]},
+                    )
+                    incremented = await connection.execute(
                         text(
                             """
                             UPDATE approval SET status='pending',approver=NULL,reason=NULL,
                               decided_at=NULL,approver_account_id=NULL,
                               approver_identity_id=NULL,
+                              generation=generation+1,
                               expires_at=now()+make_interval(hours=>CAST(:expire_hours AS integer))
                             WHERE batch_id=:id
+                            RETURNING generation
                             """
                         ),
                         {"id": row["id"], "expire_hours": approval_expire_hours},
                     )
+                    generation = incremented.scalar_one()
                 await connection.execute(
                     text(
                         """
                         INSERT INTO audit_log(actor,action,object_type,object_id,after_val)
                         VALUES(:actor,'batch_reschedule','batch',:batch_no,
                           jsonb_build_object(
-                            'scheduled_at', CAST(:scheduled_at AS text)
+                            'scheduled_at', CAST(:scheduled_at AS text),
+                            'generation', CAST(:generation AS integer)
                           ))
                         """
                     ),
@@ -311,6 +320,7 @@ class SqlSchedulingRepository:
                         "actor": self._actor(scope),
                         "batch_no": batch_no,
                         "scheduled_at": audit_scheduled_at,
+                        "generation": generation,
                     },
                 )
                 return True

@@ -25,7 +25,12 @@ CASES = [
     ("sensitive_words", "DELETE", "/api/v1/web/admin/sensitive-words/1", None),
     ("approvals", "GET", "/api/v1/web/approvals", None),
     ("approvals", "GET", "/api/v1/web/approvals/1", None),
-    ("approvals", "POST", "/api/v1/web/approvals/1/decision", {"action": "approve"}),
+    (
+        "approvals",
+        "POST",
+        "/api/v1/web/approvals/1/decision",
+        {"action": "approve", "expected_generation": 1},
+    ),
 ]
 
 
@@ -82,7 +87,8 @@ def test_ordinary_route_verifies_once_before_business_construction(
                 "estimated_segments": 1, "scheduled_at": None, "trigger_threshold": 1,
                 "trigger_threshold_source": "snapshot", "batch_status": "pending_approval",
                 "deferred_reason": None, "status": "pending", "approver": None, "reason": None,
-                "expires_at": now, "decided_at": None, "created_at": now, "content": "synthetic",
+                "expires_at": now, "decided_at": None, "created_at": now, "generation": 1,
+                "content": "synthetic",
             }
 
         async def manual_retry(self, _: int, **kwargs: Any) -> None:

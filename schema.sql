@@ -1904,6 +1904,7 @@ CREATE TABLE approval (
     decided_at TIMESTAMPTZ,
     expires_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    generation INTEGER NOT NULL DEFAULT 1,
     CONSTRAINT chk_approval_trigger_threshold_source
         CHECK (trigger_threshold_source IN ('snapshot','legacy_unknown')),
     CONSTRAINT chk_approval_trigger_threshold CHECK (
@@ -1931,7 +1932,8 @@ CREATE TABLE approval (
     ),
     CONSTRAINT ck_approval_reason_no_phone CHECK (
       reason IS NULL OR reason !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
-    )
+    ),
+    CONSTRAINT ck_approval_generation_positive CHECK (generation >= 1)
 );
 CREATE INDEX idx_approval_status ON approval(status, created_at);
 CREATE INDEX idx_approval_applicant_account

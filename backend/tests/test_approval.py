@@ -28,7 +28,7 @@ class FakeRepository:
     def __init__(self, case: ApprovalCase, *, batch_status: str = "queued") -> None:
         self.case = case
         self.batch_status = batch_status
-        self.transitioned: list[tuple[int, str, str, str | None]] = []
+        self.transitioned: list[tuple[int, str, str, str | None, int]] = []
         self.expired: list[ApprovalCase] = []
 
     async def get(self, approval_id: int) -> ApprovalCase | None:
@@ -41,10 +41,13 @@ class FakeRepository:
         action: str,
         principal: SecurityPrincipal,
         reason: str | None,
+        expected_generation: int,
     ) -> ApprovalCase | None:
-        if self.case.status != "pending":
+        if self.case.status != "pending" or self.case.generation != expected_generation:
             return None
-        self.transitioned.append((approval_id, action, principal.login_name, reason))
+        self.transitioned.append(
+            (approval_id, action, principal.login_name, reason, expected_generation)
+        )
         return replace(self.case, batch_status=self.batch_status)
 
     async def expire_due(self) -> list[ApprovalCase]:
@@ -99,7 +102,7 @@ async def test_self_approval_is_rejected_before_state_transition() -> None:
     repository = FakeRepository(case())
     with pytest.raises(SelfApprovalDenied):
         await ApprovalService(repository, FakeQuota(), FakePublisher(), FakeAlerts()).decide(
-            3, action="approve", principal=OPERATOR, reason=None
+            3, action="approve", principal=OPERATOR, reason=None, expected_generation=1
         )
     assert repository.transitioned == []
 
@@ -110,14 +113,16 @@ async def test_approve_enqueues_by_category_and_reject_refunds_once() -> None:
     quota = FakeQuota()
     publisher = FakePublisher()
     service = ApprovalService(repository, quota, publisher, FakeAlerts())
-    await service.decide(3, action="approve", principal=APPROVER, reason=None)
+    await service.decide(
+        3, action="approve", principal=APPROVER, reason=None, expected_generation=1
+    )
     assert publisher.calls == [("batch-1", "bulk")]
     assert quota.calls == []
 
     repository = FakeRepository(case())
     quota = FakeQuota()
     await ApprovalService(repository, quota, FakePublisher(), FakeAlerts()).decide(
-        3, action="reject", principal=APPROVER, reason="内容不合规"
+        3, action="reject", principal=APPROVER, reason="内容不合规", expected_generation=1
     )
     assert quota.calls[0]["event_id"] == "approval:3:rejected"
     assert quota.calls[0]["category"] == "market"
@@ -129,7 +134,7 @@ async def test_outbox_rejection_does_not_apply_a_second_direct_refund() -> None:
     quota = FakeQuota()
 
     await ApprovalService(repository, quota, FakePublisher(), FakeAlerts()).decide(
-        3, action="reject", principal=APPROVER, reason="内容不合规"
+        3, action="reject", principal=APPROVER, reason="内容不合规", expected_generation=1
     )
 
     assert quota.calls == []
@@ -142,7 +147,7 @@ async def test_approve_does_not_enqueue_batch_that_remains_scheduled() -> None:
     quota = FakeQuota()
 
     await ApprovalService(repository, quota, publisher, FakeAlerts()).decide(
-        3, action="approve", principal=APPROVER, reason=None
+        3, action="approve", principal=APPROVER, reason=None, expected_generation=1
     )
 
     assert publisher.calls == []
@@ -158,7 +163,9 @@ async def test_duplicate_decision_is_state_conflict() -> None:
             FakePublisher(),
             FakeAlerts(),
         )
-        await service.decide(3, action="approve", principal=APPROVER, reason=None)
+        await service.decide(
+            3, action="approve", principal=APPROVER, reason=None, expected_generation=1
+        )
 
 
 @pytest.mark.asyncio
@@ -200,16 +207,26 @@ async def test_outbox_expiry_keeps_log_sink_alert_without_direct_refund() -> Non
 async def test_decide_trims_reason_before_transition() -> None:
     repository = FakeRepository(case())
     await ApprovalService(repository, FakeQuota(), FakePublisher(), FakeAlerts()).decide(
-        3, action="reject", principal=APPROVER, reason="  内容不合规  "
+        3, action="reject", principal=APPROVER, reason="  内容不合规  ", expected_generation=1
     )
-    assert repository.transitioned == [(3, "reject", "approver01", "内容不合规")]
+    assert repository.transitioned == [(3, "reject", "approver01", "内容不合规", 1)]
 
 
 @pytest.mark.asyncio
 async def test_reject_with_blank_reason_is_invalid_before_transition() -> None:
     repository = FakeRepository(case())
     with pytest.raises(ValueError, match="驳回必须填写原因"):
-        await ApprovalService(
-            repository, FakeQuota(), FakePublisher(), FakeAlerts()
-        ).decide(3, action="reject", principal=APPROVER, reason="   ")
+        await ApprovalService(repository, FakeQuota(), FakePublisher(), FakeAlerts()).decide(
+            3, action="reject", principal=APPROVER, reason="   ", expected_generation=1
+        )
+    assert repository.transitioned == []
+
+
+@pytest.mark.asyncio
+async def test_stale_generation_does_not_transition() -> None:
+    repository = FakeRepository(replace(case(), generation=2))
+    with pytest.raises(StateConflict, match="刷新"):
+        await ApprovalService(repository, FakeQuota(), FakePublisher(), FakeAlerts()).decide(
+            3, action="approve", principal=APPROVER, reason=None, expected_generation=1
+        )
     assert repository.transitioned == []

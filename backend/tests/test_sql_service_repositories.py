@@ -613,6 +613,7 @@ async def test_approval_list_returns_historical_billing_schedule_and_threshold(
     assert "b.scheduled_at" in select_sql
     assert "p.trigger_threshold" in select_sql
     assert "p.trigger_threshold_source" in select_sql
+    assert "p.generation" in select_sql
     assert "p.expires_at" in select_sql
     assert "p.decided_at" in select_sql
 
@@ -772,6 +773,7 @@ async def test_reschedule_uses_runtime_approval_expiry(
             FakeResult(),
             FakeResult(),
             FakeResult(),
+            FakeResult(),
         ]
     )
     bind_engine(monkeypatch, repository, connection)
@@ -787,8 +789,11 @@ async def test_reschedule_uses_runtime_approval_expiry(
     expiry_sql, expiry_params = connection.calls[2]
     assert "GREATEST" in expiry_sql
     assert expiry_params["id"] == 9  # type: ignore[index]
-    approval_sql, approval_params = connection.calls[3]
+    approval_sql, approval_params = next(
+        (sql, params) for sql, params in connection.calls if "UPDATE approval" in sql
+    )
     assert "make_interval" in approval_sql
+    assert "generation=generation+1" in approval_sql
     assert approval_params["expire_hours"] == 6  # type: ignore[index]
 
 

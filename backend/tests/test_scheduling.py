@@ -163,6 +163,9 @@ class _Result:
     def scalar(self) -> str:
         return "08:00-21:00"
 
+    def scalar_one(self) -> int:
+        return 2
+
 
 class _Connection:
     def __init__(self, row: dict[str, object] | None) -> None:
@@ -230,12 +233,14 @@ async def test_reschedule_audit_uses_shanghai_text_and_keeps_aware_column() -> N
     assert "CAST(:expire_hours AS integer)" in approval
     assert "approver_account_id=NULL" in approval
     assert "approver_identity_id=NULL" in approval
+    assert "generation=generation+1" in approval
     audit_sql = connection.calls[-1][0]
     assert "CAST(:scheduled_at AS text)" in audit_sql
     assert connection.calls[-1][1]["scheduled_at"] == scheduled_at.astimezone(
         ZoneInfo("Asia/Shanghai")
     ).isoformat()
     assert connection.calls[-1][1]["scheduled_at"].endswith("+08:00")
+    assert connection.calls[-1][1]["generation"] == 2
     assert isinstance(update["scheduled_at"], datetime)
     assert update["deferred_reason"] is None
 

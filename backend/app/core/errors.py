@@ -49,9 +49,28 @@ async def api_error_handler(request: Request, error: ApiError) -> JSONResponse:
     return response
 
 
-async def validation_error_handler(_: Request, error: RequestValidationError) -> JSONResponse:
+def _stale_approval_generation(request: Request, error: RequestValidationError) -> bool:
+    """缺失或非法的审批版本按状态冲突失败关闭，不能当成当前版本。"""
+
+    if not request.url.path.endswith("/decision"):
+        return False
+    return any(
+        tuple(item.get("loc", ()))[-1:] == ("expected_generation",) for item in error.errors()
+    )
+
+
+async def validation_error_handler(request: Request, error: RequestValidationError) -> JSONResponse:
     """把框架参数错误统一为平台 INVALID_PARAM，不回显输入值。"""
 
+    if _stale_approval_generation(request, error):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "STATE_CONFLICT",
+                "message": "审批版本缺失或无效，请刷新后重新确认",
+                "detail": {"reason": "generation_required"},
+            },
+        )
     fields = [".".join(str(part) for part in item["loc"]) for item in error.errors()]
     return JSONResponse(
         status_code=400,

@@ -1,6 +1,18 @@
 <script setup lang="ts">
 import { formatNumber } from "../lib/format"
 import { categoryLabel, triggerRule, formatSegments } from "../lib/approvalText"
+import {
+  REVIEW_STALE_TEXT,
+  captureReview,
+  deciderLabel,
+  drawerStatusLine as drawerStatusText,
+  formatSchedule,
+  laneLabel,
+  outcomeText,
+  previewDecision,
+  reviewDrifted,
+  type ApprovalReview,
+} from "../lib/approvalReview"
 import { ElMessage } from "element-plus"
 import { computed, onMounted, ref } from "vue"
 
@@ -14,7 +26,6 @@ import {
   type ApprovalListItem,
   type ApprovalSort,
   type ApprovalStatus,
-  type DecisionOutcome,
 } from "../api/approvals"
 import { ApiRequestError } from "../api/client"
 import type { Category } from "../api/webMessages"
@@ -73,8 +84,6 @@ const detail = ref<ApprovalDetail | null>(null)
 const detailLoading = ref(false)
 const decisionReason = ref("")
 
-// 审批域的 pending 对应批次 pending_approval（待审批）；STATUS_LABELS.pending 的「待处理」
-// 是分片/明细态，不可混用，故在此覆盖。
 const statusTabs = statusOptionsOf(["pending", "approved", "rejected", "expired"] as const).map((option) =>
   option.value === "pending" ? { ...option, label: "待审批" } : option,
 )
@@ -118,16 +127,11 @@ function urgentOf(value: unknown): number {
   return value === "pending" ? counts.value.pending_urgent : 0
 }
 
-/** 通道展示统一中文（实时通道/批量通道），与发送页、通道监视、准入文案同一口径。 */
-function laneLabel(category: Category): string {
-  return category === "market" ? "批量通道" : "实时通道"
-}
-
-/** 通过前预告：只依据 scheduled_at / 类别，不预判营销窗。 */
-function previewDecision(item: ApprovalListItem): string {
-  if (item.scheduled_at) return `通过后 → 已排期 · ${formatSchedule(item.scheduled_at)}`
-  return `通过后 → 排队中 · ${laneLabel(item.category)}`
-}
+const drawerStatusLine = computed(() =>
+  selected.value
+    ? drawerStatusText(selected.value.status, selectedCountdown.value, statusLabel(selected.value.status))
+    : "",
+)
 
 const contentMeta = computed(() => {
   const content = detail.value?.content
@@ -138,30 +142,11 @@ const contentMeta = computed(() => {
   return parts.join(" · ")
 })
 
-const drawerStatusLine = computed(() => {
-  if (!selected.value) return ""
-  if (selected.value.status === "pending" && selectedCountdown.value && selectedCountdown.value !== "已临期截止") {
-    return `${statusLabel("pending")} · 剩 ${selectedCountdown.value}`
-  }
-  if (selected.value.status === "pending" && selectedCountdown.value === "已临期截止") {
-    return `${statusLabel("pending")} · 已临期截止`
-  }
-  return statusLabel(selected.value.status)
-})
-
-function formatSchedule(value: string | null): string {
-  return value ? formatDateTime(value) : "立即发送"
-}
-
-function deciderLabel(item: ApprovalListItem): string | null {
-  if (item.approver) return item.approver
-  if (item.status === "expired") return "系统自动"
-  return null
-}
-
 const detailRead = useLatestRead()
 let detailToken = 0
 let listEpoch = 0
+const review = ref<ApprovalReview | null>(null)
+const reviewStale = ref(false)
 
 const {
   items,
@@ -197,6 +182,7 @@ const {
       listEpoch,
     )
     lastUpdatedAt.value = new Date().toISOString()
+    if (review.value && reviewDrifted(review.value, result.items)) reviewStale.value = true
   },
   /** 清空状态/类别/部门/申请人筛选；排序随状态位回到 pending 默认的临期优先。 */
   resetFilters: () => {
@@ -218,6 +204,8 @@ function onStatusChange(value: string | number): void {
 async function showDetail(item: ApprovalListItem): Promise<void> {
   selected.value = item
   detail.value = null
+  review.value = null
+  reviewStale.value = false
   decisionReason.value = ""
   drawerOpen.value = true
   const token = ++detailToken
@@ -227,6 +215,7 @@ async function showDetail(item: ApprovalListItem): Promise<void> {
     const result = await getApproval(item.id, signal)
     if (signal.aborted || token !== detailToken) return
     detail.value = result
+    review.value = result ? captureReview(result) : null
   } catch (error) {
     if (signal.aborted || token !== detailToken) return
     drawerOpen.value = false
@@ -248,19 +237,10 @@ function closeDrawer(): void {
   drawerOpen.value = false
   selected.value = null
   detail.value = null
+  review.value = null
+  reviewStale.value = false
   decisionReason.value = ""
   detailToken += 1
-}
-
-/** 决策后去向文案：以 decision 响应回带的 batch_status / deferred_reason 为准，不靠猜。 */
-function outcomeText(outcome: DecisionOutcome, lane: string): string {
-  if (outcome.batch_status === "scheduled") {
-    return outcome.deferred_reason === "market_window"
-      ? "当前处于营销时间窗外，批次已改派为定时发送"
-      : "批次已进入定时发送计划"
-  }
-  if (outcome.batch_status === "queued") return `批次已进入发送队列（${lane}）`
-  return "批次已受理进入发送流程"
 }
 
 function laneOf(id: number): string {
@@ -268,7 +248,12 @@ function laneOf(id: number): string {
   return item?.category === "market" ? "批量通道" : "实时通道"
 }
 
-async function submitDecision(id: number, action: ApprovalAction, reason?: string): Promise<void> {
+async function submitDecision(
+  id: number,
+  action: ApprovalAction,
+  reason: string | undefined,
+  expectedGeneration: number,
+): Promise<void> {
   if (decidingId.value !== null) return
   const target = items.value.find((item) => item.id === id) ?? selected.value
   if (
@@ -281,7 +266,7 @@ async function submitDecision(id: number, action: ApprovalAction, reason?: strin
     return
   decidingId.value = id
   try {
-    const outcome = await decideApproval(id, action, reason)
+    const outcome = await decideApproval(id, action, expectedGeneration, reason)
     if (action === "approve") {
       ElMessage.success(`审批已通过，${outcomeText(outcome, laneOf(id))}`)
     } else {
@@ -305,26 +290,33 @@ async function submitDecision(id: number, action: ApprovalAction, reason?: strin
 }
 
 function onQuick(item: ApprovalListItem, action: ApprovalAction, reason?: string): void {
-  void submitDecision(item.id, action, reason)
+  void submitDecision(item.id, action, reason, item.generation)
 }
 
-/**
- * 抽屉决策与行内 Popover 同强度：先两段式确认（后果 + 审计细字）再提交。
- * 驳回已要求必填意见，确认框是第二道 friction，不是替代。
- */
+function onStaleReview(): void {
+  reviewStale.value = true
+  ElMessage.warning(REVIEW_STALE_TEXT)
+  void load({ silent: true })
+}
+
 async function submitDrawerDecision(action: ApprovalAction): Promise<void> {
   const target = selected.value
-  if (!target) return
+  const snapshot = review.value
+  if (!target || !snapshot || reviewStale.value) return
   const reason = decisionReasonTrimmed.value
   if (action === "reject" && !reason) return
   if (reason.length > REASON_MAX_LENGTH) return
   if (
     !(await confirmAuditedAction({
-      isCurrent: () => selected.value === target && canDecideSelected.value,
+      isCurrent: () =>
+        selected.value === target &&
+        canDecideSelected.value &&
+        !reviewStale.value &&
+        review.value?.generation === snapshot.generation,
       title: action === "approve" ? "确认通过" : "确认驳回",
       body:
         action === "approve"
-          ? `通过批次 ${target.batch_no}？${previewDecision(target)}。`
+          ? `通过批次 ${target.batch_no}？${previewDecision(target, formatSchedule(snapshot.scheduledAt))}。`
           : `驳回批次 ${target.batch_no}？配额将由服务端幂等回补。`,
       auditNote: "审批决策与操作人将写入审计日志。",
       confirmText: action === "approve" ? "确认通过" : "确认驳回",
@@ -332,13 +324,9 @@ async function submitDrawerDecision(action: ApprovalAction): Promise<void> {
     }))
   )
     return
-  await submitDecision(target.id, action, reason || undefined)
+  await submitDecision(target.id, action, reason || undefined, snapshot.generation)
 }
 
-/**
- * 秒级倒计时 tick 只在存在需要倒计时的待审批行（或抽屉内待审单）时运转，
- * 已办页签 / 空列表 / 无有效期单据不再每秒重渲染整个列表。
- */
 const tickActive = computed(() => {
   if (status.value === "pending" && items.value.some((item) => item.expires_at !== null)) return true
   return Boolean(selected.value && selected.value.status === "pending" && selected.value.expires_at !== null)
@@ -468,6 +456,7 @@ onMounted(() => {
     :current-account-id="session.accountId"
     @detail="showDetail"
     @quick="onQuick"
+    @stale="onStaleReview"
   />
 
   <ListPagination v-model:page="page" :total="total" class="approval-list-foot" @change="load">
@@ -550,7 +539,19 @@ onMounted(() => {
         ><span>审批意见</span><p>{{ selected.reason }}</p></div
       >
       <div v-if="canDecideSelected" class="approval-decide-box" data-testid="drawer-decide-box">
-        <p class="approval-outcome">{{ previewDecision(selected) }}</p>
+        <p class="approval-outcome">{{
+          previewDecision(selected, formatSchedule(review?.scheduledAt ?? selected.scheduled_at))
+        }}</p>
+        <p v-if="review" class="approval-proof-meta" data-testid="approval-generation"
+          >审阅版本 {{ review.generation }}</p
+        >
+        <el-alert
+          v-if="reviewStale"
+          :title="REVIEW_STALE_TEXT"
+          type="warning"
+          :closable="false"
+          data-testid="approval-review-stale"
+        />
         <el-input
           v-model="decisionReason"
           type="textarea"
@@ -568,14 +569,14 @@ onMounted(() => {
           <el-button
             type="danger"
             plain
-            :disabled="decidingId !== null || !decisionReasonTrimmed"
+            :disabled="decidingId !== null || reviewStale || !decisionReasonTrimmed"
             data-testid="drawer-reject"
             @click="submitDrawerDecision('reject')"
             >驳回</el-button
           >
           <el-button
             type="primary"
-            :disabled="decidingId !== null"
+            :disabled="decidingId !== null || reviewStale"
             data-testid="drawer-approve"
             @click="submitDrawerDecision('approve')"
             >通过</el-button

@@ -71,6 +71,7 @@ def sample_item() -> dict[str, object]:
         "expires_at": datetime(2026, 7, 21, 1, 0, tzinfo=UTC),
         "decided_at": None,
         "created_at": datetime(2026, 7, 20, 1, 0, tzinfo=UTC),
+        "generation": 1,
     }
 
 
@@ -123,9 +124,7 @@ def make_app(service: object) -> FastAPI:
     return app
 
 
-def make_query_app(
-    repository: FakeApprovalRepository, auditor: FakeAuditor
-) -> FastAPI:
+def make_query_app(repository: FakeApprovalRepository, auditor: FakeAuditor) -> FastAPI:
     app = FastAPI()
     register_handlers(app)
     app.include_router(api.router)
@@ -140,7 +139,7 @@ def test_approval_api_maps_self_approval_to_platform_error() -> None:
     response = TestClient(app).post(
         "/api/v1/web/approvals/3/decision",
         headers={"Authorization": "Bearer jwt"},
-        json={"action": "approve"},
+        json={"action": "approve", "expected_generation": 1},
     )
     assert response.status_code == 403
     assert response.json()["code"] == "SELF_APPROVAL_DENIED"
@@ -253,9 +252,7 @@ def test_list_passes_filters_and_wraps_keyword() -> None:
             "size": 50,
         }
     ]
-    assert repository.count_calls == [
-        {"dept": "%市场部%", "category": "market", "q": "%张三%"}
-    ]
+    assert repository.count_calls == [{"dept": "%市场部%", "category": "market", "q": "%张三%"}]
 
 
 def test_detail_returns_content_and_records_single_sensitive_read() -> None:
@@ -306,7 +303,7 @@ class RecordingRepository:
             applicant_account_id=99,
             applicant_identity_id=199,
         )
-        self.transitioned: list[tuple[str, str | None]] = []
+        self.transitioned: list[tuple[str, str | None, int]] = []
 
     async def get(self, approval_id: int) -> ApprovalCase | None:
         return self.case if approval_id == self.case.approval_id else None
@@ -318,8 +315,9 @@ class RecordingRepository:
         action: str,
         principal: object,
         reason: str | None,
+        expected_generation: int,
     ) -> ApprovalCase | None:
-        self.transitioned.append((action, reason))
+        self.transitioned.append((action, reason, expected_generation))
         if action == "approve":
             return replace(
                 self.case,
@@ -359,7 +357,7 @@ def test_decision_returns_outcome_body() -> None:
     response = TestClient(make_app(make_real_service(repository))).post(
         "/api/v1/web/approvals/3/decision",
         headers={"Authorization": "Bearer jwt"},
-        json={"action": "approve"},
+        json={"action": "approve", "expected_generation": 1},
     )
     assert response.status_code == 200
     assert response.json() == {
@@ -375,7 +373,7 @@ def test_duplicate_decision_maps_to_state_conflict() -> None:
     response = TestClient(make_app(make_real_service(repository))).post(
         "/api/v1/web/approvals/3/decision",
         headers={"Authorization": "Bearer jwt"},
-        json={"action": "approve"},
+        json={"action": "approve", "expected_generation": 1},
     )
     assert response.status_code == 409
     assert response.json()["code"] == "STATE_CONFLICT"
@@ -386,7 +384,7 @@ def test_reject_with_blank_reason_maps_to_invalid_param() -> None:
     response = TestClient(make_app(make_real_service(repository))).post(
         "/api/v1/web/approvals/3/decision",
         headers={"Authorization": "Bearer jwt"},
-        json={"action": "reject", "reason": "   "},
+        json={"action": "reject", "reason": "   ", "expected_generation": 1},
     )
     assert response.status_code == 400
     assert response.json()["code"] == "INVALID_PARAM"
@@ -398,7 +396,7 @@ def test_reason_over_database_column_limit_maps_to_invalid_param() -> None:
     response = TestClient(make_app(make_real_service(repository))).post(
         "/api/v1/web/approvals/3/decision",
         headers={"Authorization": "Bearer jwt"},
-        json={"action": "reject", "reason": "长" * 257},
+        json={"action": "reject", "reason": "长" * 257, "expected_generation": 1},
     )
     assert response.status_code == 400
     assert response.json()["code"] == "INVALID_PARAM"
@@ -410,7 +408,7 @@ def test_reason_is_trimmed_before_state_transition() -> None:
     response = TestClient(make_app(make_real_service(repository))).post(
         "/api/v1/web/approvals/3/decision",
         headers={"Authorization": "Bearer jwt"},
-        json={"action": "reject", "reason": "  内容不合规  "},
+        json={"action": "reject", "reason": "  内容不合规  ", "expected_generation": 1},
     )
     assert response.status_code == 200
     assert response.json() == {
@@ -418,4 +416,29 @@ def test_reason_is_trimmed_before_state_transition() -> None:
         "batch_status": "rejected",
         "deferred_reason": None,
     }
-    assert repository.transitioned == [("reject", "内容不合规")]
+    assert repository.transitioned == [("reject", "内容不合规", 1)]
+
+
+def test_missing_generation_is_conflict_without_transition() -> None:
+    repository = RecordingRepository()
+    response = TestClient(make_app(make_real_service(repository))).post(
+        "/api/v1/web/approvals/3/decision",
+        headers={"Authorization": "Bearer jwt"},
+        json={"action": "approve"},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "STATE_CONFLICT"
+    assert repository.transitioned == []
+
+
+def test_stale_generation_is_conflict_without_transition() -> None:
+    repository = RecordingRepository()
+    repository.case = replace(repository.case, generation=2)
+    response = TestClient(make_app(make_real_service(repository))).post(
+        "/api/v1/web/approvals/3/decision",
+        headers={"Authorization": "Bearer jwt"},
+        json={"action": "approve", "expected_generation": 1},
+    )
+    assert response.status_code == 409
+    assert response.json()["code"] == "STATE_CONFLICT"
+    assert repository.transitioned == []

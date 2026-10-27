@@ -1112,6 +1112,10 @@ class UatSuite:
         approval_id = approval.get("id")
         if not isinstance(approval_id, int):
             raise UatFailure("UAT-11 approval id missing")
+        generation = approval.get("generation")
+        if not isinstance(generation, int) or generation < 1:
+            raise UatFailure("UAT-11 approval generation missing")
+        decision = {"action": "approve", "reason": None, "expected_generation": generation}
 
         original_role, original_override = self._operator_role()
         self.rollback.defer(lambda: self._set_role(original_role, original_override))
@@ -1121,7 +1125,7 @@ class UatSuite:
             self.api,
             "POST",
             f"/api/v1/web/approvals/{approval_id}/decision",
-            payload={"action": "approve", "reason": None},
+            payload=decision,
             headers=self._bearer("operator01"),
         )
         self._expect("11", self_response, 403, code="SELF_APPROVAL_DENIED")
@@ -1130,7 +1134,7 @@ class UatSuite:
             self.api,
             "POST",
             f"/api/v1/web/approvals/{approval_id}/decision",
-            payload={"action": "approve", "reason": None},
+            payload=decision,
             headers=self._bearer("approver01"),
         )
         self._expect("11", approved, 200)
