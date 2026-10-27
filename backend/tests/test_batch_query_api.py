@@ -55,6 +55,10 @@ class FakeQueryService:
             "pending": 0,
             "sent": 0,
             "other": 0,
+            "cancelled": 0,
+            "rejected": 0,
+            "expired": 0,
+            "needs_review": 0,
             "scheduled_at": None,
             "created_at": datetime(2026, 7, 11, 8, 0, tzinfo=UTC),
         }
@@ -67,6 +71,7 @@ class FakeQueryService:
         status: str | None,
         page: int,
         size: int,
+        display_status: str | None = None,
     ) -> dict[str, object]:
         self.calls.append(("details", batch_no, scope, status, page, size))
         return {
@@ -76,6 +81,8 @@ class FakeQueryService:
                     "id": 9,
                     "phone": "138****8000",
                     "status": "delivered",
+                    "batch_status": "completed",
+                    "display_status": "delivered",
                     "vendor_task_id": "task-1",
                     "report_desc": "DELIVRD",
                     "report_time": datetime(2026, 7, 11, 8, 1, tzinfo=UTC),

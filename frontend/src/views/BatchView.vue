@@ -25,7 +25,14 @@ import {
   type BatchItem,
 } from "../api/queries"
 import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE, STATUS_LABELS } from "../lib/labels"
-import { buildCompose, channelLabel, composePct, describeCompose, shortBatchNo } from "../lib/batchDisplay"
+import {
+  buildCompose,
+  channelLabel,
+  composePct,
+  describeCompose,
+  shortBatchNo,
+  terminalUnsent,
+} from "../lib/batchDisplay"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
 import { formatNumber } from "../lib/format"
@@ -120,7 +127,7 @@ const {
   fetcher: async (page, signal) => {
     const batch = selected.value?.batch_no
     if (!batch) return null
-    const result = await getBatchMessages(batch, { status: detailStatus.value || undefined, page }, signal)
+    const result = await getBatchMessages(batch, { display_status: detailStatus.value || undefined, page }, signal)
     return selected.value?.batch_no === batch ? result : null
   },
   errorMessage: "批次明细加载失败",
@@ -432,6 +439,7 @@ watch(drawer, (open) => {
             <i class="compose-f" :style="{ width: composePct(composeOf(row).failed, row) }"></i>
             <i class="compose-u" :style="{ width: composePct(composeOf(row).unknown, row) }"></i>
             <i class="compose-o" :style="{ width: composePct(composeOf(row).other, row) }"></i>
+            <i class="compose-x" :style="{ width: composePct(terminalUnsent(composeOf(row)), row) }"></i>
           </div>
         </template>
       </el-table-column>
@@ -474,6 +482,7 @@ watch(drawer, (open) => {
           <i class="compose-f" :style="{ width: composePct(composeOf(item).failed, item) }"></i>
           <i class="compose-u" :style="{ width: composePct(composeOf(item).unknown, item) }"></i>
           <i class="compose-o" :style="{ width: composePct(composeOf(item).other, item) }"></i>
+          <i class="compose-x" :style="{ width: composePct(terminalUnsent(composeOf(item)), item) }"></i>
         </div>
         <p class="query-mobile-meta">
           {{ CATEGORY_LABELS[item.category] }} · {{ channelLabel[item.channel] || item.channel }} · {{ item.dept }} ·
@@ -501,6 +510,7 @@ watch(drawer, (open) => {
         <span><i class="compose-f"></i>失败</span>
         <span><i class="compose-u"></i>未知</span>
         <span><i class="compose-o"></i>其他</span>
+        <span><i class="compose-x"></i>未下发终止</span>
         <em>构成 = 占受理总数的份额，不是成功率；成功率口径见统计报表</em>
       </div></ListPagination
     >

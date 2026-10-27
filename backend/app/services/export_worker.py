@@ -22,6 +22,8 @@ CSV_HEADER = (
     "category",
     "phone",
     "status",
+    "batch_status",
+    "display_status",
     "report_desc",
     "report_time",
     "content",
@@ -159,6 +161,8 @@ class ExportWorker:
                         _text(row["category"]),
                         self._phone(claim, row),
                         _text(row["status"]),
+                        _text(row.get("batch_status")),
+                        _text(row.get("display_status")),
                         _text(row["report_desc"]),
                         _text(row["report_time"]),
                         decrypt_batch_display_content(

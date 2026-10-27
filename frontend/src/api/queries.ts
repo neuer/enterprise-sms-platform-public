@@ -65,6 +65,7 @@ export function getBatch(batchNo: string, signal?: AbortSignal): Promise<BatchIt
 
 export interface BatchMessageFilters {
   status?: string
+  display_status?: string
   page?: number
 }
 
@@ -75,6 +76,7 @@ export function getBatchMessages(
 ): Promise<BatchMessagePage> {
   const query = new URLSearchParams({ page: String(filters.page ?? 1), size: String(DEFAULT_PAGE_SIZE) })
   if (filters.status) query.set("status", filters.status)
+  if (filters.display_status) query.set("display_status", filters.display_status)
   return apiRequestAbs<BatchMessagePage>(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/details?${query}`, {
     method: "GET",
     signal,
@@ -86,6 +88,7 @@ export interface MessageSearchFilters {
   end?: string
   category?: string
   status?: string
+  display_status?: string
   page?: number
 }
 
@@ -119,6 +122,7 @@ export function searchMessages(
       end: filters.end,
       category: filters.category,
       status: filters.status,
+      display_status: filters.display_status,
       page: filters.page,
     },
     signal,

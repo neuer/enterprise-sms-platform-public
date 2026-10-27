@@ -253,17 +253,35 @@ class BatchModel(BaseModel):
     pending: int
     sent: int
     other: int
+    cancelled: int
+    rejected: int
+    expired: int
+    needs_review: int
     scheduled_at: datetime | None
     created_at: datetime
 
 
 MessageStatus = Literal["pending", "sent", "delivered", "failed", "unknown", "other"]
+DisplayStatus = Literal[
+    "pending",
+    "sent",
+    "delivered",
+    "failed",
+    "unknown",
+    "other",
+    "cancelled",
+    "rejected",
+    "expired",
+    "needs_review",
+]
 
 
 class MessageDetailModel(BaseModel):
     id: int
     phone: str
     status: MessageStatus
+    batch_status: str
+    display_status: DisplayStatus
     vendor_task_id: str | None
     report_desc: str | None
     report_time: datetime | None
@@ -788,6 +806,7 @@ async def list_batch_details(
     batch_no: str,
     scope: Annotated[BatchAccessScope, Depends(require_batch_reader)],
     status: Annotated[MessageStatus | None, Query()] = None,
+    display_status: Annotated[DisplayStatus | None, Query()] = None,
     page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     size: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> dict[str, object]:
@@ -796,6 +815,7 @@ async def list_batch_details(
             batch_no,
             scope,
             status=status,
+            display_status=display_status,
             page=page,
             size=size,
         )

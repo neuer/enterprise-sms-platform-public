@@ -8,6 +8,10 @@ export interface BatchCompose {
   failed: number
   unknown: number
   other: number
+  cancelled: number
+  rejected: number
+  expired: number
+  needs_review: number
 }
 
 // 渠道映射只保留这一处事实源；下拉选项由它派生。
@@ -27,7 +31,16 @@ export function buildCompose(row: BatchItem): BatchCompose {
     failed: row.failed,
     unknown: row.unknown,
     other: row.other,
+    cancelled: row.cancelled,
+    rejected: row.rejected,
+    expired: row.expired,
+    needs_review: row.needs_review,
   }
+}
+
+/** 从未下发且批次已终止的条数。不计入待处理。 */
+export function terminalUnsent(parts: BatchCompose): number {
+  return parts.cancelled + parts.rejected + parts.expired + parts.needs_review
 }
 
 /** 未终态条数（待处理 + 已提交）。 */
@@ -42,5 +55,5 @@ export function composePct(part: number, row: BatchItem): string {
 
 /** 构成条的读屏文案。 */
 export function describeCompose(row: BatchItem, parts: BatchCompose): string {
-  return `待处理 ${parts.pending}，待回执 ${parts.sent}，送达 ${parts.delivered}，失败 ${parts.failed}，未知 ${parts.unknown}，其他 ${parts.other}，占受理总数 ${row.total}`
+  return `待处理 ${parts.pending}，待回执 ${parts.sent}，送达 ${parts.delivered}，失败 ${parts.failed}，未知 ${parts.unknown}，其他 ${parts.other}，已取消未下发 ${parts.cancelled}，已驳回未下发 ${parts.rejected}，已过期未下发 ${parts.expired}，待核对 ${parts.needs_review}，占受理总数 ${row.total}`
 }
