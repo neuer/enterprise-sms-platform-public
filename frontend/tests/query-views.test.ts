@@ -846,7 +846,7 @@ describe("批次与号码查询", () => {
     expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({ phone: "13800138000" })
     expect(String(fetch.mock.calls[0][0])).not.toContain("phone=")
     expect(wrapper.text()).toContain("已在黑名单")
-    expect(wrapper.text()).toContain("近30日接收")
+    expect(wrapper.text()).toContain("近30日确认送达")
     expect(wrapper.text()).toContain("3 条")
     expect(wrapper.text()).toContain("↩ 用户回复")
     // 时间线按上海日历日分组（lib/time shanghaiDateKey）
