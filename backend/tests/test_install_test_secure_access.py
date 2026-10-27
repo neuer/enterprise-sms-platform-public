@@ -35,7 +35,7 @@ def amd64_elf(payload: bytes = b"fixed-cloudflared") -> bytes:
 
 
 class FakeRunner:
-    def __init__(self, *, version: str = "2026.7.2") -> None:
+    def __init__(self, *, version: str = "2026.10.3") -> None:
         self.version = version
         self.calls: list[tuple[tuple[str, ...], bool]] = []
         self.active_state = "inactive"
@@ -359,7 +359,7 @@ def test_installer_atomically_installs_pinned_binary_and_static_unit(
     assert result.as_dict() == {
         "status": "installed",
         "service": "sms-platform-test-secure-access.service",
-        "version": "2026.7.2",
+        "version": "2026.10.3",
     }
     assert binary.read_bytes() == source.read_bytes()
     assert binary.stat().st_mode & 0o777 == 0o755
@@ -966,6 +966,8 @@ def test_installer_rejects_existing_unit_symlink_before_systemd_mutation(
         "elf-class",
         "elf-machine",
         "version",
+        "version-before-fix",
+        "version-prefix",
         "source-root-writable",
         "source-root-owner",
     ],
@@ -996,8 +998,12 @@ def test_installer_rejects_unsafe_or_unpinned_source_before_systemd_mutation(
         source.write_bytes(data)
         source.chmod(0o644)
         installer.expected_sha256 = hashlib.sha256(data).hexdigest()
-    elif unsafe == "version":
-        runner.version = "2026.7.3"
+    elif unsafe in {"version", "version-before-fix", "version-prefix"}:
+        runner.version = {
+            "version": "2026.7.2",
+            "version-before-fix": "2026.10.1",
+            "version-prefix": "2026.10.30",
+        }[unsafe]
     elif unsafe == "source-root-writable":
         installer.root.chmod(0o777)
     else:

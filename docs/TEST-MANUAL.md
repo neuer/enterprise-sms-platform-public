@@ -1153,8 +1153,8 @@ G2 包含规格/硬规则、Ruff、Mypy、后端 pytest 与覆盖率、迁移双
 
 ### HTTPS-02：一次性主机安装保持 inactive
 
-cloudflared 固定版本为 `2026.7.2`，SHA-256 为
-`ec905ea7b7e327ff8abdde8cb64697a2152de74dbcdbf6aec9db8364eb3886cd`。本地核验官方
+cloudflared 固定版本为 `2026.10.3`，SHA-256 为
+`053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0`。本地核验官方
 binary 后上传；服务器不自行下载。源码由服务器目标 Git object 解包到固定 root-owned
 `0700` staging，禁止执行普通上传源码或可变 checkout。按 `deploy/README.md` 的完整命令用
 固定 `/usr/bin/python3` 执行安装器，并同时传入固定 `--cloudflared-file`、

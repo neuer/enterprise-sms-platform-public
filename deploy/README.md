@@ -386,9 +386,13 @@ cloudflared 二进制不进入 Git，服务器不自行下载。由 Codex/运维
 release 获取 `cloudflared-linux-amd64`，上传前核验锁定合同：
 
 ```text
-version: 2026.7.2
-SHA-256: ec905ea7b7e327ff8abdde8cb64697a2152de74dbcdbf6aec9db8364eb3886cd
+version: 2026.10.3
+SHA-256: 053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0
 ```
+
+该版本包含 Cloudflare 2026-10-20 公告所述 eMudhra 证书事件的安全修复，
+二进制与摘要以 [Cloudflare 官方发布](https://github.com/cloudflare/cloudflared/releases/tag/2026.10.3)
+为准；不得使用早于 `2026.10.2` 的版本，也不得通过关闭 TLS 证书校验解决升级后的证书错误。
 
 主机还必须有固定 `/usr/bin/python3`（Python 3.11 以上）和该解释器可导入的
 `cryptography`。源码不能由客户端随意上传，也不能从尚未更新的工作树直接执行：先让服务器
@@ -527,6 +531,13 @@ inactive/static 作为硬判据，既清理上次启动失败，也允许正常�
 例如 `0750` 只变为 `0751`，不会增加目录 read/list 权限。预期 status 为 `inactive`；
 成功后才清理上传文件和 staging。锁定版本或任一
 host-control 资产变化时必须重新评审并按目标 commit 重装。
+已有 Named Tunnel 升级时，先确认当前副本与源站配置；若 HTTPS 源站使用受影响证书，
+先更换源站证书。单副本需安排短暂维护窗口，连续服务则先部署已连接的新版本副本。
+通过 `sms-compose cloudflare-tunnel stop` 停止旧进程，再按上面的受控安装流程更新
+二进制与完整主机快照；安装完成后依次执行 `cloudflare-tunnel install`、`start`、`verify`，
+并核对运行进程的版本与摘要。仅替换文件、执行 daemon-reload 或对 active 服务再次 start
+都不会让旧进程加载新二进制。主机资产更新与应用部署分开验收，不修改应用 checkout、
+数据库或现有凭据；应用版本有变更时另走日常测试更新流程。
 首装验证故意直接调用已验真的固定 manager，因为此时服务器旧 checkout 可能还没有
 `secure-access` 命令；目标 commit 经快速更新生效后，日常才使用下节的
 `/usr/local/sbin/sms-compose secure-access ...`。
