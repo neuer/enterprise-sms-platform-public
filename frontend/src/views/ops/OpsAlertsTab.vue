@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { rangeToIsoParams } from "../../lib/time"
+import { rangeToIsoParams, SHANGHAI_CIVIL_VALUE_FORMAT, type ShanghaiCivilRange } from "../../lib/time"
 
 import { usePagedList } from "../../composables/usePagedList"
 
@@ -45,7 +45,7 @@ const alertType = ref("")
 
 const alertLevel = ref<"" | AlertItem["level"]>("")
 
-const alertRange = ref<[Date, Date] | null>(null)
+const alertRange = ref<ShanghaiCivilRange | null>(null)
 
 const selectedAlert = ref<AlertItem | null>(null)
 
@@ -348,6 +348,7 @@ onMounted(() => currentAlertPolling.start())
               class="ops-dates"
               type="datetimerange"
               format="YYYY-MM-DD HH:mm"
+              :value-format="SHANGHAI_CIVIL_VALUE_FORMAT"
               popper-class="qingluan-date-popper"
               range-separator="至"
               start-placeholder="开始时间"

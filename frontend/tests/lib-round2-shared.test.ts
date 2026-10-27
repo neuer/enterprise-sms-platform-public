@@ -41,7 +41,7 @@ describe("第二轮共享边界", () => {
   })
   it("时间查询保留原时刻，空范围不构造假的日期边界", () => {
     expect(rangeToIsoParams(null)).toEqual({ start: undefined, end: undefined })
-    expect(rangeToIsoParams([new Date("2026-09-08T00:00:00+08:00"), new Date("2026-09-09T00:00:00+08:00")])).toEqual({
+    expect(rangeToIsoParams(["2026-09-08 00:00:00", "2026-09-09 00:00:00"])).toEqual({
       start: "2026-09-08T00:00:00+08:00",
       end: "2026-09-09T00:00:00+08:00",
     })

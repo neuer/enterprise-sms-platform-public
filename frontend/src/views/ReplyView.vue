@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { rangeToIsoParams } from "../lib/time"
+import { rangeToIsoParams, SHANGHAI_CIVIL_VALUE_FORMAT, type ShanghaiCivilRange } from "../lib/time"
 
 import { ElMessage } from "element-plus"
 
@@ -37,7 +37,7 @@ const session = useSessionStore()
 // 测试环境未安装路由时 useRouter 返回 undefined，跳转入口做空值守卫。
 const router = useRouter()
 const phone = ref("")
-const range = ref<[Date, Date] | null>(null)
+const range = ref<ShanghaiCivilRange | null>(null)
 const disposition = ref<ReplyDisposition>("all")
 const filtersCollapsed = ref(true)
 const optingOutId = ref<number | null>(null)
@@ -188,6 +188,7 @@ onMounted(load)
         v-model="range"
         type="datetimerange"
         format="YYYY-MM-DD HH:mm"
+        :value-format="SHANGHAI_CIVIL_VALUE_FORMAT"
         popper-class="qingluan-date-popper"
         start-placeholder="开始时间"
         end-placeholder="结束时间"

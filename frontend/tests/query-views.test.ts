@@ -1002,7 +1002,7 @@ describe("批次与号码查询", () => {
     await flushPromises()
 
     const picker = wrapper.findComponent({ name: "ElDatePicker" })
-    picker.vm.$emit("update:modelValue", [new Date("2026-07-12T00:00:00+08:00"), new Date("2026-07-12T23:59:00+08:00")])
+    picker.vm.$emit("update:modelValue", ["2026-07-12 00:00:00", "2026-07-12 23:59:00"])
     await wrapper.find("form.batch-filter").trigger("submit")
     await flushPromises()
 
@@ -1023,7 +1023,7 @@ describe("批次与号码查询", () => {
     await wrapper.find('input[placeholder="输入 11 位手机号"]').setValue("13800138000")
 
     const picker = wrapper.findComponent({ name: "ElDatePicker" })
-    picker.vm.$emit("update:modelValue", [new Date("2026-07-12T00:00:00+08:00"), new Date("2026-07-12T23:59:00+08:00")])
+    picker.vm.$emit("update:modelValue", ["2026-07-12 00:00:00", "2026-07-12 23:59:00"])
     await wrapper.find("form").trigger("submit")
     await flushPromises()
 

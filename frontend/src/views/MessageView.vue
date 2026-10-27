@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CATEGORY_OPTIONS, MESSAGE_STATUS_OPTIONS, BLACKLIST_SOURCE_LABELS } from "../lib/labels"
-import { rangeToIsoParams } from "../lib/time"
+import { rangeToIsoParams, SHANGHAI_CIVIL_VALUE_FORMAT, type ShanghaiCivilRange } from "../lib/time"
 import { computed, ref } from "vue"
 
 import { ElMessage } from "element-plus"
@@ -32,7 +32,7 @@ import { useSessionStore } from "../stores/session"
 
 const session = useSessionStore()
 const phone = ref("")
-const range = ref<[Date, Date] | null>(null)
+const range = ref<ShanghaiCivilRange | null>(null)
 const filtersCollapsed = ref(true)
 const category = ref("")
 const status = ref("")
@@ -246,6 +246,7 @@ async function revealSearched(): Promise<string> {
         v-model="range"
         type="datetimerange"
         format="YYYY-MM-DD HH:mm"
+        :value-format="SHANGHAI_CIVIL_VALUE_FORMAT"
         popper-class="qingluan-date-popper"
         start-placeholder="开始时间"
         end-placeholder="结束时间"
