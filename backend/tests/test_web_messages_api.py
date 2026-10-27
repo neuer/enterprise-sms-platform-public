@@ -544,3 +544,36 @@ def test_viewer_cannot_write() -> None:
     )
     assert response.status_code == 403
     assert response.json()["code"] == "FORBIDDEN"
+
+
+def test_invalid_file_download_is_not_cached(tmp_path: Path) -> None:
+    missing = make_client().get(
+        "/api/v1/web/messages/import/11111111-1111-4111-8111-111111111111/invalid-file",
+        headers={"Authorization": "Bearer jwt"},
+    )
+    assert missing.status_code == 404
+    assert missing.headers["cache-control"] == "no-store"
+    assert missing.json()["code"] == "NOT_FOUND"
+
+    listing = tmp_path / "removed-phones.csv"
+    listing.write_text("line,reason\n2,invalid\n", encoding="utf-8")
+
+    class Ready(FakeImportRepository):
+        async def invalid_file(
+            self,
+            import_id: str,
+            *,
+            principal: SecurityPrincipal,
+        ) -> Path | None:
+            assert import_id == "11111111-1111-4111-8111-111111111111"
+            assert principal.login_name
+            return listing
+
+    downloaded = make_client(repository=Ready()).get(
+        "/api/v1/web/messages/import/11111111-1111-4111-8111-111111111111/invalid-file",
+        headers={"Authorization": "Bearer jwt"},
+    )
+    assert downloaded.status_code == 200
+    assert downloaded.headers["cache-control"] == "no-store"
+    assert "invalid" in downloaded.text
+    assert "13800138000" not in downloaded.text
