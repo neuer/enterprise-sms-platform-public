@@ -150,8 +150,12 @@ export function rescheduleBatch(batchNo: string, scheduledAt: string): Promise<v
   })
 }
 
-export function resendFailedBatch(
-  batchNo: string,
-): Promise<{ batch_no: string; resend_of: string; accepted: number; status: string }> {
+export function resendFailedBatch(batchNo: string): Promise<{
+  batch_no: string
+  resend_of: string
+  accepted: number
+  status: string
+  idempotent: boolean
+}> {
   return apiRequestAbs(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/resend-failed`, { method: "POST" })
 }
