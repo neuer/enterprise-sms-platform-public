@@ -61,9 +61,7 @@ def test_capacity_bands_use_outbox_not_broker() -> None:
     assert evaluate_capacity(facts(uncertain_overdue=20)) == CapacityEvaluation(
         "degraded", "uncertain_overdue", False
     )
-    assert evaluate_capacity(facts(callback_dead=20)) == CapacityEvaluation(
-        "open", "ok", False
-    )
+    assert evaluate_capacity(facts(callback_dead=20)) == CapacityEvaluation("open", "ok", False)
     assert evaluate_capacity(facts(callback_dead=200)) == CapacityEvaluation(
         "closed", "callback_backlog", False
     )
@@ -478,7 +476,8 @@ async def test_active_hold_cost_survives_capacity_reason_change() -> None:
     )
     guard = SendAdmissionGuard(repo)
     with pytest.raises(SendAdmissionRejected) as error:
-        await guard.authorize(app_id=1,
+        await guard.authorize(
+            app_id=1,
             category="notice",
             channel="api",
             recipient_count=1,
@@ -493,9 +492,15 @@ async def test_active_hold_cost_survives_capacity_reason_change() -> None:
 @pytest.mark.parametrize("count", [50, 120])
 async def test_stale_hysteresis_or_legacy_row_does_not_restart_timed_hold(reason, count) -> None:
     now = datetime.now(UTC)
-    repo = ControlRepo(facts(outbox_active=count), row=_control_row(
-        now=now, state="degraded", reason=reason, valid_until=now-timedelta(seconds=1),
-    ))
+    repo = ControlRepo(
+        facts(outbox_active=count),
+        row=_control_row(
+            now=now,
+            state="degraded",
+            reason=reason,
+            valid_until=now - timedelta(seconds=1),
+        ),
+    )
     snap = await SendAdmissionGuard(repo).snapshot()
     assert snap.hold_until is None
     assert snap.budget_mode == ("normal" if count == 50 else "recovery")
@@ -508,24 +513,35 @@ async def test_cas_winner_budget_is_rebuilt_and_cannot_weaken_hysteresis(winner_
     from app.services.send_admission_repository import AdmissionControlConflict
 
     now = datetime.now(UTC)
-    winner = _control_row(now=now, state="degraded", reason="outbox_backlog", epoch=2,
-                          hold_until=now+timedelta(seconds=30) if winner_hold else None)
+    winner = _control_row(
+        now=now,
+        state="degraded",
+        reason="outbox_backlog",
+        epoch=2,
+        hold_until=now + timedelta(seconds=30) if winner_hold else None,
+    )
 
     class Loser(ControlRepo):
         async def save_control_state(self, **values):
             raise AdmissionControlConflict(winner)
 
-    repo = Loser(facts(outbox_active=120), row=_control_row(
-        now=now, state="degraded", reason="capacity_hysteresis",
-    ))
+    repo = Loser(
+        facts(outbox_active=120),
+        row=_control_row(
+            now=now,
+            state="degraded",
+            reason="capacity_hysteresis",
+        ),
+    )
     guard = SendAdmissionGuard(repo)
     if winner_hold:
         snap = await guard.snapshot()
         assert snap.reason == "outbox_backlog" and snap.budget_mode == "recovery"
         assert snap.hold_until == winner["hold_until"]
         with pytest.raises(SendAdmissionRejected) as error:
-            await guard.authorize(app_id=1, category="notice", channel="api", recipient_count=1,
-                                  estimated_segments=21)
+            await guard.authorize(
+                app_id=1, category="notice", channel="api", recipient_count=1, estimated_segments=21
+            )
         assert error.value.reason == "recovery_segment_cost"
     else:
         with pytest.raises(SendAdmissionUnavailable):
@@ -539,7 +555,9 @@ def test_invalid_snapshot_budget_mode_fails_closed() -> None:
     for mode in ("normal", "unknown"):
         with pytest.raises(SendAdmissionUnavailable):
             authorize_from_snapshot(
-                replace(snap, budget_mode=mode), category="notice", recipient_count=1,
+                replace(snap, budget_mode=mode),
+                category="notice",
+                recipient_count=1,
             )
 
 
@@ -680,6 +698,7 @@ async def test_repository_loads_same_keys_as_current_alerts() -> None:
     assert "pending" in sql and "dead" in sql
     assert "interval '24 hours'" in sql
     assert "callback_task" in sql
+    assert "last_error is distinct from 'callbackconfigrevoked'" in sql
     assert "send_runtime_heartbeat" in sql
     assert "send-realtime" in sql
     assert "send-bulk" in sql
@@ -989,7 +1008,8 @@ async def test_bootstrap_with_existing_business_never_bypasses_hold() -> None:
     assert repo.saved[0]["reason"] == "recovery_hold"
     assert repo.saved[0]["hold_until"] == now + timedelta(seconds=60)
     with pytest.raises(SendAdmissionRejected) as rejected:
-        await SendAdmissionGuard(repo).authorize(app_id=1,
+        await SendAdmissionGuard(repo).authorize(
+            app_id=1,
             category="market",
             channel="api",
             recipient_count=1,
@@ -1529,14 +1549,16 @@ async def test_recovery_budget_is_shared_and_bound_to_epoch() -> None:
 
     first = SharedBudget(epoch=7)
     second = SharedBudget(epoch=7)
-    await SendAdmissionGuard(first).authorize(app_id=1,
+    await SendAdmissionGuard(first).authorize(
+        app_id=1,
         category="notice",
         channel="api",
         recipient_count=20,
         estimated_segments=20,
     )
     with pytest.raises(SendAdmissionRejected) as rejected:
-        await SendAdmissionGuard(second).authorize(app_id=1,
+        await SendAdmissionGuard(second).authorize(
+            app_id=1,
             category="verify",
             channel="api",
             recipient_count=1,
@@ -1546,7 +1568,8 @@ async def test_recovery_budget_is_shared_and_bound_to_epoch() -> None:
     assert rejected.value.retry_after_s == 1
     next_epoch = SharedBudget(epoch=8)
     with pytest.raises(SendAdmissionRejected, match="发送通道暂时不可用"):
-        await SendAdmissionGuard(next_epoch).authorize(app_id=1,
+        await SendAdmissionGuard(next_epoch).authorize(
+            app_id=1,
             category="notice",
             channel="api",
             recipient_count=20,
@@ -1559,7 +1582,8 @@ async def test_recovery_budget_is_shared_and_bound_to_epoch() -> None:
 async def test_recovery_budget_fail_closes_when_control_plane_down() -> None:
     repo = RecoveryBudgetFacts(error=RuntimeError("control redis down"))
     with pytest.raises(SendAdmissionRejected) as error:
-        await SendAdmissionGuard(repo).authorize(app_id=1,
+        await SendAdmissionGuard(repo).authorize(
+            app_id=1,
             category="notice",
             channel="api",
             recipient_count=1,
@@ -1593,7 +1617,8 @@ async def test_recovery_budget_fail_closes_when_control_plane_down() -> None:
             }
 
     with pytest.raises(SendAdmissionUnavailable):
-        await SendAdmissionGuard(PersistOnly()).authorize(app_id=1,
+        await SendAdmissionGuard(PersistOnly()).authorize(
+            app_id=1,
             category="notice",
             channel="api",
             recipient_count=1,
