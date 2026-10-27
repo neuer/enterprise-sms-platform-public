@@ -11,6 +11,7 @@ import {
 import { formatNumber, formatPercent } from "../lib/format"
 import { DEFAULT_PAGE_SIZE, DISPLAY_STATUS_OPTIONS, STATUS_LABELS } from "../lib/labels"
 import { codePointLength } from "../lib/codePoints"
+import { resendBlockText } from "../lib/resendEligibility"
 import { formatDateTime } from "../lib/time"
 import CategoryTag from "./CategoryTag.vue"
 import EmptyState from "./EmptyState.vue"
@@ -44,6 +45,7 @@ const emit = defineEmits<{
   cancel: []
   reschedule: []
   resend: []
+  supplement: []
   trace: [sourceBatchNo: string]
   filterDetails: []
   detailPageChange: []
@@ -113,9 +115,19 @@ async function revealPhone(messageId: number): Promise<string> {
           @click="emit('resend')"
           >重发失败（{{ formatNumber(selected.failed) }}）</el-button
         >
+        <el-button
+          v-if="selected.resend_block_reason === 'supplement_required'"
+          :loading="resending"
+          data-testid="resend-supplement"
+          @click="emit('supplement')"
+          >补发未覆盖（{{ formatNumber(selected.resend_uncovered_failed) }}）</el-button
+        >
+        <p v-if="resendBlockText(selected.resend_block_reason)" class="batch-actions-why" data-testid="resend-block">{{
+          resendBlockText(selected.resend_block_reason)
+        }}</p>
         <p class="batch-actions-why"
           >取消 / 改期仅「已排期」批次可用（服务端 409 为最终裁决）；API 批次须通过所属应用 API 重发。Web
-          批次重发失败将生成新批次并完整重走频控、审批与时间窗。</p
+          批次须等回执到齐后才能重发失败号码，并完整重走频控、审批与时间窗。</p
         >
       </div>
 

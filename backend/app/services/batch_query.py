@@ -19,6 +19,7 @@ from app.services.message_display import (
     display_status_predicate,
     ensure_display_status,
 )
+from app.services.resend_eligibility import read_coverage
 from app.settings import Settings, get_settings
 
 
@@ -236,7 +237,11 @@ class BatchQueryService:
                 row = result.mappings().first()
                 if row is None:
                     raise BatchNotFound
-                return self._batch(row)
+                item = self._batch(row)
+                coverage = await read_coverage(connection, batch_no, predicate, scope_params)
+                if coverage is not None:
+                    item.update(coverage.as_dict())
+                return item
         finally:
             await engine.dispose()
 

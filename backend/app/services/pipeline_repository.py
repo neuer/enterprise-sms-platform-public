@@ -608,7 +608,7 @@ class SqlPipelineStore:
                 (
                     await connection.execute(
                         text("""
-                SELECT id,channel,dept,category,is_test,app_id FROM sms_batch
+                SELECT id,channel,dept,category,is_test,app_id,status FROM sms_batch
                 WHERE batch_no=:batch_no FOR UPDATE
             """),
                         {"batch_no": command.resend_of},
@@ -627,6 +627,9 @@ class SqlPipelineStore:
                 or (command.channel == "api" and source["app_id"] != command.app_id)
             ):
                 raise AcceptCommitConflict("原批次重发来源资格已变化")
+            from app.services.resend_eligibility import reject_open_receipts
+
+            await reject_open_receipts(connection, int(source["id"]), str(source["status"]))
             # 回执使用相同批次锁；锁内新快照验证全部原消息，不能只检查先前读出的 failed。
             rows = (
                 (
@@ -818,6 +821,13 @@ class SqlPipelineStore:
             )
             if action.scalar_one_or_none() is None:
                 raise ValueError("失败重发源批次不存在")
+            from app.services.resend_eligibility import record_ordinary_members
+
+            await record_ordinary_members(
+                connection,
+                child_batch_id=batch_id,
+                sources=command.failed_sources,
+            )
         if command.usage_reservation_id is not None:
             await commit_usage_reservation(
                 connection,

@@ -161,6 +161,9 @@ PUBLIC 没有 EXECUTE，`sms_metrics` 仅获得累计维度和计数列 SELECT�
 同一迁移仅允许 realtime 的 `system_resend:<id>` 写 `sensitive_hit`，数据库核对
 批准状态、generation、来源分片/批次与两个有效管理员；不扩大普通 API 或其他系统动作。
 
+0135 增加失败重发的补发意图和成员。`sms_accept` 可插入并更新这两张表，没有 DELETE。
+成员只保存原消息主键和认领状态，不保存手机号。普通 `sms_resend_action` 仍是来源批次主键。
+
 0134 增加 `callback_batch_event`。`sms_accept` 与 `sms_send` 在原终态入队事务里追加快照，
 `sms_callback` 只为缺少可信快照的旧任务追加一条新事件。三个角色都没有 UPDATE。
 `sms_send` 保留 DELETE，供终态 `callback_task` 清理时级联删除快照；未终结任务和仍被

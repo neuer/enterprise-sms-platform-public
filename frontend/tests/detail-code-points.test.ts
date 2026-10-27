@@ -35,6 +35,9 @@ function batch(content: string): BatchItem {
     needs_review: 0,
     scheduled_at: null,
     created_at: "2026-10-27T08:00:00+08:00",
+    can_resend_failed: false,
+    resend_covered_failed: 0,
+    resend_uncovered_failed: 0,
   }
 }
 

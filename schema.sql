@@ -741,6 +741,7 @@ CREATE TABLE sms_resend_action (
     source_batch_id BIGINT PRIMARY KEY REFERENCES sms_batch(id) ON DELETE RESTRICT,
     child_batch_id  BIGINT NOT NULL UNIQUE REFERENCES sms_batch(id) ON DELETE RESTRICT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    coverage_needs_review BOOLEAN NOT NULL DEFAULT false,
     CONSTRAINT ck_sms_resend_action_distinct CHECK (source_batch_id <> child_batch_id)
 );
 
@@ -1516,6 +1517,41 @@ CREATE TABLE sms_message_2026_07 PARTITION OF sms_message
     FOR VALUES FROM ('2026-07-01+08') TO ('2026-08-01+08');
 CREATE TABLE sms_message_2026_08 PARTITION OF sms_message
     FOR VALUES FROM ('2026-08-01+08') TO ('2026-09-01+08');
+
+-- 显式补发只认领尚未覆盖的原消息。不含手机号明文。
+CREATE TABLE sms_resend_supplement (
+    id              UUID PRIMARY KEY,
+    source_batch_id BIGINT NOT NULL REFERENCES sms_batch(id) ON DELETE RESTRICT,
+    child_batch_id  BIGINT UNIQUE REFERENCES sms_batch(id) ON DELETE RESTRICT,
+    state           VARCHAR(16) NOT NULL DEFAULT 'preview'
+                    CHECK (state IN ('preview','submitted','rejected')),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    submitted_at    TIMESTAMPTZ,
+    CONSTRAINT ck_resend_supplement_submit CHECK (
+      (state='submitted' AND child_batch_id IS NOT NULL AND submitted_at IS NOT NULL)
+      OR (state<>'submitted' AND child_batch_id IS NULL AND submitted_at IS NULL)
+    )
+);
+CREATE INDEX idx_resend_supplement_source
+    ON sms_resend_supplement(source_batch_id, state);
+
+CREATE TABLE sms_resend_supplement_member (
+    source_batch_id BIGINT NOT NULL,
+    source_message_id BIGINT NOT NULL,
+    source_message_created_at TIMESTAMPTZ NOT NULL,
+    supplement_id UUID REFERENCES sms_resend_supplement(id) ON DELETE RESTRICT,
+    child_batch_id BIGINT REFERENCES sms_batch(id) ON DELETE RESTRICT,
+    generation INTEGER NOT NULL DEFAULT 1 CHECK (generation >= 1),
+    claim_state VARCHAR(16) NOT NULL
+                CHECK (claim_state IN ('frozen','submitted','released','needs_review')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (source_batch_id, source_message_id, source_message_created_at),
+    FOREIGN KEY (source_message_id, source_message_created_at)
+      REFERENCES sms_message(id, created_at) ON DELETE RESTRICT
+);
+CREATE INDEX idx_resend_member_supplement
+    ON sms_resend_supplement_member(supplement_id);
+REVOKE ALL ON sms_resend_supplement, sms_resend_supplement_member FROM PUBLIC;
 
 -- 上行回复（按月分区，保留12个月）
 CREATE TABLE sms_reply (
@@ -3571,6 +3607,8 @@ GRANT INSERT, UPDATE ON
     auth_session_policy
 TO sms_accept;
 GRANT INSERT ON sms_resend_action TO sms_accept;
+GRANT SELECT, INSERT, UPDATE ON sms_resend_supplement, sms_resend_supplement_member
+    TO sms_accept;
 GRANT SELECT, INSERT ON stat_dirty_date TO sms_accept;
 GRANT SELECT ON stat_scope_day TO sms_accept;
 GRANT INSERT, UPDATE ON

@@ -20,6 +20,8 @@ import {
   getBatchMessages,
   cancelBatch,
   listBatches,
+  confirmResendSupplement,
+  previewResendSupplement,
   resendFailedBatch,
   rescheduleBatch,
   type BatchItem,
@@ -184,9 +186,13 @@ function filterDetails(): void {
   void loadDetails()
 }
 
-const canResendFailed = computed(
-  () => canWrite.value && selected.value?.channel === "web" && (selected.value?.failed ?? 0) > 0,
-)
+const canResendFailed = computed(() => {
+  const batch = selected.value
+  if (!canWrite.value || batch?.channel !== "web") return false
+  if (batch.can_resend_failed === false) return false
+  if (batch.can_resend_failed === true) return true
+  return (batch.failed ?? 0) > 0
+})
 
 const resending = ref(false)
 const resendChild = ref<{ parent: string; batchNo: string; status: string } | null>(null)
@@ -217,6 +223,32 @@ async function resendFailed(): Promise<void> {
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "重发失败"))
+  } finally {
+    resending.value = false
+  }
+}
+
+async function supplementUncovered(): Promise<void> {
+  const batch = selected.value
+  if (!batch || resending.value || batch.resend_block_reason !== "supplement_required") return
+  resending.value = true
+  try {
+    const preview = await previewResendSupplement(batch.batch_no)
+    if (
+      !(await confirmAuditedAction({
+        title: "确认补发未覆盖号码",
+        body: `已覆盖 ${preview.covered_failed} 条，本次只补发未覆盖的 ${preview.uncovered_failed} 条。已覆盖号码不会再次发送。`,
+        auditNote: "补发行为、操作人与原批次将写入审计日志。",
+        confirmText: "补发未覆盖",
+      }))
+    )
+      return
+    const result = await confirmResendSupplement(batch.batch_no, preview.intent_id)
+    resendChild.value = { parent: batch.batch_no, batchNo: result.batch_no, status: result.status }
+    ElMessage.success("未覆盖号码已进入新批次 · 本次操作已记入审计")
+    await load()
+  } catch (error) {
+    ElMessage.error(errorText(error, "补发未覆盖号码失败"))
   } finally {
     resending.value = false
   }
@@ -536,6 +568,7 @@ watch(drawer, (open) => {
     @cancel="cancelSelected"
     @reschedule="openReschedule"
     @resend="resendFailed"
+    @supplement="supplementUncovered"
     @trace="traceResendOf"
     @filter-details="filterDetails"
     @detail-page-change="loadDetails"
