@@ -94,8 +94,8 @@ def test_secure_access_contract_is_short_lived_static_and_has_no_plaintext_fallb
     seal = (ROOT / "frontend/src/lib/vendorSeal.ts").read_text(encoding="utf-8")
 
     for token in (
-        'CLOUDFLARED_VERSION = "2026.7.2"',
-        "ec905ea7b7e327ff8abdde8cb64697a2152de74dbcdbf6aec9db8364eb3886cd",
+        'CLOUDFLARED_VERSION = "2026.10.3"',
+        "053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0",
         'ORIGIN = "http://127.0.0.1:18080"',
         "MAX_LIFETIME_SECONDS = 900",
     ):

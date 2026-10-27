@@ -533,8 +533,8 @@ def check_vendor_live_invariants() -> None:
     secure_contract_path = ROOT / "deploy/scripts/test_secure_access_contract.py"
     require_fragments(
         secure_contract_path,
-        'CLOUDFLARED_VERSION = "2026.7.2"',
-        "ec905ea7b7e327ff8abdde8cb64697a2152de74dbcdbf6aec9db8364eb3886cd",
+        'CLOUDFLARED_VERSION = "2026.10.3"',
+        "053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0",
         'ORIGIN = "http://127.0.0.1:18080"',
         "MAX_LIFETIME_SECONDS = 900",
         "trycloudflare",

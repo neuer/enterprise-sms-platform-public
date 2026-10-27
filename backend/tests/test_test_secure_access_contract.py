@@ -23,10 +23,10 @@ def contract() -> ModuleType:
 def test_contract_pins_every_host_runtime_boundary() -> None:
     module = contract()
 
-    assert module.CLOUDFLARED_VERSION == "2026.7.2"
+    assert module.CLOUDFLARED_VERSION == "2026.10.3"
     assert (
         module.CLOUDFLARED_SHA256
-        == "ec905ea7b7e327ff8abdde8cb64697a2152de74dbcdbf6aec9db8364eb3886cd"
+        == "053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0"
     )
     assert Path("/usr/local/libexec/sms-platform/cloudflared") == module.CLOUDFLARED_PATH
     assert module.SERVICE_NAME == "sms-platform-test-secure-access.service"

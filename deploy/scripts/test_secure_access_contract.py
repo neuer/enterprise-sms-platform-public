@@ -10,8 +10,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-CLOUDFLARED_VERSION = "2026.7.2"
-CLOUDFLARED_SHA256 = "ec905ea7b7e327ff8abdde8cb64697a2152de74dbcdbf6aec9db8364eb3886cd"
+CLOUDFLARED_VERSION = "2026.10.3"
+CLOUDFLARED_SHA256 = "053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0"
 CLOUDFLARED_PATH = Path("/usr/local/libexec/sms-platform/cloudflared")
 SERVICE_NAME = "sms-platform-test-secure-access.service"
 PERSISTENT_SERVICE_NAME = "sms-platform-cloudflare-tunnel.service"

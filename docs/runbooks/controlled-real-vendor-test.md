@@ -81,8 +81,8 @@ URL 为随机 `https://<label>.trycloudflare.com`，每次最多 15 分钟。流
 只连接固定回环 Web，不读取 Docker Socket、运行 secrets、PostgreSQL、凭据 generation
 或测试号码。
 
-cloudflared 锁定为 `2026.7.2`，linux-amd64 SHA-256 为
-`ec905ea7b7e327ff8abdde8cb64697a2152de74dbcdbf6aec9db8364eb3886cd`。二进制由
+cloudflared 锁定为 `2026.10.3`，linux-amd64 SHA-256 为
+`053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0`。二进制由
 Codex/运维在本地从官方 release 获取并核验后上传；服务器不自行下载。源码必须由服务器
 已取得的目标 Git object 解包到固定 root-owned `0700` staging，不接受普通上传目录或当前
 可变 checkout。主机固定 `/usr/bin/python3` 必须为 3.11 以上并可导入 `cryptography`。
