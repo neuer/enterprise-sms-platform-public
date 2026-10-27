@@ -79,6 +79,18 @@ def test_preview_defers_market_outside_send_window() -> None:
         now=outside,
     )
     assert notice.deferred_reason is None
+    test_send = build_billing_preview(category="market", now=outside, is_test=True, **base)
+    assert test_send.deferred_reason is None
+    assert test_send.approval_required is False
+    assert test_send.final_length == deferred.final_length
+    assert test_send.quota_cost == deferred.quota_cost
+    needs_approval = build_billing_preview(
+        category="market",
+        now=inside,
+        is_test=False,
+        **{**base, "market_threshold": 1},
+    )
+    assert needs_approval.approval_required is True
 
 
 def test_preview_passes_through_quota_summary() -> None:

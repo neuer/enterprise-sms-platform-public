@@ -48,6 +48,7 @@ export function useSendPreview(options: SendPreviewOptions) {
       signName: form.signName,
       count: previewCount.value,
       consent: form.consentConfirmed,
+      isTest: form.isTest,
     }),
   )
   const lastPreviewKey = ref("")
@@ -107,6 +108,7 @@ export function useSendPreview(options: SendPreviewOptions) {
           sign_name: form.signName || undefined,
           accepted_count: previewCount.value,
           consent_confirmed: form.consentConfirmed,
+          is_test: form.isTest,
         },
         controller.signal,
       )
