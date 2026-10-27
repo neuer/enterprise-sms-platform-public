@@ -348,10 +348,15 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 普通Web服务端无应用上下文只受全局保护；有应用归属的API、UAT和授权重发不得绕过。
 幂等成功重放返回原批次，不生成新发送。
 
-全局完整活跃Outbox达到2000或callback dead达到200时仍关闭所有新发送；
+全局完整活跃Outbox达到2000或尚未解决的 callback dead 达到200时仍关闭所有新发送；
 达到全局硬上限后的半阈值滞回、60秒保持和共享恢复预算保留。
-callback.ready不再贡献全局软降级数量，callback dead不再触发全局软降级；
-其完整数量仍在指标及硬保护中。到期处理积压、dispatcher/lane故障、暂停和
+callback.ready不再贡献全局软降级数量，callback dead不再触发全局软降级。
+策略修订（相对 #817）：应用 20 与全局 200 只统计尚未解决的失败回调，
+即 `status=dead` 且 `last_error` 不是 `CallbackConfigRevoked`。
+空原因和未知原因仍计入。永久撤销的历史事件保留在审计、回调列表和全量 dead 指标中，
+不占发送准入名额；不得靠删除任务、改成 done 或复活旧任务来恢复发送。
+全量 dead 指标维持历史口径，准入排除不缩小该可见数量。
+到期处理积压、dispatcher/lane故障、暂停和
 数据库/Redis不可确认继续按既有合同失败关闭。应用隔离不豁免总容量与基础设施保护，
 不改变回调重试、事实保留和uncertain/submitted禁止自动重发的合同。
 
