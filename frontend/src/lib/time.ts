@@ -148,12 +148,66 @@ export function daysAgoDateKey(days: number, now: Date = new Date()): string {
   return shanghaiDateKey(new Date(midnight.getTime() - days * 86_400_000))
 }
 
-/** 日期范围转换为接口 ISO 参数；未选范围不发送起止参数。书面口径走 toApiDateTime（规则 15 的 +08:00）。 */
-export function rangeToIsoParams(range: readonly [Date, Date] | null): { start?: string; end?: string } {
-  return {
-    start: range?.[0] ? toApiDateTime(range[0]) : undefined,
-    end: range?.[1] ? toApiDateTime(range[1]) : undefined,
+/** 筛选控件绑定的无时区上海钟面时间，与浏览器时区无关。 */
+export const SHANGHAI_CIVIL_VALUE_FORMAT = "YYYY-MM-DD HH:mm:ss"
+
+export type ShanghaiCivilRange = readonly [string, string]
+
+const CIVIL_TIME = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/
+
+function pad2(value: number): string {
+  return String(value).padStart(2, "0")
+}
+
+/** 严格校验上海钟面时间并写成 `YYYY-MM-DDTHH:mm:ss+08:00`；非法日历返回 undefined。 */
+export function shanghaiCivilToApi(value: string): string | undefined {
+  const match = CIVIL_TIME.exec(value.trim())
+  if (!match) return undefined
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const hour = Number(match[4])
+  const minute = Number(match[5])
+  const second = Number(match[6] ?? "0")
+  if (hour > 23 || minute > 59 || second > 59) return undefined
+  const probe = new Date(0)
+  probe.setUTCFullYear(year, month - 1, day)
+  probe.setUTCHours(0, 0, 0, 0)
+  if (probe.getUTCFullYear() !== year || probe.getUTCMonth() !== month - 1 || probe.getUTCDate() !== day) {
+    return undefined
   }
+  return `${match[1]}-${match[2]}-${match[3]}T${pad2(hour)}:${pad2(minute)}:${pad2(second)}+08:00`
+}
+
+/**
+ * 日期范围转换为接口 ISO 参数。
+ * 输入是用户看到的上海钟面时间，不把浏览器本地 Date 再换算一次。
+ * 空范围、任一侧非法时不发送起止；合法倒序原样保留，由服务端裁决。
+ */
+export function rangeToIsoParams(range: ShanghaiCivilRange | null): { start?: string; end?: string } {
+  if (!range) return { start: undefined, end: undefined }
+  const start = shanghaiCivilToApi(range[0])
+  const end = shanghaiCivilToApi(range[1])
+  if (!start || !end) return { start: undefined, end: undefined }
+  return { start, end }
+}
+
+/** 把该时刻的上海钟面写成本地 Date，只供日期控件按用户看到的数字回写。 */
+export function dateForShanghaiClock(instant: Date): Date {
+  const p = partsOf(DATE_TIME, instant)
+  const hour = p.hour === "24" ? 0 : Number(p.hour)
+  return new Date(Number(p.year), Number(p.month) - 1, Number(p.day), hour, Number(p.minute), Number(p.second))
+}
+
+/** 上海自然日 00:00 的控件值；不使用浏览器本地 setHours。 */
+export function dateForShanghaiDayStart(now: Date = new Date()): Date {
+  const [year, month, day] = shanghaiDateKey(now).split("-").map(Number)
+  return new Date(year, month - 1, day, 0, 0, 0)
+}
+
+/** 相对当前时刻的真实时长，两端都按上海钟面交给控件。 */
+export function trailingShanghaiRange(durationMs: number, now: Date = new Date()): [Date, Date] {
+  return [dateForShanghaiClock(new Date(now.getTime() - durationMs)), dateForShanghaiClock(now)]
 }
 
 export type ReportPeriodGranularity = "day" | "week" | "month"
