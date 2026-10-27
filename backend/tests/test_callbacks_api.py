@@ -16,10 +16,8 @@ from app.core.errors import (
     api_error_handler,
     validation_error_handler,
 )
-from app.services.callback_repository import (
-    CallbackRetryConflict,
-    CallbackTaskNotFound,
-)
+from app.services.callback_repository import CallbackTaskNotFound
+from app.services.callback_retry_eligibility import CallbackRetryConflict
 
 
 class FakeFacade:
@@ -63,6 +61,8 @@ class FakeRepository:
                     "last_error": "TimeoutError",
                     "created_at": datetime(2026, 7, 12, 8, 0, tzinfo=UTC),
                     "finished_at": datetime(2026, 7, 12, 9, 0, tzinfo=UTC),
+                    "manual_retry_allowed": False,
+                    "retry_block_reason": "config_revoked",
                 }
             ],
         }
@@ -114,9 +114,12 @@ def test_admin_lists_safe_callback_task_summary_and_non_admin_is_forbidden() -> 
             "size": 50,
         }
     ]
-    assert client(FakeRepository(), "operator").get(
-        "/api/v1/web/admin/callbacks", headers=headers
-    ).status_code == 403
+    assert (
+        client(FakeRepository(), "operator")
+        .get("/api/v1/web/admin/callbacks", headers=headers)
+        .status_code
+        == 403
+    )
 
 
 def test_callback_list_rejects_invalid_filters() -> None:
@@ -139,22 +142,34 @@ def test_callback_list_rejects_invalid_filters() -> None:
 def test_manual_retry_maps_missing_and_state_conflict() -> None:
     headers = {"Authorization": "Bearer jwt"}
     success = FakeRepository()
-    assert client(success).post(
-        "/api/v1/web/admin/callbacks/9/retry", headers=headers
-    ).status_code == 200
+    assert (
+        client(success).post("/api/v1/web/admin/callbacks/9/retry", headers=headers).status_code
+        == 200
+    )
     assert success.retry_calls[0][0] == 9
     assert success.retry_calls[0][1].account_id == 1
-    assert client(FakeRepository(CallbackTaskNotFound("不存在"))).post(
-        "/api/v1/web/admin/callbacks/9/retry", headers=headers
-    ).status_code == 404
-    assert client(FakeRepository(CallbackRetryConflict("仅 dead 可重推"))).post(
-        "/api/v1/web/admin/callbacks/9/retry", headers=headers
-    ).status_code == 409
+    assert (
+        client(FakeRepository(CallbackTaskNotFound("不存在")))
+        .post("/api/v1/web/admin/callbacks/9/retry", headers=headers)
+        .status_code
+        == 404
+    )
+    conflict = client(
+        FakeRepository(
+            CallbackRetryConflict(
+                "旧回调已因配置变更撤销，恢复配置也不能重推",
+                "config_revoked",
+            )
+        )
+    ).post("/api/v1/web/admin/callbacks/9/retry", headers=headers)
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == {"reason": "config_revoked"}
+    assert "恢复配置也不能重推" in conflict.json()["message"]
+    assert "url" not in conflict.text
 
 
 def test_callback_writes_and_secret_rotation_are_audited() -> None:
     assert vars(api.retry_callback)["__audited_action__"] == "callback_retry"
     assert (
-        vars(apps_api.rotate_callback_secret)["__audited_action__"]
-        == "app_rotate_callback_secret"
+        vars(apps_api.rotate_callback_secret)["__audited_action__"] == "app_rotate_callback_secret"
     )

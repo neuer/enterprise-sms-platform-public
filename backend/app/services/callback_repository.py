@@ -23,6 +23,11 @@ from app.services.callback import (
     MessageReportData,
 )
 from app.services.callback_authority import CallbackAuthorityBusy, lock_callback_authority
+from app.services.callback_retry_eligibility import (  # noqa: E501
+    conflict_for_reason,
+    diagnosis_sql,
+    list_retry_columns,
+)
 from app.services.callback_worker import CallbackClaim, CallbackLeaseLost
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
@@ -60,10 +65,6 @@ def report_event_key(
 
 
 class CallbackTaskNotFound(LookupError):
-    pass
-
-
-class CallbackRetryConflict(RuntimeError):
     pass
 
 
@@ -369,11 +370,10 @@ class SqlCallbackRepository:
                           t.takeover_count,
                           (t.lease_id IS NOT NULL AND t.lease_expires_at<=now()) stalled,
                           t.last_http_code,t.last_error,
-                          t.created_at,t.finished_at
-                        """
+                          t.created_at,t.finished_at, """
+                        + list_retry_columns()
                         + source
-                        + "WHERE "
-                        + where
+                        + "WHERE " + where
                         + " ORDER BY t.created_at DESC LIMIT :limit OFFSET :offset"
                     ),
                     params,
@@ -399,9 +399,12 @@ class SqlCallbackRepository:
         try:
             async with engine.begin() as connection:
                 # 恢复保护状态前先锁批次，与幂等退役保持 batch → callback 的顺序。
-                await connection.execute(text("""
+                await connection.execute(
+                    text("""
                     SELECT public.lock_callback_idempotency_batch(:task_id)
-                """), {"task_id": task_id})
+                """),
+                    {"task_id": task_id},
+                )
 
                 result = await connection.execute(
                     text(
@@ -425,13 +428,11 @@ class SqlCallbackRepository:
                     {"task_id": task_id},
                 )
                 if result.scalar_one_or_none() is None:
-                    status_result = await connection.execute(
-                        text("SELECT status FROM callback_task WHERE id=:task_id"),
-                        {"task_id": task_id},
-                    )
-                    if status_result.scalar_one_or_none() is None:
+                    queried = await connection.execute(text(diagnosis_sql()), {"task_id": task_id})
+                    row = queried.mappings().one_or_none()
+                    if row is None:
                         raise CallbackTaskNotFound("回调任务不存在")
-                    raise CallbackRetryConflict("仅 dead 回调可手动重推")
+                    raise conflict_for_reason(row["retry_block_reason"])
                 await insert_audit(
                     connection,
                     AuditEvent(
