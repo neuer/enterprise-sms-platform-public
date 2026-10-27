@@ -2354,7 +2354,7 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [id, event_id, correlation_id, app_id, app_name, event, batch_no, reference_count, status, retry_count, next_retry_at, lease_id, lease_expires_at, takeover_count, stalled, last_http_code, last_error, created_at, finished_at]
+                      required: [id, event_id, correlation_id, app_id, app_name, event, batch_no, reference_count, status, retry_count, next_retry_at, lease_id, lease_expires_at, takeover_count, stalled, last_http_code, last_error, created_at, finished_at, manual_retry_allowed, retry_block_reason]
                       properties:
                         id: { type: integer }
                         event_id: { type: string, format: uuid, description: 跨重试稳定的接收方幂等事件 ID }
@@ -2375,6 +2375,8 @@ paths:
                         last_error: { anyOf: [{ type: string }, { type: 'null' }] }
                         created_at: { type: string, format: date-time }
                         finished_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                        manual_retry_allowed: { type: boolean, description: 与手动重推同一资格；true 才可提交 }
+                        retry_block_reason: { anyOf: [{ type: string, enum: [config_revoked, app_disabled, config_changed, detail_disabled, not_dead] }, { type: 'null' }], description: 不可重推时的稳定原因，不包含 URL 或密钥 }
 
   /api/v1/web/admin/callbacks/{id}/retry:
     post:
@@ -2387,7 +2389,9 @@ paths:
         '200': { description: 已重新入队 }
         '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { description: STATE_CONFLICT, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409':
+          description: STATE_CONFLICT。detail.reason 为 config_revoked、app_disabled、config_changed、detail_disabled 或 not_dead
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   /api/v1/web/admin/jobs:
     get:
@@ -2961,7 +2965,7 @@ webhooks:
       description: |
         关联头：X-Sms-Event-Id 是接收方幂等事件 ID；X-Sms-Correlation-Id 与触发该事件的 HTTP/任务/Outbox 关联 ID 一致。
         签名头：X-Sms-Timestamp（Unix秒）、X-Sms-Signature = HMAC-SHA256(callback_secret, timestamp + "." + rawBody) 的 hex。
-        版本头：X-Sms-Signature-Version 固定为事件创建时的协议版本；X-Sms-Secret-Version 是该事件固化密钥的 key version。密钥轮换不改变既有事件重试。
+        版本头：X-Sms-Signature-Version 固定为事件创建时的协议版本；X-Sms-Secret-Version 是该事件固化密钥的 key version。冻结密钥只在当前回调配置仍匹配时用于重试；轮换密钥、变更 URL 或停用应用会永久撤销尚未终结的旧任务，恢复配置也不能重推。
         接收方须验签且校验时间戳偏差 ≤ 300s，返回 2xx 视为成功；否则（含 4xx）按 60/300/900/3600/3600s 重试共5次。
       requestBody:
         content:
