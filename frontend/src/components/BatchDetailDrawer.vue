@@ -2,7 +2,7 @@
 import { decryptMessagePhone, type BatchItem, type BatchMessage } from "../api/queries"
 import { activeOf, buildCompose as composeOf, channelLabel, composePct, describeCompose } from "../lib/batchDisplay"
 import { formatNumber, formatPercent } from "../lib/format"
-import { DEFAULT_PAGE_SIZE, MESSAGE_STATUS_OPTIONS } from "../lib/labels"
+import { DEFAULT_PAGE_SIZE, MESSAGE_STATUS_OPTIONS, STATUS_LABELS } from "../lib/labels"
 import { codePointLength } from "../lib/codePoints"
 import { formatDateTime } from "../lib/time"
 import CategoryTag from "./CategoryTag.vue"
@@ -31,6 +31,7 @@ defineProps<{
   detailUnconfirmed: boolean
   cancelling: boolean
   resending: boolean
+  resendChild?: { batchNo: string; status: string } | null
 }>()
 const emit = defineEmits<{
   cancel: []
@@ -220,6 +221,19 @@ async function revealPhone(messageId: number): Promise<string> {
               >{{ selected.resend_of }} ↗</button
             ><template v-else>—</template></dd
           >
+        </div>
+        <div v-if="resendChild">
+          <dt>重发批次</dt>
+          <dd>
+            <button
+              type="button"
+              class="batch-trace"
+              data-testid="view-resend-batch"
+              @click="emit('trace', resendChild.batchNo)"
+              >查看重发批次 {{ resendChild.batchNo }} ·
+              {{ STATUS_LABELS[resendChild.status] ?? resendChild.status }}</button
+            >
+          </dd>
         </div>
         <div
           ><dt>标记</dt><dd>{{ selected.is_test ? "测试发送" : "正式发送" }}</dd></div

@@ -24,7 +24,7 @@ import {
   rescheduleBatch,
   type BatchItem,
 } from "../api/queries"
-import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE, STATUS_LABELS } from "../lib/labels"
 import { buildCompose, channelLabel, composePct, describeCompose, shortBatchNo } from "../lib/batchDisplay"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction } = useConfirmActions()
@@ -182,6 +182,7 @@ const canResendFailed = computed(
 )
 
 const resending = ref(false)
+const resendChild = ref<{ parent: string; batchNo: string; status: string } | null>(null)
 async function resendFailed(): Promise<void> {
   if (!selected.value || !canResendFailed.value || resending.value) return
   const target = selected.value
@@ -199,8 +200,13 @@ async function resendFailed(): Promise<void> {
     )
       return
     const result = await resendFailedBatch(batch)
-    ElMessage.success(`重发批次 ${result.batch_no} 已创建 · 本次操作已记入审计`)
-    drawer.value = false
+    resendChild.value = { parent: batch, batchNo: result.batch_no, status: result.status }
+    const statusLabel = STATUS_LABELS[result.status] ?? result.status
+    ElMessage.success(
+      result.idempotent
+        ? `重发批次 ${result.batch_no} 已存在，当前状态：${statusLabel}`
+        : `重发批次 ${result.batch_no} 已创建，当前状态：${statusLabel} · 本次操作已记入审计`,
+    )
     await load()
   } catch (error) {
     ElMessage.error(errorText(error, "重发失败"))
@@ -515,6 +521,7 @@ watch(drawer, (open) => {
     :detail-unconfirmed="detailUnconfirmed"
     :cancelling="cancelling"
     :resending="resending"
+    :resend-child="resendChild && selected && resendChild.parent === selected.batch_no ? resendChild : null"
     @retry-detail="retrySelectedRead"
     @cancel="cancelSelected"
     @reschedule="openReschedule"
