@@ -117,7 +117,7 @@ export async function uploadPhones(file: File, signal?: AbortSignal): Promise<Im
 }
 
 export async function downloadImportInvalidFile(url: string, signal?: AbortSignal): Promise<Blob> {
-  return authorizedBlob(url, { method: "GET", signal }, DOWNLOAD_TIMEOUT_MS)
+  return authorizedBlob(url, { method: "GET", signal, cache: "no-store" }, DOWNLOAD_TIMEOUT_MS)
 }
 
 export async function previewBilling(
