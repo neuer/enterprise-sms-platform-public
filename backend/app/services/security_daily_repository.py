@@ -14,6 +14,7 @@ from app.core.audit import audit_uuid_ref
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.admin_authorization import AdminAuthorization, hold_admin_authorization
 from app.core.errors import ApiError
+from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import bind_connection_system_audit, database_engine
 from app.services.security_daily import (
     MAX_RESEND_RECIPIENTS,
@@ -741,6 +742,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         )
 
     async def list_reports(self, query: SecurityDailyQuery) -> SecurityDailyPage:
+        ensure_page_offset(query.page, query.page_size)
         predicates: list[str] = []
         params: dict[str, Any] = {
             "limit": query.page_size,

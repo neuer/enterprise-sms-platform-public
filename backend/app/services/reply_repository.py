@@ -261,10 +261,15 @@ class SqlReplyRepository:
         )
 
     async def mark_error(
-        self, raw_id: int, error: str, *, lease: RawProcessingLease | None = None
+        self,
+        raw_id: int,
+        error: str,
+        *,
+        lease: RawProcessingLease | None = None,
+        exc: BaseException | None = None,
     ) -> None:
         message = error[:256]
-        columns = mark_error_column_values(message)
+        columns = mark_error_column_values(message, exc=exc)
         await self._mark_raw(
             raw_id,
             processed=False,

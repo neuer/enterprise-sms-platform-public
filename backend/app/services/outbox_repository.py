@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.core.audit import AUDIT_BATCH_NO, validate_audit_payload
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import current_correlation_id
+from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import database_engine
 from app.services.outbox import (
     OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL,
@@ -479,6 +480,7 @@ class SqlOutboxRepository:
         """按状态分页列出事件元数据；dead 优先，永不返回 args/dedup_key。"""
         if page < 1 or not 1 <= page_size <= 100:
             raise ValueError("invalid outbox event page")
+        ensure_page_offset(page, page_size)
         where = "(CAST(:state AS varchar(16)) IS NULL OR state=CAST(:state AS varchar(16)))"
         params = {"state": state, "limit": page_size, "offset": (page - 1) * page_size}
         async with self._engine().connect() as connection:

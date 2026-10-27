@@ -17,6 +17,7 @@ from app.core.audit import audited
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
 from app.core.jobtrack import JOB_SPECS
+from app.core.query_bounds import PAGE_MAX
 from app.services.crypto import CryptoService
 from app.services.current_alerts import CurrentAlertService
 from app.services.current_alerts_repository import SqlCurrentAlertRepository
@@ -66,7 +67,8 @@ from app.tasks import register_task_modules
 from app.tasks.scheduler import build_beat_schedule
 
 router = APIRouter(
-    prefix="/api/v1/web/admin", tags=["admin"],
+    prefix="/api/v1/web/admin",
+    tags=["admin"],
     dependencies=[Depends(require_admin_actor)],
 )
 
@@ -288,7 +290,7 @@ class UnmatchedQueryModel(BaseModel):
     phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
     start: datetime | None = None
     end: datetime | None = None
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=PAGE_MAX)
     page_size: int = Field(default=20, ge=1, le=100)
 
 
@@ -362,10 +364,6 @@ def get_raw_replay_service(
     )
 
 
-
-
-
-
 def _ip(request: Request) -> str:
     return trusted_client_ip(request)
 
@@ -407,17 +405,16 @@ async def list_outbox_events(
     repository: Annotated[SqlOutboxRepository, Depends(get_outbox_repository)],
     claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    state: Literal[
-        "pending", "leased", "published", "processing", "completed", "dead"
-    ]
+    state: Literal["pending", "leased", "published", "processing", "completed", "dead"]
     | None = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
-    return _page(
-        await repository.list_events(state, page, page_size),
-        OutboxEventModel,
-    )
+    try:
+        page_result = await repository.list_events(state, page, page_size)
+    except ValueError as error:
+        raise ApiError(400, "INVALID_PARAM", str(error), None) from None
+    return _page(page_result, OutboxEventModel)
 
 
 @router.post(
@@ -470,17 +467,17 @@ async def list_alerts(
     level: Literal["info", "warn", "crit"] | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
     try:
         validate_range(start, end)
+        page_result = await repository.list_alerts(
+            AlertQuery(alert_type, level, start, end, page, page_size)
+        )
     except ValueError as error:
         raise ApiError(400, "INVALID_PARAM", str(error), None) from None
-    return _page(
-        await repository.list_alerts(AlertQuery(alert_type, level, start, end, page, page_size)),
-        AlertModel,
-    )
+    return _page(page_result, AlertModel)
 
 
 @router.get(
@@ -494,13 +491,16 @@ async def list_raw_logs(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     source: Literal["report", "reply"] | None = None,
     processed: bool | None = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
-    return _page(
-        await repository.list_raw_logs(RawLogQuery(source, processed, page, page_size)),
-        RawLogModel,
-    )
+    try:
+        page_result = await repository.list_raw_logs(
+            RawLogQuery(source, processed, page, page_size)
+        )
+    except ValueError as error:
+        raise ApiError(400, "INVALID_PARAM", str(error), None) from None
+    return _page(page_result, RawLogModel)
 
 
 @router.get(
@@ -512,10 +512,14 @@ async def list_uncertain(
     repository: Annotated[SqlOpsRepository, Depends(get_ops_repository)],
     claims: AdminActor,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> dict[str, object]:
-    return _page(await repository.list_uncertain(page, page_size), UncertainModel)
+    try:
+        page_result = await repository.list_uncertain(page, page_size)
+    except ValueError as error:
+        raise ApiError(400, "INVALID_PARAM", str(error), None) from None
+    return _page(page_result, UncertainModel)
 
 
 def _resolution_service() -> UncertainResolutionService:

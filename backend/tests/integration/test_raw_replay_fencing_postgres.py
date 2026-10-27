@@ -23,6 +23,7 @@ from app.services.raw_lease import (
     RawProcessingLease,
     renew_raw_lease,
 )
+from app.services.reply_repository import SqlReplyRepository
 from app.services.report_repository import SqlReportRepository
 
 pytestmark = pytest.mark.skipif(
@@ -766,5 +767,61 @@ async def test_sms_accept_stale_lease_cannot_commit_metadata() -> None:
                 await connection.execute(
                     text("DELETE FROM raw_vendor_log WHERE id=:id"),
                     {"id": raw_id},
+                )
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_mark_error_cannot_promote_persisted_never_eligibility() -> None:
+    """普通错误分类不得把已落库的 never 改成可重放。"""
+
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    settings = _settings(database_url)
+    engine = create_async_engine(database_url)
+    reports = SqlReportRepository(settings)
+    replies = SqlReplyRepository(settings)
+    raw_ids: list[int] = []
+    try:
+        for index, repository in enumerate((reports, replies)):
+            raw_id = await repository.persist_raw(
+                payload_enc=b"ciphertext-only",
+                payload_sha256=f"{index:064x}",
+                key_version=1,
+                http_status=503,
+                content_encoding="unsupported",
+                custom_ids=[],
+                item_count=0,
+            )
+            raw_ids.append(raw_id)
+            lease = repository._leases[raw_id]
+            async with engine.connect() as connection:
+                before = (
+                    await connection.execute(
+                        text("SELECT replay_eligibility FROM raw_vendor_log WHERE id=:id"),
+                        {"id": raw_id},
+                    )
+                ).mappings().one()
+            assert str(before["replay_eligibility"]) == "never"
+            await repository.mark_error(raw_id, "DBAPIError: parsing failed", lease=lease)
+            async with engine.connect() as connection:
+                held = (
+                    await connection.execute(
+                        text(
+                            """
+                            SELECT processed,replay_eligibility
+                            FROM raw_vendor_log WHERE id=:id
+                            """
+                        ),
+                        {"id": raw_id},
+                    )
+                ).mappings().one()
+            assert str(held["replay_eligibility"]) == "never"
+            assert bool(held["processed"]) is False
+    finally:
+        if raw_ids:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM raw_vendor_log WHERE id = ANY(:ids)"),
+                    {"ids": raw_ids},
                 )
         await engine.dispose()

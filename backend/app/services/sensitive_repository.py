@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import database_engine
 from app.core.sensitive_text import reject_phone_in_text
 from app.services.sensitive import (
@@ -38,6 +39,7 @@ class SqlSensitiveWordRepository:
         page: int,
         size: int,
     ) -> SensitiveWordPage:
+        ensure_page_offset(page, size)
         where = ""
         params: dict[str, Any] = {"limit": size, "offset": (page - 1) * size}
         if keyword is not None:

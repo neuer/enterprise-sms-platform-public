@@ -55,6 +55,7 @@ class FakeGateway:
 class FakeRepository:
     def __init__(self) -> None:
         self.events: list[tuple[str, Any]] = []
+        self.error_exceptions: list[BaseException | None] = []
 
     async def persist_raw(self, **values: Any) -> int:
         self.events.append(("persist_raw", values))
@@ -78,8 +79,16 @@ class FakeRepository:
     async def mark_processed(self, raw_id: int, **_: object) -> None:
         self.events.append(("processed", raw_id))
 
-    async def mark_error(self, raw_id: int, error: str) -> None:
+    async def mark_error(
+        self,
+        raw_id: int,
+        error: str,
+        *,
+        exc: BaseException | None = None,
+        **_: object,
+    ) -> None:
         self.events.append(("error", error))
+        self.error_exceptions.append(exc)
 
 
 def reply() -> dict[str, Any]:
@@ -403,6 +412,8 @@ async def test_invalid_reply_data_shape_is_persisted_before_error() -> None:
         await ReplyIngestService(FakeGateway("broken"), repository, crypto()).poll_once()
 
     assert [event[0] for event in repository.events] == ["persist_raw", "error"]
+    assert isinstance(repository.error_exceptions[-1], ValueError)
+    assert "object array" in str(repository.error_exceptions[-1])
 
 
 @pytest.mark.asyncio
