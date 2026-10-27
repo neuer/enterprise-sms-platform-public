@@ -16,6 +16,30 @@
     {
       "component": "web",
       "architecture": "x86_64",
+      "filename": "curl-8.23.0-r0.apk",
+      "sha256": "531ae298451a4c1c44f563fc3b2eedc2c1d7e0a26a33bdfc0efe6faaff6a5942",
+      "package": "curl",
+      "version": "8.23.0-r0",
+      "license": "curl",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-27"
+    },
+    {
+      "component": "web",
+      "architecture": "x86_64",
+      "filename": "libcurl-8.23.0-r0.apk",
+      "sha256": "1f70ca404818805a6465b615bbfe84ef861488a963d7e630108ebd7fbaa51665",
+      "package": "libcurl",
+      "version": "8.23.0-r0",
+      "license": "curl",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-27"
+    },
+    {
+      "component": "web",
+      "architecture": "x86_64",
       "filename": "libexpat-2.9.0-r0.apk",
       "sha256": "32b127f31e0a919110a18a7f0bb3780d8fb66ba4d8d61b2d301d633f0e319d0e",
       "package": "libexpat",
@@ -72,6 +96,30 @@
       "repository": "v3.24/main",
       "origin": "dl-cdn.alpinelinux.org/alpine",
       "retrieved": "2026-10-24"
+    },
+    {
+      "component": "web",
+      "architecture": "aarch64",
+      "filename": "curl-8.23.0-r0.apk",
+      "sha256": "3748c544ab475033cb028e415858b8a671ca7d43756e0149732c860588882ced",
+      "package": "curl",
+      "version": "8.23.0-r0",
+      "license": "curl",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-27"
+    },
+    {
+      "component": "web",
+      "architecture": "aarch64",
+      "filename": "libcurl-8.23.0-r0.apk",
+      "sha256": "64ae89f6e5d318ed5209778232191806ce49644ce9e09540b7d7830a5330d127",
+      "package": "libcurl",
+      "version": "8.23.0-r0",
+      "license": "curl",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-10-27"
     },
     {
       "component": "web",

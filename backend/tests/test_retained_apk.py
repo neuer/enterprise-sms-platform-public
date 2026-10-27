@@ -59,6 +59,21 @@ def test_web_retains_fixed_brotli_decoder_for_each_architecture(architecture: st
     assert versions == ["1.2.1-r0"]
 
 
+@pytest.mark.parametrize("architecture", ["x86_64", "aarch64"])
+@pytest.mark.parametrize("package", ["curl", "libcurl"])
+def test_web_retains_fixed_curl_for_each_architecture(architecture: str, package: str) -> None:
+    """两架构均覆盖 HTTP/2 upload UAF（CVE-2026-92392）的命令行和共享库。"""
+    manifest = json.loads((ASSETS / "manifest.json").read_text())
+    versions = [
+        record["version"]
+        for record in manifest["packages"]
+        if record["component"] == "web"
+        and record["architecture"] == architecture
+        and record["package"] == package
+    ]
+    assert versions == ["8.23.0-r0"]
+
+
 @pytest.mark.parametrize(
     "path",
     ["deploy/vendor-apk/web/x86_64/libexpat-2.9.0-r0.apk", "deploy/install-retained-apk.sh"],
