@@ -203,6 +203,7 @@ async def test_repository_uses_bound_app_id_and_includes_future_pending_tasks() 
     sql, params = connection.calls[0]
     assert params == {"app_id": 17}
     assert "app_id=:app_id" in sql and "pending','retrying','dead" in sql
+    assert "last_error IS DISTINCT FROM 'CallbackConfigRevoked'" in sql
     assert "next_retry_at" not in sql and "outbox_event" not in sql
     for bad_id in (0, -1, True):
         with pytest.raises(ValueError):

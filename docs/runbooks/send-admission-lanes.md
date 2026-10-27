@@ -90,14 +90,17 @@ schema，不删除新窗口或控制面事实来恢复服务；旧版无期限 r
 ## 回调应用隔离
 
 新发送先验证全局/lane/请求规模，再检查可信应用归属的回调事实。单应用
-pending/retrying（包括尚未分发和未来重试）达到200，或dead达到20，返回
+pending/retrying（包括尚未分发和未来重试）达到200，或尚未解决的 dead 达到20，返回
 `503 DEPENDENCY_UNAVAILABLE`、内部reason=`app_callback_backlog`、Retry-After=5。
+尚未解决指 `status=dead` 且 `last_error` 不是 `CallbackConfigRevoked`；
+空原因和未知原因仍计入。永久撤销不占这 20 个名额。
 两项都低于阈值后恢复到原全局检查；此门不创建独立恢复epoch或Redis预算。
 这是固定安全保护上限，应用上限严格小于全局硬上限，不新增动态业务配置。
 
 全局 `outbox_active` 和指标仍统计全部活跃Outbox；新增 `outbox_shared_active`
 只用于全局软降级及其半阈值滞回，排除 `callback.ready`。callback dead不再触发
-全局软降级。全局完整active达到2000、callback dead达到200仍全部关闭，硬状态
+全局软降级。全局完整active达到2000、尚未解决的 callback dead 达到200仍全部关闭。
+全量 dead 指标继续统计包括永久撤销在内的历史任务，准入计数不缩小该口径。硬状态
 按原半阈值、60秒保持和共享恢复预算恢复。到期回调超过300/600秒未处理、
 dispatcher故障、lane暂停及数据库/Redis不可确认仍按既有故障域拒绝。
 因此隔离仅在未触发平台硬容量和真实基础设施保护时成立。

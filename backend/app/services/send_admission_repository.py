@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import text
 
 from app.core.runtime_resources import database_engine, redis_client
+from app.services.callback_admission import UNRESOLVED_CALLBACK_DEAD_SQL
 from app.services.outbox import (
     OUTBOX_CAPACITY_ACTIVE_SQL,
     OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL,
@@ -64,9 +65,7 @@ class SqlSendAdmissionRepository:
         control_timeout_s: float = 1.0,
     ) -> None:
         self.settings = settings or get_settings()
-        self.redis = redis if redis is not None else redis_client(
-            self.settings.redis_control_url
-        )
+        self.redis = redis if redis is not None else redis_client(self.settings.redis_control_url)
         self.database_timeout_s = database_timeout_s
         self.control_timeout_s = control_timeout_s
 
@@ -99,7 +98,7 @@ class SqlSendAdmissionRepository:
                          AND uncertain_since <= now()-interval '24 hours')
                         uncertain_overdue,
                       (SELECT count(*) FROM callback_task
-                       WHERE status='dead') callback_dead,
+                       WHERE {UNRESOLVED_CALLBACK_DEAD_SQL}) callback_dead,
                       (SELECT NOT EXISTS (
                          SELECT 1 FROM send_runtime_heartbeat h
                          WHERE h.component='send-realtime'
@@ -147,9 +146,7 @@ class SqlSendAdmissionRepository:
             realtime_heartbeat_stale=(
                 enforce_heartbeat and int(row["realtime_heartbeat_stale"] or 0) > 0
             ),
-            bulk_heartbeat_stale=(
-                enforce_heartbeat and int(row["bulk_heartbeat_stale"] or 0) > 0
-            ),
+            bulk_heartbeat_stale=(enforce_heartbeat and int(row["bulk_heartbeat_stale"] or 0) > 0),
             dispatcher_heartbeat_stale=(
                 enforce_heartbeat and int(row["dispatcher_heartbeat_stale"] or 0) > 0
             ),
@@ -162,23 +159,27 @@ class SqlSendAdmissionRepository:
             raise ValueError("callback admission requires a positive application id")
         async with asyncio.timeout(self.database_timeout_s), self._engine().connect() as connection:
             row = (
-                await connection.execute(
-                    text("""
+                (
+                    await connection.execute(
+                        text(f"""
                         SELECT count(*) FILTER (WHERE status IN ('pending','retrying')) active,
-                               count(*) FILTER (WHERE status='dead') dead
+                               count(*) FILTER (WHERE {UNRESOLVED_CALLBACK_DEAD_SQL}) dead
                         FROM callback_task
                         WHERE app_id=:app_id AND status IN ('pending','retrying','dead')
                     """),
-                    {"app_id": app_id},
+                        {"app_id": app_id},
+                    )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
         return AppCallbackFacts(active=int(row["active"]), dead=int(row["dead"]))
 
     async def load_control_state(self) -> dict[str, Any] | None:
         engine = self._engine()
         async with engine.connect() as connection:
             row = (
-
+                (
                     await connection.execute(
                         text(
                             """
@@ -188,8 +189,10 @@ class SqlSendAdmissionRepository:
                         """
                         )
                     )
-
-            ).mappings().one_or_none()
+                )
+                .mappings()
+                .one_or_none()
+            )
         return dict(row) if row is not None else None
 
     async def save_control_state(
@@ -281,7 +284,7 @@ class SqlSendAdmissionRepository:
                 saved["outcome"] = "saved"
                 return saved
             winner_row = (
-
+                (
                     await connection.execute(
                         text(
                             """
@@ -291,8 +294,10 @@ class SqlSendAdmissionRepository:
                         """
                         )
                     )
-
-            ).mappings().one_or_none()
+                )
+                .mappings()
+                .one_or_none()
+            )
         if winner_row is None:
             raise RuntimeError("admission control state missing after conflict")
         winner = dict(winner_row)
