@@ -286,6 +286,12 @@ async def test_sql_search_projects_mask_only_and_applies_department_scope() -> N
 
     assert page.total == 1 and page.items[0].phone_mask == "138****8000"
     assert page.badge == PhoneBadge(True, "manual", 7)
+    badge_sql = connection.calls[3][0]
+    assert "m.status='delivered'" in badge_sql
+    assert "m.report_time IS NOT NULL" in badge_sql
+    assert "m.report_time>=now()-interval '30 days'" in badge_sql
+    assert "m.report_time<=now()" in badge_sql
+    assert "m.created_at" not in badge_sql
     sql = " ".join(item[0] for item in connection.calls)
     assert "b.dept=:scope_dept" in sql
     assert "b.category=:category" in sql and "m.status=:status" in sql
