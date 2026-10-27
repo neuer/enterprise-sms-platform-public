@@ -56,11 +56,13 @@ def build_billing_preview(
     market_window: str = "08:00-21:00",
     now: datetime | None = None,
     quota: QuotaSummary | None = None,
+    is_test: bool = False,
 ) -> BillingPreview:
     """汇总最终内容、计费分段、审批与时间窗判定，供提交前确认。
 
-    final_content 为签名前置且自动追加退订语后的完整下发文本；
-    deferred_reason 仅评估"此刻立即发送"是否落在营销窗口外，
+    final_content 为签名前置且自动追加退订语后的完整下发文本。
+    测试发送与正式入队一致：不计审批，也不因营销窗外转为定时。
+    deferred_reason 仅评估非测试的"此刻立即发送"是否落在营销窗口外，
     显式定时由提交链路另行裁决；quota 为调用方预先读取的只读摘要，
     投影不可用时传 None，前端降级展示而不阻断预检。
     """
@@ -87,11 +89,20 @@ def build_billing_preview(
         remaining -= used
     next_boundary = segments * capacity + 1
     deferred_reason: str | None = None
-    if category == "market":
-        _, deferred_reason, _ = coerce_market_dispatch(
-            now or datetime.now(SHANGHAI),
-            market_window,
-            None,
+    approval_required = False
+    if not is_test:
+        if category == "market":
+            _, deferred_reason, _ = coerce_market_dispatch(
+                now or datetime.now(SHANGHAI),
+                market_window,
+                None,
+            )
+        approval_required = requires_approval(
+            "web",
+            category,
+            accepted_count,
+            notice_threshold=notice_threshold,
+            market_threshold=market_threshold,
         )
     return BillingPreview(
         final_length=length,
@@ -102,13 +113,7 @@ def build_billing_preview(
         ),
         segment_parts=parts,
         next_segment_at=max(1, next_boundary - length),
-        approval_required=requires_approval(
-            "web",
-            category,
-            accepted_count,
-            notice_threshold=notice_threshold,
-            market_threshold=market_threshold,
-        ),
+        approval_required=approval_required,
         unsubscribe_appended=(category == "market" and prepared.send_content != content),
         final_content=final_content,
         deferred_reason=deferred_reason,

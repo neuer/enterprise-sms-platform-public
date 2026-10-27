@@ -138,6 +138,7 @@ class MessageTimelineRequest(BaseModel):
 
 class BillingPreviewRequest(WebContentModel):
     accepted_count: int = Field(ge=0, le=50_000)
+    is_test: bool = False
 
 
 class WebSendRequest(WebContentModel):
@@ -834,6 +835,7 @@ async def billing_preview(
             market_threshold=policy.market_approval_threshold,
             market_window=policy.market_send_window,
             quota=quota,
+            is_test=payload.is_test,
         )
     except (ConsentRequired, TemplateParamMismatch, ValueError) as error:
         raise _error(error) from None

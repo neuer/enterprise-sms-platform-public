@@ -692,6 +692,7 @@ paths:
                 sign_name: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }] }
                 accepted_count: { type: integer, minimum: 0, maximum: 50000 }
                 consent_confirmed: { type: boolean, default: false }
+                is_test: { type: boolean, default: false, description: 测试发送预检：不计审批、不因营销窗外转定时；计费、同意和长度不豁免 }
       responses:
         '200':
           description: 最终内容长度、分段和配额预估

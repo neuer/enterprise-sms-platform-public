@@ -98,9 +98,11 @@ function scrollToRail(): void {
 }
 
 const submitLabel = computed(() => {
-  const cost = preview.value ? ` · ${formatNumber(preview.value.quota_cost)} 计费条` : ""
-  if (preview.value?.approval_required) return `提交审批${cost}`
-  if (form.scheduleEnabled || preview.value?.deferred_reason === "market_window") return `安排发送${cost}`
+  const current = previewStale.value ? null : preview.value
+  const cost = current ? ` · ${formatNumber(current.quota_cost)} 计费条` : ""
+  if (form.isTest) return `立即发送${cost}`
+  if (current?.approval_required) return `提交审批${cost}`
+  if (form.scheduleEnabled || current?.deferred_reason === "market_window") return `安排发送${cost}`
   return `立即发送${cost}`
 })
 
