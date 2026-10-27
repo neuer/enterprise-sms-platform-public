@@ -85,6 +85,8 @@ describe("回调任务", () => {
     expect(wrapper.text()).toContain("回调任务")
     expect(wrapper.text()).toContain("dead 总计")
     expect(wrapper.text()).toContain("60s → 5m → 15m → 1h → 1h")
+    expect(wrapper.text()).toContain("每次投递尝试读取当前")
+    expect(wrapper.text()).not.toContain("beat 启动时读取")
     expect(wrapper.text()).toContain("IAM")
     expect(wrapper.text()).toContain("终止重试")
     expect(wrapper.text()).toContain("TimeoutError")

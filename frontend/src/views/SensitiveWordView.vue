@@ -2,7 +2,9 @@
 import AdminStepUpDialog from "../components/AdminStepUpDialog.vue"
 import { useAdminStepUp } from "../composables/useAdminStepUp"
 import { ElMessage } from "element-plus"
-import { computed, onMounted, ref } from "vue"
+import { computed, onMounted, onScopeDispose, ref, watch } from "vue"
+
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 
 import { listConfigs, updateConfigs } from "../api/admin"
 import {
@@ -20,6 +22,7 @@ import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { usePagedList } from "../composables/usePagedList"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAuditedAction, captureCurrent } = useConfirmActions()
+import { exceedsCodePoints } from "../lib/codePoints"
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
 import { formatDateTime } from "../lib/time"
@@ -33,7 +36,19 @@ const policyRevision = ref("")
 const policyLoading = ref(false)
 const policyError = ref("")
 const policyRead = useLatestRead()
-const saving = ref(false)
+const editorGeneration = ref(0)
+const savingGeneration = ref<number | null>(null)
+const saving = computed(() => savingGeneration.value !== null && savingGeneration.value === editorGeneration.value)
+
+function invalidateEditor(): void {
+  editorGeneration.value += 1
+}
+
+window.addEventListener(SESSION_CLEARING_EVENT, invalidateEditor)
+onScopeDispose(() => {
+  invalidateEditor()
+  window.removeEventListener(SESSION_CLEARING_EVENT, invalidateEditor)
+})
 const policySaving = ref(false)
 const drawerOpen = ref(false)
 const wordsText = ref("")
@@ -64,11 +79,13 @@ const { entries, flush: flushEntries } = useDebouncedEntries(wordsText, { parse:
 
 /** 超长词的 1 基序号；服务端 400 报错同样只带行号。 */
 const oversizedLines = computed(() =>
-  entries.value.flatMap((value, index) => (value.length > MAX_WORD_LENGTH ? [index + 1] : [])),
+  entries.value.flatMap((value, index) => (exceedsCodePoints(value, MAX_WORD_LENGTH) ? [index + 1] : [])),
 )
 
 /** 批内按词面去重（与服务端 dict.fromkeys 归并同效），得到实际提交清单。 */
-const uniqueWords = computed(() => [...new Set(entries.value.filter((value) => value.length <= MAX_WORD_LENGTH))])
+const uniqueWords = computed(() => [
+  ...new Set(entries.value.filter((value) => !exceedsCodePoints(value, MAX_WORD_LENGTH))),
+])
 
 const dupeCount = computed(() => entries.value.length - oversizedLines.value.length - uniqueWords.value.length)
 
@@ -150,13 +167,19 @@ async function setPolicy(next: string): Promise<void> {
 }
 
 function openDrawer(): void {
+  invalidateEditor()
   wordsText.value = ""
   drawerOpen.value = true
 }
 
+watch(drawerOpen, (open) => {
+  if (!open) invalidateEditor()
+})
+
 async function add(): Promise<void> {
   // 大文本粘贴后防抖窗口内也可能点击提交：先落盘最新解析，再做校验与组包。
   flushEntries()
+  if (saving.value) return
   if (!entries.value.length) {
     ElMessage.warning("请先输入要添加的敏感词")
     return
@@ -165,18 +188,30 @@ async function add(): Promise<void> {
     ElMessage.warning(oversizedHint.value)
     return
   }
-  saving.value = true
+  const generation = editorGeneration.value
+  const submitted = [...uniqueWords.value]
+  savingGeneration.value = generation
   try {
-    const result = await addSensitiveWords(uniqueWords.value)
+    const result = await addSensitiveWords(submitted)
     const skippedTip = result.skipped ? ` · 已存在跳过 ${result.skipped} 个` : ""
+    if (generation !== editorGeneration.value) {
+      ElMessage.success(`已添加 ${result.added} 个敏感词${skippedTip}，当前编辑未改动`)
+      await load()
+      return
+    }
     ElMessage.success(`已添加 ${result.added} 个${skippedTip} · 本次操作已记入审计`)
     drawerOpen.value = false
     page.value = 1
     await load()
   } catch (error) {
-    ElMessage.error(errorText(error, "添加失败"))
+    const message = errorText(error, "添加失败")
+    if (generation !== editorGeneration.value) {
+      ElMessage.error(`敏感词添加失败：${message}`)
+      return
+    }
+    ElMessage.error(message)
   } finally {
-    saving.value = false
+    if (savingGeneration.value === generation) savingGeneration.value = null
   }
 }
 

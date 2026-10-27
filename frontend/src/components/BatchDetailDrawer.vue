@@ -3,6 +3,7 @@ import { decryptMessagePhone, type BatchItem, type BatchMessage } from "../api/q
 import { activeOf, buildCompose as composeOf, channelLabel, composePct, describeCompose } from "../lib/batchDisplay"
 import { formatNumber, formatPercent } from "../lib/format"
 import { DEFAULT_PAGE_SIZE, MESSAGE_STATUS_OPTIONS } from "../lib/labels"
+import { codePointLength } from "../lib/codePoints"
 import { formatDateTime } from "../lib/time"
 import CategoryTag from "./CategoryTag.vue"
 import EmptyState from "./EmptyState.vue"
@@ -181,7 +182,7 @@ async function revealPhone(messageId: number): Promise<string> {
         <CategoryTag :category="selected.category" />
         <p>{{ selected.content }}</p>
         <small
-          >内容长度 {{ selected.content.length }} 字 · 单条 {{ selected.segments }} 计费条<template
+          >内容长度 {{ codePointLength(selected.content) }} 字 · 单条 {{ selected.segments }} 计费条<template
             v-if="selected.category === 'verify'"
           >
             · 验证码已等长打码</template
