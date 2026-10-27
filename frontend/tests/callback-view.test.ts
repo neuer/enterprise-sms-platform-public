@@ -34,6 +34,8 @@ const deadTask = {
   last_error: "TimeoutError",
   created_at: "2026-07-12T08:00:00+08:00",
   finished_at: "2026-07-12T09:00:00+08:00",
+  manual_retry_allowed: true,
+  retry_block_reason: null,
 }
 
 const appOptions = [{ id: 7, name: "IAM" }]
@@ -317,6 +319,30 @@ describe("回调任务", () => {
     expect(wrapper.text()).not.toContain("DELIVERY TRACE")
     expect(wrapper.text()).toContain("共 1 项 · 每页 20 · dead 总计 1")
     expect(wrapper.find("form.callback-filter-bar").exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it("永久撤销的 dead 任务三处都不提供重推，并说明恢复配置无效", async () => {
+    const revoked = {
+      ...deadTask,
+      manual_retry_allowed: false,
+      retry_block_reason: "config_revoked",
+      last_error: "CallbackConfigRevoked",
+    }
+    vi.stubGlobal("fetch", routeFetch({ total: 1, dead_total: 1, items: [revoked] }))
+    const wrapper = mount(CallbackView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    expect(wrapper.find("[data-testid='callback-retry-9']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='callback-retry-block-9']").text()).toContain("恢复配置也不能重推")
+    expect(wrapper.get("[data-testid='mobile-callback-retry-block-9']").text()).toContain("恢复配置也不能重推")
+    await wrapper.get("[data-testid='callback-detail-9']").trigger("click")
+    await flushPromises()
+    expect(wrapper.find("[data-testid='drawer-callback-retry-9']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='drawer-callback-retry-block-9']").text()).toContain("恢复配置也不能重推")
     wrapper.unmount()
   })
 })

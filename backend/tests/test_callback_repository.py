@@ -12,11 +12,11 @@ import app.services.callback_repository as callback_repository_module
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.callback_authority import CallbackAuthorityBusy, ensure_callback_authority_idle
 from app.services.callback_repository import (
-    CallbackRetryConflict,
     CallbackTaskNotFound,
     SqlCallbackRepository,
     enqueue_batch_finished,
 )
+from app.services.callback_retry_eligibility import CallbackRetryConflict
 from app.services.callback_worker import CallbackClaim
 
 EVENT_ID = UUID("10000000-0000-4000-8000-000000000009")
@@ -272,14 +272,14 @@ async def test_batch_material_loads_secret_ciphertext_and_aggregate_without_body
     task_row: dict[str, object] = {
         "id": 9,
         "event_id": EVENT_ID,
-            "correlation_id": CORRELATION_ID,
-            "app_id": 7,
-            "app_name": "callback-app",
-            "event": "batch.finished",
+        "correlation_id": CORRELATION_ID,
+        "app_id": 7,
+        "app_name": "callback-app",
+        "event": "batch.finished",
         "url": "http://callback.internal/hook",
-            "callback_secret_enc": b"packed-secret",
-            "callback_secret_key_version": 1,
-            "signature_version": 1,
+        "callback_secret_enc": b"packed-secret",
+        "callback_secret_key_version": 1,
+        "signature_version": 1,
         "batch_id": 8,
         "message_ids": [],
         "message_times": [],
@@ -321,14 +321,14 @@ async def test_message_material_uses_id_and_created_at_for_partition_lookup() ->
     task_row = {
         "id": 9,
         "event_id": EVENT_ID,
-            "correlation_id": CORRELATION_ID,
-            "app_id": 7,
-            "app_name": "callback-app",
-            "event": "message.report",
+        "correlation_id": CORRELATION_ID,
+        "app_id": 7,
+        "app_name": "callback-app",
+        "event": "message.report",
         "url": "http://callback.internal/hook",
-            "callback_secret_enc": b"packed-secret",
-            "callback_secret_key_version": 1,
-            "signature_version": 1,
+        "callback_secret_enc": b"packed-secret",
+        "callback_secret_key_version": 1,
+        "signature_version": 1,
         "batch_id": 8,
         "message_ids": [21],
         "message_times": [created_at],
@@ -337,8 +337,8 @@ async def test_message_material_uses_id_and_created_at_for_partition_lookup() ->
     message_row: dict[str, object] = {
         "batch_no": "BATCH-1",
         "biz_id": None,
-            "phone_enc": b"ciphertext",
-            "phone_hmac": "a" * 64,
+        "phone_enc": b"ciphertext",
+        "phone_hmac": "a" * 64,
         "key_version": 1,
         "status": "delivered",
         "report_desc": "DELIVRD",
@@ -392,6 +392,8 @@ async def test_admin_page_returns_only_safe_summary_fields() -> None:
         "last_error": "ConnectError",
         "created_at": datetime(2026, 7, 12, 8, 0, tzinfo=UTC),
         "finished_at": datetime(2026, 7, 12, 9, 0, tzinfo=UTC),
+        "manual_retry_allowed": True,
+        "retry_block_reason": None,
     }
     connection = FakeConnection(
         [FakeResult(scalars=[1]), FakeResult(rows=[row]), FakeResult(scalars=[3])]
@@ -417,7 +419,9 @@ async def test_admin_page_returns_only_safe_summary_fields() -> None:
     # LIKE 通配符必须被转义，批次号子串两端补 %
     assert connection.calls[0][1]["batch_no"] == "%BATCH\\_1\\%%"
     assert "WHERE status='dead'" in connection.calls[2][0]
-    assert "callback_url" not in sql and "callback_secret" not in sql and "phone" not in sql
+    assert "a.callback_url IS DISTINCT FROM t.url" in sql
+    assert " AS url" not in sql and "phone" not in sql
+    assert all("url" not in item and "callback_secret" not in item for item in page["items"])
 
 
 @pytest.mark.asyncio
@@ -438,10 +442,13 @@ async def test_manual_dead_retry_is_audited_and_rejects_invalid_state() -> None:
     assert success.calls[2][1]["identity_id"] == 10
     assert isinstance(success.calls[2][1]["correlation_id"], UUID)
 
-    conflict = FakeConnection([FakeResult(), FakeResult(), FakeResult(scalars=["retrying"])])
+    conflict = FakeConnection(
+        [FakeResult(), FakeResult(), FakeResult(rows=[{"retry_block_reason": "config_revoked"}])]
+    )
     bind(repository, conflict)
-    with pytest.raises(CallbackRetryConflict):
+    with pytest.raises(CallbackRetryConflict, match="恢复配置也不能重推") as blocked:
         await repository.manual_retry(10, principal=ADMIN)
+    assert blocked.value.reason == "config_revoked"
 
     missing = FakeConnection([FakeResult(), FakeResult(), FakeResult()])
     bind(repository, missing)
@@ -452,9 +459,9 @@ async def test_manual_dead_retry_is_audited_and_rejects_invalid_state() -> None:
 def test_callback_authority_mutations_trigger_transactional_task_revocation() -> None:
     root = Path(__file__).parents[2]
     schema = (root / "schema.sql").read_text(encoding="utf-8")
-    migration = (
-        root / "backend/migrations/versions/0055_callback_revocation.py"
-    ).read_text(encoding="utf-8")
+    migration = (root / "backend/migrations/versions/0055_callback_revocation.py").read_text(
+        encoding="utf-8"
+    )
 
     for source in (schema, migration):
         assert "revoke_callback_tasks_on_app_change" in source
