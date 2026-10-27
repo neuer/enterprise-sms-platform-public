@@ -117,6 +117,8 @@ async def test_scheduling_dependencies_reuse_api_pools_and_cancel_skips_policy(
 class FakePipeline:
     def __init__(self) -> None:
         self.calls: list[tuple[ApiAppContext, SendRequest]] = []
+        self.status = "queued"
+        self.idempotent = False
 
     async def replay_if_present(
         self,
@@ -137,14 +139,14 @@ class FakePipeline:
         self.calls.append((app, request))
         return BatchResponse(
             "batch-1",
-            False,
+            self.idempotent,
             1,
             0,
             0,
             0,
             1,
             1,
-            "queued",
+            self.status,
             None,
             None,
         )
@@ -1246,8 +1248,137 @@ def test_resend_failed_reenters_pipeline_and_returns_traceability(
         "resend_of": "original-1",
         "accepted": 1,
         "status": "queued",
+        "idempotent": False,
     }
     assert pipeline.calls[0][1].resend_of == "original-1"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        "queued",
+        "sending",
+        "scheduled",
+        "pending_approval",
+        "completed",
+        "completed_unknown",
+        "cancelled",
+        "rejected",
+        "expired",
+        "balance_blocked",
+    ],
+)
+def test_resend_failed_returns_the_existing_child_status(
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+) -> None:
+    pipeline = FakePipeline()
+    pipeline.status = status
+    pipeline.idempotent = True
+
+    class FakeResendService:
+        async def build_request(
+            self,
+            batch_no: str,
+            scope: BatchAccessScope,
+            actor: ActorPrincipal | None = None,
+        ) -> SendRequest:
+            return SendRequest("notice", ("13800138000",), content="通知", resend_of=batch_no)
+
+    async def fake_factory(app: ApiAppContext) -> FakePipeline:
+        return pipeline
+
+    monkeypatch.setattr(messages_module, "_pipeline", fake_factory)
+    app = make_app()
+    app.dependency_overrides[messages_module.get_resend_service] = FakeResendService
+    response = TestClient(app).post(
+        "/api/v1/messages/batches/original-1/resend-failed",
+        headers={"X-Api-Key": "valid"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["batch_no"] == "batch-1"
+    assert body["status"] == status
+    assert body["idempotent"] is True
+    assert "ResendResponseModel" not in response.text
+    assert "literal_error" not in response.text
+
+
+def test_resend_failed_hides_unexpected_status_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pipeline = FakePipeline()
+    pipeline.status = "not-a-batch-status"
+    pipeline.idempotent = True
+
+    class FakeResendService:
+        async def build_request(
+            self,
+            batch_no: str,
+            scope: BatchAccessScope,
+            actor: ActorPrincipal | None = None,
+        ) -> SendRequest:
+            return SendRequest("notice", ("13800138000",), content="通知", resend_of=batch_no)
+
+    async def fake_factory(app: ApiAppContext) -> FakePipeline:
+        return pipeline
+
+    monkeypatch.setattr(messages_module, "_pipeline", fake_factory)
+    app = make_app()
+    app.dependency_overrides[messages_module.get_resend_service] = FakeResendService
+    response = TestClient(app).post(
+        "/api/v1/messages/batches/original-1/resend-failed",
+        headers={"X-Api-Key": "valid"},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["code"] == "INTERNAL_ERROR"
+    assert "ValidationError" not in response.text
+    assert "ResendResponseModel" not in response.text
+
+
+def test_resend_model_validation_is_an_internal_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from typing import Literal
+
+    from pydantic import TypeAdapter
+
+    pipeline = FakePipeline()
+
+    async def reject_internal(*_args: object, **_kwargs: object) -> BatchResponse:
+        TypeAdapter(Literal["queued"]).validate_python("completed")
+        raise AssertionError("invalid resend status must fail validation")
+
+    pipeline.accept = reject_internal  # type: ignore[method-assign]
+
+    class FakeResendService:
+        async def build_request(
+            self,
+            batch_no: str,
+            scope: BatchAccessScope,
+            actor: ActorPrincipal | None = None,
+        ) -> SendRequest:
+            return SendRequest("notice", ("13800138000",), content="通知", resend_of=batch_no)
+
+    async def fake_factory(app: ApiAppContext) -> FakePipeline:
+        return pipeline
+
+    monkeypatch.setattr(messages_module, "_pipeline", fake_factory)
+    app = make_app()
+    app.dependency_overrides[messages_module.get_resend_service] = FakeResendService
+    response = TestClient(app).post(
+        "/api/v1/messages/batches/original-1/resend-failed",
+        headers={"X-Api-Key": "valid"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "code": "INTERNAL_ERROR",
+        "message": "服务内部错误",
+        "detail": None,
+    }
+    assert "literal_error" not in response.text
+    assert "pydantic" not in response.text.lower()
 
 
 def test_uat_application_limit_precedes_recipient_lookup(monkeypatch: pytest.MonkeyPatch) -> None:

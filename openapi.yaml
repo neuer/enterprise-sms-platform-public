@@ -405,23 +405,24 @@ paths:
     post:
       tags: [messages]
       summary: 失败号码一键重发（v1.1）
-      description: 以原批次 failed 号码生成新批次（resend_of 溯源），重新走完整管控流水线（黑名单/配额/时间窗/审批不豁免）。
+      description: 以原批次 failed 号码生成新批次（resend_of 溯源），重新走完整管控流水线（黑名单/配额/时间窗/审批不豁免）。同一重发动作命中既有子批次时返回该子批次的当前状态，idempotent 为 true，不新建批次。
       security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
       parameters:
         - { name: batch_no, in: path, required: true, schema: { type: string } }
       responses:
         '200':
-          description: 新批次已受理
+          description: 新建时为受理状态；幂等命中时为既有子批次的当前状态
           content:
             application/json:
               schema:
                 type: object
-                required: [batch_no, resend_of, accepted, status]
+                required: [batch_no, resend_of, accepted, status, idempotent]
                 properties:
-                  batch_no: { type: string, description: 新批次号 }
+                  batch_no: { type: string, description: 子批次号；幂等命中时为既有子批次 }
                   resend_of: { type: string, description: 原批次号 }
                   accepted: { type: integer }
-                  status: { type: string, enum: [pending_approval, queued, scheduled] }
+                  status: { type: string, enum: [queued, scheduled, sending, completed, completed_unknown, cancelled, balance_blocked, pending_approval, rejected, expired] }
+                  idempotent: { type: boolean, description: true 表示返回既有子批次，未再次受理 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
