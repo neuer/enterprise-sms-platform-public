@@ -759,6 +759,7 @@ CREATE TABLE idempotency_record (
     biz_id     VARCHAR(32)  NOT NULL,
     request_hash VARCHAR(64),
     request_hash_key_version SMALLINT,
+    fingerprint_format_version SMALLINT NOT NULL DEFAULT 1,
     batch_id   BIGINT       NOT NULL UNIQUE REFERENCES sms_batch(id),
     expires_at TIMESTAMPTZ  NOT NULL,
     created_at TIMESTAMPTZ  NOT NULL DEFAULT now(),
@@ -773,7 +774,8 @@ CREATE TABLE idempotency_record (
         request_hash ~ '^[0-9a-f]{64}$'
         AND request_hash_key_version BETWEEN 1 AND 32767
       )
-    )
+    ),
+    CONSTRAINT ck_idem_fingerprint_format CHECK (fingerprint_format_version IN (1, 2))
 );
 CREATE INDEX idx_idem_expire ON idempotency_record(expires_at);
 
@@ -784,6 +786,7 @@ CREATE TABLE idempotency_claim (
     biz_id       VARCHAR(32)  NOT NULL,
     token        CHAR(32)     NOT NULL,
     fingerprint  VARCHAR(64)  NOT NULL DEFAULT '',
+    fingerprint_format_version SMALLINT NOT NULL DEFAULT 1,
     generation   INTEGER      NOT NULL CHECK (generation >= 1),
     expires_at   TIMESTAMPTZ  NOT NULL,
     state        VARCHAR(16)  NOT NULL DEFAULT 'active',
@@ -795,6 +798,8 @@ CREATE TABLE idempotency_claim (
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
     updated_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
     CONSTRAINT uk_idempotency_claim_scope UNIQUE (scope_kind, scope_id, biz_id),
+    CONSTRAINT ck_idempotency_claim_fingerprint_format
+      CHECK (fingerprint_format_version IN (1, 2)),
     CONSTRAINT ck_idempotency_claim_state
       CHECK (state IN ('active','completed','released','expired')),
     CONSTRAINT ck_idempotency_claim_state_shape CHECK (
