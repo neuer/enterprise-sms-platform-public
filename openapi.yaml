@@ -406,7 +406,7 @@ paths:
     post:
       tags: [messages]
       summary: 失败号码一键重发（v1.1）
-      description: 以原批次 failed 号码生成新批次（resend_of 溯源），重新走完整管控流水线（黑名单/配额/时间窗/审批不豁免）。同一重发动作命中既有子批次时返回该子批次的当前状态，idempotent 为 true，不新建批次。
+      description: 以原批次 failed 号码生成新批次（resend_of 溯源），重新走完整管控流水线（黑名单/配额/时间窗/审批不豁免）。源批次必须已完成且没有 pending 或 sent。同一重发动作命中既有子批次时返回该子批次的当前状态，idempotent 为 true，不新建批次。已有部分覆盖时返回 409，reason=supplement_required，不要求更换 biz_id。
       security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
       parameters:
         - { name: batch_no, in: path, required: true, schema: { type: string } }
@@ -438,6 +438,60 @@ paths:
         '503':
           description: 限流/幂等 Redis 故障或配额投影不可用
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /api/v1/messages/batches/{batch_no}/resend-supplement:
+    post:
+      tags: [messages]
+      summary: 预览未覆盖失败号码的补发
+      description: 只在已有普通重发且仍有未覆盖失败号码时冻结一份预览。不发送短信，不复用 failed-recipients-v1。
+      security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: batch_no, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: 已冻结的补发预览
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [intent_id, covered_failed, uncovered_failed, child_batch_no, phone_masks, created]
+                properties:
+                  intent_id: { type: string, format: uuid }
+                  covered_failed: { type: integer }
+                  uncovered_failed: { type: integer }
+                  child_batch_no: { anyOf: [{ type: string }, { type: 'null' }] }
+                  phone_masks: { type: array, items: { type: string } }
+                  created: { type: boolean }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/v1/messages/batches/{batch_no}/resend-supplement/{intent_id}:
+    post:
+      tags: [messages]
+      summary: 确认补发未覆盖失败号码
+      description: 只发送该预览冻结且当前仍为 failed 的号码，并走完整发送流水线。重复确认返回已创建子批次的当前状态。
+      security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
+      parameters:
+        - { name: batch_no, in: path, required: true, schema: { type: string } }
+        - { name: intent_id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: 补发子批次
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batch_no, resend_of, accepted, status, idempotent]
+                properties:
+                  batch_no: { type: string }
+                  resend_of: { type: string }
+                  accepted: { type: integer }
+                  status: { type: string, enum: [queued, scheduled, sending, completed, completed_unknown, cancelled, balance_blocked, pending_approval, rejected, expired] }
+                  idempotent: { type: boolean }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   # ───────────────────────── Web 侧（JWT） ─────────────────────────
   /api/v1/web/auth/providers:
@@ -4269,6 +4323,11 @@ components:
         needs_review: { type: integer, description: 消息状态与批次状态无法归入已知展示规则 }
         scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         created_at: { type: string, format: date-time }
+        can_resend_failed: { type: boolean, default: false, description: 详情计算。列表未计算时为 false。true 才允许普通失败重发 }
+        resend_block_reason: { anyOf: [{ type: string, enum: [receipts_pending, not_terminal, supplement_required, coverage_needs_review, nothing_uncovered, preview_stale] }, { type: 'null' }], description: 普通重发被拒绝的原因。不要求更换 biz_id }
+        resend_child_batch_no: { anyOf: [{ type: string }, { type: 'null' }], description: 已有普通重发子批次 }
+        resend_covered_failed: { type: integer, default: 0, description: 已被普通重发或补发覆盖的失败号码数 }
+        resend_uncovered_failed: { type: integer, default: 0, description: 尚未覆盖、可显式补发的失败号码数 }
 
     MessageDetail:
       type: object

@@ -1428,7 +1428,23 @@ async def test_batch_query_scopes_sql_and_never_selects_phone_secrets(
         "sent": 1,
         "other": 0,
     }
-    connection = FakeConnection([FakeResult(rows=[row])])
+    connection = FakeConnection(
+        [
+            FakeResult(rows=[row]),
+            FakeResult(
+                rows=[
+                    {
+                        "status": "completed",
+                        "child_batch_no": None,
+                        "needs_review": False,
+                        "active_count": 0,
+                        "failed_count": 0,
+                        "covered_failed": 0,
+                    }
+                ]
+            ),
+        ]
+    )
     bind_engine(monkeypatch, service, connection)
     assert await service.get_batch("batch-1", BatchAccessScope(app_id=7)) == {
         "batch_no": "batch-1",
@@ -1436,6 +1452,11 @@ async def test_batch_query_scopes_sql_and_never_selects_phone_secrets(
         "pending": 0,
         "sent": 1,
         "other": 0,
+        "can_resend_failed": False,
+        "resend_block_reason": None,
+        "resend_child_batch_no": None,
+        "resend_covered_failed": 0,
+        "resend_uncovered_failed": 0,
     }
     batch_sql = connection.calls[0][0]
     assert "WHEN m.status='pending' AND b.status IN ('cancelled','rejected','expired')" in batch_sql
@@ -1732,7 +1753,24 @@ async def test_resend_repository_scopes_batch_and_reads_only_failed_ciphertext(
         "phone_hmac": "a" * 64,
         "key_version": 2,
     }
-    connection = FakeConnection([FakeResult(rows=[batch]), FakeResult(rows=[failed])])
+    connection = FakeConnection(
+        [
+            FakeResult(rows=[batch]),
+            FakeResult(
+                rows=[
+                    {
+                        "status": "completed",
+                        "child_batch_no": None,
+                        "needs_review": False,
+                        "active_count": 0,
+                        "failed_count": 1,
+                        "covered_failed": 0,
+                    }
+                ]
+            ),
+            FakeResult(rows=[failed]),
+        ]
+    )
     bind_engine(monkeypatch, repository, connection)
 
     source = await repository.load("original-1", BatchAccessScope(app_id=7))
@@ -1741,8 +1779,9 @@ async def test_resend_repository_scopes_batch_and_reads_only_failed_ciphertext(
     assert source.failed_phones[0].phone_enc == b"ciphertext"
     assert "b.app_id=:scope_app_id" in connection.calls[0][0]
     assert connection.calls[0][1] == {"batch_no": "original-1", "scope_app_id": 7}
-    assert "m.status='failed'" in connection.calls[1][0]
-    assert "phone_mask" not in connection.calls[1][0]
+    assert "pending" in connection.calls[1][0]
+    assert "m.status='failed'" in connection.calls[2][0]
+    assert "phone_mask" not in connection.calls[2][0]
 
     missing = FakeConnection([FakeResult()])
     bind_engine(monkeypatch, repository, missing)

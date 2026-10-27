@@ -163,3 +163,34 @@ export function resendFailedBatch(batchNo: string): Promise<{
 }> {
   return apiRequestAbs(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/resend-failed`, { method: "POST" })
 }
+
+export interface ResendSupplementPreview {
+  intent_id: string
+  covered_failed: number
+  uncovered_failed: number
+  child_batch_no: string | null
+  phone_masks: string[]
+  created: boolean
+}
+
+export function previewResendSupplement(batchNo: string): Promise<ResendSupplementPreview> {
+  return apiRequestAbs(`/api/v1/messages/batches/${encodeURIComponent(batchNo)}/resend-supplement`, {
+    method: "POST",
+  })
+}
+
+export function confirmResendSupplement(
+  batchNo: string,
+  intentId: string,
+): Promise<{
+  batch_no: string
+  resend_of: string
+  accepted: number
+  status: string
+  idempotent: boolean
+}> {
+  return apiRequestAbs(
+    `/api/v1/messages/batches/${encodeURIComponent(batchNo)}/resend-supplement/${encodeURIComponent(intentId)}`,
+    { method: "POST" },
+  )
+}

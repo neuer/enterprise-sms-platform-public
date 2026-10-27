@@ -57,6 +57,7 @@ from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRender
 from app.services.queue import CeleryQueuePublisher
 from app.services.quota import QuotaExceeded, QuotaService
 from app.services.resend import NoFailedRecipients, ResendService, SqlResendRepository
+from app.services.resend_eligibility import ResendBlocked
 from app.services.runtime_policy import RuntimePolicy, SqlRuntimePolicyLoader
 from app.services.scheduling import SchedulingService
 from app.services.scheduling import StateConflict as SchedulingConflict
@@ -259,6 +260,21 @@ class BatchModel(BaseModel):
     needs_review: int
     scheduled_at: datetime | None
     created_at: datetime
+    can_resend_failed: bool = False
+    resend_block_reason: (
+        Literal[
+            "receipts_pending",
+            "not_terminal",
+            "supplement_required",
+            "coverage_needs_review",
+            "nothing_uncovered",
+            "preview_stale",
+        ]
+        | None
+    ) = None
+    resend_child_batch_no: str | None = None
+    resend_covered_failed: int = 0
+    resend_uncovered_failed: int = 0
 
 
 MessageStatus = Literal["pending", "sent", "delivered", "failed", "unknown", "other"]
@@ -447,6 +463,18 @@ def _batch_scope(
 
 
 def _error(error: Exception) -> ApiError:
+    if isinstance(error, ResendBlocked):
+        return ApiError(
+            409,
+            "STATE_CONFLICT",
+            str(error),
+            {
+                "reason": error.reason,
+                "covered_failed": error.covered,
+                "uncovered_failed": error.uncovered,
+                "child_batch_no": error.child_batch_no,
+            },
+        )
     if isinstance(error, IdempotencyConflict):
         return ApiError(
             409,
@@ -931,6 +959,13 @@ async def resend_failed_batch(
         raise ApiError(404, "NOT_FOUND", "批次不存在", None) from None
     except NoFailedRecipients as error:
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
+    except IdempotencyConflict as error:
+        raise ApiError(
+            409,
+            "STATE_CONFLICT",
+            "已有重发未覆盖全部失败号码，请补发未覆盖号码，不要更换 biz_id",
+            {"reason": "supplement_required"},
+        ) from error
     except ApiError:
         raise
     except ValidationError as error:

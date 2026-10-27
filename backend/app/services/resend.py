@@ -11,7 +11,8 @@ from app.core.auth.accounts import ActorPrincipal
 from app.core.runtime_resources import database_engine
 from app.services.batch_query import BatchAccessScope, BatchNotFound
 from app.services.crypto import CryptoService, EncryptionContext
-from app.services.pipeline import FailedSourceReference, SendRequest
+from app.services.pipeline_contracts import FailedSourceReference, SendRequest
+from app.services.resend_eligibility import ResendBlocked, read_coverage
 from app.settings import Settings, get_settings
 
 RESEND_FAILED_BIZ_ID = "failed-recipients-v1"
@@ -75,6 +76,16 @@ class SqlResendRepository:
                 batch = batch_result.mappings().one_or_none()
                 if batch is None:
                     raise BatchNotFound
+                coverage = await read_coverage(connection, batch_no, predicate, scope_params)
+                if coverage is None:
+                    raise BatchNotFound
+                if coverage.block_reason is not None:
+                    raise ResendBlocked(
+                        coverage.block_reason,
+                        covered=coverage.covered_failed,
+                        uncovered=coverage.uncovered_failed,
+                        child_batch_no=coverage.child_batch_no,
+                    )
                 phone_result = await connection.execute(
                     text(
                         """
