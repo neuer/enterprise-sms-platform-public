@@ -767,6 +767,57 @@ describe("批次与号码查询", () => {
     vi.unstubAllGlobals()
   })
 
+  it("重置号码搜索会清掉结果区隐藏的类别和状态", async () => {
+    const fetch = vi.fn().mockResolvedValue(
+      response({
+        total: 1,
+        badge: { blacklisted: false, blacklist_source: null, recv_30d: 1 },
+        items: [
+          {
+            id: 9,
+            phone: "138****8000",
+            status: "delivered",
+            report_desc: null,
+            report_time: "2026-07-12T08:01:00+08:00",
+            created_at: "2026-07-12T08:00:00+08:00",
+            batch_no: "BATCH-1",
+            category: "market",
+            content: "营销通知",
+            sender: "营销应用",
+          },
+        ],
+      }),
+    )
+    vi.stubGlobal("fetch", fetch)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "operator"
+    const wrapper = mount(MessageView, { global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.find('input[placeholder="输入 11 位手机号"]').setValue("13800138000")
+    await wrapper.find("form").trigger("submit")
+    await flushPromises()
+
+    const selects = wrapper.findAllComponents(ElSelect)
+    selects[0].vm.$emit("update:modelValue", "notice")
+    selects[0].vm.$emit("change", "notice")
+    await flushPromises()
+    const callsBeforeReset = fetch.mock.calls.length
+    await wrapper.get("[data-testid='message-reset']").trigger("click")
+    await flushPromises()
+    expect(fetch.mock.calls).toHaveLength(callsBeforeReset)
+    expect(wrapper.text()).toContain("尚未查询")
+
+    await wrapper.find('input[placeholder="输入 11 位手机号"]').setValue("13800138000")
+    await wrapper.find("form").trigger("submit")
+    await flushPromises()
+    expect(JSON.parse(String(fetch.mock.calls.at(-1)?.[1].body))).toEqual({
+      phone: "13800138000",
+      page: 1,
+    })
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
   it("时间线展示号码徽标并将用户回复标为回声", async () => {
     const fetch = vi.fn().mockResolvedValue(
       response({

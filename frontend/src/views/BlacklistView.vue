@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ElMessage } from "element-plus"
-import { computed, onMounted, ref } from "vue"
+import { computed, onMounted, onScopeDispose, ref, watch } from "vue"
+
+import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 
 import {
   addBlacklist,
@@ -26,7 +28,19 @@ import { formatDateTime } from "../lib/time"
 
 const sourceFilter = ref<BlacklistSource | "all">("all")
 const keyword = ref("")
-const saving = ref(false)
+const editorGeneration = ref(0)
+const savingGeneration = ref<number | null>(null)
+const saving = computed(() => savingGeneration.value !== null && savingGeneration.value === editorGeneration.value)
+
+function invalidateEditor(): void {
+  editorGeneration.value += 1
+}
+
+window.addEventListener(SESSION_CLEARING_EVENT, invalidateEditor)
+onScopeDispose(() => {
+  invalidateEditor()
+  window.removeEventListener(SESSION_CLEARING_EVENT, invalidateEditor)
+})
 const drawerOpen = ref(false)
 const phonesText = ref("")
 const remark = ref("")
@@ -113,14 +127,20 @@ function setSource(next: BlacklistSource | "all"): void {
 }
 
 function openDrawer(): void {
+  invalidateEditor()
   phonesText.value = ""
   remark.value = ""
   drawerOpen.value = true
 }
 
+watch(drawerOpen, (open) => {
+  if (!open) invalidateEditor()
+})
+
 async function add(): Promise<void> {
   // 大文本粘贴后防抖窗口内也可能点击提交：先落盘最新解析，再做校验与组包。
   flushEntries()
+  if (saving.value) return
   if (!entries.value.length) {
     ElMessage.warning("请先输入要添加的手机号")
     return
@@ -129,18 +149,31 @@ async function add(): Promise<void> {
     ElMessage.warning(invalidHint.value)
     return
   }
-  saving.value = true
+  const generation = editorGeneration.value
+  const submittedPhones = [...uniquePhones.value]
+  const submittedRemark = remark.value.trim() || null
+  savingGeneration.value = generation
   try {
-    const result = await addBlacklist(uniquePhones.value, remark.value.trim() || null)
+    const result = await addBlacklist(submittedPhones, submittedRemark)
     const updatedTip = result.updated ? ` · 已存在并更新 ${result.updated} 个` : ""
+    if (generation !== editorGeneration.value) {
+      ElMessage.success(`新增 ${result.added} 个黑名单号码${updatedTip}，当前编辑未改动`)
+      await load()
+      return
+    }
     ElMessage.success(`新增 ${result.added} 个${updatedTip} · 本次操作已记入审计`)
     drawerOpen.value = false
     page.value = 1
     await load()
   } catch (error) {
-    ElMessage.error(errorText(error, "添加失败"))
+    const message = errorText(error, "添加失败")
+    if (generation !== editorGeneration.value) {
+      ElMessage.error(`黑名单添加失败：${message}`)
+      return
+    }
+    ElMessage.error(message)
   } finally {
-    saving.value = false
+    if (savingGeneration.value === generation) savingGeneration.value = null
   }
 }
 

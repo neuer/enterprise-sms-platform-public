@@ -262,8 +262,8 @@ onMounted(() => {
     <div
       ><span>重试序列</span
       ><p
-        >投递失败按 60s → 5m → 15m → 1h → 1h 重试，5 次后转 dead；间隔以 callback_retry_schedule 参数为准，beat
-        启动时读取。</p
+        >投递失败按默认 60s → 5m → 15m → 1h → 1h 重试，5 次后转 dead。每次投递尝试读取当前
+        callback_retry_schedule；已生成的下次重试时间不会仅因修改参数而提前或延后。</p
       ></div
     >
     <div

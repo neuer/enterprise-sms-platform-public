@@ -27,6 +27,7 @@ import MobileFilterToggle from "../components/MobileFilterToggle.vue"
 import { usePagedList } from "../composables/usePagedList"
 import { usePolling } from "../composables/usePolling"
 import { statusOptionsOf, DEFAULT_PAGE_SIZE } from "../lib/labels"
+import { codePointLength } from "../lib/codePoints"
 import { formatDateTime, formatDurationHms, formatHms } from "../lib/time"
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
@@ -132,7 +133,7 @@ const contentMeta = computed(() => {
   const content = detail.value?.content
   const segments = selected.value?.segments
   if (!content) return null
-  const parts = [`${content.length} 字`]
+  const parts = [`${codePointLength(content)} 字`]
   if (segments !== null && segments !== undefined) parts.push(`计费 ${segments} 计费条/号码`)
   return parts.join(" · ")
 })

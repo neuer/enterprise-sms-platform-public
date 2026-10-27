@@ -170,9 +170,12 @@ function search(): void {
   void run()
 }
 
-/** 重置查询栏条件（手机号/时间范围/视图）并回到未查询态；本页手机号必填，重置不自动查询。 */
+/** 重置查询栏条件并回到未查询态；本页手机号必填，重置不自动查询。 */
 function reset(): void {
   cancelQuery()
+  searched.value = false
+  category.value = ""
+  status.value = ""
   phone.value = ""
   range.value = null
   mode.value = "list"
