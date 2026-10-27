@@ -7,6 +7,7 @@ import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -31,7 +32,8 @@ CASE_SELECT = """
 SELECT p.id approval_id,trim(b.batch_no) batch_no,p.applicant,
   p.applicant_account_id,p.applicant_identity_id,b.app_id,b.dept,
   to_char(b.created_at AT TIME ZONE 'Asia/Shanghai','YYYYMMDD') quota_date,
-  b.quota_cost,b.category,p.status,b.status batch_status,b.deferred_reason
+  b.quota_cost,b.category,p.status,b.status batch_status,b.deferred_reason,
+  p.generation
 FROM approval p JOIN sms_batch b ON b.id=p.batch_id
 """
 ITEM_COLUMNS = """
@@ -39,7 +41,7 @@ p.id,trim(b.batch_no) batch_no,b.category,p.applicant,p.applicant_account_id,p.d
   b.total,b.segments,b.quota_cost estimated_segments,
   b.scheduled_at,p.trigger_threshold,
   p.trigger_threshold_source,b.status batch_status,b.deferred_reason,
-  p.status,p.approver,p.reason,p.expires_at,p.decided_at,p.created_at
+  p.status,p.approver,p.reason,p.expires_at,p.decided_at,p.created_at,p.generation
 """
 CASE_SOURCE = "FROM approval p JOIN sms_batch b ON b.id=p.batch_id"
 LIST_ORDERS = {
@@ -48,6 +50,19 @@ LIST_ORDERS = {
 }
 DEFAULT_ORDER = "ORDER BY p.created_at DESC"
 LOGGER = logging.getLogger(__name__)
+SHANGHAI = ZoneInfo("Asia/Shanghai")
+
+
+def _audit_time(value: object) -> str | None:
+    """审计只记已审计划时间，不记号码或正文。"""
+
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        raise ValueError("scheduled_at must be a timestamp")
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("scheduled_at must include timezone")
+    return value.astimezone(SHANGHAI).isoformat()
 
 
 def _list_filters(
@@ -127,6 +142,7 @@ def _case(row: Any, *, outbox_persisted: bool = False) -> ApprovalCase:
         (int(row["applicant_identity_id"]) if row["applicant_identity_id"] is not None else None),
         outbox_persisted,
         deferred_reason=str(deferred) if deferred is not None else None,
+        generation=int(row["generation"]) if row.get("generation") is not None else 1,
     )
 
 
@@ -165,10 +181,7 @@ class SqlApprovalRepository:
             async with engine.connect() as connection:
                 total = await connection.scalar(text(f"SELECT count(*) {source}"), params)
                 result = await connection.execute(
-                    text(
-                        f"SELECT {ITEM_COLUMNS} {source} {order}"
-                        " LIMIT :limit OFFSET :offset"
-                    ),
+                    text(f"SELECT {ITEM_COLUMNS} {source} {order} LIMIT :limit OFFSET :offset"),
                     params,
                 )
                 items = [dict(row) for row in result.mappings()]
@@ -224,8 +237,7 @@ class SqlApprovalRepository:
             async with engine.connect() as connection:
                 result = await connection.execute(
                     text(
-                        f"SELECT {ITEM_COLUMNS},b.display_content_enc"
-                        f" {CASE_SOURCE} WHERE p.id=:id"
+                        f"SELECT {ITEM_COLUMNS},b.display_content_enc {CASE_SOURCE} WHERE p.id=:id"
                     ),
                     {"id": approval_id},
                 )
@@ -261,12 +273,28 @@ class SqlApprovalRepository:
         action: str,
         principal: SecurityPrincipal,
         reason: str | None,
+        expected_generation: int,
     ) -> ApprovalCase | None:
         approval_status = "approved" if action == "approve" else "rejected"
         engine = self._engine()
         try:
             async with engine.begin() as connection:
-                # 先取得行锁，再以数据库实际时钟决定，避免等锁跨过授权截止。
+                # 先锁批次再锁审批，与改期、过期同一顺序，避免交叉死锁。
+                locked = await connection.execute(
+                    text(
+                        """
+                        SELECT b.id AS batch_id, b.status AS batch_status, b.scheduled_at
+                        FROM approval p
+                        JOIN sms_batch b ON b.id=p.batch_id
+                        WHERE p.id=:id
+                        FOR UPDATE OF b
+                        """
+                    ),
+                    {"id": approval_id},
+                )
+                locked_row = locked.mappings().one_or_none()
+                if locked_row is None:
+                    return None
                 await connection.execute(
                     text("SELECT id FROM approval WHERE id=:id FOR UPDATE"),
                     {"id": approval_id},
@@ -281,9 +309,11 @@ class SqlApprovalRepository:
                           approver_identity_id=:approver_identity_id,
                           reason=:reason,decided_at=now()
                         WHERE id=:id AND status='pending'
+                          AND generation=:expected_generation
                           AND expires_at>clock_timestamp()
                           AND applicant_account_id IS NOT NULL
                           AND applicant_account_id<>:approver_account_id
+                          AND :batch_status='pending_approval'
                         RETURNING batch_id
                         """
                     ),
@@ -294,6 +324,8 @@ class SqlApprovalRepository:
                         "approver_account_id": principal.account_id,
                         "approver_identity_id": principal.identity_id,
                         "reason": reason,
+                        "expected_generation": expected_generation,
+                        "batch_status": locked_row["batch_status"],
                     },
                 )
                 batch_id = result.scalar_one_or_none()
@@ -325,7 +357,9 @@ class SqlApprovalRepository:
                           jsonb_build_object(
                             'actor_account_id',CAST(:actor_account_id AS bigint),
                             'actor_identity_id',CAST(:actor_identity_id AS bigint),
-                            'decision',CAST(:decision AS text)
+                            'decision',CAST(:decision AS text),
+                            'generation',CAST(:generation AS integer),
+                            'scheduled_at',CAST(:scheduled_at AS text)
                           ))
                         """
                     ),
@@ -336,6 +370,8 @@ class SqlApprovalRepository:
                         "role": principal.role,
                         "id": approval_id,
                         "decision": action,
+                        "generation": expected_generation,
+                        "scheduled_at": _audit_time(locked_row["scheduled_at"]),
                     },
                 )
                 current = await connection.execute(
@@ -347,9 +383,7 @@ class SqlApprovalRepository:
                     enqueue_ready = True
                     if case.category == "market":
                         window_result = await connection.execute(
-                            text(
-                                "SELECT value FROM sys_config WHERE key='market_send_window'"
-                            )
+                            text("SELECT value FROM sys_config WHERE key='market_send_window'")
                         )
                         window = str(window_result.scalar() or DEFAULT_MARKET_WINDOW).strip()
                         status, deferred, scheduled_at = coerce_market_dispatch(
@@ -450,6 +484,21 @@ class SqlApprovalRepository:
                 completed_case: ApprovalCase | None = None
                 try:
                     async with engine.begin() as connection:
+                        await connection.execute(
+                            text(
+                                """
+                                SELECT b.id FROM approval p
+                                JOIN sms_batch b ON b.id=p.batch_id
+                                WHERE p.id=:approval_id
+                                FOR UPDATE OF b
+                                """
+                            ),
+                            {"approval_id": approval_id},
+                        )
+                        await connection.execute(
+                            text("SELECT id FROM approval WHERE id=:approval_id FOR UPDATE"),
+                            {"approval_id": approval_id},
+                        )
                         result = await connection.execute(
                             text(
                                 """
@@ -465,7 +514,8 @@ class SqlApprovalRepository:
                                     b.created_at AT TIME ZONE 'Asia/Shanghai',
                                     'YYYYMMDD'
                                   ) quota_date,
-                                  b.quota_cost,b.category,p.status,b.status batch_status
+                                  b.quota_cost,b.category,p.status,b.status batch_status,
+                                  p.generation
                                 """
                             ),
                             {"approval_id": approval_id},

@@ -988,11 +988,11 @@ class SqlPipelineStore:
                     INSERT INTO approval(
                       batch_id,applicant,applicant_account_id,applicant_identity_id,
                       dept,trigger_threshold,
-                      trigger_threshold_source,expires_at
+                      trigger_threshold_source,expires_at,generation
                     ) VALUES(
                       :batch_id,:applicant,:applicant_account_id,:applicant_identity_id,
                       :dept,:trigger_threshold,'snapshot',
-                      now()+make_interval(hours=>:expire_hours))
+                      now()+make_interval(hours=>:expire_hours),1)
                     """
                 ),
                 {

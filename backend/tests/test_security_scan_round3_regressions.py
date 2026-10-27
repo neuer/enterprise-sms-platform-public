@@ -133,6 +133,7 @@ async def test_blacklist_and_approval_reject_phone_embedded_in_metadata() -> Non
             action="reject",
             principal=approver,
             reason="号码 13900139000 不合规",
+            expected_generation=1,
         )
     assert approval_repository.transitioned is False
 

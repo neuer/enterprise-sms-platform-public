@@ -34,6 +34,7 @@ class ApprovalCase:
     applicant_identity_id: int | None = None
     outbox_persisted: bool = False
     deferred_reason: str | None = None
+    generation: int = 1
 
 
 class ApprovalRepository(Protocol):
@@ -46,6 +47,7 @@ class ApprovalRepository(Protocol):
         action: str,
         principal: SecurityPrincipal,
         reason: str | None,
+        expected_generation: int,
     ) -> ApprovalCase | None: ...
 
     async def expire_due(self) -> list[ApprovalCase]: ...
@@ -119,9 +121,12 @@ class ApprovalService:
         action: str,
         principal: SecurityPrincipal,
         reason: str | None,
+        expected_generation: int,
     ) -> ApprovalCase:
         if action not in {"approve", "reject"}:
             raise ValueError("invalid approval action")
+        if expected_generation < 1:
+            raise StateConflict("审批版本缺失，请刷新后重新确认")
         cleaned_reason = reason.strip() if reason else None
         reject_phone_in_text(cleaned_reason, field_name="reason")
         if action == "reject" and not cleaned_reason:
@@ -133,11 +138,14 @@ class ApprovalService:
             raise SelfApprovalDenied("历史申请主体未解析，禁止审批")
         if current.applicant_account_id == principal.account_id:
             raise SelfApprovalDenied("不能审批本人提交")
+        if current.generation != expected_generation:
+            raise StateConflict("审批版本已变化，请刷新后重新确认")
         decided = await self.repository.transition(
             approval_id,
             action=action,
             principal=principal,
             reason=cleaned_reason,
+            expected_generation=expected_generation,
         )
         if decided is None:
             raise StateConflict("审批单状态冲突")
