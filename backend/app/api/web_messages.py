@@ -782,8 +782,19 @@ async def download_invalid_file(
         principal=claims.principal,
     )
     if path is None:
-        raise ApiError(404, "NOT_FOUND", "剔除清单不存在或已过期", None)
-    return FileResponse(path, media_type="text/csv", filename="removed-phones.csv")
+        raise ApiError(
+            404,
+            "NOT_FOUND",
+            "剔除清单不存在或已过期",
+            None,
+            headers={"Cache-Control": "no-store"},
+        )
+    return FileResponse(
+        path,
+        media_type="text/csv",
+        filename="removed-phones.csv",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.post(
