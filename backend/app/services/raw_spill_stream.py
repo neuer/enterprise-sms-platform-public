@@ -370,24 +370,32 @@ class RawSpillStream:
         self._refresh_ondisk_bytes()
 
     def _rewrite_header_key_version(self, key_version: int) -> None:
-        raw = self.path.read_bytes()
-        if not raw.startswith(STREAM_MAGIC):
-            raise ValueError("invalid raw spill stream")
-        rest = raw[len(STREAM_MAGIC) :]
-        header_bytes, body = rest.split(b"\n", maxsplit=1)
-        header = json.loads(header_bytes.decode("utf-8"))
-        header["key_version"] = key_version
-        rewritten = (
-            STREAM_MAGIC
-            + json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8")
-            + b"\n"
-            + body
-        )
-        tmp = self.path.with_name(self.path.name + ".hdr")
-        with tmp.open("wb") as handle:
-            handle.write(rewritten)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, self.path)
-        self.store._layout.fsync_directory()
+        """在目录锁内重写密钥版本。锁必须覆盖 .hdr 可见到替换完成的整段。
+
+        只锁 os.replace 不够：回收器会把已经 fsync 的 .hdr 当成崩溃遗留并提前改名。
+        计数刷新放在锁外，避免在持锁时再进入会获取同一把锁的路径。
+        """
+
+        layout = self.store._layout
+        with layout.quota_lock():
+            raw = self.path.read_bytes()
+            if not raw.startswith(STREAM_MAGIC):
+                raise ValueError("invalid raw spill stream")
+            rest = raw[len(STREAM_MAGIC) :]
+            header_bytes, body = rest.split(b"\n", maxsplit=1)
+            header = json.loads(header_bytes.decode("utf-8"))
+            header["key_version"] = key_version
+            rewritten = (
+                STREAM_MAGIC
+                + json.dumps(header, separators=(",", ":"), sort_keys=True).encode("utf-8")
+                + b"\n"
+                + body
+            )
+            tmp = self.path.with_name(self.path.name + ".hdr")
+            with tmp.open("wb") as handle:
+                handle.write(rewritten)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, self.path)
+            layout.fsync_directory()
         self._refresh_ondisk_bytes()
