@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.jobtrack import JobSpec
+from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import (
     bind_connection_audit_subject,
     bind_connection_system_audit,
@@ -399,9 +400,7 @@ class SqlOpsRepository:
             raise RuntimeError("raw replay intent principal unavailable")
         allowed = claim_eligibilities(allow_manual=allow_manual)
         eligibility_sql = ", ".join(f"'{item}'" for item in allowed)
-        capture_sql = (
-            "'complete','complete_too_large'" if allow_manual else "'complete'"
-        )
+        capture_sql = "'complete','complete_too_large'" if allow_manual else "'complete'"
         lease_id = new_lease_id()
         engine = self._engine()
         try:
@@ -542,9 +541,10 @@ class SqlOpsRepository:
         error: str,
         *,
         lease: RawProcessingLease | None = None,
+        exc: BaseException | None = None,
     ) -> None:
         message = error[:256]
-        columns = mark_error_column_values(message)
+        columns = mark_error_column_values(message, exc=exc)
         token = require_lease(lease, raw_id)
         engine = self._engine()
         try:
@@ -610,8 +610,7 @@ class SqlOpsRepository:
         if principal.actor_name != actor:
             raise RuntimeError("raw reevaluate audit principal unavailable")
         if expected_processed and (
-            disposition.parse_state != "processed"
-            or disposition.replay_eligibility != "never"
+            disposition.parse_state != "processed" or disposition.replay_eligibility != "never"
         ):
             raise RawReplayConflict("已处理 raw 不得改回可重放状态")
         engine = self._engine()
@@ -625,7 +624,7 @@ class SqlOpsRepository:
                     identity_id=principal.identity_id,
                 )
                 current = (
-
+                    (
                         await connection.execute(
                             text(
                                 """
@@ -641,15 +640,16 @@ class SqlOpsRepository:
                             ),
                             {"raw_id": raw_id},
                         )
-
-                ).mappings().one_or_none()
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
                 if current is None:
                     raise RawReplayConflict("原始报文不存在")
                 already_applied = (
                     bool(current["processed"]) == expected_processed
                     and str(current["parse_state"]) == disposition.parse_state
-                    and str(current["replay_eligibility"])
-                    == disposition.replay_eligibility
+                    and str(current["replay_eligibility"]) == disposition.replay_eligibility
                 )
                 if already_applied:
                     existing_audit = await connection.scalar(
@@ -1020,9 +1020,7 @@ class SqlOpsRepository:
                         row["uncertain_since"],
                         int(row["age_seconds"]),
                         str(row["status"]),
-                        int(row["resolution_id"])
-                        if row.get("resolution_id") is not None
-                        else None,
+                        int(row["resolution_id"]) if row.get("resolution_id") is not None else None,
                         str(row["resolution_action"])
                         if row.get("resolution_action") is not None
                         else None,
@@ -1085,4 +1083,5 @@ class SqlOpsRepository:
 
     @staticmethod
     def _page_params(page: int, page_size: int) -> dict[str, object]:
+        ensure_page_offset(page, page_size)
         return {"limit": page_size, "offset": (page - 1) * page_size}

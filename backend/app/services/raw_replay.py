@@ -89,6 +89,7 @@ class RawReplayRepository(Protocol):
         error: str,
         *,
         lease: RawProcessingLease | None = None,
+        exc: BaseException | None = None,
     ) -> None: ...
 
     async def load_raw_for_reevaluate(self, raw_id: int) -> RawReplayRecord | None: ...

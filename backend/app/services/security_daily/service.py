@@ -12,6 +12,7 @@ from uuid import UUID
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.admin_authorization import AdminAuthorization
+from app.core.query_bounds import ensure_page_offset
 from app.services.security_daily.contract import (
     MAX_SECURITY_DAILY_INPUT_BYTES,
     SHANGHAI_TZ,
@@ -272,6 +273,7 @@ class SecurityDailyService:
         return await self.repository.overview(now=now)
 
     async def list_reports(self, query: SecurityDailyQuery) -> SecurityDailyPage:
+        ensure_page_offset(query.page, query.page_size)
         await self._reconcile_configuration(persist=True)
         await self._synchronize_control_results()
         return await self.repository.list_reports(query)

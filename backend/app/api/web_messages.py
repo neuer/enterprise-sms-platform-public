@@ -124,7 +124,7 @@ class MessageSearchRequest(BaseModel):
     end: datetime | None = None
     category: Literal["verify", "notice", "market"] | None = None
     status: Literal["pending", "sent", "delivered", "failed", "unknown", "other"] | None = None
-    page: int = Field(default=1, ge=1)
+    page: int = Field(default=1, ge=1, le=PAGE_MAX)
     size: int = Field(default=20, ge=1, le=100)
 
 

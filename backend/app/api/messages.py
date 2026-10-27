@@ -19,6 +19,7 @@ from app.core.auth.jwt import JwtClaims
 from app.core.auth.runtime import AuthFacade, get_auth_facade
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
+from app.core.query_bounds import PAGE_MAX
 from app.core.runtime_resources import redis_client
 from app.core.sensitive_text import reject_phone_business_id
 from app.services.app_ratelimit import (
@@ -294,8 +295,6 @@ async def _pipeline(app: ApiAppContext) -> SendPipeline:
         store=store,
         idempotency=IdempotencyCoordinator(redis, store),
         crypto=crypto,
-
-
         publisher=CeleryQueuePublisher(),
         templates=SqlTemplateRenderer(settings),
         signs=SignResolver(SqlSignRepository(settings)),
@@ -783,16 +782,19 @@ async def list_batch_details(
     batch_no: str,
     scope: Annotated[BatchAccessScope, Depends(require_batch_reader)],
     status: Annotated[MessageStatus | None, Query()] = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     size: Annotated[int, Query(ge=1, le=1000)] = 100,
 ) -> dict[str, object]:
-    return await _batch_queries().list_details(
-        batch_no,
-        scope,
-        status=status,
-        page=page,
-        size=size,
-    )
+    try:
+        return await _batch_queries().list_details(
+            batch_no,
+            scope,
+            status=status,
+            page=page,
+            size=size,
+        )
+    except ValueError as error:
+        raise ApiError(400, "INVALID_PARAM", str(error), None) from None
 
 
 @router.post(
