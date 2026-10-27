@@ -237,7 +237,10 @@ class SpillReclaimer:
         ]
 
     def _reclaim_rewrite_tmps_locked(self, now_ts: float) -> int:
-        """完成或隔离 key_version 重写留下的 *.hdr。"""
+        """完成或隔离 key_version 重写留下的 *.hdr。
+
+        活动租约覆盖的新鲜头留给写入者；陈旧或目标已消失的合法头才晋升。
+        """
 
         if not self._layout.directory.exists():
             return 0
@@ -247,6 +250,14 @@ class SpillReclaimer:
             if match is None or not path.is_file():
                 continue
             target = path.with_name(path.name[: -len(".hdr")])
+            if self._hdr_has_live_writer(
+                path,
+                target,
+                match.group("source"),
+                match.group("stream_id"),
+                now_ts,
+            ):
+                continue
             if self._hdr_is_promotable(path, target):
                 os.replace(path, target)
                 self._layout.fsync_directory()
@@ -263,6 +274,26 @@ class SpillReclaimer:
             )
             reclaimed += 1
         return reclaimed
+
+    def _hdr_has_live_writer(
+        self,
+        hdr: Path,
+        target: Path,
+        source: str,
+        stream_id: str,
+        now_ts: float,
+    ) -> bool:
+        """目标流仍在，且保留租约覆盖的新鲜 .hdr 属于活动写入者。
+
+        进程退出后锁会释放，但租约文件还在。超过 header-only 年龄上界才视为
+        无活动所有权，允许有界恢复。目标已不存在时不是抢占，交给晋升判断。
+        """
+
+        if not target.is_file():
+            return False
+        if self._layout.file_age_seconds(hdr, now_ts) >= self._limits.header_only_min_age_s:
+            return False
+        return self._layout.reservation_path(source, stream_id).is_file()
 
     def _hdr_is_promotable(self, hdr: Path, target: Path) -> bool:
         try:
