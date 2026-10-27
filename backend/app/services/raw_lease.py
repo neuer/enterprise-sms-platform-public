@@ -98,11 +98,17 @@ PERSIST_STARTED_AT_SQL = """
   CASE WHEN :acquire_processing_lease THEN now() END
 """
 
-FENCED_TERMINAL_SQL = """
+# 已落库的 never 是独立约束：后续暂态或未知错误不能把它提升成可重放。
+_KEEP_NEVER_ELIGIBILITY_SQL = """
+  CASE WHEN raw_vendor_log.replay_eligibility='never' THEN 'never'
+    ELSE :replay_eligibility END
+"""
+
+FENCED_TERMINAL_SQL = f"""
 UPDATE raw_vendor_log
 SET processed=:processed,error=:error,processing_started_at=NULL,
   parse_state=:parse_state,
-  replay_eligibility=:replay_eligibility,
+  replay_eligibility={_KEEP_NEVER_ELIGIBILITY_SQL},
   processing_lease_id=NULL,
   processing_lease_expires_at=NULL
 WHERE id=:id
@@ -110,11 +116,11 @@ WHERE id=:id
   AND processing_lease_epoch=:epoch
 """
 
-FENCED_TERMINAL_SYSTEM_AUDIT_SQL = """
+FENCED_TERMINAL_SYSTEM_AUDIT_SQL = f"""
 UPDATE raw_vendor_log
 SET processed=:processed,error=:error,processing_started_at=NULL,
   parse_state=:parse_state,
-  replay_eligibility=:replay_eligibility,
+  replay_eligibility={_KEEP_NEVER_ELIGIBILITY_SQL},
   processing_lease_id=NULL,
   processing_lease_expires_at=NULL,
   system_replay_audit_state=:system_replay_audit_state
@@ -130,6 +136,7 @@ def fenced_terminal_sql(*, system_audit_intent: bool = False) -> str:
     if system_audit_intent:
         return FENCED_TERMINAL_SYSTEM_AUDIT_SQL
     return FENCED_TERMINAL_SQL
+
 
 FENCED_METADATA_SQL = """
 UPDATE raw_vendor_log
@@ -207,9 +214,7 @@ async def execute_fenced_raw_update(
     result = await connection.execute(text(sql), params)
     rowcount = getattr(result, "rowcount", 1)
     if rowcount == 0:
-        await record_raw_fencing_miss(
-            connection, raw_id=lease.raw_id, lease_id=lease.lease_id
-        )
+        await record_raw_fencing_miss(connection, raw_id=lease.raw_id, lease_id=lease.lease_id)
         return False
     return True
 
@@ -224,9 +229,7 @@ async def commit_fenced_raw_update(
     """提交 fencing 事务后再失败关闭，保证 miss 事件可观测。"""
 
     async with engine.begin() as connection:
-        applied = await execute_fenced_raw_update(
-            connection, sql, params, lease=lease
-        )
+        applied = await execute_fenced_raw_update(connection, sql, params, lease=lease)
     if not applied:
         raise RawLeaseLost("raw processing lease lost")
 
@@ -290,8 +293,7 @@ class RawLeaseHeartbeat:
         lease: RawProcessingLease,
         *,
         interval_s: float = RAW_LEASE_HEARTBEAT_SECONDS,
-        on_failure: Callable[[RawProcessingLease, RawLeaseLost], Awaitable[None]]
-        | None = None,
+        on_failure: Callable[[RawProcessingLease, RawLeaseLost], Awaitable[None]] | None = None,
     ) -> None:
         self._renew = renew
         self.lease = lease
@@ -314,14 +316,10 @@ class RawLeaseHeartbeat:
         if isinstance(error, asyncio.CancelledError):
             return
         if error is not None:
-            self._lost = RawLeaseHeartbeatFailed(
-                "raw processing lease heartbeat failed"
-            )
+            self._lost = RawLeaseHeartbeatFailed("raw processing lease heartbeat failed")
             self._lost.__cause__ = error
             raise self._lost
-        self._lost = RawLeaseHeartbeatFailed(
-            "raw processing lease heartbeat ended unexpectedly"
-        )
+        self._lost = RawLeaseHeartbeatFailed("raw processing lease heartbeat ended unexpectedly")
         raise self._lost
 
     def _failure_class(self, error: RawLeaseLost) -> str:
@@ -418,9 +416,7 @@ class RawLeaseHeartbeat:
                     await self._notify_failure(error)
                     return
                 except Exception as error:
-                    wrapped = RawLeaseHeartbeatFailed(
-                        "raw processing lease heartbeat failed"
-                    )
+                    wrapped = RawLeaseHeartbeatFailed("raw processing lease heartbeat failed")
                     wrapped.__cause__ = error
                     self._lost = wrapped
                     await self._notify_failure(wrapped)

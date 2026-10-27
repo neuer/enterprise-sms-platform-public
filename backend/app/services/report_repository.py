@@ -802,9 +802,9 @@ class SqlReportRepository:
         )
 
     async def mark_error(
-        self, raw_id: int, error: str, *, lease: RawProcessingLease | None = None
-    ) -> None:
-        columns = mark_error_column_values(error)
+        self, raw_id: int, error: str, *, lease: RawProcessingLease | None = None,
+        exc: BaseException | None = None) -> None:
+        columns = mark_error_column_values(error, exc=exc)
         await self._mark_raw(
             raw_id,
             processed=False,

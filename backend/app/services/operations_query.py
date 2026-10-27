@@ -11,6 +11,7 @@ from sqlalchemy import text
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import database_engine
 from app.services.batch_query import BatchAccessScope
 from app.services.content_protection import (
@@ -155,6 +156,7 @@ class OperationsQueryService:
             raise ValueError("page must be positive")
         if not 1 <= size <= MAX_PAGE_SIZE:
             raise ValueError("page size out of range")
+        ensure_page_offset(page, size)
         _validate_range(start, end)
         return await self.repository.search_messages(
             phone_hmacs=self._hmacs(phone),
@@ -282,6 +284,7 @@ class SqlOperationsQueryRepository:
         size: int,
         scope: BatchAccessScope,
     ) -> MessageQueryPage:
+        ensure_page_offset(page, size)
         predicate, scope_params = scope.sql()
         where = f"""
           m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
