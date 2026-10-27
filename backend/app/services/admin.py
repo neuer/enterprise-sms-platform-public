@@ -180,12 +180,20 @@ class AdminService:
             max_value=(spec.maximum if spec is not None and spec.value_type == "int" else None),
         )
 
-    async def list_configs(self) -> tuple[ConfigItem, ...]:
+    def _project_configs(
+        self,
+        rows: tuple[ConfigRow, ...] | list[ConfigRow],
+    ) -> tuple[ConfigItem, ...]:
+        """通用参数目录：排除安全日报专用键和内部键，敏感值仍只返回 configured。"""
+
         return tuple(
             self._item(row)
-            for row in await self.repository.list_configs()
-            if row.key not in UI_ONLY_CONFIG_KEYS
+            for row in rows
+            if row.key not in UI_ONLY_CONFIG_KEYS and not row.key.startswith("__")
         )
+
+    async def list_configs(self) -> tuple[ConfigItem, ...]:
+        return self._project_configs(await self.repository.list_configs())
 
     @staticmethod
     def _validate_value(row: ConfigRow, value: str) -> str:
@@ -286,7 +294,7 @@ class AdminService:
             with suppress(SessionStateUnavailable):
                 # PostgreSQL 权威行已提交；API 对账会在 Redis 恢复后补齐。
                 await self.session_policy_publisher(policy)
-        return tuple(self._item(row) for row in changed)
+        return self._project_configs(changed)
 
     async def list_audits(
         self,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { rangeToIsoParams } from "../../lib/time"
+import { rangeToIsoParams, SHANGHAI_CIVIL_VALUE_FORMAT, type ShanghaiCivilRange } from "../../lib/time"
 
 import { usePagedList } from "../../composables/usePagedList"
 
@@ -30,7 +30,7 @@ const props = defineProps<{ active: boolean }>()
 
 const unmatchedPhone = ref("")
 
-const unmatchedRange = ref<[Date, Date] | null>(null)
+const unmatchedRange = ref<ShanghaiCivilRange | null>(null)
 
 const exportDecrypted = ref(false)
 
@@ -168,6 +168,7 @@ watch(
             class="ops-dates"
             type="datetimerange"
             format="YYYY-MM-DD HH:mm"
+            :value-format="SHANGHAI_CIVIL_VALUE_FORMAT"
             popper-class="qingluan-date-popper"
             range-separator="至"
             start-placeholder="开始时间"
