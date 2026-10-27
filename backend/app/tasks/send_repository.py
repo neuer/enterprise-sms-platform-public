@@ -87,6 +87,13 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
     def _engine(self) -> SendTransactionEngine:
         return database_engine(self.settings.database_url)
 
+    async def eligible_dispatch_phones(self, chunk: ChunkPayload) -> Any:
+        """下发前复核黑名单，返回仍允许发送的号码和策略代际。"""
+
+        from app.services.dispatch_blacklist import filter_chunk_phones
+
+        return await filter_chunk_phones(self, chunk)
+
     @staticmethod
     def lane_for(category: str) -> str:
         return queue_for_category(category)
@@ -153,9 +160,7 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
             await engine.dispose()
 
     async def is_paused(self, lane: str) -> bool:
-        critical = await self.redis.mget(
-            ["queue:paused:realtime", "queue:paused:bulk"]
-        )
+        critical = await self.redis.mget(["queue:paused:realtime", "queue:paused:bulk"])
         if any(value is not None for value in critical):
             return True
         agent_stale = (
@@ -547,8 +552,10 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
         try:
             async with engine.begin() as connection:
                 candidate = await connection.execute(
-                    text("SELECT batch_id FROM sms_chunk WHERE id=:id "
-                         "AND status='submitting' FOR UPDATE"),
+                    text(
+                        "SELECT batch_id FROM sms_chunk WHERE id=:id "
+                        "AND status='submitting' FOR UPDATE"
+                    ),
                     {"id": chunk_id},
                 )
                 batch_id = candidate.scalar_one_or_none()
@@ -752,8 +759,12 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                         RETURNING b.category
                         """
                     ),
-                    {"id": chunk_id, "code": code, "delay_s": delay_s,
-                     "retry_limit": DELAYED_RETRY_LIMIT},
+                    {
+                        "id": chunk_id,
+                        "code": code,
+                        "delay_s": delay_s,
+                        "retry_limit": DELAYED_RETRY_LIMIT,
+                    },
                 )
                 category = result.scalar_one_or_none()
                 if category is not None:
@@ -780,8 +791,7 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                                 "WHERE id=:id AND status='submitting' "
                                 "RETURNING batch_id"
                             ),
-                            {"id": chunk_id, "code": code,
-                             "reason": DELAYED_RETRY_EXHAUSTED},
+                            {"id": chunk_id, "code": code, "reason": DELAYED_RETRY_EXHAUSTED},
                         )
                         transitioned_batch_id = failed.scalar_one_or_none()
                         if transitioned_batch_id is not None:
@@ -875,9 +885,8 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
             await engine.dispose()
 
 
-
-
 if TYPE_CHECKING:
+
     def _assert_store_dependencies(store: SqlChunkStore) -> None:
         """编译期确认组合类满足每个 Mixin 所需能力，不创建运行时替身。"""
         payload: SendPayloadDependencies = store

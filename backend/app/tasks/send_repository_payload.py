@@ -71,7 +71,8 @@ class ChunkPayloadMixin:
                 """
                 SELECT m.phone_enc, trim(m.phone_hmac) phone_hmac, m.key_version
                 FROM sms_message m
-                WHERE m.chunk_id=:chunk_id ORDER BY m.id, m.created_at
+                WHERE m.chunk_id=:chunk_id AND m.status='pending'
+                ORDER BY m.id, m.created_at
                 """
             ),
             {"chunk_id": chunk_id},

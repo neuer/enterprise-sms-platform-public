@@ -766,7 +766,13 @@ class SqlExportRepository:
                 SELECT m.id,m.created_at,trim(b.batch_no) batch_no,b.category,
                   {phone_columns},m.status,b.status AS batch_status,
                   ({MESSAGE_DISPLAY_STATUS_SQL}) AS display_status,
-                  m.report_desc,m.report_time,b.display_content_enc
+                  m.report_desc,m.report_time,b.display_content_enc,
+                  (
+                    SELECT exclusion.reason FROM sms_dispatch_exclusion exclusion
+                    WHERE exclusion.message_id=m.id
+                      AND exclusion.message_created_at=m.created_at
+                    LIMIT 1
+                  ) AS exclusion_reason
                 FROM sms_message m JOIN sms_batch b ON b.id=m.batch_id
                 WHERE {_message_where()}
                 ORDER BY m.created_at,m.id LIMIT {MAX_EXPORT_ROWS + 1}

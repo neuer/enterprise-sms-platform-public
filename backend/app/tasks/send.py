@@ -18,6 +18,7 @@ from app.services.alert_repository import SqlAlertService
 from app.services.billing import calculate_quota_cost
 from app.services.category import DEFAULT_MARKET_WINDOW, coerce_market_dispatch
 from app.services.crypto import CryptoService
+from app.services.dispatch_blacklist import DispatchAction, phones_for_invoke
 from app.services.outbox import OutboxClaim, OutboxDeferred, OutboxExecutor
 from app.services.outbox_repository import SqlOutboxRepository
 from app.services.vendor_alert import RedisVendorAlertMonitor
@@ -26,7 +27,6 @@ from app.services.vendor_control_state import (
     VendorControlStateUnavailable,
 )
 from app.services.vendor_test_budget import SubmissionClaim, SubmissionClaimStatus
-from app.services.vendor_test_guard import VendorTestRecipientDenied
 from app.settings import get_settings
 from app.tasks import celery_app
 from app.vendor.failover import (
@@ -518,25 +518,9 @@ class SendWorker:
         return None
 
     async def _guard_chunk(self, chunk: ChunkPayload, *, persist_rejection: bool = True) -> bool:
-        if self.enforce_live_test_recipients and chunk.denied_recipient_count:
-            if persist_rejection:
-                await self.store.reject_disallowed_recipient(
-                    chunk.chunk_id,
-                    chunk.denied_recipient_count,
-                )
-            return False
-        if self.recipient_guard is None:
-            return True
-        try:
-            self.recipient_guard.require_allowed(chunk.phones)
-        except VendorTestRecipientDenied as error:
-            if persist_rejection:
-                await self.store.reject_disallowed_recipient(
-                    chunk.chunk_id,
-                    error.denied_count,
-                )
-            return False
-        return True
+        from app.services.dispatch_blacklist import guard_chunk
+
+        return await guard_chunk(self, chunk, persist_rejection=persist_rejection)
 
     async def _control_ready(self) -> bool:
         if self.control_guard is None:
@@ -557,9 +541,12 @@ class SendWorker:
         lease_epoch: int,
         vendor_id: str = PRIMARY_VENDOR_ID,
     ) -> SubmissionClaimStatus:
+        decision = await phones_for_invoke(self.store, chunk)
+        if decision.action is not DispatchAction.SEND or not decision.eligible_phones:
+            return SubmissionClaimStatus.STALE
         segments = calculate_quota_cost(
             f"{chunk.sign_name}{chunk.content}",
-            recipient_count=len(chunk.phones),
+            recipient_count=len(decision.eligible_phones),
         )
         claim = await self.store.claim_submission(
             chunk.chunk_id,
@@ -953,9 +940,7 @@ class SendWorker:
             if platform_paused:
                 return SubmitOutcome.PAUSED
             health = await self._health_snapshot(platform_paused=platform_paused)
-            decision = self.router.decide(
-                self._route_request(chunk, tuple(attempts), health)
-            )
+            decision = self.router.decide(self._route_request(chunk, tuple(attempts), health))
             if decision.action == "terminal_uncertain":
                 return SubmitOutcome.UNCERTAIN
             if decision.action != "invoke" or decision.vendor_id is None:
@@ -1032,7 +1017,6 @@ class SendWorker:
                 retry_index=retry_index,
                 lease_epoch=lease_epoch,
             )
-
 
     async def _claim_persisted_failover(
         self,
@@ -1142,9 +1126,21 @@ class SendWorker:
             )
         vendor_invoked = False
         try:
+            decision = await phones_for_invoke(self.store, chunk)
+            if decision.action is DispatchAction.FROZEN:
+                return SubmitOutcome.STALE
+            if decision.action is not DispatchAction.SEND or not decision.eligible_phones:
+                outcome = (
+                    SubmitOutcome.REJECTED
+                    if decision.action is DispatchAction.EMPTY
+                    else SubmitOutcome.PAUSED
+                )
+                return await self._abort_before_http(
+                    chunk, vendor_id, generation, attempt_id, lease_epoch, outcome
+                )
             vendor_invoked = True
             task_id = await gateway.send(
-                chunk.phones,
+                decision.eligible_phones,
                 chunk.content,
                 template_id=chunk.template_id,
                 sign_name=chunk.sign_name,
@@ -1338,9 +1334,7 @@ async def _run_chunk(
         chunk, lane = loaded
         from app.services.runtime_heartbeat import touch_runtime_heartbeat
 
-        await touch_runtime_heartbeat(
-            "send-bulk" if lane == "bulk" else "send-realtime"
-        )
+        await touch_runtime_heartbeat("send-bulk" if lane == "bulk" else "send-realtime")
         if await store.is_paused(lane):
             if fail_closed_on_pause:
                 raise SendQueuePaused("send queue is paused")
@@ -1352,16 +1346,15 @@ async def _run_chunk(
                 success=True,
             )
         return ChunkTaskResult(
-            1, outcome,
+            1,
+            outcome,
             worker.market_defer_until if outcome is SubmitOutcome.PAUSED else None,
         )
     finally:
         await gateway.aclose()
 
 
-async def _process_chunk(
-    chunk_id: int, *, fail_closed_on_pause: bool = False
-) -> ChunkTaskResult:
+async def _process_chunk(chunk_id: int, *, fail_closed_on_pause: bool = False) -> ChunkTaskResult:
     result = await _run_chunk(chunk_id, fail_closed_on_pause=fail_closed_on_pause)
     if fail_closed_on_pause and result.outcome is SubmitOutcome.PAUSED:
         if result.next_attempt_at is not None:

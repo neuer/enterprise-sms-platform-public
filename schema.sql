@@ -1553,6 +1553,21 @@ CREATE INDEX idx_resend_member_supplement
     ON sms_resend_supplement_member(supplement_id);
 REVOKE ALL ON sms_resend_supplement, sms_resend_supplement_member FROM PUBLIC;
 
+-- 下发前剔除。只保存消息引用和原因，不含手机号。
+CREATE TABLE sms_dispatch_exclusion (
+    message_id BIGINT NOT NULL,
+    message_created_at TIMESTAMPTZ NOT NULL,
+    batch_id BIGINT NOT NULL REFERENCES sms_batch(id) ON DELETE RESTRICT,
+    reason VARCHAR(32) NOT NULL,
+    decision_generation BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (message_id, message_created_at, reason),
+    FOREIGN KEY (message_id, message_created_at)
+      REFERENCES sms_message(id, created_at) ON DELETE RESTRICT
+);
+CREATE INDEX idx_dispatch_exclusion_batch ON sms_dispatch_exclusion(batch_id);
+REVOKE ALL ON sms_dispatch_exclusion FROM PUBLIC;
+
 -- 上行回复（按月分区，保留12个月）
 CREATE TABLE sms_reply (
     id             BIGSERIAL,
@@ -2056,6 +2071,35 @@ ALTER TABLE blacklist_hmac_alias
   FOREIGN KEY(blacklist_digest) REFERENCES blacklist(phone_hmac)
   ON UPDATE CASCADE ON DELETE CASCADE;
 
+-- 黑名单写入递增代际。发送授权只比较这一行，不在厂商 HTTP 期间持锁。
+CREATE TABLE blacklist_policy_generation (
+    id SMALLINT PRIMARY KEY CHECK (id = 1),
+    generation BIGINT NOT NULL CHECK (generation >= 1)
+);
+INSERT INTO blacklist_policy_generation(id, generation) VALUES (1, 1);
+REVOKE ALL ON blacklist_policy_generation FROM PUBLIC;
+
+CREATE OR REPLACE FUNCTION bump_blacklist_policy_generation()
+RETURNS bigint
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  next_generation bigint;
+BEGIN
+  UPDATE blacklist_policy_generation
+  SET generation = generation + 1
+  WHERE id = 1
+  RETURNING generation INTO next_generation;
+  IF next_generation IS NULL THEN
+    RAISE EXCEPTION 'blacklist policy generation unavailable';
+  END IF;
+  RETURN next_generation;
+END
+$$;
+REVOKE ALL ON FUNCTION bump_blacklist_policy_generation() FROM PUBLIC;
+
 -- 历史自由文本命中手机号时，迁移先加密保存原值，再收敛在线字段。
 -- 该表不授予任何运行角色，只允许 sms_owner 受控恢复。
 CREATE TABLE sensitive_metadata_archive (
@@ -2451,6 +2495,7 @@ CREATE TABLE outbox_event (
                      'app.tasks.outbox.compensate_quota',
                      'app.tasks.outbox.deliver_alert',
                      'app.tasks.outbox.release_usage',
+                     'app.tasks.outbox.publish_usage_projection',
                      'app.tasks.outbox.trigger_job',
                      'app.tasks.outbox.apply_uncertain_effect'
                    )),
@@ -2570,6 +2615,15 @@ CREATE TABLE outbox_event (
             || '[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
           )
         )
+        OR (
+          task_name='app.tasks.outbox.publish_usage_projection'
+          AND jsonb_array_length(args)=1
+          AND jsonb_typeof(args->0)='string'
+          AND args->>0 ~ (
+            '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-'
+            || '[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          )
+        )
       )
       AND args::text !~ (
         '"(phone|phones|mobile|mobiles|phone_enc|phone_hmac|'
@@ -2615,6 +2669,13 @@ CREATE TABLE outbox_event (
             || '[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
           )
         )
+        OR (
+          task_name='app.tasks.outbox.publish_usage_projection'
+          AND aggregate_id ~ (
+            '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-'
+            || '[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          )
+        )
       )
       AND (
         dedup_key !~ '(^|[^0-9])1[0-9]{10}([^0-9]|$)'
@@ -2633,7 +2694,10 @@ CREATE TABLE outbox_event (
           || '[89ab][0-9a-f]{3}-[0-9a-f]{12}|'
           || 'usage[.]release[:][0-9a-f]{8}-[0-9a-f]{4}-'
           || '[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-'
-          || '[0-9a-f]{12})$'
+          || '[0-9a-f]{12}|'
+          || 'usage[.]projection[:][0-9a-f]{8}-[0-9a-f]{4}-'
+          || '[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-'
+          || '[0-9a-f]{12}[:][1-9][0-9]*[:][1-9][0-9]*)$'
         )
       )
     )
@@ -3451,7 +3515,8 @@ BEGIN
             'vendor_test_operation_completed','vendor_test_operation_batch_attached'))
           OR (NEW.actor='system-reconcile' AND NEW.action='raw_replay')
           OR (NEW.actor IN ('system:usage-projection','system:usage-projection-auto')
-              AND NEW.action='usage_projection_rebuild')))
+              AND NEW.action='usage_projection_rebuild')
+          OR (NEW.actor='dispatch-blacklist' AND NEW.action='dispatch_excluded')))
       OR (context_domain='bulk' AND session_user='sms_send' AND (
           (NEW.actor='security-report-collector' AND NEW.action IN (
             'security_daily_generated','security_daily_generation_unavailable'))
@@ -3461,7 +3526,8 @@ BEGIN
           OR (NEW.actor='security-report-mailer'
               AND NEW.action='security_daily_delivery_result')
           OR (NEW.actor IN ('system:usage-projection','system:usage-projection-auto')
-              AND NEW.action='usage_projection_rebuild')));
+              AND NEW.action='usage_projection_rebuild')
+          OR (NEW.actor='dispatch-blacklist' AND NEW.action='dispatch_excluded')));
 
     IF NOT system_allowed THEN
       RAISE EXCEPTION 'system audit producer/action is not authorized for database role'
@@ -3607,6 +3673,9 @@ GRANT INSERT, UPDATE ON
     auth_session_policy
 TO sms_accept;
 GRANT INSERT ON sms_resend_action TO sms_accept;
+GRANT SELECT ON sms_dispatch_exclusion TO sms_accept;
+GRANT SELECT ON blacklist_policy_generation TO sms_accept;
+GRANT EXECUTE ON FUNCTION bump_blacklist_policy_generation() TO sms_accept;
 GRANT SELECT, INSERT, UPDATE ON sms_resend_supplement, sms_resend_supplement_member
     TO sms_accept;
 GRANT SELECT, INSERT ON stat_dirty_date TO sms_accept;
@@ -3750,6 +3819,9 @@ TO sms_send;
 GRANT INSERT, DELETE ON callback_report_event TO sms_send;
 GRANT INSERT, UPDATE, DELETE ON callback_task TO sms_send;
 GRANT INSERT, DELETE ON callback_batch_event TO sms_send;
+GRANT SELECT, INSERT ON sms_dispatch_exclusion TO sms_send;
+GRANT SELECT ON blacklist_policy_generation TO sms_send;
+GRANT EXECUTE ON FUNCTION bump_blacklist_policy_generation() TO sms_send;
 GRANT INSERT, UPDATE ON
     report_event_projection, vendor_test_daily_usage,
     vendor_test_send_attempt, vendor_test_operation,

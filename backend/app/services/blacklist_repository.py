@@ -11,6 +11,7 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import bind_connection_audit_subject, database_engine
 from app.services.blacklist import BlacklistEntry, BlacklistPage, BlacklistUpsertResult
+from app.services.dispatch_blacklist import bump_blacklist_generation, lock_blacklist_subjects
 from app.settings import Settings, get_settings
 
 
@@ -41,6 +42,8 @@ async def upsert_blacklist_entries(
             )
         }
     )
+    await lock_blacklist_subjects(connection, digests)
+    await bump_blacklist_generation(connection)
     resolved = await connection.execute(
         text(
             """
@@ -68,9 +71,7 @@ async def upsert_blacklist_entries(
     for entry in entries:
         aliases = entry.hmac_candidates or ((entry.key_version, entry.phone_hmac),)
         owners = {
-            owner
-            for _version, digest in aliases
-            for owner in owners_by_digest.get(digest, set())
+            owner for _version, digest in aliases for owner in owners_by_digest.get(digest, set())
         }
         if owners:
             updated += 1
@@ -265,6 +266,7 @@ class SqlBlacklistRepository:
         engine = self._engine()
         try:
             async with engine.begin() as connection:
+                await lock_blacklist_subjects(connection, [phone_hmac])
                 result = await connection.execute(
                     text(
                         """
@@ -282,6 +284,8 @@ class SqlBlacklistRepository:
                     {"phone_hmac": phone_hmac},
                 )
                 removed = result.scalar_one_or_none() is not None
+                if removed:
+                    await bump_blacklist_generation(connection)
                 if removed:
                     await bind_connection_audit_subject(
                         connection,

@@ -67,6 +67,7 @@ TASK_NAMES = {
     "app.tasks.outbox.compensate_quota",
     "app.tasks.outbox.deliver_alert",
     "app.tasks.outbox.release_usage",
+    "app.tasks.outbox.publish_usage_projection",
     "app.tasks.outbox.trigger_job",
     "app.tasks.outbox.apply_uncertain_effect",
 }
@@ -209,6 +210,27 @@ def _assert_safe(value: Any, *, key: str | None = None) -> None:
         raise ValueError("outbox args must be JSON scalar references")
 
 
+def _usage_projection_reference(spec: OutboxEventSpec) -> bool:
+    """部分释放后的绝对值投影。参数只有预留 UUID，代际和分片只在 dedup。"""
+
+    prefix = f"usage.projection:{spec.aggregate_id}:"
+    tail = spec.dedup_key.removeprefix(prefix)
+    generation, separator, chunk_id = tail.partition(":")
+    return (
+        spec.task_name == "app.tasks.outbox.publish_usage_projection"
+        and spec.event_type == "usage.projection"
+        and spec.aggregate_type == "usage_reservation"
+        and spec.queue == "realtime"
+        and UUID_REFERENCE.fullmatch(spec.aggregate_id) is not None
+        and spec.args == (spec.aggregate_id,)
+        and separator == ":"
+        and generation.isdecimal()
+        and not generation.startswith("0")
+        and chunk_id.isdecimal()
+        and not chunk_id.startswith("0")
+    )
+
+
 def validate_spec(spec: OutboxEventSpec) -> None:
     """验证稳定引用合同；拒绝 PII、正文、凭据和任意队列/任务注入。"""
 
@@ -334,8 +356,13 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         and spec.dedup_key.startswith(f"sign.adopt:{spec.aggregate_id}:")
         and UUID_REFERENCE.fullmatch(spec.dedup_key.rsplit(":", 1)[-1]) is not None
     )
+    usage_projection_reference = _usage_projection_reference(spec)
     if spec.task_name == "app.tasks.outbox.release_usage" and not usage_release_reference:
         raise ValueError("invalid usage release outbox contract")
+    if spec.task_name == "app.tasks.outbox.publish_usage_projection" and not (
+        usage_projection_reference
+    ):
+        raise ValueError("invalid usage projection outbox contract")
     if spec.task_name == "app.tasks.send.process_chunk" and not chunk_ready_reference:
         raise ValueError("invalid chunk ready outbox contract")
     if (
@@ -357,6 +384,7 @@ def validate_spec(spec: OutboxEventSpec) -> None:
         raise ValueError("invalid sign adoption outbox contract")
     if (
         not usage_release_reference
+        and not usage_projection_reference
         and not chunk_ready_reference
         and not uncertain_effect_reference
         and not manual_job_reference
@@ -398,7 +426,10 @@ class OutboxRepository(Protocol):
     async def complete(self, event_id: UUID, lease_id: UUID) -> None: ...
 
     async def defer_execution(
-        self, event_id: UUID, lease_id: UUID, next_attempt_at: datetime,
+        self,
+        event_id: UUID,
+        lease_id: UUID,
+        next_attempt_at: datetime,
     ) -> None: ...
 
     async def fail_execution(
@@ -579,7 +610,9 @@ class OutboxExecutor:
                 )
                 raise
             await self.repository.defer_execution(
-                claim.event_id, claim.lease_id, deferred.next_attempt_at,
+                claim.event_id,
+                claim.lease_id,
+                deferred.next_attempt_at,
             )
             return cast(T, 0)
         except Exception as exc:
