@@ -224,7 +224,11 @@ class BatchQueryService:
                           message_counts.sent,message_counts.other,
                           message_counts.cancelled,message_counts.rejected,
                           message_counts.expired,message_counts.needs_review,
-                          b.scheduled_at,b.created_at
+                          b.scheduled_at,b.created_at,
+                          (
+                            SELECT count(*) FROM sms_dispatch_exclusion exclusion
+                            WHERE exclusion.batch_id=b.id
+                          ) AS excluded_before_send
                         FROM sms_batch b
                         LEFT JOIN app a ON a.id=b.app_id
                         LEFT JOIN sms_batch original ON original.id=b.resend_of
@@ -258,11 +262,7 @@ class BatchQueryService:
         ensure_page_offset(page, size)
         predicate, scope_params = scope.sql()
         status_predicate = "" if status is None else "AND m.status=:status"
-        display_predicate = (
-            ""
-            if display_status is None
-            else f"AND {display_status_predicate()}"
-        )
+        display_predicate = "" if display_status is None else f"AND {display_status_predicate()}"
         params: dict[str, object] = {
             "batch_no": batch_no,
             "offset": (page - 1) * size,
@@ -289,7 +289,13 @@ class BatchQueryService:
                         f"""
                         SELECT m.id,m.phone_mask AS phone,m.status,b.status AS batch_status,
                           ({MESSAGE_DISPLAY_STATUS_SQL}) AS display_status,
-                          c.vendor_task_id,m.report_desc,m.report_time
+                          c.vendor_task_id,m.report_desc,m.report_time,
+                          (
+                            SELECT exclusion.reason FROM sms_dispatch_exclusion exclusion
+                            WHERE exclusion.message_id=m.id
+                              AND exclusion.message_created_at=m.created_at
+                            LIMIT 1
+                          ) AS exclusion_reason
                         {source}
                         ORDER BY m.id
                         OFFSET :offset LIMIT :size

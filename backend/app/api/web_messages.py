@@ -254,6 +254,7 @@ class TimelineEventModel(BaseModel):
     sender: str | None
     batch_status: str | None
     display_status: str | None
+    exclusion_reason: str | None = None
 
     @field_serializer("ts", when_used="json")
     def serialize_ts(self, value: datetime) -> datetime:
@@ -611,6 +612,7 @@ async def message_timeline(
                 sender=item.sender,
                 batch_status=item.batch_status,
                 display_status=item.display_status,
+                exclusion_reason=item.exclusion_reason,
             )
             for item in result.events
         ],

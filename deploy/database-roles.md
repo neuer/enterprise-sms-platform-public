@@ -161,6 +161,8 @@ PUBLIC 没有 EXECUTE，`sms_metrics` 仅获得累计维度和计数列 SELECT�
 同一迁移仅允许 realtime 的 `system_resend:<id>` 写 `sensitive_hit`，数据库核对
 批准状态、generation、来源分片/批次与两个有效管理员；不扩大普通 API 或其他系统动作。
 
+0136 增加 `sms_dispatch_exclusion` 和 `blacklist_policy_generation`。`sms_send` 可查询并插入剔除事实，`sms_accept` 只读。两边都只能读取代际，写入通过 `bump_blacklist_policy_generation()`。没有手机号列，剔除表也没有 UPDATE/DELETE。已提交或结果未知的分片不写这张表。`dispatch-blacklist` / `dispatch_excluded` 只审计数量、原因和 batch_no。
+
 0135 增加失败重发的补发意图和成员。`sms_accept` 可插入并更新这两张表，没有 DELETE。
 成员只保存原消息主键和认领状态，不保存手机号。普通 `sms_resend_action` 仍是来源批次主键。
 

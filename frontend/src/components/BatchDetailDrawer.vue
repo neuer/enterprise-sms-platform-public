@@ -130,6 +130,9 @@ async function revealPhone(messageId: number): Promise<string> {
           批次须等回执到齐后才能重发失败号码，并完整重走频控、审批与时间窗。</p
         >
       </div>
+      <p v-if="selected.excluded_before_send > 0" class="batch-actions-why" data-testid="excluded-before-send"
+        >下发前剔除 {{ formatNumber(selected.excluded_before_send) }} 个号码，未调用厂商。</p
+      >
 
       <section class="batch-hero">
         <div class="compose compose--lg" role="img" :aria-label="describeCompose(selected, composeOf(selected))">

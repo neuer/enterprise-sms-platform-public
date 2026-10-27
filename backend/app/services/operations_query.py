@@ -85,6 +85,7 @@ class TimelineEvent:
     sender: str | None
     batch_status: str | None = None
     display_status: str | None = None
+    exclusion_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -401,7 +402,13 @@ class SqlOperationsQueryRepository:
                             trim(b.batch_no) content_object_id,m.status,
                             CASE WHEN b.channel='web' THEN b.creator ELSE a.name END sender,
                             b.status AS batch_status,
-                            ({MESSAGE_DISPLAY_STATUS_SQL}) AS display_status
+                            ({MESSAGE_DISPLAY_STATUS_SQL}) AS display_status,
+                            (
+                              SELECT exclusion.reason FROM sms_dispatch_exclusion exclusion
+                              WHERE exclusion.message_id=m.id
+                                AND exclusion.message_created_at=m.created_at
+                              LIMIT 1
+                            ) AS exclusion_reason
                           FROM sms_message m JOIN sms_batch b ON b.id=m.batch_id
                           LEFT JOIN app a ON a.id=b.app_id
                           WHERE m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
@@ -414,7 +421,8 @@ class SqlOperationsQueryRepository:
                             NULL::bytea batch_content_enc,e.content_enc reply_content_enc,
                             trim(r.event_key) content_object_id,NULL status,
                             '用户' sender,b.status AS batch_status,
-                            NULL::varchar(16) AS display_status
+                            NULL::varchar(16) AS display_status,
+                            NULL::varchar(32) AS exclusion_reason
                           FROM sms_reply r
                           JOIN reply_event e ON e.event_key=r.event_key
                           LEFT JOIN sms_batch b ON b.id=r.batch_id
@@ -458,25 +466,17 @@ class SqlOperationsQueryRepository:
                             ts=timestamp,
                             direction=str(values["direction"]),
                             category=(
-                                str(values["category"])
-                                if values["category"] is not None
-                                else None
+                                str(values["category"]) if values["category"] is not None else None
                             ),
                             batch_no=(
-                                str(values["batch_no"])
-                                if values["batch_no"] is not None
-                                else None
+                                str(values["batch_no"]) if values["batch_no"] is not None else None
                             ),
                             content=content,
                             status=(
-                                str(values["status"])
-                                if values["status"] is not None
-                                else None
+                                str(values["status"]) if values["status"] is not None else None
                             ),
                             sender=(
-                                str(values["sender"])
-                                if values["sender"] is not None
-                                else None
+                                str(values["sender"]) if values["sender"] is not None else None
                             ),
                             batch_status=(
                                 str(values["batch_status"])
@@ -486,6 +486,11 @@ class SqlOperationsQueryRepository:
                             display_status=(
                                 str(values["display_status"])
                                 if values.get("display_status") is not None
+                                else None
+                            ),
+                            exclusion_reason=(
+                                str(values["exclusion_reason"])
+                                if values.get("exclusion_reason") is not None
                                 else None
                             ),
                         )

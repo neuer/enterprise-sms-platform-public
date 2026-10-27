@@ -27,6 +27,7 @@ CSV_HEADER = (
     "report_desc",
     "report_time",
     "content",
+    "exclusion_reason",
 )
 UNMATCHED_CSV_HEADER = (
     "created_at",
@@ -170,6 +171,7 @@ class ExportWorker:
                             row["display_content_enc"],
                             _text(row["batch_no"]),
                         ),
+                        _text(row.get("exclusion_reason")),
                     )
 
         async def maintain_lease() -> None:
@@ -198,11 +200,7 @@ class ExportWorker:
         build_task: asyncio.Task[Path] | None = None
         lost_task = asyncio.create_task(lease_lost.wait())
         try:
-            header = (
-                UNMATCHED_CSV_HEADER
-                if claim.filters.dataset == "unmatched"
-                else CSV_HEADER
-            )
+            header = UNMATCHED_CSV_HEADER if claim.filters.dataset == "unmatched" else CSV_HEADER
             build_task = asyncio.create_task(
                 self.codec.write_csv(
                     claim.id,

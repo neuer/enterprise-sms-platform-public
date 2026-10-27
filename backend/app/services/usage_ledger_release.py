@@ -294,6 +294,31 @@ class UsageReleaseMixin(UsageProjectionMixin):
             )
             return changed
 
+    async def publish_projection(self, reservation_id: UUID) -> int:
+        """把该预留当前的绝对投影写到 Redis。不改变预留状态。"""
+
+        engine = self._engine()
+        async with engine.connect() as connection:
+            key_result = await connection.execute(
+                text(
+                    """
+                    SELECT projection_key FROM usage_quota_entry
+                    WHERE reservation_id=:reservation_id
+                    UNION
+                    SELECT projection_key FROM usage_frequency_entry
+                    WHERE reservation_id=:reservation_id
+                    """
+                ),
+                {"reservation_id": reservation_id},
+            )
+            rows = await _projection_rows(
+                connection,
+                [str(value) for value in key_result.scalars()],
+            )
+        if not rows:
+            return 0
+        return await self._apply_rows(rows)
+
     async def apply_release(self, reservation_id: UUID) -> int:
         """Outbox effect：覆盖全部受影响绝对投影，成功后才标记 released。"""
 

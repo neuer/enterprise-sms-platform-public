@@ -275,6 +275,7 @@ class BatchModel(BaseModel):
     resend_child_batch_no: str | None = None
     resend_covered_failed: int = 0
     resend_uncovered_failed: int = 0
+    excluded_before_send: int = 0
 
 
 MessageStatus = Literal["pending", "sent", "delivered", "failed", "unknown", "other"]
@@ -301,6 +302,7 @@ class MessageDetailModel(BaseModel):
     vendor_task_id: str | None
     report_desc: str | None
     report_time: datetime | None
+    exclusion_reason: str | None = None
 
 
 class MessageDetailPage(BaseModel):

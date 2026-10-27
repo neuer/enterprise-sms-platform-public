@@ -195,6 +195,36 @@ def compensate_quota(
     )
 
 
+async def _publish_usage_projection(reservation_id: str, event_id: str) -> int:
+    settings = get_settings()
+    redis = Redis.from_url(settings.redis_control_url, decode_responses=True)
+
+    async def effect(claim: OutboxClaim) -> int:
+        if claim.args != (reservation_id,):
+            raise ValueError("usage projection outbox args mismatch")
+        return await UsageLedgerService(
+            redis,
+            settings,
+            pooled=False,
+        ).publish_projection(UUID(reservation_id))
+
+    try:
+        return await OutboxExecutor(SqlOutboxRepository(settings)).run(
+            UUID(event_id),
+            expected_type="usage.projection",
+            effect=effect,
+        )
+    finally:
+        await redis.aclose()
+
+
+@celery_app.task(name="app.tasks.outbox.publish_usage_projection")  # type: ignore[untyped-decorator]
+def publish_usage_projection(reservation_id: str, outbox_event_id: str) -> int:
+    """只携带 reservation UUID；重复执行覆盖同一绝对投影。"""
+
+    return run_worker_async(_publish_usage_projection(reservation_id, outbox_event_id))
+
+
 @celery_app.task(name="app.tasks.outbox.release_usage")  # type: ignore[untyped-decorator]
 def release_usage(
     reservation_id: str,
@@ -254,9 +284,7 @@ def trigger_job(
         if not isinstance(reference_or_event_id, str):
             raise ValueError("invalid manual job outbox reference")
         return run_worker_async(_trigger_job(task_name, reference_or_event_id))
-    if not isinstance(reference_or_event_id, int) or isinstance(
-        reference_or_event_id, bool
-    ):
+    if not isinstance(reference_or_event_id, int) or isinstance(reference_or_event_id, bool):
         raise ValueError("invalid manual job outbox reference")
     return run_worker_async(
         _trigger_job(

@@ -165,6 +165,10 @@ class FakeConnection:
         self.calls.append((str(statement), params))
         return self.results.pop(0)
 
+    async def scalar(self, statement: object, params: Any = None) -> int:
+        self.calls.append((str(statement), params))
+        return 1
+
 
 class FakeContext:
     def __init__(self, connection: FakeConnection) -> None:
@@ -334,6 +338,7 @@ async def test_sql_optout_reprotects_phone_and_persists_all_hmac_aliases() -> No
                     }
                 ]
             ),
+            FakeResult(),
             FakeResult(rows=[]),
             FakeResult(),
             FakeResult(),
@@ -414,6 +419,7 @@ async def test_sql_optout_audit_failure_propagates(
                     }
                 ]
             ),
+            FakeResult(),
             FakeResult(rows=[]),
             FakeResult(),
             FakeResult(),

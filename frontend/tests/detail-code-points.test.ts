@@ -38,6 +38,7 @@ function batch(content: string): BatchItem {
     can_resend_failed: false,
     resend_covered_failed: 0,
     resend_uncovered_failed: 0,
+    excluded_before_send: 0,
   }
 }
 
@@ -68,6 +69,35 @@ describe("详情字数按码点计数", () => {
     expect(text).toContain("内容长度 69 字")
     expect(text).toContain("单条 1 计费条")
     expect(text).not.toContain("138 字")
+    expect(text).not.toContain("下发前剔除")
+    wrapper.unmount()
+  })
+
+  it("下发前剔除数量来自批次事实", async () => {
+    const selected = batch("通知")
+    selected.excluded_before_send = 2
+    const wrapper = mount(BatchDetailDrawer, {
+      props: {
+        modelValue: true,
+        detailStatus: "",
+        detailPage: 1,
+        selected,
+        details: [],
+        detailTotal: 0,
+        detailsLoading: false,
+        canWrite: false,
+        canDecrypt: false,
+        canScheduleOps: false,
+        canResendFailed: false,
+        detailUnconfirmed: false,
+        cancelling: false,
+        resending: false,
+      },
+      global: { plugins: [ElementPlus] },
+      attachTo: document.body,
+    })
+    await flushPromises()
+    expect(document.body.textContent ?? "").toContain("下发前剔除 2 个号码，未调用厂商。")
     wrapper.unmount()
   })
 })

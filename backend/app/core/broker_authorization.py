@@ -34,6 +34,7 @@ TASK_ROLES: dict[str, frozenset[str]] = {
             "app.tasks.reconcile_usage_projection",
             "app.tasks.outbox.compensate_quota",
             "app.tasks.outbox.release_usage",
+            "app.tasks.outbox.publish_usage_projection",
             "app.tasks.outbox.apply_uncertain_effect",
         ),
         frozenset({"realtime"}),

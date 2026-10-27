@@ -886,6 +886,7 @@ async def test_blacklist_repository_persists_hmac_rows_and_count_only_audit(
     entry = BlacklistEntry("a" * 64, b"cipher", "138****8000", 1, "import", "投诉")
     connection = FakeConnection(
         [
+            FakeResult(),
             FakeResult(rows=[]),
             FakeResult(),
             FakeResult(),
@@ -893,7 +894,8 @@ async def test_blacklist_repository_persists_hmac_rows_and_count_only_audit(
             FakeResult(rows=[{"database_user": "sms_accept", "txid": 7}]),
             FakeResult(),
             FakeResult(),
-        ]
+        ],
+        scalar_values=[2],
     )
     bind_engine(monkeypatch, repository, connection)
     with correlation_scope(UUID("d8c138c4-5b7e-4b06-afa9-30bde2e6b7f0")):
@@ -910,11 +912,13 @@ async def test_blacklist_repository_persists_hmac_rows_and_count_only_audit(
 
     connection = FakeConnection(
         [
+            FakeResult(),
             FakeResult(scalar=1),
             FakeResult(rows=[{"database_user": "sms_accept", "txid": 8}]),
             FakeResult(),
             FakeResult(),
-        ]
+        ],
+        scalar_values=[3],
     )
     bind_engine(monkeypatch, repository, connection)
     assert (
@@ -965,6 +969,7 @@ async def test_blacklist_rotation_renames_canonical_digest_and_replaces_aliases(
     )
     connection = FakeConnection(
         [
+            FakeResult(),
             FakeResult(
                 rows=[
                     {
@@ -979,7 +984,8 @@ async def test_blacklist_rotation_renames_canonical_digest_and_replaces_aliases(
             FakeResult(rows=[{"database_user": "sms_accept", "txid": 9}]),
             FakeResult(),
             FakeResult(),
-        ]
+        ],
+        scalar_values=[4],
     )
     bind_engine(monkeypatch, repository, connection)
 
@@ -991,11 +997,14 @@ async def test_blacklist_rotation_renames_canonical_digest_and_replaces_aliases(
     )
 
     assert outcome == BlacklistUpsertResult(added=0, updated=1)
-    update_sql, update_params = connection.calls[1]
-    assert "UPDATE blacklist SET" in update_sql
+    update_sql, update_params = next(
+        call for call in connection.calls if "UPDATE blacklist SET" in call[0]
+    )
     assert update_params[0]["current"] == "a" * 64  # type: ignore[index]
     assert update_params[0]["canonical"] == "b" * 64  # type: ignore[index]
-    alias_call = connection.calls[3]
+    alias_call = next(
+        call for call in connection.calls if "INSERT INTO blacklist_hmac_alias" in call[0]
+    )
     assert "INSERT INTO blacklist_hmac_alias" in alias_call[0]
     assert {row["digest"] for row in alias_call[1]} == {"a" * 64, "b" * 64}  # type: ignore[union-attr]
 
