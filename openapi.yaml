@@ -874,7 +874,7 @@ paths:
                     properties:
                       blacklisted: { type: boolean }
                       blacklist_source: { anyOf: [{ type: string }, { type: 'null' }] }
-                      recv_30d: { type: integer, description: 近30日接收量 }
+                      recv_30d: { type: integer, description: 近30日确认送达。只计 status=delivered 且 report_time 在当前时刻向前30日内的消息；缺失回执时间、未下发、失败、未知和上行回复不计入。字段名保持 recv_30d。 }
                   items:
                     type: array
                     items:
@@ -924,7 +924,7 @@ paths:
                     properties:
                       blacklisted: { type: boolean }
                       blacklist_source: { anyOf: [{ type: string }, { type: 'null' }] }
-                      recv_30d: { type: integer, description: 近30日接收量 }
+                      recv_30d: { type: integer, description: 近30日确认送达。只计 status=delivered 且 report_time 在当前时刻向前30日内的消息；缺失回执时间、未下发、失败、未知和上行回复不计入。字段名保持 recv_30d。 }
                   events:
                     type: array
                     items:
