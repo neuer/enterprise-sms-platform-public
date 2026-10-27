@@ -355,6 +355,7 @@ async def test_approval_waiting_for_lock_cannot_cross_deadline() -> None:
                     approval,
                     action="approve",
                     reason=None,
+                    expected_generation=1,
                     principal=SecurityPrincipal(
                         account + 1, 999999, "synthetic-reviewer", "synthetic", "admin"
                     ),

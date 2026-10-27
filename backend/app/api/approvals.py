@@ -51,6 +51,7 @@ class ApprovalListItem(BaseModel):
     status: ApprovalStatus
     approver: str | None
     reason: str | None = Field(max_length=256)
+    generation: int = Field(ge=1)
     expires_at: datetime
     decided_at: datetime | None
     created_at: datetime
@@ -83,6 +84,7 @@ class DecisionOutcome(BaseModel):
 class DecisionRequest(BaseModel):
     action: Literal["approve", "reject"]
     reason: str | None = Field(default=None, max_length=256)
+    expected_generation: int = Field(ge=1)
 
 
 async def get_approval_service(_actor: ApproverActor) -> AsyncIterator[ApprovalService]:
@@ -191,6 +193,7 @@ async def decide_approval(
             action=payload.action,
             principal=actor.principal,
             reason=payload.reason,
+            expected_generation=payload.expected_generation,
         )
     except SelfApprovalDenied as error:
         raise ApiError(403, "SELF_APPROVAL_DENIED", str(error), None) from None

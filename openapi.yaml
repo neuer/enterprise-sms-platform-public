@@ -1030,10 +1030,11 @@ paths:
           application/json:
             schema:
               type: object
-              required: [action]
+              required: [action, expected_generation]
               properties:
                 action: { type: string, enum: [approve, reject] }
                 reason: { anyOf: [{ type: string, maxLength: 256 }, { type: 'null' }], description: 驳回时必填（去空白后非空）；通过时可选填审批意见 }
+                expected_generation: { type: integer, minimum: 1, description: 本次已展示的审阅版本。缺失、无效或与数据库不一致时返回 409，不能省略成当前版本 }
       responses:
         '200': { description: 处理成功, content: { application/json: { schema: { $ref: '#/components/schemas/DecisionOutcome' } } } }
         '400': { $ref: '#/components/responses/BadRequest' }
@@ -4243,7 +4244,7 @@ components:
 
     ApprovalListItem:
       type: object
-      required: [id, batch_no, category, applicant, applicant_account_id, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at]
+      required: [id, batch_no, category, applicant, applicant_account_id, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at, generation]
       properties:
         id: { type: integer }
         batch_no: { type: string }
@@ -4267,10 +4268,11 @@ components:
         expires_at: { type: string, format: date-time, description: 审批单过期自动关闭时间 }
         decided_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 决策时间；待审批为 null }
         created_at: { type: string, format: date-time }
+        generation: { type: integer, minimum: 1, description: 审阅版本。首次为 1，每次改期重审递增；决策必须回传打开时看到的版本 }
 
     ApprovalDetail:
       type: object
-      required: [id, batch_no, category, applicant, applicant_account_id, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at, content]
+      required: [id, batch_no, category, applicant, applicant_account_id, dept, total, segments, estimated_segments, scheduled_at, trigger_threshold, trigger_threshold_source, batch_status, deferred_reason, status, approver, reason, expires_at, decided_at, created_at, generation, content]
       properties:
         id: { type: integer }
         batch_no: { type: string }
@@ -4294,6 +4296,7 @@ components:
         expires_at: { type: string, format: date-time, description: 审批单过期自动关闭时间 }
         decided_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 决策时间；待审批为 null }
         created_at: { type: string, format: date-time }
+        generation: { type: integer, minimum: 1, description: 审阅版本。首次为 1，每次改期重审递增；决策必须回传打开时看到的版本 }
         content: { type: string, description: 解密后的展示正文；仅详情端点返回并逐条记敏感读审计 }
 
     ApprovalCounts:

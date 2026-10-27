@@ -37,6 +37,7 @@ export interface ApprovalListItem {
   created_at: string
   batch_status: string
   deferred_reason: string | null
+  generation: number
 }
 
 /** 同 ApprovalListItem：契约 ApprovalDetail 的 category 同为 string，保留手写以维持 Category 窄化。 */
@@ -75,10 +76,19 @@ export async function getApproval(id: number, signal?: AbortSignal): Promise<App
   return apiRequest<ApprovalDetail>(`/approvals/${id}`, { method: "GET", signal })
 }
 
-export async function decideApproval(id: number, action: ApprovalAction, reason?: string): Promise<DecisionOutcome> {
+export async function decideApproval(
+  id: number,
+  action: ApprovalAction,
+  expectedGeneration: number,
+  reason?: string,
+): Promise<DecisionOutcome> {
   return apiRequest<DecisionOutcome>(`/approvals/${id}/decision`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, reason: reason || null }),
+    body: JSON.stringify({
+      action,
+      reason: reason || null,
+      expected_generation: expectedGeneration,
+    }),
   })
 }

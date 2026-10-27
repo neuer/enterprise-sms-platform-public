@@ -41,6 +41,7 @@ function makeItem(overrides: Partial<ApprovalListItem> = {}): ApprovalListItem {
     created_at: "2026-08-19T09:12:04+08:00",
     batch_status: "pending_approval",
     deferred_reason: null,
+    generation: 1,
     ...overrides,
   }
 }
@@ -299,6 +300,7 @@ describe("审批中心", () => {
     expect(JSON.parse(String(decisionCall![1]?.body))).toEqual({
       action: "approve",
       reason: "同意发送",
+      expected_generation: 1,
     })
 
     expect(document.body.textContent).toContain("审批已通过")
@@ -331,6 +333,7 @@ describe("审批中心", () => {
     expect(JSON.parse(String(decisionCall![1]?.body))).toEqual({
       action: "reject",
       reason: "含未备案链接",
+      expected_generation: 1,
     })
     expect(document.body.textContent).toContain("审批已驳回")
   })
@@ -379,6 +382,7 @@ describe("审批中心", () => {
     expect(JSON.parse(String(decisionCall![1]?.body))).toEqual({
       action: "approve",
       reason: "同意，注意营销时间窗",
+      expected_generation: 1,
     })
     expect(document.body.textContent).toContain("批次已改派为定时发送")
     expect(drawer.props("modelValue")).toBe(false)

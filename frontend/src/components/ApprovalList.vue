@@ -33,6 +33,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   detail: [item: ApprovalListItem]
   quick: [item: ApprovalListItem, action: ApprovalAction, reason?: string]
+  stale: [item: ApprovalListItem]
 }>()
 
 const emptyTitle = computed(() => (props.status === "pending" ? "当前没有待审批记录" : "当前分类没有审批记录"))
@@ -112,7 +113,7 @@ function destinationOf(item: ApprovalListItem): Destination {
 /* 行内快捷决策：全列表同时只保留一个 Popover，意见随目标切换重置。
    Popover 绑定 :visible 且不透传 update 处理器 → Element 视为受控组件，触发器事件全部惰性，
    开合完全由引用按钮的 click 驱动（避免受控模式下 jsdom 触发竞态）。 */
-const quickTarget = ref<{ id: number; action: ApprovalAction } | null>(null)
+const quickTarget = ref<{ id: number; action: ApprovalAction; item: ApprovalListItem } | null>(null)
 const quickReason = ref("")
 
 function quickVisible(item: ApprovalListItem, action: ApprovalAction): boolean {
@@ -124,7 +125,7 @@ function toggleQuick(item: ApprovalListItem, action: ApprovalAction): void {
     closeQuick()
     return
   }
-  quickTarget.value = { id: item.id, action }
+  quickTarget.value = { id: item.id, action, item }
   quickReason.value = ""
 }
 
@@ -148,11 +149,17 @@ const quickConfirmDisabled = computed(() => {
 })
 
 function confirmQuick(item: ApprovalListItem): void {
-  if (quickTarget.value === null || quickConfirmDisabled.value) return
-  const action = quickTarget.value.action
+  const target = quickTarget.value
+  if (target === null || target.id !== item.id || quickConfirmDisabled.value) return
+  const frozen = target.item
+  const action = target.action
   const reason = quickReason.value.trim() || undefined
   closeQuick()
-  emit("quick", item, action, reason)
+  if (item.generation !== frozen.generation) {
+    emit("stale", frozen)
+    return
+  }
+  emit("quick", frozen, action, reason)
 }
 </script>
 
@@ -223,6 +230,9 @@ function confirmQuick(item: ApprovalListItem): void {
               </template>
               <div v-click-outside="onQuickClickOutside" class="approval-quick">
                 <p class="approval-quick-title">快捷通过 · {{ item.batch_no }}</p>
+                <p class="approval-quick-tip" data-testid="approval-quick-generation">
+                  审阅版本 {{ quickTarget?.item.generation }}
+                </p>
                 <el-input
                   v-model="quickReason"
                   type="textarea"
@@ -267,6 +277,9 @@ function confirmQuick(item: ApprovalListItem): void {
               </template>
               <div v-click-outside="onQuickClickOutside" class="approval-quick">
                 <p class="approval-quick-title">快捷驳回 · {{ item.batch_no }}</p>
+                <p class="approval-quick-tip" data-testid="approval-quick-generation">
+                  审阅版本 {{ quickTarget?.item.generation }}
+                </p>
                 <el-input
                   v-model="quickReason"
                   type="textarea"

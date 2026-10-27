@@ -322,6 +322,8 @@ async def test_approval_expiry_repository_commits_state_and_callback_only(
     connection = FakeConnection(
         [
             FakeResult(scalar_values=[3]),
+            FakeResult(),
+            FakeResult(),
             FakeResult(rows=[row]),
             FakeResult(),
             FakeResult(),
@@ -493,7 +495,15 @@ async def test_approval_rejection_enqueues_batch_finished_in_same_transaction(
     repository = SqlApprovalRepository()
     connection = FakeConnection(
         [
-            FakeResult(3),
+            FakeResult(
+                rows=[
+                    {
+                        "batch_status": "pending_approval",
+                        "scheduled_at": None,
+                    }
+                ]
+            ),
+            FakeResult(),
             FakeResult(8),
             FakeResult(),
             FakeResult(),
@@ -526,6 +536,7 @@ async def test_approval_rejection_enqueues_batch_finished_in_same_transaction(
             action="reject",
             principal=APPROVER,
             reason="不合规",
+            expected_generation=1,
         )
         is not None
     )
@@ -541,7 +552,7 @@ async def test_approval_rejection_enqueues_batch_finished_in_same_transaction(
         "approval:3:rejected",
     )
     assert outbox_events[0].dedup_key == "approval:3:rejected"
-    audit_sql = connection.calls[3][0]
+    audit_sql = next(sql for sql, _params in connection.calls if "approval_decision" in sql)
     assert "'decision',CAST(:decision AS text)" in audit_sql
     assert "'actor_account_id',CAST(:actor_account_id AS bigint)" in audit_sql
 
