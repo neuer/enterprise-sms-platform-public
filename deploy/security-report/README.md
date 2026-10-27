@@ -81,8 +81,9 @@ worker-bulk 对 `security-report-control` 为可写挂载（用于提交投递�
 
 ## 证据采集器（当前仅开发/预生产修复验证）
 
-日报数据不是 mailer 生成的。主机侧需要安装同一提交中的
-`security-report-collector.service` 和 `.timer`；采集器只读取固定主机日志，写入
+日报数据不是 mailer 生成的。开发测试主机需要安装同一提交中的
+`security-report-collector.test.service`（安装为 `security-report-collector.service`）
+和 `security-report-collector.timer`；采集器只读取固定主机日志，写入
 `security-report-control/incoming/YYYY-MM-DD.json`，只保留聚合计数与覆盖状态，不写入
 日志原文、IP、账号、请求路径或平台凭据。它默认在 07:50（Asia/Shanghai）运行，供
 08:00 的日报任务消费。
@@ -107,20 +108,36 @@ worker-bulk 对 `security-report-control` 为可写挂载（用于提交投递�
 
 以下安装示例当前不得用于生产；只有上述生产 No-Go 闭合后，才可由授权运维按新的受控入口安装：
 
-采集器只使用 Python 标准库，必须由生产宿主固定的 `/usr/bin/python3` 运行；该解释器
+采集器只使用 Python 标准库，必须由宿主固定的 `/usr/bin/python3` 运行；该解释器
 必须是 Python 3.12。它不依赖、也不得回退到发布目录中的 `backend/.venv`。启用 timer
-前先完成生产宿主只读预检，并确认 Ubuntu 的 `rsyslog` 正在把 SSH 认证事件写入
+前先确认 `/etc/sms-platform/test-host` 存在，`compose.env` 中
+`SMS_SECRETS_MODE=development`，并确认 Ubuntu 的 `rsyslog` 正在把 SSH 认证事件写入
 `/var/log/auth.log`；文件缺失或目标日期不可归属时，日报保持“证据缺失”，不得改用
 不受控路径或把缺失当作零事件。
+
+测试专用 unit 对主机 marker 和运行模式双重检查。生产 unit 仍调用受控快照中的
+`sms-compose security-report`，写入固定的 `/var/lib/sms-platform/security-report`；
+不得把生产 unit 直接用于开发测试，也不得把测试主机改成 production 来绕过检查。
 
 ```bash
 sudo install -d -o root -g root -m 0750 \
   /opt/sms-platform/deploy/security-report-control/incoming
-sudo install -m 0644 deploy/systemd/security-report-collector.service /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/security-report-collector.test.service \
+  /etc/systemd/system/security-report-collector.service
 sudo install -m 0644 deploy/systemd/security-report-collector.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now security-report-collector.timer
+sudo systemctl start security-report-collector.service
+sudo systemctl show -p Result -p ExecMainStatus -p ConditionResult \
+  -p ExecCondition -p ExecMainStartTimestamp security-report-collector.service
 ```
+
+安装验收必须同时确认 timer 为 active、服务实际执行成功、昨日日期快照存在且为
+`10001:root 0640` 普通文件，以及平台容器可读。已有 `incoming` 目录和历史快照保留，
+不递归修改 control 目录权限；collector 按既有开发测试合同管理 incoming 的所有权。
+collector 本身不创建投递请求、不启动 mailer；但已启用的日报任务会消费新快照并按
+现有邮件配置自动投递。启用前只读核对日报开关和 mailer 状态，恢复既有投递也须在
+操作者授权范围内；不得仅凭“只运行 collector”断言没有邮件副作用。
 
 安装后不需要在页面维护采集器；页面只负责日报启停、Resend 配置、生成、预览和投递。
 若 `incoming` 没有对应日期文件，“立即生成”会明确记录“证据不可用”，不会把示例 JSON
