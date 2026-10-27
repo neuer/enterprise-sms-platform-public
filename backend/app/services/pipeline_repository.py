@@ -28,6 +28,11 @@ from app.services.category import queue_for_category
 from app.services.content_protection import decrypt_template_content
 from app.services.crypto import CryptoService
 from app.services.idempotency import IdempotencyFingerprint, IdempotencyScope
+from app.services.idempotency_claim_sql import (
+    RELEASE_IDEMPOTENCY_CLAIM_SQL,
+    RENEW_IDEMPOTENCY_CLAIM_SQL,
+    RESERVE_IDEMPOTENCY_CLAIM_SQL,
+)
 from app.services.idempotency_lifecycle import (
     CLAIM_RESULT_SQL,
     reclaim_completed_result,
@@ -50,13 +55,13 @@ from app.settings import Settings, get_settings
 PIPELINE_CONFIG_KEYS = tuple(sorted(set(CONFIG_SPECS) | {"vendor_batch_size"}))
 
 
-
-
 class SqlPipelineStore:
     """在同一事务创建批次、消息三列、幂等记录与无 PII 审计。"""
 
     def __init__(
-        self, settings: Settings | None = None, crypto: CryptoService | None = None,
+        self,
+        settings: Settings | None = None,
+        crypto: CryptoService | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.crypto = crypto
@@ -330,8 +335,12 @@ class SqlPipelineStore:
             await connection.execute(text("SET LOCAL lock_timeout='1s'"))
             await connection.execute(text("SET LOCAL statement_timeout='5s'"))
             params = {
-                "scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id,
-                "token": token, "fingerprint": fingerprint, "ttl_s": ttl_s,
+                "scope_kind": scope.kind,
+                "scope_id": scope.id,
+                "biz_id": biz_id,
+                "token": token,
+                "fingerprint": fingerprint,
+                "ttl_s": ttl_s,
             }
             previous = (
                 (
@@ -351,36 +360,7 @@ class SqlPipelineStore:
 
             row = (
                 await connection.execute(
-                    text(
-                        """
-                        INSERT INTO idempotency_claim (
-                          scope_kind, scope_id, biz_id, token, fingerprint,
-                          generation, expires_at, state
-                        ) VALUES (
-                          :scope_kind, :scope_id, :biz_id, :token, :fingerprint,
-                          1, now() + make_interval(secs => :ttl_s), 'active'
-                        )
-                        ON CONFLICT (scope_kind, scope_id, biz_id)
-                        DO UPDATE SET
-                          generation = idempotency_claim.generation + 1,
-                          token = EXCLUDED.token,
-                          fingerprint = EXCLUDED.fingerprint,
-                          expires_at = EXCLUDED.expires_at,
-                          state = 'active',
-                          batch_id = NULL,
-                          completed_at = NULL,
-                          result_expires_at = NULL,
-                          released_at = NULL,
-                          release_reason = NULL,
-                          updated_at = now()
-                        WHERE idempotency_claim.state IN ('expired','released')
-                           OR (
-                             idempotency_claim.state='active'
-                             AND idempotency_claim.expires_at < now()
-                           )
-                        RETURNING generation
-                        """
-                    ),
+                    text(RESERVE_IDEMPOTENCY_CLAIM_SQL),
                     {
                         "scope_kind": scope.kind,
                         "scope_id": scope.id,
@@ -409,20 +389,7 @@ class SqlPipelineStore:
         async with self._engine().begin() as connection:
             row = (
                 await connection.execute(
-                    text(
-                        """
-                        UPDATE idempotency_claim SET
-                          expires_at=now()+make_interval(secs=>:ttl_s),
-                          updated_at=now()
-                        WHERE scope_kind=:scope_kind AND scope_id=:scope_id
-                          AND biz_id=:biz_id AND token=:token
-                          AND fingerprint=:fingerprint
-                          AND generation=:generation
-                          AND state='active'
-                          AND expires_at>now()-make_interval(secs=>:margin_s)
-                        RETURNING generation
-                        """
-                    ),
+                    text(RENEW_IDEMPOTENCY_CLAIM_SQL),
                     {
                         "scope_kind": scope.kind,
                         "scope_id": scope.id,
@@ -451,28 +418,7 @@ class SqlPipelineStore:
         async with self._engine().begin() as connection:
             row = (
                 await connection.execute(
-                    text(
-                        """
-                        UPDATE idempotency_claim SET
-                          state='released',
-                          released_at=now(),
-                          release_reason=:reason,
-                          updated_at=now()
-                        WHERE scope_kind=:scope_kind AND scope_id=:scope_id
-                          AND biz_id=:biz_id AND token=:token
-                          AND generation=:generation
-                          AND state='active'
-                          AND batch_id IS NULL
-                          AND NOT EXISTS (
-                            SELECT 1 FROM idempotency_record r
-                            WHERE r.scope_kind=idempotency_claim.scope_kind
-                              AND r.scope_id=idempotency_claim.scope_id
-                              AND r.biz_id=idempotency_claim.biz_id
-                              AND r.expires_at>now()
-                          )
-                        RETURNING id
-                        """
-                    ),
+                    text(RELEASE_IDEMPOTENCY_CLAIM_SQL),
                     {
                         "scope_kind": scope.kind,
                         "scope_id": scope.id,
@@ -486,13 +432,26 @@ class SqlPipelineStore:
         return row is not None
 
     async def load_idempotency_claim(
-        self, scope: IdempotencyScope, biz_id: str,
+        self,
+        scope: IdempotencyScope,
+        biz_id: str,
     ) -> dict[str, Any] | None:
         """区分有效工作、真正过期结果与来源不足的完成操作。"""
         async with self._engine().connect() as connection:
-            row = (await connection.execute(text(CLAIM_RESULT_SQL), {
-                "scope_kind": scope.kind, "scope_id": scope.id, "biz_id": biz_id,
-            })).mappings().one_or_none()
+            row = (
+                (
+                    await connection.execute(
+                        text(CLAIM_RESULT_SQL),
+                        {
+                            "scope_kind": scope.kind,
+                            "scope_id": scope.id,
+                            "biz_id": biz_id,
+                        },
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
         if row is not None:
             require_completed_result(dict(row))
         return dict(row) if row is not None else None
@@ -607,7 +566,8 @@ class SqlPipelineStore:
             result = await connection.execute(
                 text(
                     """
-                    SELECT i.request_hash,i.request_hash_key_version
+                    SELECT i.request_hash,i.request_hash_key_version,
+                      i.fingerprint_format_version,b.sign_name AS frozen_sign
                     FROM idempotency_record i
                     JOIN sms_batch b ON b.id=i.batch_id
                     WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id
@@ -627,13 +587,20 @@ class SqlPipelineStore:
                 or row["request_hash_key_version"] is None
             ):
                 return None
+            raw_format = row.get("fingerprint_format_version")
+            frozen = row.get("frozen_sign")
             return IdempotencyFingerprint(
                 str(row["request_hash"]).strip(),
                 int(row["request_hash_key_version"]),
+                1 if raw_format is None else int(raw_format),
+                str(frozen) if frozen else None,
             )
 
     async def _insert(
-        self, connection: AsyncConnection, command: BatchCommand, batch_no: str,
+        self,
+        connection: AsyncConnection,
+        command: BatchCommand,
+        batch_no: str,
     ) -> int | StoredBatch:
         uncertain = None
         if command.resend_of and not isinstance(command.principal, UncertainEffectPrincipal):
@@ -715,9 +682,10 @@ class SqlPipelineStore:
                 if not relation["provenance_verified"]:
                     raise UncertainResolutionConflict("重发子批次来源冲突")
                 _check_child_context(relation, uncertain, context)
-                existing_no = await connection.scalar(text(
-                    "SELECT batch_no FROM sms_batch WHERE id=:id"
-                ), {"id": relation["child_batch_id"]})
+                existing_no = await connection.scalar(
+                    text("SELECT batch_no FROM sms_batch WHERE id=:id"),
+                    {"id": relation["child_batch_id"]},
+                )
                 return StoredBatch(str(existing_no).strip(), True)
             if uncertain.child_batch_id is not None:
                 raise UncertainResolutionConflict("重发子批次来源无法证明")
@@ -726,18 +694,29 @@ class SqlPipelineStore:
             if self.crypto is None:
                 self.crypto = CryptoService.from_settings(self.settings)
             await verify_source_proof(
-                connection, self.crypto, command.uncertain_source_proof,
-                resolution_id=uncertain.id, generation=uncertain.effect_generation,
-                batch_id=uncertain.batch_id, chunk_id=uncertain.chunk_id, accepted=command.messages,
+                connection,
+                self.crypto,
+                command.uncertain_source_proof,
+                resolution_id=uncertain.id,
+                generation=uncertain.effect_generation,
+                batch_id=uncertain.batch_id,
+                chunk_id=uncertain.chunk_id,
+                accepted=command.messages,
             )
         if command.biz_id:
             # 旧结果清理与状态写入共用批次锁；DELETE 使用获得锁后的新语句快照。
-            await connection.execute(text("""
+            await connection.execute(
+                text("""
                 SELECT b.id FROM sms_batch b JOIN idempotency_record i ON i.batch_id=b.id
                 WHERE i.scope_kind=:scope_kind AND i.scope_id=:scope_id AND i.biz_id=:biz_id
                 FOR UPDATE OF b
-            """), {"scope_kind": command.scope_kind, "scope_id": command.scope_id,
-                    "biz_id": command.biz_id})
+            """),
+                {
+                    "scope_kind": command.scope_kind,
+                    "scope_id": command.scope_id,
+                    "biz_id": command.biz_id,
+                },
+            )
 
             await connection.execute(
                 text(
@@ -916,10 +895,11 @@ class SqlPipelineStore:
                     """
                     INSERT INTO idempotency_record (
                       app_id, scope_kind, scope_id, biz_id, batch_id,
-                      request_hash, request_hash_key_version, expires_at
+                      request_hash, request_hash_key_version,
+                      fingerprint_format_version, expires_at
                     ) VALUES (
                       :app_id, :scope_kind, :scope_id, :biz_id, :batch_id,
-                      :request_hash, :request_hash_key_version,
+                      :request_hash, :request_hash_key_version, 2,
                       COALESCE((CAST(:scheduled_at AS timestamptz) + interval '7 days'),
                                now() + interval '24 hours')
                     )

@@ -37,6 +37,26 @@ LOGGER = logging.getLogger("app.services.pipeline")
 CLAIM_CLEANUP_TIMEOUT_S = 2.0
 
 
+def _sign_fingerprint(
+    explicit: str | None,
+    _current_default: str | None,
+    *,
+    format_version: int,
+    frozen_sign: str | None,
+) -> object:
+    """格式 2 只记录客户端有没有写签名。格式 1 用冻结签名，不用当前默认值。"""
+
+    if explicit:
+        if format_version >= 2:
+            return {"source": "explicit", "name": explicit}
+        return explicit
+    if format_version >= 2:
+        return {"source": "omitted"}
+    if frozen_sign:
+        return frozen_sign
+    raise ValueError("legacy sign snapshot missing")
+
+
 def _same_digest(left: str, right: str) -> bool:
     if len(left) != len(right):
         return False
@@ -65,6 +85,8 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
         *,
         key_version: int | None = None,
         normalize: bool = True,
+        format_version: int = 2,
+        frozen_sign: str | None = None,
     ) -> str:
         """生成版本化请求 HMAC，覆盖会改变真实短信副作用与作用域的字段。"""
 
@@ -109,7 +131,12 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
             "content": request.content,
             "template_id": request.template_id,
             "template_params": list(request.template_params or ()),
-            "sign_name": request.sign_name or app.default_sign,
+            "sign_name": _sign_fingerprint(
+                request.sign_name,
+                app.default_sign,
+                format_version=format_version,
+                frozen_sign=frozen_sign,
+            ),
             "scheduled_at": _canonical_scheduled_at(request.scheduled_at)
             if normalize
             else (request.scheduled_at.isoformat() if request.scheduled_at is not None else None),
@@ -147,13 +174,27 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
         """提供与受理幂等记录一致的版本化指纹，供受控恢复绑定。"""
 
         version = self.crypto.active_version
+        format_version = 2
+        frozen_sign = None
         if request.biz_id:
             scope = self._idempotency_scope(request, app)
             stored = await self.idempotency.request_fingerprint(scope, request.biz_id)
             if stored is not None:
                 version = stored.key_version
+                format_version = stored.format_version
+                frozen_sign = stored.frozen_sign
         policy = self._resolve_policy(app, request, None)
-        return self._request_hash(request, app, policy, key_version=version), version
+        return (
+            self._request_hash(
+                request,
+                app,
+                policy,
+                key_version=version,
+                format_version=format_version,
+                frozen_sign=frozen_sign,
+            ),
+            version,
+        )
 
     @staticmethod
     def _idempotency_scope(
@@ -228,8 +269,17 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
         try:
             request_hash = (
                 computed.digest
-                if computed is not None and computed.key_version == stored.key_version
-                else self._request_hash(request, app, policy, key_version=stored.key_version)
+                if computed is not None
+                and computed.key_version == stored.key_version
+                and computed.format_version == stored.format_version
+                else self._request_hash(
+                    request,
+                    app,
+                    policy,
+                    key_version=stored.key_version,
+                    format_version=stored.format_version,
+                    frozen_sign=stored.frozen_sign,
+                )
             )
             if _same_digest(stored.digest, request_hash):
                 return
@@ -239,18 +289,24 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
                 policy,
                 key_version=stored.key_version,
                 normalize=False,
+                format_version=stored.format_version,
+                frozen_sign=stored.frozen_sign,
             )
-        except ValueError:
-            # 记录绑定的 HMAC 版本已在轮换中退役：无法证明是同一请求。
-            # 若按 400 参数错误返回，调用方最自然的反应是换 biz_id 重发，
-            # 恰好击穿幂等要防的重复下发；因此按幂等冲突 409 处理。
+        except ValueError as error:
+            # 密钥退役或旧记录没有冻结签名时，不能把当前默认签名当成原请求。
+            if str(error) == "legacy sign snapshot missing":
+                raise IdempotencyConflict(
+                    "同一幂等键无法证明原签名，请先查询原批次，勿直接更换 biz_id 重发"
+                ) from None
             raise IdempotencyConflict(
                 "同一幂等键的请求指纹版本已退役，无法验证同请求；"
                 "请先查询原批次状态，勿直接更换 biz_id 重发"
             ) from None
         if _same_digest(stored.digest, legacy_hash):
             return
-        raise IdempotencyConflict("同一幂等键已用于不同请求，请更换 biz_id 或复用原请求")
+        raise IdempotencyConflict(
+            "同一幂等键已用于不同请求，请先查询原批次，勿直接更换 biz_id 重发"
+        )
 
     async def _resolve_acceptance_commit(
         self,
