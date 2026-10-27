@@ -40,6 +40,7 @@ class SchedulingRepository(Protocol):
         scheduled_at: datetime,
         *,
         approval_expire_hours: int,
+        max_schedule_ahead_days: int = 90,
     ) -> bool: ...
 
 
@@ -128,5 +129,6 @@ class SchedulingService:
             scope,
             scheduled_at,
             approval_expire_hours=self.approval_expire_hours,
+            max_schedule_ahead_days=self.max_schedule_ahead_days,
         ):
             raise StateConflict("仅 scheduled 批次可改期")

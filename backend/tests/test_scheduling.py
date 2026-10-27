@@ -49,6 +49,7 @@ class FakeRepository:
         scheduled_at: datetime,
         *,
         approval_expire_hours: int,
+        max_schedule_ahead_days: int = 90,
     ) -> bool:
         self.rescheduled = (batch_no, scheduled_at)
         self.approval_expire_hours = approval_expire_hours
@@ -159,6 +160,9 @@ class _Result:
     def mappings(self) -> _Rows:
         return _Rows(self.rows)
 
+    def scalar(self) -> str:
+        return "08:00-21:00"
+
 
 class _Connection:
     def __init__(self, row: dict[str, object] | None) -> None:
@@ -201,7 +205,7 @@ class _Engine:
 async def test_reschedule_audit_uses_shanghai_text_and_keeps_aware_column() -> None:
     scheduled_at = datetime(2026, 7, 12, 0, 30, tzinfo=UTC)
     connection = _Connection(
-        {"id": 9, "channel": "web", "had_approval": True},
+        {"id": 9, "channel": "web", "category": "notice", "had_approval": True},
     )
     repository = SqlSchedulingRepository()
     repository._engine = lambda: _Engine(connection)  # type: ignore[method-assign]
@@ -233,12 +237,15 @@ async def test_reschedule_audit_uses_shanghai_text_and_keeps_aware_column() -> N
     ).isoformat()
     assert connection.calls[-1][1]["scheduled_at"].endswith("+08:00")
     assert isinstance(update["scheduled_at"], datetime)
+    assert update["deferred_reason"] is None
 
 
 @pytest.mark.asyncio
 async def test_reschedule_without_reapproval_still_types_the_audit_clock() -> None:
     scheduled_at = datetime(2026, 10, 23, 16, 0, tzinfo=UTC) + timedelta(0)
-    connection = _Connection({"id": 3, "channel": "api", "had_approval": False})
+    connection = _Connection(
+        {"id": 3, "channel": "api", "category": "notice", "had_approval": False}
+    )
     repository = SqlSchedulingRepository()
     repository._engine = lambda: _Engine(connection)  # type: ignore[method-assign]
     raised = False
@@ -254,3 +261,25 @@ async def test_reschedule_without_reapproval_still_types_the_audit_clock() -> No
     assert raised
     assert all("UPDATE approval" not in sql for sql, _params in connection.calls)
     assert connection.calls[-1][1]["scheduled_at"] == "2026-10-24T00:00:00+08:00"
+
+
+@pytest.mark.asyncio
+async def test_market_reschedule_uses_the_next_window_immediately() -> None:
+    requested = datetime(2026, 10, 26, 21, 24, 37, tzinfo=ZoneInfo("Asia/Shanghai"))
+    connection = _Connection(
+        {"id": 11, "channel": "web", "category": "market", "had_approval": False}
+    )
+    repository = SqlSchedulingRepository()
+    repository._engine = lambda: _Engine(connection)  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="synthetic audit failure"):
+        await repository.reschedule(
+            "c" * 32,
+            BatchAccessScope(all_departments=True),
+            requested,
+            approval_expire_hours=24,
+        )
+    update = next(params for sql, params in connection.calls if "UPDATE sms_batch" in sql)
+    expected = datetime(2026, 10, 27, 8, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    assert update["scheduled_at"] == expected
+    assert update["deferred_reason"] == "market_window"
+    assert connection.calls[-1][1]["scheduled_at"] == "2026-10-27T08:00:00+08:00"
