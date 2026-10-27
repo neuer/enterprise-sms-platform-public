@@ -404,6 +404,7 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
                 action="approve",
                 principal=ad_principal,
                 reason=None,
+                expected_generation=1,
             )
 
         async with engine.begin() as connection:
