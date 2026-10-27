@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 import ahocorasick
 
+from app.core.query_bounds import ensure_page_offset
 from app.core.sensitive_text import reject_phone_in_text
 
 SENSITIVE_WORD_REVISION_KEY = "__sensitive_word_revision"
@@ -129,6 +130,7 @@ class SensitiveWordManager:
         """分页查询词库；keyword 模糊匹配词面。"""
         if page < 1 or not 1 <= size <= MAX_PAGE_SIZE:
             raise ValueError("invalid pagination")
+        ensure_page_offset(page, size)
         keyword = (keyword or "").strip() or None
         return await self.repository.list_page(keyword=keyword, page=page, size=size)
 

@@ -235,6 +235,7 @@ class BatchQueryService:
         page: int,
         size: int,
     ) -> dict[str, object]:
+        ensure_page_offset(page, size)
         predicate, scope_params = scope.sql()
         status_predicate = "" if status is None else "AND m.status=:status"
         params: dict[str, object] = {

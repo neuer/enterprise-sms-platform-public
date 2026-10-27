@@ -12,6 +12,7 @@ from app.api.auth import ERROR_RESPONSE
 from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.errors import ApiError
+from app.core.query_bounds import PAGE_MAX
 from app.services.sensitive import SensitiveWord, SensitiveWordManager, sensitive_word_index
 from app.services.sensitive_repository import SqlSensitiveWordRepository
 
@@ -52,10 +53,13 @@ async def list_sensitive_words(
     manager: Annotated[SensitiveWordManager, Depends(get_sensitive_word_manager)],
     actor: AdminActor,
     keyword: Annotated[str | None, Query(max_length=64)] = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> SensitiveWordPageModel:
-    result = await manager.list_page(keyword=keyword, page=page, size=size)
+    try:
+        result = await manager.list_page(keyword=keyword, page=page, size=size)
+    except ValueError as error:
+        raise ApiError(400, "INVALID_PARAM", str(error), None) from None
     return SensitiveWordPageModel(total=result.total, items=[_item(item) for item in result.items])
 
 

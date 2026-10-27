@@ -17,6 +17,7 @@ from app.core.audit import audited
 from app.core.auth.jwt import JwtClaims
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
+from app.core.query_bounds import PAGE_MAX
 from app.services.admin_step_up import admin_intent
 from app.services.security_daily import (
     SENDER_ADDRESS,
@@ -348,7 +349,7 @@ async def list_security_daily_reports(
     delivery_status: (
         Literal["not_sent", "pending", "sending", "sent", "failed", "unknown"] | None
     ) = None,
-    page: Annotated[int, Query(ge=1)] = 1,
+    page: Annotated[int, Query(ge=1, le=PAGE_MAX)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> SecurityDailyPageModel:
     if date_from is not None and date_to is not None and date_from > date_to:
@@ -365,6 +366,8 @@ async def list_security_daily_reports(
                 page_size,
             )
         )
+    except ValueError as error:
+        raise ApiError(400, "INVALID_PARAM", str(error), None) from None
     except SecurityDailyControlError:
         raise _unavailable("安全日报独立投递控制面不可用") from None
     except SecurityDailyConfigurationError as error:

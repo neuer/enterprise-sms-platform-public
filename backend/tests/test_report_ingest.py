@@ -64,6 +64,7 @@ class FakeRepository:
         self.matched = matched
         self.changed = changed
         self.events: list[tuple[str, Any]] = []
+        self.error_exceptions: list[BaseException | None] = []
         self.failure_rate: FailureRateAlert | None = None
 
     async def persist_raw(self, **values: Any) -> int:
@@ -97,8 +98,16 @@ class FakeRepository:
     async def mark_processed(self, raw_id: int, **_: object) -> None:
         self.events.append(("processed", raw_id))
 
-    async def mark_error(self, raw_id: int, error: str) -> None:
+    async def mark_error(
+        self,
+        raw_id: int,
+        error: str,
+        *,
+        exc: BaseException | None = None,
+        **_: object,
+    ) -> None:
         self.events.append(("error", error))
+        self.error_exceptions.append(exc)
 
 
 class FakeAlerts:
@@ -491,6 +500,8 @@ async def test_invalid_data_shape_is_still_persisted_before_error() -> None:
     with pytest.raises(ValueError, match="object array"):
         await ReportIngestService(FakeGateway("broken"), repository, crypto()).poll_once()
     assert [event[0] for event in repository.events] == ["persist_raw", "error"]
+    assert isinstance(repository.error_exceptions[-1], ValueError)
+    assert "object array" in str(repository.error_exceptions[-1])
 
 
 @pytest.mark.asyncio
@@ -503,6 +514,8 @@ async def test_non_json_pull_is_persisted_before_protocol_error() -> None:
         await ReportIngestService(gateway, repository, crypto()).poll_once()
 
     assert [event[0] for event in repository.events] == ["persist_raw", "error"]
+    assert repository.error_exceptions[-1] is not None
+    assert "not JSON" in str(repository.error_exceptions[-1])
 
 
 @pytest.mark.asyncio
@@ -516,6 +529,8 @@ async def test_compressed_wire_response_is_persisted_before_rejection() -> None:
         await ReportIngestService(gateway, repository, crypto()).poll_once()
 
     assert [event[0] for event in repository.events] == ["persist_raw", "error"]
+    assert repository.error_exceptions[-1] is not None
+    assert "content-encoding" in str(repository.error_exceptions[-1])
     persisted = repository.events[0][1]
     assert persisted["content_encoding"] == "unsupported"
     assert persisted["item_count"] == 0 and persisted["custom_ids"] == []

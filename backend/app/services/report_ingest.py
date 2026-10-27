@@ -135,7 +135,12 @@ class ReportRepository(Protocol):
     ) -> None: ...
 
     async def mark_error(
-        self, raw_id: int, error: str, *, lease: RawProcessingLease | None = None
+        self,
+        raw_id: int,
+        error: str,
+        *,
+        lease: RawProcessingLease | None = None,
+        exc: BaseException | None = None,
     ) -> None: ...
 
 
@@ -852,6 +857,7 @@ class ReportIngestService:
             await self.repository.mark_error(
                 raw_id,
                 f"{type(error).__name__}: vendor response parsing failed",
+                exc=error,
             )
             raise
         processed = await self.process_existing(raw_id, data)
@@ -934,7 +940,8 @@ class ReportIngestService:
                 await self.repository.mark_error(
                     raw_id,
                     f"{type(error).__name__}: report persistence failed",
-                    **({} if lease is None else {"lease": lease}),
+                    exc=error,
+                    lease=lease,
                 )
                 raise
             await flush_failure_rates()
@@ -942,7 +949,7 @@ class ReportIngestService:
                 await self.repository.mark_error(
                     raw_id,
                     f"skipped {skipped} invalid report items",
-                    **({} if lease is None else {"lease": lease}),
+                    lease=lease,
                 )
                 await self._alert_skipped(raw_id, skipped, source="report")
                 return len(data)
