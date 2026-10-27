@@ -14,11 +14,8 @@ from app.api.authorization import AdminActor
 from app.core.audit import audited
 from app.core.errors import ApiError
 from app.core.query_bounds import PAGE_MAX
-from app.services.callback_repository import (
-    CallbackRetryConflict,
-    CallbackTaskNotFound,
-    SqlCallbackRepository,
-)
+from app.services.callback_repository import CallbackTaskNotFound, SqlCallbackRepository
+from app.services.callback_retry_eligibility import CallbackRetryConflict
 
 router = APIRouter(prefix="/api/v1/web/admin/callbacks", tags=["admin"])
 CallbackStatus = Literal["pending", "retrying", "done", "dead"]
@@ -44,6 +41,17 @@ class CallbackTaskModel(BaseModel):
     last_error: str | None
     created_at: datetime
     finished_at: datetime | None
+    manual_retry_allowed: bool
+    retry_block_reason: (
+        Literal[
+            "config_revoked",
+            "app_disabled",
+            "config_changed",
+            "detail_disabled",
+            "not_dead",
+        ]
+        | None
+    )
 
 
 class CallbackPageModel(BaseModel):
@@ -97,5 +105,10 @@ async def retry_callback(
     except CallbackTaskNotFound as error:
         raise ApiError(404, "NOT_FOUND", str(error), None) from None
     except CallbackRetryConflict as error:
-        raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
+        raise ApiError(
+            409,
+            "STATE_CONFLICT",
+            str(error),
+            {"reason": error.reason},
+        ) from None
     return Response(status_code=200)
