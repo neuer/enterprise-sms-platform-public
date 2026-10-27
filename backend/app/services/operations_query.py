@@ -240,7 +240,11 @@ class SqlOperationsQueryRepository:
         predicate: str,
         scope_params: dict[str, Any],
     ) -> PhoneBadge:
-        """黑名单状态与近30日接收量；仅当权限内存在该号码记录时才暴露黑名单状态。"""
+        """黑名单状态与近30日确认送达；仅当权限内存在该号码记录时才暴露黑名单状态。
+
+        确认送达只计 status=delivered 且 report_time 落在当前时刻向前 30 日内的消息。
+        缺失回执时间、未下发和失败不计入；测试消息沿用既有不过滤规则。
+        """
         params = {"phone_hmacs": list(phone_hmacs), **scope_params}
         blacklist_result = await connection.execute(
             text(
@@ -274,7 +278,11 @@ class SqlOperationsQueryRepository:
                 SELECT count(*) FROM sms_message m
                 JOIN sms_batch b ON b.id=m.batch_id
                 WHERE m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
-                  AND m.created_at>=now()-interval '30 days' AND {predicate}
+                  AND m.status='delivered'
+                  AND m.report_time IS NOT NULL
+                  AND m.report_time>=now()-interval '30 days'
+                  AND m.report_time<=now()
+                  AND {predicate}
                 """
             ),
             params,

@@ -304,7 +304,7 @@ async function revealSearched(): Promise<string> {
     </span>
     <span class="message-badge-sep" aria-hidden="true"></span>
     <div class="message-badge-stat">
-      <span>近30日接收</span>
+      <span title="厂商已确认送达，按回执时间统计近30日">近30日确认送达</span>
       <strong>{{ badge.recv_30d }} 条</strong>
     </div>
     <div v-if="badgeRevealed" class="message-badge-reveal">
