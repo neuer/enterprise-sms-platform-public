@@ -3,7 +3,7 @@ import { computed, ref, watch, type Ref } from "vue"
 import { listApps, type ManagedApp } from "../../api/apps"
 import type { BatchFilters } from "../../api/queries"
 import { CATEGORY_OPTIONS, STATUS_LABELS } from "../../lib/labels"
-import { rangeToIsoParams, toApiDateTime } from "../../lib/time"
+import { rangeToIsoParams, type ShanghaiCivilRange } from "../../lib/time"
 import { useLatestRead } from "../../composables/useLatestRead"
 
 // 状态分组为前端推导；各组计数来自服务端分面 status_counts（不含状态条件本身）。
@@ -41,7 +41,7 @@ export function useBatchFilters(isAdmin: Ref<boolean>) {
   const statusGroup = ref("all")
   const channel = ref("")
   const batchNo = ref("")
-  const range = ref<[Date, Date] | null>(null)
+  const range = ref<ShanghaiCivilRange | null>(null)
   // 更多筛选（低频字段，收进气泡）
   const isTest = ref("") // "" | "false" | "true"
   const appId = ref("")
@@ -73,8 +73,8 @@ export function useBatchFilters(isAdmin: Ref<boolean>) {
       isTest.value,
       appId.value.trim(),
       isAdmin.value ? dept.value.trim() : "",
-      range.value?.[0] ? toApiDateTime(range.value[0]) : "",
-      range.value?.[1] ? toApiDateTime(range.value[1]) : "",
+      rangeToIsoParams(range.value).start ?? "",
+      rangeToIsoParams(range.value).end ?? "",
     ]),
   )
   const filtersDirty = computed(

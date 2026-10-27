@@ -631,7 +631,7 @@ describe("审计与系统参数", () => {
     expect(document.body.textContent).toContain("审计事件详情")
 
     const picker = wrapper.findComponent({ name: "ElDatePicker" })
-    picker.vm.$emit("update:modelValue", [new Date("2026-07-12T00:00:00+08:00"), new Date("2026-07-12T23:59:00+08:00")])
+    picker.vm.$emit("update:modelValue", ["2026-07-12 00:00:00", "2026-07-12 23:59:00"])
     await wrapper
       .findAll("button")
       .find((button) => button.text().includes("查询"))!
