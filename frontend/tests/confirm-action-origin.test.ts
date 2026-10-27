@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils"
-import ElementPlus, { ElMessageBox } from "element-plus"
+import ElementPlus, { ElMessage, ElMessageBox } from "element-plus"
 import { createPinia, setActivePinia } from "pinia"
 import { nextTick } from "vue"
 import { afterEach, expect, it, vi } from "vitest"
@@ -7,7 +7,13 @@ import { useSessionStore } from "../src/stores/session"
 import type { BatchItem } from "../src/api/queries"
 const api = vi.hoisted(() => ({
   cancelBatch: vi.fn(),
-  resendFailedBatch: vi.fn().mockResolvedValue({ batch_no: "new" }),
+  resendFailedBatch: vi.fn().mockResolvedValue({
+    batch_no: "new",
+    resend_of: "original",
+    accepted: 1,
+    status: "queued",
+    idempotent: false,
+  }),
   revokeUserSessions: vi.fn(),
   getApp: vi.fn(),
   updateApp: vi.fn(),
@@ -86,6 +92,74 @@ it.each(
     expect(api.resendFailedBatch).not.toHaveBeenCalled()
   }
   if (change !== "dispose") wrapper.unmount()
+})
+
+it("首次重发提示已创建，完成后重复操作提示既有子批次状态", async () => {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  useSessionStore().role = "admin"
+  const toast = vi.spyOn(ElMessage, "success")
+  vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+  api.resendFailedBatch
+    .mockResolvedValueOnce({
+      batch_no: "child-1",
+      resend_of: "original",
+      accepted: 1,
+      status: "queued",
+      idempotent: false,
+    })
+    .mockResolvedValueOnce({
+      batch_no: "child-1",
+      resend_of: "original",
+      accepted: 1,
+      status: "completed",
+      idempotent: true,
+    })
+  const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+  await flushPromises()
+  const vm = wrapper.vm as unknown as {
+    selected: BatchItem
+    drawer: boolean
+    resendFailed: () => Promise<void>
+  }
+  vm.drawer = true
+  vm.selected = {
+    batch_no: "original",
+    status: "completed",
+    channel: "web",
+    failed: 1,
+    dept: "平台部",
+    created_at: "2026-10-27T01:00:00+08:00",
+    category: "notice",
+    app_name: null,
+    creator: "管理员",
+    content: "通知",
+    deferred_reason: null,
+    resend_of: null,
+    is_test: false,
+    segments: 1,
+    quota_cost: 1,
+    total: 1,
+    removed_freq_limit: 0,
+    delivered: 0,
+    unknown: 0,
+    pending: 0,
+    sent: 0,
+    other: 0,
+    scheduled_at: null,
+  } as BatchItem
+  await vm.resendFailed()
+  await flushPromises()
+  expect(toast).toHaveBeenCalledWith("重发批次 child-1 已创建，当前状态：排队中 · 本次操作已记入审计")
+  expect(wrapper.get("[data-testid='view-resend-batch']").text()).toContain("child-1")
+  expect(wrapper.get("[data-testid='view-resend-batch']").text()).toContain("排队中")
+
+  await vm.resendFailed()
+  await flushPromises()
+  expect(toast).toHaveBeenCalledWith("重发批次 child-1 已存在，当前状态：已完成")
+  expect(wrapper.get("[data-testid='view-resend-batch']").text()).toContain("已完成")
+  expect(api.resendFailedBatch).toHaveBeenCalledTimes(2)
+  wrapper.unmount()
 })
 
 it("强制下线确认后不得跨会话提交", async () => {

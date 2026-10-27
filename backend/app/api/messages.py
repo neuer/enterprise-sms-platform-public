@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal, cast
+from typing import Annotated, Any, Literal, cast, get_args
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
 from app.api.vendor_control_ready import raise_vendor_control_unavailable
@@ -153,6 +153,20 @@ class SendRequestModel(BaseModel):
         return self
 
 
+BatchAcceptanceStatus = Literal[
+    "queued",
+    "scheduled",
+    "sending",
+    "completed",
+    "completed_unknown",
+    "cancelled",
+    "balance_blocked",
+    "pending_approval",
+    "rejected",
+    "expired",
+]
+
+
 class SendResponseModel(BaseModel):
     batch_no: str
     idempotent: bool
@@ -162,18 +176,7 @@ class SendResponseModel(BaseModel):
     removed_freq_limit: int
     est_segments: int
     quota_cost: int
-    status: Literal[
-        "queued",
-        "scheduled",
-        "sending",
-        "completed",
-        "completed_unknown",
-        "cancelled",
-        "balance_blocked",
-        "pending_approval",
-        "rejected",
-        "expired",
-    ]
+    status: BatchAcceptanceStatus
     deferred_reason: Literal["market_window"] | None
     scheduled_at: datetime | None
     idempotency_expires_at: datetime | None = None
@@ -281,7 +284,8 @@ class ResendResponseModel(BaseModel):
     batch_no: str
     resend_of: str
     accepted: int
-    status: Literal["queued", "scheduled", "pending_approval"]
+    status: BatchAcceptanceStatus
+    idempotent: bool
 
 
 async def _pipeline(app: ApiAppContext) -> SendPipeline:
@@ -512,6 +516,8 @@ def _error(error: Exception) -> ApiError:
             "配额与频控投影尚未安全恢复，请稍后重试",
             None,
         )
+    if isinstance(error, ValidationError):
+        return ApiError(500, "INTERNAL_ERROR", "服务内部错误", None)
     if isinstance(error, (InvalidContent, ValueError)):
         return ApiError(400, "INVALID_PARAM", str(error), None)
     return ApiError(500, "INTERNAL_ERROR", "服务内部错误", None)
@@ -892,11 +898,14 @@ async def resend_failed_batch(
             )
         pipeline = await _pipeline(pipeline_app)
         result = await pipeline.accept(pipeline_app, resend_request)
+        if result.status not in get_args(BatchAcceptanceStatus):
+            raise ApiError(500, "INTERNAL_ERROR", "服务内部错误", None)
         return ResendResponseModel(
             batch_no=result.batch_no,
             resend_of=batch_no,
             accepted=result.accepted,
-            status=cast(Literal["queued", "scheduled", "pending_approval"], result.status),
+            status=cast(BatchAcceptanceStatus, result.status),
+            idempotent=result.idempotent,
         )
     except BatchNotFound:
         raise ApiError(404, "NOT_FOUND", "批次不存在", None) from None
@@ -904,6 +913,8 @@ async def resend_failed_batch(
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
     except ApiError:
         raise
+    except ValidationError as error:
+        raise _error(error) from error
     except Exception as error:
         mapped = _error(error)
         if mapped.status_code == 500:
