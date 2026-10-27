@@ -11,6 +11,7 @@ import pytest
 import app.services.callback_repository as callback_repository_module
 from app.core.auth.accounts import SecurityPrincipal
 from app.services.callback_authority import CallbackAuthorityBusy, ensure_callback_authority_idle
+from app.services.callback_batch_event import CallbackSnapshotUnavailable
 from app.services.callback_repository import (
     CallbackTaskNotFound,
     SqlCallbackRepository,
@@ -115,6 +116,11 @@ async def test_batch_finished_uses_text_binding_and_casts_back_to_bigint() -> No
     assert "callback_secret_enc" in sql
     assert "callback_secret_key_version" in sql
     assert "signature_version" in sql
+    assert "INSERT INTO callback_batch_event" in sql
+    assert "clock_timestamp()" in sql
+    assert "UPDATE" not in sql
+    assert "updated_at" not in sql
+    assert len(connection.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -294,6 +300,8 @@ async def test_batch_material_loads_secret_ciphertext_and_aggregate_without_body
         "failed": 1,
         "unknown": 0,
         "finished_at": finished,
+        "legacy_unavailable": False,
+        "manual_resolution_required": False,
     }
     connection = FakeConnection([FakeResult(rows=[task_row]), FakeResult(rows=[batch_row])])
     bind(repository, connection)
@@ -304,6 +312,14 @@ async def test_batch_material_loads_secret_ciphertext_and_aggregate_without_body
     assert material.task.callback_secret_enc == b"packed-secret"
     assert material.task.event_id == EVENT_ID
     assert material.batch.batch_no == "BATCH-1"
+    assert material.batch.delivered == 2
+    assert material.batch.finished_at == finished
+    assert material.batch.manual_resolution_required is False
+    snapshot_sql = connection.calls[1][0]
+    assert "callback_batch_event" in snapshot_sql
+    assert "task_id=:task_id" in snapshot_sql
+    assert "sms_batch" not in snapshot_sql
+    assert "updated_at" not in snapshot_sql
     assert all(
         "body" not in sql.casefold() and "payload" not in sql.casefold()
         for sql, _ in connection.calls
@@ -312,6 +328,45 @@ async def test_batch_material_loads_secret_ciphertext_and_aggregate_without_body
     assert "a.status=1" in task_sql
     assert "a.callback_url=t.url" in task_sql
     assert "a.callback_secret_enc=t.callback_secret_enc" in task_sql
+
+
+@pytest.mark.asyncio
+async def test_legacy_finished_material_does_not_fall_back_to_live_counts() -> None:
+    repository = SqlCallbackRepository()
+    task_row: dict[str, object] = {
+        "id": 9,
+        "event_id": EVENT_ID,
+        "correlation_id": CORRELATION_ID,
+        "app_id": 7,
+        "app_name": "callback-app",
+        "event": "batch.finished",
+        "url": "http://callback.internal/hook",
+        "callback_secret_enc": b"packed-secret",
+        "callback_secret_key_version": 1,
+        "signature_version": 1,
+        "batch_id": 8,
+        "message_ids": [],
+        "message_times": [],
+    }
+    legacy = {
+        "batch_no": "BATCH-1",
+        "biz_id": None,
+        "category": "notice",
+        "status": None,
+        "total": 99,
+        "delivered": 99,
+        "failed": 0,
+        "unknown": 0,
+        "finished_at": datetime(2026, 7, 12, 8, 0, tzinfo=UTC),
+        "legacy_unavailable": True,
+        "manual_resolution_required": None,
+    }
+    connection = FakeConnection([FakeResult(rows=[task_row]), FakeResult(rows=[legacy])])
+    bind(repository, connection)
+
+    with pytest.raises(CallbackSnapshotUnavailable):
+        await repository.load_material(9, LEASE_ID)
+    assert "sms_batch" not in connection.calls[1][0]
 
 
 @pytest.mark.asyncio
@@ -394,6 +449,7 @@ async def test_admin_page_returns_only_safe_summary_fields() -> None:
         "finished_at": datetime(2026, 7, 12, 9, 0, tzinfo=UTC),
         "manual_retry_allowed": True,
         "retry_block_reason": None,
+        "finished_snapshot": None,
     }
     connection = FakeConnection(
         [FakeResult(scalars=[1]), FakeResult(rows=[row]), FakeResult(scalars=[3])]
@@ -416,6 +472,8 @@ async def test_admin_page_returns_only_safe_summary_fields() -> None:
     assert "CAST(:app_id AS bigint)" in sql
     assert "CAST(:event AS varchar(20))" in sql
     assert "trim(b.batch_no) ILIKE :batch_no" in sql
+    assert "callback_batch_event e" in sql
+    assert "finished_snapshot" in sql
     # LIKE 通配符必须被转义，批次号子串两端补 %
     assert connection.calls[0][1]["batch_no"] == "%BATCH\\_1\\%%"
     assert "WHERE status='dead'" in connection.calls[2][0]
@@ -435,6 +493,8 @@ async def test_manual_dead_retry_is_audited_and_rejects_invalid_state() -> None:
     assert "FROM app" in retry_sql
     assert "callback_url" in retry_sql and "callback_secret_enc" in retry_sql
     assert "CallbackConfigRevoked" in retry_sql
+    assert "callback_batch_event" in retry_sql
+    assert "legacy_unavailable" in retry_sql
     assert "INSERT INTO audit_log" in success.calls[2][0]
     assert "worker_lease_event" in success.calls[3][0]
     assert success.calls[2][1]["actor"] == "admin"

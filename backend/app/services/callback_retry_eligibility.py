@@ -14,6 +14,7 @@ class CallbackRetryConflict(RuntimeError):
 # 不投影 URL 或密钥。
 RETRY_BLOCK_REASON_SQL = """
 CASE
+  WHEN e.legacy_unavailable THEN 'legacy_snapshot_unavailable'
   WHEN t.status <> 'dead' THEN 'not_dead'
   WHEN t.last_error = 'CallbackConfigRevoked' THEN 'config_revoked'
   WHEN a.status IS DISTINCT FROM 1 THEN 'app_disabled'
@@ -33,6 +34,7 @@ _RETRY_BLOCK_MESSAGES = {
     "app_disabled": "应用已停用，不能重推",
     "config_changed": "回调地址或密钥已变化，不能重推这条旧任务",
     "detail_disabled": "明细回调已关闭，不能重推这条旧任务",
+    "legacy_snapshot_unavailable": "历史汇总没有可信快照，已停止按旧事件重推",
 }
 
 
@@ -50,7 +52,9 @@ def diagnosis_sql() -> str:
         "SELECT "
         + RETRY_BLOCK_REASON_SQL
         + " AS retry_block_reason FROM callback_task t"
-        + " JOIN app a ON a.id=t.app_id WHERE t.id=:task_id"
+        + " JOIN app a ON a.id=t.app_id"
+        + " LEFT JOIN callback_batch_event e ON e.task_id=t.id"
+        + " WHERE t.id=:task_id"
     )
 
 

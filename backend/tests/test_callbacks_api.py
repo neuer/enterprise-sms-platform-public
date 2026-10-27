@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from uuid import UUID
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -16,6 +17,7 @@ from app.core.errors import (
     api_error_handler,
     validation_error_handler,
 )
+from app.services.callback_batch_event import FinishedRecovery, FinishedRecoveryRejected
 from app.services.callback_repository import CallbackTaskNotFound
 from app.services.callback_retry_eligibility import CallbackRetryConflict
 
@@ -63,6 +65,7 @@ class FakeRepository:
                     "finished_at": datetime(2026, 7, 12, 9, 0, tzinfo=UTC),
                     "manual_retry_allowed": False,
                     "retry_block_reason": "config_revoked",
+                    "finished_snapshot": "current",
                 }
             ],
         }
@@ -78,7 +81,29 @@ class FakeRepository:
             raise self.retry_error
 
 
-def client(repository: FakeRepository, role: str = "admin") -> TestClient:
+class FakeRecovery:
+    def __init__(
+        self,
+        result: FinishedRecovery | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[tuple[int, SecurityPrincipal]] = []
+
+    async def recover(self, task_id: int, *, principal: SecurityPrincipal) -> FinishedRecovery:
+        self.calls.append((task_id, principal))
+        if self.error is not None:
+            raise self.error
+        assert self.result is not None
+        return self.result
+
+
+def client(
+    repository: FakeRepository,
+    role: str = "admin",
+    recovery: FakeRecovery | None = None,
+) -> TestClient:
     app = FastAPI()
     app.add_exception_handler(ApiError, api_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(
@@ -88,6 +113,8 @@ def client(repository: FakeRepository, role: str = "admin") -> TestClient:
     app.include_router(api.router)
     app.dependency_overrides[get_auth_facade] = lambda: FakeFacade(role)
     app.dependency_overrides[api.get_callback_repository] = lambda: repository
+    if recovery is not None:
+        app.dependency_overrides[api.get_finished_recovery] = lambda: recovery
     return TestClient(app)
 
 
@@ -168,8 +195,49 @@ def test_manual_retry_maps_missing_and_state_conflict() -> None:
     assert "url" not in conflict.text
 
 
+def test_recover_finished_returns_new_event_and_maps_conflicts() -> None:
+    headers = {"Authorization": "Bearer jwt"}
+    event_id = UUID("40000000-0000-4000-8000-000000000021")
+    recovery = FakeRecovery(FinishedRecovery(21, event_id, True))
+    created = client(FakeRepository(), recovery=recovery).post(
+        "/api/v1/web/admin/callbacks/9/recover-finished",
+        headers=headers,
+    )
+    assert created.status_code == 200
+    assert created.json() == {
+        "task_id": 21,
+        "event_id": str(event_id),
+        "created": True,
+    }
+    assert recovery.calls[0][0] == 9
+    assert recovery.calls[0][1].account_id == 1
+    missing = client(
+        FakeRepository(),
+        recovery=FakeRecovery(
+            error=FinishedRecoveryRejected("回调任务不存在", "not_found", missing=True)
+        ),
+    ).post("/api/v1/web/admin/callbacks/9/recover-finished", headers=headers)
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == {"reason": "not_found"}
+    conflict = client(
+        FakeRepository(),
+        recovery=FakeRecovery(
+            error=FinishedRecoveryRejected("这条批次终态已有冻结汇总，不能另补一条", "not_legacy")
+        ),
+    ).post("/api/v1/web/admin/callbacks/9/recover-finished", headers=headers)
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"] == {"reason": "not_legacy"}
+    assert "url" not in conflict.text and "phone" not in conflict.text
+    forbidden = client(FakeRepository(), "operator").post(
+        "/api/v1/web/admin/callbacks/9/recover-finished",
+        headers=headers,
+    )
+    assert forbidden.status_code == 403
+
+
 def test_callback_writes_and_secret_rotation_are_audited() -> None:
     assert vars(api.retry_callback)["__audited_action__"] == "callback_retry"
+    assert vars(api.recover_finished_callback)["__audited_action__"] == "callback_finished_recover"
     assert (
         vars(apps_api.rotate_callback_secret)["__audited_action__"] == "app_rotate_callback_secret"
     )

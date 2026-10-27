@@ -173,6 +173,9 @@ def test_cleanup_parent_guards_prevent_unbounded_cascade_and_active_fact_deletio
     assert "processed = TRUE" in PLANS["raw"].predicate
     assert "status<>'running'" in PLANS["jobs"].predicate
     assert "expires_at>CAST(:cutoff AS timestamptz)" in PLANS["usage_frequency"].predicate
+    assert "callback_batch_event" in PLANS["callbacks"].predicate
+    assert "recovered_from_task_id=p.id" in PLANS["callbacks"].predicate
+    assert "status IN ('done','dead')" in PLANS["callbacks"].predicate
 
 
 @pytest.mark.asyncio

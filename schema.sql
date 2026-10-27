@@ -2119,6 +2119,84 @@ CREATE INDEX idx_cb_lease_expiry ON callback_task(lease_expires_at,id)
     WHERE lease_id IS NOT NULL;
 CREATE INDEX idx_cb_event_keys ON callback_task USING GIN(event_keys);
 
+-- batch.finished 入队时冻结的汇总。不含手机号、正文或回调 body。
+-- 运行角色没有 UPDATE。终态清理随 callback_task 级联删除。
+CREATE TABLE callback_batch_event (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL UNIQUE,
+    batch_id BIGINT NOT NULL,
+    source_report_event_key CHAR(64),
+    recovered_from_task_id BIGINT UNIQUE,
+    batch_no CHAR(32) NOT NULL,
+    biz_id VARCHAR(32),
+    category VARCHAR(8) NOT NULL,
+    status VARCHAR(20),
+    total INTEGER,
+    delivered INTEGER,
+    failed INTEGER,
+    unknown_cnt INTEGER,
+    manual_resolution_required BOOLEAN,
+    finished_at TIMESTAMPTZ NOT NULL,
+    legacy_unavailable BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT fk_cbe_task FOREIGN KEY (task_id)
+      REFERENCES callback_task(id) ON DELETE CASCADE,
+    CONSTRAINT fk_cbe_batch FOREIGN KEY (batch_id)
+      REFERENCES sms_batch(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_cbe_recovered_from FOREIGN KEY (recovered_from_task_id)
+      REFERENCES callback_task(id) ON DELETE RESTRICT,
+    CONSTRAINT fk_cbe_source_report FOREIGN KEY (source_report_event_key)
+      REFERENCES report_event(event_key) ON DELETE RESTRICT,
+    CONSTRAINT ck_cbe_recovery_identity CHECK (
+      recovered_from_task_id IS NULL OR recovered_from_task_id <> task_id
+    ),
+    CONSTRAINT ck_cbe_payload CHECK (
+      (
+        legacy_unavailable
+        AND status IS NULL
+        AND total IS NULL
+        AND delivered IS NULL
+        AND failed IS NULL
+        AND unknown_cnt IS NULL
+        AND manual_resolution_required IS NULL
+        AND recovered_from_task_id IS NULL
+      )
+      OR (
+        NOT legacy_unavailable
+        AND status IN (
+          'completed','completed_unknown','cancelled','expired','rejected'
+        )
+        AND category IN ('verify','notice','market')
+        AND total IS NOT NULL AND total >= 0
+        AND delivered IS NOT NULL AND delivered >= 0
+        AND failed IS NOT NULL AND failed >= 0
+        AND unknown_cnt IS NOT NULL AND unknown_cnt >= 0
+        AND manual_resolution_required = (status = 'completed_unknown')
+      )
+    )
+);
+COMMENT ON TABLE callback_batch_event IS
+  'batch.finished 创建时冻结的汇总，不含手机号、正文或回调 body';
+CREATE INDEX idx_cbe_batch ON callback_batch_event(batch_id);
+CREATE UNIQUE INDEX uk_cbe_batch_source
+  ON callback_batch_event(batch_id, source_report_event_key)
+  WHERE source_report_event_key IS NOT NULL;
+CREATE OR REPLACE FUNCTION reject_callback_batch_event_update()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  RAISE EXCEPTION 'callback_batch_event is immutable';
+END
+$$;
+REVOKE ALL ON FUNCTION reject_callback_batch_event_update() FROM PUBLIC;
+DROP TRIGGER IF EXISTS trg_cbe_no_update ON callback_batch_event;
+CREATE TRIGGER trg_cbe_no_update
+BEFORE UPDATE ON callback_batch_event
+FOR EACH ROW EXECUTE FUNCTION reject_callback_batch_event_update();
+REVOKE ALL ON callback_batch_event FROM PUBLIC;
+
 CREATE TABLE callback_authority_lease (
     app_id      BIGINT PRIMARY KEY REFERENCES app(id) ON DELETE CASCADE,
     task_id     BIGINT NOT NULL UNIQUE REFERENCES callback_task(id) ON DELETE CASCADE,
@@ -3460,7 +3538,7 @@ GRANT SELECT ON
     sms_reply, raw_vendor_log, report_event, report_event_projection, reply_event,
     unmatched_report, job_run, import_task, import_phone, approval, sms_template,
     sms_sign, blacklist, blacklist_hmac_alias, sensitive_word, callback_report_event, callback_task,
-    callback_authority_lease,
+    callback_batch_event, callback_authority_lease,
     worker_lease_event, balance_snapshot, alert_log, outbox_event,
     usage_reservation, usage_frequency_subject, usage_frequency_alias,
     usage_quota_entry, usage_frequency_entry, usage_projection,
@@ -3499,6 +3577,7 @@ GRANT INSERT, UPDATE ON
     security_daily_report, security_daily_delivery_request TO sms_accept;
 GRANT SELECT, INSERT, DELETE, UPDATE ON security_daily_recipient TO sms_accept;
 GRANT INSERT ON callback_task, alert_log TO sms_accept;
+GRANT INSERT ON callback_batch_event TO sms_accept;
 GRANT DELETE ON callback_authority_lease TO sms_accept;
 GRANT INSERT, DELETE ON vendor_test_recipient_hmac_alias TO sms_accept;
 GRANT INSERT, UPDATE ON
@@ -3558,7 +3637,7 @@ GRANT USAGE, SELECT ON SEQUENCE
     import_phone_id_seq, approval_id_seq, sms_template_id_seq, sms_sign_id_seq,
     sensitive_word_id_seq, audit_log_id_seq,
     vendor_test_send_attempt_id_seq, vendor_test_recipient_id_seq,
-    callback_task_id_seq, alert_log_id_seq,
+    callback_task_id_seq, callback_batch_event_id_seq, alert_log_id_seq,
     usage_projection_version_seq, security_daily_report_id_seq,
     sms_uncertain_resolution_id_seq, send_inflight_reservation_id_seq,
     send_inflight_reconcile_fact_id_seq
@@ -3584,7 +3663,8 @@ GRANT SELECT ON
     sms_reply, raw_vendor_log, report_event, report_event_projection, reply_event,
     unmatched_report, job_run, import_task, import_phone, approval, sms_template, sms_sign, blacklist,
     blacklist_hmac_alias,
-    sensitive_word, callback_report_event, callback_task, worker_lease_event,
+    sensitive_word, callback_report_event, callback_task, callback_batch_event,
+    worker_lease_event,
     balance_snapshot, alert_log, outbox_event, usage_reservation,
     usage_frequency_subject, usage_frequency_alias, usage_quota_entry,
     usage_frequency_entry, usage_projection, usage_projection_drift, stat_daily,
@@ -3631,6 +3711,7 @@ GRANT INSERT ON
 TO sms_send;
 GRANT INSERT, DELETE ON callback_report_event TO sms_send;
 GRANT INSERT, UPDATE, DELETE ON callback_task TO sms_send;
+GRANT INSERT, DELETE ON callback_batch_event TO sms_send;
 GRANT INSERT, UPDATE ON
     report_event_projection, vendor_test_daily_usage,
     vendor_test_send_attempt, vendor_test_operation,
@@ -3641,15 +3722,18 @@ GRANT USAGE, SELECT ON SEQUENCE
     raw_vendor_log_id_seq, unmatched_report_id_seq, job_run_id_seq,
     approval_id_seq, balance_snapshot_id_seq, alert_log_id_seq,
     worker_lease_event_id_seq, vendor_test_send_attempt_id_seq,
-    audit_log_id_seq, callback_task_id_seq, import_phone_id_seq,
+    audit_log_id_seq, callback_task_id_seq, callback_batch_event_id_seq,
+    import_phone_id_seq,
     usage_projection_version_seq, security_daily_report_id_seq,
     sms_uncertain_resolution_id_seq, sms_vendor_attempt_id_seq,
     send_inflight_reservation_id_seq, send_inflight_reconcile_fact_id_seq
 TO sms_send;
 
 -- 回调 worker 的横向影响限制在回调事实、租约、告警与 Outbox。
+-- batch.finished 投递只读 callback_batch_event。sms_batch 计数只用于补发新事件。
 GRANT SELECT ON
-    app, sms_message, callback_report_event, callback_task, callback_authority_lease,
+    app, sms_message, callback_report_event, callback_task, callback_batch_event,
+    callback_authority_lease,
     worker_lease_event, alert_log, outbox_event, sys_config, job_run
 TO sms_callback;
 GRANT SELECT (
@@ -3657,12 +3741,13 @@ GRANT SELECT (
     delivered, failed, unknown_cnt, updated_at
 ) ON sms_batch TO sms_callback;
 GRANT INSERT, UPDATE, DELETE ON callback_report_event, callback_task TO sms_callback;
+GRANT INSERT ON callback_batch_event TO sms_callback;
 GRANT INSERT, DELETE ON callback_authority_lease TO sms_callback;
 GRANT UPDATE (expires_at) ON callback_authority_lease TO sms_callback;
 GRANT INSERT, UPDATE ON outbox_event, alert_log, job_run TO sms_callback;
 GRANT INSERT ON worker_lease_event, audit_log TO sms_callback;
 GRANT USAGE, SELECT ON SEQUENCE
-    callback_task_id_seq, worker_lease_event_id_seq,
+    callback_task_id_seq, callback_batch_event_id_seq, worker_lease_event_id_seq,
     alert_log_id_seq, audit_log_id_seq, job_run_id_seq
 TO sms_callback;
 

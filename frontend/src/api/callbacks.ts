@@ -36,3 +36,13 @@ export function listCallbacks(filters: CallbackFilters, signal?: AbortSignal): P
 export function retryCallback(id: number): Promise<void> {
   return apiRequest<void>(`/admin/callbacks/${id}/retry`, { method: "POST" })
 }
+
+export interface FinishedRecovery {
+  task_id: number
+  event_id: string
+  created: boolean
+}
+
+export function recoverFinishedCallback(id: number): Promise<FinishedRecovery> {
+  return apiRequest<FinishedRecovery>(`/admin/callbacks/${id}/recover-finished`, { method: "POST" })
+}

@@ -98,11 +98,14 @@ PLANS = {
         "AND p.status<>'running'",
         "jobs",
     ),
+    # 快照随终态任务级联删除。仍被补发事件引用的原任务先保留。
     "callbacks": _DeletePlan(
         "callback_task",
         (("id", "bigint"),),
         "p.status IN ('done','dead') "
-        "AND p.created_at < CAST(:cutoff AS timestamptz)-make_interval(days=>:raw_days)",
+        "AND p.created_at < CAST(:cutoff AS timestamptz)-make_interval(days=>:raw_days) "
+        "AND NOT EXISTS (SELECT 1 FROM callback_batch_event e "
+        "WHERE e.recovered_from_task_id=p.id)",
     ),
     "callback_events": _DeletePlan(
         "callback_report_event",

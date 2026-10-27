@@ -345,4 +345,47 @@ describe("回调任务", () => {
     expect(wrapper.get("[data-testid='drawer-callback-retry-block-9']").text()).toContain("恢复配置也不能重推")
     wrapper.unmount()
   })
+
+  it("缺少快照的终态停止重推，并在确认后补发新事件", async () => {
+    const success = vi.spyOn(ElMessage, "success")
+    const legacy = {
+      ...deadTask,
+      manual_retry_allowed: false,
+      retry_block_reason: "legacy_snapshot_unavailable",
+      finished_snapshot: "legacy",
+      last_error: "LegacySnapshotUnavailable",
+    }
+    const eventId = "40000000-0000-4000-8000-000000000021"
+    const fetch = routeFetch({ total: 1, dead_total: 1, items: [legacy] }, (url, init) => {
+      if (String(url).endsWith("/callbacks/9/recover-finished") && init?.method === "POST") {
+        return response({ task_id: 21, event_id: eventId, created: true })
+      }
+      return undefined
+    })
+    vi.stubGlobal("fetch", fetch)
+    const wrapper = mount(CallbackView, {
+      attachTo: document.body,
+      global: { plugins: [createPinia(), ElementPlus] },
+    })
+    await flushPromises()
+
+    expect(wrapper.find("[data-testid='callback-retry-9']").exists()).toBe(false)
+    expect(wrapper.get("[data-testid='callback-retry-block-9']").text()).toContain("没有可信快照")
+    await wrapper.get("[data-testid='callback-detail-9']").trigger("click")
+    await flushPromises()
+    expect(wrapper.find("[data-testid='drawer-callback-retry-9']").exists()).toBe(false)
+    await wrapper.get("[data-testid='drawer-callback-recover-9']").trigger("click")
+    await flushPromises()
+
+    const confirm = vi.mocked(ElMessageBox.confirm)
+    expect(confirm.mock.calls[0][1]).toBe("确认补发新事件")
+    expect(vnodeText(confirm.mock.calls[0][0])).toContain("旧事件不会被改写")
+    expect(
+      fetch.mock.calls.some(
+        ([url, init]) => String(url).endsWith("/callbacks/9/recover-finished") && init?.method === "POST",
+      ),
+    ).toBe(true)
+    expect(success).toHaveBeenCalledWith("已补发新的批次终态事件 · 本次操作已记入审计")
+    wrapper.unmount()
+  })
 })

@@ -15,8 +15,8 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import current_correlation_id
 from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import database_engine
+from app.services import callback_batch_event as batch_events
 from app.services.callback import (
-    BatchFinishedData,
     CallbackMaterial,
     CallbackMessage,
     CallbackTaskRef,
@@ -74,70 +74,13 @@ async def enqueue_batch_finished(
     *,
     source_report_event_key: str | None = None,
 ) -> None:
-    """按有效报告修订幂等创建 batch.finished 引用任务。"""
+    """与批次状态更新同一事务写入终态任务和冻结汇总。"""
 
-    correlation_id = current_correlation_id()
-    assert correlation_id is not None
-    inserted = await connection.execute(
-        text(
-            """
-            WITH task_lock AS (
-              SELECT pg_advisory_xact_lock(
-                hashtextextended('batch.finished:' || CAST(:batch_id AS text),0)
-              )
-            ), candidate AS (
-              SELECT b.id batch_id,b.app_id,a.callback_url,a.callback_secret_enc
-              FROM sms_batch b JOIN app a ON a.id=b.app_id
-              WHERE b.id=CAST(:batch_id AS bigint)
-                AND b.status IN (
-                  'completed','completed_unknown','cancelled','expired','rejected'
-                )
-                AND a.status=1 AND a.callback_url IS NOT NULL
-                AND a.callback_secret_enc IS NOT NULL
-            )
-            INSERT INTO callback_task(
-              correlation_id,app_id,event,batch_id,source_report_event_key,url,
-              callback_secret_enc,callback_secret_key_version,signature_version
-            )
-            SELECT :correlation_id,c.app_id,'batch.finished',c.batch_id,
-              CAST(:source_report_event_key AS char(64)),c.callback_url,
-              c.callback_secret_enc,
-              ((get_byte(c.callback_secret_enc,0) << 8)
-                + get_byte(c.callback_secret_enc,1))::smallint,
-              1
-            FROM candidate c,task_lock
-            WHERE CAST(:source_report_event_key AS char(64)) IS NOT NULL
-               OR NOT EXISTS (
-                 SELECT 1 FROM callback_task t
-                 WHERE t.event='batch.finished' AND t.batch_id=c.batch_id
-                   AND t.source_report_event_key IS NULL
-               )
-            ON CONFLICT DO NOTHING
-            RETURNING id,correlation_id
-            """
-        ),
-        {
-            "batch_id": str(batch_id),
-            "source_report_event_key": source_report_event_key,
-            "correlation_id": correlation_id,
-        },
+    await batch_events.enqueue_batch_finished(
+        connection,
+        batch_id,
+        source_report_event_key=source_report_event_key,
     )
-    row = inserted.mappings().one_or_none()
-    if row is not None:
-        task_id = int(row["id"])
-        await enqueue_outbox(
-            connection,
-            OutboxEventSpec(
-                event_type="callback.ready",
-                aggregate_type="callback_task",
-                aggregate_id=str(task_id),
-                task_name="app.tasks.deliver_callback",
-                queue="callback",
-                args=(int(task_id),),
-                dedup_key=f"callback:{task_id}:attempt:0",
-                correlation_id=UUID(str(row["correlation_id"])),
-            ),
-        )
 
 
 async def enqueue_message_report(
@@ -350,7 +293,8 @@ class SqlCallbackRepository:
             params["batch_no"] = f"%{_escape_like(batch_no.strip())}%"
         source = (
             " FROM callback_task t JOIN app a ON a.id=t.app_id"
-            " LEFT JOIN sms_batch b ON b.id=t.batch_id "
+            " LEFT JOIN sms_batch b ON b.id=t.batch_id"
+            " LEFT JOIN callback_batch_event e ON e.task_id=t.id "
         )
         engine = self._engine()
         try:
@@ -372,8 +316,12 @@ class SqlCallbackRepository:
                           t.last_http_code,t.last_error,
                           t.created_at,t.finished_at, """
                         + list_retry_columns()
+                        + ","
+                        + batch_events.finished_snapshot_column()
+                        + " AS finished_snapshot "
                         + source
-                        + "WHERE " + where
+                        + "WHERE "
+                        + where
                         + " ORDER BY t.created_at DESC LIMIT :limit OFFSET :offset"
                     ),
                     params,
@@ -421,6 +369,10 @@ class SqlCallbackRepository:
                           AND (
                             t.event<>'message.report'
                             OR a.callback_report_enabled=true
+                          )
+                          AND NOT EXISTS (
+                            SELECT 1 FROM callback_batch_event e
+                            WHERE e.task_id=t.id AND e.legacy_unavailable
                           )
                         RETURNING t.id
                         """
@@ -868,33 +820,15 @@ class SqlCallbackRepository:
                 )
                 if task.event == "batch.finished":
                     batch_result = await connection.execute(
-                        text(
-                            """
-                            SELECT trim(batch_no) batch_no,biz_id,category,status,total,
-                              delivered,failed,unknown_cnt unknown,updated_at finished_at
-                            FROM sms_batch WHERE id=:batch_id
-                            """
-                        ),
-                        {"batch_id": task.batch_id},
+                        text(batch_events.FINISHED_SNAPSHOT_SQL),
+                        {"task_id": task.task_id},
                     )
-                    batch_row = batch_result.mappings().one()
-                    unknown = int(batch_row["unknown"])
+                    batch_row = batch_result.mappings().one_or_none()
+                    if batch_row is None:
+                        raise batch_events.CallbackSnapshotUnavailable("批次终态缺少冻结汇总")
                     return CallbackMaterial(
                         task,
-                        batch=BatchFinishedData(
-                            batch_no=str(batch_row["batch_no"]),
-                            biz_id=batch_row["biz_id"],
-                            category=str(batch_row["category"]),
-                            status=str(batch_row["status"]),
-                            total=int(batch_row["total"]),
-                            delivered=int(batch_row["delivered"]),
-                            failed=int(batch_row["failed"]),
-                            unknown=unknown,
-                            finished_at=batch_row["finished_at"],
-                            unknown_count=unknown,
-                            manual_resolution_required=str(batch_row["status"])
-                            == "completed_unknown",
-                        ),
+                        batch=batch_events.batch_from_snapshot(batch_row),
                     )
                 if task.event == "message.report":
                     messages_result = await connection.execute(
