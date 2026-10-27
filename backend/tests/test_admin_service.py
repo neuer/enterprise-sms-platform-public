@@ -397,3 +397,62 @@ async def test_empty_callback_deployment_does_not_block_unrelated_config_updates
     )
 
     assert repository.updates[0][0] == (ConfigUpdate("vendor_qps", "8", REVISION),)
+
+
+class CatalogRepository(FakeRepository):
+    async def list_configs(self) -> tuple[ConfigRow, ...]:
+        base = await FakeRepository.list_configs(self)
+        return (
+            *base,
+            ConfigRow("security_daily_enabled", "true", "bool", "日报开关", None, None),
+            ConfigRow("__internal_marker", "1", "str", "内部", None, None),
+        )
+
+    async def update_configs(
+        self,
+        updates: tuple[ConfigUpdate, ...],
+        *,
+        authorization: AdminAuthorization,
+        principal: SecurityPrincipal,
+        ip: str,
+    ) -> tuple[ConfigRow, ...]:
+        await super().update_configs(
+            updates,
+            authorization=authorization,
+            principal=principal,
+            ip=ip,
+        )
+        return await self.list_configs()
+
+
+@pytest.mark.asyncio
+async def test_general_config_catalog_hides_security_daily_and_internal_keys() -> None:
+    repository = CatalogRepository()
+    service = AdminService(repository)
+    listed = {item.key for item in await service.list_configs()}
+    saved = await service.update_configs(
+        (ConfigUpdate("callback_retry_schedule", "2,3,4,5,6", REVISION),),
+        principal=ADMIN,
+        ip="10.0.0.8",
+        authorization=grant((ConfigUpdate("callback_retry_schedule", "2,3,4,5,6", REVISION),)),
+    )
+    kept = await service.update_configs(
+        (ConfigUpdate("alert_wecom_webhook", None, REVISION),),
+        principal=ADMIN,
+        ip="10.0.0.8",
+        authorization=grant((ConfigUpdate("alert_wecom_webhook", None, REVISION),)),
+    )
+    assert {item.key for item in saved} == listed
+    assert {item.key for item in kept} == listed
+    assert "security_daily_enabled" not in listed
+    assert "__internal_marker" not in listed
+    assert "callback_retry_schedule" in listed
+    webhook = next(item for item in kept if item.key == "alert_wecom_webhook")
+    assert webhook.value is None and webhook.configured is True
+    with pytest.raises(InvalidAdminQuery, match="安全日报"):
+        await service.update_configs(
+            (ConfigUpdate("security_daily_enabled", "false", REVISION),),
+            principal=ADMIN,
+            ip="10.0.0.8",
+            authorization=grant((ConfigUpdate("security_daily_enabled", "false", REVISION),)),
+        )
