@@ -758,7 +758,16 @@ async def test_reschedule_uses_runtime_approval_expiry(
     repository = SqlSchedulingRepository()
     connection = FakeConnection(
         [
-            FakeResult(rows=[{"id": 9, "channel": "web", "had_approval": True}]),
+            FakeResult(
+                rows=[
+                    {
+                        "id": 9,
+                        "channel": "web",
+                        "category": "notice",
+                        "had_approval": True,
+                    }
+                ]
+            ),
             FakeResult(),
             FakeResult(),
             FakeResult(),

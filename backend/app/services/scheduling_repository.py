@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -215,18 +215,18 @@ class SqlSchedulingRepository:
         scheduled_at: datetime,
         *,
         approval_expire_hours: int,
+        max_schedule_ahead_days: int = 90,
     ) -> bool:
-        """在同一事务内改期、延长幂等并写入上海时区审计时间。"""
+        """在同一事务内按营销窗口归一改期、延长幂等并写入上海时区审计时间。"""
 
         predicate, scope_params = scope.sql()
-        audit_scheduled_at = _shanghai_iso(scheduled_at)
         engine = self._engine()
         try:
             async with engine.begin() as connection:
                 selected = await connection.execute(
                     text(
                         f"""
-                        SELECT b.id,b.channel,EXISTS(
+                        SELECT b.id,b.channel,b.category,EXISTS(
                           SELECT 1 FROM approval p WHERE p.batch_id=b.id
                         ) had_approval FROM sms_batch b
                         WHERE b.batch_no=:batch_no AND b.status='scheduled' AND {predicate}
@@ -238,16 +238,38 @@ class SqlSchedulingRepository:
                 row = selected.mappings().one_or_none()
                 if row is None:
                     return False
+                effective = scheduled_at
+                deferred: str | None = None
+                if str(row["category"]) == "market":
+                    window_result = await connection.execute(
+                        text("SELECT value FROM sys_config WHERE key='market_send_window'")
+                    )
+                    window = str(window_result.scalar() or DEFAULT_MARKET_WINDOW).strip()
+                    _dispatch, deferred, coerced = coerce_market_dispatch(
+                        datetime.now(UTC),
+                        window,
+                        scheduled_at,
+                    )
+                    if coerced is not None:
+                        effective = coerced
+                if effective > datetime.now(UTC) + timedelta(days=max_schedule_ahead_days):
+                    raise ValueError(f"scheduled_at 不能超过 {max_schedule_ahead_days} 天")
+                audit_scheduled_at = _shanghai_iso(effective)
                 needs_reapproval = row["channel"] == "web" and bool(row["had_approval"])
                 status = "pending_approval" if needs_reapproval else "scheduled"
                 await connection.execute(
                     text(
                         """
                         UPDATE sms_batch SET scheduled_at=:scheduled_at,status=:status,
-                          updated_at=now() WHERE id=:id
+                          deferred_reason=:deferred_reason,updated_at=now() WHERE id=:id
                         """
                     ),
-                    {"id": row["id"], "scheduled_at": scheduled_at, "status": status},
+                    {
+                        "id": row["id"],
+                        "scheduled_at": effective,
+                        "status": status,
+                        "deferred_reason": deferred,
+                    },
                 )
                 await connection.execute(
                     text(
@@ -260,7 +282,7 @@ class SqlSchedulingRepository:
                         WHERE batch_id=:id
                         """
                     ),
-                    {"id": row["id"], "scheduled_at": scheduled_at},
+                    {"id": row["id"], "scheduled_at": effective},
                 )
                 if needs_reapproval:
                     await connection.execute(
