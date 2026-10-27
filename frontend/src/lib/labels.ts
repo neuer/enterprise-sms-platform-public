@@ -53,6 +53,7 @@ export const STATUS_LABELS: Record<string, string> = {
   unknown: "未知",
   dead: "终止重试",
   other: "其他",
+  needs_review: "待核对",
 }
 
 /** 厂商审核状态主标签；draft 为模板特有的平台草稿态（签名无此态）。 */
@@ -106,6 +107,18 @@ export const MESSAGE_STATUS_OPTIONS = statusOptionsOf([
   "failed",
   "unknown",
   "other",
+] as const)
+export const DISPLAY_STATUS_OPTIONS = statusOptionsOf([
+  "pending",
+  "sent",
+  "delivered",
+  "failed",
+  "unknown",
+  "other",
+  "cancelled",
+  "rejected",
+  "expired",
+  "needs_review",
 ] as const)
 export const BLACKLIST_SOURCE_LABELS: Record<string, string> = {
   manual: "人工加入",

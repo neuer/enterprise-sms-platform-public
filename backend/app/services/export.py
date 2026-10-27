@@ -37,6 +37,7 @@ class ExportRequestFilters:
     end: datetime | None = None
     category: str | None = None
     status: str | None = None
+    display_status: str | None = None
     app_id: int | None = None
     dept: str | None = None
     batch_no: str | None = None
@@ -59,10 +60,24 @@ class ExportFilterSet:
     dataset: Literal["message", "unmatched"] = "message"
     end_exclusive: datetime | None = None
     is_test: bool | None = None
+    display_status: str | None = None
 
     def __post_init__(self) -> None:
         """所有构造与历史任务重载统一拒绝不安全过滤元数据。"""
 
+        if self.display_status is not None and self.display_status not in {
+            "pending",
+            "sent",
+            "delivered",
+            "failed",
+            "unknown",
+            "other",
+            "cancelled",
+            "rejected",
+            "expired",
+            "needs_review",
+        }:
+            raise ValueError("invalid export display status")
         if self.status is not None and self.status not in {
             "pending",
             "sent",
@@ -91,6 +106,7 @@ class ExportFilterSet:
             "end": self.end.isoformat() if self.end is not None else None,
             "category": self.category,
             "status": self.status,
+            "display_status": self.display_status,
             "app_id": self.app_id,
             "batch_no": self.batch_no,
             "phone_hmacs": list(self.phone_hmacs),
@@ -117,6 +133,9 @@ class ExportFilterSet:
             end=moment("end"),
             category=str(value["category"]) if value.get("category") is not None else None,
             status=str(value["status"]) if value.get("status") is not None else None,
+            display_status=(
+                str(value["display_status"]) if value.get("display_status") is not None else None
+            ),
             app_id=int(value["app_id"]) if value.get("app_id") is not None else None,
             batch_no=str(value["batch_no"]) if value.get("batch_no") is not None else None,
             phone_hmacs=tuple(str(item) for item in raw_hmacs),
@@ -236,6 +255,7 @@ class ExportService:
             filters.dataset,
             filters.end_exclusive,
             filters.is_test,
+            filters.display_status,
         )
 
     async def create(

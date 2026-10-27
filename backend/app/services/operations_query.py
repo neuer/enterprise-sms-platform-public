@@ -19,6 +19,11 @@ from app.services.content_protection import (
     decrypt_reply_content,
 )
 from app.services.crypto import CryptoService
+from app.services.message_display import (
+    MESSAGE_DISPLAY_STATUS_SQL,
+    display_status_predicate,
+    ensure_display_status,
+)
 from app.settings import Settings, get_settings
 
 
@@ -51,6 +56,8 @@ class MessageQueryItem:
     category: str
     content: str
     sender: str | None
+    batch_status: str = ""
+    display_status: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +83,8 @@ class TimelineEvent:
     content: str
     status: str | None
     sender: str | None
+    batch_status: str | None = None
+    display_status: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +103,7 @@ class OperationsQueryRepository(Protocol):
         end: datetime | None,
         category: str | None,
         status: str | None,
+        display_status: str | None = None,
         page: int,
         size: int,
         scope: BatchAccessScope,
@@ -148,10 +158,12 @@ class OperationsQueryService:
         end: datetime | None,
         category: str | None,
         status: str | None,
+        display_status: str | None = None,
         page: int,
         size: int,
         scope: BatchAccessScope,
     ) -> MessageQueryPage:
+        ensure_display_status(display_status)
         if page < 1:
             raise ValueError("page must be positive")
         if not 1 <= size <= MAX_PAGE_SIZE:
@@ -164,6 +176,7 @@ class OperationsQueryService:
             end=end,
             category=category,
             status=status,
+            display_status=display_status,
             page=page,
             size=size,
             scope=scope,
@@ -288,10 +301,12 @@ class SqlOperationsQueryRepository:
         end: datetime | None,
         category: str | None,
         status: str | None,
+        display_status: str | None = None,
         page: int,
         size: int,
         scope: BatchAccessScope,
     ) -> MessageQueryPage:
+        ensure_display_status(display_status)
         ensure_page_offset(page, size)
         predicate, scope_params = scope.sql()
         where = f"""
@@ -300,6 +315,7 @@ class SqlOperationsQueryRepository:
           AND (CAST(:end AS timestamptz) IS NULL OR m.created_at<=:end)
           AND (CAST(:category AS varchar(10)) IS NULL OR b.category=:category)
           AND (CAST(:status AS varchar(10)) IS NULL OR m.status=:status)
+          AND {display_status_predicate()}
           AND {predicate}
         """
         params = {
@@ -308,6 +324,7 @@ class SqlOperationsQueryRepository:
             "end": end,
             "category": category,
             "status": status,
+            "display_status": display_status,
             "limit": size,
             "offset": (page - 1) * size,
             **scope_params,
@@ -323,7 +340,11 @@ class SqlOperationsQueryRepository:
                 rows_result = await connection.execute(
                     text(
                         """
-                        SELECT m.id,m.phone_mask,m.status,m.report_desc,m.report_time,
+                        SELECT m.id,m.phone_mask,m.status,b.status AS batch_status,
+                          ("""
+                        + MESSAGE_DISPLAY_STATUS_SQL
+                        + """) AS display_status,
+                          m.report_desc,m.report_time,
                           m.created_at,trim(b.batch_no) batch_no,b.category,
                           b.display_content_enc,
                           CASE WHEN b.channel='web' THEN b.creator ELSE a.name END sender
@@ -378,7 +399,9 @@ class SqlOperationsQueryRepository:
                             b.display_content_enc batch_content_enc,
                             NULL::bytea reply_content_enc,
                             trim(b.batch_no) content_object_id,m.status,
-                            CASE WHEN b.channel='web' THEN b.creator ELSE a.name END sender
+                            CASE WHEN b.channel='web' THEN b.creator ELSE a.name END sender,
+                            b.status AS batch_status,
+                            ({MESSAGE_DISPLAY_STATUS_SQL}) AS display_status
                           FROM sms_message m JOIN sms_batch b ON b.id=m.batch_id
                           LEFT JOIN app a ON a.id=b.app_id
                           WHERE m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
@@ -390,7 +413,8 @@ class SqlOperationsQueryRepository:
                             b.category,trim(b.batch_no) batch_no,
                             NULL::bytea batch_content_enc,e.content_enc reply_content_enc,
                             trim(r.event_key) content_object_id,NULL status,
-                            '用户' sender
+                            '用户' sender,b.status AS batch_status,
+                            NULL::varchar(16) AS display_status
                           FROM sms_reply r
                           JOIN reply_event e ON e.event_key=r.event_key
                           LEFT JOIN sms_batch b ON b.id=r.batch_id
@@ -452,6 +476,16 @@ class SqlOperationsQueryRepository:
                             sender=(
                                 str(values["sender"])
                                 if values["sender"] is not None
+                                else None
+                            ),
+                            batch_status=(
+                                str(values["batch_status"])
+                                if values.get("batch_status") is not None
+                                else None
+                            ),
+                            display_status=(
+                                str(values["display_status"])
+                                if values.get("display_status") is not None
                                 else None
                             ),
                         )

@@ -87,6 +87,18 @@ class ExportFiltersModel(BaseModel):
     end_exclusive: datetime | None = None
     category: Literal["verify", "notice", "market"] | None = None
     status: Literal["pending", "sent", "delivered", "failed", "unknown", "other"] | None = None
+    display_status: Literal[
+        "pending",
+        "sent",
+        "delivered",
+        "failed",
+        "unknown",
+        "other",
+        "cancelled",
+        "rejected",
+        "expired",
+        "needs_review",
+    ] | None = None
     app_id: int | None = Field(default=None, ge=1)
     dept: str | None = Field(default=None, max_length=128)
     batch_no: str | None = Field(default=None, max_length=32)
