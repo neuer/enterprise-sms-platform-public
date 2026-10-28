@@ -12,7 +12,7 @@ from uuid import UUID
 from app.core.auth.accounts import (
     ActorPrincipal,
 )
-from app.services.category import CategoryPolicy
+from app.services.category import SHANGHAI, CategoryPolicy
 from app.services.crypto import ProtectedPhone
 from app.services.freq import FrequencyLimits
 from app.services.idempotency import (
@@ -216,6 +216,16 @@ class BatchResponse:
     deferred_reason: str | None
     scheduled_at: datetime | None
     idempotency_expires_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        """首次受理与持久化重放共享上海时区响应，不改变绝对时刻。"""
+        for name in ("scheduled_at", "idempotency_expires_at"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(f"{name} must include timezone")
+            object.__setattr__(self, name, value.astimezone(SHANGHAI))
 
 
 class PipelineStore(Protocol):

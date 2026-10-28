@@ -172,7 +172,8 @@ Content-Type: application/json
 - 定时发送：`scheduled_at + 7 days`；
 - 窗口内相同请求返回原 `batch_no` 且 `idempotent: true`，不同请求体返回 409
   `IDEMPOTENCY_CONFLICT`；
-- 响应头 `Idempotency-Expires-At` 与可选字段 `idempotency_expires_at` 给出截止时间；
+- 首次受理与幂等重放的 `scheduled_at` 均以上海时区 ISO8601 `+08:00` 返回，保留输入的绝对时刻；
+- 响应头 `Idempotency-Expires-At` 与可选字段 `idempotency_expires_at` 给出相同的截止时间，均使用上海时区 `+08:00`；
 - 过期后若批次仍处于
   `pending_approval/scheduled/queued/sending/balance_blocked`，或仍有
   `uncertain` / `unknown_terminal` 分片，或仍有未完成 callback
