@@ -201,7 +201,7 @@ async def test_recovery_inserts_a_new_event_without_updating_the_old_snapshot(
     assert result.task_id == 21 and result.event_id == EVENT_ID and result.created is True
     assert len(connection.calls) == 6
     sqls = [call[0] for call in connection.calls]
-    batch_lock = next(i for i, sql in enumerate(sqls) if "sms_batch" in sql and "FOR UPDATE" in sql)
+    batch_lock = next(i for i, sql in enumerate(sqls) if "lock_callback_idempotency_batch" in sql)
     task_lock = next(
         i for i, sql in enumerate(sqls) if "callback_task t" in sql and "FOR UPDATE" in sql
     )

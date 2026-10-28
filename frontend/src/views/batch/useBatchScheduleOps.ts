@@ -87,7 +87,8 @@ export function useBatchScheduleOps(deps: {
 
   function openReschedule(): void {
     if (!canScheduleOps.value) return
-    scheduledAt.value = deps.selected.value?.scheduled_at || ""
+    const current = deps.selected.value?.scheduled_at
+    scheduledAt.value = current ? toApiDateTime(new Date(current)) : ""
     rescheduleOpen.value = true
   }
 

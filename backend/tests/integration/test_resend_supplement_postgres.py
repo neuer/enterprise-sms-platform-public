@@ -299,3 +299,33 @@ async def test_existing_preview_never_silently_expands_its_frozen_audience(resen
     again = await subject.preview(batch, scope)
     assert again.intent_id == first.intent_id and again.phone_masks == first.phone_masks
     assert again.uncovered_failed == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_ordinary_result_requires_current_scope_and_full_coverage(
+    resend_env: Any,
+) -> None:
+    """操作者变化只复用已覆盖动作，权限变化、未覆盖和未决回执均不能走此捷径。"""
+    from app.services.resend import SqlResendRepository
+
+    env = resend_env
+    _actor, batch, source, ids = await seed_legacy(env)
+    repo = SqlResendRepository(env.settings)
+    repo._engine = lambda: _NoDisposeEngine(env.engine)  # type: ignore[method-assign]
+    scope = BatchAccessScope(dept="平台部")
+    assert await repo.existing_result(batch, scope, "web") is None
+    async with env.engine.begin() as c:
+        await c.execute(
+            text("UPDATE sms_message SET status='delivered' WHERE id=:id"), {"id": ids[1]}
+        )
+    result = await repo.existing_result(batch, scope, "web")
+    assert result is not None and result.accepted == 1 and result.status == "completed"
+    assert await repo.existing_result(batch, BatchAccessScope(dept="其他部门"), "web") is None
+    assert await repo.existing_result(batch, scope, "api") is None
+    async with env.engine.begin() as c:
+        await c.execute(text("UPDATE sms_message SET status='sent' WHERE id=:id"), {"id": ids[1]})
+    assert await repo.existing_result(batch, scope, "web") is None
+    async with env.engine.connect() as c:
+        assert await c.scalar(
+            text("SELECT count(*) FROM sms_batch WHERE resend_of=:id"), {"id": source}
+        ) == 1

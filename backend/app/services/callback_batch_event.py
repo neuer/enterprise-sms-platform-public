@@ -191,7 +191,10 @@ WHERE t.id=:task_id
 """
 
 _LOCK_BATCH_SQL = """
-SELECT id FROM sms_batch WHERE id=:batch_id FOR UPDATE
+WITH locked AS MATERIALIZED (
+  SELECT public.lock_callback_idempotency_batch(:task_id)
+)
+SELECT b.id FROM sms_batch b CROSS JOIN locked WHERE b.id=:batch_id
 """
 
 _LOCK_SQL = """
@@ -315,7 +318,7 @@ class FinishedRecoveryService:
         batch_id = int(task["batch_id"])
         locked_batch = await connection.execute(
             text(_LOCK_BATCH_SQL),
-            {"batch_id": batch_id},
+            {"batch_id": batch_id, "task_id": task_id},
         )
         if locked_batch.mappings().one_or_none() is None:
             raise FinishedRecoveryRejected("批次尚未终态，不能补发汇总", "batch_not_terminal")

@@ -138,3 +138,48 @@ it("详情读取 404 后暂停操作并提供只读重试，不自动再次改�
     wrapper.unmount()
   }
 })
+
+it.each(["2026-10-31T00:00:00Z", "2026-10-31T08:00:00+08:00"])(
+  "改期回显把 %s 转为上海钟面，未编辑保存保持同一时刻",
+  async (scheduledAt) => {
+    const batch = { ...scheduled, scheduled_at: scheduledAt }
+    const writes: unknown[] = []
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (String(url).endsWith("/reschedule")) {
+          writes.push(JSON.parse(String(init?.body)))
+          return response({})
+        }
+        if (String(url).includes("/details?")) return response({ total: 0, items: [] })
+        if (String(url).endsWith("/batches/BATCH-SCHEDULED")) return response(batch)
+        return response({ total: 1, items: [batch], status_counts: {} })
+      }),
+    )
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useSessionStore().role = "operator"
+    const wrapper = mount(BatchView, { global: { plugins: [pinia, ElementPlus] } })
+    try {
+      await flushPromises()
+      await wrapper
+        .findAll("button")
+        .find((b) => b.text().includes("查看详情"))!
+        .trigger("click")
+      await flushPromises()
+      await wrapper.get("[data-testid='reschedule-batch']").trigger("click")
+      await flushPromises()
+      const picker = wrapper.findAllComponents({ name: "ElDatePicker" }).find((p) => p.props("type") === "datetime")!
+      expect(picker.find("input").element.value).toBe("2026-10-31 08:00:00")
+      await wrapper
+        .findAll("button")
+        .find((b) => b.text() === "确认改期")!
+        .trigger("click")
+      await flushPromises()
+      expect(writes).toEqual([{ scheduled_at: "2026-10-31T08:00:00+08:00" }])
+    } finally {
+      wrapper.unmount()
+    }
+  },
+)

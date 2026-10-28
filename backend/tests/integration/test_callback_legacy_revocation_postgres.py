@@ -11,8 +11,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.auth.accounts import SecurityPrincipal
+from app.core.runtime_resources import bind_connection_audit_subject
 from app.services.callback_batch_event import FinishedRecoveryRejected, FinishedRecoveryService
 from app.services.callback_retry_eligibility import diagnosis_sql
+from tests.integration.audit_fixtures import live_audit_principal as live_audit_principal
+from tests.integration.test_ops_audit_postgres import accept_runtime as accept_runtime
 
 pytestmark = pytest.mark.skipif(
     "OUTBOX_POSTGRES_DSN" not in os.environ,
@@ -21,8 +24,10 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("legacy", [True, False])
-async def test_revocation_wins_over_snapshot_and_recovery(legacy: bool) -> None:
+@pytest.mark.parametrize("legacy,revoked", [(True, True), (False, True), (True, False)])
+async def test_revocation_wins_over_snapshot_and_recovery(
+    legacy: bool, revoked: bool, live_audit_principal: SecurityPrincipal
+) -> None:
     """即使当前应用和 URL/密钥已恢复，两个恢复入口仍无新增事件或 Outbox。"""
     engine = create_async_engine(make_url(os.environ["OUTBOX_POSTGRES_DSN"]))
     try:
@@ -53,9 +58,16 @@ async def test_revocation_wins_over_snapshot_and_recovery(legacy: bool) -> None:
                     INSERT INTO callback_task(app_id,event,batch_id,url,callback_secret_enc,
                         callback_secret_key_version,status,last_error)
                     VALUES(:app,'batch.finished',:batch,'https://callback.invalid',:sealed,
-                        1,'dead','CallbackConfigRevoked') RETURNING id
+                        1,'dead',:error) RETURNING id
                 """),
-                    {**params, "app": app_id, "batch": batch_id},
+                    {
+                        **params,
+                        "app": app_id,
+                        "batch": batch_id,
+                        "error": (
+                            "CallbackConfigRevoked" if revoked else "LegacySnapshotUnavailable"
+                        ),
+                    },
                 )
                 await connection.execute(
                     text("""
@@ -75,15 +87,41 @@ async def test_revocation_wins_over_snapshot_and_recovery(legacy: bool) -> None:
                         "flag": None if legacy else False,
                     },
                 )
+                await connection.execute(text("SET LOCAL ROLE sms_callback"))
+                assert not await connection.scalar(
+                    text("SELECT has_table_privilege(current_user,'sms_batch','UPDATE')")
+                )
                 reason = await connection.scalar(text(diagnosis_sql()), {"task_id": task_id})
-                assert reason == "config_revoked"
+                assert reason == ("config_revoked" if revoked else "legacy_snapshot_unavailable")
                 before = await connection.scalar(text("SELECT count(*) FROM callback_task"))
                 before_outbox = await connection.scalar(text("SELECT count(*) FROM outbox_event"))
+                principal = live_audit_principal
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=principal.login_name,
+                    account_id=principal.account_id,
+                    identity_id=principal.identity_id,
+                )
+                if not revoked:
+                    service = FinishedRecoveryService()
+                    created = await service._recover(connection, int(task_id), principal)
+                    repeated = await service._recover(connection, int(task_id), principal)
+                    assert created.created and not repeated.created
+                    assert repeated.task_id == created.task_id
+                    assert repeated.event_id == created.event_id
+                    assert await connection.scalar(text("SELECT count(*) FROM callback_task")) == (
+                        before + 1
+                    )
+                    assert await connection.scalar(text("SELECT count(*) FROM outbox_event")) == (
+                        before_outbox + 1
+                    )
+                    return
                 with pytest.raises(FinishedRecoveryRejected) as blocked:
                     await FinishedRecoveryService()._recover(
                         connection,
                         int(task_id),
-                        SecurityPrincipal(1, 10, "admin", "平台部", "admin"),
+                        principal,
                     )
                 assert blocked.value.reason == "config_revoked"
                 assert await connection.scalar(text("SELECT count(*) FROM callback_task")) == before
