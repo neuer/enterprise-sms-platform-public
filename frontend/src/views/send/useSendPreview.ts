@@ -177,7 +177,7 @@ export function useSendPreview(options: SendPreviewOptions) {
     if (preview.value?.deferred_reason === "market_window" && !form.isTest) {
       lines.push({
         tone: "warn",
-        title: "当前处于营销时间窗外（默认 08:00–21:00）",
+        title: "当前处于营销时间窗外",
         desc: "提交后将自动转为下一发送窗口起点定时，到点前可取消。",
       })
     } else if (
@@ -189,8 +189,8 @@ export function useSendPreview(options: SendPreviewOptions) {
     ) {
       lines.push({
         tone: "info",
-        title: "当前处于营销时间窗内（08:00–21:00）",
-        desc: "窗外提交将自动转次日窗口起点定时，预检会提前提示。",
+        title: "当前处于营销时间窗内",
+        desc: "以服务端配置的时间窗为准；窗外提交将转为下一发送窗口起点定时。",
       })
     }
     if (preview.value?.unsubscribe_appended) {
