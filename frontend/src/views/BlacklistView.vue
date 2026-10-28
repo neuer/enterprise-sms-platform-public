@@ -185,6 +185,7 @@ const removingHmac = ref<string | null>(null)
 async function remove(item: BlacklistItem): Promise<void> {
   item = { ...item }
   if (removingHmac.value !== null) return
+  const isCurrent = captureCurrent()
   removingHmac.value = item.phone_hmac
   try {
     if (
@@ -197,10 +198,12 @@ async function remove(item: BlacklistItem): Promise<void> {
     )
       return
     await deleteBlacklist(item.phone_hmac)
+    if (!isCurrent()) return
     ElMessage.success("已移出黑名单 · 本次操作已记入审计")
     if (items.value.length === 1 && page.value > 1) page.value -= 1
     await load()
   } catch (error) {
+    if (!isCurrent()) return
     ElMessage.error(errorText(error, "移除失败"))
   } finally {
     removingHmac.value = null

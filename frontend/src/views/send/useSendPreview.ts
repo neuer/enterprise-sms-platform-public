@@ -204,7 +204,7 @@ export function useSendPreview(options: SendPreviewOptions) {
       lines.push({
         tone: "info",
         title: "测试发送",
-        desc: "豁免营销时间窗；黑名单、敏感词、频控与配额照常执行。",
+        desc: "豁免审批与营销时间窗；黑名单、敏感词、频控与配额照常执行。",
       })
     } else if (scheduledAtValue.value) {
       lines.push({

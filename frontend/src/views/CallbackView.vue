@@ -22,7 +22,7 @@ import { usePagedList } from "../composables/usePagedList"
 import { useLatestRead } from "../composables/useLatestRead"
 import { useConfirmActions } from "../lib/confirm"
 import { vRowActivate } from "../lib/directives"
-const { confirmAuditedAction } = useConfirmActions()
+const { confirmAuditedAction, captureCurrent } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { callbackRetryReason } from "../lib/callbackRetry"
 import { formatDateTime } from "../lib/time"
@@ -153,6 +153,7 @@ function openDetail(item: CallbackTask): void {
 async function retry(item: CallbackTask): Promise<void> {
   item = { ...item }
   if (retryingId.value !== null) return
+  const isCurrent = captureCurrent()
   retryingId.value = item.id
   try {
     if (
@@ -165,9 +166,11 @@ async function retry(item: CallbackTask): Promise<void> {
     )
       return
     await retryCallback(item.id)
+    if (!isCurrent()) return
     ElMessage.success("回调任务已重新入队 · 本次操作已记入审计")
     await load()
   } catch (error) {
+    if (!isCurrent()) return
     ElMessage.error(errorText(error, "手动重推失败"))
     if (error instanceof ApiRequestError && error.status === 409) await load()
   } finally {
@@ -177,6 +180,7 @@ async function retry(item: CallbackTask): Promise<void> {
 
 async function recover(item: CallbackTask): Promise<void> {
   if (retryingId.value !== null) return
+  const isCurrent = captureCurrent()
   retryingId.value = item.id
   try {
     if (
@@ -189,11 +193,13 @@ async function recover(item: CallbackTask): Promise<void> {
     )
       return
     const result = await recoverFinishedCallback(item.id)
+    if (!isCurrent()) return
     ElMessage.success(
       result.created ? "已补发新的批次终态事件 · 本次操作已记入审计" : "该历史事件已经补发过，未再次创建",
     )
     await load()
   } catch (error) {
+    if (!isCurrent()) return
     ElMessage.error(errorText(error, "补发新事件失败"))
   } finally {
     retryingId.value = null
