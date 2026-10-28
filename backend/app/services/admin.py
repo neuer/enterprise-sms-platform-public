@@ -7,7 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from ipaddress import IPv4Network, IPv6Network
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from app.core.auth.accounts import SecurityPrincipal
@@ -337,11 +337,11 @@ def _config_revision(value: object) -> str:
         raise InvalidAdminQuery("配置版本必须为带时区时间") from None
 
 
-def canonical_config_intent_items(items: object) -> list[dict[str, Any]]:
+def canonical_config_intent_items(items: object) -> list[dict[str, str]]:
     """授权白名单按键排序；敏感项只记录动作，不接收凭据摘要。"""
     if not isinstance(items, list) or not 1 <= len(items) <= 50:
         raise InvalidAdminQuery("配置更新数量无效")
-    result: list[dict[str, Any]] = []
+    result: list[dict[str, str]] = []
     seen: set[str] = set()
     for item in items:
         if not isinstance(item, dict) or not isinstance(item.get("key"), str):
@@ -400,11 +400,14 @@ def normalize_config_updates(updates: tuple[ConfigUpdate, ...]) -> tuple[ConfigU
     return tuple(normalized)
 
 
-def config_write_parameters(updates: tuple[ConfigUpdate, ...]) -> dict[str, Any]:
+def config_write_parameters(updates: tuple[ConfigUpdate, ...]) -> dict[str, list[dict[str, str]]]:
     """由实际变更重新构造非凭据授权参数。"""
     items = []
     for item in normalize_config_updates(updates):
-        entry: dict[str, Any] = {"key": item.key, "expected_updated_at": item.expected_updated_at}
+        entry: dict[str, object] = {
+            "key": item.key,
+            "expected_updated_at": item.expected_updated_at,
+        }
         if item.key in SENSITIVE_CONFIG_KEYS:
             entry["secret_action"] = (
                 "keep" if item.value is None else "replace" if item.value else "clear"

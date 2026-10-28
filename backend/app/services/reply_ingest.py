@@ -18,6 +18,7 @@ from app.services.alert import emit_alert_best_effort
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
 from app.services.raw_lease import (
+    MarkProcessedOptions,
     RawLeaseLost,
     RawProcessingLease,
     bind_raw_lease_heartbeat,
@@ -833,7 +834,7 @@ class ReplyIngestService:
                     dedup_key=f"raw_item_skipped:reply:{raw_id}",
                 )
                 return len(data)
-            mark_kwargs: dict[str, Any] = {}
+            mark_kwargs: MarkProcessedOptions = {}
             if lease is not None:
                 mark_kwargs["lease"] = lease
             if system_audit_intent:

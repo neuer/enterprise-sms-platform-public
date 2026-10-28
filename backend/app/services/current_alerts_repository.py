@@ -5,9 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections import defaultdict
 from datetime import datetime
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 
 from app.core.jobtrack import JobRunSnapshot, JobSpec
 from app.core.runtime_resources import ManagedAsyncEngine, database_engine, redis_client
@@ -80,7 +80,7 @@ class SqlCurrentAlertRepository:
                     ),
                     {"job_names": [spec.job_name for spec in specs]},
                 )
-                grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+                grouped: dict[str, list[RowMapping]] = defaultdict(list)
                 latest_success: dict[str, datetime | None] = {}
                 for row in job_result.mappings():
                     job_name = str(row["job_name"])
@@ -89,7 +89,7 @@ class SqlCurrentAlertRepository:
                         row["latest_success_at"],
                     )
                     if row["started_at"] is not None:
-                        grouped[job_name].append(dict(row))
+                        grouped[job_name].append(row)
                 jobs: list[CurrentJobFact] = []
                 for spec in specs:
                     rows = grouped.get(spec.job_name, [])

@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 from uuid import UUID, uuid4
 
 from sqlalchemy import RowMapping, text
@@ -52,6 +52,13 @@ class RawProcessingLease:
     lease_id: UUID
     epoch: int
     expires_at: datetime | None = None
+
+
+class MarkProcessedOptions(TypedDict, total=False):
+    """mark_processed 的按需可选参数；未用到时不传，兼容未声明这些参数的仓储。"""
+
+    lease: RawProcessingLease
+    system_audit_intent: bool
 
 
 def new_lease_id() -> UUID:

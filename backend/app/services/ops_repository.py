@@ -923,7 +923,7 @@ class SqlOpsRepository:
                         str(row["alert_type"]),
                         cast(AlertLevel, str(row["level"])),
                         str(row["title"]),
-                        cast(dict[str, Any] | None, row["detail"]),
+                        row["detail"],
                         str(row["channels"]),
                         row["created_at"],
                     )
