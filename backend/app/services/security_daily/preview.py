@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import html
 import json
+from collections.abc import Mapping
 from datetime import datetime, timedelta
-from typing import Any
 
 from app.services.security_daily.contract import (
     SHANGHAI_TZ,
     ConfigurationState,
     SecurityDailyReportRecord,
+    SecurityDailyTimelineEvent,
     validate_security_daily_payload,
 )
 
@@ -37,8 +38,8 @@ def resolve_configuration_state(
     return "ready"
 
 
-def _timeline(record: SecurityDailyReportRecord) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
+def _timeline(record: SecurityDailyReportRecord) -> list[SecurityDailyTimelineEvent]:
+    events: list[SecurityDailyTimelineEvent] = []
     if record.generated_at is not None:
         events.append({"type": "generated", "at": record.generated_at, "label": "报告生成"})
     if record.last_error_at is not None:
@@ -67,7 +68,7 @@ def _timeline(record: SecurityDailyReportRecord) -> list[dict[str, Any]]:
     return events
 
 
-def _render_preview(payload: dict[str, Any]) -> tuple[str, str]:
+def _render_preview(payload: Mapping[str, object]) -> tuple[str, str]:
     """基于同一脱敏对象生成安全的 HTML/纯文本预览。"""
 
     validated = validate_security_daily_payload(payload)
@@ -85,15 +86,16 @@ def _render_preview(payload: dict[str, Any]) -> tuple[str, str]:
             or "今日无需处理",
         ),
     ]
-    for key, label in (
-        ("metrics", "核心指标"),
-        ("ssh", "SSH 与主机安全"),
-        ("web", "Web/API"),
-        ("audit", "管理审计"),
-        ("runtime", "运行状态"),
-        ("coverage", "证据范围"),
-    ):
-        sections.append((label, json.dumps(validated[key], ensure_ascii=False, indent=2)))
+    detail_sections: tuple[tuple[str, object], ...] = (
+        ("核心指标", validated["metrics"]),
+        ("SSH 与主机安全", validated["ssh"]),
+        ("Web/API", validated["web"]),
+        ("管理审计", validated["audit"]),
+        ("运行状态", validated["runtime"]),
+        ("证据范围", validated["coverage"]),
+    )
+    for label, rows in detail_sections:
+        sections.append((label, json.dumps(rows, ensure_ascii=False, indent=2)))
     text_lines = [f"服务器安全日报 [{status}]", f"日期：{report_date}", ""]
     text_lines.extend(f"{label}\n{value}\n" for label, value in sections)
     text_preview = "\n".join(text_lines)

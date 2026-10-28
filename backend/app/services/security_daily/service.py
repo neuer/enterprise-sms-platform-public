@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from app.core.auth.accounts import SecurityPrincipal
@@ -26,10 +26,12 @@ from app.services.security_daily.contract import (
     SecurityDailyNotFound,
     SecurityDailyOverview,
     SecurityDailyPage,
+    SecurityDailyPayloadData,
     SecurityDailyPreview,
     SecurityDailyQuery,
     SecurityDailyReportRecord,
     SecurityDailyStateConflict,
+    SecurityDailyTimelineEvent,
     SecurityDailyUnavailable,
     SecurityDailyValidationError,
     recipient_set_digest,
@@ -63,7 +65,7 @@ class SecurityDailyRepository(Protocol):
 
     async def ingest_payload(
         self,
-        payload: dict[str, Any],
+        payload: Mapping[str, object],
         *,
         recipient_count: int,
         force: bool = False,
@@ -187,21 +189,21 @@ async def generate_security_daily_for_date(
             raise SecurityDailyValidationError("security report input must be an object")
         # 平台侧派生计算只消费已通过结构、时间和脱敏校验的快照；缺列或
         # 不完整输入必须显式记为 unavailable，不能在 enrich 阶段异常退出。
-        value = validate_security_daily_payload(value)
+        payload = validate_security_daily_payload(value)
         evidence = await repository.audit_evidence(period_start, period_end)
         if evidence is not None:
-            value = _enrich_audit_evidence(value, evidence)
-        value = _finalize_security_daily_payload(value)
+            payload = _enrich_audit_evidence(payload, evidence)
+        payload = _finalize_security_daily_payload(payload)
         previous = await repository.get_latest_report(report_date - timedelta(days=1))
         if (
             previous is not None
             and previous.generation_status == "ready"
             and previous.payload is not None
         ):
-            value = _enrich_day_over_day(value, previous.payload)
-        value["generated_at"] = generation_time.isoformat()
+            payload = _enrich_day_over_day(payload, previous.payload)
+        payload["generated_at"] = generation_time.isoformat()
         return await repository.ingest_payload(
-            value,
+            payload,
             recipient_count=recipient_count,
             force=force,
             generation_source=generation_source,
@@ -324,7 +326,7 @@ class SecurityDailyService:
         record = await self.repository.get_latest_report(report_date)
         if record is None:
             raise SecurityDailyUnavailable("安全日报生成未产出记录")
-        payload_override: dict[str, Any] | None = None
+        payload_override: SecurityDailyPayloadData | None = None
         if record.generation_status != "ready" or record.payload is None:
             payload_override = _problem_payload(
                 record.report_date,
@@ -399,7 +401,7 @@ class SecurityDailyService:
                 # 快照比已入库 payload 更新：直接发送会外发过期数据，
                 # 跳过自动投递，等待管理员手动“立即生成”后发送。
                 return None
-        payload_override: dict[str, Any] | None = None
+        payload_override: SecurityDailyPayloadData | None = None
         if record.generation_status != "ready" or record.payload is None:
             payload_override = _problem_payload(
                 record.report_date,
@@ -438,7 +440,7 @@ class SecurityDailyService:
         principal: SecurityPrincipal | None = None,
         ip: str | None = None,
         system: bool = False,
-        payload_override: dict[str, Any] | None = None,
+        payload_override: SecurityDailyPayloadData | None = None,
     ) -> SecurityDailyDeliveryRequest:
         """发布与 request_id 成对的投递证据，新重试不受旧结果抑制。
 
@@ -681,7 +683,7 @@ class SecurityDailyService:
         return False
 
     @staticmethod
-    def timeline(record: SecurityDailyReportRecord) -> list[dict[str, Any]]:
+    def timeline(record: SecurityDailyReportRecord) -> list[SecurityDailyTimelineEvent]:
         return _timeline(record)
 
     @staticmethod

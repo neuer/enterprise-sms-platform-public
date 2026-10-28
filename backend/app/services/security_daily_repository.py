@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import date, datetime, timedelta
-from typing import Any, cast
+from typing import cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import RowMapping, text
@@ -53,7 +54,10 @@ from app.services.security_daily import (
     validate_resend_recipients,
     validate_security_daily_payload,
 )
-from app.services.security_daily.contract import security_daily_write_parameters
+from app.services.security_daily.contract import (
+    SecurityDailyPayloadData,
+    security_daily_write_parameters,
+)
 from app.services.security_daily_delivery_lookup import (
     fetch_delivery_request,
     fetch_latest_delivery_request,
@@ -78,12 +82,11 @@ def _bool_config(value: str | None, default: bool = False) -> bool:
 
 
 def _record(row: RowMapping, *, include_payload: bool) -> SecurityDailyReportRecord:
-    payload: dict[str, Any] | None = None
+    payload: SecurityDailyPayloadData | None = None
     generation_status = cast(GenerationStatus, str(row["generation_status"]))
     if include_payload and row["payload"] is not None:
         try:
-            raw = cast(dict[str, Any], row["payload"])
-            payload = validate_security_daily_payload(raw)
+            payload = validate_security_daily_payload(row["payload"])
         except (TypeError, SecurityDailyValidationError):
             generation_status = "unavailable"
             payload = None
@@ -493,7 +496,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
 
     async def ingest_payload(
         self,
-        payload: dict[str, Any],
+        payload: Mapping[str, object],
         *,
         recipient_count: int,
         force: bool = False,
