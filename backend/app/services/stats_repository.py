@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.stats import STAT_TEST_SCOPE_VERSION
 from app.settings import Settings, get_settings
 
@@ -131,7 +130,7 @@ class SqlStatsRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def aggregate_day(self, stat_date: date) -> int:

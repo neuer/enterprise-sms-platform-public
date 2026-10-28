@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.accounts import SecurityPrincipal
@@ -17,7 +17,7 @@ from app.core.auth.export_authorization import (
     ExportDownloadAuthorization,
     lock_export_authorization,
 )
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.export import (
     MAX_EXPORT_ROWS,
     ExportFilterSet,
@@ -143,7 +143,7 @@ def _params(filters: ExportFilterSet) -> dict[str, object]:
     return params
 
 
-def _task(row: Any) -> ExportTaskInfo:
+def _task(row: RowMapping) -> ExportTaskInfo:
     return ExportTaskInfo(
         id=int(row["id"]),
         public_id=UUID(str(row["public_id"])),
@@ -162,7 +162,7 @@ class SqlExportRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url_for("export"))
 
     async def count_rows(self, filters: ExportFilterSet) -> int:
@@ -302,7 +302,7 @@ class SqlExportRepository:
 
     async def _downloadable_row(
         self,
-        connection: Any,
+        connection: AsyncConnection,
         public_id: UUID,
         *,
         principal: SecurityPrincipal,

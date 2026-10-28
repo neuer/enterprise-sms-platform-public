@@ -6,7 +6,7 @@ from collections.abc import Callable
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 
 from app.services.security_daily import (
     DeliveryAction,
@@ -16,7 +16,7 @@ from app.services.security_daily import (
 
 
 def _delivery_request(
-    row: Any,
+    row: RowMapping,
     *,
     delivery_id: str,
     error: str | None = None,

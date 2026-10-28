@@ -13,7 +13,11 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.core.runtime_resources import bind_connection_system_audit, database_engine
+from app.core.runtime_resources import (
+    ManagedAsyncEngine,
+    bind_connection_system_audit,
+    database_engine,
+)
 from app.services.usage_ledger_common import (
     UsageDrift,
     UsageProjectionUnavailable,
@@ -397,10 +401,10 @@ class UsageProjectionMixin:
     pooled: bool
     clock: Any
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
-    async def _claim_rebuild_lock(self, connection: Any, date_key: str) -> str:
+    async def _claim_rebuild_lock(self, connection: AsyncConnection, date_key: str) -> str:
         """数据库会话锁决定 Owner；Redis 屏障覆盖跨日及普通投影写入。"""
 
         token = str(uuid4())
@@ -450,7 +454,7 @@ class UsageProjectionMixin:
         if int(published) != 1:
             raise UsageProjectionUnavailable("usage projection rebuild in progress")
 
-    async def _release_rebuild_lock(self, connection: Any) -> None:
+    async def _release_rebuild_lock(self, connection: AsyncConnection) -> None:
         # 分页 SQL 失败会中止事务；先 rollback 才能在池化会话上真正释放 session lock。
         await connection.rollback()
         await connection.execute(
@@ -521,7 +525,9 @@ class UsageProjectionMixin:
             raise UsageProjectionUnavailable("usage projection write unavailable") from exc
         return applied
 
-    async def _projection_pages(self, connection: Any) -> AsyncIterator[list[ProjectionRow]]:
+    async def _projection_pages(
+        self, connection: AsyncConnection
+    ) -> AsyncIterator[list[ProjectionRow]]:
         """稳定维度游标分页，数据库与 Python 每次最多保留一页。"""
 
         cursor = ""

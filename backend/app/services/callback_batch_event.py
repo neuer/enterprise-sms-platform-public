@@ -7,12 +7,13 @@ from datetime import datetime
 from typing import Any, NoReturn
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import current_correlation_id
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.callback import BatchFinishedData
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
@@ -56,7 +57,7 @@ WHERE task_id=:task_id
 """
 
 
-def batch_from_snapshot(row: Mapping[str, Any]) -> BatchFinishedData:
+def batch_from_snapshot(row: RowMapping | Mapping[str, Any]) -> BatchFinishedData:
     """用冻结行构造回调体。legacy 或残缺行直接拒绝。"""
 
     if row.get("legacy_unavailable") is not False or row.get("status") is None:
@@ -147,7 +148,7 @@ JOIN inserted_event e ON e.task_id=t.id
 
 
 async def enqueue_batch_finished(
-    connection: Any,
+    connection: AsyncConnection,
     batch_id: int,
     *,
     source_report_event_key: str | None = None,
@@ -278,7 +279,7 @@ class FinishedRecoveryService:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         settings = self._settings or get_settings()
         return database_engine(settings.database_url_for("callback"))
 
@@ -299,7 +300,7 @@ class FinishedRecoveryService:
 
     async def _recover(
         self,
-        connection: Any,
+        connection: AsyncConnection,
         task_id: int,
         principal: SecurityPrincipal,
     ) -> FinishedRecovery:
@@ -374,7 +375,7 @@ class FinishedRecoveryService:
         return recovery
 
 
-async def _reject_unfinished(connection: Any, batch_id: int) -> NoReturn:
+async def _reject_unfinished(connection: AsyncConnection, batch_id: int) -> NoReturn:
     result = await connection.execute(text(_CLASSIFY_SQL), {"batch_id": batch_id})
     row = result.mappings().one_or_none()
     terminal = {
@@ -395,7 +396,7 @@ async def _reject_unfinished(connection: Any, batch_id: int) -> NoReturn:
 
 
 async def _audit(
-    connection: Any,
+    connection: AsyncConnection,
     principal: SecurityPrincipal,
     source_task_id: int,
     recovery: FinishedRecovery,

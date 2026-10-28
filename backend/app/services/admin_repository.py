@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.admin_authorization import AdminAuthorization, hold_admin_authorization
@@ -14,7 +13,11 @@ from app.core.auth.session_policy import AuthSessionPolicy
 from app.core.auth.session_policy_sync import POLICY_SELECT, policy_from_mapping
 from app.core.errors import ApiError
 from app.core.query_bounds import ensure_page_offset
-from app.core.runtime_resources import bind_connection_audit_subject, database_engine
+from app.core.runtime_resources import (
+    ManagedAsyncEngine,
+    bind_connection_audit_subject,
+    database_engine,
+)
 from app.services.admin import (
     SENSITIVE_CONFIG_KEYS,
     AuditQuery,
@@ -42,7 +45,7 @@ FROM sys_config WHERE LEFT(key,2) <> '__' ORDER BY key
 CONFIG_UPDATE_LOCK_ID = 7_260_202_607_13
 
 
-def _config(row: Any) -> ConfigRow:
+def _config(row: RowMapping) -> ConfigRow:
     key = str(row["key"])
     value = str(row["value"])
     return ConfigRow(
@@ -74,10 +77,10 @@ class SqlAdminRepository:
             )
         return self.credential_cipher
 
-    def _config(self, row: Any) -> ConfigRow:
+    def _config(self, row: RowMapping) -> ConfigRow:
         return _config(row)
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def list_configs(self) -> tuple[ConfigRow, ...]:

@@ -5,16 +5,16 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import UTC, datetime
-from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import current_correlation_id
 from app.core.query_bounds import ensure_page_offset
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services import callback_batch_event as batch_events
 from app.services.callback import (
     CallbackMaterial,
@@ -69,7 +69,7 @@ class CallbackTaskNotFound(LookupError):
 
 
 async def enqueue_batch_finished(
-    connection: Any,
+    connection: AsyncConnection,
     batch_id: int,
     *,
     source_report_event_key: str | None = None,
@@ -84,7 +84,7 @@ async def enqueue_batch_finished(
 
 
 async def enqueue_message_report(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     batch_id: int,
     message_id: int,
@@ -219,7 +219,7 @@ class SqlCallbackRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url_for("callback"))
 
     async def callback_allow_cidrs(self) -> str:

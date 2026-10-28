@@ -14,14 +14,14 @@ from typing import Annotated, Any, Protocol, cast
 
 from fastapi import Depends, Security
 from fastapi.security import APIKeyHeader
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from starlette.requests import Request
 
 from app.core.auth.accounts import ApplicationPrincipal
 from app.core.auth.principal_context import bind_audit_principal
 from app.core.client_ip import trusted_client_ip
 from app.core.errors import ApiError
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.crypto import ParsedKeyring, parse_secret_keyring
 from app.settings import Settings, get_settings
 
@@ -291,7 +291,7 @@ APP_SEND_POLICY_COLUMNS = """id, name, dept, allowed_categories, default_sign,
  unlimited_quota_exempt_until"""
 
 
-def load_app_send_policy(row: Mapping[str, Any]) -> dict[str, Any]:
+def load_app_send_policy(row: RowMapping | Mapping[str, Any]) -> dict[str, Any]:
     """严格映射数据库发送策略；遗漏字段与合法空值不得混淆。"""
     values = {key.strip(): row[key.strip()] for key in APP_SEND_POLICY_COLUMNS.split(",")}
     bounds = {
@@ -372,7 +372,7 @@ class SqlApiKeyRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url_for("auth"))
 
     async def find_candidates(self, prefix: str) -> list[ApiKeyCandidate]:

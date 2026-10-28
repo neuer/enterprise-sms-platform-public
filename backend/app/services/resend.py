@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 from sqlalchemy import text
 
 from app.core.auth.accounts import ActorPrincipal
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.batch_query import BatchAccessScope, BatchNotFound
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.pipeline_contracts import FailedSourceReference, SendRequest
@@ -53,7 +53,7 @@ class SqlResendRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def load(self, batch_no: str, scope: BatchAccessScope) -> ResendSource:

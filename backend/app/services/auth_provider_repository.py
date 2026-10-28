@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any, cast
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.admin_authorization import AdminAuthorization, lock_admin_authorization
 from app.core.auth.roles import Role
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.admin_invariant import ensure_effective_admin
 from app.services.auth_provider import (
     ExternalRoleMapping,
@@ -28,7 +29,7 @@ tested_version,active_version,last_tested_at,last_test_status,created_at,updated
 """
 
 
-def _provider(row: Any) -> ProviderRecord:
+def _provider(row: RowMapping) -> ProviderRecord:
     return ProviderRecord(
         id=int(row["id"]),
         code=str(row["code"]),
@@ -59,7 +60,7 @@ class SqlAuthProviderRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url_for("auth"))
 
     async def list_enabled(self) -> tuple[ProviderRecord, ...]:
@@ -443,7 +444,7 @@ class SqlAuthProviderRepository:
 
     async def _audit_role_mappings(
         self,
-        connection: Any,
+        connection: AsyncConnection,
         *,
         code: str,
         mappings: tuple[ExternalRoleMapping, ...],
@@ -482,7 +483,7 @@ class SqlAuthProviderRepository:
 
     async def _audit(
         self,
-        connection: Any,
+        connection: AsyncConnection,
         *,
         code: str,
         version: int,

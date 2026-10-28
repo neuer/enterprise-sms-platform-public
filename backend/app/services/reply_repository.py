@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.raw_lease import (
     FENCED_METADATA_SQL,
     PERSIST_LEASE_COLUMNS,
@@ -44,7 +44,7 @@ class SqlReplyRepository:
     def _lease_for(self, raw_id: int, lease: RawProcessingLease | None) -> RawProcessingLease:
         return require_lease(lease or self._leases.get(raw_id), raw_id)
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def persist_raw(self, **values: Any) -> int:

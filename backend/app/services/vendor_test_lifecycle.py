@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 VENDOR_TEST_LIFECYCLE_LOCK = "vendor-test-lifecycle"
 
 
-async def lock_vendor_test_lifecycle(connection: Any) -> None:
+async def lock_vendor_test_lifecycle(connection: AsyncConnection) -> None:
     """持有至当前 PostgreSQL 事务结束，串行化 start 与破坏性收尾。"""
 
     await connection.execute(

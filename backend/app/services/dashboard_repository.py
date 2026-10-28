@@ -11,7 +11,7 @@ from typing import Any, cast
 from sqlalchemy import text
 
 from app.core.jobtrack import JobSpec
-from app.core.runtime_resources import database_engine, redis_client
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine, redis_client
 from app.services.current_alerts import DatabaseCurrentFacts
 from app.services.dashboard import (
     AlertSummary,
@@ -65,7 +65,7 @@ class SqlDashboardRepository:
         self.redis: Any = None
         self.channel_timeout_s = channel_timeout_s
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def load_balance(self) -> BalanceSnapshot:
@@ -272,7 +272,12 @@ class SqlDashboardRepository:
                         ),
                         {"scope_dept": scope_dept},
                     )
-                    counts = counts_result.mappings().one()
+                    count_row = counts_result.mappings().one()
+                    counts = {
+                        "uncertain": int(count_row["uncertain"]),
+                        "unmatched": int(count_row["unmatched"]),
+                        "callback_dead": int(count_row["callback_dead"]),
+                    }
                     queue_result = await connection.execute(
                         text(
                             """
@@ -376,9 +381,9 @@ class SqlDashboardRepository:
                         current_balance,
                         balances,
                         alerts,
-                        int(counts["uncertain"]),
-                        int(counts["unmatched"]),
-                        int(counts["callback_dead"]),
+                        counts["uncertain"],
+                        counts["unmatched"],
+                        counts["callback_dead"],
                         jobs,
                         queue_depths.get("realtime", 0),
                         queue_depths.get("bulk", 0),

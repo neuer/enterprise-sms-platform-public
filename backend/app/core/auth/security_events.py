@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from ipaddress import ip_address
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 from uuid import UUID
 
 from sqlalchemy import text
@@ -21,7 +21,11 @@ from app.core.auth.observability import (
     observe_transition_failure,
     observe_transition_success,
 )
-from app.core.runtime_resources import bind_connection_system_audit, database_engine
+from app.core.runtime_resources import (
+    ManagedAsyncEngine,
+    bind_connection_system_audit,
+    database_engine,
+)
 from app.settings import Settings, get_settings
 
 AuthSecurityAction = Literal["auth_account_locked", "auth_ip_banned"]
@@ -129,7 +133,7 @@ class SqlAuthSecurityEventRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url_for("auth"))
 
     async def current_database_user(self) -> str:

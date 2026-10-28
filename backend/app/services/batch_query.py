@@ -5,12 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 
 from app.core.query_bounds import ensure_bigint_id, ensure_page_offset
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.content_protection import decrypt_batch_display_content
 from app.services.crypto import CryptoService
 from app.services.message_display import (
@@ -62,10 +61,10 @@ class BatchQueryService:
         self.settings = settings or get_settings()
         self.crypto = crypto
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
-    def _batch(self, row: Any) -> dict[str, object]:
+    def _batch(self, row: RowMapping) -> dict[str, object]:
         values = dict(row)
         batch_no = str(values["batch_no"])
         values["content"] = decrypt_batch_display_content(

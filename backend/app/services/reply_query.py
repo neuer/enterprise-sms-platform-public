@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from sqlalchemy import text
 
 from app.core.auth.accounts import SecurityPrincipal
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.blacklist import BlacklistEntry
 from app.services.blacklist_repository import upsert_blacklist_entries
 from app.services.content_protection import decrypt_reply_content
@@ -142,7 +142,7 @@ class SqlReplyQueryRepository:
         self.settings = settings or get_settings()
         self.crypto = crypto
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def list_page(

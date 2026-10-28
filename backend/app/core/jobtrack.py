@@ -135,7 +135,7 @@ class SqlJobRunRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def start(self, job_name: str, started_at: datetime) -> int:

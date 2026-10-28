@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 
 class CallbackAuthorityBusy(RuntimeError):
     """当前仍有受 fencing 的回调正在解密或投递。"""
 
 
-async def lock_callback_authority(connection: Any, app_id: int) -> None:
+async def lock_callback_authority(connection: AsyncConnection, app_id: int) -> None:
     """按应用获取事务级互斥锁；不扩大 callback 角色的 app 写权限。"""
 
     await connection.execute(
@@ -23,7 +22,7 @@ async def lock_callback_authority(connection: Any, app_id: int) -> None:
     )
 
 
-async def ensure_callback_authority_idle(connection: Any, app_id: int) -> None:
+async def ensure_callback_authority_idle(connection: AsyncConnection, app_id: int) -> None:
     """短事务锁定 app，并拒绝在有效投递租约期间提交撤销。"""
 
     await lock_callback_authority(connection, app_id)

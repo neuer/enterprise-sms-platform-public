@@ -8,7 +8,7 @@ from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.services.usage_ledger_common import (
@@ -71,7 +71,7 @@ FREQUENCY_MERGE_FUTURE_MINUTE_SKEW = 2
 FREQUENCY_MERGE_FUTURE_DAY_SKEW = 1
 
 
-def _frequency_window_sort_key(row: Any) -> tuple[date, int | str]:
+def _frequency_window_sort_key(row: RowMapping) -> tuple[date, int | str]:
     """按 (usage_date, window_key) 比较窗口新旧；数字窗口按整数排，避免 '9'>'10'。"""
 
     window_key = str(row["window_key"])

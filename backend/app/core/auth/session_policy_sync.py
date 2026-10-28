@@ -10,7 +10,7 @@ from time import monotonic, time
 from typing import Any, Literal
 
 from redis.exceptions import RedisError
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 
 from app.core.auth.backends import SessionStateUnavailable
 from app.core.auth.observability import (
@@ -89,7 +89,7 @@ WHERE id = 1
 """
 
 
-def policy_from_mapping(row: Any) -> AuthSessionPolicy:
+def policy_from_mapping(row: RowMapping) -> AuthSessionPolicy:
     return AuthSessionPolicy(
         int(row["revision"]),
         int(row["ad_session_max_age_minutes"]),

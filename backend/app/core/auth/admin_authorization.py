@@ -75,7 +75,7 @@ def require_admin_intent(
 
 
 async def lock_admin_authorization(
-    connection: Any,
+    connection: AsyncConnection,
     authorization: AdminAuthorization,
     *,
     operation: str,

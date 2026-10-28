@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.batch_query import BatchAccessScope
 from app.services.callback_repository import enqueue_batch_finished
 from app.services.category import (
@@ -43,7 +43,7 @@ class SqlSchedulingRepository:
         self.settings = settings or get_settings()
         self.pooled = pooled
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def _dispose_task_engine(self, engine: Any) -> None:

@@ -7,7 +7,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.alert import AlertRouting, AlertService, SmtpRouting, safe_alert_routing
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
@@ -36,7 +36,7 @@ class SqlAlertRepository:
             )
         return self.credential_cipher
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def load_channel_availability(self) -> tuple[bool, bool]:

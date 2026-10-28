@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.services.user_management import LastAdminProtected
 
 ADMIN_INVARIANT_LOCK_ID = 783_692_261_159_983_410
 
 
-async def lock_admin_invariant(connection: Any) -> None:
+async def lock_admin_invariant(connection: AsyncConnection) -> None:
     """串行化所有可能减少有效管理员集合的事务。"""
 
     await connection.execute(
@@ -20,7 +19,7 @@ async def lock_admin_invariant(connection: Any) -> None:
     )
 
 
-async def ensure_effective_admin(connection: Any) -> None:
+async def ensure_effective_admin(connection: AsyncConnection) -> None:
     """按提交后的 Provider、身份、覆盖角色与目录映射验证管理员可用性。"""
 
     result = await connection.execute(

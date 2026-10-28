@@ -6,9 +6,10 @@ import json
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.query_bounds import ensure_page_offset
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.core.sensitive_text import reject_phone_in_text
 from app.services.sensitive import (
     SENSITIVE_WORD_REVISION_KEY,
@@ -29,7 +30,7 @@ class SqlSensitiveWordRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def list_page(
@@ -137,7 +138,7 @@ class SqlSensitiveWordRepository:
             await engine.dispose()
 
     @staticmethod
-    async def _bump_revision(connection: Any, actor: str) -> None:
+    async def _bump_revision(connection: AsyncConnection, actor: str) -> None:
         await connection.execute(
             text(
                 """
@@ -156,7 +157,7 @@ class SqlSensitiveWordRepository:
         )
 
     @staticmethod
-    async def _audit(connection: Any, actor: str, action: str, count: int) -> None:
+    async def _audit(connection: AsyncConnection, actor: str, action: str, count: int) -> None:
         await connection.execute(
             text(
                 """
