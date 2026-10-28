@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 # 共享写入条件：字段不完整也不把来源不明的报告当作“尚无报告”。
@@ -33,7 +32,7 @@ async def repair_message_projection_from_report(
     *,
     batch_id: int,
     identities: Sequence[tuple[int, datetime]],
-) -> list[dict[str, Any]]:
+) -> list[RowMapping]:
     """在批次及消息锁内恢复已选中的可信事实，不重排回执、不创造新事件。"""
 
     if not identities:
@@ -63,7 +62,7 @@ async def repair_message_projection_from_report(
             "created_ats": [identity[1] for identity in identities],
         },
     )
-    rows = [dict(row) for row in result.mappings()]
+    rows = list(result.mappings())
     if rows:
         await connection.execute(
             text(

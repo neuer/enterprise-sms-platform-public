@@ -8,7 +8,7 @@ import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from time import monotonic
-from typing import Any, Protocol
+from typing import Protocol, TypedDict
 from uuid import uuid4
 
 from app.core.redis_eval import RedisEval
@@ -106,6 +106,20 @@ class IdempotencyClaimView:
     generation: int
 
 
+class IdempotencyClaimRow(TypedDict):
+    """CLAIM_RESULT_SQL 结果行：数据库 Claim 权威事实及其结果可信度判定。"""
+
+    token: str
+    fingerprint: str | None
+    generation: int
+    state: str
+    batch_id: int | None
+    lease_valid: bool | None
+    result_id: int | None
+    result_verified: bool | None
+    result_protected: bool | None
+
+
 CLAIM_RELEASE_LUA = """
 local current = redis.call('GET', KEYS[1])
 if current == ARGV[1] then
@@ -170,7 +184,7 @@ def claim_payload(view: IdempotencyClaimView) -> str:
     return f"{view.token}:{view.fingerprint}:{view.generation}"
 
 
-def claim_view_from_row(row: dict[str, Any]) -> IdempotencyClaimView:
+def claim_view_from_row(row: IdempotencyClaimRow) -> IdempotencyClaimView:
     return IdempotencyClaimView(
         str(row["token"]).strip(),
         str(row.get("fingerprint") or ""),
@@ -178,7 +192,7 @@ def claim_view_from_row(row: dict[str, Any]) -> IdempotencyClaimView:
     )
 
 
-def claim_row_is_live(row: dict[str, Any]) -> bool:
+def claim_row_is_live(row: IdempotencyClaimRow) -> bool:
     return str(row["state"]) == "active" and bool(row["lease_valid"])
 
 
@@ -331,12 +345,14 @@ class IdempotencyCoordinator:
             return payload
         return None
 
-    async def _authority(self, scope: IdempotencyScope, biz_id: str) -> dict[str, Any] | None:
+    async def _authority(
+        self, scope: IdempotencyScope, biz_id: str
+    ) -> IdempotencyClaimRow | None:
         loader = getattr(self.repository, "load_idempotency_claim", None)
         if loader is None:
             return None
-        loaded = await _state_call(loader(scope, biz_id))
-        return dict(loaded) if loaded is not None else None
+        loaded: IdempotencyClaimRow | None = await _state_call(loader(scope, biz_id))
+        return loaded.copy() if loaded is not None else None
 
     async def _project_view(
         self,

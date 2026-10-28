@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TypedDict
 
 from sqlalchemy import text
 
@@ -13,6 +13,17 @@ from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.sensitive_config import AlertCredentialCipher, decrypt_wecom_webhook
 from app.settings import Settings, get_settings
+
+
+class AlertEventRow(TypedDict):
+    """alert_log 中供渠道投递重建事件的列；detail 已在入库前通过 PII 校验。"""
+
+    id: int
+    alert_type: str
+    level: str
+    title: str
+    detail: dict[str, object] | None
+    dedup_key: str | None
 
 
 class SqlAlertRepository:
@@ -191,7 +202,7 @@ class SqlAlertRepository:
         finally:
             await engine.dispose()
 
-    async def load_event(self, alert_id: int) -> dict[str, Any] | None:
+    async def load_event(self, alert_id: int) -> AlertEventRow | None:
         engine = self._engine()
         try:
             async with engine.connect() as connection:
@@ -205,7 +216,16 @@ class SqlAlertRepository:
                     {"alert_id": alert_id},
                 )
                 row = result.mappings().one_or_none()
-                return dict(row) if row is not None else None
+                if row is None:
+                    return None
+                return {
+                    "id": row["id"],
+                    "alert_type": row["alert_type"],
+                    "level": row["level"],
+                    "title": row["title"],
+                    "detail": row["detail"],
+                    "dedup_key": row["dedup_key"],
+                }
         finally:
             await engine.dispose()
 

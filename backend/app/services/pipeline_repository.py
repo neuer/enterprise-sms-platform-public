@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -28,7 +28,11 @@ from app.services.blacklist_repository import SqlBlacklistRepository
 from app.services.category import queue_for_category
 from app.services.content_protection import decrypt_template_content
 from app.services.crypto import CryptoService
-from app.services.idempotency import IdempotencyFingerprint, IdempotencyScope
+from app.services.idempotency import (
+    IdempotencyClaimRow,
+    IdempotencyFingerprint,
+    IdempotencyScope,
+)
 from app.services.idempotency_claim_sql import (
     RELEASE_IDEMPOTENCY_CLAIM_SQL,
     RENEW_IDEMPOTENCY_CLAIM_SQL,
@@ -36,6 +40,7 @@ from app.services.idempotency_claim_sql import (
 )
 from app.services.idempotency_lifecycle import (
     CLAIM_RESULT_SQL,
+    claim_row_from_mapping,
     reclaim_completed_result,
     require_completed_result,
 )
@@ -73,7 +78,7 @@ class SqlPipelineStore:
     def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
-    async def load_config(self, dept: str) -> dict[str, Any]:
+    async def load_config(self, dept: str) -> dict[str, str]:
         """每次读取策略所需键与当前部门配额，不跨请求缓存配置或凭据。"""
 
         async with self._engine().connect() as connection:
@@ -439,7 +444,7 @@ class SqlPipelineStore:
         self,
         scope: IdempotencyScope,
         biz_id: str,
-    ) -> dict[str, Any] | None:
+    ) -> IdempotencyClaimRow | None:
         """区分有效工作、真正过期结果与来源不足的完成操作。"""
         async with self._engine().connect() as connection:
             row = (
@@ -456,9 +461,11 @@ class SqlPipelineStore:
                 .mappings()
                 .one_or_none()
             )
-        if row is not None:
-            require_completed_result(dict(row))
-        return dict(row) if row is not None else None
+        if row is None:
+            return None
+        claim = claim_row_from_mapping(row)
+        require_completed_result(claim)
+        return claim
 
     async def live_idempotency_claim(self, scope: IdempotencyScope, biz_id: str) -> bool:
         async with self._engine().connect() as connection:

@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.services.idempotency import IdempotencyConflict
+from app.services.idempotency import IdempotencyClaimRow, IdempotencyConflict
 
 # 仅可解释的已完成事实允许退役；未知状态及缺失关联事实保守保留。
 RESULT_WORK_PROTECTED_SQL = """
@@ -85,7 +83,22 @@ CLAIM_RESULT_SQL = (
 )
 
 
-def require_completed_result(row: dict[str, Any]) -> None:
+def claim_row_from_mapping(row: RowMapping) -> IdempotencyClaimRow:
+    """按 CLAIM_RESULT_SQL 列投影为 Claim 行；列集合与 SQL 一一对应。"""
+    return {
+        "token": row["token"],
+        "fingerprint": row["fingerprint"],
+        "generation": row["generation"],
+        "state": row["state"],
+        "batch_id": row["batch_id"],
+        "lease_valid": row["lease_valid"],
+        "result_id": row["result_id"],
+        "result_verified": row["result_verified"],
+        "result_protected": row["result_protected"],
+    }
+
+
+def require_completed_result(row: IdempotencyClaimRow) -> None:
     """已完成操作缺少可信原结果时拒绝重发，不把它当作新业务键。"""
     if row["state"] == "completed" and (
         not row["result_verified"]
@@ -115,7 +128,7 @@ async def reclaim_completed_result(
     row = (await connection.execute(text(CLAIM_RESULT_SQL), params)).mappings().one_or_none()
     if row is None or row["state"] != "completed" or row["batch_id"] != batch_id:
         return None
-    require_completed_result(dict(row))
+    require_completed_result(claim_row_from_mapping(row))
     if row["result_protected"]:
         return None
     if row["result_id"] is not None:

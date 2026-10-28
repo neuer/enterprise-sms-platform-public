@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Protocol
 
 from sqlalchemy import text
 
@@ -181,7 +181,7 @@ class SqlSendAdmissionRepository:
             )
         return AppCallbackFacts(active=int(row["active"]), dead=int(row["dead"]))
 
-    async def load_control_state(self) -> dict[str, Any] | None:
+    async def load_control_state(self) -> dict[str, object] | None:
         engine = self._engine()
         async with engine.connect() as connection:
             row = (
@@ -208,7 +208,7 @@ class SqlSendAdmissionRepository:
         reason: str,
         hold_until: datetime | None,
         epoch: int,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         if state == "open" and hold_until is not None:
             raise ValueError("open admission state cannot carry a recovery hold")
         if reason == "recovery_hold" and state != "degraded":

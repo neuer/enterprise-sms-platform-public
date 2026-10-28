@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 from sqlalchemy import RowMapping, text
 from sqlalchemy.exc import DBAPIError, OperationalError
@@ -157,7 +157,8 @@ async def _lock_balance(
     app_id: int,
     operation: str,
     allow_create: bool,
-) -> dict[str, Any]:
+) -> int:
+    """锁定余额行并返回当前 reserved_chunks。"""
     if allow_create:
         await connection.execute(
             text(
@@ -190,7 +191,7 @@ async def _lock_balance(
         raise InFlightInvariantViolation(operation, "balance missing")
     if row["conservation_blocked_at"] is not None and operation == "reserve":
         raise InFlightInvariantViolation(operation, "conservation blocked")
-    return dict(row)
+    return int(row["reserved_chunks"])
 
 
 async def _adjust_locked_balance(
@@ -249,7 +250,7 @@ async def _apply_reserve(
     await _adjust_locked_balance(
         connection,
         app_id=app_id,
-        stored=int(locked["reserved_chunks"]),
+        stored=locked,
         delta=estimated,
         operation="reserve",
         limit=limit,
@@ -353,7 +354,7 @@ async def _apply_reservation_delta(
     await _adjust_locked_balance(
         connection,
         app_id=app_id,
-        stored=int(locked["reserved_chunks"]),
+        stored=locked,
         delta=amount,
         operation=operation,
         limit=limit,
@@ -867,7 +868,7 @@ async def resolve_ambiguous_acceptance_commit(
 
 
 def _same_subject(
-    row: RowMapping | Mapping[str, Any],
+    row: RowMapping,
     *,
     app_id: int,
     biz_id: str,
@@ -889,8 +890,8 @@ async def _lookup_idempotent_batch(
     scope_kind: str,
     scope_id: str,
     biz_id: str,
-) -> dict[str, Any] | None:
-    row = (
+) -> RowMapping | None:
+    return (
         (
             await connection.execute(
                 text(
@@ -914,7 +915,6 @@ async def _lookup_idempotent_batch(
         .mappings()
         .one_or_none()
     )
-    return dict(row) if row is not None else None
 
 
 async def _load_bound_batch(
@@ -922,8 +922,8 @@ async def _load_bound_batch(
     *,
     reservation_id: int,
     batch_id: int | None,
-) -> dict[str, Any] | None:
-    row = (
+) -> RowMapping | None:
+    return (
         (
             await connection.execute(
                 text(
@@ -948,7 +948,6 @@ async def _load_bound_batch(
         .mappings()
         .first()
     )
-    return dict(row) if row is not None else None
 
 
 async def repair_misreleased_bound_reservations(
