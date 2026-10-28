@@ -1751,3 +1751,23 @@
   导入，不是孤立脚本。
 - 待定：许可证口径（README“开源”表述与 `LICENSE` 保留全部权利）暂不处理，对外宣称
   开源前必须先决定。
+
+## D123 显式 Any 棘轮与基础设施类型
+
+- 背景：`backend/app` 显式 `Any`（AST 口径，含 `typing.Any`、别名与字符串注解）在 D122
+  基线 `23aa16a` 为 646 处，此后降到 630 处又回升到 689 处 / 161 个文件。大头不是动态
+  数据，而是 SQLAlchemy 连接（`connection: Any` 86 处）、`_engine() -> Any`（42 处）与
+  数据库行（`row: Any` 26 处）把库已有的类型丢掉，mypy strict 因此看不到调用方的错配。
+  此前按 `grep` 文本计数的 714 / 844 口径不一致，不再引用。
+- 决策：`scripts/any_budget.py` 接入 `check_invariants.py`，逐文件统计显式 `Any`，登记在
+  `gate_policy.EXPLICIT_ANY_BUDGET`。登记值必须等于当前计数：增加即失败，减少须在同一
+  变更中下调，清零即删除条目；未登记文件不得出现显式 `Any`。新增条目或上调登记值须经
+  评审并在提交说明中写明动态边界。`governance_metrics.py` 增加 `app_explicit_any` 月度指标。
+- 决策：基础设施统一使用库类型：`database_engine()` 的返回用 `ManagedAsyncEngine`，连接
+  用 `AsyncConnection`，结果行用 `RowMapping`；同时接受普通字典的帮助函数写成
+  `RowMapping | Mapping[str, Any]`。首批按此替换后降到 546 处 / 141 个文件，mypy 随之
+  暴露并修正了变量复用导致的行类型混用。
+- 边界：vendor-live 精确保护路径（如 `vendor/zhihui.py`、`tasks/send*.py`、
+  `pipeline_*`、`vendor_test_*`）首批不动，登记现值，随部署工具解冻再清理。测试、迁移与
+  仓库脚本不受此约束。JSON 载荷（`dict[str, Any]`）后续按领域改为 TypedDict / Pydantic
+  模型，不为降计数改成 `dict[str, object]` 后在调用处 `cast`。
