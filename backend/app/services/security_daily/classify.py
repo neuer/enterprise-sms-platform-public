@@ -4,13 +4,15 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+from app.services.security_daily.contract import Tone
+
 
 class AuditClassification(NamedTuple):
     """单个审计 action 的日报分类；字段缺省值即未知 action 的默认回退。"""
 
     assessment: str = "管理操作"
     category: str = "其他管理操作"
-    tone: str = "neutral"
+    tone: Tone = "neutral"
 
 
 _DEFAULT_CLASSIFICATION = AuditClassification()
@@ -128,5 +130,5 @@ def _audit_category(action: str) -> str:
     return AUDIT_CLASSIFICATION_BY_ACTION.get(action, _DEFAULT_CLASSIFICATION).category
 
 
-def _audit_tone(action: str) -> str:
+def _audit_tone(action: str) -> Tone:
     return AUDIT_CLASSIFICATION_BY_ACTION.get(action, _DEFAULT_CLASSIFICATION).tone

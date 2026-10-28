@@ -8,10 +8,18 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Literal, NotRequired, TypedDict
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+    with_config,
+)
 
 SecurityStatus = Literal["normal", "attention", "high"]
 GenerationSource = Literal["auto", "manual"]
@@ -20,6 +28,8 @@ DeliveryStatus = Literal["not_sent", "pending", "sending", "sent", "failed", "un
 ConfigurationState = Literal["disabled", "dispatcher_missing", "recipients_empty", "ready"]
 DeliveryAction = Literal["send", "retry"]
 DeliveryRequestState = Literal["pending", "sent", "failed", "unknown"]
+Tone = Literal["neutral", "good", "warn", "danger"]
+ActionPriority = Literal["high", "medium", "low"]
 
 SHANGHAI_OFFSET = timedelta(hours=8)
 SHANGHAI_TZ = timezone(SHANGHAI_OFFSET, name="Asia/Shanghai")
@@ -126,7 +136,7 @@ class _StrictModel(BaseModel):
 class SecurityMetric(_StrictModel):
     label: str = Field(min_length=1, max_length=32)
     value: str = Field(min_length=1, max_length=32)
-    tone: Literal["neutral", "good", "warn", "danger"]
+    tone: Tone
     note: str = Field(default="", max_length=80)
 
 
@@ -134,7 +144,7 @@ class SecurityDetailRow(_StrictModel):
     label: str = Field(min_length=1, max_length=40)
     value: str = Field(min_length=1, max_length=160)
     assessment: str = Field(min_length=1, max_length=80)
-    tone: Literal["neutral", "good", "warn", "danger"]
+    tone: Tone
 
 
 class SecurityAuditRow(_StrictModel):
@@ -143,11 +153,11 @@ class SecurityAuditRow(_StrictModel):
     source_ip: str = Field(min_length=1, max_length=64)
     action: str = Field(min_length=1, max_length=80)
     assessment: str = Field(min_length=1, max_length=80)
-    tone: Literal["neutral", "good", "warn", "danger"]
+    tone: Tone
 
 
 class SecurityActionItem(_StrictModel):
-    priority: Literal["high", "medium", "low"]
+    priority: ActionPriority
     title: str = Field(min_length=1, max_length=80)
     detail: str = Field(min_length=1, max_length=300)
 
@@ -157,7 +167,7 @@ class SecurityCoverageItem(_StrictModel):
     window: str = Field(min_length=1, max_length=100)
     status: str = Field(min_length=1, max_length=40)
     note: str = Field(min_length=1, max_length=240)
-    tone: Literal["neutral", "good", "warn", "danger"]
+    tone: Tone
 
 
 class SecurityDailyPayload(_StrictModel):
@@ -226,14 +236,85 @@ def _assert_safe_payload(value: object, path: str = "report") -> None:
         raise SecurityDailyValidationError(f"{path} 包含手机号或凭据文本")
 
 
-def validate_security_daily_payload(value: Mapping[str, Any]) -> dict[str, Any]:
+# 以下 TypedDict 是 SecurityDailyPayload 的 JSON 形态（字段与顺序逐一对应），
+# 供生成、注入、预览与投递环节按键读写；extra=forbid 让模型新增字段时校验即失败。
+_PAYLOAD_DATA_CONFIG = ConfigDict(extra="forbid")
+
+
+@with_config(_PAYLOAD_DATA_CONFIG)
+class SecurityMetricData(TypedDict):
+    label: str
+    value: str
+    tone: Tone
+    note: str
+
+
+@with_config(_PAYLOAD_DATA_CONFIG)
+class SecurityDetailRowData(TypedDict):
+    label: str
+    value: str
+    assessment: str
+    tone: Tone
+
+
+@with_config(_PAYLOAD_DATA_CONFIG)
+class SecurityAuditRowData(TypedDict):
+    time: str
+    actor: str
+    source_ip: str
+    action: str
+    assessment: str
+    tone: Tone
+
+
+@with_config(_PAYLOAD_DATA_CONFIG)
+class SecurityActionItemData(TypedDict):
+    priority: ActionPriority
+    title: str
+    detail: str
+
+
+@with_config(_PAYLOAD_DATA_CONFIG)
+class SecurityCoverageItemData(TypedDict):
+    source: str
+    window: str
+    status: str
+    note: str
+    tone: Tone
+
+
+@with_config(_PAYLOAD_DATA_CONFIG)
+class SecurityDailyPayloadData(TypedDict):
+    """已通过 SecurityDailyPayload 校验与脱敏检查的日报 JSON 对象。"""
+
+    schema_version: Literal[1]
+    report_date: str
+    period_start: str
+    period_end: str
+    generated_at: str
+    status: SecurityStatus
+    summary: str
+    pending_confirmation: str
+    metrics: list[SecurityMetricData]
+    ssh: list[SecurityDetailRowData]
+    web: list[SecurityDetailRowData]
+    audit: list[SecurityAuditRowData]
+    runtime: list[SecurityDetailRowData]
+    actions: list[SecurityActionItemData]
+    coverage: list[SecurityCoverageItemData]
+
+
+_PAYLOAD_DATA = TypeAdapter(SecurityDailyPayloadData)
+
+
+def validate_security_daily_payload(value: Mapping[str, object]) -> SecurityDailyPayloadData:
     """严格校验外部摘要，并返回可安全持久化的 JSON 对象。"""
 
     try:
         model = SecurityDailyPayload.model_validate(value)
+        payload = _PAYLOAD_DATA.validate_python(model.model_dump(mode="json"))
     except (ValidationError, SecurityDailyValidationError) as error:
         raise SecurityDailyValidationError("安全日报结构校验失败") from error
-    payload = model.model_dump(mode="json")
     _assert_safe_payload(payload)
     if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 256 * 1024:
         raise SecurityDailyValidationError("安全日报超过安全大小上限")
@@ -257,7 +338,7 @@ class SecurityDailyReportRecord:
     last_error: str | None
     last_error_at: datetime | None
     updated_at: datetime
-    payload: dict[str, Any] | None
+    payload: SecurityDailyPayloadData | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -325,7 +406,7 @@ class SecurityDailyConfigurationUpdate:
 def security_daily_write_parameters(
     update: SecurityDailyConfigurationUpdate,
     expected_config_version: int,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """授权只绑定收件人、开关、版本及 Key 操作，不含 Key 或其摘要。"""
     action = "keep"
     if update.api_key is not None:
@@ -421,4 +502,11 @@ class SecurityDailyPreview:
     status: SecurityStatus
     html: str
     text: str
-    payload: dict[str, Any]
+    payload: SecurityDailyPayloadData
+
+
+class SecurityDailyTimelineEvent(TypedDict):
+    type: str
+    at: datetime
+    label: str
+    detail: NotRequired[str | None]

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query, Request, status
@@ -100,8 +101,8 @@ class SecurityDailyReportModel(StrictModel):
     last_error: str | None
     last_error_at: datetime | None
     updated_at: datetime
-    payload: dict[str, Any] | None = None
-    timeline: list[dict[str, Any]] = Field(default_factory=list)
+    payload: Mapping[str, object] | None = None
+    timeline: Sequence[Mapping[str, object]] = Field(default_factory=list)
 
 
 class SecurityDailyPageModel(StrictModel):
@@ -118,7 +119,7 @@ class SecurityDailyPreviewModel(StrictModel):
     message: str | None
     html: str
     text: str
-    payload: dict[str, Any] | None
+    payload: Mapping[str, object] | None
 
 
 class SecurityDailyDeliveryActionModel(StrictModel):

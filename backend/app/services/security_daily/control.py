@@ -6,11 +6,12 @@ import asyncio
 import fcntl
 import json
 import os
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Literal, Protocol, cast
+from typing import Literal, Protocol, cast
 from uuid import UUID, uuid4
 
 from app.services.security_daily.contract import (
@@ -52,7 +53,7 @@ class SecurityDailyControl(Protocol):
     async def submit(
         self,
         request: SecurityDailyDeliveryRequest,
-        payload: dict[str, Any],
+        payload: Mapping[str, object],
     ) -> None: ...
 
     async def result(self, request_id: UUID) -> SecurityDailyControlResult | None: ...
@@ -148,7 +149,7 @@ class FileSecurityDailyControl:
     async def submit(
         self,
         request: SecurityDailyDeliveryRequest,
-        payload: dict[str, Any],
+        payload: Mapping[str, object],
     ) -> None:
         await asyncio.to_thread(self._write_request, request, payload)
 
@@ -167,7 +168,7 @@ class FileSecurityDailyControl:
     def _write_request(
         self,
         request: SecurityDailyDeliveryRequest,
-        payload: dict[str, Any],
+        payload: Mapping[str, object],
     ) -> RequestPublishResult:
         if not self.control_dir.is_dir():
             raise SecurityDailyControlError("安全日报独立投递器未连接")

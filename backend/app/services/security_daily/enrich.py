@@ -6,11 +6,15 @@ import ipaddress
 import re
 from collections.abc import Sequence
 from datetime import date, datetime
-from typing import Any
 
 from app.services.security_daily.classify import _audit_assessment, _audit_tone
 from app.services.security_daily.contract import (
+    SecurityActionItemData,
     SecurityDailyAuditEvidence,
+    SecurityDailyPayloadData,
+    SecurityDetailRowData,
+    SecurityMetricData,
+    SecurityStatus,
     validate_security_daily_payload,
 )
 
@@ -42,8 +46,8 @@ def _audit_source_display(value: str) -> str:
 
 
 def _enrich_audit_evidence(
-    payload: dict[str, Any], evidence: SecurityDailyAuditEvidence
-) -> dict[str, Any]:
+    payload: SecurityDailyPayloadData, evidence: SecurityDailyAuditEvidence
+) -> SecurityDailyPayloadData:
     """把平台审计摘要注入日报，并翻转管理审计覆盖状态。"""
 
     payload["audit"] = [
@@ -98,40 +102,55 @@ def _count_delta_suffix(current: str, previous: str) -> str | None:
     return f"（昨日 {previous_count}，{arrow}{percent}%）"
 
 
-def _labeled_row(
-    rows: Sequence[dict[str, Any]], *labels: str
-) -> dict[str, Any] | None:
+def _labeled_row[RowT: (SecurityMetricData, SecurityDetailRowData)](
+    rows: Sequence[RowT], *labels: str
+) -> RowT | None:
     """按语义标签定位行，避免展示项重排后把不同指标互相比较。"""
 
     expected = frozenset(labels)
     return next((item for item in rows if str(item.get("label")) in expected), None)
 
 
-def _enrich_day_over_day(payload: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
+def _append_delta[RowT: (SecurityMetricData, SecurityDetailRowData)](
+    rows: Sequence[RowT],
+    previous_rows: Sequence[RowT],
+    labels: Sequence[str],
+    label: str,
+) -> str | None:
+    """给当日行追加环比后缀并返回摘要片段；任一侧缺行或不可解析时不改动。"""
+
+    current = _labeled_row(rows, *labels)
+    old = _labeled_row(previous_rows, *labels)
+    if current is None or old is None:
+        return None
+    suffix = _count_delta_suffix(current["value"], old["value"])
+    if suffix is None:
+        return None
+    current["value"] = f"{current['value']}{suffix}"
+    return f"{label}{suffix}"
+
+
+def _enrich_day_over_day(
+    payload: SecurityDailyPayloadData, previous: SecurityDailyPayloadData
+) -> SecurityDailyPayloadData:
     """在平台侧追加昨日环比：SSH 失败、Web 5xx、敏感路径三个关键面。"""
 
-    comparisons: list[str] = []
-    specifications = (
-        ("metrics", SSH_FAILURE_METRIC_LABELS, "SSH 失败认证"),
-        ("metrics", (WEB_5XX_METRIC_LABEL,), "Web 5xx"),
-        ("web", (SENSITIVE_PATH_LABEL,), "敏感路径"),
+    candidates = (
+        _append_delta(
+            payload["metrics"], previous["metrics"], SSH_FAILURE_METRIC_LABELS, "SSH 失败认证"
+        ),
+        _append_delta(payload["metrics"], previous["metrics"], (WEB_5XX_METRIC_LABEL,), "Web 5xx"),
+        _append_delta(payload["web"], previous["web"], (SENSITIVE_PATH_LABEL,), "敏感路径"),
     )
-    for section, labels, label in specifications:
-        current = _labeled_row(payload[section], *labels)
-        old = _labeled_row(previous.get(section, []), *labels)
-        if current is None or old is None:
-            continue
-        suffix = _count_delta_suffix(current["value"], old["value"])
-        if suffix is None:
-            continue
-        current["value"] = f"{current['value']}{suffix}"
-        comparisons.append(f"{label}{suffix}")
+    comparisons = [item for item in candidates if item is not None]
     if comparisons:
         payload["summary"] = f"{payload['summary']} 较昨日：{'、'.join(comparisons)}。"
     return payload
 
 
-def _finalize_security_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _finalize_security_daily_payload(
+    payload: SecurityDailyPayloadData,
+) -> SecurityDailyPayloadData:
     """在平台侧重算状态/待确认/建议，覆盖采集快照与审计注入后的口径漂移。"""
 
     gaps = [str(item["source"]) for item in payload["coverage"] if item.get("status") != "完整"]
@@ -166,7 +185,7 @@ def _finalize_security_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
     ssh_needs_confirm = (
         ssh_failed is not None and ssh_failed >= SSH_FAILED_CONFIRM_THRESHOLD
     )
-    status = (
+    status: SecurityStatus = (
         "high"
         if web_sensitive_count
         else (
@@ -190,7 +209,7 @@ def _finalize_security_daily_payload(payload: dict[str, Any]) -> dict[str, Any]:
     if runtime_unhealthy_count:
         pending_items.append(f"存在 {runtime_unhealthy_count} 个异常容器，需要核查运行态")
     pending = "；".join(pending_items) + "。" if pending_items else "无待确认事项。"
-    actions: list[dict[str, str]] = []
+    actions: list[SecurityActionItemData] = []
     if web_sensitive_count:
         actions.append(
             {
@@ -259,7 +278,7 @@ def _problem_payload(
     period_end: datetime,
     generated_at: datetime,
     reason: str,
-) -> dict[str, Any]:
+) -> SecurityDailyPayloadData:
     """构建“证据不可用”问题通报 payload；指标一律显式不可用，不虚构数值。"""
 
     window = f"{report_date.isoformat()} 00:00 — 23:59（UTC+8）"
