@@ -59,10 +59,10 @@ class _DeadlineSmtp(smtplib.SMTP):
             raise TimeoutError("SMTP absolute deadline exceeded")
         return min(5.0, remaining)
 
-    def send(self, data: Buffer | str) -> None:
+    def send(self, s: Buffer | str) -> None:
         if self.sock is not None:
             self.sock.settimeout(self._remaining())
-        super().send(data)
+        super().send(s)
 
     def getreply(self) -> tuple[int, bytes]:
         if self.file is None:

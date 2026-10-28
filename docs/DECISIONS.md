@@ -1771,3 +1771,22 @@
   `pipeline_*`、`vendor_test_*`）首批不动，登记现值，随部署工具解冻再清理。测试、迁移与
   仓库脚本不受此约束。JSON 载荷（`dict[str, Any]`）后续按领域改为 TypedDict / Pydantic
   模型，不为降计数改成 `dict[str, object]` 后在调用处 `cast`。
+
+## D124 ty 评估结论与 mypy 收紧
+
+- 背景：ty 0.0.93 对 `backend/app` 试跑报出 65 条诊断，其中有价值的是 pydantic 模型 Literal
+  字段收到普通 `str`、一定抛异常的函数标注为 `-> None`、`list` 方法遮蔽内置类型、签名与
+  基类不符和多余代码；mypy 未报是因为 pydantic-mypy 的 `init_typed` 默认关闭。
+- 决策：不以 ty 替代 mypy。ty 仍是 0.0.x 测试版，不识别 mypy 的 `# type: ignore[code]`
+  语义，也没有 pydantic 插件，会对 pydantic 与 SQLAlchemy 产生大量误报；只作为偶尔试跑的
+  参考。
+- 决策：mypy 在 strict 基础上打开 `enable_error_code = ["possibly-undefined", "deprecated"]`
+  与 pydantic-mypy 的 `init_typed`、`init_forbid_extra`、`warn_required_dynamic_aliases`。
+  首轮暴露 21 处（`init_typed` 7、`possibly-undefined` 14，其余 0）。Literal 问题在服务层
+  用同名 Literal 别名和 `TypeGuard` 显式收窄，不用 `cast`；`possibly-undefined` 为控制流
+  误报，按等价结构改写。
+- 边界：vendor-live 冻结路径不改。`app.api.vendor_test` 关闭 `arg-type`（其 Literal 来源
+  `vendor_control_state.py` 同属冻结）并因此关闭该模块的 unused-ignore 告警；
+  `app.services.pipeline_commit` 与 `app.tasks.send_repository_attempt` 关闭
+  `possibly-undefined`（重试循环误报）。均登记在 `pyproject.toml` 覆盖项，随解冻处理。
+  冻结文件里 4 处 `@asynccontextmanager -> AsyncIterator` 与 `settings.py` 多余条件同样留待解冻。

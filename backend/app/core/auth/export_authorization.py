@@ -1,7 +1,7 @@
 """导出下载提交审计期间的权威主体锁；不扩大 export 数据库角色权限。"""
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -35,7 +35,7 @@ class ExportDownloadAuthorization:
 async def lock_export_authorization(
     settings: Settings, authorization: ExportDownloadAuthorization,
     business_connection: AsyncConnection,
-) -> AsyncIterator[AsyncConnection]:
+) -> AsyncGenerator[AsyncConnection, None]:
     """业务事务持有授权锁；认证读取事务先退出，随后才允许提交审计。"""
 
     engine = database_engine(settings.database_url_for("auth"))

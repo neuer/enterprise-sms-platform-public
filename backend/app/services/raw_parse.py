@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Final, Literal, TypeGuard
 
 from app.services.raw_spill import (
     CAPTURE_COMPLETE,
@@ -19,11 +20,14 @@ from app.services.raw_spill import (
 )
 from app.vendor.zhihui import VendorApiError, VendorProtocolError
 
-PARSE_UNATTEMPTED = "unattempted"
-PARSE_TRANSIENT_FAILURE = "transient_failure"
-PARSE_PROTOCOL_INVALID = "protocol_invalid"
-PARSE_PROCESSED = "processed"
-VALID_PARSE_STATES = frozenset(
+ParseState = Literal["unattempted", "transient_failure", "protocol_invalid", "processed"]
+ReplayEligibility = Literal["automatic", "manual", "never"]
+
+PARSE_UNATTEMPTED: Final = "unattempted"
+PARSE_TRANSIENT_FAILURE: Final = "transient_failure"
+PARSE_PROTOCOL_INVALID: Final = "protocol_invalid"
+PARSE_PROCESSED: Final = "processed"
+VALID_PARSE_STATES: frozenset[ParseState] = frozenset(
     {
         PARSE_UNATTEMPTED,
         PARSE_TRANSIENT_FAILURE,
@@ -32,10 +36,10 @@ VALID_PARSE_STATES = frozenset(
     }
 )
 
-ELIGIBILITY_AUTOMATIC = "automatic"
-ELIGIBILITY_MANUAL = "manual"
-ELIGIBILITY_NEVER = "never"
-VALID_REPLAY_ELIGIBILITIES = frozenset(
+ELIGIBILITY_AUTOMATIC: Final = "automatic"
+ELIGIBILITY_MANUAL: Final = "manual"
+ELIGIBILITY_NEVER: Final = "never"
+VALID_REPLAY_ELIGIBILITIES: frozenset[ReplayEligibility] = frozenset(
     {ELIGIBILITY_AUTOMATIC, ELIGIBILITY_MANUAL, ELIGIBILITY_NEVER}
 )
 
@@ -117,8 +121,8 @@ _NEVER_ERROR_MARKERS = (
 class RawParseDisposition:
     """一次分类结果。reason 只含无 PII 的稳定标签。"""
 
-    parse_state: str
-    replay_eligibility: str
+    parse_state: ParseState
+    replay_eligibility: ReplayEligibility
     reason: str
 
     @property
@@ -130,16 +134,24 @@ class RawParseDisposition:
         return self.replay_eligibility == ELIGIBILITY_NEVER
 
 
-def normalize_parse_state(value: str | None) -> str:
+def _is_parse_state(value: str) -> TypeGuard[ParseState]:
+    return value in VALID_PARSE_STATES
+
+
+def _is_replay_eligibility(value: str) -> TypeGuard[ReplayEligibility]:
+    return value in VALID_REPLAY_ELIGIBILITIES
+
+
+def normalize_parse_state(value: str | None) -> ParseState:
     state = value if value else PARSE_UNATTEMPTED
-    if state not in VALID_PARSE_STATES:
+    if not _is_parse_state(state):
         raise ValueError("invalid parse_state")
     return state
 
 
-def normalize_replay_eligibility(value: str | None) -> str:
+def normalize_replay_eligibility(value: str | None) -> ReplayEligibility:
     eligibility = value if value else ELIGIBILITY_MANUAL
-    if eligibility not in VALID_REPLAY_ELIGIBILITIES:
+    if not _is_replay_eligibility(eligibility):
         raise ValueError("invalid replay_eligibility")
     return eligibility
 
@@ -198,7 +210,7 @@ def classify_raw_disposition(
     if processed:
         return RawParseDisposition(PARSE_PROCESSED, ELIGIBILITY_NEVER, "already_processed")
     if state in NON_REPLAYABLE_CAPTURE_STATES:
-        parse_state = (
+        parse_state: ParseState = (
             PARSE_PROTOCOL_INVALID if state == CAPTURE_PROTOCOL_INVALID else PARSE_UNATTEMPTED
         )
         return RawParseDisposition(parse_state, ELIGIBILITY_NEVER, f"capture_{state}")

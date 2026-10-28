@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -29,7 +29,7 @@ def bind_audit_principal(principal: ActorPrincipal) -> None:
 @contextmanager
 def audit_principal_scope(
     principal: ActorPrincipal | None = None,
-) -> Iterator[None]:
+) -> Generator[None, None, None]:
     """为单个 HTTP 请求或显式后台操作隔离审计主体。"""
 
     token = _audit_principal.set(principal)

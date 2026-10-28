@@ -6,6 +6,7 @@ import csv
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from tempfile import SpooledTemporaryFile
 from typing import Any
 
 from cryptography.exceptions import InvalidTag
@@ -100,7 +101,7 @@ async def process_import_once(import_id: str) -> int:
     limits = ImportLimits.from_policy(policy)
     codec = ImportFileCodec(crypto, settings.import_storage_dir)
     redis: Any = Redis.from_url(settings.redis_control_url, decode_responses=True)
-    temporary: Any = None
+    temporary: SpooledTemporaryFile[bytes] | None = None
     removed: list[RemovedPhone] = []
     removed_file: str | None = None
     valid_count = 0

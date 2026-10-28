@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
@@ -131,7 +131,7 @@ async def hold_admin_authorization(
     target: str,
     parameters: dict[str, Any],
     engine: ManagedAsyncEngine | None = None,
-) -> AsyncIterator[AsyncConnection]:
+) -> AsyncGenerator[AsyncConnection, None]:
     """授权锁、业务写入与审计共用业务角色事务，不授予身份表访问权限。"""
     owns_engine = engine is None
     engine = engine if engine is not None else database_engine(settings.database_url)

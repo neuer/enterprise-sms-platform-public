@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from uuid import UUID, uuid4
@@ -42,7 +42,7 @@ def current_correlation_id(*, create: bool = True) -> UUID | None:
 
 
 @contextmanager
-def correlation_scope(value: UUID | str | None = None) -> Iterator[UUID]:
+def correlation_scope(value: UUID | str | None = None) -> Generator[UUID, None, None]:
     """在当前执行上下文中绑定关联 ID，并保证离开时恢复原上下文。"""
 
     correlation_id = parse_correlation_id(value) or uuid4()

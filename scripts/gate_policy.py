@@ -194,7 +194,7 @@ EXPLICIT_ANY_BUDGET: Mapping[str, int] = MappingProxyType(
         "backend/app/services/vendor_test_uat.py": 3,
         "backend/app/tasks/__init__.py": 1,
         "backend/app/tasks/anomaly.py": 1,
-        "backend/app/tasks/imports.py": 4,
+        "backend/app/tasks/imports.py": 3,
         "backend/app/tasks/send.py": 5,
         "backend/app/tasks/send_repository.py": 4,
         "backend/app/tasks/send_repository_attempt.py": 4,

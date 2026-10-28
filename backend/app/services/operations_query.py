@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Literal, Protocol
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
@@ -22,6 +22,8 @@ from app.services.content_protection import (
 from app.services.crypto import CryptoService
 from app.services.message_display import (
     MESSAGE_DISPLAY_STATUS_SQL,
+    DisplayStatus,
+    MessageStatus,
     display_status_predicate,
     ensure_display_status,
 )
@@ -49,7 +51,7 @@ def shanghai_isoformat(value: datetime) -> str:
 class MessageQueryItem:
     id: int
     phone_mask: str
-    status: str
+    status: MessageStatus
     report_desc: str | None
     report_time: datetime | None
     created_at: datetime
@@ -58,7 +60,7 @@ class MessageQueryItem:
     content: str
     sender: str | None
     batch_status: str = ""
-    display_status: str = ""
+    display_status: DisplayStatus | Literal[""] = ""
 
 
 @dataclass(frozen=True, slots=True)

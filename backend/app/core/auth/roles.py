@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, TypeGuard, get_args
 
 from app.core.auth.backends import AuthenticatedIdentity, DirectoryIdentity, InvalidCredentials
 
 Role = Literal["admin", "approver", "operator", "viewer"]
 ROLE_PRIORITY: dict[str, int] = {"viewer": 1, "operator": 2, "approver": 3, "admin": 4}
+
+
+def is_role(value: str) -> TypeGuard[Role]:
+    return value in get_args(Role)
 
 
 @dataclass(frozen=True, slots=True)

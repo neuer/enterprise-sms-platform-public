@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from io import StringIO, TextIOWrapper
 from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Protocol, cast
+from typing import IO, BinaryIO, Protocol, cast
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
@@ -52,7 +52,7 @@ class ImportLimits:
         )
 
 
-def _find_eocd(source: BinaryIO, archive_size: int) -> tuple[int, tuple[int, ...]]:
+def _find_eocd(source: IO[bytes], archive_size: int) -> tuple[int, tuple[int, ...]]:
     """在 ZIP 尾部有界查找 EOCD，并拒绝截断或伪造的尾记录。"""
 
     tail_size = min(archive_size, _EOCD.size + _EOCD_MAX_COMMENT_BYTES)
@@ -75,7 +75,7 @@ def _find_eocd(source: BinaryIO, archive_size: int) -> tuple[int, tuple[int, ...
     raise ImportFormatError("XLSX 压缩包缺少有效尾记录")
 
 
-def _preflight_central_directory(source: BinaryIO, limits: ImportLimits) -> None:
+def _preflight_central_directory(source: IO[bytes], limits: ImportLimits) -> None:
     """在构造 ZipInfo 前有界校验中央目录大小、条目数与结构。"""
 
     source.seek(0, 2)
@@ -167,7 +167,7 @@ def _column_index(letters: str) -> int:
 class _LimitedReader:
     """限制单条目继续解压的字节数；到达上限后再读到数据即拒绝。"""
 
-    def __init__(self, raw: BinaryIO, limit: int) -> None:
+    def __init__(self, raw: IO[bytes], limit: int) -> None:
         self.raw = raw
         self.limit = limit
         self.read_bytes = 0
@@ -288,7 +288,7 @@ def _cell_text(element: ElementTree.Element, shared: list[str]) -> str:
     return value or ""
 
 
-def _iter_xlsx_rows(source: BinaryIO, limits: ImportLimits) -> Iterator[tuple[int, str]]:
+def _iter_xlsx_rows(source: IO[bytes], limits: ImportLimits) -> Iterator[tuple[int, str]]:
     """按实际单元格坐标有界读取第一列；缺失或伪造的 dimension 都不能放宽列/行上限。"""
 
     max_physical_row = limits.max_rows + 1
@@ -460,7 +460,7 @@ class ImportParser:
         self.blacklist = blacklist
         self.limits = limits or ImportLimits()
 
-    def _rows(self, filename: str, source: BinaryIO) -> Iterator[tuple[int, str]]:
+    def _rows(self, filename: str, source: IO[bytes]) -> Iterator[tuple[int, str]]:
         suffix = Path(filename).suffix.casefold()
         if suffix == ".csv":
             wrapper = TextIOWrapper(source, encoding="utf-8-sig", newline="")
@@ -475,7 +475,7 @@ class ImportParser:
             return
         raise ImportFormatError("仅支持 csv/xlsx 文件")
 
-    def preflight(self, filename: str, source: BinaryIO, *, size: int) -> None:
+    def preflight(self, filename: str, source: IO[bytes], *, size: int) -> None:
         """重型解析前只检查大小、扩展名和 XLSX ZIP 放大风险。"""
 
         if size < 0 or size > self.limits.max_bytes:
@@ -487,7 +487,7 @@ class ImportParser:
             self._preflight_xlsx(source)
         source.seek(0)
 
-    def _preflight_xlsx(self, source: BinaryIO) -> None:
+    def _preflight_xlsx(self, source: IO[bytes]) -> None:
         """只读检查 XLSX ZIP 元数据，在 openpyxl 解压前限制资源放大。"""
 
         try:
@@ -539,7 +539,7 @@ class ImportParser:
     async def parse(
         self,
         filename: str,
-        source: BinaryIO,
+        source: IO[bytes],
         *,
         size: int,
     ) -> ImportResult:
@@ -567,7 +567,7 @@ class ImportParser:
     def iter_chunks(
         self,
         filename: str,
-        source: BinaryIO,
+        source: IO[bytes],
         *,
         size: int,
         chunk_size: int = 500,

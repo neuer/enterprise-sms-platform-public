@@ -8,7 +8,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
-from typing import Any, cast
+from typing import Any
 from uuid import uuid4
 
 import jwt
@@ -52,7 +52,7 @@ from app.core.auth.observability import (
     observe_token_issue_policy_mismatch,
     observe_token_issue_policy_revision,
 )
-from app.core.auth.roles import Role
+from app.core.auth.roles import is_role
 from app.core.auth.service import AsyncKeyValue
 from app.core.auth.session_policy import (
     AuthSessionPolicy,
@@ -651,7 +651,7 @@ class JwtService:
             raise InvalidCredentials("无效或已吊销的令牌")
         account_id, identity_id = self._stable_ids(payload)
         role = str(payload["role"])
-        if role not in {"admin", "approver", "operator", "viewer"}:
+        if not is_role(role):
             raise InvalidCredentials("无效或已吊销的令牌")
         try:
             security_version = int(payload["security_version"])
@@ -679,7 +679,7 @@ class JwtService:
             login_name=str(payload["login_name"]),
             display_name=str(payload["display_name"]),
             dept=str(payload["dept"]),
-            role=cast(Role, role),
+            role=role,
             security_version=security_version,
             jti=str(payload["jti"]),
             session_id=session_id,

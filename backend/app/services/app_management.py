@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import ipaddress
 import logging
 import secrets
@@ -91,7 +92,7 @@ class AppUpdate:
 
 
 class AppRepository(Protocol):
-    async def list(self) -> list[dict[str, Any]]: ...
+    async def list(self) -> builtins.list[dict[str, Any]]: ...
 
     async def get(self, app_id: int) -> dict[str, Any] | None: ...
 
@@ -428,7 +429,7 @@ class AppManagementService:
             values["status"] = config.status
         return values
 
-    async def list(self) -> list[dict[str, Any]]:
+    async def list(self) -> builtins.list[dict[str, Any]]:
         return await self.repository.list()
 
     async def get(self, app_id: int) -> dict[str, Any]:

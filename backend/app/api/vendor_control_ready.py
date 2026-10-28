@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, NoReturn
 
 from redis.asyncio import Redis
 
@@ -29,7 +29,7 @@ async def raise_vendor_control_unavailable(
     error: VendorControlStateUnavailable,
     *,
     message: str = "真实联调控制代理状态不可用",
-) -> None:
+) -> NoReturn:
     """损坏状态写入 critical pause；写入失败保持 503 且不得继续。"""
 
     if error.requires_critical_pause:
