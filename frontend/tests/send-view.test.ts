@@ -553,6 +553,8 @@ describe("人工发送工作台", () => {
     await vi.advanceTimersByTimeAsync(650)
     await flushPromises()
     expect(button.text()).toContain("安排发送")
+    expect(wrapper.text()).toContain("当前处于营销时间窗外")
+    expect(wrapper.text()).not.toContain("当前处于营销时间窗外（默认 08:00–21:00）")
     wrapper.unmount()
     vi.useRealTimers()
     vi.unstubAllGlobals()
@@ -660,6 +662,8 @@ describe("人工发送工作台", () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain("当前处于营销时间窗内")
+    expect(wrapper.text()).not.toContain("当前处于营销时间窗内（08:00–21:00）")
+    expect(wrapper.text()).toContain("以服务端配置的时间窗为准")
     const button = wrapper.get("[data-testid='send-button']")
     expect(button.classes()).toContain("approval")
     expect(button.text()).toContain("提交审批")
