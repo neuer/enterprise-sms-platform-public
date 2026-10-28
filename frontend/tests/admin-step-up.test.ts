@@ -103,3 +103,53 @@ describe("管理员二次认证组件生命周期", () => {
     wrapper.unmount()
   })
 })
+
+it.each(
+  ["cancel", "session", "unmount"].flatMap((boundary) =>
+    ["success", "failure"].map((outcome) => ({ boundary, outcome })),
+  ),
+)("已发出业务写入的 $outcome 在 $boundary 后不向旧调用方交付", async ({ boundary, outcome }) => {
+  api.issueAdminStepUp.mockResolvedValueOnce("synthetic-grant")
+  const { wrapper, controller } = setup()
+  let resolve!: (value: { saved: boolean }) => void
+  let reject!: (error: Error) => void
+  const action = vi.fn(
+    () =>
+      new Promise<{ saved: boolean }>((yes, no) => {
+        resolve = yes
+        reject = no
+      }),
+  )
+  const work = controller.run(intent, "修改角色", action)
+  // 立即观察拒绝分支，避免测试延后断言引起未处理 Promise。
+  const settled = work.then(
+    (value) => ({ value, error: null }),
+    (error: unknown) => ({ value: undefined, error }),
+  )
+  controller.updatePassword("synthetic-password")
+  await controller.submit()
+  await flushPromises()
+  expect(action).toHaveBeenCalledTimes(1)
+  if (boundary === "cancel") controller.cancel()
+  else if (boundary === "session") useSessionStore(createPinia()).clear()
+  else wrapper.unmount()
+  if (outcome === "success") resolve({ saved: true })
+  else reject(new Error("synthetic transport loss"))
+  expect(await settled).toEqual({ value: undefined, error: null })
+  expect(action).toHaveBeenCalledTimes(1)
+  wrapper.unmount()
+})
+
+it("当前授权的业务写入失败仍向调用方传播", async () => {
+  api.issueAdminStepUp.mockResolvedValueOnce("synthetic-grant")
+  const { wrapper, controller } = setup()
+  const error = new Error("synthetic current failure")
+  const work = controller.run(intent, "修改角色", async () => {
+    throw error
+  })
+  const settled = work.catch((value: unknown) => value)
+  controller.updatePassword("synthetic-password")
+  await controller.submit()
+  expect(await settled).toBe(error)
+  wrapper.unmount()
+})

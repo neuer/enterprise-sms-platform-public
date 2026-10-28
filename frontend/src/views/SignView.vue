@@ -25,7 +25,7 @@ import StatusTag from "../components/StatusTag.vue"
 import { useMobileLayout } from "../composables/useMobileLayout"
 import { useConfirmActions } from "../lib/confirm"
 import { vRowActivate } from "../lib/directives"
-const { confirmAuditedAction } = useConfirmActions()
+const { confirmAuditedAction, captureCurrent } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { roleNames, VENDOR_REVIEW_LABELS, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
 import { canAdoptSign, canDeleteSign, canEditSign, canSyncSign } from "../lib/signDisplay"
@@ -168,6 +168,7 @@ async function submit(): Promise<void> {
     ElMessage.warning(nameIssue.value)
     return
   }
+  const isCurrent = captureCurrent()
   const generation = editorGeneration.value
   const submittedName = name.value.trim()
   const editingId = editingSource.value?.id ?? null
@@ -175,6 +176,7 @@ async function submit(): Promise<void> {
   try {
     if (editingId === null) await createSign(submittedName)
     else await updateSign(editingId, submittedName)
+    if (!isCurrent()) return
     if (generation !== editorGeneration.value) {
       ElMessage.success(`签名「${submittedName}」已提交，当前编辑未改动`)
       await load()
@@ -184,6 +186,7 @@ async function submit(): Promise<void> {
     editorOpen.value = false
     await load()
   } catch (error) {
+    if (!isCurrent()) return
     const message = errorText(error, "签名提交失败")
     if (generation !== editorGeneration.value) {
       ElMessage.error(`签名「${submittedName}」提交失败：${message}`)
@@ -197,21 +200,24 @@ async function submit(): Promise<void> {
 
 async function sync(item: SmsSign): Promise<void> {
   if (syncingId.value !== null) return
+  const isCurrent = captureCurrent()
   syncingId.value = item.id
   try {
     await syncSign(item.id)
+    if (!isCurrent()) return
     ElMessage.success("审核状态同步请求已入队")
     await load()
   } catch (error) {
-    ElMessage.error(errorText(error, "审核状态同步失败"))
+    if (isCurrent()) ElMessage.error(errorText(error, "审核状态同步失败"))
   } finally {
-    syncingId.value = null
+    if (isCurrent()) syncingId.value = null
   }
 }
 
 function openAdopt(item: SmsSign): void {
   if (!canAdopt(item)) return
-  adoptingSign.value = item
+  adoptingSign.value = { ...item }
+  adopting.value = false
   vendorSignId.value = ""
   adoptOpen.value = true
 }
@@ -228,19 +234,22 @@ async function adopt(): Promise<void> {
     ElMessage.warning("请输入正整数厂商签名 ID")
     return
   }
+  const isCurrent = captureCurrent()
   adopting.value = true
   try {
     await adoptExistingSign(item.id, parsed, item.name)
+    if (!isCurrent()) return
     ElMessage.success("关联已有厂商签名与审核状态查询已入队")
-    adoptOpen.value = false
+    if (adoptingSign.value === item) adoptOpen.value = false
     await load()
+    if (!isCurrent()) return
     if (detail.value?.id === item.id) {
       detail.value = items.value.find((candidate) => candidate.id === item.id) ?? detail.value
     }
   } catch (error) {
-    ElMessage.error(errorText(error, "关联已有厂商签名失败"))
+    if (isCurrent()) ElMessage.error(errorText(error, "关联已有厂商签名失败"))
   } finally {
-    adopting.value = false
+    if (isCurrent() && adoptingSign.value === item) adopting.value = false
   }
 }
 
@@ -249,6 +258,7 @@ const removingId = ref<number | null>(null)
 async function remove(item: SmsSign): Promise<void> {
   item = { ...item }
   if (removingId.value !== null) return
+  const isCurrent = captureCurrent()
   removingId.value = item.id
   try {
     if (
@@ -261,13 +271,14 @@ async function remove(item: SmsSign): Promise<void> {
     )
       return
     await deleteSign(item.id)
+    if (!isCurrent()) return
     ElMessage.success("签名已删除 · 本次操作已记入审计")
     if (detail.value?.id === item.id) detailOpen.value = false
     await load()
   } catch (error) {
-    ElMessage.error(errorText(error, "签名删除失败"))
+    if (isCurrent()) ElMessage.error(errorText(error, "签名删除失败"))
   } finally {
-    removingId.value = null
+    if (isCurrent()) removingId.value = null
   }
 }
 
