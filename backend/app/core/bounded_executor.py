@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -78,7 +78,7 @@ _WORK_SCOPE: ContextVar[BoundedWorkScope | None] = ContextVar("bounded_work_scop
 
 
 @contextmanager
-def bounded_work_scope() -> Iterator[BoundedWorkScope]:
+def bounded_work_scope() -> Generator[BoundedWorkScope, None, None]:
     """由 bulk/认证准入显式启用；共享对象跟踪该作用域的同步工作。"""
 
     scope = BoundedWorkScope()

@@ -2,6 +2,22 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
+MessageStatus = Literal["pending", "sent", "delivered", "failed", "unknown", "other"]
+DisplayStatus = Literal[
+    "pending",
+    "sent",
+    "delivered",
+    "failed",
+    "unknown",
+    "other",
+    "cancelled",
+    "rejected",
+    "expired",
+    "needs_review",
+]
+
 # 真实投递结果保持原状态。pending 且批次已取消/驳回/过期时，表示从未下发的终止。
 MESSAGE_DISPLAY_STATUS_SQL = """
 CASE
@@ -15,7 +31,7 @@ CASE
 END
 """.strip()
 
-DISPLAY_STATUS_VALUES = frozenset(
+DISPLAY_STATUS_VALUES: frozenset[DisplayStatus] = frozenset(
     {
         "pending",
         "sent",

@@ -139,6 +139,12 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy"]
 mypy_path = ["../scripts", "../deploy/scripts"]
+enable_error_code = ["possibly-undefined", "deprecated"]
+
+[tool.pydantic-mypy]
+init_typed = true
+init_forbid_extra = true
+warn_required_dynamic_aliases = true
 
 [tool.pyright]
 pythonVersion = "3.12"
@@ -149,3 +155,13 @@ extraPaths = ["../scripts", "../deploy/scripts"]
 [[tool.mypy.overrides]]
 module = ["ldap3.*", "ahocorasick.*", "celery.*", "openpyxl.*", "yaml.*"]
 ignore_missing_imports = true
+
+# vendor-live 冻结，随解冻处理：重试循环与 VendorControlState 的 str 字段需改保护文件才能收窄。
+[[tool.mypy.overrides]]
+module = ["app.services.pipeline_commit", "app.tasks.send_repository_attempt"]
+disable_error_code = ["possibly-undefined"]
+
+[[tool.mypy.overrides]]
+module = ["app.api.vendor_test"]
+disable_error_code = ["arg-type"]
+warn_unused_ignores = false

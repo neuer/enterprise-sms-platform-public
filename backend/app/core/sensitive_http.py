@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -29,7 +29,7 @@ for _name in (
 
 
 @contextmanager
-def sensitive_http_request() -> Iterator[None]:
+def sensitive_http_request() -> Generator[None, None, None]:
     """只抑制当前请求的底层日志；业务分类日志和并发普通请求保持可观测。"""
 
     token = _SENSITIVE_REQUEST.set(True)

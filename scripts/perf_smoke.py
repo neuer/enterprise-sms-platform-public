@@ -953,23 +953,18 @@ class PerformanceSuite:
             accepted, acceptance_p95 = self._phase_one()
             verify, bulk, verify_p95 = self._phase_two()
             runtime = self._runtime_metrics()
+            drain_seconds = self._phase_three()
+            measurements = (
+                accepted,
+                acceptance_p95,
+                verify,
+                bulk,
+                verify_p95,
+                *runtime,
+                drain_seconds,
+            )
         except Exception as error:
             phase_error = error
-
-        if phase_error is None:
-            try:
-                drain_seconds = self._phase_three()
-                measurements = (
-                    accepted,
-                    acceptance_p95,
-                    verify,
-                    bulk,
-                    verify_p95,
-                    *runtime,
-                    drain_seconds,
-                )
-            except Exception as error:
-                phase_error = error
         try:
             cancelled, cleanup_seconds = self._cleanup_scheduled_batches()
         except Exception as error:

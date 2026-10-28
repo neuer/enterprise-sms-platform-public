@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import struct
+from contextlib import suppress
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
 from typing import BinaryIO
@@ -195,17 +196,16 @@ class ImportFileCodec:
             if len(payload) != length:
                 raise ValueError("导入源文件密文帧截断")
             plaintext: bytes | None = None
-            try:
+            frame_type = "data"
+            with suppress(ValueError, InvalidTag):
                 plaintext = self.crypto.decrypt_bound_bytes(
                     payload,
                     version,
                     self._frame_context(import_id, frame_index, "data", expected_size),
                     allow_legacy=False,
                 )
-                frame_type = "data"
-            except (ValueError, InvalidTag):
-                pass
             if plaintext is None:
+                frame_type = "terminal"
                 try:
                     plaintext = self.crypto.decrypt_bound_bytes(
                         payload,
@@ -218,7 +218,6 @@ class ImportFileCodec:
                         ),
                         allow_legacy=False,
                     )
-                    frame_type = "terminal"
                 except (ValueError, InvalidTag):
                     raise ValueError("导入源文件密文帧认证失败") from None
             if frame_type == "data":

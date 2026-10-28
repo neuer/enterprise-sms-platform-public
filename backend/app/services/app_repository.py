@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import builtins
 import hashlib
 import json
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
@@ -136,7 +137,7 @@ class SqlAppRepository:
             },
         )
 
-    async def list(self) -> list[dict[str, Any]]:
+    async def list(self) -> builtins.list[dict[str, Any]]:
         engine = self._engine()
         try:
             async with engine.connect() as connection:
@@ -175,7 +176,7 @@ class SqlAppRepository:
         app_id: int | None,
         expected_updated_at: datetime | None,
         values: dict[str, object],
-    ) -> AsyncIterator[AsyncConnection]:
+    ) -> AsyncGenerator[AsyncConnection, None]:
         """先锁授权主体，再锁回调权限与应用版本；审计失败时整体回滚。"""
         parameters: dict[str, object] = {}
         if operation in {"app_create", "app_update"}:

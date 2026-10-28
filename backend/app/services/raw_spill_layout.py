@@ -5,7 +5,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -99,7 +99,7 @@ class SpillLayout:
         return self.directory / f"{source}-{stream_id}{HEADER_QUARANTINE_SUFFIX}"
 
     @contextmanager
-    def quota_lock(self) -> Iterator[None]:
+    def quota_lock(self) -> Generator[None, None, None]:
         """Report/Reply 共用目录锁，禁止并发超卖。"""
 
         self.directory.mkdir(parents=True, exist_ok=True)

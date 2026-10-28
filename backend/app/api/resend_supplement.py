@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, TypeGuard, get_args
 from uuid import UUID
 
 from fastapi import APIRouter, Depends
@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from app.api.auth import ERROR_RESPONSE
 from app.api.messages import (
+    BatchAcceptanceStatus,
     ResendResponseModel,
     _error,
     _pipeline,
@@ -28,6 +29,10 @@ from app.services.resend_supplement import ResendSupplementService
 from app.settings import get_settings
 
 router = APIRouter(prefix="/api/v1/messages", tags=["messages"])
+
+
+def _is_batch_status(value: str) -> TypeGuard[BatchAcceptanceStatus]:
+    return value in get_args(BatchAcceptanceStatus)
 
 
 class SupplementPreviewModel(BaseModel):
@@ -141,6 +146,8 @@ async def confirm_resend_supplement(
         raise
     except Exception as error:
         raise _map(error) from error
+    if not _is_batch_status(result.status):
+        raise RuntimeError("unexpected batch status")
     return ResendResponseModel(
         batch_no=result.batch_no,
         resend_of=batch_no,

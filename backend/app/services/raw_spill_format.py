@@ -7,7 +7,7 @@ import re
 import struct
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -361,7 +361,7 @@ def discard_header_only_stream(stream: object | None) -> None:
 
 
 @contextmanager
-def manage_raw_spill_stream[S](stream: S | None) -> Iterator[S | None]:
+def manage_raw_spill_stream[S](stream: S | None) -> Generator[S | None, None, None]:
     """退出时先 flush 已 announce 的短帧，再回收 announce 前的 header-only。"""
 
     try:

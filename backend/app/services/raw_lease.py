@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -452,7 +452,7 @@ async def bind_raw_lease_heartbeat(
     lease: RawProcessingLease | None,
     *,
     interval_s: float = RAW_LEASE_HEARTBEAT_SECONDS,
-) -> AsyncIterator[RawLeaseHeartbeat | None]:
+) -> AsyncGenerator[RawLeaseHeartbeat | None, None]:
     """仓储未实现续租或尚无 token 时跳过，避免假对象被误打到数据库。"""
 
     renewer = getattr(repository, "renew_processing_lease", None)

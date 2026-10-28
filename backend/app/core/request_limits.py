@@ -144,7 +144,7 @@ class RequestBodyLimitMiddleware:
                     peeked = None
                     return message
                 message = await receive()
-                if message["type"] == "http.request" and (message.get("body") or b""):
+                if message["type"] == "http.request" and message.get("body"):
                     raise RequestBodyNotAllowed
                 return message
 
@@ -157,7 +157,7 @@ class RequestBodyLimitMiddleware:
                 await send(message)
 
             first = await receive()
-            if first["type"] == "http.request" and (first.get("body") or b""):
+            if first["type"] == "http.request" and first.get("body"):
                 await _send_error(
                     send,
                     status=400,
