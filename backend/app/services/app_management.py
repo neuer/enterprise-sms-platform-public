@@ -10,7 +10,7 @@ import socket
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import NotRequired, Protocol, TypedDict, Unpack
 from urllib.parse import urlsplit
 
 from app.core.apikey import issue_api_key_record
@@ -91,12 +91,80 @@ class AppUpdate:
     status: int = 1
 
 
+# 应用查询行：SQL 列投影（不含哈希/密文），对外形状由 API 层 AppResponse 校验。
+type AppRow = dict[str, object]
+
+
+class AppConfigValues(TypedDict):
+    """create/update 共同写入的应用配置列（已校验、规范化）。"""
+
+    dept: str
+    allowed_categories: str
+    default_sign: str | None
+    daily_quota: int
+    rate_limit_per_min: int
+    recipient_limit_per_min: int
+    segment_limit_per_min: int
+    max_in_flight_chunks: int
+    allow_market_api_bulk: bool
+    blacklist_check: bool
+    ip_allowlist_exempt_until: datetime | None
+    unlimited_quota_exempt_until: datetime | None
+    admission_exempt_note: str | None
+    freq_override: dict[str, int] | None
+    allowed_ips: tuple[str, ...]
+    callback_url: str | None
+    callback_report_enabled: bool
+
+
+class AppKeyValues(TypedDict):
+    """API Key 摘要列；缺省版本/算法时仓储按历史摘要规则回填。"""
+
+    api_key_hash: str
+    api_key_prefix: str
+    api_key_hash_version: NotRequired[int | None]
+    api_key_hash_algorithm: NotRequired[str]
+
+
+class AppCreateValues(AppConfigValues, AppKeyValues):
+    name: str
+    callback_secret_enc: bytes | None
+
+
+class AppUpdateValues(AppConfigValues):
+    status: int
+
+
+class AppKeyRotation(AppKeyValues):
+    old_key_expires_at: datetime
+
+
+class CreatedApp(TypedDict):
+    """创建响应；明文 Key/secret 只存在于本次响应内存。"""
+
+    id: int
+    api_key: str
+    callback_secret: str | None
+
+
+class RotatedKey(TypedDict):
+    api_key: str
+    old_key_expires_at: datetime
+
+
 class AppRepository(Protocol):
-    async def list(self) -> builtins.list[dict[str, Any]]: ...
+    async def list(self) -> builtins.list[AppRow]: ...
 
-    async def get(self, app_id: int) -> dict[str, Any] | None: ...
+    async def get(self, app_id: int) -> AppRow | None: ...
 
-    async def create(self, *, authorization: AdminAuthorization, **values: Any) -> int: ...
+    async def create(
+        self,
+        *,
+        authorization: AdminAuthorization,
+        actor: str,
+        ip: str,
+        **values: Unpack[AppCreateValues],
+    ) -> int: ...
 
     async def update(
         self,
@@ -104,8 +172,10 @@ class AppRepository(Protocol):
         *,
         authorization: AdminAuthorization,
         expected_updated_at: datetime,
-        **values: Any,
-    ) -> dict[str, Any]: ...
+        actor: str,
+        ip: str,
+        **values: Unpack[AppUpdateValues],
+    ) -> AppRow: ...
 
     async def disable(
         self,
@@ -123,7 +193,9 @@ class AppRepository(Protocol):
         *,
         authorization: AdminAuthorization,
         expected_updated_at: datetime,
-        **values: Any,
+        actor: str,
+        ip: str,
+        **values: Unpack[AppKeyRotation],
     ) -> None: ...
 
     async def revoke_old_key(
@@ -142,7 +214,9 @@ class AppRepository(Protocol):
         *,
         authorization: AdminAuthorization,
         expected_updated_at: datetime,
-        **values: Any,
+        actor: str,
+        ip: str,
+        callback_secret_enc: bytes,
     ) -> None: ...
 
 
@@ -346,7 +420,7 @@ class AppManagementService:
                 raise InvalidAppConfig("空白名单豁免必须填写原因")
 
     @staticmethod
-    def _key_values(plaintext: str) -> dict[str, Any]:
+    def _key_values(plaintext: str) -> AppKeyValues:
         if len(plaintext) < 16:
             raise InvalidAppConfig("生成的密钥长度不足")
         issued = issue_api_key_record(plaintext)
@@ -388,14 +462,14 @@ class AppManagementService:
     async def _config_values(
         self,
         config: AppCreate | AppUpdate,
-    ) -> dict[str, Any]:
+    ) -> AppConfigValues:
         self._validate(config)
         callback_url = (
             await self.callback_validator.validate_for_save(config.callback_url)
             if config.callback_url
             else None
         )
-        values: dict[str, Any] = {
+        values: AppConfigValues = {
             "dept": config.dept,
             "allowed_categories": ",".join(sorted(config.allowed_categories)),
             "default_sign": config.default_sign,
@@ -423,16 +497,12 @@ class AppManagementService:
                 "app ip allowlist is empty; api key accepts all sources",
                 extra={"app_name": getattr(config, "name", None)},
             )
-        if isinstance(config, AppCreate):
-            values["name"] = config.name
-        else:
-            values["status"] = config.status
         return values
 
-    async def list(self) -> builtins.list[dict[str, Any]]:
+    async def list(self) -> builtins.list[AppRow]:
         return await self.repository.list()
 
-    async def get(self, app_id: int) -> dict[str, Any]:
+    async def get(self, app_id: int) -> AppRow:
         app = await self.repository.get(app_id)
         if app is None:
             raise AppNotFound("应用不存在")
@@ -440,19 +510,24 @@ class AppManagementService:
 
     async def create(
         self, config: AppCreate, *, actor: str, ip: str, authorization: AdminAuthorization
-    ) -> dict[str, Any]:
-        values = await self._config_values(config)
+    ) -> CreatedApp:
+        config_values = await self._config_values(config)
         issued_token = self.token_factory()
-        values.update(self._key_values(issued_token))
+        key_values = self._key_values(issued_token)
         callback_secret: str | None = None
+        callback_secret_enc: bytes | None = None
         if config.callback_url:
             callback_secret = self.token_factory()
-            values["callback_secret_enc"] = self.crypto.encrypt_bound_packed_text(
+            callback_secret_enc = self.crypto.encrypt_bound_packed_text(
                 callback_secret,
                 self._callback_secret_context(config.name),
             )
-        else:
-            values["callback_secret_enc"] = None
+        values: AppCreateValues = {
+            **config_values,
+            "name": config.name,
+            **key_values,
+            "callback_secret_enc": callback_secret_enc,
+        }
         app_id = await self.repository.create(
             **values, actor=actor, ip=ip, authorization=authorization
         )
@@ -467,8 +542,8 @@ class AppManagementService:
         ip: str,
         authorization: AdminAuthorization,
         expected_updated_at: datetime,
-    ) -> dict[str, Any]:
-        values = await self._config_values(config)
+    ) -> AppRow:
+        values: AppUpdateValues = {**await self._config_values(config), "status": config.status}
         if config.callback_url:
             current = await self.repository.get(app_id)
             if current is None:
@@ -509,7 +584,7 @@ class AppManagementService:
         ip: str,
         authorization: AdminAuthorization,
         expected_updated_at: datetime,
-    ) -> dict[str, Any]:
+    ) -> RotatedKey:
         issued_token = self.token_factory()
         expires_at = self.clock() + self.key_grace
         await self.repository.rotate_key(

@@ -29,10 +29,13 @@ from app.services.app_management import (
     AppManagementService,
     AppNameConflict,
     AppNotFound,
+    AppRow,
     AppUpdate,
     CallbackUrlValidator,
     CallbackValidationUnavailable,
+    CreatedApp,
     InvalidAppConfig,
+    RotatedKey,
 )
 from app.services.app_repository import SqlAppRepository
 from app.services.callback_authority import CallbackAuthorityBusy
@@ -145,7 +148,7 @@ async def list_apps(
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
-) -> list[dict[str, Any]]:
+) -> list[AppRow]:
     return await service.list()
 
 
@@ -167,7 +170,7 @@ async def create_app(
     ],
     step_up: AdminStepUp,
     step_up_token: AdminStepUpToken = None,
-) -> dict[str, Any]:
+) -> CreatedApp:
     actor, ip = claims.username, trusted_client_ip(request)
     authorization = await step_up.consume(
         step_up_token,
@@ -211,7 +214,7 @@ async def get_app(
         HTTPAuthorizationCredentials | None,
         Depends(bearer_scheme),
     ],
-) -> dict[str, Any]:
+) -> AppRow:
     try:
         return await service.get(id)
     except AppNotFound as error:
@@ -237,7 +240,7 @@ async def update_app(
     step_up: AdminStepUp,
     expected_updated_at: Annotated[datetime, Header(alias="X-App-Revision")],
     step_up_token: AdminStepUpToken = None,
-) -> dict[str, Any]:
+) -> AppRow:
     actor, ip = claims.username, trusted_client_ip(request)
     authorization = await step_up.consume(
         step_up_token,
@@ -335,7 +338,7 @@ async def rotate_key(
     step_up: AdminStepUp,
     expected_updated_at: Annotated[datetime, Header(alias="X-App-Revision")],
     step_up_token: AdminStepUpToken = None,
-) -> dict[str, Any]:
+) -> RotatedKey:
     actor, ip = claims.username, trusted_client_ip(request)
     authorization = await step_up.consume(
         step_up_token,

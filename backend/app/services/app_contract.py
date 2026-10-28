@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import ipaddress
+from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, with_config
 from typing_extensions import TypedDict
@@ -87,14 +88,15 @@ class AppUpdateRequest(BaseModel):
     status: Literal[0, 1] = 1
 
 
-def canonical_app_parameters(values: dict[str, Any], *, create: bool) -> dict[str, Any]:
+def canonical_app_parameters(values: Mapping[str, object], *, create: bool) -> dict[str, object]:
     """只接纳配置白名单；签发和实际 SQL 值统一为同一确定性表示。"""
     model = AppCreateRequest if create else AppUpdateRequest
     if set(values) != set(model.model_fields):
         raise ValueError("应用授权必须包含完整配置且不得包含凭据")
     prepared = dict(values)
-    if isinstance(prepared.get("allowed_categories"), str):
-        prepared["allowed_categories"] = prepared["allowed_categories"].split(",")
+    categories = prepared.get("allowed_categories")
+    if isinstance(categories, str):
+        prepared["allowed_categories"] = categories.split(",")
     validated = model.model_validate(prepared)
     result = validated.model_dump()
     result["allowed_categories"] = sorted(set(result["allowed_categories"]))
