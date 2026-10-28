@@ -98,7 +98,7 @@ def check_task_boundary(
             raise TaskBoundaryError("manual job is outside this worker capability")
 
 
-def broker_transport_options(role: str) -> dict[str, Any]:
+def broker_transport_options(role: str) -> dict[str, object]:
     """各消费者确认/可见性恢复记录独立，避免低权限记录被其他消费者恢复。"""
 
     if role and role not in {*WORKER_QUEUES, *PRODUCER_ROLES}:

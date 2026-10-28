@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
-from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.services.usage_ledger_common import (
@@ -46,7 +45,7 @@ async def _load_frequency_alias_map(
 async def _load_frequency_subject_rows(
     connection: AsyncConnection,
     subject_ids: Sequence[UUID],
-) -> dict[UUID, Any]:
+) -> dict[UUID, RowMapping]:
     unique = list(dict.fromkeys(subject_ids))
     if not unique:
         return {}
@@ -117,7 +116,7 @@ def _item_subject_ids(
 async def _list_frequency_subjects(
     connection: AsyncConnection,
     digests: Sequence[str],
-) -> tuple[set[UUID], list[Any]]:
+) -> tuple[set[UUID], list[RowMapping]]:
     alias_result = await connection.execute(
         text(
             """

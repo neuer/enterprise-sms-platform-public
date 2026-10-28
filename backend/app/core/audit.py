@@ -62,7 +62,7 @@ class AuditEvent:
     after: dict[str, Any] | None = None
 
 
-def validate_audit_payload(value: Any) -> None:
+def validate_audit_payload(value: object) -> None:
     """递归拒绝手机号、逐号密文/HMAC、token、secret 与请求正文。
 
     与 ck_audit_payload_no_pii 对齐：仅顶层 batch_no 且为 32 位小写 hex 时
@@ -81,7 +81,7 @@ def validate_audit_payload(value: Any) -> None:
     _reject_sensitive(value, key=None)
 
 
-def _reject_sensitive(value: Any, *, key: str | None) -> None:
+def _reject_sensitive(value: object, *, key: str | None) -> None:
     if key is not None and (
         FORBIDDEN_AUDIT_KEY.search(key) or DATABASE_FORBIDDEN_AUDIT_KEY.fullmatch(key)
     ):

@@ -200,7 +200,7 @@ def validate_alert_destinations(
             raise ValueError("alert_smtp_host 不在部署允许列表")
 
 
-def _assert_no_pii(value: Any, *, key: str | None = None) -> None:
+def _assert_no_pii(value: object, *, key: str | None = None) -> None:
     if key is not None and key.casefold() in PHONE_KEYS:
         raise ValueError("alert detail contains forbidden PII field")
     if isinstance(value, dict):

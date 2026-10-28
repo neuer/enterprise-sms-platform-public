@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from app.services.crypto import (
@@ -316,7 +316,7 @@ class ArtifactStats:
     oldest_cipherq_age_seconds: float | None = None
 
 
-def flush_announced_pending_frames(stream: Any | None) -> None:
+def flush_announced_pending_frames(stream: object | None) -> None:
     """announce 之后、finish 之前的异常边界必须把不足一帧的缓冲落盘。"""
 
     if stream is None or getattr(stream, "has_announced", False) is not True:
@@ -335,7 +335,7 @@ def flush_announced_pending_frames(stream: Any | None) -> None:
         )
 
 
-def discard_header_only_stream(stream: Any | None) -> None:
+def discard_header_only_stream(stream: object | None) -> None:
     """announce 前失败只删除纯 header-only；已认证 data/announce 留给恢复。"""
 
     if stream is None:
@@ -361,7 +361,7 @@ def discard_header_only_stream(stream: Any | None) -> None:
 
 
 @contextmanager
-def manage_raw_spill_stream(stream: Any | None) -> Iterator[Any]:
+def manage_raw_spill_stream[S](stream: S | None) -> Iterator[S | None]:
     """退出时先 flush 已 announce 的短帧，再回收 announce 前的 header-only。"""
 
     try:
@@ -533,7 +533,7 @@ class RawSpillRecord:
 
 
 def iter_records_for_recover(
-    spill: Any,
+    spill: object,
     crypto: StreamChunkCrypto,
     source: str,
 ) -> Iterator[RawSpillRecord]:

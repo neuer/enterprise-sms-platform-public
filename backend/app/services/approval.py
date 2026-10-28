@@ -64,7 +64,7 @@ class QuotaRefundPort(Protocol):
         cost: int,
         event_id: str,
         marker_ttl_s: int,
-    ) -> Any: ...
+    ) -> object: ...
 
 
 class ApprovalPublisher(Protocol):

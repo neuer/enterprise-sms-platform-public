@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -14,7 +13,7 @@ from app.core.auth.accounts import ActorPrincipal
 from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.batch_query import BatchAccessScope, BatchNotFound
 from app.services.crypto import CryptoService, EncryptionContext
-from app.services.pipeline_contracts import FailedSourceReference, SendRequest
+from app.services.pipeline_contracts import BatchResponse, FailedSourceReference, SendRequest
 from app.services.resend_eligibility import ResendBlocked, read_coverage
 from app.settings import Settings, get_settings
 
@@ -66,7 +65,7 @@ class ResendSupplementService:
         scope: BatchAccessScope,
         *,
         actor: ActorPrincipal | None,
-        accept: Callable[[SendRequest], Awaitable[Any]],
+        accept: Callable[[SendRequest], Awaitable[BatchResponse]],
     ) -> SupplementSubmit:
         engine = self._engine()
         try:

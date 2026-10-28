@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -52,6 +52,9 @@ from app.services.sensitive import SENSITIVE_WORD_REVISION_KEY, sensitive_word_i
 from app.services.template import render_template
 from app.services.usage_ledger import commit_usage_reservation, shanghai_day
 from app.settings import Settings, get_settings
+
+if TYPE_CHECKING:
+    from app.services.send_inflight import AcceptCommitResolution, InFlightReservation
 
 PIPELINE_CONFIG_KEYS = tuple(sorted(set(CONFIG_SPECS) | {"vendor_batch_size"}))
 
@@ -136,8 +139,8 @@ class SqlPipelineStore:
                 deferred_reason=(
                     str(row["deferred_reason"]) if row["deferred_reason"] is not None else None
                 ),
-                scheduled_at=cast(Any, row["scheduled_at"]),
-                idempotency_expires_at=cast(Any, row.get("expires_at")),
+                scheduled_at=row["scheduled_at"],
+                idempotency_expires_at=row.get("expires_at"),
             )
 
     async def count_in_flight_chunks(self, app_id: int) -> int:
@@ -163,7 +166,7 @@ class SqlPipelineStore:
         app_id: int,
         estimated: int,
         limit: int,
-    ) -> Any:
+    ) -> InFlightReservation:
         if estimated < 1 or limit < 1:
             raise ValueError("in-flight reservation bounds invalid")
         from app.services.send_inflight import (
@@ -265,7 +268,7 @@ class SqlPipelineStore:
         scope_id: str,
         biz_id: str,
         request_hash: str,
-    ) -> Any:
+    ) -> AcceptCommitResolution:
         from app.services.send_inflight import resolve_ambiguous_acceptance_commit
 
         try:

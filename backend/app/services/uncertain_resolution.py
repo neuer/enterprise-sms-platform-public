@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -798,7 +798,9 @@ async def lock_uncertain_resend(
     return current, context, app_ctx
 
 
-async def _child_relation(connection: AsyncConnection, resolution_id: int) -> Any:
+async def _child_relation(
+    connection: AsyncConnection, resolution_id: int
+) -> RowMapping | None:
     return (
         (
             await connection.execute(
@@ -888,7 +890,7 @@ async def bind_uncertain_child(
 
 async def _legacy_resend_candidates(
     connection: AsyncConnection, current: UncertainResolution
-) -> Any:
+) -> Sequence[RowMapping]:
     """旧命名空间/旧指针只用于发现待核验候选，绝不作为内部创建的证明。"""
 
     return (
@@ -957,7 +959,7 @@ def _manual_effect_error(exc: BaseException) -> str:
 
 async def _lock_not_accepted(
     connection: AsyncConnection, resolution_id: int, chunk_id: int, batch_id: int, generation: int,
-) -> Any:
+) -> RowMapping:
     """按 chunk→batch→resolution 锁定本次批准，拒绝错配及旧代际。"""
     await _lock_resolution_source(connection, resolution_id)
     row = (await connection.execute(text("""

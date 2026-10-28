@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from datetime import date, datetime
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy import RowMapping, text
@@ -81,10 +80,10 @@ def _frequency_window_sort_key(row: RowMapping) -> tuple[date, int | str]:
 
 
 def _choose_frequency_merge_window(
-    rows: Sequence[Any],
+    rows: Sequence[RowMapping],
     *,
     target_key: str,
-) -> tuple[str, date, str, datetime, tuple[Any, ...]] | None:
+) -> tuple[str, date, str, datetime, tuple[RowMapping, ...]] | None:
     """从 live 行先选最新 (usage_date, window_key)，同窗内再优先 canonical。"""
 
     if not rows:
@@ -128,7 +127,7 @@ def _frequency_window_is_future_skewed(
 async def _list_active_frequency_entry_refs(
     connection: AsyncConnection,
     subject_ids: Sequence[UUID],
-) -> list[Any]:
+) -> list[RowMapping]:
     """未终态 counted 频控明细；删除 source 投影前必须仍有可命中的 projection_key。"""
 
     if not subject_ids:
@@ -156,8 +155,8 @@ async def _write_expired_canonical_tombstone(
     connection: AsyncConnection,
     *,
     target_key: str,
-    source_rows: Sequence[Any],
-    entry_refs: Sequence[Any],
+    source_rows: Sequence[RowMapping],
+    entry_refs: Sequence[RowMapping],
 ) -> ProjectionRow | None:
     """为仍被引用的过期 source 写 canonical 墓碑，供负向释放 UPDATE 命中。
 
@@ -199,7 +198,7 @@ async def _write_expired_canonical_tombstone(
 async def _list_frequency_projection_rows(
     connection: AsyncConnection,
     hmacs: Sequence[str],
-) -> list[Any]:
+) -> list[RowMapping]:
     unique = [digest for digest in dict.fromkeys(hmacs) if HMAC_PATTERN.fullmatch(digest)]
     if not unique:
         return []
@@ -362,7 +361,7 @@ async def _merge_frequency_projections(
     connection: AsyncConnection,
     *,
     canonical_hmac: str,
-    subject_rows: Sequence[Any],
+    subject_rows: Sequence[RowMapping],
 ) -> tuple[ProjectionRow, ...]:
     """在已持有投影键锁后，把 source 主体窗口计数并入 canonical 键。"""
 
@@ -370,7 +369,7 @@ async def _merge_frequency_projections(
     await _lock_projection_writer(connection)
     subject_ids = [UUID(str(row["id"])) for row in subject_rows]
     observed = await _database_now(connection)
-    groups: dict[str, list[Any]] = {}
+    groups: dict[str, list[RowMapping]] = {}
     remaps: dict[str, str] = {}
     for row in await _list_frequency_projection_rows(connection, hmacs):
         source_key = str(row["dimension_key"])

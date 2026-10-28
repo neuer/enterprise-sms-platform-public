@@ -209,7 +209,7 @@ def decode_startup_schedule(raw: str | None) -> dict[str, dict[str, Any]]:
     if raw is None:
         return {}
     try:
-        value: Any = json.loads(raw)
+        value: object = json.loads(raw)
     except json.JSONDecodeError as error:
         raise ValueError("invalid beat startup schedule") from error
     if not isinstance(value, dict) or any(

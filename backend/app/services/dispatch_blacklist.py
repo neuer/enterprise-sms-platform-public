@@ -298,7 +298,7 @@ def _decrypt(crypto: CryptoService, row: RowMapping) -> str:
     return phone
 
 
-async def _pending_messages(connection: AsyncConnection, chunk_id: int) -> list[Any]:
+async def _pending_messages(connection: AsyncConnection, chunk_id: int) -> list[RowMapping]:
     result = await connection.execute(
         text(
             """

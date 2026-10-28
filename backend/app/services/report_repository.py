@@ -62,7 +62,7 @@ class SqlReportRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
         self._leases: dict[int, RawProcessingLease] = {}
-        self.on_claimed_batch: Callable[[Any, int], Awaitable[None]] | None = None
+        self.on_claimed_batch: Callable[[AsyncConnection, int], Awaitable[None]] | None = None
 
     def remember_lease(self, lease: RawProcessingLease) -> None:
         self._leases[lease.raw_id] = lease

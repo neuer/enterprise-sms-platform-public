@@ -61,7 +61,7 @@ def _retry_audit_payload(
     return after
 
 
-def _args(value: Any) -> tuple[str | int, ...]:
+def _args(value: object) -> tuple[str | int, ...]:
     if not isinstance(value, list) or any(
         not isinstance(item, (str, int)) or isinstance(item, bool) for item in value
     ):
