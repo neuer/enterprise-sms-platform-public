@@ -282,6 +282,68 @@ async def test_owner_completes_within_five_seconds(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["released", "completed", "new_owner"])
+async def test_wait_refreshes_pg_after_owner_changes_during_projection_rebuild(
+    claim_env: tuple[Any, SqlPipelineStore, Redis, int], outcome: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """固定读旧租约后释放的交错；残留 Redis 不能拖住拒绝请求或夺取新租约。"""
+
+    from app.services.idempotency import IdempotencyCoordinationTimeout
+
+    engine, store, redis, app_id = claim_env
+    scope = IdempotencyScope("app", str(app_id))
+    biz = "wait-release-" + new_business_id()[:12]
+    owner = IdempotencyCoordinator(redis, store)
+    token = await owner.claim(scope, biz, fingerprint="7" * 64)
+    assert token is not None
+    viewed = await owner.inspect(scope, biz)
+    assert viewed is not None
+    loader = store.load_idempotency_claim
+    first = True
+    expected_batch: str | None = None
+    replacement: str | None = None
+
+    async def interleaved_load(*args: Any, **kwargs: Any) -> Any:
+        nonlocal first, expected_batch, replacement
+        row = await loader(*args, **kwargs)
+        if first:
+            first = False
+            if outcome == "completed":
+                stored = await _complete(
+                    store, app_id=app_id, biz_id=biz, token=token,
+                    generation=viewed.generation, fingerprint="7" * 64,
+                )
+                expected_batch = stored.batch_no
+            await owner.release(scope, biz, token)
+            if outcome == "new_owner":
+                replacement = await owner.claim(scope, biz, fingerprint="7" * 64)
+                assert replacement is not None
+        return row
+
+    monkeypatch.setattr(store, "load_idempotency_claim", interleaved_load)
+    waiter = IdempotencyCoordinator(redis, store, wait_attempts=4, wait_interval_s=0.01)
+    if outcome == "new_owner":
+        with pytest.raises(IdempotencyCoordinationTimeout):
+            await asyncio.wait_for(waiter.wait(scope, biz), timeout=2)
+        row = await _claim_row(engine, scope, biz)
+        assert row["state"] == "active"
+        assert row["generation"] == viewed.generation + 1
+        assert row["token"].strip() == replacement
+        assert await waiter.claim(scope, biz, fingerprint="7" * 64) is None
+        assert replacement is not None
+        await owner.release(scope, biz, replacement)
+    else:
+        result = await asyncio.wait_for(waiter.wait(scope, biz), timeout=2)
+        assert result == expected_batch
+        row = await _claim_row(engine, scope, biz)
+        assert row["state"] == outcome
+        if outcome == "released":
+            assert row["batch_id"] is None
+            assert await store.find_existing(scope, biz) is None
+
+
+@pytest.mark.asyncio
 async def test_legal_owner_completes_after_35_60_90_120_seconds(
     claim_env: tuple[Any, SqlPipelineStore, Redis, int],
 ) -> None:

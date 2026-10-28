@@ -174,7 +174,7 @@ def test_migration_does_not_copy_current_counts_onto_attempted_events() -> None:
 async def test_recovery_inserts_a_new_event_without_updating_the_old_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task = {"id": 9, "batch_id": 8, "event": "batch.finished"}
+    task = {"id": 9, "batch_id": 8, "event": "batch.finished", "last_error": None}
     connection = FakeConnection(
         [
             FakeResult([task]),
@@ -201,7 +201,7 @@ async def test_recovery_inserts_a_new_event_without_updating_the_old_snapshot(
     assert result.task_id == 21 and result.event_id == EVENT_ID and result.created is True
     assert len(connection.calls) == 6
     sqls = [call[0] for call in connection.calls]
-    batch_lock = next(i for i, sql in enumerate(sqls) if "sms_batch" in sql and "FOR UPDATE" in sql)
+    batch_lock = next(i for i, sql in enumerate(sqls) if "lock_callback_idempotency_batch" in sql)
     task_lock = next(
         i for i, sql in enumerate(sqls) if "callback_task t" in sql and "FOR UPDATE" in sql
     )
@@ -228,7 +228,7 @@ async def test_recovery_inserts_a_new_event_without_updating_the_old_snapshot(
 async def test_second_recovery_returns_the_existing_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task = {"id": 9, "batch_id": 8, "event": "batch.finished"}
+    task = {"id": 9, "batch_id": 8, "event": "batch.finished", "last_error": None}
     connection = FakeConnection(
         [
             FakeResult([task]),
@@ -260,7 +260,7 @@ async def test_second_recovery_returns_the_existing_event(
 async def test_current_snapshot_cannot_be_recovered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task = {"id": 9, "batch_id": 8, "event": "batch.finished"}
+    task = {"id": 9, "batch_id": 8, "event": "batch.finished", "last_error": None}
     connection = FakeConnection(
         [
             FakeResult([task]),
@@ -273,3 +273,29 @@ async def test_current_snapshot_cannot_be_recovered(
         await _service(connection, monkeypatch).recover(9, principal=ADMIN)
     assert blocked.value.reason == "not_legacy"
     assert len(connection.calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_revoked_legacy_recovery_stops_before_snapshot_or_existing_event_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """撤销优先于快照缺失；不能借补发入口重新创建已撤销的事件。"""
+
+    task = {
+        "id": 9,
+        "batch_id": 8,
+        "event": "batch.finished",
+        "last_error": "CallbackConfigRevoked",
+    }
+    connection = FakeConnection(
+        [
+            FakeResult([task]),
+            FakeResult([{"id": 8}]),
+            FakeResult([task]),
+        ]
+    )
+    with pytest.raises(FinishedRecoveryRejected) as blocked:
+        await _service(connection, monkeypatch).recover(9, principal=ADMIN)
+    assert blocked.value.reason == "config_revoked"
+    assert len(connection.calls) == 3
+    assert all("INSERT" not in sql for sql, _ in connection.calls)

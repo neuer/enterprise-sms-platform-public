@@ -12,6 +12,7 @@ from app.services.pipeline_contracts import AcceptCommitConflict, FailedSourceRe
 TERMINAL_RESEND_STATUSES = frozenset({"completed", "completed_unknown"})
 
 _REASON_TEXT = {
+    "source_terminated": "批次已取消、驳回或过期，未下发号码不能重发",
     "receipts_pending": "仍有回执未到齐，不能重发失败号码",
     "not_terminal": "批次尚未完成，不能重发失败号码",
     "supplement_required": "已有重发未覆盖全部失败号码，请补发未覆盖号码，不要更换 biz_id",
@@ -70,7 +71,9 @@ def decide_resend(
     """根据锁定后的计数决定普通重发是否可以开始。"""
 
     uncovered = max(failed - covered, 0)
-    if active > 0:
+    if status in {"cancelled", "rejected", "expired"}:
+        reason = "source_terminated"
+    elif active > 0:
         reason = "receipts_pending"
     elif status not in TERMINAL_RESEND_STATUSES:
         reason = "not_terminal"
@@ -103,7 +106,7 @@ SELECT b.status,
       WHERE mem.source_batch_id=b.id
         AND mem.source_message_id=m.id
         AND mem.source_message_created_at=m.created_at
-        AND mem.claim_state IN ('frozen','submitted')
+        AND mem.claim_state='submitted'
     )
   ) AS covered_failed
 FROM sms_batch b
@@ -144,6 +147,8 @@ async def read_coverage(
 async def reject_open_receipts(connection: AsyncConnection, batch_id: int, status: str) -> None:
     """源批次行锁内拒绝未完成回执。调用方不得在此之前插入子批次。"""
 
+    if status in {"cancelled", "rejected", "expired"}:
+        raise ResendBlocked("source_terminated")
     if status not in TERMINAL_RESEND_STATUSES:
         raise ResendBlocked("not_terminal")
     result = await connection.execute(

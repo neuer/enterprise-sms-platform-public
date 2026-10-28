@@ -107,7 +107,9 @@ const submitLabel = computed(() => {
 })
 
 const testSendHint = computed(() =>
-  testSendMax.value === null ? "号码上限暂不可用" : `≤${testSendMax.value} 个号码 · 豁免营销时间窗 · 其余管控照常`,
+  testSendMax.value === null
+    ? "号码上限暂不可用"
+    : `≤${testSendMax.value} 个号码 · 豁免审批与营销时间窗 · 其余管控照常`,
 )
 
 const uiPolicyRead = useLatestRead()
@@ -211,7 +213,7 @@ onBeforeUnmount(() => {
             @click="chooseCategory('notice')"
           >
             <b>通知短信<span class="cat-tag notice">NOTICE</span></b>
-            <small>实时通道 · 黑名单默认拦截<br />≥100 号码需审批</small>
+            <small>实时通道 · 黑名单默认拦截<br />是否需要审批以服务端预检为准</small>
           </button>
           <button
             type="button"
@@ -222,7 +224,7 @@ onBeforeUnmount(() => {
             @click="chooseCategory('market')"
           >
             <b>营销短信<span class="cat-tag market">MARKET</span></b>
-            <small>批量通道 · 08:00–21:00 · 强制退订语<br />≥50 号码需审批 · 同号同应用 1 条/天</small>
+            <small>批量通道 · 默认 08:00–21:00 · 强制退订语<br />审批以预检为准 · 频控按配置执行</small>
           </button>
           <!-- verify 仅 API 渠道（PRD FR-00），Web 人工发送不展示验证码类别卡 -->
         </div>

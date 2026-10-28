@@ -20,7 +20,7 @@ import PhoneMask from "../components/PhoneMask.vue"
 import { useDebouncedEntries } from "../composables/useDebouncedEntries"
 import { usePagedList } from "../composables/usePagedList"
 import { useConfirmActions } from "../lib/confirm"
-const { confirmAuditedAction } = useConfirmActions()
+const { confirmAuditedAction, captureCurrent } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { BLACKLIST_SOURCE_LABELS } from "../lib/labels"
 import { PHONE_RE } from "../lib/phone"
@@ -150,11 +150,13 @@ async function add(): Promise<void> {
     return
   }
   const generation = editorGeneration.value
+  const isCurrent = captureCurrent()
   const submittedPhones = [...uniquePhones.value]
   const submittedRemark = remark.value.trim() || null
   savingGeneration.value = generation
   try {
     const result = await addBlacklist(submittedPhones, submittedRemark)
+    if (!isCurrent()) return
     const updatedTip = result.updated ? ` · 已存在并更新 ${result.updated} 个` : ""
     if (generation !== editorGeneration.value) {
       ElMessage.success(`新增 ${result.added} 个黑名单号码${updatedTip}，当前编辑未改动`)
@@ -166,6 +168,7 @@ async function add(): Promise<void> {
     page.value = 1
     await load()
   } catch (error) {
+    if (!isCurrent()) return
     const message = errorText(error, "添加失败")
     if (generation !== editorGeneration.value) {
       ElMessage.error(`黑名单添加失败：${message}`)
@@ -182,6 +185,7 @@ const removingHmac = ref<string | null>(null)
 async function remove(item: BlacklistItem): Promise<void> {
   item = { ...item }
   if (removingHmac.value !== null) return
+  const isCurrent = captureCurrent()
   removingHmac.value = item.phone_hmac
   try {
     if (
@@ -194,10 +198,12 @@ async function remove(item: BlacklistItem): Promise<void> {
     )
       return
     await deleteBlacklist(item.phone_hmac)
+    if (!isCurrent()) return
     ElMessage.success("已移出黑名单 · 本次操作已记入审计")
     if (items.value.length === 1 && page.value > 1) page.value -= 1
     await load()
   } catch (error) {
+    if (!isCurrent()) return
     ElMessage.error(errorText(error, "移除失败"))
   } finally {
     removingHmac.value = null

@@ -170,3 +170,5 @@ PUBLIC 没有 EXECUTE，`sms_metrics` 仅获得累计维度和计数列 SELECT�
 `sms_callback` 只为缺少可信快照的旧任务追加一条新事件。三个角色都没有 UPDATE。
 `sms_send` 保留 DELETE，供终态 `callback_task` 清理时级联删除快照；未终结任务和仍被
 补发事件引用的原任务不进入清理。触发器拒绝任何 UPDATE。快照不含手机号、正文或回调 body。
+
+0137 为 `sms_export` 补齐 `sms_dispatch_exclusion` 的 `message_id`、`message_created_at`、`reason` 三列 SELECT，用于明细 CSV 中的下发前剔除原因。该角色没有该表的 INSERT/UPDATE/DELETE/TRUNCATE，也不获得代际写入或其它运行角色权限。

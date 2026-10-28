@@ -43,8 +43,19 @@ class ResendSource:
     failed_phones: tuple[EncryptedFailedPhone, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class ExistingResend:
+    batch_no: str
+    accepted: int
+    status: str
+
+
 class ResendRepository(Protocol):
     async def load(self, batch_no: str, scope: BatchAccessScope) -> ResendSource: ...
+
+    async def existing_result(
+        self, batch_no: str, scope: BatchAccessScope, channel: str
+    ) -> ExistingResend | None: ...
 
 
 class SqlResendRepository:
@@ -55,6 +66,43 @@ class SqlResendRepository:
 
     def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
+
+    async def existing_result(
+        self, batch_no: str, scope: BatchAccessScope, channel: str
+    ) -> ExistingResend | None:
+        """当前主体仍能访问源批次且已覆盖全部失败时，只返回已有普通重发。"""
+        predicate, params = scope.sql()
+        engine = self._engine()
+        try:
+            async with engine.connect() as connection:
+                result = await connection.execute(
+                    text(f"""
+                    SELECT trim(child.batch_no) batch_no,child.total,child.status
+                    FROM sms_batch b
+                    JOIN sms_resend_action a ON a.source_batch_id=b.id
+                    JOIN sms_batch child ON child.id=a.child_batch_id
+                    WHERE b.batch_no=:batch_no AND {predicate} AND b.channel=:channel
+                      AND b.status IN ('completed','completed_unknown')
+                      AND NOT a.coverage_needs_review
+                      AND NOT EXISTS (
+                        SELECT 1 FROM sms_message m WHERE m.batch_id=b.id
+                          AND (m.status IN ('pending','sent') OR (m.status='failed'
+                            AND NOT EXISTS (
+                              SELECT 1 FROM sms_resend_supplement_member mem
+                              WHERE mem.source_batch_id=b.id AND mem.source_message_id=m.id
+                                AND mem.source_message_created_at=m.created_at
+                                AND mem.claim_state='submitted'
+                            )))
+                      )
+                    """),
+                    {"batch_no": batch_no, "channel": channel, **params},
+                )
+                row = result.mappings().one_or_none()
+                if row is None:
+                    return None
+                return ExistingResend(str(row["batch_no"]), int(row["total"]), str(row["status"]))
+        finally:
+            await engine.dispose()
 
     async def load(self, batch_no: str, scope: BatchAccessScope) -> ResendSource:
         predicate, scope_params = scope.sql()
@@ -134,6 +182,12 @@ class ResendService:
     def __init__(self, repository: ResendRepository, crypto: CryptoService) -> None:
         self.repository = repository
         self.crypto = crypto
+
+    async def existing_result(
+        self, batch_no: str, scope: BatchAccessScope, channel: str
+    ) -> ExistingResend | None:
+        """跨操作者重复操作也复用同一动作，但不得绕过当前来源权限或覆盖缺口。"""
+        return await self.repository.existing_result(batch_no, scope, channel)
 
     async def build_request(
         self,

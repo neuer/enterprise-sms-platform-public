@@ -264,6 +264,7 @@ class BatchModel(BaseModel):
     resend_block_reason: (
         Literal[
             "receipts_pending",
+            "source_terminated",
             "not_terminal",
             "supplement_required",
             "coverage_needs_review",
@@ -962,6 +963,17 @@ async def resend_failed_batch(
     except NoFailedRecipients as error:
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
     except IdempotencyConflict as error:
+        existing = await service.existing_result(batch_no, scope, expected_channel)
+        if existing is not None:
+            if existing.status not in get_args(BatchAcceptanceStatus):
+                raise ApiError(500, "INTERNAL_ERROR", "服务内部错误", None) from None
+            return ResendResponseModel(
+                batch_no=existing.batch_no,
+                resend_of=batch_no,
+                accepted=existing.accepted,
+                status=cast(BatchAcceptanceStatus, existing.status),
+                idempotent=True,
+            )
         raise ApiError(
             409,
             "STATE_CONFLICT",

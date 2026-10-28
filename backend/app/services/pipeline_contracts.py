@@ -115,6 +115,7 @@ class SendRequest:
     resend_of: str | None = None
     resend_dept: str | None = None
     failed_sources: tuple[FailedSourceReference, ...] = ()
+    resend_supplement_id: UUID | None = None
     protected_mobiles: Sequence[ProtectedPhone] = ()
     protected_hmac_candidates: Sequence[tuple[int, str]] = ()
     vendor_test_uat: bool = False
@@ -184,6 +185,7 @@ class BatchCommand:
     scope_kind: str
     scope_id: str
     failed_sources: tuple[FailedSourceReference, ...] = ()
+    resend_supplement_id: UUID | None = None
     request_hash: str | None = None
     request_hash_key_version: int | None = None
     inflight_reservation_id: int | None = None

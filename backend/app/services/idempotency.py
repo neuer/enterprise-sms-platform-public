@@ -43,6 +43,7 @@ class IdempotencyScope:
             "app",
             "account",
             "resend",
+            "resend-extra",
             "web-legacy",
             "uncertain-resend",
         }:
@@ -345,9 +346,7 @@ class IdempotencyCoordinator:
             return payload
         return None
 
-    async def _authority(
-        self, scope: IdempotencyScope, biz_id: str
-    ) -> IdempotencyClaimRow | None:
+    async def _authority(self, scope: IdempotencyScope, biz_id: str) -> IdempotencyClaimRow | None:
         loader = getattr(self.repository, "load_idempotency_claim", None)
         if loader is None:
             return None
@@ -425,44 +424,32 @@ class IdempotencyCoordinator:
         return token
 
     async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:
+        """每轮读取当前权威租约，避免释放后的旧快照或 Redis 投影延长等待。"""
+
         claim_key = self.claim_key(scope, biz_id)
         live_checker = getattr(self.repository, "live_idempotency_claim", None)
-        authority = await self._authority(scope, biz_id)
-        if authority is not None and str(authority["state"]) == "completed":
-            batch_no = await _state_call(self.repository.find_existing(scope, biz_id))
-            if batch_no is not None:
-                await self.remember(scope, biz_id, batch_no)
-                return batch_no
-        if authority is not None and claim_row_is_live(authority):
-            await self._project_view(scope, biz_id, claim_view_from_row(authority))
+        has_authority = getattr(self.repository, "load_idempotency_claim", None) is not None
         for attempt in range(self.wait_attempts):
+            authority = await self._authority(scope, biz_id) if has_authority else None
             owned = await _state_call(self.redis.get(claim_key))
-            if owned is None:
+            if has_authority:
+                live = authority is not None and claim_row_is_live(authority)
+            else:
+                live = owned is not None or (
+                    live_checker is not None and await _state_call(live_checker(scope, biz_id))
+                )
+            if not live or attempt + 1 == self.wait_attempts:
                 batch_no = await _state_call(self.repository.find_existing(scope, biz_id))
                 if batch_no is not None:
                     await self.remember(scope, biz_id, batch_no)
                     return batch_no
-                if live_checker is not None and await _state_call(live_checker(scope, biz_id)):
-                    if attempt + 1 < self.wait_attempts:
-                        await self.sleeper(self.wait_interval_s)
-                    continue
-                if authority is not None and claim_row_is_live(authority):
-                    if attempt + 1 < self.wait_attempts:
-                        await self.sleeper(self.wait_interval_s)
-                    continue
-                return None
-            if attempt + 1 < self.wait_attempts:
-                await self.sleeper(self.wait_interval_s)
-        batch_no = await _state_call(self.repository.find_existing(scope, biz_id))
-        if batch_no is not None:
-            await self.remember(scope, biz_id, batch_no)
-            return batch_no
-        if await _state_call(self.redis.get(claim_key)) is not None:
-            raise IdempotencyCoordinationTimeout("idempotency wait timed out")
-        if live_checker is not None and await _state_call(live_checker(scope, biz_id)):
-            raise IdempotencyCoordinationTimeout("idempotency wait timed out")
-        if authority is not None and claim_row_is_live(authority):
-            raise IdempotencyCoordinationTimeout("idempotency wait timed out")
+                if not live:
+                    # 返回后仍须经过数据库 CAS 取租约；这里不授予发送权。
+                    return None
+                raise IdempotencyCoordinationTimeout("idempotency wait timed out")
+            if authority is not None and owned is None:
+                await self._project_view(scope, biz_id, claim_view_from_row(authority))
+            await self.sleeper(self.wait_interval_s)
         return None
 
     async def renew(self, scope: IdempotencyScope, biz_id: str, token: str) -> bool:

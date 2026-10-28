@@ -159,6 +159,7 @@ async function setPolicy(next: string): Promise<void> {
     }
     ElMessage.success(next === "block" ? "敏感词命中将阻断发送" : "敏感词命中仅审计记录")
   } catch (error) {
+    if (!isCurrent()) return
     policy.value = previous
     ElMessage.error(errorText(error, "策略更新失败"))
   } finally {
@@ -189,10 +190,12 @@ async function add(): Promise<void> {
     return
   }
   const generation = editorGeneration.value
+  const isCurrent = captureCurrent()
   const submitted = [...uniqueWords.value]
   savingGeneration.value = generation
   try {
     const result = await addSensitiveWords(submitted)
+    if (!isCurrent()) return
     const skippedTip = result.skipped ? ` · 已存在跳过 ${result.skipped} 个` : ""
     if (generation !== editorGeneration.value) {
       ElMessage.success(`已添加 ${result.added} 个敏感词${skippedTip}，当前编辑未改动`)
@@ -204,6 +207,7 @@ async function add(): Promise<void> {
     page.value = 1
     await load()
   } catch (error) {
+    if (!isCurrent()) return
     const message = errorText(error, "添加失败")
     if (generation !== editorGeneration.value) {
       ElMessage.error(`敏感词添加失败：${message}`)
@@ -220,6 +224,7 @@ const removingId = ref<number | null>(null)
 async function remove(item: SensitiveWordItem): Promise<void> {
   item = { ...item }
   if (removingId.value !== null) return
+  const isCurrent = captureCurrent()
   removingId.value = item.id
   try {
     if (
@@ -232,10 +237,12 @@ async function remove(item: SensitiveWordItem): Promise<void> {
     )
       return
     await deleteSensitiveWord(item.id)
+    if (!isCurrent()) return
     ElMessage.success("已删除敏感词 · 本次操作已记入审计")
     if (items.value.length === 1 && page.value > 1) page.value -= 1
     await load()
   } catch (error) {
+    if (!isCurrent()) return
     ElMessage.error(errorText(error, "删除失败"))
   } finally {
     removingId.value = null

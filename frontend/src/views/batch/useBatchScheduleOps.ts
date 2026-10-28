@@ -19,6 +19,7 @@ export function useBatchScheduleOps(deps: {
   selected: Ref<BatchItem | null>
   drawer: Ref<boolean>
   canWrite: ComputedRef<boolean>
+  captureCurrent: () => () => boolean
   openToken: () => number
   startRead: () => AbortSignal
   getBatch: BatchConflictBind["getBatch"]
@@ -57,10 +58,19 @@ export function useBatchScheduleOps(deps: {
     detailRefreshPending.value = false
   }
 
+  /** 写入完成只影响发起它的页面、会话与详情代次。 */
+  function captureDetail(batch: string): () => boolean {
+    const isCurrent = deps.captureCurrent()
+    const token = deps.openToken()
+    return () =>
+      isCurrent() && token === deps.openToken() && deps.drawer.value && deps.selected.value?.batch_no === batch
+  }
+
   async function cancelSelected(): Promise<void> {
     if (!deps.selected.value || !canScheduleOps.value || cancelling.value) return
     const target = deps.selected.value
     const batch = target.batch_no
+    const isCurrent = captureDetail(batch)
     cancelling.value = true
     try {
       if (
@@ -74,10 +84,12 @@ export function useBatchScheduleOps(deps: {
       )
         return
       await deps.cancelBatch(batch)
+      if (!isCurrent()) return
       deps.drawer.value = false
       ElMessage.success("批次已取消 · 本次操作已记入审计")
       await deps.reloadList()
     } catch (error) {
+      if (!isCurrent()) return
       if (await conflict.recoverIfConflict(error, batch)) return
       ElMessage.error(errorText(error, "取消失败"))
     } finally {
@@ -87,7 +99,8 @@ export function useBatchScheduleOps(deps: {
 
   function openReschedule(): void {
     if (!canScheduleOps.value) return
-    scheduledAt.value = deps.selected.value?.scheduled_at || ""
+    const current = deps.selected.value?.scheduled_at
+    scheduledAt.value = current ? toApiDateTime(new Date(current)) : ""
     rescheduleOpen.value = true
   }
 
@@ -95,6 +108,7 @@ export function useBatchScheduleOps(deps: {
     if (!deps.selected.value || !scheduledAt.value || rescheduling.value) return
     const target = deps.selected.value
     const batch = target.batch_no
+    const isCurrent = captureDetail(batch)
     if (
       !(await deps.confirmAuditedAction({
         isCurrent: () => deps.selected.value === target && canScheduleOps.value,
@@ -108,11 +122,13 @@ export function useBatchScheduleOps(deps: {
     rescheduling.value = true
     try {
       await deps.rescheduleBatch(batch, toApiDateTime(new Date(scheduledAt.value)))
+      if (!isCurrent()) return
       rescheduleOpen.value = false
       deps.drawer.value = false
       ElMessage.success("批次已改期并重新执行审批判定 · 本次操作已记入审计")
       await deps.reloadList()
     } catch (error) {
+      if (!isCurrent()) return
       if (await conflict.recoverIfConflict(error, batch)) return
       ElMessage.error(errorText(error, "改期失败"))
     } finally {

@@ -191,11 +191,14 @@ WHERE t.id=:task_id
 """
 
 _LOCK_BATCH_SQL = """
-SELECT id FROM sms_batch WHERE id=:batch_id FOR UPDATE
+WITH locked AS MATERIALIZED (
+  SELECT public.lock_callback_idempotency_batch(:task_id)
+)
+SELECT b.id FROM sms_batch b CROSS JOIN locked WHERE b.id=:batch_id
 """
 
 _LOCK_SQL = """
-SELECT t.id,t.batch_id,t.event
+SELECT t.id,t.batch_id,t.event,t.last_error
 FROM callback_task t
 WHERE t.id=:task_id
 FOR UPDATE
@@ -315,7 +318,7 @@ class FinishedRecoveryService:
         batch_id = int(task["batch_id"])
         locked_batch = await connection.execute(
             text(_LOCK_BATCH_SQL),
-            {"batch_id": batch_id},
+            {"batch_id": batch_id, "task_id": task_id},
         )
         if locked_batch.mappings().one_or_none() is None:
             raise FinishedRecoveryRejected("批次尚未终态，不能补发汇总", "batch_not_terminal")
@@ -325,6 +328,11 @@ class FinishedRecoveryService:
             raise FinishedRecoveryRejected("回调任务不存在", "not_found", missing=True)
         if task["event"] != "batch.finished" or task["batch_id"] is None:
             raise FinishedRecoveryRejected("只有批次终态可以补发汇总", "not_legacy")
+        if task["last_error"] == "CallbackConfigRevoked":
+            raise FinishedRecoveryRejected(
+                "旧回调已因配置变更永久撤销，不能由它补发新事件",
+                "config_revoked",
+            )
         state = await connection.execute(text(_STATE_SQL), {"task_id": task_id})
         snapshot = state.mappings().one_or_none()
         if snapshot is None or snapshot["legacy_unavailable"] is not True:

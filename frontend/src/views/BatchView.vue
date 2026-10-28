@@ -15,18 +15,8 @@ import EmptyState from "../components/EmptyState.vue"
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
 import MobileFilterToggle from "../components/MobileFilterToggle.vue"
 import StatusTag from "../components/StatusTag.vue"
-import {
-  getBatch,
-  getBatchMessages,
-  cancelBatch,
-  listBatches,
-  confirmResendSupplement,
-  previewResendSupplement,
-  resendFailedBatch,
-  rescheduleBatch,
-  type BatchItem,
-} from "../api/queries"
-import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE, STATUS_LABELS } from "../lib/labels"
+import { getBatch, getBatchMessages, cancelBatch, listBatches, rescheduleBatch, type BatchItem } from "../api/queries"
+import { CATEGORY_LABELS, DEFAULT_PAGE_SIZE } from "../lib/labels"
 import {
   buildCompose,
   channelLabel,
@@ -36,9 +26,10 @@ import {
   terminalUnsent,
 } from "../lib/batchDisplay"
 import { useConfirmActions } from "../lib/confirm"
-const { confirmAuditedAction } = useConfirmActions()
+const { confirmAuditedAction, captureCurrent } = useConfirmActions()
 import { formatNumber } from "../lib/format"
 import { formatDateTime, formatDateTimeMinute, SHANGHAI_CIVIL_VALUE_FORMAT } from "../lib/time"
+import { useBatchResendOps } from "./batch/useBatchResendOps"
 import { useBatchScheduleOps } from "./batch/useBatchScheduleOps"
 import { errorText } from "../lib/error"
 import { useLatestRead } from "../composables/useLatestRead"
@@ -152,6 +143,7 @@ const {
   selected,
   drawer,
   canWrite,
+  captureCurrent,
   openToken: () => openToken,
   startRead: () => batchRead.start(),
   getBatch,
@@ -194,65 +186,13 @@ const canResendFailed = computed(() => {
   return (batch.failed ?? 0) > 0
 })
 
-const resending = ref(false)
-const resendChild = ref<{ parent: string; batchNo: string; status: string } | null>(null)
-async function resendFailed(): Promise<void> {
-  if (!selected.value || !canResendFailed.value || resending.value) return
-  const target = selected.value
-  const batch = target.batch_no
-  resending.value = true
-  try {
-    if (
-      !(await confirmAuditedAction({
-        isCurrent: () => selected.value === target && canResendFailed.value,
-        title: "确认重发",
-        body: "失败号码将生成新批次并完整重走频控、审批和时间窗。",
-        auditNote: "重发行为与操作人将写入审计日志。",
-        confirmText: "确认重发",
-      }))
-    )
-      return
-    const result = await resendFailedBatch(batch)
-    resendChild.value = { parent: batch, batchNo: result.batch_no, status: result.status }
-    const statusLabel = STATUS_LABELS[result.status] ?? result.status
-    ElMessage.success(
-      result.idempotent
-        ? `重发批次 ${result.batch_no} 已存在，当前状态：${statusLabel}`
-        : `重发批次 ${result.batch_no} 已创建，当前状态：${statusLabel} · 本次操作已记入审计`,
-    )
-    await load()
-  } catch (error) {
-    ElMessage.error(errorText(error, "重发失败"))
-  } finally {
-    resending.value = false
-  }
-}
-
-async function supplementUncovered(): Promise<void> {
-  const batch = selected.value
-  if (!batch || resending.value || batch.resend_block_reason !== "supplement_required") return
-  resending.value = true
-  try {
-    const preview = await previewResendSupplement(batch.batch_no)
-    if (
-      !(await confirmAuditedAction({
-        title: "确认补发未覆盖号码",
-        body: `已覆盖 ${preview.covered_failed} 条，本次只补发未覆盖的 ${preview.uncovered_failed} 条。已覆盖号码不会再次发送。`,
-        auditNote: "补发行为、操作人与原批次将写入审计日志。",
-        confirmText: "补发未覆盖",
-      }))
-    )
-      return
-    const result = await confirmResendSupplement(batch.batch_no, preview.intent_id)
-    resendChild.value = { parent: batch.batch_no, batchNo: result.batch_no, status: result.status }
-    ElMessage.success("未覆盖号码已进入新批次 · 本次操作已记入审计")
-    await load()
-  } catch (error) {
-    ElMessage.error(errorText(error, "补发未覆盖号码失败"))
-  } finally {
-    resending.value = false
-  }
-}
+const { resending, resendChild, resendFailed, supplementUncovered } = useBatchResendOps({
+  selected,
+  drawer,
+  canResendFailed,
+  openToken: () => openToken,
+  reloadList: load,
+})
 
 /** 重发溯源跳转：复用批次号模糊筛选定位源批次 */
 function traceResendOf(sourceBatchNo: string): void {
