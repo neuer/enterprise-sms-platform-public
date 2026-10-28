@@ -6,10 +6,10 @@ import builtins
 import hashlib
 import json
 import secrets
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any
+from typing import Unpack
 
 from sqlalchemy import RowMapping, text
 from sqlalchemy.exc import IntegrityError
@@ -19,7 +19,14 @@ from app.core.auth.admin_authorization import AdminAuthorization, hold_admin_aut
 from app.core.errors import ApiError
 from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.app_contract import AppCreateRequest, AppUpdateRequest, canonical_app_revision
-from app.services.app_management import AppNameConflict, AppNotFound
+from app.services.app_management import (
+    AppCreateValues,
+    AppKeyRotation,
+    AppNameConflict,
+    AppNotFound,
+    AppRow,
+    AppUpdateValues,
+)
 from app.services.callback_authority import ensure_callback_authority_idle
 from app.settings import Settings, get_settings
 
@@ -65,8 +72,8 @@ def _is_app_name_conflict(error: IntegrityError) -> bool:
     return state == "23505" and constraint == "app_name_key"
 
 
-def _safe_row(row: RowMapping) -> dict[str, Any]:
-    result = dict(row)
+def _safe_row(row: RowMapping) -> AppRow:
+    result: AppRow = dict(row)
     categories = result.get("allowed_categories")
     if isinstance(categories, str):
         result["allowed_categories"] = categories.split(",")
@@ -137,7 +144,7 @@ class SqlAppRepository:
             },
         )
 
-    async def list(self) -> builtins.list[dict[str, Any]]:
+    async def list(self) -> builtins.list[AppRow]:
         engine = self._engine()
         try:
             async with engine.connect() as connection:
@@ -151,7 +158,7 @@ class SqlAppRepository:
         finally:
             await engine.dispose()
 
-    async def get(self, app_id: int) -> dict[str, Any] | None:
+    async def get(self, app_id: int) -> AppRow | None:
         engine = self._engine()
         try:
             async with engine.connect() as connection:
@@ -175,7 +182,7 @@ class SqlAppRepository:
         operation: str,
         app_id: int | None,
         expected_updated_at: datetime | None,
-        values: dict[str, object],
+        values: Mapping[str, object],
     ) -> AsyncGenerator[AsyncConnection, None]:
         """先锁授权主体，再锁回调权限与应用版本；审计失败时整体回滚。"""
         parameters: dict[str, object] = {}
@@ -209,7 +216,14 @@ class SqlAppRepository:
                     raise ApiError(409, "STATE_CONFLICT", "应用已变化，请刷新后重新认证", None)
             yield connection
 
-    async def create(self, *, authorization: AdminAuthorization, **values: Any) -> int:
+    async def create(
+        self,
+        *,
+        authorization: AdminAuthorization,
+        actor: str,
+        ip: str,
+        **values: Unpack[AppCreateValues],
+    ) -> int:
         engine = self._engine()
         try:
             async with self._authorized_write(
@@ -249,8 +263,10 @@ class SqlAppRepository:
                         ) RETURNING id
                         """
                         ),
-                        values
-                        | {
+                        {
+                            **values,
+                            "actor": actor,
+                            "ip": ip,
                             "api_key_hash_version": values.get("api_key_hash_version"),
                             "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
                             or (
@@ -273,8 +289,8 @@ class SqlAppRepository:
                 app_id = int(result.scalar_one())
                 await self._audit(
                     connection,
-                    actor=str(values["actor"]),
-                    ip=str(values["ip"]),
+                    actor=actor,
+                    ip=ip,
                     action="app_create",
                     app_id=app_id,
                     after={
@@ -297,8 +313,10 @@ class SqlAppRepository:
         *,
         authorization: AdminAuthorization,
         expected_updated_at: datetime,
-        **values: Any,
-    ) -> dict[str, Any]:
+        actor: str,
+        ip: str,
+        **values: Unpack[AppUpdateValues],
+    ) -> AppRow:
         engine = self._engine()
         try:
             async with self._authorized_write(
@@ -333,8 +351,10 @@ class SqlAppRepository:
                         RETURNING {APP_COLUMNS}
                         """
                     ),
-                    values
-                    | {
+                    {
+                        **values,
+                        "actor": actor,
+                        "ip": ip,
                         "app_id": app_id,
                         "freq_override": (
                             json.dumps(values["freq_override"])
@@ -349,8 +369,8 @@ class SqlAppRepository:
                     raise AppNotFound("应用不存在")
                 await self._audit(
                     connection,
-                    actor=str(values["actor"]),
-                    ip=str(values["ip"]),
+                    actor=actor,
+                    ip=ip,
                     action="app_update",
                     app_id=app_id,
                     after={
@@ -423,7 +443,9 @@ class SqlAppRepository:
         *,
         authorization: AdminAuthorization,
         expected_updated_at: datetime,
-        **values: Any,
+        actor: str,
+        ip: str,
+        **values: Unpack[AppKeyRotation],
     ) -> None:
         engine = self._engine()
         try:
@@ -452,8 +474,10 @@ class SqlAppRepository:
                           AND usage_subject_kind='api_app'
                         """
                     ),
-                    values
-                    | {
+                    {
+                        **values,
+                        "actor": actor,
+                        "ip": ip,
                         "app_id": app_id,
                         "api_key_hash_version": values.get("api_key_hash_version"),
                         "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
@@ -466,8 +490,8 @@ class SqlAppRepository:
                     raise AppNotFound("应用不存在或已停用")
                 await self._audit(
                     connection,
-                    actor=str(values["actor"]),
-                    ip=str(values["ip"]),
+                    actor=actor,
+                    ip=ip,
                     action="app_rotate_key",
                     app_id=app_id,
                     after={"old_key_expires_at": str(values["old_key_expires_at"])},
@@ -524,7 +548,9 @@ class SqlAppRepository:
         *,
         authorization: AdminAuthorization,
         expected_updated_at: datetime,
-        **values: Any,
+        actor: str,
+        ip: str,
+        callback_secret_enc: bytes,
     ) -> None:
         engine = self._engine()
         try:
@@ -533,7 +559,7 @@ class SqlAppRepository:
                 operation="app_rotate_callback_secret",
                 app_id=app_id,
                 expected_updated_at=expected_updated_at,
-                values=values,
+                values={"callback_secret_enc": callback_secret_enc, "actor": actor, "ip": ip},
             ) as connection:
                 result = await connection.execute(
                     text(
@@ -544,14 +570,19 @@ class SqlAppRepository:
                           AND usage_subject_kind='api_app'
                         """
                     ),
-                    values | {"app_id": app_id},
+                    {
+                        "callback_secret_enc": callback_secret_enc,
+                        "actor": actor,
+                        "ip": ip,
+                        "app_id": app_id,
+                    },
                 )
                 if result.rowcount != 1:
                     raise AppNotFound("应用不存在或已停用")
                 await self._audit(
                     connection,
-                    actor=str(values["actor"]),
-                    ip=str(values["ip"]),
+                    actor=actor,
+                    ip=ip,
                     action="app_rotate_callback_secret",
                     app_id=app_id,
                 )
