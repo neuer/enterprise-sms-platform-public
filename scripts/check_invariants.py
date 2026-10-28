@@ -8,8 +8,10 @@ import re
 import sys
 from pathlib import Path
 
+from any_budget import ANY_ROOT, any_budget_violations, collect_any_counts
 from call_order import first_reach_precedes
 from gate_policy import (
+    EXPLICIT_ANY_BUDGET,
     SIZE_BUDGET_EXCEPTIONS,
     SPLIT_MODULE_PARTS,
     SPLIT_MODULE_UNRELATED,
@@ -1164,6 +1166,16 @@ def check_size_budget() -> None:
         fail(ROOT / path, message)
 
 
+def check_any_budget() -> None:
+    """backend/app 显式 Any 棘轮：新文件不得使用，登记的存量计数只许下调。"""
+
+    paths = [path.relative_to(ROOT).as_posix() for path in (ROOT / ANY_ROOT).rglob("*.py")]
+    for path, message in any_budget_violations(
+        collect_any_counts(ROOT, paths), EXPLICIT_ANY_BUDGET
+    ):
+        fail(ROOT / path, message)
+
+
 def check_split_module_registry() -> None:
     """拆分模块的登记表必须与磁盘一致，且拆出文件继承入口的 vendor-live 保护。"""
 
@@ -1349,6 +1361,7 @@ check_single_implementation_invariants()
 check_protected_path_policy_invariants()
 check_split_module_registry()
 check_size_budget()
+check_any_budget()
 check_outbox_invariants()
 check_usage_ledger_invariants()
 check_import_reservation_invariants()

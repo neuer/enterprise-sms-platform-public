@@ -6,7 +6,6 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -16,6 +15,7 @@ from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.bounded_executor import run_bounded
 from app.core.runtime_resources import (
+    ManagedAsyncEngine,
     bind_connection_audit_subject,
     bind_connection_system_audit,
     database_engine,
@@ -110,7 +110,7 @@ class SqlImportRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def persist(

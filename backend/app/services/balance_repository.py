@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from sqlalchemy import text
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.settings import Settings, get_settings
 
 
@@ -14,7 +12,7 @@ class SqlBalanceRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def alert_threshold(self) -> int:

@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.principal_context import current_audit_principal
-from app.core.runtime_resources import bind_connection_system_audit, database_engine
+from app.core.runtime_resources import (
+    ManagedAsyncEngine,
+    bind_connection_system_audit,
+    database_engine,
+)
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.sign import format_sign_name
@@ -26,7 +30,7 @@ FIELDS = (
 )
 
 
-def _record(row: Any) -> SignRecord:
+def _record(row: RowMapping) -> SignRecord:
     return SignRecord(
         int(row["id"]),
         str(row["name"]),
@@ -41,7 +45,7 @@ class SqlSignRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def list_all(self) -> list[SignRecord]:
@@ -397,7 +401,7 @@ class SqlSignRepository:
 
     @staticmethod
     async def _lock_vendor_binding(
-        connection: Any,
+        connection: AsyncConnection,
         sign_id: int,
         vendor_sign_id: str,
     ) -> None:
@@ -424,7 +428,7 @@ class SqlSignRepository:
             raise SignStateConflict("厂商签名编号已关联其他本地签名")
 
     @staticmethod
-    async def _enqueue_binding(connection: Any, sign_id: int) -> None:
+    async def _enqueue_binding(connection: AsyncConnection, sign_id: int) -> None:
         request_id = uuid4()
         await enqueue_outbox(
             connection,
@@ -441,7 +445,7 @@ class SqlSignRepository:
         )
 
     @staticmethod
-    async def _audit(connection: Any, actor: str, action: str, sign_id: int) -> None:
+    async def _audit(connection: AsyncConnection, actor: str, action: str, sign_id: int) -> None:
         await connection.execute(
             text(
                 """

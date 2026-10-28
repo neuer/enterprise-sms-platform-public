@@ -10,7 +10,7 @@ from typing import Any, Literal, cast
 from sqlalchemy import text
 
 from app.core.jobtrack import JobRunSnapshot, JobSpec
-from app.core.runtime_resources import database_engine, redis_client
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine, redis_client
 from app.services.current_alerts import (
     ControlCurrentFacts,
     CurrentJobFact,
@@ -43,7 +43,7 @@ class SqlCurrentAlertRepository:
         self.database_timeout_s = database_timeout_s
         self.control_timeout_s = control_timeout_s
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def load_database(

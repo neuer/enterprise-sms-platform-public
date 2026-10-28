@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, cast
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.accounts import AccountSourceConflict
 from app.core.auth.admin_authorization import AdminAuthorization, lock_admin_authorization
@@ -15,7 +16,7 @@ from app.core.auth.department import normalize_account_department
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
 from app.core.auth.temporary_password import TEMPORARY_PASSWORD_EXPIRY_SQL
 from app.core.query_bounds import ensure_page_offset
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.admin_invariant import ensure_effective_admin
 from app.services.user_management import (
     ProviderActionUnsupported,
@@ -55,7 +56,7 @@ LEFT JOIN local_credential lc ON lc.identity_id=ai.id
 """
 
 
-def _record(row: Any) -> UserRecord:
+def _record(row: RowMapping) -> UserRecord:
     return UserRecord(
         account_id=int(row["account_id"]),
         identity_id=int(row["identity_id"]),
@@ -84,7 +85,7 @@ class SqlUserManagementRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url_for("auth"))
 
     async def list(self, query: UserQuery) -> UserPage:
@@ -571,7 +572,7 @@ class SqlUserManagementRepository:
         finally:
             await engine.dispose()
 
-    async def _locked(self, connection: Any, account_id: int) -> Any:
+    async def _locked(self, connection: AsyncConnection, account_id: int) -> Any:
         result = await connection.execute(
             text(
                 f"""

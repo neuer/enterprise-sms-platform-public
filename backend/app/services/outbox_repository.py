@@ -15,7 +15,7 @@ from app.core.audit import AUDIT_BATCH_NO, validate_audit_payload
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import current_correlation_id
 from app.core.query_bounds import ensure_page_offset
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.outbox import (
     OUTBOX_CAPACITY_AGE_ELIGIBLE_SQL,
     OUTBOX_CAPACITY_AGE_SQL,
@@ -162,7 +162,7 @@ class SqlOutboxRepository:
         self.settings = settings or get_settings()
         self.pooled = pooled
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def lease_due(self, *, limit: int, lease_seconds: int) -> list[OutboxLease]:

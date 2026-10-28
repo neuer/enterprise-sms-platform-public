@@ -8,9 +8,10 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.accounts import ActorPrincipal
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.batch_query import BatchAccessScope, BatchNotFound
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.pipeline_contracts import FailedSourceReference, SendRequest
@@ -47,7 +48,7 @@ class ResendSupplementService:
         self.crypto = crypto
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def preview(self, batch_no: str, scope: BatchAccessScope) -> SupplementPreview:
@@ -88,7 +89,7 @@ class ResendSupplementService:
 
     async def _preview(
         self,
-        connection: Any,
+        connection: AsyncConnection,
         batch_no: str,
         scope: BatchAccessScope,
     ) -> SupplementPreview:
@@ -202,7 +203,7 @@ class ResendSupplementService:
 
     async def _prepare_confirm(
         self,
-        connection: Any,
+        connection: AsyncConnection,
         batch_no: str,
         intent_id: UUID,
         scope: BatchAccessScope,

@@ -8,11 +8,12 @@ from typing import Any, Protocol
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.query_bounds import ensure_page_offset
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.batch_query import BatchAccessScope
 from app.services.content_protection import (
     decrypt_batch_display_content,
@@ -231,12 +232,12 @@ class SqlOperationsQueryRepository:
         self.settings = settings or get_settings()
         self.crypto = crypto
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def _phone_badge(
         self,
-        connection: Any,
+        connection: AsyncConnection,
         phone_hmacs: tuple[str, ...],
         predicate: str,
         scope_params: dict[str, Any],

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from sqlalchemy import text
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.alert_repository import SqlAlertService
 from app.services.callback_repository import enqueue_batch_finished
 from app.services.uncertain import RawCandidate, UncertainChunk
@@ -17,7 +15,7 @@ class SqlUncertainRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def list_uncertain(self) -> list[UncertainChunk]:

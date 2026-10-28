@@ -13,6 +13,7 @@ from typing import Any, TypeVar, cast
 from uuid import UUID
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.accounts import ActorPrincipal
 from app.core.correlation import current_correlation_id
@@ -113,7 +114,7 @@ def _reject_sensitive(value: Any, *, key: str | None) -> None:
         raise ValueError("audit payload contains a non-JSON value")
 
 
-async def insert_audit(connection: Any, event: AuditEvent) -> None:
+async def insert_audit(connection: AsyncConnection, event: AuditEvent) -> None:
     """使用调用方连接写入审计；失败向外抛出并回滚同一业务事务。"""
 
     if not 1 <= len(event.action) <= 48:

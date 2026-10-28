@@ -11,8 +11,9 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 LOGGER = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ def new_lease_id() -> UUID:
     return uuid4()
 
 
-def lease_from_row(row: Any, *, raw_id: int | None = None) -> RawProcessingLease | None:
+def lease_from_row(row: RowMapping, *, raw_id: int | None = None) -> RawProcessingLease | None:
     """从认领/插入回行构造租约；缺 token 则视为未持有。"""
 
     lease_id = row.get("processing_lease_id") if hasattr(row, "get") else None
@@ -180,7 +181,7 @@ STALE_LEASE_PREDICATE_SQL = """
 
 
 async def record_raw_fencing_miss(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     raw_id: int,
     lease_id: UUID,
@@ -199,7 +200,7 @@ async def record_raw_fencing_miss(
 
 
 async def execute_fenced_raw_update(
-    connection: Any,
+    connection: AsyncConnection,
     sql: str,
     params: dict[str, Any],
     *,
@@ -235,7 +236,7 @@ async def commit_fenced_raw_update(
 
 
 async def record_raw_heartbeat_lost(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     raw_id: int,
     lease_id: UUID,

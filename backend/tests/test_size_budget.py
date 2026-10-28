@@ -77,6 +77,7 @@ def test_governance_metrics_follow_d122_definitions() -> None:
     files = {
         "backend/app/a.py": "x\n" * 801 + "except Exception:\n",
         "backend/app/b.py": "try:\n    pass\nexcept Exception as exc:\n",
+        "backend/app/c.py": "from typing import Any\n\ndef f(x: Any) -> dict[str, Any]: ...\n",
         "backend/tests/test_a.py": "x\n",
         "frontend/src/views/A.vue": "x\n" * 601,
         "frontend/src/api/types.gen.ts": "x\n" * 5,
@@ -88,9 +89,10 @@ def test_governance_metrics_follow_d122_definitions() -> None:
 
     metrics = compute_metrics(files, ["fix(api): a", "feat: b", "Fix: c"])
 
-    assert metrics["app_modules"] == 2
+    assert metrics["app_modules"] == 3
     assert metrics["app_files_over_800"] == 1
     assert metrics["app_except_exception"] == 2
+    assert metrics["app_explicit_any"] == 2
     assert metrics["frontend_lines"] == 606
     assert metrics["frontend_vue_over_600"] == 1
     assert metrics["ops_lines"] == 2

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 ACTIVE_INFLIGHT_STATES = frozenset({"reserved", "batch_bound", "materialized"})
 OCCUPYING_CHUNK_STATES = frozenset(
@@ -69,7 +71,7 @@ def conservation_error(exc: BaseException) -> bool:
 
 
 async def apply_inflight_delta(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     operation: InFlightDeltaOperation,
     app_id: int,
@@ -112,7 +114,7 @@ async def apply_inflight_delta(
 
 
 async def reserve_in_flight_chunks(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     app_id: int,
     estimated: int,
@@ -133,7 +135,7 @@ async def reserve_in_flight_chunks(
     return created
 
 
-async def mark_conservation_blocked(connection: Any, app_id: int) -> None:
+async def mark_conservation_blocked(connection: AsyncConnection, app_id: int) -> None:
     """在独立事务中标记应用失败关闭，供新发送拒绝。"""
 
     await connection.execute(
@@ -150,7 +152,7 @@ async def mark_conservation_blocked(connection: Any, app_id: int) -> None:
 
 
 async def _lock_balance(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     app_id: int,
     operation: str,
@@ -192,7 +194,7 @@ async def _lock_balance(
 
 
 async def _adjust_locked_balance(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     app_id: int,
     stored: int,
@@ -230,7 +232,7 @@ async def _adjust_locked_balance(
 
 
 async def _apply_reserve(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     app_id: int,
     estimated: int,
@@ -282,7 +284,7 @@ async def _apply_reserve(
 
 
 async def _apply_reservation_delta(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     operation: str,
     app_id: int,
@@ -410,7 +412,7 @@ async def _apply_reservation_delta(
 
 
 async def bind_in_flight_reservation(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     reservation_id: int,
     generation: int,
@@ -479,7 +481,7 @@ async def bind_in_flight_reservation(
 
 
 async def release_in_flight_reservation(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     reservation_id: int,
     generation: int,
@@ -517,7 +519,7 @@ async def release_in_flight_reservation(
 
 
 async def release_unbound_acceptance_reservation(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     reservation_id: int,
     generation: int,
@@ -548,7 +550,7 @@ async def release_unbound_acceptance_reservation(
 
 
 async def _require_reservation_app(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     reservation_id: int,
     app_id: int | None,
@@ -571,7 +573,7 @@ async def _require_reservation_app(
 
 
 async def request_inflight_release_for_batch(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     batch_id: int,
     reason: str,
@@ -605,7 +607,7 @@ async def request_inflight_release_for_batch(
 
 
 async def materialize_in_flight_reservation(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     batch_id: int,
     actual_chunks: int,
@@ -653,7 +655,7 @@ async def materialize_in_flight_reservation(
 
 
 async def expand_in_flight_for_split(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     batch_id: int,
     delta: int,
@@ -699,19 +701,17 @@ async def expand_in_flight_for_split(
 
 
 async def reconcile_split_occupancy_drift(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     limit: int = 100,
-    rows: list[Any] | None = None,
+    rows: Sequence[RowMapping] | None = None,
 ) -> int:
     """把低估的 materialized 预留补到当前占用分片数；只扩不缩。"""
 
     if rows is None:
-        rows = (
-            (
-                await connection.execute(
-                    text(
-                        """
+        result = await connection.execute(
+            text(
+                """
                     SELECT r.id, r.generation, r.app_id, r.reserved_chunks, r.batch_id
                     FROM send_inflight_reservation r
                     WHERE r.state='materialized'
@@ -719,13 +719,10 @@ async def reconcile_split_occupancy_drift(
                     ORDER BY r.id
                     LIMIT :limit
                     """
-                    ),
-                    {"limit": limit},
-                )
-            )
-            .mappings()
-            .all()
+            ),
+            {"limit": limit},
         )
+        rows = result.mappings().all()
     for app_id in sorted({int(row["app_id"]) for row in rows}):
         await _lock_balance(connection, app_id=app_id, operation="repair", allow_create=True)
     repaired = 0
@@ -762,7 +759,7 @@ async def reconcile_split_occupancy_drift(
 
 
 async def resolve_ambiguous_acceptance_commit(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     reservation_id: int,
     generation: int,
@@ -870,7 +867,7 @@ async def resolve_ambiguous_acceptance_commit(
 
 
 def _same_subject(
-    row: Any,
+    row: RowMapping | Mapping[str, Any],
     *,
     app_id: int,
     biz_id: str,
@@ -887,7 +884,7 @@ def _same_subject(
 
 
 async def _lookup_idempotent_batch(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     scope_kind: str,
     scope_id: str,
@@ -921,7 +918,7 @@ async def _lookup_idempotent_batch(
 
 
 async def _load_bound_batch(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     reservation_id: int,
     batch_id: int | None,
@@ -955,7 +952,7 @@ async def _load_bound_batch(
 
 
 async def repair_misreleased_bound_reservations(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     limit: int = 100,
 ) -> int:
@@ -1035,7 +1032,7 @@ async def repair_misreleased_bound_reservations(
 
 
 async def bind_reserved_reservation_to_existing_batch(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     limit: int = 100,
 ) -> int:
@@ -1093,7 +1090,7 @@ async def bind_reserved_reservation_to_existing_batch(
     return repaired
 
 
-async def reconcile_in_flight_reservations(connection: Any, *, limit: int = 100) -> int:
+async def reconcile_in_flight_reservations(connection: AsyncConnection, *, limit: int = 100) -> int:
     """释放过期未绑定预留，并回收已终态批次上的活动预留。"""
 
     orphans = (
@@ -1206,7 +1203,7 @@ async def reconcile_in_flight_reservations(connection: Any, *, limit: int = 100)
 
 
 async def reconcile_inflight_balance_conservation(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     limit: int = 100,
     apps: list[int] | None = None,

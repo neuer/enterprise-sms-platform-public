@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.apikey import APP_SEND_POLICY_COLUMNS, ApiAppContext, load_app_send_policy
 from app.core.auth.accounts import SecurityPrincipal, UncertainEffectPrincipal
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.idempotency import IdempotencyScope, uncertain_resend_biz_id
 from app.services.pipeline import SendRequest
@@ -91,7 +92,7 @@ class UncertainResolutionService:
         self.crypto = crypto
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def propose(
@@ -454,7 +455,7 @@ class UncertainResolutionService:
 
     async def _build_resend(
         self,
-        connection: Any,
+        connection: AsyncConnection,
         *,
         chunk_id: int,
         resolution_id: int,
@@ -815,7 +816,7 @@ async def _child_relation(connection: AsyncConnection, resolution_id: int) -> An
 
 
 def _check_child_context(
-    row: Any, current: UncertainResolution, context: UncertainResendContext
+    row: RowMapping, current: UncertainResolution, context: UncertainResendContext
 ) -> None:
     if int(row["generation"]) != current.effect_generation:
         raise UncertainResolutionConflict("处置 generation 已变化")
@@ -1116,7 +1117,7 @@ async def reevaluate_confirmed_unused_batch(connection: AsyncConnection, batch_i
     )
 
 
-def _row(row: Any) -> UncertainResolution:
+def _row(row: RowMapping | Mapping[str, Any]) -> UncertainResolution:
     source_app = row.get("source_app_id")
     source_channel = row.get("source_channel")
     source_category = row.get("source_category")

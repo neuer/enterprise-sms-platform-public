@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.services.pipeline_contracts import AcceptCommitConflict, FailedSourceReference
 
@@ -116,7 +116,7 @@ GROUP BY b.id, b.status, child.batch_no, action.coverage_needs_review
 
 
 async def read_coverage(
-    connection: Any,
+    connection: AsyncConnection,
     batch_no: str,
     predicate: str,
     params: dict[str, object],
@@ -141,7 +141,7 @@ async def read_coverage(
     )
 
 
-async def reject_open_receipts(connection: Any, batch_id: int, status: str) -> None:
+async def reject_open_receipts(connection: AsyncConnection, batch_id: int, status: str) -> None:
     """源批次行锁内拒绝未完成回执。调用方不得在此之前插入子批次。"""
 
     if status not in TERMINAL_RESEND_STATUSES:
@@ -160,7 +160,7 @@ async def reject_open_receipts(connection: Any, batch_id: int, status: str) -> N
 
 
 async def record_ordinary_members(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     child_batch_id: int,
     sources: tuple[FailedSourceReference, ...],

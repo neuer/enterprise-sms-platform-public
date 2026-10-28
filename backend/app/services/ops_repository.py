@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, cast
 
 from redis.asyncio import Redis
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.audit import AuditEvent, insert_audit
@@ -15,6 +15,7 @@ from app.core.auth.accounts import SecurityPrincipal
 from app.core.jobtrack import JobSpec
 from app.core.query_bounds import ensure_page_offset
 from app.core.runtime_resources import (
+    ManagedAsyncEngine,
     bind_connection_audit_subject,
     bind_connection_system_audit,
     database_engine,
@@ -93,7 +94,7 @@ class SqlOpsRepository:
             decode_responses=True,
         )
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def list_jobs(
@@ -488,7 +489,7 @@ class SqlOpsRepository:
         finally:
             await engine.dispose()
 
-    def _raw_replay_record(self, row: Any) -> RawReplayRecord:
+    def _raw_replay_record(self, row: RowMapping) -> RawReplayRecord:
         return RawReplayRecord(
             int(row["id"]),
             str(row["source"]),

@@ -8,7 +8,7 @@ from typing import Any
 from redis.asyncio import Redis
 from sqlalchemy import text
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.anomaly import CATEGORIES, AnomalyConfig, VolumeSample
 from app.settings import Settings, get_settings
 
@@ -23,7 +23,7 @@ class SqlAnomalyRepository:
             decode_responses=True,
         )
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def config(self) -> AnomalyConfig:

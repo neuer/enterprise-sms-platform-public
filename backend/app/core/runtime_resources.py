@@ -286,7 +286,7 @@ def _set_audit_transaction_context(connection: Connection) -> None:
 
 
 async def bind_connection_audit_subject(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     subject_kind: str,
     actor_name: str,
@@ -359,7 +359,7 @@ async def bind_connection_audit_subject(
 
 
 async def bind_connection_system_audit(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     actor_name: str,
     action: str,

@@ -10,13 +10,13 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.admin_authorization import AdminAuthorization, hold_admin_authorization
 from app.core.errors import ApiError
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.app_contract import AppCreateRequest, AppUpdateRequest, canonical_app_revision
 from app.services.app_management import AppNameConflict, AppNotFound
 from app.services.callback_authority import ensure_callback_authority_idle
@@ -64,7 +64,7 @@ def _is_app_name_conflict(error: IntegrityError) -> bool:
     return state == "23505" and constraint == "app_name_key"
 
 
-def _safe_row(row: Any) -> dict[str, Any]:
+def _safe_row(row: RowMapping) -> dict[str, Any]:
     result = dict(row)
     categories = result.get("allowed_categories")
     if isinstance(categories, str):
@@ -78,7 +78,7 @@ class SqlAppRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def load_security_config(self) -> tuple[int, str]:

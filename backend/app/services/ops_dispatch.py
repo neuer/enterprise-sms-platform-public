@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
@@ -253,7 +253,7 @@ class SignAdoptionSender:
             ) from error
 
     @staticmethod
-    async def _reserve_adoption(connection: Any, sign_id: int) -> bool:
+    async def _reserve_adoption(connection: AsyncConnection, sign_id: int) -> bool:
         """锁定签名并只撤销尚未发布的自动 BindSign，杜绝双路竞态。"""
 
         current = await connection.execute(

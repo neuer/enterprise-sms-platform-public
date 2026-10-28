@@ -6,8 +6,9 @@ from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.reporting import (
     ReportFilterNotReady,
     ReportingData,
@@ -94,10 +95,12 @@ class SqlReportingRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
-    async def _ensure_filtered_scope_ready(self, connection: Any, query: ReportingQuery) -> None:
+    async def _ensure_filtered_scope_ready(
+        self, connection: AsyncConnection, query: ReportingQuery
+    ) -> None:
         """测试或普通筛选遇到未标记日期时失败，禁止把缺层当成 0。"""
 
         if query.test_scope == "all":

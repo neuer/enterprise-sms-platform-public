@@ -17,6 +17,7 @@ from app.core.auth.accounts import (
     UncertainEffectPrincipal,
 )
 from app.core.runtime_resources import (
+    ManagedAsyncEngine,
     bind_connection_system_audit,
     database_engine,
     redis_client,
@@ -66,7 +67,7 @@ class SqlPipelineStore:
         self.settings = settings or get_settings()
         self.crypto = crypto
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def load_config(self, dept: str) -> dict[str, Any]:

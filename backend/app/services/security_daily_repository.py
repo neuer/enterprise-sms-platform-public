@@ -7,15 +7,20 @@ from datetime import date, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.audit import audit_uuid_ref
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.admin_authorization import AdminAuthorization, hold_admin_authorization
 from app.core.errors import ApiError
 from app.core.query_bounds import ensure_page_offset
-from app.core.runtime_resources import bind_connection_system_audit, database_engine
+from app.core.runtime_resources import (
+    ManagedAsyncEngine,
+    bind_connection_system_audit,
+    database_engine,
+)
 from app.services.security_daily import (
     MAX_RESEND_RECIPIENTS,
     SHANGHAI_TZ,
@@ -72,7 +77,7 @@ def _bool_config(value: str | None, default: bool = False) -> bool:
     raise SecurityDailyConfigurationError("安全日报布尔配置无效")
 
 
-def _record(row: Any, *, include_payload: bool) -> SecurityDailyReportRecord:
+def _record(row: RowMapping, *, include_payload: bool) -> SecurityDailyReportRecord:
     payload: dict[str, Any] | None = None
     generation_status = cast(GenerationStatus, str(row["generation_status"]))
     if include_payload and row["payload"] is not None:
@@ -108,7 +113,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def generation_config(self) -> tuple[bool, int]:
@@ -395,7 +400,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
 
     async def _upsert_publish_state(
         self,
-        connection: Any,
+        connection: AsyncConnection,
         *,
         config_version: int,
         publish_state: str,

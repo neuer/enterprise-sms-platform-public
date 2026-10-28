@@ -5,11 +5,16 @@ from __future__ import annotations
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.query_bounds import ensure_page_offset
-from app.core.runtime_resources import bind_connection_audit_subject, database_engine
+from app.core.runtime_resources import (
+    ManagedAsyncEngine,
+    bind_connection_audit_subject,
+    database_engine,
+)
 from app.services.blacklist import BlacklistEntry, BlacklistPage, BlacklistUpsertResult
 from app.services.dispatch_blacklist import bump_blacklist_generation, lock_blacklist_subjects
 from app.settings import Settings, get_settings
@@ -22,7 +27,7 @@ def _escape_like(value: str) -> str:
 
 
 async def upsert_blacklist_entries(
-    connection: Any,
+    connection: AsyncConnection,
     entries: list[BlacklistEntry],
     *,
     principal: SecurityPrincipal,
@@ -79,7 +84,7 @@ async def upsert_blacklist_entries(
             duplicate_owners.update(owners - {current})
         else:
             current = None
-        row = {
+        params: dict[str, object] = {
             "current": current,
             "canonical": entry.phone_hmac,
             "phone_enc": entry.phone_enc,
@@ -89,7 +94,7 @@ async def upsert_blacklist_entries(
             "remark": entry.remark,
             "actor": principal.login_name,
         }
-        (existing_rows if current is not None else new_rows).append(row)
+        (existing_rows if current is not None else new_rows).append(params)
         canonical_aliases.append((entry.phone_hmac, aliases))
 
     if duplicate_owners:
@@ -177,7 +182,7 @@ class SqlBlacklistRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def list_page(

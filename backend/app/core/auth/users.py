@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, Protocol, cast
+from typing import Literal, Protocol, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -26,6 +26,7 @@ from app.core.auth.department import valid_account_department
 from app.core.auth.identity import normalize_login_name
 from app.core.auth.roles import ExistingUser, Role, RoleResolver
 from app.core.runtime_resources import (
+    ManagedAsyncEngine,
     bind_connection_audit_subject,
     bind_connection_system_audit,
     database_engine,
@@ -108,7 +109,7 @@ class PasswordChangeClaim:
     issued_credential_version: int = 1
 
 
-def _security_account(row: Any) -> PlatformAccount:
+def _security_account(row: RowMapping) -> PlatformAccount:
     return PlatformAccount(
         account_id=int(row["account_id"]),
         identity_id=int(row["identity_id"]),
@@ -145,7 +146,7 @@ async def load_security_session_from_connection(
     return _security_account(row)
 
 
-def _local_record(row: Any) -> LocalAccountRecord:
+def _local_record(row: RowMapping) -> LocalAccountRecord:
     return LocalAccountRecord(
         account=PlatformAccount(
             account_id=int(row["account_id"]),
@@ -268,7 +269,7 @@ class SqlUserRepository:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url_for("auth"))
 
     async def find_local_account(
@@ -663,7 +664,7 @@ class SqlUserRepository:
             await engine.dispose()
 
     @staticmethod
-    async def _audit_login(connection: Any, account: PlatformAccount, ip: str) -> None:
+    async def _audit_login(connection: AsyncConnection, account: PlatformAccount, ip: str) -> None:
         await bind_connection_audit_subject(
             connection,
             subject_kind="human",
@@ -932,8 +933,7 @@ class SqlUserRepository:
                         "login_name": login_name,
                     },
                 )
-                token_id = locked.scalar_one_or_none()
-                if token_id is None:
+                if locked.scalar_one_or_none() is None:
                     raise InvalidCredentials("改密令牌无效、已过期或已使用")
                 updated = await connection.execute(
                     text(

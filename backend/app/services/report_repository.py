@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from app.services.report_timeout import SweepResult
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.callback_repository import (
     enqueue_batch_finished,
     enqueue_message_report,
@@ -70,7 +70,7 @@ class SqlReportRepository:
     def _lease_for(self, raw_id: int, lease: RawProcessingLease | None) -> RawProcessingLease:
         return require_lease(lease or self._leases.get(raw_id), raw_id)
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def report_timeout_hours(self) -> int:
@@ -486,9 +486,9 @@ class SqlReportRepository:
                         "batch_id": batch_id,
                     },
                 )
-                row = locked_message.mappings().one_or_none()
-                if row is None:
+                if (locked_row := locked_message.mappings().one_or_none()) is None:
                     return None
+                row = locked_row
                 projection = await connection.execute(
                     text(
                         """
@@ -1232,7 +1232,7 @@ async def _apply_local_timeouts(
     )
 
 
-def evaluate_failure_rate(row: Mapping[str, Any]) -> FailureRateAlert | None:
+def evaluate_failure_rate(row: RowMapping | Mapping[str, Any]) -> FailureRateAlert | None:
     """用整数交叉乘法判断终态批次失败率，避免浮点阈值漂移。"""
 
     delivered = int(row["delivered"])

@@ -7,7 +7,8 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.runtime_resources import bind_connection_system_audit
 from app.services.billing import calculate_quota_cost
@@ -123,7 +124,7 @@ async def filter_chunk_phones(store: Any, chunk: Any) -> DispatchDecision:
         await engine.dispose()
 
 
-async def lock_blacklist_subjects(connection: Any, digests: list[str]) -> None:
+async def lock_blacklist_subjects(connection: AsyncConnection, digests: list[str]) -> None:
     """按摘要排序锁定号码主体。不在厂商 HTTP 期间持有。"""
 
     unique = sorted({item.strip() for item in digests if item and item.strip()})
@@ -143,7 +144,7 @@ async def lock_blacklist_subjects(connection: Any, digests: list[str]) -> None:
     )
 
 
-async def bump_blacklist_generation(connection: Any) -> int:
+async def bump_blacklist_generation(connection: AsyncConnection) -> int:
     value = await connection.scalar(text("SELECT bump_blacklist_policy_generation()"))
     if not isinstance(value, int) or isinstance(value, bool):
         raise RuntimeError("blacklist policy generation unavailable")
@@ -151,7 +152,7 @@ async def bump_blacklist_generation(connection: Any) -> int:
 
 
 async def decide_dispatch(
-    connection: Any,
+    connection: AsyncConnection,
     crypto: CryptoService,
     chunk: Any,
 ) -> DispatchDecision:
@@ -279,14 +280,14 @@ async def decide_dispatch(
 
 
 class _Loaded:
-    def __init__(self, row: Any, phone: str) -> None:
+    def __init__(self, row: RowMapping, phone: str) -> None:
         self.message_id = int(row["id"])
         self.created_at = row["created_at"]
         self.hmac = str(row["phone_hmac"])
         self.phone = phone
 
 
-def _decrypt(crypto: CryptoService, row: Any) -> str:
+def _decrypt(crypto: CryptoService, row: RowMapping) -> str:
     phone = crypto.decrypt_phone(
         bytes(row["phone_enc"]),
         int(row["key_version"]),
@@ -297,7 +298,7 @@ def _decrypt(crypto: CryptoService, row: Any) -> str:
     return phone
 
 
-async def _pending_messages(connection: Any, chunk_id: int) -> list[Any]:
+async def _pending_messages(connection: AsyncConnection, chunk_id: int) -> list[Any]:
     result = await connection.execute(
         text(
             """
@@ -313,7 +314,7 @@ async def _pending_messages(connection: Any, chunk_id: int) -> list[Any]:
     return list(result.mappings())
 
 
-async def _read_generation(connection: Any) -> int:
+async def _read_generation(connection: AsyncConnection) -> int:
     value = await connection.scalar(
         text("SELECT generation FROM blacklist_policy_generation WHERE id=1")
     )
@@ -331,7 +332,9 @@ async def _generation(store: Any) -> int:
         await engine.dispose()
 
 
-async def _exclude_one(connection: Any, item: _Loaded, row: Any, generation: int) -> bool:
+async def _exclude_one(
+    connection: AsyncConnection, item: _Loaded, row: RowMapping, generation: int
+) -> bool:
     inserted = await connection.execute(
         text(
             """
@@ -368,7 +371,7 @@ async def _exclude_one(connection: Any, item: _Loaded, row: Any, generation: int
 
 
 async def _release_one(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     reservation_id: object,
     phone_hmac: str,
@@ -488,7 +491,7 @@ def _unique_changes(changes: list[_ProjectionChange]) -> list[_ProjectionChange]
     return list(merged.values())
 
 
-async def _audit_exclusion(connection: Any, batch_no: str, count: int) -> None:
+async def _audit_exclusion(connection: AsyncConnection, batch_no: str, count: int) -> None:
     await bind_connection_system_audit(
         connection,
         actor_name=_AUDIT_ACTOR,
@@ -520,7 +523,7 @@ async def _audit_exclusion(connection: Any, batch_no: str, count: int) -> None:
     )
 
 
-async def _fail_unchunked(connection: Any, chunk_id: int, status: str) -> None:
+async def _fail_unchunked(connection: AsyncConnection, chunk_id: int, status: str) -> None:
     if status == "submitting":
         return
     await connection.execute(
@@ -536,7 +539,7 @@ async def _fail_unchunked(connection: Any, chunk_id: int, status: str) -> None:
     )
 
 
-async def _settle_batch(connection: Any, batch_id: int) -> None:
+async def _settle_batch(connection: AsyncConnection, batch_id: int) -> None:
     updated = await connection.execute(
         text(
             """

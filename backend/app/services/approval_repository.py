@@ -6,14 +6,14 @@ import json
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.query_bounds import ensure_page_offset
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.approval import ApprovalCase
 from app.services.callback_repository import enqueue_batch_finished
 from app.services.category import (
@@ -88,7 +88,7 @@ def _list_filters(
 
 
 async def record_pending_approval_alert(
-    connection: Any,
+    connection: AsyncConnection,
     *,
     batch_no: str,
     dept: str,
@@ -125,7 +125,7 @@ async def record_pending_approval_alert(
     )
 
 
-def _case(row: Any, *, outbox_persisted: bool = False) -> ApprovalCase:
+def _case(row: RowMapping, *, outbox_persisted: bool = False) -> ApprovalCase:
     deferred = row.get("deferred_reason")
     return ApprovalCase(
         int(row["approval_id"]),
@@ -155,7 +155,7 @@ class SqlApprovalRepository:
         self.settings = settings or get_settings()
         self.crypto = crypto
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def list_page(

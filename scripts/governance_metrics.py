@@ -11,6 +11,8 @@ import sys
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
+from any_budget import count_explicit_any
+
 ROOT = Path(__file__).resolve().parents[1]
 EXCEPT_EXCEPTION = re.compile(r"\bexcept\s+Exception\b")
 FIX_SUBJECT = re.compile(r"^fix\b", re.IGNORECASE)
@@ -52,6 +54,13 @@ def _lines(text: str) -> int:
     return text.count("\n")
 
 
+def _explicit_any(text: str) -> int:
+    try:
+        return count_explicit_any(text)
+    except SyntaxError:
+        return 0
+
+
 def _select(files: Mapping[str, str], prefix: str, suffixes: tuple[str, ...]) -> dict[str, str]:
     return {
         path: text
@@ -61,7 +70,7 @@ def _select(files: Mapping[str, str], prefix: str, suffixes: tuple[str, ...]) ->
 
 
 def compute_metrics(files: Mapping[str, str], subjects: Iterable[str]) -> dict[str, int]:
-    """D122 指标：体量、超大文件、裸异常、迁移数、fix 占比与 AGENTS.md 字节数。"""
+    """D122 指标：体量、超大文件、裸异常、显式 Any、迁移数、fix 占比与 AGENTS.md 字节数。"""
 
     app = _select(files, "backend/app/", (".py",))
     tests = _select(files, "backend/tests/", (".py",))
@@ -89,6 +98,7 @@ def compute_metrics(files: Mapping[str, str], subjects: Iterable[str]) -> dict[s
         "app_except_exception": sum(
             len(EXCEPT_EXCEPTION.findall(text)) for text in app.values()
         ),
+        "app_explicit_any": sum(map(_explicit_any, app.values())),
         "recent_commits": len(recent),
         "recent_fix_commits": sum(bool(FIX_SUBJECT.match(subject)) for subject in recent),
         "agents_bytes": len(files.get("AGENTS.md", "").encode("utf-8")),

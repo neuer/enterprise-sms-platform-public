@@ -6,11 +6,16 @@ import json
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.principal_context import current_audit_principal
-from app.core.runtime_resources import bind_connection_system_audit, database_engine
+from app.core.runtime_resources import (
+    ManagedAsyncEngine,
+    bind_connection_system_audit,
+    database_engine,
+)
 from app.services.content_protection import decrypt_template_content, decrypt_template_name
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.outbox import OutboxEventSpec
@@ -34,7 +39,7 @@ FROM sms_template
 """
 
 
-def _record(row: Any, crypto: CryptoService) -> TemplateRecord:
+def _record(row: RowMapping, crypto: CryptoService) -> TemplateRecord:
     template_id = int(row["id"])
     return TemplateRecord(
         template_id,
@@ -63,7 +68,7 @@ class SqlTemplateRepository:
             self.crypto = CryptoService.from_settings(self.settings)
         return self.crypto
 
-    def _engine(self) -> Any:
+    def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
     async def list_all(self, *, dept: str | None) -> list[TemplateRecord]:
@@ -403,7 +408,7 @@ class SqlTemplateRepository:
 
     @staticmethod
     async def _lock_vendor_binding(
-        connection: Any,
+        connection: AsyncConnection,
         template_id: int,
         vendor_template_id: str,
     ) -> None:
@@ -430,7 +435,7 @@ class SqlTemplateRepository:
             raise TemplateStateConflict("厂商模板编号已关联其他本地模板")
 
     @staticmethod
-    async def _enqueue_binding(connection: Any, template_id: int) -> None:
+    async def _enqueue_binding(connection: AsyncConnection, template_id: int) -> None:
         request_id = uuid4()
         await enqueue_outbox(
             connection,
@@ -447,7 +452,9 @@ class SqlTemplateRepository:
         )
 
     @staticmethod
-    async def _audit(connection: Any, actor: str, action: str, template_id: int) -> None:
+    async def _audit(
+        connection: AsyncConnection, actor: str, action: str, template_id: int
+    ) -> None:
         await connection.execute(
             text(
                 """
