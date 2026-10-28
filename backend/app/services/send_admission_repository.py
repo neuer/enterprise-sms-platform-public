@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from typing import Any, Protocol
 
 from sqlalchemy import text
@@ -49,7 +50,7 @@ return 1
 class AdmissionControlConflict(RuntimeError):
     """CAS 败者读到新鲜胜者；不等于控制面不可用。"""
 
-    def __init__(self, winner: dict[str, Any]) -> None:
+    def __init__(self, winner: dict[str, object]) -> None:
         self.winner = winner
         super().__init__("admission control conflict")
 
@@ -205,7 +206,7 @@ class SqlSendAdmissionRepository:
         *,
         state: str,
         reason: str,
-        hold_until: Any,
+        hold_until: datetime | None,
         epoch: int,
     ) -> dict[str, Any]:
         if state == "open" and hold_until is not None:

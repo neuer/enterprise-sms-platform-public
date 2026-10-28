@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -146,7 +145,7 @@ class SqlReportingRepository:
               count(*)::bigint dimension_count,min(rank) rank
             FROM ranked GROUP BY 1,2,3 ORDER BY rank
         """)
-        params: dict[str, Any] = {
+        params: dict[str, object] = {
             "start": query.start,
             "end": query.end,
             "category": query.category,

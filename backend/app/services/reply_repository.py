@@ -292,7 +292,7 @@ class SqlReplyRepository:
     ) -> None:
         token = self._lease_for(raw_id, lease)
         engine = self._engine()
-        params: dict[str, Any] = {
+        params: dict[str, object] = {
             "id": raw_id,
             "processed": processed,
             "error": error,

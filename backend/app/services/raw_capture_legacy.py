@@ -7,7 +7,6 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
 
 from app.services.raw_spill import (
     CAPTURE_COMPLETE,
@@ -252,7 +251,7 @@ def _count(bucket: dict[str, int], key: str) -> None:
     bucket[key] = bucket.get(key, 0) + 1
 
 
-def build_inventory(rows: Sequence[RawInventoryInput]) -> dict[str, Any]:
+def build_inventory(rows: Sequence[RawInventoryInput]) -> dict[str, object]:
     """汇总数量、大小桶、状态和窗口；输出不得含解密正文、号码或密钥。"""
 
     by_state: dict[str, int] = {}
@@ -353,7 +352,7 @@ def _walk_keys(value: object) -> list[str]:
     return keys
 
 
-def inventory_leak_reasons(document: Mapping[str, Any]) -> list[str]:
+def inventory_leak_reasons(document: Mapping[str, object]) -> list[str]:
     """检查盘点结果是否泄漏正文、号码或密钥材料。"""
 
     reasons: list[str] = []

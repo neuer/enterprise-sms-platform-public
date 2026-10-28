@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
@@ -240,7 +240,7 @@ class SqlOperationsQueryRepository:
         connection: AsyncConnection,
         phone_hmacs: tuple[str, ...],
         predicate: str,
-        scope_params: dict[str, Any],
+        scope_params: dict[str, object],
     ) -> PhoneBadge:
         """黑名单状态与近30日确认送达；仅当权限内存在该号码记录时才暴露黑名单状态。
 

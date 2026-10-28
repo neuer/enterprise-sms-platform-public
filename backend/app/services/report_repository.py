@@ -844,7 +844,7 @@ class SqlReportRepository:
                 "RuntimeError",
             }:
                 error_type = candidate_type
-        params: dict[str, Any] = {
+        params: dict[str, object] = {
             "id": raw_id,
             "processed": processed,
             "error": (

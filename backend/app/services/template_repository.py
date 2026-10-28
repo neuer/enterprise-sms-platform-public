@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import RowMapping, text
@@ -108,7 +107,7 @@ class SqlTemplateRepository:
     ) -> TemplateRecord:
         # dept 列暂留作数据库兼容字段，新模板不再归属部门。
         del dept
-        values: dict[str, Any] = {
+        values: dict[str, object] = {
             "var_specs": var_specs,
             "dept": "",
             "actor": actor,
@@ -156,7 +155,7 @@ class SqlTemplateRepository:
                         "var_specs": json.dumps(values["var_specs"]),
                     },
                 )
-                await self._audit(connection, values["actor"], "template_create", template_id)
+                await self._audit(connection, actor, "template_create", template_id)
                 await self._enqueue_binding(connection, template_id)
                 current = await connection.execute(
                     text(f"{SELECT_FIELDS} WHERE id=:id"), {"id": template_id}
@@ -174,7 +173,7 @@ class SqlTemplateRepository:
         var_specs: list[dict[str, int]],
         actor: str,
     ) -> TemplateRecord | None:
-        values: dict[str, Any] = {
+        values: dict[str, object] = {
             "name_enc": self._crypto().encrypt_bound_packed_text(
                 name,
                 EncryptionContext(
@@ -220,7 +219,7 @@ class SqlTemplateRepository:
                 )
                 if changed.scalar_one_or_none() is None:
                     return None
-                await self._audit(connection, values["actor"], "template_update", template_id)
+                await self._audit(connection, actor, "template_update", template_id)
                 await self._enqueue_binding(connection, template_id)
                 current = await connection.execute(
                     text(f"{SELECT_FIELDS} WHERE id=:id"), {"id": template_id}
