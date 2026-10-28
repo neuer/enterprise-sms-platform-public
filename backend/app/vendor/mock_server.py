@@ -7,7 +7,7 @@ import re
 from datetime import UTC, datetime
 from threading import RLock
 from time import monotonic
-from typing import Any
+from typing import TypedDict
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict
@@ -25,7 +25,81 @@ NO_REPORT_PREFIX = "1991000"
 DEFAULT_BALANCE = 5000
 
 
-def _envelope(data: Any = None, *, code: int = 0, msg: str | None = None) -> dict[str, Any]:
+# 厂商请求体与测试注入记录是未受信 JSON 对象：字段逐项 isinstance 收窄，保持原样透传。
+type JsonObject = dict[str, object]
+
+
+class VendorEnvelope[DataT](TypedDict):
+    """docs/vendor-api.md 统一响应包络。"""
+
+    code: int
+    msg: str | None
+    data: DataT
+
+
+class SendCall(TypedDict):
+    """mock 记录的 Send 受理项；对外状态只回显打码号码。"""
+
+    taskId: str
+    customId: str
+    mobile: str
+    content: str
+
+
+class VendorReport(TypedDict):
+    """GetReport data 项。"""
+
+    taskId: str
+    customId: str
+    phone: str
+    reportStatus: int
+    reportDescription: str
+    reportTime: str
+
+
+class ReviewState(TypedDict):
+    """GetTemplateState / GetSignState data 项。"""
+
+    id: int
+    checkType: int
+    checkRemark: str | None
+
+
+class CallbackRecord(TypedDict):
+    raw_body: str
+    signature: str | None
+    timestamp: str | None
+
+
+class MockCatalogState(TypedDict):
+    persistent: bool
+    status: str
+    error: str | None
+    template_sequence: int
+    sign_sequence: int
+    template_count: int
+    sign_count: int
+
+
+class MockPublicState(TypedDict):
+    next_send_code: int | None
+    next_send_times: int
+    latency_ms: int
+    send_latency_ms: int
+    balance: int
+    pending_reports: int
+    pending_replies: int
+    send_calls: list[SendCall]
+    template_contents: list[str]
+    catalog: MockCatalogState
+    callback_failures: int
+    callback_status: int
+    callback_count: int
+
+
+def _envelope[DataT](
+    data: DataT, *, code: int = 0, msg: str | None = None
+) -> VendorEnvelope[DataT]:
     return {"code": code, "msg": msg, "data": data}
 
 
@@ -49,8 +123,8 @@ class MockControl(BaseModel):
     send_latency_ms: int | None = None
     balance: int | None = None
     requeue_reports: bool = False
-    enqueue_report: dict[str, Any] | None = None
-    enqueue_reply: dict[str, Any] | None = None
+    enqueue_report: JsonObject | None = None
+    enqueue_reply: JsonObject | None = None
     callback_failures: int | None = None
     callback_status: int | None = None
     clear_callbacks: bool = False
@@ -93,15 +167,16 @@ class MockState:
         self.send_latency_ms = 0
         self.balance = DEFAULT_BALANCE
         self.task_sequence = 0
-        self.send_calls: list[dict[str, Any]] = []
-        self.pending_reports: list[dict[str, Any]] = []
-        self.consumed_reports: list[dict[str, Any]] = []
-        self.pending_replies: list[dict[str, Any]] = []
+        self.send_calls: list[SendCall] = []
+        # 报告队列混合生成报告与测试注入的任意报文；"_available_at" 为内部字段，拉取时剥离。
+        self.pending_reports: list[JsonObject] = []
+        self.consumed_reports: list[JsonObject] = []
+        self.pending_replies: list[JsonObject] = []
         self.template_contents = {}
         self.sign_contents = {}
         self.callback_failures = 0
         self.callback_status = 500
-        self.callbacks: list[dict[str, Any]] = []
+        self.callbacks: list[CallbackRecord] = []
 
     def reset(self) -> None:
         """日常故障注入：清空易失队列，保留已持久的模板/签名编号。"""
@@ -175,14 +250,14 @@ async def _apply_latency(*, send: bool = False) -> None:
         await asyncio.sleep(latency_ms / 1000)
 
 
-def _validate_phone_record(record: dict[str, Any], kind: str) -> dict[str, Any]:
+def _validate_phone_record(record: JsonObject, kind: str) -> JsonObject:
     phone = record.get("phone")
     if not isinstance(phone, str) or PHONE_PATTERN.fullmatch(phone) is None:
         raise HTTPException(status_code=422, detail=f"{kind}.phone must match ^1\\d{{10}}$")
     return dict(record)
 
 
-async def _complete_send(payload: dict[str, Any]) -> dict[str, Any]:
+async def _complete_send(payload: JsonObject) -> VendorEnvelope[str | None]:
     """完成一次 Send：延迟后记账。客户端超时不得取消厂商侧受理。"""
 
     await _apply_latency(send=True)
@@ -192,15 +267,15 @@ async def _complete_send(payload: dict[str, Any]) -> dict[str, Any]:
             STATE.next_send_times -= 1
             if STATE.next_send_times == 0:
                 STATE.next_send_code = None
-            return _envelope(code=code, msg=f"mock injected error {code}")
+            return _envelope(None, code=code, msg=f"mock injected error {code}")
 
         mobile = payload.get("mobile")
         content = payload.get("content")
         if not isinstance(mobile, str) or not isinstance(content, str):
-            return _envelope(code=5000, msg="missing mobile/content")
+            return _envelope(None, code=5000, msg="missing mobile/content")
         phones = mobile.split(",")
         if any(PHONE_PATTERN.fullmatch(phone) is None for phone in phones):
-            return _envelope(code=1001, msg="invalid mobile")
+            return _envelope(None, code=1001, msg="invalid mobile")
 
         STATE.task_sequence += 1
         task_id = str(STATE.task_sequence)
@@ -218,37 +293,40 @@ async def _complete_send(payload: dict[str, Any]) -> dict[str, Any]:
             if phone.startswith(NO_REPORT_PREFIX):
                 continue
             failed = phone.startswith(FAILED_REPORT_PREFIX)
-            STATE.pending_reports.append(
-                {
-                    "taskId": task_id,
-                    "customId": custom_id,
-                    "phone": phone,
-                    "reportStatus": 2 if failed else 1,
-                    "reportDescription": "MOCK_FAILED" if failed else "DELIVRD",
-                    "reportTime": _vendor_time(),
-                    "_available_at": available_at,
-                }
-            )
+            report: VendorReport = {
+                "taskId": task_id,
+                "customId": custom_id,
+                "phone": phone,
+                "reportStatus": 2 if failed else 1,
+                "reportDescription": "MOCK_FAILED" if failed else "DELIVRD",
+                "reportTime": _vendor_time(),
+            }
+            STATE.pending_reports.append({**report, "_available_at": available_at})
         return _envelope(task_id)
 
 
-@app.post("/Sms/Api/Send")
-async def send(payload: dict[str, Any]) -> dict[str, Any]:
+def _report_available_at(item: JsonObject) -> float:
+    available_at = item["_available_at"]
+    return available_at if isinstance(available_at, float) else 0.0
+
+
+@app.post("/Sms/Api/Send", response_model=None)
+async def send(payload: JsonObject) -> VendorEnvelope[str | None]:
     """记录下发并为非永不报告号码创建延迟 2 秒的报告。"""
 
     return await asyncio.shield(_complete_send(payload))
 
 
-@app.post("/Sms/Api/GetReport")
-async def get_report(_: dict[str, Any]) -> dict[str, Any]:
+@app.post("/Sms/Api/GetReport", response_model=None)
+async def get_report(_: JsonObject) -> VendorEnvelope[list[JsonObject]]:
     """只返回已到生成时间的报告，并在返回时消费。"""
 
     await _apply_latency()
     now = monotonic()
     with STATE.lock:
-        ready = [item for item in STATE.pending_reports if item["_available_at"] <= now]
+        ready = [item for item in STATE.pending_reports if _report_available_at(item) <= now]
         STATE.pending_reports = [
-            item for item in STATE.pending_reports if item["_available_at"] > now
+            item for item in STATE.pending_reports if _report_available_at(item) > now
         ]
         STATE.consumed_reports.extend(ready)
         data = [
@@ -257,8 +335,8 @@ async def get_report(_: dict[str, Any]) -> dict[str, Any]:
     return _envelope(data)
 
 
-@app.post("/Sms/Api/GetReply")
-async def get_reply(_: dict[str, Any]) -> dict[str, Any]:
+@app.post("/Sms/Api/GetReply", response_model=None)
+async def get_reply(_: JsonObject) -> VendorEnvelope[list[JsonObject]]:
     """拉走并消费全部已注入的上行回复。"""
 
     await _apply_latency()
@@ -268,34 +346,34 @@ async def get_reply(_: dict[str, Any]) -> dict[str, Any]:
     return _envelope(data)
 
 
-@app.post("/Sms/Api/GetBalance")
-async def get_balance(_: dict[str, Any]) -> dict[str, Any]:
+@app.post("/Sms/Api/GetBalance", response_model=None)
+async def get_balance(_: JsonObject) -> VendorEnvelope[int]:
     await _apply_latency()
     with STATE.lock:
         return _envelope(STATE.balance)
 
 
-@app.post("/Sms/Api/BindTemplate")
-async def bind_template(payload: dict[str, Any]) -> dict[str, Any]:
+@app.post("/Sms/Api/BindTemplate", response_model=None)
+async def bind_template(payload: JsonObject) -> VendorEnvelope[int | None]:
     await _apply_latency()
     content = payload.get("templateContent")
     if not isinstance(content, str) or not content:
-        return _envelope(code=5000, msg="missing templateContent")
+        return _envelope(None, code=5000, msg="missing templateContent")
     with STATE.lock:
         template_id = STATE._allocate("template", content)
     if template_id is None:
-        return _envelope(code=5000, msg="mock catalog invalid")
+        return _envelope(None, code=5000, msg="mock catalog invalid")
     return _envelope(template_id)
 
 
-@app.post("/Sms/Api/GetTemplateState")
-async def get_template_state(payload: dict[str, Any]) -> dict[str, Any]:
+@app.post("/Sms/Api/GetTemplateState", response_model=None)
+async def get_template_state(payload: JsonObject) -> VendorEnvelope[list[ReviewState] | None]:
     await _apply_latency()
     ids = payload.get("templateIds")
     if not isinstance(ids, list):
-        return _envelope(code=5000, msg="missing templateIds")
+        return _envelope(None, code=5000, msg="missing templateIds")
     with STATE.lock:
-        data = [
+        data: list[ReviewState] = [
             {"id": item, "checkType": 1, "checkRemark": None}
             for item in ids
             if item in STATE.template_ids
@@ -303,27 +381,27 @@ async def get_template_state(payload: dict[str, Any]) -> dict[str, Any]:
     return _envelope(data)
 
 
-@app.post("/Sms/Api/BindSign")
-async def bind_sign(payload: dict[str, Any]) -> dict[str, Any]:
+@app.post("/Sms/Api/BindSign", response_model=None)
+async def bind_sign(payload: JsonObject) -> VendorEnvelope[int | None]:
     await _apply_latency()
     name = payload.get("signName")
     if not isinstance(name, str) or not name:
-        return _envelope(code=5000, msg="missing signName")
+        return _envelope(None, code=5000, msg="missing signName")
     with STATE.lock:
         sign_id = STATE._allocate("sign", name)
     if sign_id is None:
-        return _envelope(code=5000, msg="mock catalog invalid")
+        return _envelope(None, code=5000, msg="mock catalog invalid")
     return _envelope(sign_id)
 
 
-@app.post("/Sms/Api/GetSignState")
-async def get_sign_state(payload: dict[str, Any]) -> dict[str, Any]:
+@app.post("/Sms/Api/GetSignState", response_model=None)
+async def get_sign_state(payload: JsonObject) -> VendorEnvelope[list[ReviewState] | None]:
     await _apply_latency()
     ids = payload.get("signIds")
     if not isinstance(ids, list):
-        return _envelope(code=5000, msg="missing signIds")
+        return _envelope(None, code=5000, msg="missing signIds")
     with STATE.lock:
-        data = [
+        data: list[ReviewState] = [
             {"id": item, "checkType": 1, "checkRemark": None}
             for item in ids
             if item in STATE.sign_ids
@@ -331,8 +409,8 @@ async def get_sign_state(payload: dict[str, Any]) -> dict[str, Any]:
     return _envelope(data)
 
 
-@app.post("/_mock/state")
-async def configure_mock(control: MockControl) -> dict[str, Any]:
+@app.post("/_mock/state", response_model=None)
+async def configure_mock(control: MockControl) -> MockPublicState:
     """应用测试注入；手机号仅可进入进程内队列，不在响应中回显。"""
 
     if control.reset_catalog:
@@ -402,7 +480,7 @@ async def configure_mock(control: MockControl) -> dict[str, Any]:
     return _public_state()
 
 
-def _public_state() -> dict[str, Any]:
+def _public_state() -> MockPublicState:
     with STATE.lock:
         send_calls = [
             item | {"mobile": ",".join(_mask_phone(phone) for phone in item["mobile"].split(","))}
@@ -433,8 +511,8 @@ def _public_state() -> dict[str, Any]:
         }
 
 
-@app.get("/_mock/state")
-async def read_mock_state() -> dict[str, Any]:
+@app.get("/_mock/state", response_model=None)
+async def read_mock_state() -> MockPublicState:
     return _public_state()
 
 
@@ -457,10 +535,10 @@ async def callback_sink(request: Request) -> Response:
     return Response(status_code=200)
 
 
-@app.get("/_mock/callbacks")
-async def read_callbacks() -> list[dict[str, Any]]:
+@app.get("/_mock/callbacks", response_model=None)
+async def read_callbacks() -> list[CallbackRecord]:
     with STATE.lock:
-        return [dict(item) for item in STATE.callbacks]
+        return [item.copy() for item in STATE.callbacks]
 
 
 @app.delete("/_mock/callbacks")
