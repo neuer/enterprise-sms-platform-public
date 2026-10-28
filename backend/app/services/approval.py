@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.sensitive_text import reject_phone_in_text
@@ -78,7 +78,7 @@ class ApprovalAlertPort(Protocol):
         alert_type: str,
         level: str,
         title: str,
-        detail: dict[str, Any],
+        detail: dict[str, object],
         dedup_key: str,
         dedup_hours: int = 4,
     ) -> None: ...

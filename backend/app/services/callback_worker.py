@@ -6,7 +6,7 @@ import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from app.core.correlation import correlation_scope
@@ -94,7 +94,7 @@ class AlertEmitter(Protocol):
         alert_type: str,
         level: str,
         title: str,
-        detail: dict[str, Any],
+        detail: dict[str, object],
         dedup_key: str,
     ) -> None: ...
 

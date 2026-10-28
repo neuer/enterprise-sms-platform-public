@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Protocol
 
 from app.core.redis_eval import RedisEval
 from app.vendor.codes import policy_for
@@ -23,7 +23,7 @@ class AlertEmitter(Protocol):
         alert_type: str,
         level: str,
         title: str,
-        detail: dict[str, Any],
+        detail: dict[str, object],
         dedup_key: str,
     ) -> None: ...
 
@@ -56,7 +56,9 @@ class RedisVendorAlertMonitor:
         count = int(
             await self.redis.eval(INCREMENT_SCRIPT, 1, COUNTER_KEY, COUNTER_TTL_S)
         )
-        detail = {"vendor_code": code, "chunk_id": chunk_id, "batch_id": batch_id}
+        detail: dict[str, object] = {
+            "vendor_code": code, "chunk_id": chunk_id, "batch_id": batch_id,
+        }
         policy = policy_for(code)
         named = CRITICAL_EVENTS.get(code)
         if named is not None:

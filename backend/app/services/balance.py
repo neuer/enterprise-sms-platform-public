@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Protocol
 
 
 class BalanceRepository(Protocol):
@@ -21,7 +21,7 @@ class BalanceAlertSink(Protocol):
         alert_type: str,
         level: str,
         title: str,
-        detail: dict[str, Any],
+        detail: dict[str, object],
         dedup_key: str,
     ) -> None: ...
 

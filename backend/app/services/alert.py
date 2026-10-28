@@ -7,12 +7,12 @@ import json
 import logging
 import re
 import smtplib
-from collections.abc import Iterable, Mapping
+from collections.abc import Buffer, Iterable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
 from email.message import EmailMessage
 from time import monotonic
-from typing import Any, Protocol
+from typing import Protocol
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
@@ -59,7 +59,7 @@ class _DeadlineSmtp(smtplib.SMTP):
             raise TimeoutError("SMTP absolute deadline exceeded")
         return min(5.0, remaining)
 
-    def send(self, data: Any) -> None:
+    def send(self, data: Buffer | str) -> None:
         if self.sock is not None:
             self.sock.settimeout(self._remaining())
         super().send(data)
@@ -117,7 +117,7 @@ class AlertEvent:
     alert_type: str
     level: str
     title: str
-    detail: dict[str, Any]
+    detail: dict[str, object]
     dedup_key: str
 
 
@@ -132,7 +132,7 @@ class AlertRepository(Protocol):
         alert_type: str,
         level: str,
         title: str,
-        detail: dict[str, Any],
+        detail: dict[str, object],
         channels: str,
         dedup_key: str,
         dedup_hours: int,
@@ -218,7 +218,7 @@ def _event(
     alert_type: str,
     level: str,
     title: str,
-    detail: dict[str, Any],
+    detail: dict[str, object],
     dedup_key: str,
 ) -> AlertEvent:
     if not alert_type or len(alert_type) > 32:
@@ -354,7 +354,7 @@ class AlertService:
         alert_type: str,
         level: str,
         title: str,
-        detail: dict[str, Any],
+        detail: dict[str, object],
         dedup_key: str,
         dedup_hours: int = 4,
     ) -> None:
@@ -434,7 +434,7 @@ class AlertSink(Protocol):
         alert_type: str,
         level: str,
         title: str,
-        detail: dict[str, Any],
+        detail: dict[str, object],
         dedup_key: str,
     ) -> None: ...
 
@@ -448,7 +448,7 @@ async def emit_alert_best_effort(
     alert_type: str,
     level: str,
     title: str,
-    detail: dict[str, Any],
+    detail: dict[str, object],
     dedup_key: str,
 ) -> None:
     """告警是观测旁路：未注入或发送失败时只记录异常类型，不影响调用方主流程。"""

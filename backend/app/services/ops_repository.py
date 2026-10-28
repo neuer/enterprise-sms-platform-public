@@ -603,8 +603,8 @@ class SqlOpsRepository:
         actor: str,
         ip: str,
         principal: SecurityPrincipal,
-        before: dict[str, Any],
-        after: dict[str, Any],
+        before: dict[str, object],
+        after: dict[str, object],
     ) -> None:
         """同一事务写入解析面资格与 raw_reevaluate 审计；失败全部回滚。"""
 

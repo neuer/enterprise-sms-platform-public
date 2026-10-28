@@ -154,7 +154,7 @@ class AlertEmitter(Protocol):
         alert_type: str,
         level: str,
         title: str,
-        detail: dict[str, Any],
+        detail: dict[str, object],
         dedup_key: str,
     ) -> None: ...
 
