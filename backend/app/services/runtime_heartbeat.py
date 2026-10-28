@@ -6,11 +6,10 @@ import logging
 import os
 import sys
 from collections.abc import Mapping
-from typing import Any
 
 from sqlalchemy import text
 
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.settings import get_settings
 
 LOGGER = logging.getLogger(__name__)
@@ -28,7 +27,7 @@ async def touch_runtime_heartbeat(
     component: str,
     *,
     success: bool = False,
-    engine: Any | None = None,
+    engine: ManagedAsyncEngine | None = None,
 ) -> None:
     """写入或续租运行组件心跳；失败只记日志，不得阻断业务提交。"""
 

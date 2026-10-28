@@ -11,6 +11,7 @@ from time import monotonic
 from typing import Any, Protocol
 from uuid import uuid4
 
+from app.core.redis_eval import RedisEval
 from app.core.sensitive_text import reject_phone_business_id
 from app.services.app_ratelimit import ControlPlaneUnavailable
 
@@ -181,14 +182,12 @@ def claim_row_is_live(row: dict[str, Any]) -> bool:
     return str(row["state"]) == "active" and bool(row["lease_valid"])
 
 
-class IdempotencyRedis(Protocol):
+class IdempotencyRedis(RedisEval, Protocol):
     async def get(self, key: str) -> str | None: ...
 
-    async def set(self, key: str, value: str, **kwargs: Any) -> Any: ...
+    async def set(self, key: str, value: str, *, nx: bool, ex: int) -> bool | None: ...
 
-    async def delete(self, key: str) -> Any: ...
-
-    async def eval(self, *args: Any) -> Any: ...
+    async def delete(self, key: str) -> object: ...
 
 
 class IdempotencyRepository(Protocol):

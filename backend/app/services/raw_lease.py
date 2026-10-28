@@ -8,12 +8,15 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import RowMapping, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncConnection
+
+if TYPE_CHECKING:
+    from app.core.runtime_resources import ManagedAsyncEngine
 
 LOGGER = logging.getLogger(__name__)
 
@@ -221,7 +224,7 @@ async def execute_fenced_raw_update(
 
 
 async def commit_fenced_raw_update(
-    engine: Any,
+    engine: ManagedAsyncEngine,
     sql: str,
     params: dict[str, Any],
     *,
@@ -255,7 +258,7 @@ async def record_raw_heartbeat_lost(
 
 
 async def renew_raw_lease(
-    engine: Any,
+    engine: ManagedAsyncEngine,
     lease: RawProcessingLease,
     *,
     lease_seconds: int = RAW_LEASE_SECONDS,

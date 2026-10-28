@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, MutableMapping
-from typing import Any, Literal
+from typing import Literal
+
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 API_JSON_BODY_LIMIT = 1 * 1024 * 1024
 IMPORT_BODY_LIMIT = 12 * 1024 * 1024
@@ -14,11 +15,6 @@ HEALTH_PATHS = frozenset({"/livez", "/readyz", "/healthz"})
 NO_BODY_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 BodyPolicy = Literal["no_body", "json_1mib", "import_12mib"]
-
-Scope = MutableMapping[str, Any]
-Receive = Callable[[], Awaitable[MutableMapping[str, Any]]]
-Send = Callable[[MutableMapping[str, Any]], Awaitable[None]]
-
 
 def body_policy_for(path: str, method: str) -> BodyPolicy:
     """未声明的读路由默认禁止 body；导入放宽不得被其他路由继承。"""
@@ -98,7 +94,7 @@ async def _send_payload_too_large(send: Send, method: str = "POST") -> None:
 class RequestBodyLimitMiddleware:
     """在 JSON/表单解析前按实际字节切断；不信任单独的 Content-Length。"""
 
-    def __init__(self, app: Any) -> None:
+    def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -139,9 +135,9 @@ class RequestBodyLimitMiddleware:
                 )
                 return
 
-            peeked: MutableMapping[str, Any] | None = None
+            peeked: Message | None = None
 
-            async def gated_receive() -> MutableMapping[str, Any]:
+            async def gated_receive() -> Message:
                 nonlocal peeked
                 if peeked is not None:
                     message = peeked
@@ -154,7 +150,7 @@ class RequestBodyLimitMiddleware:
 
             started = False
 
-            async def gated_send(message: MutableMapping[str, Any]) -> None:
+            async def gated_send(message: Message) -> None:
                 nonlocal started
                 if message["type"] == "http.response.start":
                     started = True
@@ -196,7 +192,7 @@ class RequestBodyLimitMiddleware:
         received = 0
         started = False
 
-        async def limited_receive() -> MutableMapping[str, Any]:
+        async def limited_receive() -> Message:
             nonlocal received
             message = await receive()
             if message["type"] == "http.request":
@@ -205,7 +201,7 @@ class RequestBodyLimitMiddleware:
                     raise RequestBodyTooLarge
             return message
 
-        async def tracked_send(message: MutableMapping[str, Any]) -> None:
+        async def tracked_send(message: Message) -> None:
             nonlocal started
             if message["type"] == "http.response.start":
                 started = True

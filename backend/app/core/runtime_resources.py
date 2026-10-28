@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from threading import Lock
 from time import monotonic
 from types import TracebackType
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 
 from redis.asyncio import Redis
 from sqlalchemy import event, text
@@ -25,6 +25,9 @@ from app.core.audit_context import (
 )
 from app.core.auth.principal_context import current_audit_principal
 from app.core.correlation import current_correlation_id
+
+if TYPE_CHECKING:
+    from app.settings import Settings
 
 DatabaseUrl = str | URL
 DATABASE_COMPONENTS = ("api", "worker", "beat", "metrics", "background")
@@ -155,7 +158,7 @@ class ManagedAsyncEngine:
 _INHERITED_DATABASE_POOLS: list[Any] = []
 _DATABASE_ENGINES: dict[tuple[str, DatabaseUrl], ManagedAsyncEngine] = {}
 _DATABASE_METRICS: dict[str, _DatabaseMetrics] = {}
-_REDIS_CLIENTS: dict[str, Any] = {}
+_REDIS_CLIENTS: dict[str, Redis] = {}
 _RESOURCE_LIFECYCLES: dict[str, tuple[Callable[[], Awaitable[None]], Callable[[], None]]] = {}
 _RESOURCE_LOCK = Lock()
 _BUDGETS = dict(DEFAULT_BUDGETS)
@@ -166,21 +169,20 @@ _RUNTIME_COMPONENT = (
 )
 
 
-def configure_runtime_resources(settings: object, *, component: str | None = None) -> None:
+def configure_runtime_resources(settings: Settings, *, component: str | None = None) -> None:
     """从非敏感运行配置加载各组件预算；已有 pool 不允许静默换预算。"""
 
     global _RUNTIME_COMPONENT
     selected = (component or _RUNTIME_COMPONENT).strip().casefold()
     if selected not in DATABASE_COMPONENTS:
         raise ValueError("invalid runtime database component")
-    settings_value = cast(Any, settings)
     budgets = {
         name: DatabasePoolBudget(
-            int(getattr(settings_value, f"db_{name}_pool_size")),
-            int(getattr(settings_value, f"db_{name}_max_overflow")),
-            float(settings_value.db_pool_timeout_seconds),
-            float(settings_value.db_connect_timeout_seconds),
-            int(getattr(settings_value, f"db_{name}_statement_timeout_ms")),
+            int(getattr(settings, f"db_{name}_pool_size")),
+            int(getattr(settings, f"db_{name}_max_overflow")),
+            float(settings.db_pool_timeout_seconds),
+            float(settings.db_connect_timeout_seconds),
+            int(getattr(settings, f"db_{name}_statement_timeout_ms")),
         )
         for name in DATABASE_COMPONENTS
     }
@@ -469,6 +471,7 @@ def database_engine(
 def redis_client(redis_url: str) -> Any:
     """按 URL 复用异步 Redis 客户端及其连接池。"""
 
+    # redis-py 异步 stub 返回 Awaitable[T] | T 联合，调用方以各自的异步 Protocol 收窄。
     with _RESOURCE_LOCK:
         client = _REDIS_CLIENTS.get(redis_url)
         if client is None:

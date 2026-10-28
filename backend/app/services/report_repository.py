@@ -958,7 +958,7 @@ class SqlReportRepository:
 
     async def _due_batches_exist(
         self,
-        engine: Any,
+        engine: ManagedAsyncEngine,
         *,
         timeout_hours: int,
         exclude_ids: set[int],
@@ -987,7 +987,7 @@ class SqlReportRepository:
             return bool(result.scalar_one())
 
     async def _claim_due_timeout_batch(
-        self, engine: Any, *, timeout_hours: int, exclude_ids: set[int],
+        self, engine: ManagedAsyncEngine, *, timeout_hours: int, exclude_ids: set[int],
         statement_timeout_ms: int, lock_timeout_ms: int,
     ) -> tuple[int, int] | None:
         """独立提交领取代际和调度位置；租约覆盖最大 120 秒轮次及清理余量。"""
@@ -1035,7 +1035,7 @@ class SqlReportRepository:
             return int(row[0]), int(row[1])
 
     async def _record_timeout_failure(
-        self, engine: Any, *, batch_id: int, generation: int,
+        self, engine: ManagedAsyncEngine, *, batch_id: int, generation: int,
         statement_timeout_ms: int, lock_timeout_ms: int,
     ) -> None:
         """业务回滚后独立保存退避；旧代际或已终结批次不得被迟到失败覆盖。"""
@@ -1061,7 +1061,7 @@ class SqlReportRepository:
 
     async def _expire_one_due_batch(
         self,
-        engine: Any,
+        engine: ManagedAsyncEngine,
         *,
         timeout_hours: int,
         message_limit: int,

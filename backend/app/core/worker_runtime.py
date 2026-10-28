@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import atexit
 import logging
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Callable, Coroutine
 from concurrent.futures import Future
 from contextlib import suppress
 from threading import Event, Lock, Thread
-from typing import Any, TypeVar
+from typing import TypeVar
 
 from app.core.runtime_resources import close_runtime_resources
 
@@ -34,7 +34,7 @@ class WorkerAsyncRuntime:
         self._thread: Thread | None = None
         self._ready = Event()
         self._lock = Lock()
-        self._periodic: list[Future[Any]] = []
+        self._periodic: list[Future[None]] = []
         self._deferred: set[Future[None]] = set()
 
     def _serve(self) -> None:
@@ -60,7 +60,7 @@ class WorkerAsyncRuntime:
         if not self._ready.wait(timeout=5):
             raise RuntimeError("worker async runtime failed to start")
 
-    def run(self, coroutine: Coroutine[Any, Any, T]) -> T:
+    def run(self, coroutine: Coroutine[object, None, T]) -> T:
         self.start()
         loop = self._loop
         if loop is None or not loop.is_running():
@@ -99,7 +99,7 @@ class WorkerAsyncRuntime:
             raise
 
     def defer_cleanup(
-        self, pending: WorkerCancellationPending | None, coroutine: Coroutine[Any, Any, None]
+        self, pending: WorkerCancellationPending | None, coroutine: Coroutine[object, None, None]
     ) -> None:
         """软超时后仍在收尾的工作持有原准入锁，真正退出后再释放。"""
 
@@ -134,7 +134,7 @@ class WorkerAsyncRuntime:
 
     def schedule_periodic(
         self,
-        factory: Any,
+        factory: Callable[[], Awaitable[object]],
         interval_s: float,
     ) -> None:
         """在 worker 常驻 loop 上周期执行；失败不得阻断发送。"""
@@ -187,12 +187,12 @@ class WorkerAsyncRuntime:
 _WORKER_RUNTIME = WorkerAsyncRuntime()
 
 
-def run_worker_async[T](coroutine: Coroutine[Any, Any, T]) -> T:
+def run_worker_async[T](coroutine: Coroutine[object, None, T]) -> T:
     return _WORKER_RUNTIME.run(coroutine)
 
 
 def defer_worker_cleanup(
-    pending: WorkerCancellationPending | None, coroutine: Coroutine[Any, Any, None]
+    pending: WorkerCancellationPending | None, coroutine: Coroutine[object, None, None]
 ) -> None:
     _WORKER_RUNTIME.defer_cleanup(pending, coroutine)
 
@@ -201,7 +201,7 @@ def start_worker_runtime() -> None:
     _WORKER_RUNTIME.start()
 
 
-def schedule_worker_periodic(factory: Any, interval_s: float) -> None:
+def schedule_worker_periodic(factory: Callable[[], Awaitable[object]], interval_s: float) -> None:
     _WORKER_RUNTIME.schedule_periodic(factory, interval_s)
 
 

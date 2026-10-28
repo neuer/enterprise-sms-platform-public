@@ -7,12 +7,12 @@ import hashlib
 import hmac
 from collections.abc import Awaitable, Callable
 from ipaddress import ip_address
-from typing import Any
 
 from app.core.auth.admission_policy import AdmissionPolicy
 from app.core.auth.backends import SessionStateUnavailable
 from app.core.auth.capacity_metrics import observe_spray
 from app.core.auth.identity import normalize_login_name
+from app.core.redis_eval import RedisEval
 
 # 两个方向各固定 4096 桶，每桶至多 32 个匿名位；碰撞只能增加失败响应延迟。
 BUCKETS = 4096
@@ -58,7 +58,7 @@ class PasswordSprayGuard:
 
     def __init__(
         self,
-        store: Any,
+        store: RedisEval,
         loader: Callable[[], Awaitable[AdmissionPolicy]],
         *,
         key: bytes,

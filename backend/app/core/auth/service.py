@@ -39,7 +39,9 @@ from app.core.auth.security_events import (
 )
 from app.core.auth.spray import PasswordSprayGuard
 from app.core.bounded_executor import bounded_work_scope
+from app.core.redis_eval import RedisArg, RedisEval
 from app.core.runtime_resources import redis_client
+from app.settings import Settings
 
 ACCOUNT_WINDOW_S = 15 * 60
 IP_WINDOW_S = 5 * 60
@@ -78,7 +80,7 @@ class TransitionClaimResult(NamedTuple):
     created_at_ms: str
 
 
-def writer_lease_ms(settings: Any | None = None) -> int:
+def writer_lease_ms(settings: Settings | None = None) -> int:
     """Writer Lease 必须覆盖 pool + connect + statement 最坏耗时。"""
 
     pool_s = 3.0
@@ -294,16 +296,14 @@ class RateLimited(RuntimeError):
     """来源 IP 已被临时封禁，对应 RATE_LIMITED/429。"""
 
 
-class AsyncKeyValue(Protocol):
+class AsyncKeyValue(RedisEval, Protocol):
     async def get(self, key: str) -> Any: ...
 
-    async def set(self, key: str, value: Any, *, ex: int) -> None: ...
+    async def set(self, key: str, value: RedisArg, *, ex: int) -> None: ...
 
     async def delete(self, key: str) -> None: ...
 
     async def increment(self, key: str, *, window_s: int) -> int: ...
-
-    async def eval(self, script: str, numkeys: int, *args: Any) -> Any: ...
 
 
 class RedisKeyValue:
@@ -328,7 +328,7 @@ class RedisKeyValue:
         except RedisError as error:
             raise SessionStateUnavailable("auth session store unavailable") from error
 
-    async def set(self, key: str, value: Any, *, ex: int) -> None:
+    async def set(self, key: str, value: RedisArg, *, ex: int) -> None:
         try:
             await self.redis.set(key, value, ex=ex)
         except RedisError as error:

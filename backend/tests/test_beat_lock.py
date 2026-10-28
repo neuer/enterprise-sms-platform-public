@@ -46,7 +46,7 @@ def test_lock_uses_nx_ttl_and_compare_scripts() -> None:
     assert lock.renew() is True
     assert lock.release() is True
     assert len(client.eval_calls) == 2
-    assert client.eval_calls[0][-2:] == ("instance-a", 30)
+    assert client.eval_calls[0][-2:] == ("instance-a", "30")
     assert client.eval_calls[1][-1] == "instance-a"
 
 

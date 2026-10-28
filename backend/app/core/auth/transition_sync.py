@@ -8,7 +8,7 @@ from collections import deque
 from contextlib import suppress
 from datetime import UTC, datetime
 from time import monotonic
-from typing import Any, Protocol
+from typing import Protocol
 
 from app.build_info import APP_VERSION
 from app.core.auth.observability import (
@@ -31,6 +31,7 @@ from app.core.auth.security_events import (
 )
 from app.core.auth.service import (
     INTEGRITY_STATS_PAGE_SIZE,
+    AsyncKeyValue,
     LoginGuard,
     RedisKeyValue,
     TransitionClaimResult,
@@ -88,7 +89,7 @@ class AuthTransitionReconciler:
         self,
         settings: Settings | None = None,
         *,
-        store: Any | None = None,
+        store: AsyncKeyValue | None = None,
         security_events: AuthSecurityEventWriter | None = None,
         alerter: TransitionAlerter | None = None,
         interval_s: float = 5,
@@ -530,7 +531,7 @@ class AuthTransitionReconciler:
 def create_auth_transition_reconciler(
     settings: Settings | None = None,
     *,
-    store: Any | None = None,
+    store: AsyncKeyValue | None = None,
     security_events: AuthSecurityEventWriter | None = None,
     alerter: TransitionAlerter | None = None,
     interval_s: float = 5,

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol
+from typing import Literal
+
+from app.core.redis_eval import RedisEval
 
 TOKEN_BUCKET_LUA = """
 local lane = ARGV[1]
@@ -65,10 +67,6 @@ redis.call('HSET', KEYS[1], 'tokens', tokens, 'last_ms', last_ms)
 redis.call('PEXPIRE', KEYS[1], 60000)
 return 1
 """
-
-
-class RedisEval(Protocol):
-    async def eval(self, *args: Any) -> Any: ...
 
 
 class TokenBucket:

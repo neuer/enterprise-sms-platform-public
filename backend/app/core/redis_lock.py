@@ -6,8 +6,8 @@ import asyncio
 import logging
 from contextlib import suppress
 from time import monotonic
-from typing import Any
 
+from redis.asyncio.lock import Lock
 from redis.exceptions import LockError
 
 LOGGER = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ class HeartbeatLock:
     返回 False 由调用方记录告警，不把已完成的工作标记为失败。
     """
 
-    def __init__(self, lock: Any, *, ttl_s: int, beat_s: int) -> None:
+    def __init__(self, lock: Lock, *, ttl_s: int, beat_s: int) -> None:
         if not 1 <= beat_s < ttl_s:
             raise ValueError("heartbeat interval must be shorter than lock ttl")
         self._lock = lock

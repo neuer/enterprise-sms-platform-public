@@ -12,7 +12,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.errors import ApiError
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.settings import Settings
 
 if TYPE_CHECKING:
@@ -130,7 +130,7 @@ async def hold_admin_authorization(
     operation: str,
     target: str,
     parameters: dict[str, Any],
-    engine: Any | None = None,
+    engine: ManagedAsyncEngine | None = None,
 ) -> AsyncIterator[AsyncConnection]:
     """授权锁、业务写入与审计共用业务角色事务，不授予身份表访问权限。"""
     owns_engine = engine is None

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, cast
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import RowMapping, text
 
+from app.core.runtime_resources import ManagedAsyncEngine
 from app.services.security_daily import (
     DeliveryAction,
     DeliveryRequestState,
@@ -37,7 +38,7 @@ def _delivery_request(
 
 
 async def fetch_latest_delivery_request(
-    open_engine: Callable[[], Any], report_id: int
+    open_engine: Callable[[], ManagedAsyncEngine], report_id: int
 ) -> SecurityDailyDeliveryRequest | None:
     """读取某条日报最近一次投递请求。"""
 
@@ -67,7 +68,7 @@ async def fetch_latest_delivery_request(
 
 
 async def fetch_delivery_request(
-    open_engine: Callable[[], Any], request_id: UUID
+    open_engine: Callable[[], ManagedAsyncEngine], request_id: UUID
 ) -> SecurityDailyDeliveryRequest | None:
     """按 request_id 读取原投递请求，人工报告和自动报告共用这一入口。"""
 

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Protocol
 from uuid import uuid4
+
+from app.core.redis_eval import RedisEval
 
 SLIDING_WINDOW_LUA = """
 local t = redis.call('TIME')
@@ -157,9 +158,7 @@ ring_add(seg_key, seg_add)
 return 1
 """
 
-
-class RateLimitRedis(Protocol):
-    async def eval(self, *args: Any) -> Any: ...
+RateLimitRedis = RedisEval
 
 
 class ApplicationRateLimitExceeded(RuntimeError):
