@@ -236,6 +236,7 @@ async function supplementUncovered(): Promise<void> {
     const preview = await previewResendSupplement(batch.batch_no)
     if (
       !(await confirmAuditedAction({
+        isCurrent: () => selected.value === batch && batch.resend_block_reason === "supplement_required",
         title: "确认补发未覆盖号码",
         body: `已覆盖 ${preview.covered_failed} 条，本次只补发未覆盖的 ${preview.uncovered_failed} 条。已覆盖号码不会再次发送。`,
         auditNote: "补发行为、操作人与原批次将写入审计日志。",

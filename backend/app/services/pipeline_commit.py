@@ -161,6 +161,7 @@ class AcceptanceCommitMixin(AcceptanceStagesMixin):
                 remark=request.remark,
                 resend_of=request.resend_of,
                 failed_sources=request.failed_sources,
+                resend_supplement_id=request.resend_supplement_id,
                 usage_reservation_id=acceptance.usage_reservation_id,
                 import_reservation_id=request.import_reservation_id,
                 inflight_reservation_id=getattr(acceptance.inflight, "id", None),

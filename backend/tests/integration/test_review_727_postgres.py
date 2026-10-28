@@ -587,6 +587,7 @@ async def test_failed_resend_rechecks_after_source_batch_lock() -> None:
             ).one()
         command = SimpleNamespace(
             resend_of=number,
+            resend_supplement_id=None,
             principal=None,
             channel="web",
             dept="synthetic",

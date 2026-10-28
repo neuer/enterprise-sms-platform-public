@@ -14,9 +14,9 @@ class CallbackRetryConflict(RuntimeError):
 # 不投影 URL 或密钥。
 RETRY_BLOCK_REASON_SQL = """
 CASE
+  WHEN t.last_error = 'CallbackConfigRevoked' THEN 'config_revoked'
   WHEN e.legacy_unavailable THEN 'legacy_snapshot_unavailable'
   WHEN t.status <> 'dead' THEN 'not_dead'
-  WHEN t.last_error = 'CallbackConfigRevoked' THEN 'config_revoked'
   WHEN a.status IS DISTINCT FROM 1 THEN 'app_disabled'
   WHEN a.callback_url IS DISTINCT FROM t.url
     OR a.callback_secret_enc IS DISTINCT FROM t.callback_secret_enc

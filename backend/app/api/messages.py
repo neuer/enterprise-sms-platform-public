@@ -264,6 +264,7 @@ class BatchModel(BaseModel):
     resend_block_reason: (
         Literal[
             "receipts_pending",
+            "source_terminated",
             "not_terminal",
             "supplement_required",
             "coverage_needs_review",

@@ -638,6 +638,12 @@ class SqlPipelineStore:
                 or (command.channel == "api" and source["app_id"] != command.app_id)
             ):
                 raise AcceptCommitConflict("原批次重发来源资格已变化")
+            if command.resend_supplement_id is not None:
+                from app.services.resend_supplement_commit import lock_supplement
+
+                existing = await lock_supplement(connection, command, int(source["id"]))
+                if existing is not None:
+                    return existing
             from app.services.resend_eligibility import reject_open_receipts
 
             await reject_open_receipts(connection, int(source["id"]), str(source["status"]))
@@ -819,26 +825,9 @@ class SqlPipelineStore:
         )
         batch_id = int(result.scalar_one())
         if command.resend_of is not None:
-            action = await connection.execute(
-                text(
-                    """
-                    INSERT INTO sms_resend_action(source_batch_id,child_batch_id)
-                    SELECT resend_of,id FROM sms_batch
-                    WHERE id=:batch_id AND resend_of IS NOT NULL
-                    RETURNING source_batch_id
-                    """
-                ),
-                {"batch_id": batch_id},
-            )
-            if action.scalar_one_or_none() is None:
-                raise ValueError("失败重发源批次不存在")
-            from app.services.resend_eligibility import record_ordinary_members
+            from app.services.resend_supplement_commit import commit_resend
 
-            await record_ordinary_members(
-                connection,
-                child_batch_id=batch_id,
-                sources=command.failed_sources,
-            )
+            await commit_resend(connection, command, batch_id)
         if command.usage_reservation_id is not None:
             await commit_usage_reservation(
                 connection,
@@ -1114,7 +1103,7 @@ class SqlPipelineStore:
                 existing = await self.find_existing(scope, command.biz_id)
                 if existing is not None:
                     return StoredBatch(existing, True)
-            if command.resend_of:
+            if command.resend_of and command.resend_supplement_id is None:
                 existing_resend = await self.find_resend_child(command.resend_of)
                 if existing_resend is not None:
                     return StoredBatch(existing_resend, True)

@@ -443,7 +443,7 @@ paths:
     post:
       tags: [messages]
       summary: 预览未覆盖失败号码的补发
-      description: 只在已有普通重发且仍有未覆盖失败号码时冻结一份预览。不发送短信，不复用 failed-recipients-v1。
+      description: 只在已有普通重发且仍有未覆盖失败号码时冻结一份预览。冻结不计作已覆盖，取消后可重开同一意图且号码集合不扩大；旧意图失效后释放再重建。不发送短信，不复用 failed-recipients-v1。
       security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
       parameters:
         - { name: batch_no, in: path, required: true, schema: { type: string } }
@@ -470,7 +470,7 @@ paths:
     post:
       tags: [messages]
       summary: 确认补发未覆盖失败号码
-      description: 只发送该预览冻结且当前仍为 failed 的号码，并走完整发送流水线。重复确认返回已创建子批次的当前状态。
+      description: 只发送该预览冻结且当前仍为 failed 的号码，并走完整发送流水线。补发子批次、意图覆盖与发送 Outbox 同事务提交，独立于普通重发动作。重复或并发确认只创建一个子批次，并返回其当前状态。
       security: [{ ApiKeyAuth: [] }, { BearerAuth: [] }]
       parameters:
         - { name: batch_no, in: path, required: true, schema: { type: string } }
@@ -2460,7 +2460,7 @@ paths:
     post:
       tags: [admin]
       summary: 为缺少可信快照的批次终态补发新事件
-      description: 不改写旧 event_id。按当前批次汇总新建一条 batch.finished。重复调用返回已创建的事件。
+      description: 不改写旧 event_id。按当前批次汇总新建一条 batch.finished。永久撤销的旧任务拒绝补发，即使缺少历史快照或配置已恢复。其它重复调用返回已创建的事件。
       security: [{ BearerAuth: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer } }
@@ -2479,7 +2479,7 @@ paths:
         '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: STATE_CONFLICT。detail.reason 为 not_legacy、app_unavailable 或 batch_not_terminal
+          description: STATE_CONFLICT。detail.reason 为 config_revoked、not_legacy、app_unavailable 或 batch_not_terminal
           content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
 
   /api/v1/web/admin/jobs:
@@ -4325,7 +4325,7 @@ components:
         scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         created_at: { type: string, format: date-time }
         can_resend_failed: { type: boolean, default: false, description: 详情计算。列表未计算时为 false。true 才允许普通失败重发 }
-        resend_block_reason: { anyOf: [{ type: string, enum: [receipts_pending, not_terminal, supplement_required, coverage_needs_review, nothing_uncovered, preview_stale] }, { type: 'null' }], description: 普通重发被拒绝的原因。不要求更换 biz_id }
+        resend_block_reason: { anyOf: [{ type: string, enum: [receipts_pending, source_terminated, not_terminal, supplement_required, coverage_needs_review, nothing_uncovered, preview_stale] }, { type: 'null' }], description: 普通重发被拒绝的原因。不要求更换 biz_id }
         resend_child_batch_no: { anyOf: [{ type: string }, { type: 'null' }], description: 已有普通重发子批次 }
         resend_covered_failed: { type: integer, default: 0, description: 已被普通重发或补发覆盖的失败号码数 }
         resend_uncovered_failed: { type: integer, default: 0, description: 尚未覆盖、可显式补发的失败号码数 }

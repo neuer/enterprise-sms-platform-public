@@ -322,12 +322,13 @@ describe("回调任务", () => {
     wrapper.unmount()
   })
 
-  it("永久撤销的 dead 任务三处都不提供重推，并说明恢复配置无效", async () => {
+  it.each(["legacy", "current"])("永久撤销的 %s 任务不提供重推或补发入口", async (snapshot) => {
     const revoked = {
       ...deadTask,
       manual_retry_allowed: false,
       retry_block_reason: "config_revoked",
       last_error: "CallbackConfigRevoked",
+      finished_snapshot: snapshot,
     }
     vi.stubGlobal("fetch", routeFetch({ total: 1, dead_total: 1, items: [revoked] }))
     const wrapper = mount(CallbackView, {
@@ -342,6 +343,7 @@ describe("回调任务", () => {
     await wrapper.get("[data-testid='callback-detail-9']").trigger("click")
     await flushPromises()
     expect(wrapper.find("[data-testid='drawer-callback-retry-9']").exists()).toBe(false)
+    expect(wrapper.find("[data-testid='drawer-callback-recover-9']").exists()).toBe(false)
     expect(wrapper.get("[data-testid='drawer-callback-retry-block-9']").text()).toContain("恢复配置也不能重推")
     wrapper.unmount()
   })

@@ -3862,6 +3862,8 @@ GRANT USAGE, SELECT ON SEQUENCE
 TO sms_callback;
 
 -- 导出 API/worker 只能读取批准的数据集并维护导出任务。
+GRANT SELECT (message_id, message_created_at, reason)
+    ON sms_dispatch_exclusion TO sms_export;
 GRANT SELECT ON
     app, sms_batch, sms_message, sms_reply, report_event_projection,
     unmatched_report,

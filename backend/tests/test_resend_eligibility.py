@@ -183,3 +183,27 @@ class _ctx:
 
     async def __aexit__(self, *_exc: object) -> None:
         return None
+
+
+@pytest.mark.parametrize("status", ["cancelled", "rejected", "expired"])
+def test_unsent_terminal_source_does_not_wait_for_receipts(status: str) -> None:
+    result = decide_resend(
+        status=status,
+        active=1,
+        failed=0,
+        covered=0,
+        child_batch_no=None,
+        needs_review=False,
+    )
+    assert not result.can_resend_failed
+    assert result.block_reason == "source_terminated"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["cancelled", "rejected", "expired"])
+async def test_locked_unsent_terminal_source_rejects_without_query(status: str) -> None:
+    connection = FakeConnection(1)
+    with pytest.raises(ResendBlocked) as blocked:
+        await reject_open_receipts(connection, 1, status)
+    assert blocked.value.reason == "source_terminated"
+    assert connection.calls == []

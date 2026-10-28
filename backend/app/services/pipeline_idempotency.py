@@ -110,6 +110,11 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
             }
         else:
             actor_document = None
+        if request.resend_supplement_id is not None:
+            actor_document = {
+                "kind": "resend-supplement",
+                "intent_id": str(request.resend_supplement_id),
+            }
         fingerprint_key_version = self.crypto.active_version if key_version is None else key_version
         protected_aliases = dict(request.protected_hmac_candidates)
         protected_identity: dict[str, object] | None = None
@@ -224,7 +229,13 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
             )
             if not (web_actor or api_actor):
                 raise ValueError("失败重发必须绑定稳定授权主体")
+            if request.resend_supplement_id is not None:
+                if request.biz_id != request.resend_supplement_id.hex:
+                    raise ValueError("补发业务键必须绑定预览意图")
+                return IdempotencyScope("resend-extra", str(request.resend_supplement_id))
             return IdempotencyScope("resend", request.resend_of)
+        if request.resend_supplement_id is not None:
+            raise ValueError("补发意图必须绑定原批次")
         if request.channel == "web":
             if isinstance(request.actor, UncertainEffectPrincipal):
                 raise ValueError("system resend principal is not forgeable")

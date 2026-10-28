@@ -540,7 +540,7 @@ onMounted(() => {
             >{{ callbackRetryReason(selected) }}</small
           >
           <el-button
-            v-if="selected?.finished_snapshot === 'legacy'"
+            v-if="selected?.finished_snapshot === 'legacy' && selected.retry_block_reason !== 'config_revoked'"
             :data-testid="`drawer-callback-recover-${selected.id}`"
             type="primary"
             :loading="retryingId === selected.id"

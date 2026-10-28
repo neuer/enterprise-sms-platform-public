@@ -43,6 +43,7 @@ class IdempotencyScope:
             "app",
             "account",
             "resend",
+            "resend-extra",
             "web-legacy",
             "uncertain-resend",
         }:
@@ -345,9 +346,7 @@ class IdempotencyCoordinator:
             return payload
         return None
 
-    async def _authority(
-        self, scope: IdempotencyScope, biz_id: str
-    ) -> IdempotencyClaimRow | None:
+    async def _authority(self, scope: IdempotencyScope, biz_id: str) -> IdempotencyClaimRow | None:
         loader = getattr(self.repository, "load_idempotency_claim", None)
         if loader is None:
             return None

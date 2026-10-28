@@ -189,10 +189,12 @@ async function add(): Promise<void> {
     return
   }
   const generation = editorGeneration.value
+  const isCurrent = captureCurrent()
   const submitted = [...uniqueWords.value]
   savingGeneration.value = generation
   try {
     const result = await addSensitiveWords(submitted)
+    if (!isCurrent()) return
     const skippedTip = result.skipped ? ` · 已存在跳过 ${result.skipped} 个` : ""
     if (generation !== editorGeneration.value) {
       ElMessage.success(`已添加 ${result.added} 个敏感词${skippedTip}，当前编辑未改动`)
@@ -204,6 +206,7 @@ async function add(): Promise<void> {
     page.value = 1
     await load()
   } catch (error) {
+    if (!isCurrent()) return
     const message = errorText(error, "添加失败")
     if (generation !== editorGeneration.value) {
       ElMessage.error(`敏感词添加失败：${message}`)

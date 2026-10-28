@@ -5,6 +5,8 @@ from __future__ import annotations
 from uuid import UUID
 
 import pytest
+from asyncpg.exceptions import InternalClientError
+from sqlalchemy.exc import InternalError
 
 from app.services.raw_lease import (
     FENCED_TERMINAL_SQL,
@@ -16,6 +18,7 @@ from app.services.raw_parse import (
     ELIGIBILITY_MANUAL,
     PARSE_PROTOCOL_INVALID,
     PARSE_TRANSIENT_FAILURE,
+    classify_raw_disposition,
     mark_error_column_values,
 )
 from app.services.reply_repository import SqlReplyRepository
@@ -59,6 +62,32 @@ def test_fenced_terminal_sql_keeps_never_for_both_audit_variants() -> None:
     )
     assert "processing_lease_id=CAST(:lease_id AS uuid)" in FENCED_TERMINAL_SQL
     assert "processing_lease_epoch=:epoch" in FENCED_TERMINAL_SYSTEM_AUDIT_SQL
+
+
+def test_driver_internal_client_failure_is_transient_but_generic_internal_error_is_not() -> None:
+    driver = InternalClientError("synthetic disconnected protocol state")
+    wrapped = InternalError(None, None, driver)
+    wrapped.__cause__ = driver
+    recovered = classify_raw_disposition(exc=wrapped)
+    assert recovered.parse_state == PARSE_TRANSIENT_FAILURE
+    assert recovered.replay_eligibility == ELIGIBILITY_AUTOMATIC
+    generic = classify_raw_disposition(
+        exc=InternalError(None, None, Exception("internal SQL error"))
+    )
+    assert generic.replay_eligibility == ELIGIBILITY_MANUAL
+
+
+@pytest.mark.parametrize("http_status,encoding", [(503, "identity"), (200, "gzip")])
+def test_driver_failure_cannot_override_non_replayable_wire_facts(
+    http_status: int, encoding: str
+) -> None:
+    result = classify_raw_disposition(
+        capture_state="complete",
+        http_status=http_status,
+        content_encoding=encoding,
+        exc=InternalClientError("synthetic disconnected protocol state"),
+    )
+    assert result.replay_eligibility == "never"
 
 
 class _Connection:

@@ -77,8 +77,9 @@ class ResendSupplementService:
                 return prepared
         finally:
             await engine.dispose()
+        if isinstance(prepared, ResendBlocked):
+            raise prepared
         result = await accept(prepared)
-        await self._mark_submitted(intent_id, str(result.batch_no))
         return SupplementSubmit(
             str(result.batch_no),
             int(result.accepted),
@@ -127,6 +128,20 @@ class ResendSupplementService:
             {"batch_id": source["id"]},
         )
         current = existing.mappings().one_or_none()
+        if current is not None:
+            valid = await connection.scalar(
+                text("""
+                    SELECT count(*)>0 AND bool_and(m.status='failed')
+                    FROM sms_resend_supplement_member mem
+                    JOIN sms_message m ON m.id=mem.source_message_id
+                      AND m.created_at=mem.source_message_created_at
+                    WHERE mem.supplement_id=:id AND mem.claim_state='frozen'
+                """),
+                {"id": current["id"]},
+            )
+            if not valid:
+                await _release_preview(connection, UUID(str(current["id"])))
+                current = None
         intent_id = UUID(str(current["id"])) if current is not None else uuid4()
         created = current is None
         if created:
@@ -140,42 +155,43 @@ class ResendSupplementService:
                 ),
                 {"id": intent_id, "batch_id": source["id"]},
             )
-        await connection.execute(
-            text(
-                """
-                UPDATE sms_resend_supplement_member mem
-                SET supplement_id=:intent_id, claim_state='frozen', child_batch_id=NULL
-                FROM sms_message m
-                WHERE mem.source_message_id=m.id
-                  AND mem.source_message_created_at=m.created_at
-                  AND m.batch_id=:batch_id AND m.status='failed'
-                  AND mem.claim_state='released'
-                """
-            ),
-            {"intent_id": intent_id, "batch_id": source["id"]},
-        )
-        await connection.execute(
-            text(
-                """
-                INSERT INTO sms_resend_supplement_member(
-                  source_batch_id, source_message_id, source_message_created_at,
-                  supplement_id, generation, claim_state
-                )
-                SELECT m.batch_id, m.id, m.created_at, :intent_id, 1, 'frozen'
-                FROM sms_message m
-                WHERE m.batch_id=:batch_id AND m.status='failed'
-                  AND NOT EXISTS (
-                    SELECT 1 FROM sms_resend_supplement_member mem
-                    WHERE mem.source_batch_id=m.batch_id
-                      AND mem.source_message_id=m.id
+        if created:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE sms_resend_supplement_member mem
+                    SET supplement_id=:intent_id, claim_state='frozen', child_batch_id=NULL
+                    FROM sms_message m
+                    WHERE mem.source_message_id=m.id
                       AND mem.source_message_created_at=m.created_at
-                      AND mem.claim_state IN ('frozen','submitted')
-                  )
-                ON CONFLICT DO NOTHING
-                """
-            ),
-            {"intent_id": intent_id, "batch_id": source["id"]},
-        )
+                      AND m.batch_id=:batch_id AND m.status='failed'
+                      AND mem.claim_state='released'
+                    """
+                ),
+                {"intent_id": intent_id, "batch_id": source["id"]},
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO sms_resend_supplement_member(
+                      source_batch_id, source_message_id, source_message_created_at,
+                      supplement_id, generation, claim_state
+                    )
+                    SELECT m.batch_id, m.id, m.created_at, :intent_id, 1, 'frozen'
+                    FROM sms_message m
+                    WHERE m.batch_id=:batch_id AND m.status='failed'
+                      AND NOT EXISTS (
+                        SELECT 1 FROM sms_resend_supplement_member mem
+                        WHERE mem.source_batch_id=m.batch_id
+                          AND mem.source_message_id=m.id
+                          AND mem.source_message_created_at=m.created_at
+                          AND mem.claim_state IN ('frozen','submitted')
+                      )
+                    ON CONFLICT DO NOTHING
+                    """
+                ),
+                {"intent_id": intent_id, "batch_id": source["id"]},
+            )
         masks = await connection.execute(
             text(
                 """
@@ -207,7 +223,7 @@ class ResendSupplementService:
         intent_id: UUID,
         scope: BatchAccessScope,
         actor: ActorPrincipal | None,
-    ) -> SendRequest | SupplementSubmit:
+    ) -> SendRequest | SupplementSubmit | ResendBlocked:
         predicate, params = scope.sql()
         locked_batch = await connection.execute(
             text(
@@ -255,6 +271,8 @@ class ResendSupplementService:
                 str(found["status"]),
                 True,
             )
+        if row["state"] != "preview":
+            raise ResendBlocked("preview_stale")
         members = await connection.execute(
             text(
                 """
@@ -273,26 +291,9 @@ class ResendSupplementService:
         )
         rows = list(members.mappings())
         if not rows or any(item["status"] != "failed" for item in rows):
-            await connection.execute(
-                text(
-                    """
-                    UPDATE sms_resend_supplement SET state='rejected'
-                    WHERE id=:id AND state='preview'
-                    """
-                ),
-                {"id": intent_id},
-            )
-            await connection.execute(
-                text(
-                    """
-                    UPDATE sms_resend_supplement_member
-                    SET claim_state='released'
-                    WHERE supplement_id=:id AND claim_state='frozen'
-                    """
-                ),
-                {"id": intent_id},
-            )
-            raise ResendBlocked("preview_stale")
+            await _release_preview(connection, intent_id)
+            # 在事务成功提交释放事实后再返回冲突，不能用异常回滚本次释放。
+            return ResendBlocked("preview_stale")
         content = self.crypto.decrypt_bound_packed_text(
             bytes(source["send_content_enc"]),
             EncryptionContext(
@@ -321,6 +322,7 @@ class ResendSupplementService:
             biz_id=intent_id.hex,
             is_test=bool(source["is_test"]),
             resend_of=str(source["batch_no"]).strip(),
+            resend_supplement_id=intent_id,
             resend_dept=str(source["dept"]),
             actor=actor,
             failed_sources=tuple(
@@ -334,38 +336,20 @@ class ResendSupplementService:
             ),
         )
 
-    async def _mark_submitted(self, intent_id: UUID, child_batch_no: str) -> None:
-        engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
-                        WITH child AS (
-                          SELECT id FROM sms_batch
-                          WHERE batch_no=CAST(:batch_no AS char(32))
-                        )
-                        UPDATE sms_resend_supplement s
-                        SET state='submitted', child_batch_id=child.id,
-                          submitted_at=clock_timestamp()
-                        FROM child
-                        WHERE s.id=:id AND s.state='preview'
-                        """
-                    ),
-                    {"id": intent_id, "batch_no": child_batch_no},
-                )
-                await connection.execute(
-                    text(
-                        """
-                        UPDATE sms_resend_supplement_member mem
-                        SET claim_state='submitted',
-                          child_batch_id=s.child_batch_id
-                        FROM sms_resend_supplement s
-                        WHERE mem.supplement_id=s.id AND s.id=:id
-                          AND mem.claim_state='frozen'
-                        """
-                    ),
-                    {"id": intent_id},
-                )
-        finally:
-            await engine.dispose()
+
+async def _release_preview(connection: AsyncConnection, intent_id: UUID) -> None:
+    """释放已失效的冻结集合；不删除历史意图或已经提交的覆盖事实。"""
+    await connection.execute(
+        text("""
+        UPDATE sms_resend_supplement SET state='rejected'
+        WHERE id=:id AND state='preview'
+    """),
+        {"id": intent_id},
+    )
+    await connection.execute(
+        text("""
+        UPDATE sms_resend_supplement_member SET claim_state='released'
+        WHERE supplement_id=:id AND claim_state='frozen'
+    """),
+        {"id": intent_id},
+    )

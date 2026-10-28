@@ -195,7 +195,7 @@ SELECT id FROM sms_batch WHERE id=:batch_id FOR UPDATE
 """
 
 _LOCK_SQL = """
-SELECT t.id,t.batch_id,t.event
+SELECT t.id,t.batch_id,t.event,t.last_error
 FROM callback_task t
 WHERE t.id=:task_id
 FOR UPDATE
@@ -325,6 +325,11 @@ class FinishedRecoveryService:
             raise FinishedRecoveryRejected("回调任务不存在", "not_found", missing=True)
         if task["event"] != "batch.finished" or task["batch_id"] is None:
             raise FinishedRecoveryRejected("只有批次终态可以补发汇总", "not_legacy")
+        if task["last_error"] == "CallbackConfigRevoked":
+            raise FinishedRecoveryRejected(
+                "旧回调已因配置变更永久撤销，不能由它补发新事件",
+                "config_revoked",
+            )
         state = await connection.execute(text(_STATE_SQL), {"task_id": task_id})
         snapshot = state.mappings().one_or_none()
         if snapshot is None or snapshot["legacy_unavailable"] is not True:

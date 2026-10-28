@@ -58,6 +58,7 @@ _TRANSIENT_TYPE_NAMES = frozenset(
         "ConnectionResetError",
         "DeadlockDetectedError",
         "IdleInTransactionSessionTimeoutError",
+        "InternalClientError",
         "InterfaceError",
         "LockNotAvailableError",
         "OperationalError",
