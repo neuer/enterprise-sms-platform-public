@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
 from app.core.jobtrack import (
     JobRunSnapshot,
@@ -27,7 +27,7 @@ class CurrentAlert:
     alert_type: str
     level: AlertLevel
     title: str
-    detail: dict[str, Any]
+    detail: dict[str, object]
     since: datetime | None
     checked_at: datetime
     target: CurrentAlertTarget

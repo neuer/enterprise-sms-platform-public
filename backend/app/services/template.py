@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
 
 PLATFORM_PLACEHOLDER = re.compile(r"\{([1-9]\d*)\}")
 BRACED_TOKEN = re.compile(r"\{[^{}]*\}")
@@ -19,7 +18,7 @@ class TemplateParamMismatch(ValueError):
     code = "TEMPLATE_PARAM_MISMATCH"
     status_code = 422
 
-    def __init__(self, message: str, *, detail: dict[str, Any] | None = None) -> None:
+    def __init__(self, message: str, *, detail: dict[str, object] | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.detail = detail
@@ -36,7 +35,7 @@ class VarSpec:
 VarSpecInput = VarSpec | Mapping[str, object]
 
 
-def _mismatch(message: str, **detail: Any) -> TemplateParamMismatch:
+def _mismatch(message: str, **detail: object) -> TemplateParamMismatch:
     return TemplateParamMismatch(message, detail=detail or None)
 
 

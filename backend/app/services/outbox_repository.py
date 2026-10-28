@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -43,14 +43,14 @@ def _retry_audit_payload(
     *,
     aggregate_type: str,
     aggregate_id: str,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     """构造 outbox_retry 审计载荷；聚合主键不重复写入，仅批次以顶层 batch_no 引用。
 
     aggregate_id 可能是批次号或 UUID，其中的数字片段会命中手机号检测；
     object_id 已是 event_id，原始聚合主键可经 outbox_event 关联取得。
     """
 
-    after: dict[str, Any] = {
+    after: dict[str, object] = {
         "actor_account_id": principal.account_id,
         "actor_identity_id": principal.identity_id,
         "aggregate_type": aggregate_type,

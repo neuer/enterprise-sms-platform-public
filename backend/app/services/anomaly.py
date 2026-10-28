@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, timezone
-from typing import Any, Protocol
+from typing import Protocol
 
 CATEGORIES = {"verify", "notice", "market"}
 VERIFY_RECOMMENDATION = "建议：核查该应用调用来源，必要时停用 API Key 或轮换。"
@@ -41,7 +41,7 @@ class AlertEmitter(Protocol):
         alert_type: str,
         level: str,
         title: str,
-        detail: dict[str, Any],
+        detail: dict[str, object],
         dedup_key: str,
         dedup_hours: int = 4,
     ) -> None: ...
@@ -100,7 +100,7 @@ class AnomalyService:
         for sample in await self.repository.samples(scan_date):
             if not is_anomalous(sample, config):
                 continue
-            detail: dict[str, Any] = {
+            detail: dict[str, object] = {
                 "app_id": sample.app_id,
                 "category": sample.category,
                 "current_total": sample.current,

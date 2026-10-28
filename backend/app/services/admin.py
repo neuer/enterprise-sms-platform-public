@@ -54,8 +54,8 @@ class AuditRecord:
     action: str
     object_type: str | None
     object_id: str | None
-    before_val: dict[str, Any] | None
-    after_val: dict[str, Any] | None
+    before_val: dict[str, object] | None
+    after_val: dict[str, object] | None
     created_at: datetime
     actor_subject_kind: str = "legacy_unknown"
     actor_account_id: int | None = None

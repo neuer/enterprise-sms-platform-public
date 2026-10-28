@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Generic, Literal, Protocol, TypeVar
+from typing import Generic, Literal, Protocol, TypeVar
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.jobtrack import JobSpec
@@ -32,7 +32,7 @@ class AlertRecord:
     alert_type: str
     level: AlertLevel
     title: str
-    detail: dict[str, Any] | None
+    detail: dict[str, object] | None
     channels: str
     created_at: datetime
 

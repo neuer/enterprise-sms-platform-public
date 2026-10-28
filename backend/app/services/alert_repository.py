@@ -117,7 +117,7 @@ class SqlAlertRepository:
         alert_type: str,
         level: str,
         title: str,
-        detail: dict[str, Any],
+        detail: dict[str, object],
         channels: str,
         dedup_key: str,
         dedup_hours: int,

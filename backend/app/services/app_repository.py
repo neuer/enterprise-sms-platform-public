@@ -114,7 +114,7 @@ class SqlAppRepository:
         ip: str,
         action: str,
         app_id: int,
-        after: dict[str, Any] | None = None,
+        after: dict[str, object] | None = None,
     ) -> None:
         await connection.execute(
             text(

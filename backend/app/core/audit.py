@@ -58,8 +58,8 @@ class AuditEvent:
     object_id: str | None = None
     role: str | None = None
     ip: str | None = None
-    before: dict[str, Any] | None = None
-    after: dict[str, Any] | None = None
+    before: dict[str, object] | None = None
+    after: dict[str, object] | None = None
 
 
 def validate_audit_payload(value: object) -> None:

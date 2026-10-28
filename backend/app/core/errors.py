@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import Any
 
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
@@ -22,7 +21,7 @@ class ApiError(RuntimeError):
         status_code: int,
         code: str,
         message: str,
-        detail: dict[str, Any] | None = None,
+        detail: dict[str, object] | None = None,
         headers: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(message)
