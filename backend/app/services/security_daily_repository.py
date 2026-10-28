@@ -749,7 +749,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
     async def list_reports(self, query: SecurityDailyQuery) -> SecurityDailyPage:
         ensure_page_offset(query.page, query.page_size)
         predicates: list[str] = []
-        params: dict[str, Any] = {
+        params: dict[str, object] = {
             "limit": query.page_size,
             "offset": (query.page - 1) * query.page_size,
         }
@@ -829,7 +829,7 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         """按日期读取最新一条日报（可选限定生成来源）。"""
 
         predicates = "report_date=:report_date"
-        params: dict[str, Any] = {"report_date": report_date}
+        params: dict[str, object] = {"report_date": report_date}
         if generation_source is not None:
             predicates += " AND generation_source=:generation_source"
             params["generation_source"] = generation_source

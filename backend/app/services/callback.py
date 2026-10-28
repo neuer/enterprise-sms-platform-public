@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -317,7 +317,7 @@ class CallbackDelivery:
         self.clock = clock
         self.timeout_s = timeout_s
 
-    def _body(self, material: CallbackMaterial) -> dict[str, Any]:
+    def _body(self, material: CallbackMaterial) -> dict[str, object]:
         if material.task.event == "batch.finished" and material.batch is not None:
             batch_data = material.batch
             unknown = batch_data.unknown

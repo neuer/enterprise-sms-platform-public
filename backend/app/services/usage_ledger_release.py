@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 from uuid import UUID
 
 from sqlalchemy import text
@@ -435,7 +434,7 @@ class UsageReleaseMixin(UsageProjectionMixin):
         *,
         reservation_id: UUID | None = None,
         batch_no: str | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, object]:
         """解释计数来源，只返回主体 UUID 和窗口，不返回 HMAC 或手机号。"""
 
         if (reservation_id is None) == (batch_no is None):

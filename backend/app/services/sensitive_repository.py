@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -42,7 +41,7 @@ class SqlSensitiveWordRepository:
     ) -> SensitiveWordPage:
         ensure_page_offset(page, size)
         where = ""
-        params: dict[str, Any] = {"limit": size, "offset": (page - 1) * size}
+        params: dict[str, object] = {"limit": size, "offset": (page - 1) * size}
         if keyword is not None:
             where = " WHERE word ILIKE :keyword"
             params["keyword"] = f"%{_escape_like(keyword)}%"

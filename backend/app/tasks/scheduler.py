@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import NotRequired, TypedDict
 
 from sqlalchemy import text
 
@@ -30,7 +30,21 @@ CONFIGURABLE_JOB_SCHEDULES = {
 }
 
 
-def build_beat_schedule(config: dict[str, str]) -> dict[str, dict[str, Any]]:
+class BeatOptions(TypedDict):
+    queue: str
+    expires: NotRequired[int]
+
+
+class BeatEntry(TypedDict):
+    task: str
+    schedule: int
+    options: BeatOptions
+
+
+BeatSchedule = dict[str, BeatEntry]
+
+
+def build_beat_schedule(config: dict[str, str]) -> BeatSchedule:
     """构造固定到本次 beat 生命周期的调度表，不提供运行时热更。"""
 
     report_seconds = int(config.get("report_poll_seconds", "60"))
@@ -154,7 +168,7 @@ def build_beat_schedule(config: dict[str, str]) -> dict[str, dict[str, Any]]:
     }
 
 
-def apply_job_interval_overrides(schedule: dict[str, dict[str, Any]]) -> None:
+def apply_job_interval_overrides(schedule: BeatSchedule) -> None:
     """用进程启动快照校准可配置任务的心跳预期间隔。"""
 
     for schedule_name, job_name in CONFIGURABLE_JOB_SCHEDULES.items():
@@ -173,7 +187,7 @@ async def load_and_apply_job_intervals() -> None:
     apply_job_interval_overrides(await load_beat_schedule())
 
 
-async def load_beat_schedule() -> dict[str, dict[str, Any]]:
+async def load_beat_schedule() -> BeatSchedule:
     settings = get_settings()
     engine = database_engine(settings.database_url)
     try:
@@ -197,13 +211,13 @@ async def load_beat_schedule() -> dict[str, dict[str, Any]]:
         await engine.dispose()
 
 
-def encode_startup_schedule(schedule: dict[str, dict[str, Any]]) -> str:
+def encode_startup_schedule(schedule: BeatSchedule) -> str:
     """把不含凭据的启动调度编码给 Celery beat 子进程。"""
 
     return json.dumps(schedule, sort_keys=True, separators=(",", ":"))
 
 
-def decode_startup_schedule(raw: str | None) -> dict[str, dict[str, Any]]:
+def decode_startup_schedule(raw: str | None) -> BeatSchedule:
     """在 Celery scheduler 构造前恢复本次启动固定的调度。"""
 
     if raw is None:
@@ -219,10 +233,10 @@ def decode_startup_schedule(raw: str | None) -> dict[str, dict[str, Any]]:
     return value
 
 
-def load_startup_schedule() -> dict[str, dict[str, Any]]:
+def load_startup_schedule() -> BeatSchedule:
     """同步入口仅供 beat 父进程在创建 Celery 子进程前调用。"""
 
-    async def load_and_close() -> dict[str, dict[str, Any]]:
+    async def load_and_close() -> BeatSchedule:
         configure_runtime_resources(get_settings(), component="beat")
         try:
             return await load_beat_schedule()

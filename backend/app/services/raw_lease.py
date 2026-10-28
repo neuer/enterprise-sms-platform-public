@@ -205,7 +205,7 @@ async def record_raw_fencing_miss(
 async def execute_fenced_raw_update(
     connection: AsyncConnection,
     sql: str,
-    params: dict[str, Any],
+    params: dict[str, object],
     *,
     lease: RawProcessingLease,
 ) -> bool:
@@ -226,7 +226,7 @@ async def execute_fenced_raw_update(
 async def commit_fenced_raw_update(
     engine: ManagedAsyncEngine,
     sql: str,
-    params: dict[str, Any],
+    params: dict[str, object],
     *,
     lease: RawProcessingLease,
 ) -> None:

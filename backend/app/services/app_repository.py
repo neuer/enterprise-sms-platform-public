@@ -174,10 +174,10 @@ class SqlAppRepository:
         operation: str,
         app_id: int | None,
         expected_updated_at: datetime | None,
-        values: dict[str, Any],
+        values: dict[str, object],
     ) -> AsyncIterator[AsyncConnection]:
         """先锁授权主体，再锁回调权限与应用版本；审计失败时整体回滚。"""
-        parameters: dict[str, Any] = {}
+        parameters: dict[str, object] = {}
         if operation in {"app_create", "app_update"}:
             model = AppCreateRequest if app_id is None else AppUpdateRequest
             parameters["config"] = {key: values[key] for key in model.model_fields}

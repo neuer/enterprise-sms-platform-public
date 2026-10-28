@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
 
 from app.services.raw_spill import (
     CAPTURE_COMPLETE,
@@ -473,7 +472,7 @@ def historical_sql_case() -> tuple[str, str]:
     return parse_state, eligibility
 
 
-def disposition_payload(disposition: RawParseDisposition) -> dict[str, Any]:
+def disposition_payload(disposition: RawParseDisposition) -> dict[str, object]:
     """审计/API 只返回无 PII 的资格事实。"""
 
     return {

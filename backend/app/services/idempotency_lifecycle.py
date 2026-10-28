@@ -96,7 +96,7 @@ def require_completed_result(row: dict[str, Any]) -> None:
 
 async def reclaim_completed_result(
     connection: AsyncConnection,
-    params: dict[str, Any],
+    params: dict[str, object],
     batch_id: int | None,
 ) -> int | None:
     """持有批次与原 Claim 后重验事实，原子退役结果并推进 generation。"""

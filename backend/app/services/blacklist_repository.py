@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -195,7 +193,7 @@ class SqlBlacklistRepository:
     ) -> BlacklistPage:
         ensure_page_offset(page, size)
         where = ""
-        params: dict[str, Any] = {"limit": size, "offset": (page - 1) * size}
+        params: dict[str, object] = {"limit": size, "offset": (page - 1) * size}
         conditions: list[str] = []
         if source is not None:
             conditions.append("source=:source")
