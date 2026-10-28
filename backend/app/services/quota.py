@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any, Protocol
+
+from app.core.redis_eval import RedisEval
 
 RESERVE_LUA = """
 if ARGV[5] == '1' and redis.call('GET', KEYS[4]) ~= ARGV[6] then
@@ -102,9 +103,7 @@ end
 return {1, app_used, dept_used}
 """
 
-
-class QuotaRedis(Protocol):
-    async def eval(self, *args: Any) -> Any: ...
+QuotaRedis = RedisEval
 
 
 class QuotaExceeded(RuntimeError):

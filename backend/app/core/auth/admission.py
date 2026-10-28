@@ -17,6 +17,7 @@ from app.core.auth.admission_policy import ACTIVE_KEY, POLICY_KEY, WORK_KEY, Adm
 from app.core.auth.backends import AuthenticationPurpose, SessionStateUnavailable
 from app.core.auth.capacity_metrics import observe_recovery, observe_source
 from app.core.bounded_executor import BoundedWorkScope
+from app.core.redis_eval import RedisEval
 
 _FINISHING_TASKS: set[asyncio.Task[None]] = set()
 _GUARDS: WeakSet[LoginAdmission] = WeakSet()
@@ -258,7 +259,7 @@ return 1
 class LoginAdmission:
     def __init__(
         self,
-        store: Any,
+        store: RedisEval,
         policy_loader: Callable[[], Awaitable[AdmissionPolicy]],
         *,
         key: bytes,

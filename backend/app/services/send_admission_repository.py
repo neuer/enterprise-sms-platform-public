@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, Protocol
 
 from sqlalchemy import text
 
+from app.core.redis_eval import RedisEval
 from app.core.runtime_resources import ManagedAsyncEngine, database_engine, redis_client
 from app.services.callback_admission import UNRESOLVED_CALLBACK_DEAD_SQL
 from app.services.outbox import (
@@ -53,6 +54,10 @@ class AdmissionControlConflict(RuntimeError):
         super().__init__("admission control conflict")
 
 
+class AdmissionControlRedis(RedisEval, Protocol):
+    async def mget(self, *keys: str) -> list[str | None]: ...
+
+
 class SqlSendAdmissionRepository:
     """只读积压聚合 + 状态变化写入 alert_log；不读手机号、正文或 broker。"""
 
@@ -60,7 +65,7 @@ class SqlSendAdmissionRepository:
         self,
         settings: Settings | None = None,
         *,
-        redis: Any | None = None,
+        redis: AdmissionControlRedis | None = None,
         database_timeout_s: float = 2.0,
         control_timeout_s: float = 1.0,
     ) -> None:

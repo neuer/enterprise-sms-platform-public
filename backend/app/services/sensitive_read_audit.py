@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.principal_context import current_audit_principal
-from app.core.runtime_resources import database_engine
+from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.settings import Settings, get_settings
 
 
@@ -30,7 +28,7 @@ class SensitiveReadAuditor:
         principal = current_audit_principal()
         if principal is None:
             raise RuntimeError("sensitive read audit principal unavailable")
-        engine: Any = database_engine(self.settings.database_url)
+        engine: ManagedAsyncEngine = database_engine(self.settings.database_url)
         try:
             async with engine.begin() as connection:
                 await insert_audit(

@@ -6,8 +6,9 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
 from zoneinfo import ZoneInfo
+
+from app.core.redis_eval import RedisEval
 
 HMAC_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
@@ -61,10 +62,6 @@ if not current then
 end
 return {1, tonumber(current)}
 """
-
-
-class RedisEval(Protocol):
-    async def eval(self, *args: Any) -> Any: ...
 
 
 class FrequencyFenceLost(RuntimeError):

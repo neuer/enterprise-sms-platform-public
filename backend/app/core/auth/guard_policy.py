@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import hashlib
 from asyncio import Lock
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from time import monotonic
-from typing import Any
 
 from sqlalchemy import text
 
@@ -44,7 +43,7 @@ class AuthGuardPolicy:
     version: int
 
     @classmethod
-    def from_mapping(cls, supplied: Mapping[str, Any], *, version: int = 1) -> AuthGuardPolicy:
+    def from_mapping(cls, supplied: Mapping[str, object], *, version: int = 1) -> AuthGuardPolicy:
         values = {
             key: str(CONFIG_SPECS[key].default)
             for key in AUTH_GUARD_KEYS
@@ -73,7 +72,7 @@ class AuthGuardPolicy:
         return cls.from_mapping({})
 
 
-def _version_from_rows(rows: list[tuple[str, str, Any]]) -> int:
+def _version_from_rows(rows: Sequence[tuple[str, str, object]]) -> int:
     material = "|".join(f"{key}={value}" for key, value, _updated in sorted(rows))
     digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
     return int(digest[:12], 16)
@@ -88,7 +87,7 @@ class SqlAuthGuardPolicyLoader:
         *,
         cache_ttl_s: float = CACHE_TTL_SECONDS,
         stale_window_s: float = STALE_WINDOW_SECONDS,
-        clock: Any = monotonic,
+        clock: Callable[[], float] = monotonic,
     ) -> None:
         self.settings = settings or get_settings()
         self.cache_ttl_s = cache_ttl_s

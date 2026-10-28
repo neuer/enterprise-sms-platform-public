@@ -25,6 +25,7 @@ from app.core.auth.session_policy import (
     load_auth_session_policy,
     publish_auth_session_policy,
 )
+from app.core.redis_eval import RedisArg
 from app.core.runtime_resources import database_engine, redis_client
 from app.settings import Settings, get_settings
 
@@ -73,7 +74,7 @@ class _AuthRedis:
     def __init__(self, url: str) -> None:
         self.redis = redis_client(url)
 
-    async def eval(self, script: str, numkeys: int, *args: Any) -> Any:
+    async def eval(self, script: str, numkeys: int, *args: RedisArg) -> Any:
         try:
             return await self.redis.eval(script, numkeys, *args)
         except RedisError as error:

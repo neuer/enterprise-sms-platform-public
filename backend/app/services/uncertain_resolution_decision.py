@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.core.audit import AuditEvent, insert_audit
 from app.core.auth.accounts import SecurityPrincipal
-from app.core.runtime_resources import bind_connection_audit_subject
+from app.core.runtime_resources import ManagedAsyncEngine, bind_connection_audit_subject
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.uncertain_resolution import (
@@ -72,7 +70,7 @@ async def _require_current_admin(
 
 
 async def propose_resolution(
-    engine: Any,
+    engine: ManagedAsyncEngine,
     chunk_id: int,
     action: str,
     principal: SecurityPrincipal,
@@ -164,7 +162,7 @@ async def propose_resolution(
 
 
 async def confirm_resolution(
-    engine: Any,
+    engine: ManagedAsyncEngine,
     resolution_id: int,
     principal: SecurityPrincipal,
     *,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from app.core.redis_eval import RedisEval
 from app.vendor.codes import policy_for
 
 COUNTER_KEY = "alert:vendor:consecutive_failures"
@@ -40,10 +41,14 @@ CRITICAL_EVENTS: dict[int, tuple[str, str]] = {
 }
 
 
+class VendorAlertRedis(RedisEval, Protocol):
+    async def delete(self, *names: str) -> object: ...
+
+
 class RedisVendorAlertMonitor:
     """Redis 只保存短期连续次数；告警事实仍由 alert_log 持久化。"""
 
-    def __init__(self, redis: Any, alerts: AlertEmitter) -> None:
+    def __init__(self, redis: VendorAlertRedis, alerts: AlertEmitter) -> None:
         self.redis = redis
         self.alerts = alerts
 

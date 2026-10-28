@@ -11,7 +11,7 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import uuid4
 
 from redis import Redis
@@ -52,9 +52,9 @@ return 0
 class RedisLockClient(Protocol):
     """beat 锁所需的最小 Redis 接口。"""
 
-    def set(self, *args: Any, **kwargs: Any) -> Any: ...
+    def set(self, name: str, value: str, *, nx: bool, ex: int) -> object: ...
 
-    def eval(self, *args: Any) -> Any: ...
+    def eval(self, script: str, numkeys: int, *keys_and_args: str) -> object: ...
 
 
 class BeatProcess(Protocol):
@@ -95,7 +95,7 @@ class BeatLock:
         """仅锁持有者可以延长租期；Redis 异常视为失锁。"""
 
         try:
-            return bool(self.client.eval(RENEW_SCRIPT, 1, self.key, self.token, self.ttl_s))
+            return bool(self.client.eval(RENEW_SCRIPT, 1, self.key, self.token, str(self.ttl_s)))
         except Exception:
             return False
 

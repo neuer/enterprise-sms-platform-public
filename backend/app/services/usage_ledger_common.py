@@ -6,9 +6,11 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID
 from zoneinfo import ZoneInfo
+
+from app.core.redis_eval import RedisArg, RedisEval
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
@@ -45,14 +47,12 @@ RELEASE_EVENT_ID_PATTERN = re.compile(
 )
 
 
-class UsageRedis(Protocol):
-    async def eval(self, *args: Any) -> Any: ...
+class UsageRedis(RedisEval, Protocol):
+    async def get(self, name: str) -> str | None: ...
 
-    async def get(self, name: str) -> Any: ...
+    async def set(self, name: str, value: RedisArg, **kwargs: bool | int) -> bool | None: ...
 
-    async def set(self, name: str, value: Any, **kwargs: Any) -> Any: ...
-
-    async def mget(self, keys: Sequence[str]) -> list[Any]: ...
+    async def mget(self, keys: Sequence[str]) -> list[str | None]: ...
 
 
 class UsageProjectionUnavailable(RuntimeError):

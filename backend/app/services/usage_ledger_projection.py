@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import AsyncIterator, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -399,7 +399,7 @@ class UsageProjectionMixin:
     redis: UsageRedis
     settings: Settings
     pooled: bool
-    clock: Any
+    clock: Callable[[], datetime]
 
     def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)

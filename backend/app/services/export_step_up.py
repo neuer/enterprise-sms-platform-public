@@ -6,11 +6,12 @@ import hashlib
 import json
 import secrets
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol
+from typing import Protocol
 from uuid import UUID
 
 from app.core.audit import AuditEvent
 from app.core.auth.jwt import JwtClaims
+from app.core.redis_eval import RedisEval
 
 EXPORT_STEP_UP_TTL_SECONDS = 300
 _CONSUME_LUA = """
@@ -35,12 +36,10 @@ class ReauthenticationFacade(Protocol):
     ) -> object | None: ...
 
 
-class StepUpStore(Protocol):
-    async def set(self, key: str, value: str, *, ex: int) -> Any: ...
+class StepUpStore(RedisEval, Protocol):
+    async def set(self, key: str, value: str, *, ex: int) -> object: ...
 
-    async def delete(self, *keys: str) -> Any: ...
-
-    async def eval(self, script: str, numkeys: int, *args: Any) -> Any: ...
+    async def delete(self, *keys: str) -> object: ...
 
 
 def _binding(claims: JwtClaims, ip: str, public_id: UUID) -> str:

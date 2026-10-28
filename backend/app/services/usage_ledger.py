@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -92,7 +92,7 @@ class UsageLedgerService(UsageFrequencyMixin, UsageReleaseMixin):
         settings: Settings | None = None,
         *,
         pooled: bool = True,
-        clock: Any = utc_now,
+        clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self.redis = redis
         self.settings = settings or get_settings()

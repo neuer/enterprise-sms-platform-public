@@ -297,7 +297,7 @@ class JobTracker:
         self.clock = clock
 
     @staticmethod
-    def _items(result: Any) -> int:
+    def _items(result: object) -> int:
         return result if isinstance(result, int) and not isinstance(result, bool) else 0
 
     @staticmethod

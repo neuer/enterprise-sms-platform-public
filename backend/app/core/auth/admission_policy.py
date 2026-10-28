@@ -12,12 +12,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import text
 
 from app.core.auth.backends import SessionStateUnavailable
+from app.core.redis_eval import RedisEval
 from app.core.runtime_resources import database_engine
 from app.settings import Settings
 
@@ -177,7 +178,7 @@ class AdmissionPolicyRuntime:
     def __init__(
         self,
         settings: Settings,
-        store: Any,
+        store: RedisEval,
         *,
         loader: Callable[[], Awaitable[AdmissionPolicy]] | None = None,
         clock: Callable[[], float] = monotonic,

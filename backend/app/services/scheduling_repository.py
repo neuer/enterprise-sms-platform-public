@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
@@ -46,7 +45,7 @@ class SqlSchedulingRepository:
     def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
-    async def _dispose_task_engine(self, engine: Any) -> None:
+    async def _dispose_task_engine(self, engine: ManagedAsyncEngine) -> None:
         if not self.pooled:
             await engine.dispose()
 
