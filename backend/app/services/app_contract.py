@@ -111,7 +111,7 @@ def canonical_app_parameters(values: dict[str, Any], *, create: bool) -> dict[st
     return result
 
 
-def canonical_app_revision(value: Any) -> str:
+def canonical_app_revision(value: object) -> str:
     """版本仅接受有时区时间，归一到 UTC；拒绝数字时间戳和 naive 时间。"""
     if isinstance(value, str):
         value = datetime.fromisoformat(value.replace("Z", "+00:00"))

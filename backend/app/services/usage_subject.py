@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Literal
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -125,7 +125,7 @@ async def load_system_uncertain_resend_app(
     )
 
 
-def require_source_dept(value: Any) -> str:
+def require_source_dept(value: object) -> str:
     """源批次部门必须可恢复；禁止把固定字符串 web 当作缺省部门。"""
 
     dept = str(value or "").strip()

@@ -7,9 +7,8 @@ import json
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import RowMapping, text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.services.crypto import CryptoService, ProtectedPhone
@@ -55,7 +54,7 @@ def prepare_source_proof(
     crypto: CryptoService,
     resolution_id: int,
     generation: int,
-    rows: Sequence[Any],
+    rows: Sequence[RowMapping],
     mobiles: Sequence[str],
 ) -> UncertainSourceProof:
     """仅由服务端读取并受控解密源消息后签发，沿用现有文件型 HMAC 密钥。"""

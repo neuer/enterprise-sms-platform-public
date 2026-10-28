@@ -182,7 +182,7 @@ async def generate_security_daily_for_date(
                 generation_source=generation_source,
             )
         raw = await asyncio.to_thread(source.read_text, encoding="utf-8")
-        value: Any = json.loads(raw)
+        value: object = json.loads(raw)
         if not isinstance(value, dict):
             raise SecurityDailyValidationError("security report input must be an object")
         # 平台侧派生计算只消费已通过结构、时间和脱敏校验的快照；缺列或

@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -22,6 +22,9 @@ import httpx
 from app.core.correlation import current_correlation_id
 from app.core.sensitive_http import sensitive_http_request
 from app.services.crypto import CryptoService, EncryptionContext
+
+if TYPE_CHECKING:
+    from app.services.app_management import ApprovedCallbackTarget
 
 LOGGER = logging.getLogger(__name__)
 
@@ -139,7 +142,7 @@ class CallbackMaterialRepository(Protocol):
 
 
 class OutboundValidator(Protocol):
-    async def validate_for_outbound(self, url: str) -> Any: ...
+    async def validate_for_outbound(self, url: str) -> ApprovedCallbackTarget | str: ...
 
 
 class CallbackTransport(Protocol):

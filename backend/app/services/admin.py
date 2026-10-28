@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
+from ipaddress import IPv4Network, IPv6Network
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -144,7 +145,7 @@ class AdminService:
         repository: AdminRepository,
         *,
         allowed_smtp_hosts: set[str] | frozenset[str] | None = None,
-        callback_egress_networks: tuple[Any, ...] | None = None,
+        callback_egress_networks: tuple[IPv4Network | IPv6Network, ...] | None = None,
         session_policy_publisher: Callable[[AuthSessionPolicy], Awaitable[None]] | None = None,
     ) -> None:
         self.repository = repository
@@ -328,7 +329,7 @@ class AdminService:
         return await self.repository.list_audit_actions()
 
 
-def _config_revision(value: Any) -> str:
+def _config_revision(value: object) -> str:
     """配置 CAS 版本使用读取时的带时区时间，不能猜测或省略。"""
     try:
         return canonical_app_revision(value)
@@ -336,7 +337,7 @@ def _config_revision(value: Any) -> str:
         raise InvalidAdminQuery("配置版本必须为带时区时间") from None
 
 
-def canonical_config_intent_items(items: Any) -> list[dict[str, Any]]:
+def canonical_config_intent_items(items: object) -> list[dict[str, Any]]:
     """授权白名单按键排序；敏感项只记录动作，不接收凭据摘要。"""
     if not isinstance(items, list) or not 1 <= len(items) <= 50:
         raise InvalidAdminQuery("配置更新数量无效")

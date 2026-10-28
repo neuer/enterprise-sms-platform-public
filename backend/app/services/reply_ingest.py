@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from zoneinfo import ZoneInfo
 
 from app.services.alert import emit_alert_best_effort
@@ -40,6 +40,7 @@ from app.services.raw_spill import (
     manage_raw_spill_stream,
     spill_file_identity_matches,
 )
+from app.services.report_ingest import AlertEmitter
 from app.vendor.identifiers import (
     degrade_vendor_identifier,
     protect_vendor_custom_id,
@@ -53,11 +54,14 @@ from app.vendor.zhihui import (
     decode_pulled_payload,
 )
 
+if TYPE_CHECKING:
+    from app.services.raw_spill_stream import RawSpillStream
+
 LOGGER = logging.getLogger(__name__)
 VENDOR_LOCAL_TIME = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?")
 
 
-def _discard_unused_stream(stream: Any) -> None:
+def _discard_unused_stream(stream: object) -> None:
     """仅释放 announce 前的 header-only 租约；已 announce 的捕获留给恢复。"""
 
     discard_header_only_stream(stream)
@@ -88,11 +92,11 @@ class ProtectedReply:
 
 
 class ReplyGateway(Protocol):
-    async def get_reply_raw(self, body_sink: Any | None = None) -> RawPulledPayload: ...
+    async def get_reply_raw(self, body_sink: object | None = None) -> RawPulledPayload: ...
 
 
 class ReplyRepository(Protocol):
-    async def persist_raw(self, **values: Any) -> int: ...
+    async def persist_raw(self, **values: object) -> int: ...
 
     async def update_metadata(
         self,
@@ -155,7 +159,7 @@ class ReplyIngestService:
         repository: ReplyRepository,
         crypto: CryptoService,
         *,
-        alerts: Any | None = None,
+        alerts: AlertEmitter | None = None,
         spill: RawSpillStore | None = None,
     ) -> None:
         self.gateway = gateway
@@ -328,7 +332,7 @@ class ReplyIngestService:
             title="raw spill 配额已满，已停止继续拉取以防消费缺口",
         )
 
-    async def _alert_artifact_quarantine(self, result: Any) -> None:
+    async def _alert_artifact_quarantine(self, result: object) -> None:
         """不可认证/损坏/孤儿对象离开活动配额必须可观测；载荷不含 PII 或路径。"""
 
         isolated = int(getattr(result, "isolated", 0) or 0)
@@ -389,7 +393,7 @@ class ReplyIngestService:
             dedup_key="vendor_raw_quarantine_capacity:reply",
         )
 
-    async def _alert_cipherq_manifest_only(self, result: Any) -> None:
+    async def _alert_cipherq_manifest_only(self, result: object) -> None:
         """清单无密文必须有确定终态告警；载荷不含路径或密文。"""
 
         dropped = int(getattr(result, "cipherq_manifest_only", 0) or 0)
@@ -502,7 +506,7 @@ class ReplyIngestService:
         content_encoding: str,
         payload_enc: bytes,
         capture_state: str,
-        stream: Any | None,
+        stream: RawSpillStream | None,
     ) -> int:
         """PostgreSQL 提交成功前不得删除 stream，除非 secondary spill 已 fsync。"""
 
@@ -556,7 +560,7 @@ class ReplyIngestService:
         *,
         status_code: int,
         complete: bool,
-        stream: Any | None = None,
+        stream: RawSpillStream | None = None,
     ) -> None:
         """超限响应的已读部分仍按拉走即消费落密文；截断不得当作正常可重放。"""
 

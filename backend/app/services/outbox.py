@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol, TypeVar, cast
+from typing import Protocol, TypeVar, cast
 from uuid import UUID
 
 from app.core.correlation import correlation_scope
@@ -190,7 +190,7 @@ class OutboxEventPage:
     page_size: int
 
 
-def _assert_safe(value: Any, *, key: str | None = None) -> None:
+def _assert_safe(value: object, *, key: str | None = None) -> None:
     if key is not None and key.casefold() in FORBIDDEN_KEYS:
         raise ValueError("outbox args contain a forbidden field")
     if isinstance(value, dict):

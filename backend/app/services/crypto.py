@@ -12,7 +12,7 @@ import os
 import re
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Protocol
+from typing import Protocol
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -116,7 +116,7 @@ class ParsedKeyring:
 _ParsedKeyring = ParsedKeyring
 
 
-def _decode_key(encoded: Any, *, label: str, version: int) -> bytes:
+def _decode_key(encoded: object, *, label: str, version: int) -> bytes:
     if not isinstance(encoded, str):
         raise ValueError(f"{label} key version {version} must be base64 text")
     try:

@@ -6,7 +6,6 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from ipaddress import IPv4Network, IPv6Network, ip_network
-from typing import Any
 
 from sqlalchemy import text
 
@@ -327,7 +326,7 @@ class RuntimePolicy:
     approval_expire_hours: int
 
     @classmethod
-    def from_mapping(cls, supplied: Mapping[str, Any]) -> RuntimePolicy:
+    def from_mapping(cls, supplied: Mapping[str, object]) -> RuntimePolicy:
         values = DEFAULTS | {key: str(value) for key, value in supplied.items()}
         from app.core.auth.admission_policy import AdmissionLimits
 

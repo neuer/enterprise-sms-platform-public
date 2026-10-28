@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any, cast
+from typing import cast
 
 from sqlalchemy import RowMapping, text
 from sqlalchemy.exc import IntegrityError
@@ -572,7 +572,7 @@ class SqlUserManagementRepository:
         finally:
             await engine.dispose()
 
-    async def _locked(self, connection: AsyncConnection, account_id: int) -> Any:
+    async def _locked(self, connection: AsyncConnection, account_id: int) -> RowMapping:
         result = await connection.execute(
             text(
                 f"""

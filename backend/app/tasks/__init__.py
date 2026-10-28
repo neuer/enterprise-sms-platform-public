@@ -2,8 +2,11 @@
 
 import logging
 import os
+from contextvars import Token
 from importlib import import_module
+from types import TracebackType
 from typing import Any
+from uuid import UUID
 
 from celery import Celery
 from celery.signals import (
@@ -118,7 +121,7 @@ TRANSIENT_TASK_ERRORS = (
 )
 
 
-def background_task_options(*, soft_time_limit: int, time_limit: int) -> dict[str, Any]:
+def background_task_options(*, soft_time_limit: int, time_limit: int) -> dict[str, object]:
     """返回后台任务的有限重试与超时策略。"""
 
     if soft_time_limit <= 0 or time_limit <= soft_time_limit:
@@ -137,7 +140,7 @@ def background_task_options(*, soft_time_limit: int, time_limit: int) -> dict[st
 
 
 celery_app = app
-_task_correlation_tokens: dict[str, Any] = {}
+_task_correlation_tokens: dict[str, Token[UUID | None]] = {}
 LOGGER = logging.getLogger(__name__)
 
 from app.tasks.scheduler import (  # noqa: E402
@@ -178,8 +181,8 @@ def reset_task_correlation(task_id: str | None = None, **_: object) -> None:
 def log_task_failure(
     task_id: str | None = None,
     exception: BaseException | None = None,
-    traceback: Any = None,
-    sender: Any = None,
+    traceback: TracebackType | None = None,
+    sender: object = None,
     **_: object,
 ) -> None:
     """未知任务异常记录堆栈和安全关联字段，不记录任务参数。"""

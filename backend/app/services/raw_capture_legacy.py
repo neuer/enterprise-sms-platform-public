@@ -341,7 +341,7 @@ def build_inventory(rows: Sequence[RawInventoryInput]) -> dict[str, Any]:
     }
 
 
-def _walk_keys(value: Any) -> list[str]:
+def _walk_keys(value: object) -> list[str]:
     keys: list[str] = []
     if isinstance(value, Mapping):
         for key, item in value.items():

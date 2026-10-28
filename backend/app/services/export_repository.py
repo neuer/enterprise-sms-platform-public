@@ -6,7 +6,6 @@ import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import RowMapping, text
@@ -308,7 +307,7 @@ class SqlExportRepository:
         principal: SecurityPrincipal,
         retention_days: int,
         locked: bool,
-    ) -> Any:
+    ) -> RowMapping | None:
         result = await connection.execute(
             text(DOWNLOADABLE_SELECT + (" FOR SHARE" if locked else "")),
             {

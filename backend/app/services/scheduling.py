@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import Protocol
 
 from app.services.batch_query import BatchAccessScope
 from app.services.category import queue_for_category
@@ -55,7 +55,7 @@ class SchedulingQuota(Protocol):
         cost: int,
         event_id: str,
         marker_ttl_s: int,
-    ) -> Any: ...
+    ) -> object: ...
 
 
 class SchedulingPublisher(Protocol):
