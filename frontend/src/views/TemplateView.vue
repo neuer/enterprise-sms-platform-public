@@ -25,7 +25,7 @@ import StatusTag from "../components/StatusTag.vue"
 import TemplateDetailDrawer from "../components/TemplateDetailDrawer.vue"
 import { useMobileLayout } from "../composables/useMobileLayout"
 import { useConfirmActions } from "../lib/confirm"
-const { confirmAuditedAction } = useConfirmActions()
+const { confirmAuditedAction, captureCurrent } = useConfirmActions()
 import { errorText } from "../lib/error"
 import { roleNames, vendorReviewSub, type VendorReviewSub } from "../lib/labels"
 import { useSessionStore } from "../stores/session"
@@ -160,6 +160,7 @@ async function submit(): Promise<void> {
     ElMessage.warning(contentIssue.value)
     return
   }
+  const isCurrent = captureCurrent()
   const generation = editorGeneration.value
   const submittedName = form.name.trim()
   const editingId = editingSource.value?.id ?? null
@@ -172,6 +173,7 @@ async function submit(): Promise<void> {
     }
     if (editingId === null) await createTemplate(payload)
     else await updateTemplate(editingId, payload)
+    if (!isCurrent()) return
     if (generation !== editorGeneration.value) {
       ElMessage.success(`模板「${submittedName}」已提交，当前编辑未改动`)
       await load()
@@ -181,6 +183,7 @@ async function submit(): Promise<void> {
     editorOpen.value = false
     await load()
   } catch (error) {
+    if (!isCurrent()) return
     const message = errorText(error, "模板提交失败")
     if (generation !== editorGeneration.value) {
       ElMessage.error(`模板「${submittedName}」提交失败：${message}`)
@@ -194,15 +197,17 @@ async function submit(): Promise<void> {
 
 async function sync(item: SmsTemplate): Promise<void> {
   if (syncingId.value !== null) return
+  const isCurrent = captureCurrent()
   syncingId.value = item.id
   try {
     await syncTemplate(item.id)
+    if (!isCurrent()) return
     ElMessage.success("审核状态同步请求已入队")
     await load()
   } catch (error) {
-    ElMessage.error(errorText(error, "审核状态同步失败"))
+    if (isCurrent()) ElMessage.error(errorText(error, "审核状态同步失败"))
   } finally {
-    syncingId.value = null
+    if (isCurrent()) syncingId.value = null
   }
 }
 
@@ -211,6 +216,7 @@ const removingId = ref<number | null>(null)
 async function remove(item: SmsTemplate): Promise<void> {
   item = { ...item }
   if (removingId.value !== null) return
+  const isCurrent = captureCurrent()
   removingId.value = item.id
   try {
     if (
@@ -223,12 +229,13 @@ async function remove(item: SmsTemplate): Promise<void> {
     )
       return
     await deleteTemplate(item.id)
+    if (!isCurrent()) return
     ElMessage.success("模板已删除 · 本次操作已记入审计")
     await load()
   } catch (error) {
-    ElMessage.error(errorText(error, "模板删除失败"))
+    if (isCurrent()) ElMessage.error(errorText(error, "模板删除失败"))
   } finally {
-    removingId.value = null
+    if (isCurrent()) removingId.value = null
   }
 }
 

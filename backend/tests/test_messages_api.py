@@ -391,8 +391,8 @@ def test_send_api_exposes_idempotency_expires_header(
         },
     )
     assert response.status_code == 200
-    assert response.headers["idempotency-expires-at"] == "2026-09-05T08:00:00Z"
-    assert response.json()["idempotency_expires_at"] == "2026-09-05T08:00:00Z"
+    assert response.headers["idempotency-expires-at"] == "2026-09-05T16:00:00+08:00"
+    assert response.json()["idempotency_expires_at"] == "2026-09-05T16:00:00+08:00"
 
 
 def test_send_api_maps_admission_closed_to_503_with_retry_after(

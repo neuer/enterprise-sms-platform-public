@@ -212,10 +212,11 @@ paths:
                   quota_cost: { type: integer, description: 本批次配额消耗 = accepted × est_segments（v1.2） }
                   status: { type: string, enum: [queued, scheduled, sending, completed, completed_unknown, cancelled, balance_blocked, pending_approval, rejected, expired] }
                   deferred_reason: { anyOf: [{ type: string, const: market_window }, { type: 'null' }] }
-                  scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-                  idempotency_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                  scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 首次受理与幂等重放均返回上海时区 ISO8601 +08:00，绝对时刻不变 }
+                  idempotency_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 上海时区 ISO8601 +08:00 的幂等保护截止时间 }
           headers:
             Idempotency-Expires-At:
+              description: 上海时区 ISO8601 +08:00 的幂等保护截止时间，与响应字段一致
               schema: { type: string, format: date-time }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
@@ -303,8 +304,8 @@ paths:
                   quota_cost: { type: integer }
                   status: { type: string, enum: [queued, scheduled, sending, completed, completed_unknown, cancelled, balance_blocked, pending_approval, rejected, expired] }
                   deferred_reason: { anyOf: [{ type: string, const: market_window }, { type: 'null' }] }
-                  scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-                  idempotency_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                  scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 首次受理与幂等重放均返回上海时区 ISO8601 +08:00，绝对时刻不变 }
+                  idempotency_expires_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 上海时区 ISO8601 +08:00 的幂等保护截止时间 }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -707,7 +708,7 @@ paths:
                   est_segments: { type: integer }
                   quota_cost: { type: integer }
                   deferred_reason: { anyOf: [{ type: string }, { type: 'null' }] }
-                  scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+                  scheduled_at: { anyOf: [{ type: string, format: date-time }, { type: 'null' }], description: 首次受理与幂等重放均返回上海时区 ISO8601 +08:00，绝对时刻不变 }
         '400': { description: INVALID_PARAM, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { description: FORBIDDEN, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }

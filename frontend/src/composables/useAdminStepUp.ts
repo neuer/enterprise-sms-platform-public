@@ -66,7 +66,11 @@ export function useAdminStepUp() {
     })
     if (!token || disposed || generation !== current) return undefined
     try {
-      return await action(token)
+      const result = await action(token)
+      return !disposed && generation === current ? result : undefined
+    } catch (error) {
+      if (!disposed && generation === current) throw error
+      return undefined
     } finally {
       token = null
     }

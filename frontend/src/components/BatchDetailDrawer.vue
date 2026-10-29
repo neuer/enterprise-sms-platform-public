@@ -81,7 +81,7 @@ async function revealPhone(messageId: number): Promise<string> {
         class="batch-status-unconfirmed"
         type="warning"
         :closable="false"
-        title="暂时无法确认该批次的最新状态，取消和改期已暂停。"
+        title="暂时无法确认该批次的最新状态，取消、改期、重发和补发已暂停。"
         data-testid="batch-status-unconfirmed"
         show-icon
       >
@@ -118,6 +118,7 @@ async function revealPhone(messageId: number): Promise<string> {
         <el-button
           v-if="selected.resend_block_reason === 'supplement_required'"
           :loading="resending"
+          :disabled="detailUnconfirmed || resending"
           data-testid="resend-supplement"
           @click="emit('supplement')"
           >补发未覆盖（{{ formatNumber(selected.resend_uncovered_failed) }}）</el-button

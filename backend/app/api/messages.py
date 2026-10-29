@@ -639,9 +639,7 @@ async def send_message(
     ) as error:
         raise _error(error) from None
     if result.idempotency_expires_at is not None:
-        response.headers["Idempotency-Expires-At"] = (
-            result.idempotency_expires_at.isoformat().replace("+00:00", "Z")
-        )
+        response.headers["Idempotency-Expires-At"] = result.idempotency_expires_at.isoformat()
     return result
 
 

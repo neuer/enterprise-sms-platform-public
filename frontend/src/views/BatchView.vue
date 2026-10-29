@@ -180,7 +180,7 @@ function filterDetails(): void {
 
 const canResendFailed = computed(() => {
   const batch = selected.value
-  if (!canWrite.value || batch?.channel !== "web") return false
+  if (!canWrite.value || detailUnconfirmed.value || batch?.channel !== "web") return false
   if (batch.can_resend_failed === false) return false
   if (batch.can_resend_failed === true) return true
   return (batch.failed ?? 0) > 0
@@ -190,8 +190,9 @@ const { resending, resendChild, resendFailed, supplementUncovered } = useBatchRe
   selected,
   drawer,
   canResendFailed,
+  detailUnconfirmed,
   openToken: () => openToken,
-  reloadList: load,
+  refreshSelected: retrySelectedRead,
 })
 
 /** 重发溯源跳转：复用批次号模糊筛选定位源批次 */
