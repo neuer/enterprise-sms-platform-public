@@ -7,6 +7,7 @@ import { useSessionStore } from "../src/stores/session"
 import type { BatchItem } from "../src/api/queries"
 const api = vi.hoisted(() => ({
   cancelBatch: vi.fn(),
+  getBatch: vi.fn(),
   resendFailedBatch: vi.fn().mockResolvedValue({
     batch_no: "new",
     resend_of: "original",
@@ -148,6 +149,13 @@ it("首次重发提示已创建，完成后重复操作提示既有子批次状�
     other: 0,
     scheduled_at: null,
   } as BatchItem
+  api.getBatch.mockResolvedValue({
+    ...vm.selected,
+    can_resend_failed: true,
+    resend_child_batch_no: "child-1",
+    resend_covered_failed: 1,
+    resend_uncovered_failed: 0,
+  })
   await vm.resendFailed()
   await flushPromises()
   expect(toast).toHaveBeenCalledWith("重发批次 child-1 已创建，当前状态：排队中 · 本次操作已记入审计")
@@ -159,6 +167,7 @@ it("首次重发提示已创建，完成后重复操作提示既有子批次状�
   expect(toast).toHaveBeenCalledWith("重发批次 child-1 已存在，当前状态：已完成")
   expect(wrapper.get("[data-testid='view-resend-batch']").text()).toContain("已完成")
   expect(api.resendFailedBatch).toHaveBeenCalledTimes(2)
+  expect(api.getBatch).toHaveBeenCalledTimes(2)
   wrapper.unmount()
 })
 

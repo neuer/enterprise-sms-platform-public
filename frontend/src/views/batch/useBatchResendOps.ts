@@ -10,8 +10,9 @@ export function useBatchResendOps(deps: {
   selected: Ref<BatchItem | null>
   drawer: Ref<boolean>
   canResendFailed: ComputedRef<boolean>
+  detailUnconfirmed: Ref<boolean>
   openToken: () => number
-  reloadList: () => Promise<void>
+  refreshSelected: () => Promise<void>
 }) {
   const { confirmAuditedAction, captureCurrent } = useConfirmActions()
   const resending = ref(false)
@@ -49,7 +50,7 @@ export function useBatchResendOps(deps: {
           ? `重发批次 ${result.batch_no} 已存在，当前状态：${statusLabel}`
           : `重发批次 ${result.batch_no} 已创建，当前状态：${statusLabel} · 本次操作已记入审计`,
       )
-      await deps.reloadList()
+      await deps.refreshSelected()
     } catch (error) {
       if (!isCurrent()) return
       ElMessage.error(errorText(error, "重发失败"))
@@ -60,7 +61,13 @@ export function useBatchResendOps(deps: {
 
   async function supplementUncovered(): Promise<void> {
     const batch = deps.selected.value
-    if (!batch || resending.value || batch.resend_block_reason !== "supplement_required") return
+    if (
+      !batch ||
+      resending.value ||
+      deps.detailUnconfirmed.value ||
+      batch.resend_block_reason !== "supplement_required"
+    )
+      return
     const isCurrent = captureResendDetail(batch.batch_no)
     resending.value = true
     try {
@@ -80,7 +87,7 @@ export function useBatchResendOps(deps: {
       if (!isCurrent()) return
       resendChild.value = { parent: batch.batch_no, batchNo: result.batch_no, status: result.status }
       ElMessage.success("未覆盖号码已进入新批次 · 本次操作已记入审计")
-      await deps.reloadList()
+      await deps.refreshSelected()
     } catch (error) {
       if (!isCurrent()) return
       ElMessage.error(errorText(error, "补发未覆盖号码失败"))
