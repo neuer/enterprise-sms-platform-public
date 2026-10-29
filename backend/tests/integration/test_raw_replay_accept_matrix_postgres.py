@@ -459,8 +459,9 @@ async def test_sms_accept_login_cannot_widen_replay_or_audit_privileges(accept_w
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("rollover", [False, True], ids=["current-minute", "previous-minute"])
 async def test_sms_accept_http_replays_empty_and_nonempty_raw(
-    accept_world: Any, monkeypatch: pytest.MonkeyPatch
+    accept_world: Any, monkeypatch: pytest.MonkeyPatch, rollover: bool
 ) -> None:
     replay, resolution, repository = _services(accept_world)
     monkeypatch.setattr(ops_api, "_resolution_service", lambda: resolution)
@@ -595,7 +596,10 @@ async def test_sms_accept_http_replays_empty_and_nonempty_raw(
         replay_eligibility="never",
         parse_state="protocol_invalid",
     )
-    concurrent_raw = await store("report", [_report_item(matched_custom, "concurrent")])
+    concurrent_report = _report_item(matched_custom, "concurrent")
+    # 相同时间与状态会按事件键排序，随机 custom_id 不能决定测试是否产生修订。
+    concurrent_report["reportTime"] = "2026-07-15T16:00:01+08:00"
+    concurrent_raw = await store("report", [concurrent_report])
 
     transport = httpx.ASGITransport(app=application)
     async with httpx.AsyncClient(transport=transport, base_url="http://sms.test") as client:
@@ -645,6 +649,20 @@ async def test_sms_accept_http_replays_empty_and_nonempty_raw(
             client, f"/api/v1/web/admin/raw-logs/{illegal_raw}/replay", "proposer"
         )
         assert illegal.status_code == 409
+
+    if rollover:
+        # 显式老化本测试任务，稳定覆盖分钟边界，不依赖 CI 恰好在整分运行。
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE callback_task
+                    SET created_at=date_trunc('minute',now())-interval '1 minute'
+                    WHERE batch_id=:batch AND event='message.report'
+                    """
+                ),
+                {"batch": matched[0]},
+            )
 
     async def replay_once() -> str:
         with correlation_scope(uuid4()):
@@ -802,34 +820,49 @@ async def test_sms_accept_http_replays_empty_and_nonempty_raw(
         )
         assert blacklist_after == blacklist_before
 
-        appended = (
-            await connection.execute(
-                text(
-                    """
-                    SELECT count(*) tasks,max(cardinality(message_ids)) refs
-                    FROM callback_task
-                    WHERE batch_id=:batch AND event='message.report'
-                    """
-                ),
-                {"batch": append[0]},
-            )
-        ).mappings().one()
-        assert int(appended["tasks"]) == 1
-        assert int(appended["refs"]) == 1
-        created_tasks = int(
-            (
+        async def assert_report_references(batch: int, descriptions: set[str]) -> int:
+            """跨分钟允许新任务，但每条报告事实只能被引用一次。"""
+            tasks = (
                 await connection.execute(
                     text(
                         """
-                        SELECT count(*) FROM callback_task
+                        SELECT date_trunc('minute',created_at) bucket,event_keys,
+                               cardinality(message_ids) messages,
+                               cardinality(message_times) times
+                        FROM callback_task
                         WHERE batch_id=:batch AND event='message.report'
                         """
                     ),
-                    {"batch": matched[0]},
+                    {"batch": batch},
                 )
-            ).scalar_one()
-        )
-        assert created_tasks == 1
+            ).mappings().all()
+            assert len(tasks) == len({task["bucket"] for task in tasks})
+            keys = [str(key).strip() for task in tasks for key in task["event_keys"]]
+            assert len(keys) == len(set(keys)) == len(descriptions)
+            assert all(
+                task["messages"] == task["times"] == len(task["event_keys"])
+                for task in tasks
+            )
+            events = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT event_key,report_desc FROM callback_report_event
+                        WHERE batch_id=:batch
+                        """
+                    ),
+                    {"batch": batch},
+                )
+            ).mappings().all()
+            assert set(keys) == {str(event["event_key"]).strip() for event in events}
+            assert {event["report_desc"] for event in events} == descriptions
+            return len(tasks)
+
+        assert await assert_report_references(append[0], {"append"}) in {1, 2}
+        created_tasks = await assert_report_references(matched[0], {"delivered", "concurrent"})
+        assert created_tasks in {1, 2}
+        if rollover:
+            assert created_tasks == 2
 
         concurrent_events = int(
             (

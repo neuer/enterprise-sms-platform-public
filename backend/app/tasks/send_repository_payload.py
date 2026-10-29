@@ -202,13 +202,19 @@ class ChunkPayloadMixin:
                     text(
                         "SELECT id, category, status, app_id, "
                         "usage_reservation_id, segments FROM sms_batch "
-                        "WHERE batch_no=:batch_no "
-                        "AND status IN ('queued','sending') FOR UPDATE"
+                        "WHERE batch_no=:batch_no FOR UPDATE"
                     ),
                     {"batch_no": batch_no},
                 )
                 batch = batch_result.mappings().one_or_none()
-                if batch is None or str(batch["status"]) not in {"queued", "sending"}:
+                if batch is None:
+                    raise RuntimeError("批次状态不允许发送")
+                if str(batch["status"]) in {
+                    "completed", "completed_unknown", "cancelled", "rejected", "expired",
+                }:
+                    # 子分片可能先于 batch.ready 的完成确认进入终态；遗留事件只确认完成。
+                    return [], self.lane_for(str(batch["category"]))
+                if str(batch["status"]) not in {"queued", "sending"}:
                     raise RuntimeError("批次状态不允许发送")
                 batch_id = int(batch["id"])
                 existing = await connection.execute(
