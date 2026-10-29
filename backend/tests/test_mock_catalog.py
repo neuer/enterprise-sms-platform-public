@@ -4,6 +4,7 @@ import pytest
 
 from app.vendor.mock_catalog import (
     CatalogError,
+    CatalogLoad,
     CatalogSnapshot,
     FileCatalogStore,
     MemoryCatalogStore,
@@ -46,11 +47,21 @@ def test_volatile_reset_keeps_catalog_and_explicit_reset_clears_it(tmp_path: Pat
         assert state._allocate("template", "重新开始") == 1
 
 
-def test_corrupt_or_oversized_catalog_is_not_silently_zeroed(tmp_path: Path) -> None:
+def test_corrupt_or_oversized_catalog_is_not_silently_zeroed(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     path = tmp_path / "catalog.json"
     path.write_text("{", encoding="utf-8")
-    broken = MockState(FileCatalogStore(path))
+    with caplog.at_level("WARNING"):
+        broken = MockState(FileCatalogStore(path))
     assert broken.catalog_status == "invalid"
+    assert broken.catalog_error == "Mock 目录无效"
+    assert "无法读取" not in broken.catalog_error
+    assert "Traceback" not in broken.catalog_error
+    assert str(path) not in broken.catalog_error
+    assert any("Mock 目录无法读取" in record.getMessage() for record in caplog.records)
+    with pytest.raises(CatalogError, match="^Mock 目录无效$"):
+        broken.reset_catalog_state()
     with broken.lock:
         assert broken._allocate("template", "不会成功") is None
     assert broken.template_sequence == 0
@@ -64,3 +75,21 @@ def test_corrupt_or_oversized_catalog_is_not_silently_zeroed(tmp_path: Path) -> 
     memory.save(CatalogSnapshot(2, 0, {1: 1, 2: 1}, {}))
     with pytest.raises(CatalogError):
         memory.save(CatalogSnapshot(1, 0, {2: 1}, {}))
+
+
+def test_catalog_save_failure_is_not_copied_into_public_state() -> None:
+    class RejectingCatalog:
+        persistent = False
+
+        def load(self) -> CatalogLoad:
+            return CatalogLoad(CatalogSnapshot.empty(), "ok")
+
+        def save(self, snapshot: CatalogSnapshot) -> None:
+            raise CatalogError("internal catalog detail")
+
+    state = MockState(RejectingCatalog())
+    with state.lock:
+        assert state._allocate("template", "正文") is None
+    assert state.catalog_status == "invalid"
+    assert state.catalog_error == "Mock 目录无效"
+    assert "internal catalog detail" not in state.catalog_error

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 import app.vendor.mock_server as mock_module
+from app.vendor.mock_catalog import FileCatalogStore
 
 AUTH = {"secretName": "dev-name", "secretKey": "dev-key"}
 
@@ -249,3 +251,26 @@ def test_send_latency_does_not_delay_consuming_report_endpoint(
         assert client.post("/_mock/state", json={"send_latency_ms": 60_001}).status_code == 422
         assert client.post("/_mock/state", json={"reset": True}).status_code == 200
         assert client.get("/_mock/state").json()["send_latency_ms"] == 0
+
+
+def test_mock_state_response_hides_catalog_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "catalog.json"
+    path.write_text("{", encoding="utf-8")
+    monkeypatch.setattr(mock_module, "STATE", mock_module.MockState(FileCatalogStore(path)))
+    with TestClient(mock_module.app) as client:
+        listed = client.get("/_mock/state")
+        refused = client.post("/_mock/state", json={"reset_catalog": True})
+    body = listed.text
+    assert listed.status_code == 200
+    assert listed.json()["catalog"]["status"] == "invalid"
+    assert listed.json()["catalog"]["error"] == "Mock 目录无效"
+    assert "Traceback" not in body
+    assert "JSONDecodeError" not in body
+    assert "无法读取" not in body
+    assert str(path) not in body
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "Mock 目录无效"
+    assert "Traceback" not in refused.text
+    assert str(path) not in refused.text
