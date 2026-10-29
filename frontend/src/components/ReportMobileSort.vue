@@ -14,7 +14,7 @@ function onField(event: Event): void {
       <select data-testid="report-mobile-sort-field" aria-label="排序字段" :value="prop" @change="onField">
         <option value="period_start">周期</option>
         <option value="total">消息数</option>
-        <option value="total_segments">计费条</option>
+        <option value="total_segments">受理计费估算</option>
         <option value="success_rate">成功率</option>
       </select>
     </label>

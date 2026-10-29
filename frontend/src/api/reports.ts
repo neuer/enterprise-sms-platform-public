@@ -9,7 +9,7 @@ export type ReportGroupBy = components["schemas"]["ReportingModel"]["group_by"]
 // 历史别名：类别部分单点为 lib/labels 的 MessageCategory（"all" 为报表聚合选项），本别名由后续收敛移除。
 // 与契约 ReportingModel.category 枚举（"verify"|"notice"|"market"|"all"）逐字面量一致。
 export type ReportCategory = MessageCategory | "all"
-/** 趋势堆叠可选指标：消息数或计费条。 */
+/** 趋势堆叠可选指标：消息数或受理计费估算（计费条）。 */
 export type ReportTrendMetric = components["schemas"]["ReportingModel"]["metric"]
 
 export type ReportRow = components["schemas"]["ReportingRowModel"]
