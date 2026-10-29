@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from datetime import UTC, datetime
 from threading import RLock
@@ -19,6 +20,8 @@ from app.vendor.mock_catalog import (
     catalog_from_env,
 )
 
+LOGGER = logging.getLogger(__name__)
+_CATALOG_PUBLIC_ERROR = "Mock 目录无效"
 PHONE_PATTERN = re.compile(r"^1\d{10}$")
 FAILED_REPORT_PREFIX = "1990000"
 NO_REPORT_PREFIX = "1991000"
@@ -151,8 +154,7 @@ class MockState:
         try:
             loaded = self.catalog.load()
         except CatalogError as error:
-            self.catalog_status = "invalid"
-            self.catalog_error = str(error)
+            self._reject_catalog(error)
             return
         self.catalog_status = loaded.status
         self.template_sequence = loaded.snapshot.template_sequence
@@ -189,7 +191,7 @@ class MockState:
 
         with self.lock:
             if self.catalog_status == "invalid":
-                raise CatalogError(self.catalog_error or "Mock 目录无效")
+                raise CatalogError(_CATALOG_PUBLIC_ERROR)
             self._reset_volatile_unlocked()
             self.template_ids = {}
             self.sign_ids = {}
@@ -219,8 +221,7 @@ class MockState:
         try:
             self.catalog.save(snapshot)
         except CatalogError as error:
-            self.catalog_status = "invalid"
-            self.catalog_error = str(error)
+            self._reject_catalog(error)
             return None
         self.template_sequence = snapshot.template_sequence
         self.sign_sequence = snapshot.sign_sequence
@@ -232,6 +233,13 @@ class MockState:
         else:
             self.sign_contents[next_id] = content
         return next_id
+
+    def _reject_catalog(self, error: CatalogError) -> None:
+        """目录失败原因只写服务端日志，控制面响应使用固定文案。"""
+
+        LOGGER.warning("mock catalog rejected reason=%s", error)
+        self.catalog_status = "invalid"
+        self.catalog_error = _CATALOG_PUBLIC_ERROR
 
 
 STATE = MockState()
@@ -417,7 +425,8 @@ async def configure_mock(control: MockControl) -> MockPublicState:
         try:
             STATE.reset_catalog_state()
         except CatalogError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            LOGGER.warning("mock catalog rejected reason=%s", error)
+            raise HTTPException(status_code=409, detail=_CATALOG_PUBLIC_ERROR) from None
     if control.reset:
         STATE.reset()
     with STATE.lock:
