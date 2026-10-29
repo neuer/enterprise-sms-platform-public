@@ -53,7 +53,7 @@ export const audienceOptions: Array<{ label: string; value: ReportAudience }> = 
 ]
 export const metricOptions: Array<{ label: string; value: ReportTrendMetric }> = [
   { label: "消息数", value: "total" },
-  { label: "计费条", value: "total_segments" },
+  { label: "受理计费估算", value: "total_segments" },
 ]
 export const statusLabel: Record<ExportTask["status"], string> = {
   pending: "等待生成",

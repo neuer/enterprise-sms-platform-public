@@ -119,7 +119,7 @@ const reportHints = computed(() => {
   const hints: string[] = []
   if (dateRange.value[1] >= shanghaiDateKey()) {
     hints.push(
-      "报表及仪表盘的消息数、计费条与成功率为每 5 分钟聚合的统计快照，当日数据可能滞后。单批次状态请查看批次列表。",
+      "报表及仪表盘的消息数、受理计费估算与成功率为每 5 分钟聚合的统计快照，当日数据可能滞后。单批次状态请查看批次列表。",
     )
   }
   if (groupBy.value === "app") {
@@ -292,7 +292,7 @@ onMounted(() => void load())
     <div>
       <p class="eyebrow">ANALYTICS / 统计报表</p>
       <h1>统计报表</h1>
-      <p>日、周、月多维聚合，消息数与计费条使用同一事实源。</p>
+      <p>日、周、月多维聚合，消息数与受理计费估算使用同一事实源。</p>
     </div>
     <span class="report-scope" data-testid="report-scope"><i></i>当前口径：{{ scopeLabel }}</span>
   </section>
@@ -391,9 +391,9 @@ onMounted(() => void load())
         </p>
       </el-card>
       <el-card shadow="never" class="report-kpi">
-        <span>计费条</span>
+        <span>受理计费估算</span>
         <strong>{{ formatNumber(result.summary.total_segments) }}</strong>
-        <small>最终内容计费口径 · 与厂商账单对账</small>
+        <small>单位：计费条。包含已取消及下发前剔除等未下发记录，不代表厂商实际账单。</small>
         <p class="kpi-foot">条 / 消息 {{ segmentsPerMessage }}</p>
       </el-card>
       <el-card shadow="never" class="report-kpi">
@@ -474,7 +474,9 @@ onMounted(() => void load())
           <div class="panel-title">
             <div
               ><strong>维度排行 · {{ dimLabel }}</strong
-              ><small>按{{ result.metric === "total" ? "消息数" : "计费条" }} · Top 5 + 其他 · 完整筛选范围</small></div
+              ><small
+                >按{{ result.metric === "total" ? "消息数" : "受理计费估算" }} · Top 5 + 其他 · 完整筛选范围</small
+              ></div
             >
             <span>共 {{ result.dimension_total }} 个{{ dimLabel }}</span>
           </div>
@@ -494,7 +496,7 @@ onMounted(() => void load())
               <b>{{ formatNumber(dim[result.metric]) }}</b>
               <small>
                 {{ shareOf(dim[result.metric], result.summary[result.metric]) }} ·
-                {{ result.metric === "total" ? "计费条" : "消息数" }}
+                {{ result.metric === "total" ? "受理计费估算" : "消息数" }}
                 {{ formatNumber(result.metric === "total" ? dim.total_segments : dim.total) }}
               </small>
             </span>
@@ -545,7 +547,7 @@ onMounted(() => void load())
             <el-table-column prop="total" label="消息数" width="100" align="right" sortable="custom"
               ><template #default="{ row }">{{ formatNumber(row.total) }}</template></el-table-column
             >
-            <el-table-column prop="total_segments" label="计费条" width="100" align="right" sortable="custom"
+            <el-table-column prop="total_segments" label="受理计费估算" width="140" align="right" sortable="custom"
               ><template #default="{ row }">{{ formatNumber(row.total_segments) }}</template></el-table-column
             >
             <el-table-column prop="delivered" label="送达" width="90" align="right"
@@ -583,7 +585,7 @@ onMounted(() => void load())
                 ><div
                   ><dt>消息数</dt><dd>{{ item.total }}</dd></div
                 ><div
-                  ><dt>计费条</dt><dd>{{ item.total_segments }}</dd></div
+                  ><dt>受理计费估算</dt><dd>{{ item.total_segments }}</dd></div
                 ><div
                   ><dt>成功率</dt><dd>{{ formatRate(item.success_rate) }}</dd></div
                 ></dl
