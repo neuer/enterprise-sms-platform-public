@@ -20,6 +20,7 @@ IDEMPOTENCY_CLAIM_TTL_S = 30
 IDEMPOTENCY_WAIT_ATTEMPTS = 100
 IDEMPOTENCY_WAIT_INTERVAL_S = 0.05
 IDEMPOTENCY_WAIT_MARGIN_S = 5
+IDEMPOTENCY_CONTROL_TIMEOUT_S = 1.0
 
 
 def uncertain_resend_biz_id(resolution_id: int, generation: int) -> str:
@@ -98,6 +99,16 @@ async def _state_call[T](operation: Awaitable[T]) -> T:
         raise
     except Exception as exc:
         raise ControlPlaneUnavailable("幂等事实源或控制面不可用") from exc
+
+
+async def _control_call[T](operation: Awaitable[T]) -> T:
+    """控制 Redis 无响应时有界失败；数据库事务保留原有独立期限。"""
+
+    async def bounded() -> T:
+        async with asyncio.timeout(IDEMPOTENCY_CONTROL_TIMEOUT_S):
+            return await operation
+
+    return await _state_call(bounded())
 
 
 @dataclass(frozen=True, slots=True)
@@ -295,7 +306,7 @@ class IdempotencyCoordinator:
     async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
         key = self.key(scope, biz_id)
         try:
-            batch_no = await _state_call(self.redis.get(key))
+            batch_no = await _control_call(self.redis.get(key))
         except Exception as exc:
             raise ControlPlaneUnavailable("幂等控制面不可用") from exc
         if batch_no is None:
@@ -306,11 +317,11 @@ class IdempotencyCoordinator:
         if await _state_call(self.repository.exists(scope, biz_id, batch_no)):
             return batch_no
         # 只删除刚核验的旧缓存值，保留已经由新请求发布的结果。
-        await _state_call(self.redis.eval(CLAIM_RELEASE_LUA, 1, key, batch_no))
+        await _control_call(self.redis.eval(CLAIM_RELEASE_LUA, 1, key, batch_no))
         return await _state_call(self.repository.find_existing(scope, biz_id))
 
     async def remember(self, scope: IdempotencyScope, biz_id: str, batch_no: str) -> None:
-        await _state_call(
+        await _control_call(
             self.redis.set(
                 self.key(scope, biz_id),
                 batch_no,
@@ -321,7 +332,7 @@ class IdempotencyCoordinator:
 
     async def inspect(self, scope: IdempotencyScope, biz_id: str) -> IdempotencyClaimView | None:
         try:
-            raw = await _state_call(self.redis.get(self.claim_key(scope, biz_id)))
+            raw = await _control_call(self.redis.get(self.claim_key(scope, biz_id)))
         except Exception as exc:
             raise ControlPlaneUnavailable("幂等控制面不可用") from exc
         viewed = parse_claim_payload(str(raw)) if raw else None
@@ -362,7 +373,7 @@ class IdempotencyCoordinator:
         payload = claim_payload(viewed)
         try:
             projected = int(
-                await _state_call(
+                await _control_call(
                     self.redis.eval(
                         CLAIM_PROJECT_LUA,
                         1,
@@ -408,7 +419,7 @@ class IdempotencyCoordinator:
         self._local_generations[claim_key] = generation
         payload = f"{token}:{fingerprint}:{generation}"
         try:
-            acquired = await _state_call(
+            acquired = await _control_call(
                 self.redis.set(
                     claim_key,
                     payload,
@@ -431,7 +442,7 @@ class IdempotencyCoordinator:
         has_authority = getattr(self.repository, "load_idempotency_claim", None) is not None
         for attempt in range(self.wait_attempts):
             authority = await self._authority(scope, biz_id) if has_authority else None
-            owned = await _state_call(self.redis.get(claim_key))
+            owned = await _control_call(self.redis.get(claim_key))
             if has_authority:
                 live = authority is not None and claim_row_is_live(authority)
             else:
@@ -475,7 +486,7 @@ class IdempotencyCoordinator:
             if not renewed:
                 return False
             try:
-                redis_ok = await _state_call(
+                redis_ok = await _control_call(
                     self.redis.eval(
                         CLAIM_RENEW_LUA,
                         1,
@@ -489,7 +500,7 @@ class IdempotencyCoordinator:
             if not redis_ok and await self._project_view(scope, biz_id, viewed) != 1:
                 raise ControlPlaneUnavailable("幂等投影续租失败")
             return True
-        renewed = await _state_call(
+        renewed = await _control_call(
             self.redis.eval(
                 CLAIM_RENEW_LUA,
                 1,
@@ -556,7 +567,7 @@ class IdempotencyCoordinator:
                     reason="abandoned",
                 )
             )
-        await _state_call(
+        await _control_call(
             self.redis.eval(
                 CLAIM_RELEASE_LUA,
                 1,
