@@ -399,7 +399,7 @@ onMounted(() => void load())
       <el-card shadow="never" class="report-kpi">
         <span>成功率</span>
         <strong>{{ formatRate(result.summary.success_rate) }}</strong>
-        <small>送达 /（送达 + 失败），未知不入分母</small>
+        <small>送达 /（送达 + 失败），未知与其他不入分母</small>
         <div class="kpi-kv"
           ><span>送达</span><b>{{ formatNumber(result.summary.delivered) }}</b></div
         >
@@ -409,7 +409,7 @@ onMounted(() => void load())
       </el-card>
       <el-card shadow="never" class="report-kpi">
         <span>结果构成</span>
-        <strong>{{ formatNumber(result.summary.unknown) }}<small class="strong-note">未知 · 待终态</small></strong>
+        <strong>{{ formatNumber(result.summary.unknown) }}<small class="strong-note">未知 / 其他</small></strong>
         <div class="compose-strip" aria-label="结果构成">
           <i
             class="d"
@@ -424,13 +424,13 @@ onMounted(() => void load())
           ><i
             class="u"
             :style="{ width: composeWidth(result.summary.unknown, result.summary.total) }"
-            :title="`未知 ${formatNumber(result.summary.unknown)}`"
+            :title="`未知 / 其他 ${formatNumber(result.summary.unknown)}`"
           ></i>
         </div>
         <div class="kpi-kv compose-shares"
           ><span>送达 {{ shareOf(result.summary.delivered, result.summary.total) }}</span
           ><span>失败 {{ shareOf(result.summary.failed, result.summary.total) }}</span
-          ><span>未知 {{ shareOf(result.summary.unknown, result.summary.total) }}</span></div
+          ><span>未知 / 其他 {{ shareOf(result.summary.unknown, result.summary.total) }}</span></div
         >
       </el-card>
     </section>
@@ -554,7 +554,7 @@ onMounted(() => void load())
             <el-table-column prop="failed" label="失败" width="80" align="right"
               ><template #default="{ row }">{{ formatNumber(row.failed) }}</template></el-table-column
             >
-            <el-table-column prop="unknown" label="未知" width="80" align="right"
+            <el-table-column prop="unknown" label="未知 / 其他" width="110" align="right"
               ><template #default="{ row }">{{ formatNumber(row.unknown) }}</template></el-table-column
             >
             <el-table-column prop="success_rate" label="成功率" width="110" align="right" sortable="custom"
@@ -587,7 +587,7 @@ onMounted(() => void load())
                 ><div
                   ><dt>成功率</dt><dd>{{ formatRate(item.success_rate) }}</dd></div
                 ></dl
-              ><p>送达 {{ item.delivered }} · 失败 {{ item.failed }} · 未知 {{ item.unknown }}</p></article
+              ><p>送达 {{ item.delivered }} · 失败 {{ item.failed }} · 未知 / 其他 {{ item.unknown }}</p></article
             ></div
           >
         </template>

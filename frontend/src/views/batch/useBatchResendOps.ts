@@ -54,6 +54,8 @@ export function useBatchResendOps(deps: {
     } catch (error) {
       if (!isCurrent()) return
       ElMessage.error(errorText(error, "重发失败"))
+      // 响应丢失或状态冲突后只重读权威详情，避免沿用旧操作状态或自动重发。
+      await deps.refreshSelected()
     } finally {
       resending.value = false
     }
@@ -91,6 +93,7 @@ export function useBatchResendOps(deps: {
     } catch (error) {
       if (!isCurrent()) return
       ElMessage.error(errorText(error, "补发未覆盖号码失败"))
+      await deps.refreshSelected()
     } finally {
       resending.value = false
     }

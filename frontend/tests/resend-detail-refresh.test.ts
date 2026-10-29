@@ -51,9 +51,14 @@ afterEach(() => {
 
 it.each(
   ["ordinary", "supplement"].flatMap((action) =>
-    ["success", "read-failure", "target", "session", "dispose"].map((outcome) => ({ action, outcome })),
+    (action === "supplement"
+      ? ["accepted", "response-lost", "write-conflict", "preview-conflict"]
+      : ["accepted", "response-lost", "write-conflict"]
+    ).flatMap((result) =>
+      ["success", "read-failure", "target", "session", "dispose"].map((outcome) => ({ action, result, outcome })),
+    ),
   ),
-)("$action 已受理后的详情刷新：$outcome", async ({ action, outcome }) => {
+)("$action 请求 $result 后的详情刷新：$outcome", async ({ action, result, outcome }) => {
   const initial = {
     ...source,
     can_resend_failed: action === "ordinary",
@@ -78,9 +83,15 @@ it.each(
     vi.fn(async (input: string, init?: RequestInit) => {
       const url = String(input)
       if (init?.method === "POST") {
-        if (url.endsWith("/resend-supplement"))
+        if (url.endsWith("/resend-supplement")) {
+          if (result === "preview-conflict")
+            return response({ code: "STATE_CONFLICT", message: "没有未覆盖的失败号码", detail: null }, 409)
           return response({ intent_id: "40000000-0000-4000-8000-000000000882", covered_failed: 1, uncovered_failed: 1 })
+        }
         writes += 1
+        if (result === "response-lost") throw new TypeError("响应传输中断")
+        if (result === "write-conflict")
+          return response({ code: "STATE_CONFLICT", message: "批次状态已变化", detail: null }, 409)
         return response({ batch_no: "child", resend_of: "source", accepted: 1, status: "queued", idempotent: false })
       }
       if (url.endsWith("/admin/apps")) return response([])
@@ -113,9 +124,10 @@ it.each(
   vm.drawer = true
   const running = action === "ordinary" ? vm.resendFailed() : vm.supplementUncovered()
   await flushPromises()
-  expect(writes).toBe(1)
+  const expectedWrites = result === "preview-conflict" ? 0 : 1
+  expect(writes).toBe(expectedWrites)
   expect(detailReads).toBe(1)
-  expect(success).toHaveBeenCalledTimes(1)
+  expect(success).toHaveBeenCalledTimes(result === "accepted" ? 1 : 0)
   const listsBefore = listReads
   if (outcome === "target") vm.selected = { ...source, batch_no: "replacement" }
   if (outcome === "session") useSessionStore().clear()
@@ -127,8 +139,8 @@ it.each(
   )
   await running
   await flushPromises()
-  expect(error).not.toHaveBeenCalled()
-  expect(writes).toBe(1)
+  expect(error).toHaveBeenCalledTimes(result === "accepted" ? 0 : 1)
+  expect(writes).toBe(expectedWrites)
   if (outcome === "success") {
     expect(vm.selected.resend_uncovered_failed).toBe(0)
     expect(wrapper.find('[data-testid="resend-supplement"]').exists()).toBe(false)
@@ -140,13 +152,13 @@ it.each(
     if (action === "supplement") {
       expect(wrapper.get('[data-testid="resend-supplement"]').attributes("disabled")).toBeDefined()
       await vm.supplementUncovered()
-      expect(writes).toBe(1)
+      expect(writes).toBe(expectedWrites)
     }
     await wrapper.get('[data-testid="retry-batch-detail"]').trigger("click")
     await flushPromises()
     expect(vm.detailUnconfirmed).toBe(false)
     expect(vm.selected.resend_uncovered_failed).toBe(0)
-    expect(writes).toBe(1)
+    expect(writes).toBe(expectedWrites)
   } else {
     expect(listReads).toBe(listsBefore)
     if (outcome === "target") expect(vm.selected.batch_no).toBe("replacement")
