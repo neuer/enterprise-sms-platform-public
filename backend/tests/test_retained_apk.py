@@ -20,10 +20,10 @@ def test_retained_packages_match_complete_dual_architecture_manifest() -> None:
     checksums: dict[Path, list[str]] = {}
     for record in manifest["packages"]:
         component, architecture = record["component"], record["architecture"]
-        assert component in {"web", "postgres", "redis"}
+        assert component in {"web", "postgres"}
         assert architecture in {"x86_64", "aarch64"}
         assert record["origin"] == "dl-cdn.alpinelinux.org/alpine"
-        assert record["repository"] == ("v3.21/main" if component == "redis" else "v3.24/main")
+        assert record["repository"] == "v3.24/main"
         assert record["license"]
         filename = f"{record['package']}-{record['version']}.apk"
         assert filename == record["filename"]
@@ -37,7 +37,7 @@ def test_retained_packages_match_complete_dual_architecture_manifest() -> None:
             (record["package"], record["version"])
         )
     assert expected == set(ASSETS.glob("**/*.apk"))
-    assert set(components) == {"web", "postgres", "redis"}
+    assert set(components) == {"web", "postgres"}
     for architectures in components.values():
         assert set(architectures) == {"x86_64", "aarch64"}
         assert architectures["x86_64"] == architectures["aarch64"]

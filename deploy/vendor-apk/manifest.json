@@ -192,54 +192,6 @@
       "repository": "v3.24/main",
       "origin": "dl-cdn.alpinelinux.org/alpine",
       "retrieved": "2026-10-11"
-    },
-    {
-      "component": "redis",
-      "architecture": "x86_64",
-      "filename": "libcrypto3-3.3.7-r2.apk",
-      "sha256": "3c6fb1c90a974ef0fc83687868712340ca3df3ef5206cfc79fd81ff16f22596a",
-      "package": "libcrypto3",
-      "version": "3.3.7-r2",
-      "license": "Apache-2.0",
-      "repository": "v3.21/main",
-      "origin": "dl-cdn.alpinelinux.org/alpine",
-      "retrieved": "2026-10-11"
-    },
-    {
-      "component": "redis",
-      "architecture": "x86_64",
-      "filename": "libssl3-3.3.7-r2.apk",
-      "sha256": "00e674d00a80c9808580546dd388093c1c67f21628a9d70e27628bddc86a31e8",
-      "package": "libssl3",
-      "version": "3.3.7-r2",
-      "license": "Apache-2.0",
-      "repository": "v3.21/main",
-      "origin": "dl-cdn.alpinelinux.org/alpine",
-      "retrieved": "2026-10-11"
-    },
-    {
-      "component": "redis",
-      "architecture": "aarch64",
-      "filename": "libcrypto3-3.3.7-r2.apk",
-      "sha256": "2303cca13dc8bba5798744a68abd07530abb35ab339d9cc4640fc53276049af0",
-      "package": "libcrypto3",
-      "version": "3.3.7-r2",
-      "license": "Apache-2.0",
-      "repository": "v3.21/main",
-      "origin": "dl-cdn.alpinelinux.org/alpine",
-      "retrieved": "2026-10-11"
-    },
-    {
-      "component": "redis",
-      "architecture": "aarch64",
-      "filename": "libssl3-3.3.7-r2.apk",
-      "sha256": "d494a0a211dd78a8055c24885fc06375eabb79c82ae797f7f694cefbf3653b79",
-      "package": "libssl3",
-      "version": "3.3.7-r2",
-      "license": "Apache-2.0",
-      "repository": "v3.21/main",
-      "origin": "dl-cdn.alpinelinux.org/alpine",
-      "retrieved": "2026-10-11"
     }
   ]
 }

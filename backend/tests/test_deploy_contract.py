@@ -33,10 +33,10 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
         "FROM ghcr.io/astral-sh/uv:0.7.12@sha256:"
         "4faec156e35a5f345d57804d8858c6ba1cf6352ce5f4bffc11b7fdebdef46a38" in backend
     )
-    assert (
+    assert backend.count(
         "FROM python:3.12-alpine@sha256:"
-        "1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4" in backend
-    )
+        "e6dae589c1c05976188fd3bd019afd091445fc533ed2ea29001beddc7368a9c8"
+    ) == 2
     assert "uv sync --frozen --no-dev" in backend
     assert backend.count("RUN python -m pip uninstall --yes pip") == 2
     assert backend.count("rm -rf /usr/local/lib/python3.12/ensurepip") == 2
@@ -51,13 +51,13 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
         "47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951" in frontend
     )
     assert "RUN apk add" not in backend
-    for dockerfile in (frontend, postgres, redis):
+    for dockerfile in (frontend, postgres):
         assert "RUN --network=none --mount=type=bind" in dockerfile
         assert "sh /install-retained-apk.sh" in dockerfile
         assert "RUN apk add" not in dockerfile
     assert (
         "FROM postgres:16-alpine@sha256:"
-        "721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea" in postgres
+        "0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab" in postgres
     )
     assert "rm /usr/local/bin/gosu" in postgres
     assert "ln -s /sbin/su-exec /usr/local/bin/gosu" in postgres
@@ -77,8 +77,10 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
         assert metadata in postgres
     assert (
         "FROM redis:7-alpine@sha256:"
-        "858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499" in redis
+        "8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f" in redis
     )
+    assert "install-retained-apk.sh" not in redis
+    assert "RUN apk add" not in redis
     assert "USER 999:1000" in redis
 
 
