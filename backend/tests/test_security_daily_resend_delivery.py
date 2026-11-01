@@ -373,7 +373,7 @@ def test_companion_container_uses_only_dedicated_ui_config_file() -> None:
     dockerfile = COMPANION_DOCKERFILE.read_text(encoding="utf-8")
     assert (
         "FROM python:3.12-alpine@sha256:"
-        "1b668429b3511ab407d8e00648891631b0b1a4d7e15e3ca70f38ab5b91ad4ab4"
+        "e6dae589c1c05976188fd3bd019afd091445fc533ed2ea29001beddc7368a9c8"
         in dockerfile
     )
     assert "apk add" not in dockerfile

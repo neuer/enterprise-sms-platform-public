@@ -1,9 +1,4 @@
-FROM redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
-
-# Retained signed packages; installation never consults a mutable mirror.
-RUN --network=none --mount=type=bind,source=deploy/vendor-apk/redis,target=/apks,ro \
-    --mount=type=bind,source=deploy/install-retained-apk.sh,target=/install-retained-apk.sh,ro \
-    sh /install-retained-apk.sh
+FROM redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
 
 ARG APP_VERSION
 ARG GIT_SHA
