@@ -234,11 +234,11 @@ jobs:
           uv run --locked python ../scripts/check_contract.py ../openapi.yaml
 
   backend-unit:
-    name: backend-unit (${{ matrix.part }}/4)
+    name: backend-unit (${{ matrix.part }}/5)
     strategy:
       fail-fast: false
       matrix:
-        part: [1, 2, 3, 4]
+        part: [1, 2, 3, 4, 5]
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-24.04
@@ -268,23 +268,23 @@ jobs:
       - name: Enable Lua-backed Redis unit tests
         run: sudo apt-get update && sudo apt-get install -y lua5.4
       - name: Run unit test shard
-        run: bash scripts/run_backend_tests.sh unit "${{ runner.temp }}/backend-evidence" "${{ matrix.part }}" 4
+        run: bash scripts/run_backend_tests.sh unit "${{ runner.temp }}/backend-evidence" "${{ matrix.part }}" 5
       - name: Upload unit evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: backend-unit-${{ matrix.part }}-of-4-${{ github.sha }}
+          name: backend-unit-${{ matrix.part }}-of-5-${{ github.sha }}
           path: ${{ runner.temp }}/backend-evidence/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
   backend-postgres:
-    name: backend-postgres (${{ matrix.part }}/3)
+    name: backend-postgres (${{ matrix.part }}/4)
     strategy:
       fail-fast: false
       matrix:
-        part: [1, 2, 3]
+        part: [1, 2, 3, 4]
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-24.04
@@ -311,12 +311,12 @@ jobs:
       - name: Prepare development-only CI files
         run: bash scripts/local_test.sh prepare
       - name: Run postgres test shard
-        run: bash scripts/run_backend_tests.sh postgres "${{ runner.temp }}/backend-evidence" "${{ matrix.part }}" 3
+        run: bash scripts/run_backend_tests.sh postgres "${{ runner.temp }}/backend-evidence" "${{ matrix.part }}" 4
       - name: Upload postgres evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: backend-postgres-${{ matrix.part }}-of-3-${{ github.sha }}
+          name: backend-postgres-${{ matrix.part }}-of-4-${{ github.sha }}
           path: ${{ runner.temp }}/backend-evidence/
           include-hidden-files: true
           if-no-files-found: error
@@ -353,17 +353,17 @@ jobs:
       - name: Download unit evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          pattern: backend-unit-*-of-4-${{ github.sha }}
+          pattern: backend-unit-*-of-5-${{ github.sha }}
           merge-multiple: true
           path: ${{ runner.temp }}/backend-evidence
       - name: Download PostgreSQL evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          pattern: backend-postgres-*-of-3-${{ github.sha }}
+          pattern: backend-postgres-*-of-4-${{ github.sha }}
           merge-multiple: true
           path: ${{ runner.temp }}/backend-evidence
       - name: Verify complete test inventory and independent coverage gates
-        run: bash scripts/run_backend_tests.sh merge "${{ runner.temp }}/backend-evidence" 4 3
+        run: bash scripts/run_backend_tests.sh merge "${{ runner.temp }}/backend-evidence" 5 4
       - name: Upload merged coverage and inventory
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -543,8 +543,12 @@ jobs:
         if: ${{ always() }}
         run: rm -rf -- "${RUNNER_TEMP:?}/security-private"
 
-  g2:
-    name: g2
+  g2-runtime:
+    name: g2-runtime (${{ matrix.part }}/3)
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3]
     # 与静态/组件门禁并行跑整栈运行态阶段，最终由 ci-gate 汇合精确 SHA 证据。
     # 按路径选择整栈与发布控制阶段；性能压测在测试环境专项执行，不进入 CI。
     needs: [changes]
@@ -557,7 +561,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      COMPOSE_PROJECT_NAME: sms-platform-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_PROJECT_NAME: sms-platform-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.part }}
       API_PORT: "18100"
       MOCK_VENDOR_PORT: "19128"
       WEB_PORT: "18180"
@@ -603,7 +607,7 @@ jobs:
           G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
           G2_COLD_BUILD: ${{ github.event_name == 'schedule' && '1' || '0' }}
         run: |
-          g2_args=(--mode integration)
+          g2_args=(--mode integration --e2e-shard "${{ matrix.part }}")
           expected_stages="5,6,7"
           echo "expected_stages=$expected_stages" >> "$GITHUB_OUTPUT"
           sudo env \
@@ -627,7 +631,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: image-security-${{ github.sha }}-${{ github.run_attempt }}
+          name: image-security-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.part }}
           path: |
             ${{ runner.temp }}/g2-image-security
             ${{ runner.temp }}/mailer-image-security
@@ -643,6 +647,25 @@ jobs:
             --gate-outcome "${{ steps.authoritative-g2.outcome }}" \
             --expected-stages "${{ steps.authoritative-g2.outputs.expected_stages }}" \
             --summary-file "$GITHUB_STEP_SUMMARY"
+
+  g2:
+    name: g2
+    needs: [changes, g2-runtime]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.g2 == 'true' }}
+    outputs:
+      tested_sha: ${{ steps.bind.outputs.sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Bind G2 evidence to candidate
+        id: bind
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+          test "${{ needs.g2-runtime.result }}" = success
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   g2-release-control:
     name: g2-release-control

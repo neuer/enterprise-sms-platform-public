@@ -10,7 +10,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from check_coverage_gates import CoverageGateError, verify_test_evidence  # noqa: E402
-from gate_policy import CRITICAL_MARKERS, partition_index, partition_name  # noqa: E402
+from gate_policy import (  # noqa: E402
+    CRITICAL_MARKERS,
+    POSTGRES_COSTLY_MODULES,
+    UNIT_COSTLY_NODES,
+    partition_index,
+    partition_name,
+)
 
 SHA = "a" * 40
 
@@ -89,14 +95,16 @@ def test_plugin_rejects_skipped_postgres_with_existing_external_evidence(tmp_pat
     assert report["skipped"]
 
 
-def partitioned_evidence():
+def partitioned_evidence(unit_parts=4, postgres_parts=3):
     inventory, _ = evidence()
     unit = {f"tests/test_unit.py::test_case[{index}]" for index in range(100)}
     postgres = {f"tests/integration/test_db_{index}.py::test_case" for index in range(30)}
+    unit |= UNIT_COSTLY_NODES
+    postgres |= {f"{module}::test_case" for module in POSTGRES_COSTLY_MODULES}
     inventory.update(collected=sorted(unit | postgres), isolated=sorted(postgres),
                      markers={key: sorted(unit | postgres) for key in CRITICAL_MARKERS})
     parts = []
-    for kind, nodes, count in (("unit", unit, 4), ("postgres", postgres, 3)):
+    for kind, nodes, count in (("unit", unit, unit_parts), ("postgres", postgres, postgres_parts)):
         for index in range(1, count + 1):
             selected = sorted(node for node in nodes if partition_index(node, kind, count) == index)
             parts.append({"schema": 1, "sha": SHA, "shard": partition_name(kind, index, count),
@@ -111,6 +119,14 @@ def test_parallel_partitions_are_exhaustive_and_database_modules_stay_together()
     assert partition_index("tests/integration/test_db.py::test_a", "postgres", 3) == (
         partition_index("tests/integration/test_db.py::test_b[7]", "postgres", 3)
     )
+
+
+def test_expensive_cases_have_exclusive_runners_with_complete_inventory():
+    inventory, parts = partitioned_evidence(5, 4)
+    verify_test_evidence(inventory, parts, commit=SHA, unit_parts=5, postgres_parts=4)
+    by_name = {part["shard"]: part["collected"] for part in parts}
+    assert set(by_name["unit-5-of-5"]) == UNIT_COSTLY_NODES
+    assert {node.split("::")[0] for node in by_name["postgres-4-of-4"]} == POSTGRES_COSTLY_MODULES
 
 
 @pytest.mark.parametrize("mutation", ["missing", "relabel", "wrong-part", "sha", "skip"])

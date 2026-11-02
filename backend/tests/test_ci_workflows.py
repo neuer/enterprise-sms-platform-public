@@ -112,6 +112,7 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "frontend",
         "security",
         "g2",
+        "g2-runtime",
         "g2-release-control",
         "ci-gate",
     }
@@ -310,16 +311,21 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     assert jobs["security"]["needs"] == "changes"
     assert "needs.changes.outputs.security == 'true'" in jobs["security"]["if"]
 
-    assert jobs["g2"]["needs"] == ["changes"]
+    assert jobs["g2-runtime"]["needs"] == ["changes"]
+    assert jobs["g2"]["needs"] == ["changes", "g2-runtime"]
+    assert jobs["g2-runtime"]["strategy"] == {
+        "fail-fast": False, "matrix": {"part": [1, 2, 3]},
+    }
+    assert 'needs.g2-runtime.result' in job_commands(jobs["g2"])
     for token in (
         "!cancelled()",
         "needs.changes.result == 'success'",
         "needs.changes.outputs.g2 == 'true'",
     ):
-        assert token in jobs["g2"]["if"]
+        assert token in jobs["g2-runtime"]["if"]
     for component in ("backend", "frontend", "security"):
-        assert f"needs.{component}" not in jobs["g2"]["if"]
-    g2_commands = job_commands(jobs["g2"])
+        assert f"needs.{component}" not in jobs["g2-runtime"]["if"]
+    g2_commands = job_commands(jobs["g2-runtime"])
     assert "scripts/local_test.sh prepare" in g2_commands
     assert "bash scripts/verify_all.sh" in g2_commands
     assert "--mode integration" in g2_commands
@@ -337,7 +343,8 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     )
     assert "sudo env" in g2_commands
     assert 'PATH="$PATH"' in g2_commands
-    assert jobs["g2"]["timeout-minutes"] == 30
+    assert jobs["g2-runtime"]["timeout-minutes"] == 30
+    assert '--e2e-shard "${{ matrix.part }}"' in g2_commands
 
     gate = jobs["ci-gate"]
     assert gate["needs"] == [
@@ -380,7 +387,7 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
 
 def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
     workflow = load_workflow(CI_WORKFLOW)
-    g2 = workflow["jobs"]["g2"]
+    g2 = workflow["jobs"]["g2-runtime"]
 
     cache_steps = [
         step

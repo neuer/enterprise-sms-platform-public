@@ -55,8 +55,9 @@ CI 每次独立运行检查，不读取本地免检回执。门禁/前端契约�
 README、CONTRIBUTING 及普通 Markdown 文档只执行规格/不变量检查并返回 `ci-gate`，
 不能用 workflow 级 paths-ignore 跳过 required check。受保护运行手册、产品契约和未知
 源代码路径仍保留相应校验；main、定时及人工运行一律全检。
-后端单元测试拆为 4 片，隔离 PostgreSQL/Redis 按模块拆为 3 片，在独立 Ubuntu runner
-并行执行。每片上传同一 SHA 的实际执行清单、JUnit 和覆盖数据。隔离分区自动收集 `tests/integration/` 以及显式真实 Redis 用例，
+后端单元测试拆为 5 片，隔离 PostgreSQL/Redis 按模块拆为 4 片，在独立 Ubuntu runner
+并行执行。64 MiB 单字节分片用例与真实租约等待模块各占独立 runner，其余用例自动分配；
+每片上传同一 SHA 的实际执行清单、JUnit 和覆盖数据。隔离分区自动收集 `tests/integration/` 以及显式真实 Redis 用例，
 任何 skip 都失败；各集成模块从同一迁移基线克隆独立临时库，避免状态污染。
 汇总重新独立收集完整清单，逐片验证确定性分配、分区互斥且穷尽、关键 marker 实际通过，
 并核验 app 文件全集及 application/auth/pipeline/export/tasks/api 六项覆盖率，
@@ -74,8 +75,9 @@ full G2 复用 `scripts/run_backend_tests.sh full <临时证据目录>` 和相�
 不再重复执行关键 marker 子集。普通分区仅保留公开快照缺失文档与本机无 Lua 的明确例外。
 
 CI 按风险运行组件门禁；认证/授权/审计、加密与 PII、发送/厂商、迁移、部署和控制面等
-受保护变更进入 G2 integration，发布控制烟测仍按路径选择，与整栈 API 验收在独立 runner 并行；两者都必须通过精确
-SHA 校验。性能压测不进入 PR、push、
+受保护变更进入 G2 integration。21 项 API 验收按审批、心跳和其余场景分到 3 个独立
+Mock 栈，场景集合互斥且穷尽，真实超时与全部断言不变；本地 full G2 仍串行跑全量。
+发布控制烟测仍按路径选择，与 API 验收在独立 runner 并行，两者均须通过精确 SHA 校验。性能压测不进入 PR、push、
 每日定时或人工 CI/G2 门禁，只在隔离测试环境按 `docs/PERFORMANCE.md` 专项执行并单独归档证据。
 
 ## 数据库迁移期限

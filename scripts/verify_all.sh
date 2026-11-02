@@ -9,6 +9,7 @@ fi
 cd "$ROOT"
 mode="full"
 include_release_control=0
+e2e_shard=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --mode)
@@ -20,14 +21,20 @@ while [[ $# -gt 0 ]]; do
       include_release_control=1
       shift
       ;;
+    --e2e-shard)
+      [[ $# -ge 2 && "$2" =~ ^[123]$ ]] || exit 2
+      e2e_shard="$2"
+      shift 2
+      ;;
     *)
-      echo "usage: scripts/verify_all.sh [--mode full|integration] [--include-release-control]" >&2
+      echo "usage: scripts/verify_all.sh [--mode full|integration] [--include-release-control] [--e2e-shard 1|2|3]" >&2
       exit 2
       ;;
   esac
 done
 case "$mode" in
   full)
+    [[ "$e2e_shard" == 0 ]] || { echo 'full G2 requires all API cases' >&2; exit 2; }
     include_release_control=1
     ;;
   integration) ;;
@@ -219,7 +226,7 @@ python3 scripts/security_acceptance.py --base "http://localhost:${web_port}" --c
 }
 
 stage_7(){
-uv run --locked --project backend python scripts/e2e_api.py --base "http://localhost:${api_port}" --mock-base "http://localhost:${mock_vendor_port}" --keys deploy/secrets/dev-apikeys.txt --compose-file deploy/docker-compose.yml
+uv run --locked --project backend python scripts/e2e_api.py --base "http://localhost:${api_port}" --mock-base "http://localhost:${mock_vendor_port}" --keys deploy/secrets/dev-apikeys.txt --compose-file deploy/docker-compose.yml --ci-shard "$e2e_shard"
 python3 scripts/verify_tls_termination_e2e.py \
   --project "$COMPOSE_PROJECT_NAME" \
   --web-port "$web_port" \
