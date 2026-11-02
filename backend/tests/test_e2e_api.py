@@ -403,6 +403,22 @@ def test_scheduled_cancel_case_waits_for_durable_usage_release_projection() -> N
     assert 'raise UatFailure("UAT-15 quota was not refunded")' not in case_15
 
 
+def test_approval_threshold_does_not_send_before_admission_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http = FakeHttp([])
+    suite = UatSuite(http, None, {}, run_id="cold-approval")
+    suite._tokens["operator01"] = "operator-token"
+
+    def unavailable(_case_id: str) -> None:
+        raise UatFailure("admission precondition unavailable")
+
+    monkeypatch.setattr(suite, "_wait_admission_ready_for_volume", unavailable)
+    with pytest.raises(UatFailure, match="admission precondition unavailable"):
+        suite.case_11()
+    assert not http.calls
+
+
 @pytest.mark.parametrize(
     ("quota_values", "alert_items", "should_pass"),
     [

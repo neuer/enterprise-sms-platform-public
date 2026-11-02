@@ -1108,6 +1108,9 @@ class UatSuite:
             raise UatFailure("UAT-10 consent audit mismatch")
 
     def case_11(self) -> None:
+        # 独立分片也必须等真实 OPEN，不能依赖前一个营销场景预热。
+        self.login("operator01")
+        self._wait_admission_ready_for_volume("11")
         data = self._expect(
             "11",
             self.web_send(
