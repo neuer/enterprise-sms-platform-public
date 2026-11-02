@@ -13,13 +13,20 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
-from gate_policy import CRITICAL_MARKERS, isolated_node  # noqa: E402
+from gate_policy import (  # noqa: E402
+    CRITICAL_MARKERS,
+    isolated_node,
+    partition_index,
+    partition_name,
+)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     """显式选择完整收集、普通回归或真实数据库回归。"""
     parser.addoption("--gate-shard", choices=("unit", "postgres", "inventory"))
     parser.addoption("--gate-evidence", type=Path)
+    parser.addoption("--gate-part-index", type=int, default=1)
+    parser.addoption("--gate-part-count", type=int, default=1)
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -34,6 +41,18 @@ class GateEvidence:
     def __init__(self, config: pytest.Config) -> None:
         self.config = config
         self.shard: str = config.getoption("--gate-shard")
+        self.part_index: int = config.getoption("--gate-part-index")
+        self.part_count: int = config.getoption("--gate-part-count")
+        self.evidence_shard = self.shard
+        if self.shard != "inventory":
+            try:
+                self.evidence_shard = partition_name(
+                    self.shard, self.part_index, self.part_count,
+                )
+            except ValueError as error:
+                raise pytest.UsageError(str(error)) from error
+        elif (self.part_index, self.part_count) != (1, 1):
+            raise pytest.UsageError("inventory must collect every partition")
         self.nodes: list[str] = []
         self.passed: set[str] = set()
         self.failed: set[str] = set()
@@ -49,6 +68,11 @@ class GateEvidence:
         for item in items:
             isolated = isolated_node(item.nodeid)
             if self.shard != "inventory" and isolated != (self.shard == "postgres"):
+                deselected.append(item)
+                continue
+            if self.shard != "inventory" and partition_index(
+                item.nodeid, self.shard, self.part_count,
+            ) != self.part_index:
                 deselected.append(item)
                 continue
             selected.append(item)
@@ -94,7 +118,7 @@ class GateEvidence:
         document: dict[str, Any] = {
             "schema": 1,
             "sha": sha,
-            "shard": self.shard,
+            "shard": self.evidence_shard,
             "collected": sorted(self.nodes),
             "passed": sorted(self.passed),
             "failed": sorted(self.failed),

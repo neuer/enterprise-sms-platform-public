@@ -76,6 +76,35 @@ def test_case_registry_is_exact_autopilot_subset() -> None:
     assert expected == CASE_IDS
 
 
+def test_ci_partitions_cover_every_api_case_once_without_shortening_timeouts() -> None:
+    groups = [e2e_api.ci_case_partition(index) for index in (1, 2, 3)]
+    flattened = [case for group in groups for case in group]
+    assert len(flattened) == len(set(flattened)) == len(CASE_IDS)
+    assert set(flattened) == set(CASE_IDS)
+    assert groups[:2] == [("11", "12"), ("27",)]
+    assert e2e_api.ci_case_partition(0) == CASE_IDS
+    assert "timeout_s=130" in inspect.getsource(UatSuite.case_27)
+    assert "time.sleep(6)" in inspect.getsource(UatSuite.case_12)
+
+
+@pytest.mark.parametrize("index", [-1, 4])
+def test_ci_partition_rejects_unknown_index(index: int) -> None:
+    with pytest.raises(ValueError, match="invalid API UAT partition"):
+        e2e_api.ci_case_partition(index)
+
+
+def test_ci_partition_rejects_registry_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(e2e_api, "CASE_IDS", tuple(case for case in CASE_IDS if case != "27"))
+    with pytest.raises(ValueError, match="disjoint and exhaustive"):
+        e2e_api.ci_case_partition(2)
+
+
+def test_ci_shard_cannot_be_combined_with_partial_case_selection() -> None:
+    with pytest.raises(SystemExit) as error:
+        e2e_api.main(["--keys", "unused", "--cases", "05", "--ci-shard", "1"])
+    assert error.value.code == 2
+
+
 def test_all_autopilot_cases_have_concrete_methods() -> None:
     suite = UatSuite.stub(run_id="fixed-run")
     assert all(callable(getattr(suite, f"case_{case_id}", None)) for case_id in CASE_IDS)
@@ -372,6 +401,22 @@ def test_scheduled_cancel_case_waits_for_durable_usage_release_projection() -> N
     assert 'wait_until("15", quota_refunded, timeout_s=15' in case_15
     assert "redis_int(quota_key) != before" not in case_15
     assert 'raise UatFailure("UAT-15 quota was not refunded")' not in case_15
+
+
+def test_approval_threshold_does_not_send_before_admission_is_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    http = FakeHttp([])
+    suite = UatSuite(http, None, {}, run_id="cold-approval")
+    suite._tokens["operator01"] = "operator-token"
+
+    def unavailable(_case_id: str) -> None:
+        raise UatFailure("admission precondition unavailable")
+
+    monkeypatch.setattr(suite, "_wait_admission_ready_for_volume", unavailable)
+    with pytest.raises(UatFailure, match="admission precondition unavailable"):
+        suite.case_11()
+    assert not http.calls
 
 
 @pytest.mark.parametrize(

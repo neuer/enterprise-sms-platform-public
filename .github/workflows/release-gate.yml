@@ -13,7 +13,7 @@ permissions:
   artifact-metadata: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.ref }}-${{ github.run_id }}
   cancel-in-progress: false
 
 jobs:

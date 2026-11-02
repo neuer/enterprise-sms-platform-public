@@ -28,8 +28,9 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.head.label || github.ref_name }}
-  cancel-in-progress: true
+  # main/manual runs have independent groups: even pending commits must not be replaced.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.run_id || github.event.pull_request.head.label || github.ref_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'pull_request') }}
 
 jobs:
   changes:
@@ -102,6 +103,7 @@ jobs:
           python3 scripts/release_metadata.py --root "$GITHUB_WORKSPACE"
       - name: Verify reusable PR evidence for main
         id: reuse
+        if: ${{ steps.dispatch.outputs.mode == 'post_merge' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
           POST_MERGE_HEAD: ${{ inputs.post_merge_head || '' }}
@@ -134,7 +136,9 @@ jobs:
             base_sha=""
             before_sha=""
             head_sha="$GITHUB_SHA"
-          elif [[ "$event_name" == push && "$GITHUB_REF" != refs/heads/main ]]; then
+          elif [[ "$event_name" == push && "$GITHUB_REF" == refs/heads/main ]]; then
+            event_name=main_push
+          elif [[ "$event_name" == push ]]; then
             event_name=pull_request
             base_sha="$(git merge-base origin/main "$GITHUB_SHA")"
             before_sha=""
@@ -145,10 +149,10 @@ jobs:
             --base-sha "$base_sha" \
             --before-sha "$before_sha" \
             --head-sha "$head_sha" \
-            --trusted-pr-evidence "${{ steps.reuse.outputs.reuse }}" \
+            --trusted-pr-evidence "${{ steps.reuse.outputs.reuse || 'false' }}" \
             --github-output "$GITHUB_OUTPUT"
       - name: Set up Python for gate and frontend contracts
-        if: ${{ steps.reuse.outputs.reuse != 'true' }}
+        if: ${{ steps.classify.outputs.backend != 'true' && steps.classify.outputs.frontend == 'true' }}
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           version: "0.7.12"
@@ -156,7 +160,7 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
       - name: Check gate and frontend contracts
-        if: ${{ steps.reuse.outputs.reuse != 'true' }}
+        if: ${{ steps.classify.outputs.backend != 'true' && steps.classify.outputs.frontend == 'true' }}
         env:
           ENVIRONMENT: "test"
           DEBUG: "1"
@@ -194,26 +198,47 @@ jobs:
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
       - name: Set up Node.js for vendor console safety gate
+        if: ${{ needs.changes.outputs.frontend != 'true' }}
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - name: Install vendor console test dependencies
+        if: ${{ needs.changes.outputs.frontend != 'true' }}
         run: |
-          npm ci --prefix frontend
+          npm ci --prefix frontend --prefer-offline --no-audit
           npm audit --prefix frontend --audit-level=high
       - name: Prepare development-only CI files
         run: bash scripts/local_test.sh prepare
       - name: Verify controlled vendor-live safety
-        env:
-          SMS_SKIP_VENDOR_POSTGRES_RECOVERY: "1"
-        run: bash scripts/verify_vendor_live_test.sh
+        # Complete Python/Vitest inventories already include the ordinary vendor tests.
+        # The isolated Linux SO_PEERCRED/UDS/RSA boundary remains a distinct check.
+        run: bash scripts/verify_vendor_control_uds.sh
+      - name: Verify vendor console when full frontend is not selected
+        if: ${{ needs.changes.outputs.frontend != 'true' }}
+        run: >-
+          npm test --prefix frontend -- tests/vendor-seal.test.ts
+          tests/vendor-test-api.test.ts tests/vendor-test-console.test.ts
       - name: Lint and type-check backend
         run: python3 scripts/check_backend_static.py
+      - name: Check migrations and OpenAPI contract
+        env:
+          ENVIRONMENT: "test"
+          DEBUG: "1"
+          VENDOR_MOCK: "1"
+          AUTH_MOCK: "1"
+        run: |
+          cd backend
+          uv run --locked python scripts_support/check_migration.py
+          uv run --locked python ../scripts/check_contract.py ../openapi.yaml
 
   backend-unit:
-    name: backend-unit
+    name: backend-unit (${{ matrix.part }}/5)
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5]
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-24.04
@@ -243,19 +268,23 @@ jobs:
       - name: Enable Lua-backed Redis unit tests
         run: sudo apt-get update && sudo apt-get install -y lua5.4
       - name: Run unit test shard
-        run: bash scripts/run_backend_tests.sh unit "${{ runner.temp }}/backend-evidence"
+        run: bash scripts/run_backend_tests.sh unit "${{ runner.temp }}/backend-evidence" "${{ matrix.part }}" 5
       - name: Upload unit evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: backend-unit-${{ github.sha }}
-          path: ${{ runner.temp }}/backend-evidence/unit/
+          name: backend-unit-${{ matrix.part }}-of-5-${{ github.sha }}
+          path: ${{ runner.temp }}/backend-evidence/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 
   backend-postgres:
-    name: backend-postgres
+    name: backend-postgres (${{ matrix.part }}/4)
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4]
     needs: changes
     if: ${{ needs.changes.outputs.backend == 'true' }}
     runs-on: ubuntu-24.04
@@ -282,13 +311,13 @@ jobs:
       - name: Prepare development-only CI files
         run: bash scripts/local_test.sh prepare
       - name: Run postgres test shard
-        run: bash scripts/run_backend_tests.sh postgres "${{ runner.temp }}/backend-evidence"
+        run: bash scripts/run_backend_tests.sh postgres "${{ runner.temp }}/backend-evidence" "${{ matrix.part }}" 4
       - name: Upload postgres evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: backend-postgres-${{ github.sha }}
-          path: ${{ runner.temp }}/backend-evidence/postgres/
+          name: backend-postgres-${{ matrix.part }}-of-4-${{ github.sha }}
+          path: ${{ runner.temp }}/backend-evidence/
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
@@ -324,25 +353,17 @@ jobs:
       - name: Download unit evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: backend-unit-${{ github.sha }}
-          path: ${{ runner.temp }}/backend-evidence/unit
+          pattern: backend-unit-*-of-5-${{ github.sha }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/backend-evidence
       - name: Download PostgreSQL evidence
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: backend-postgres-${{ github.sha }}
-          path: ${{ runner.temp }}/backend-evidence/postgres
+          pattern: backend-postgres-*-of-4-${{ github.sha }}
+          merge-multiple: true
+          path: ${{ runner.temp }}/backend-evidence
       - name: Verify complete test inventory and independent coverage gates
-        run: bash scripts/run_backend_tests.sh merge "${{ runner.temp }}/backend-evidence"
-      - name: Check migrations and OpenAPI contract
-        env:
-          ENVIRONMENT: "test"
-          DEBUG: "1"
-          VENDOR_MOCK: "1"
-          AUTH_MOCK: "1"
-        run: |
-          cd backend
-          uv run --locked python scripts_support/check_migration.py
-          uv run --locked python ../scripts/check_contract.py ../openapi.yaml
+        run: bash scripts/run_backend_tests.sh merge "${{ runner.temp }}/backend-evidence" 5 4
       - name: Upload merged coverage and inventory
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -408,8 +429,9 @@ jobs:
         with:
           version: "0.7.12"
           python-version: "3.12"
+          enable-cache: false
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --prefer-offline --no-audit
       - name: Audit dependency lockfile
         run: npm audit --audit-level=high
       - name: Verify generated API types match openapi.yaml
@@ -521,8 +543,12 @@ jobs:
         if: ${{ always() }}
         run: rm -rf -- "${RUNNER_TEMP:?}/security-private"
 
-  g2:
-    name: g2
+  g2-runtime:
+    name: g2-runtime (${{ matrix.part }}/3)
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3]
     # 与静态/组件门禁并行跑整栈运行态阶段，最终由 ci-gate 汇合精确 SHA 证据。
     # 按路径选择整栈与发布控制阶段；性能压测在测试环境专项执行，不进入 CI。
     needs: [changes]
@@ -535,7 +561,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
-      COMPOSE_PROJECT_NAME: sms-platform-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      COMPOSE_PROJECT_NAME: sms-platform-ci-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.part }}
       API_PORT: "18100"
       MOCK_VENDOR_PORT: "19128"
       WEB_PORT: "18180"
@@ -572,29 +598,17 @@ jobs:
             ) }}
           restore-keys: |
             g2-buildkit-${{ runner.os }}-
-      - name: Restore G2 npm download cache
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
-        with:
-          path: ${{ runner.temp }}/g2-npm-cache
-          key: g2-npm-${{ runner.os }}-${{ hashFiles('frontend/package-lock.json') }}
-          restore-keys: |
-            g2-npm-${{ runner.os }}-
       - name: Prepare development-only CI files
         run: bash scripts/local_test.sh prepare
       - name: Run authoritative G2 gate
         id: authoritative-g2
         env:
           G2_DOCKER_CACHE_DIR: ${{ runner.temp }}/g2-buildkit-cache
-          G2_NPM_CACHE_DIR: ${{ runner.temp }}/g2-npm-cache
           G2_TIMING_FILE: ${{ runner.temp }}/g2-timing.jsonl
           G2_COLD_BUILD: ${{ github.event_name == 'schedule' && '1' || '0' }}
         run: |
-          g2_args=(--mode integration)
+          g2_args=(--mode integration --e2e-shard "${{ matrix.part }}")
           expected_stages="5,6,7"
-          if [[ "${{ needs.changes.outputs.release_control }}" == true ]]; then
-            g2_args+=(--include-release-control)
-            expected_stages+=",9"
-          fi
           echo "expected_stages=$expected_stages" >> "$GITHUB_OUTPUT"
           sudo env \
             PATH="$PATH" \
@@ -606,7 +620,6 @@ jobs:
             MOCK_VENDOR_PORT="$MOCK_VENDOR_PORT" \
             WEB_PORT="$WEB_PORT" \
             G2_DOCKER_CACHE_DIR="$G2_DOCKER_CACHE_DIR" \
-            G2_NPM_CACHE_DIR="$G2_NPM_CACHE_DIR" \
             G2_TIMING_FILE="$G2_TIMING_FILE" \
             G2_COLD_BUILD="$G2_COLD_BUILD" \
             bash scripts/verify_all.sh "${g2_args[@]}"
@@ -618,7 +631,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: image-security-${{ github.sha }}-${{ github.run_attempt }}
+          name: image-security-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.part }}
           path: |
             ${{ runner.temp }}/g2-image-security
             ${{ runner.temp }}/mailer-image-security
@@ -635,10 +648,89 @@ jobs:
             --expected-stages "${{ steps.authoritative-g2.outputs.expected_stages }}" \
             --summary-file "$GITHUB_STEP_SUMMARY"
 
+  g2:
+    name: g2
+    needs: [changes, g2-runtime]
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.g2 == 'true' }}
+    outputs:
+      tested_sha: ${{ steps.bind.outputs.sha }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Bind G2 evidence to candidate
+        id: bind
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+          test "${{ needs.g2-runtime.result }}" = success
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  g2-release-control:
+    name: g2-release-control
+    # 与静态/组件门禁并行跑整栈运行态阶段，最终由 ci-gate 汇合精确 SHA 证据。
+    # 按路径选择整栈与发布控制阶段；性能压测在测试环境专项执行，不进入 CI。
+    needs: [changes]
+    outputs:
+      tested_sha: ${{ steps.bind.outputs.sha }}
+    if: >-
+      ${{ !cancelled()
+          && needs.changes.result == 'success'
+          && needs.changes.outputs.release_control == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      COMPOSE_PROJECT_NAME: sms-platform-release-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      API_PORT: "18100"
+      MOCK_VENDOR_PORT: "19128"
+      WEB_PORT: "18180"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Bind G2 evidence to candidate
+        id: bind
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Restore G2 BuildKit dependency cache
+        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        with:
+          path: ${{ runner.temp }}/g2-buildkit-cache
+          key: >-
+            g2-buildkit-${{ runner.os }}-${{ hashFiles(
+              'backend/Dockerfile',
+              'backend/uv.lock',
+              'frontend/Dockerfile',
+              'frontend/package-lock.json',
+              'deploy/postgres.Dockerfile',
+              'deploy/redis.Dockerfile',
+              'deploy/vendor-apk/**',
+              'deploy/install-retained-apk.sh'
+            ) }}
+          restore-keys: |
+            g2-buildkit-${{ runner.os }}-
+      - name: Prepare development-only CI files
+        run: bash scripts/local_test.sh prepare
+      - name: Build the release-control candidates
+        env:
+          G2_DOCKER_CACHE_DIR: ${{ runner.temp }}/g2-buildkit-cache
+          G2_COLD_BUILD: ${{ github.event_name == 'schedule' && '1' || '0' }}
+        run: bash scripts/build_g2_images.sh
+      - name: Verify isolated release recovery
+        run: |
+          sudo env PATH="$PATH" \
+            SMS_RELEASE_CONTROL_API_IMAGE=sms-platform-api:local \
+            SMS_RELEASE_CONTROL_WEB_IMAGE=sms-platform-web:local \
+            SMS_RELEASE_CONTROL_POSTGRES_IMAGE=sms-platform-postgres:local \
+            SMS_RELEASE_CONTROL_REDIS_IMAGE=sms-platform-redis:local \
+            bash scripts/verify_release_control.sh
+
   ci-gate:
     # 同仓 PR 的占位检查必须使用不同名称，精确提交验证只能采信真正执行的 ci-gate。
     name: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && 'same-repo-pr-ci-skipped' || 'ci-gate' }}
-    needs: [changes, backend, frontend, security, g2]
+    needs: [changes, backend, frontend, security, g2, g2-release-control]
     if: >-
       ${{ !cancelled()
           && (github.event_name != 'pull_request'
@@ -652,6 +744,19 @@ jobs:
         run: |
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-parse HEAD)" = "${{ needs.changes.outputs.candidate_sha }}"
+      - name: Require independently selected release recovery
+        env:
+          EXPECTED: ${{ needs.changes.outputs.release_control }}
+          RESULT: ${{ needs.g2-release-control.result }}
+          TESTED_SHA: ${{ needs.g2-release-control.outputs.tested_sha }}
+        run: |
+          if [[ "$EXPECTED" == true ]]; then
+            test "$RESULT" = success
+            test "$TESTED_SHA" = "$GITHUB_SHA"
+          else
+            test "$EXPECTED" = false
+            test "$RESULT" = skipped
+          fi
       - name: Verify selective CI results
         run: |
           python3 scripts/verify_ci_results.py \

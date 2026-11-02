@@ -1,16 +1,16 @@
 FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS build
 
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci --no-audit --prefer-offline
+
+COPY frontend .
+COPY VERSION /VERSION
+# Commit metadata affects the bundle, never the dependency installation layer.
 ARG GIT_SHA=development
 ARG SCHEMA_REVISION=development
 ENV VITE_GIT_SHA="${GIT_SHA}" \
     VITE_SCHEMA_REVISION="${SCHEMA_REVISION}"
-
-WORKDIR /app
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
-
-COPY frontend .
-COPY VERSION /VERSION
 RUN VITE_APP_VERSION="$(tr -d '\n' < /VERSION)" npm run build
 
 FROM nginx:stable-alpine@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951

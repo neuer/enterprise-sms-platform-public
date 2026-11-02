@@ -21,6 +21,13 @@ from classify_ci_changes import (  # noqa: E402
 )
 
 
+def test_every_main_push_forces_full_checks_even_with_reusable_evidence(tmp_path):
+    result = classify_event(repo=tmp_path, event_name="main_push", base_sha="",
+                            before_sha="", head_sha="a" * 40, trusted_pr_evidence=True)
+    assert result.backend and result.frontend and result.security and result.g2
+    assert result.release_control
+
+
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
@@ -30,8 +37,8 @@ from classify_ci_changes import (  # noqa: E402
         ("MAINTENANCE.md", (True, False, False)),
         ("PUBLICATION.md", (True, False, False)),
         ("PRD.md", (True, False, False)),
-        ("docs/UAT.md", (True, False, False)),
-        ("deploy/README.md", (True, False, False)),
+        ("docs/UAT.md", (False, False, False)),
+        ("deploy/README.md", (False, False, False)),
         ("openapi.yaml", (True, True, True)),
         ("schema.sql", (True, True, True)),
         ("frontend/src/views/DashboardView.vue", (False, True, False)),

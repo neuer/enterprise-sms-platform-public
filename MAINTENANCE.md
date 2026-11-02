@@ -43,19 +43,23 @@ required `ci-gate`、会话解决和冲突保护全部满足后才能合并，�
 若 PR 落后于 main 或存在冲突，先在任务分支处理并重新推送，再核验新 head SHA 的 CI
 与 GitHub 实际合并条件；不因新提交重复索要口头评审确认。
 合并后核对 PR 的实际 merge SHA 与 `origin/main`，并验证该 SHA 的 GitHub Actions
-`ci-gate=success`；PR head 的绿色结果不能直接当作合并提交通过。当前 CI 保留受信任
-PR 证据复用和内部 dispatch 校验能力，但没有自动创建一次性 tag 或派发合并验真的
-工作流，不能假定这些动作已经发生。若合并提交没有 CI，使用现有 `workflow_dispatch`
-执行完整 CI，并确认运行绑定目标 SHA；不要手工填写内部 `post_merge_*` 参数。
+`ci-gate=success`；PR head 的绿色结果不能直接当作合并提交通过。main 的每次 push
+均独立完整执行，不取消运行中或排队中的旧提交，也不以 PR 证据复用代替实际执行。
+分支 push/fork PR 仅保留同一分支的最新一次；人工与定时运行使用独立并发组。
+若合并提交没有 CI，使用现有 `workflow_dispatch` 执行完整 CI，并确认运行绑定目标
+SHA；不要手工填写内部 `post_merge_*` 参数。
 清理已合并分支前检查远端 ref，存在后续提交时保留；合并本身不代表测试部署完成。
 
-CI 每次独立运行检查，不读取本地免检回执。前端与门禁契约在 changes 中执行，
-前端专用变更也能触发 Python 契约。CI 控制入口变更覆盖全部相关 job；README 和
-CONTRIBUTING 等普通根文档走廉价合同检查，未知源代码路径仍保守全检。
-后端单元测试与隔离 PostgreSQL/Redis 测试并行，各自上传同一 SHA 的实际执行清单、
-JUnit 和覆盖数据。隔离分区自动收集 `tests/integration/` 以及显式真实 Redis 用例，
+CI 每次独立运行检查，不读取本地免检回执。门禁/前端契约由完整后端清单执行；
+前端专用变更在 changes 中补跑 Python 契约。CI 控制入口变更覆盖全部相关 job；
+README、CONTRIBUTING 及普通 Markdown 文档只执行规格/不变量检查并返回 `ci-gate`，
+不能用 workflow 级 paths-ignore 跳过 required check。受保护运行手册、产品契约和未知
+源代码路径仍保留相应校验；main、定时及人工运行一律全检。
+后端单元测试拆为 5 片，隔离 PostgreSQL/Redis 按模块拆为 4 片，在独立 Ubuntu runner
+并行执行。64 MiB 单字节分片用例与真实租约等待模块各占独立 runner，其余用例自动分配；
+每片上传同一 SHA 的实际执行清单、JUnit 和覆盖数据。隔离分区自动收集 `tests/integration/` 以及显式真实 Redis 用例，
 任何 skip 都失败；各集成模块从同一迁移基线克隆独立临时库，避免状态污染。
-汇总重新独立收集完整清单，验证分区互斥且穷尽、关键 marker 实际通过，
+汇总重新独立收集完整清单，逐片验证确定性分配、分区互斥且穷尽、关键 marker 实际通过，
 并核验 app 文件全集及 application/auth/pipeline/export/tasks/api 六项覆盖率，
 同时保留原 full G2 的 services ≥80% 基线。
 前端 CI 使用 `npm run test:coverage`（Python 3.12 / Node 24），先用真实 Vitest
@@ -71,7 +75,9 @@ full G2 复用 `scripts/run_backend_tests.sh full <临时证据目录>` 和相�
 不再重复执行关键 marker 子集。普通分区仅保留公开快照缺失文档与本机无 Lua 的明确例外。
 
 CI 按风险运行组件门禁；认证/授权/审计、加密与 PII、发送/厂商、迁移、部署和控制面等
-受保护变更进入 G2 integration，发布控制烟测仍按路径选择。性能压测不进入 PR、push、
+受保护变更进入 G2 integration。21 项 API 验收按审批、心跳和其余场景分到 3 个独立
+Mock 栈，场景集合互斥且穷尽，真实超时与全部断言不变；本地 full G2 仍串行跑全量。
+发布控制烟测仍按路径选择，与 API 验收在独立 runner 并行，两者均须通过精确 SHA 校验。性能压测不进入 PR、push、
 每日定时或人工 CI/G2 门禁，只在隔离测试环境按 `docs/PERFORMANCE.md` 专项执行并单独归档证据。
 
 ## 数据库迁移期限

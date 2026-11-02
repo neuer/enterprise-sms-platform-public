@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""在 mock Compose 栈串行执行固定的 20 项 API UAT。"""
+"""在隔离 mock Compose 栈执行完整 API UAT 或穷尽互斥的 CI 分片。"""
 
 from __future__ import annotations
 
@@ -37,6 +37,20 @@ SAFE_VARIABLE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 SAFE_DATABASE_VALUE = re.compile(r"^[A-Za-z0-9_.:@+\-]+$")
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 TAB_ID = "00000000000000000000000000000001"
+
+
+def ci_case_partition(index: int) -> tuple[str, ...]:
+    """按实测等待成本拆分，保留每个用例原有真实计时与全部断言。"""
+    if index not in (0, 1, 2, 3):
+        raise ValueError("invalid API UAT partition")
+    if index == 0:
+        return CASE_IDS
+    slow = ("11", "12", "27")
+    groups = (("11", "12"), ("27",), tuple(case for case in CASE_IDS if case not in slow))
+    flattened = tuple(case for group in groups for case in group)
+    if len(flattened) != len(set(flattened)) or set(flattened) != set(CASE_IDS):
+        raise ValueError("API UAT partitions must be disjoint and exhaustive")
+    return groups[index - 1]
 
 
 class UatFailure(RuntimeError):
@@ -1094,6 +1108,9 @@ class UatSuite:
             raise UatFailure("UAT-10 consent audit mismatch")
 
     def case_11(self) -> None:
+        # 独立分片也必须等真实 OPEN，不能依赖前一个营销场景预热。
+        self.login("operator01")
+        self._wait_admission_ready_for_volume("11")
         data = self._expect(
             "11",
             self.web_send(
@@ -2442,8 +2459,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=Path(__file__).resolve().parents[1] / "deploy/docker-compose.yml",
     )
     parser.add_argument("--cases", default=",".join(CASE_IDS))
+    parser.add_argument("--ci-shard", type=int, choices=(0, 1, 2, 3), default=0)
     args = parser.parse_args(argv)
     selected = tuple(item.strip() for item in args.cases.split(",") if item.strip())
+    if args.ci_shard:
+        if selected != CASE_IDS:
+            parser.error("--ci-shard cannot narrow the complete case registry")
+        selected = ci_case_partition(args.ci_shard)
     repository_root = Path(__file__).resolve().parents[1]
     suite = UatSuite(
         HttpClient(args.base),
