@@ -90,7 +90,7 @@ RELEASE_CONTROL_EXACT = {
     "scripts/verify_reproducible_release.py",
 }
 ZERO_SHA = "0" * 40
-FORCE_ALL_EVENTS = {"workflow_dispatch", "schedule"}
+FORCE_ALL_EVENTS = {"workflow_dispatch", "schedule", "main_push"}
 
 
 class ChangeDetectionError(RuntimeError):
@@ -110,6 +110,9 @@ def _rule(path: str) -> tuple[RuleResult, bool]:
     if path in ACTIVE_BLOCKER_DOCS:
         return NONE, False
     if path.startswith("docs/plans/") or fnmatchcase(path, "docs/TEST-REPORT-*"):
+        return NONE, False
+    # 普通说明文档只保留规格/不变量门禁；受保护运行手册已经在前面匹配。
+    if path.endswith(".md") and path.startswith(("docs/", "backend/", "frontend/", "deploy/")):
         return NONE, False
     if path in CI_CONTROL_SCRIPTS or path.startswith(".github/"):
         return FULL, False

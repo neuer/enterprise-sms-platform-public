@@ -152,9 +152,14 @@ def test_ci_vendor_gate_is_mock_only_and_installs_locked_frontend_runtime() -> N
     assert 'node-version: "24"' in backend_job
     assert "npm ci" in backend_job
     assert backend_job.index("npm ci") < backend_job.index(
-        "bash scripts/verify_vendor_live_test.sh"
+        "npm test --prefix frontend"
     )
-    assert "SMS_SKIP_VENDOR_POSTGRES_RECOVERY" in backend_job
+    assert "needs.changes.outputs.frontend != 'true'" in backend_job
+    assert "bash scripts/verify_vendor_control_uds.sh" in backend_job
+    assert "scripts/run_backend_tests.sh unit" in workflow
+    assert "tests/vendor-seal.test.ts" in backend_job
+    assert "tests/vendor-test-api.test.ts" in backend_job
+    assert "tests/vendor-test-console.test.ts" in backend_job
     for forbidden in (
         "vendor.example.invalid",
         "VENDOR_MOCK: \"0\"",

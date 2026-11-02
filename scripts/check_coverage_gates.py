@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from check_operations_coverage import app_document, evaluate, normalize
-from gate_policy import CRITICAL_MARKERS, logical_module_files
+from gate_policy import CRITICAL_MARKERS, logical_module_files, partition_index, partition_name
 
 THRESHOLDS: Mapping[str, float] = {
     "application": 75.0,
@@ -142,14 +142,23 @@ def allowed_skip(node: str, reason: str) -> bool:
     )
 
 
-def verify_test_evidence(inventory: Any, parts: Sequence[Any], *, commit: str) -> None:
+def verify_test_evidence(
+    inventory: Any, parts: Sequence[Any], *, commit: str,
+    unit_parts: int = 1, postgres_parts: int = 1,
+) -> None:
     """验证分区完整、互斥、同 SHA，并要求每类关键测试实际成功。"""
     if not isinstance(inventory, dict) or inventory.get("shard") != "inventory":
         raise CoverageGateError("independent test inventory is missing")
-    if len(parts) != 2 or {part.get("shard") for part in parts if isinstance(part, dict)} != {
-        "unit",
-        "postgres",
-    }:
+    for kind, count in (("unit", unit_parts), ("postgres", postgres_parts)):
+        partition_name(kind, 1, count)
+    expected_parts = {
+        partition_name(kind, index, count): (kind, index, count)
+        for kind, count in (("unit", unit_parts), ("postgres", postgres_parts))
+        for index in range(1, count + 1)
+    }
+    if (len(parts) != len(expected_parts)
+            or {part.get("shard") for part in parts if isinstance(part, dict)}
+            != set(expected_parts)):
         raise CoverageGateError("unit/postgres evidence set is incomplete")
     all_nodes = _nodes(inventory.get("collected"))
     isolated = _nodes(inventory.get("isolated"))
@@ -179,10 +188,12 @@ def verify_test_evidence(inventory: Any, parts: Sequence[Any], *, commit: str) -
             or success | skips.keys() != nodes
         ):
             raise CoverageGateError("test execution evidence is incomplete or overlapping")
-        expected = isolated if part["shard"] == "postgres" else all_nodes - isolated
+        kind, index, count = expected_parts[part["shard"]]
+        candidates = isolated if kind == "postgres" else all_nodes - isolated
+        expected = {node for node in candidates if partition_index(node, kind, count) == index}
         if nodes != expected:
             raise CoverageGateError("test shard does not match independent inventory")
-        if part["shard"] == "postgres" and skips:
+        if kind == "postgres" and skips:
             raise CoverageGateError("isolated tests must not skip")
         if any(not allowed_skip(node, reason) for node, reason in skips.items()):
             raise CoverageGateError("unexpected test skip")
@@ -206,6 +217,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("report", type=Path)
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--unit-parts", type=int, choices=range(1, 17), default=1)
+    parser.add_argument("--postgres-parts", type=int, choices=range(1, 17), default=1)
     args = parser.parse_args(argv)
     try:
         document: Any = json.loads(args.report.read_text(encoding="utf-8"))
@@ -214,12 +227,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             json.loads((evidence / "inventory.json").read_text(encoding="utf-8")),
             [
                 json.loads((evidence / name / "tests.json").read_text(encoding="utf-8"))
-                for name in (
-                    "unit",
-                    "postgres",
-                )
+                for kind, count in (("unit", args.unit_parts), ("postgres", args.postgres_parts))
+                for index in range(1, count + 1)
+                for name in (partition_name(kind, index, count),)
             ],
             commit=args.commit,
+            unit_parts=args.unit_parts,
+            postgres_parts=args.postgres_parts,
         )
         backend = Path(__file__).resolve().parents[1] / "backend"
         expected = {

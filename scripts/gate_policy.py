@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from pathlib import Path
 from types import MappingProxyType
@@ -193,6 +194,20 @@ def logical_module_files(entry: str) -> tuple[str, ...]:
 def isolated_node(nodeid: str) -> bool:
     """所有 integration 用例及显式真实 Redis 用例必须进入隔离依赖分区。"""
     return nodeid.startswith("tests/integration/") or nodeid in ISOLATED_EXTRA_NODES
+
+
+def partition_name(kind: str, index: int, count: int) -> str:
+    """单机入口保留原名，多机证据显式绑定分片编号与总数。"""
+    if kind not in {"unit", "postgres"} or not 1 <= index <= count <= 16:
+        raise ValueError("invalid backend partition")
+    return kind if count == 1 else f"{kind}-{index}-of-{count}"
+
+
+def partition_index(nodeid: str, kind: str, count: int) -> int:
+    """数据库用例按模块隔离，普通用例按 nodeid 均分，新增测试自动入片。"""
+    partition_name(kind, 1, count)
+    key = nodeid.split("::", 1)[0] if kind == "postgres" else nodeid
+    return int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "big") % count + 1
 
 
 def isolated_paths(root: Path) -> frozenset[str]:

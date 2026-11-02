@@ -23,20 +23,9 @@ FROM python:3.12-alpine@sha256:e6dae589c1c05976188fd3bd019afd091445fc533ed2ea290
 RUN python -m pip uninstall --yes pip \
     && rm -rf /usr/local/lib/python3.12/ensurepip
 
-ARG APP_VERSION
-ARG GIT_SHA=development
-ARG SCHEMA_REVISION=development
-
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH" \
-    GIT_SHA="${GIT_SHA}" \
-    SCHEMA_REVISION="${SCHEMA_REVISION}" \
-    IMAGE_DIGEST="unresolved"
-
-LABEL org.opencontainers.image.version="${APP_VERSION}" \
-      org.opencontainers.image.revision="${GIT_SHA}" \
-      com.sms-platform.schema-revision="${SCHEMA_REVISION}"
+    PATH="/app/.venv/bin:$PATH"
 
 RUN adduser -D -u 10001 sms \
     && sed -i 's/^sms:!:[0-9]*:/sms:!:0:/' /etc/shadow \
@@ -73,6 +62,16 @@ RUN find /app/app /app/migrations /app/scripts_support \
       -type d -exec chmod 0755 {} + \
     && find /app/app /app/migrations /app/scripts_support \
       -type f -exec chmod 0644 {} +
+
+ARG APP_VERSION
+ARG GIT_SHA=development
+ARG SCHEMA_REVISION=development
+ENV GIT_SHA="${GIT_SHA}" \
+    SCHEMA_REVISION="${SCHEMA_REVISION}" \
+    IMAGE_DIGEST="unresolved"
+LABEL org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      com.sms-platform.schema-revision="${SCHEMA_REVISION}"
 
 USER sms
 EXPOSE 8000

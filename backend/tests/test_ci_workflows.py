@@ -98,7 +98,8 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "contents": "read",
         "pull-requests": "read",
     }
-    assert workflow["concurrency"]["cancel-in-progress"] is True
+    assert "github.ref != 'refs/heads/main'" in workflow["concurrency"]["cancel-in-progress"]
+    assert "github.run_id" in workflow["concurrency"]["group"]
 
     jobs = workflow["jobs"]
     assert set(jobs) == {
@@ -111,6 +112,7 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "frontend",
         "security",
         "g2",
+        "g2-release-control",
         "ci-gate",
     }
 
@@ -164,7 +166,9 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         assert command in changes_commands
     expected_concurrency_group = (
         "ci-${{ github.workflow }}-${{ github.event_name }}-"
-        "${{ github.event.pull_request.head.label || github.ref_name }}"
+        "${{ (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' "
+        "|| github.event_name == 'schedule') && github.run_id "
+        "|| github.event.pull_request.head.label || github.ref_name }}"
     )
     assert workflow["concurrency"]["group"] == expected_concurrency_group
     assert "github.event_name != 'pull_request'" in changes["if"]
@@ -189,9 +193,10 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         for step in jobs["backend-vendor-lint"]["steps"]
         if step.get("name") == "Verify controlled vendor-live safety"
     )
-    assert vendor_live_step["env"] == {"SMS_SKIP_VENDOR_POSTGRES_RECOVERY": "1"}
+    assert vendor_live_step["run"] == "bash scripts/verify_vendor_control_uds.sh"
     assert "verify_vendor_postgres_recovery.sh" not in vendor_lint_commands
-    assert vendor_lint_commands.count("verify_vendor_live_test.sh") == 1
+    assert "verify_vendor_live_test.sh" not in vendor_lint_commands
+    assert "tests/vendor-test-console.test.ts" in vendor_lint_commands
     assert "pytest-xdist" not in backend_commands
     assert "-n auto" not in backend_commands
     assert jobs["backend-vendor-lint"]["needs"] == "changes"
@@ -320,7 +325,10 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     assert "--mode integration" in g2_commands
     assert "include-performance" not in g2_commands
     assert "needs.changes.outputs.performance" not in g2_commands
-    assert "needs.changes.outputs.release_control" in g2_commands
+    assert "--include-release-control" not in g2_commands
+    assert "needs.changes.outputs.release_control" in jobs["g2-release-control"]["if"]
+    assert jobs["g2-release-control"]["needs"] == ["changes"]
+    assert "scripts/verify_release_control.sh" in job_commands(jobs["g2-release-control"])
     assert "verify_vendor_live_test.sh" in (ROOT / "scripts/verify_all.sh").read_text(
         encoding="utf-8"
     )
@@ -332,7 +340,9 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     assert jobs["g2"]["timeout-minutes"] == 30
 
     gate = jobs["ci-gate"]
-    assert gate["needs"] == ["changes", "backend", "frontend", "security", "g2"]
+    assert gate["needs"] == [
+        "changes", "backend", "frontend", "security", "g2", "g2-release-control",
+    ]
     assert gate["name"].endswith(
         "&& 'same-repo-pr-ci-skipped' || 'ci-gate' }}"
     )
@@ -377,12 +387,12 @@ def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
         for step in g2["steps"]
         if str(step.get("uses", "")).startswith("actions/cache@")
     ]
-    assert len(cache_steps) == 2
+    assert len(cache_steps) == 1
     assert all(
         step["uses"] == "actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306"
         for step in cache_steps
     )
-    build_cache, npm_cache = cache_steps
+    build_cache = cache_steps[0]
     assert build_cache["with"]["path"] == "${{ runner.temp }}/g2-buildkit-cache"
     for token in (
         "backend/Dockerfile",
@@ -393,17 +403,14 @@ def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
         "deploy/redis.Dockerfile",
     ):
         assert token in build_cache["with"]["key"]
-    assert npm_cache["with"]["path"] == "${{ runner.temp }}/g2-npm-cache"
-    assert "frontend/package-lock.json" in npm_cache["with"]["key"]
 
     gate = next(step for step in g2["steps"] if step.get("id") == "authoritative-g2")
     assert gate["env"] == {
         "G2_DOCKER_CACHE_DIR": "${{ runner.temp }}/g2-buildkit-cache",
-        "G2_NPM_CACHE_DIR": "${{ runner.temp }}/g2-npm-cache",
         "G2_TIMING_FILE": "${{ runner.temp }}/g2-timing.jsonl",
         "G2_COLD_BUILD": "${{ github.event_name == 'schedule' && '1' || '0' }}",
     }
-    for variable in ("G2_DOCKER_CACHE_DIR", "G2_NPM_CACHE_DIR", "G2_TIMING_FILE"):
+    for variable in ("G2_DOCKER_CACHE_DIR", "G2_TIMING_FILE"):
         assert f'{variable}="${variable}"' in gate["run"]
 
     summary = next(
@@ -417,7 +424,7 @@ def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
     assert "steps.authoritative-g2.outputs.expected_stages" in summary["run"]
     assert 'GITHUB_STEP_SUMMARY' in summary["run"]
     assert 'expected_stages="5,6,7"' in gate["run"]
-    assert 'expected_stages+=",9"' in gate["run"]
+    assert "--include-release-control" not in gate["run"]
 
 
 def test_owner_pr_automation_only_opens_draft_for_independent_review() -> None:

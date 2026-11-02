@@ -82,7 +82,7 @@ def main() -> None:
     parser.add_argument("mode", choices=("prepare", "begin", "stamp", "verify"))
     parser.add_argument("path", type=Path)
     parser.add_argument("--commit", required=True)
-    parser.add_argument("--shard", choices=("unit", "postgres"), default="unit")
+    parser.add_argument("--shard", default="unit")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     if args.mode == "prepare":
