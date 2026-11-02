@@ -271,7 +271,7 @@ jobs:
         run: bash scripts/run_backend_tests.sh unit "${{ runner.temp }}/backend-evidence" "${{ matrix.part }}" 5
       - name: Upload unit evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: backend-unit-${{ matrix.part }}-of-5-${{ github.sha }}
           path: ${{ runner.temp }}/backend-evidence/
@@ -314,7 +314,7 @@ jobs:
         run: bash scripts/run_backend_tests.sh postgres "${{ runner.temp }}/backend-evidence" "${{ matrix.part }}" 4
       - name: Upload postgres evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: backend-postgres-${{ matrix.part }}-of-4-${{ github.sha }}
           path: ${{ runner.temp }}/backend-evidence/
@@ -351,13 +351,13 @@ jobs:
       - name: Prepare development-only CI files
         run: bash scripts/local_test.sh prepare
       - name: Download unit evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: backend-unit-*-of-5-${{ github.sha }}
           merge-multiple: true
           path: ${{ runner.temp }}/backend-evidence
       - name: Download PostgreSQL evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: backend-postgres-*-of-4-${{ github.sha }}
           merge-multiple: true
@@ -366,7 +366,7 @@ jobs:
         run: bash scripts/run_backend_tests.sh merge "${{ runner.temp }}/backend-evidence" 5 4
       - name: Upload merged coverage and inventory
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: backend-coverage-${{ github.sha }}
           path: ${{ runner.temp }}/backend-evidence/
@@ -452,7 +452,7 @@ jobs:
           verify --commit "$GITHUB_SHA"
       - name: Upload frontend coverage evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: frontend-coverage-${{ github.sha }}
           path: frontend/coverage/
@@ -520,7 +520,7 @@ jobs:
       - name: Upload public security summary
         id: evidence-upload
         if: ${{ always() && steps.sanitize.outcome == 'success' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: security-summary-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/security-public/summary.json
@@ -581,8 +581,9 @@ jobs:
           python-version: "3.12"
           enable-cache: true
           cache-dependency-glob: backend/uv.lock
+      # release-control 统一保存共享缓存；运行态分片只恢复，避免归档 sudo 生成的私有锁文件。
       - name: Restore G2 BuildKit dependency cache
-        uses: actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
+        uses: actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306 # v5.0.3
         with:
           path: ${{ runner.temp }}/g2-buildkit-cache
           key: >-
@@ -629,7 +630,7 @@ jobs:
           python3 scripts/verify_image_security.py --scope mailer --output "$RUNNER_TEMP/mailer-image-security"
       - name: Upload image security evidence
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image-security-${{ github.sha }}-${{ github.run_attempt }}-${{ matrix.part }}
           path: |

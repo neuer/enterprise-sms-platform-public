@@ -15,6 +15,7 @@ MAINTENANCE = ROOT / "MAINTENANCE.md"
 ALLOWED_ACTIONS = {
     "actions/attest",
     "actions/cache",
+    "actions/cache/restore",
     "actions/checkout",
     "actions/download-artifact",
     "actions/setup-node",
@@ -392,15 +393,25 @@ def test_g2_restores_dependency_caches_and_always_renders_timing() -> None:
     cache_steps = [
         step
         for step in g2["steps"]
-        if str(step.get("uses", "")).startswith("actions/cache@")
+        if str(step.get("uses", "")).startswith("actions/cache")
     ]
     assert len(cache_steps) == 1
     assert all(
-        step["uses"] == "actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306"
+        step["uses"] == "actions/cache/restore@cdf6c1fa76f9f475f3d7449005a359c84ca0f306"
         for step in cache_steps
     )
     build_cache = cache_steps[0]
     assert build_cache["with"]["path"] == "${{ runner.temp }}/g2-buildkit-cache"
+    release_cache_steps = [
+        step
+        for step in workflow["jobs"]["g2-release-control"]["steps"]
+        if str(step.get("uses", "")).startswith("actions/cache")
+    ]
+    assert len(release_cache_steps) == 1
+    assert release_cache_steps[0]["uses"] == (
+        "actions/cache@cdf6c1fa76f9f475f3d7449005a359c84ca0f306"
+    )
+    assert release_cache_steps[0]["with"] == build_cache["with"]
     for token in (
         "backend/Dockerfile",
         "backend/uv.lock",
@@ -536,8 +547,8 @@ def test_release_workflow_is_manual_or_tag_only_and_fail_closed() -> None:
         "path": "${{ runner.temp }}/release-evidence",
     }
     assert "actions/attest@36051bcae73b7c2a8a6945a48cbf80953c6baa35" in source
-    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in source
-    assert "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093" in source
+    assert "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9" in source
+    assert "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333" in source
     assert (
         "subject-path: ${{ runner.temp }}/release-evidence/offline-image-index.json"
         in source

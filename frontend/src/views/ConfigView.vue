@@ -814,17 +814,17 @@ onMounted(() => {
             >
             <p>{{ item.description || "未提供参数说明" }}</p>
             <el-select
-              :disabled="saving"
               v-if="item.value_type === 'bool'"
               v-model="values[item.key]"
+              :disabled="saving"
               :data-testid="`config-${item.key}`"
               :aria-label="item.key"
               @change="mark(item.key)"
               ><el-option label="开启 · true" value="true" /><el-option label="关闭 · false" value="false"
             /></el-select>
             <el-input-number
-              :disabled="saving"
               v-else-if="item.value_type === 'int'"
+              :disabled="saving"
               :model-value="values[item.key] === '' ? undefined : Number(values[item.key])"
               :data-testid="`config-${item.key}`"
               :aria-label="item.key"
@@ -836,9 +836,9 @@ onMounted(() => {
               @update:model-value="(value: number | undefined) => setNumber(item.key, value)"
             />
             <el-input
-              :disabled="saving"
               v-else
               v-model="values[item.key]"
+              :disabled="saving"
               :data-testid="`config-${item.key}`"
               :aria-label="item.key"
               :type="item.sensitive ? 'password' : 'text'"
@@ -888,8 +888,8 @@ onMounted(() => {
               >
               <small v-else></small>
               <el-button
-                :disabled="saving"
                 v-if="isModified(item)"
+                :disabled="saving"
                 link
                 type="primary"
                 :data-testid="`config-reset-${item.key}`"
