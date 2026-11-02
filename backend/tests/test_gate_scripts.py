@@ -9,6 +9,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 DOCKER_PUBLIC_ENVIRONMENT_KEYS = (
@@ -686,7 +688,54 @@ def test_data_image_smoke_waits_for_database_and_initdb_role() -> None:
 
     assert "psql -U sms_owner -d sms_image_smoke -Atc" in wait_body
     assert "FROM pg_roles WHERE rolname = 'sms_accept'" in wait_body
-    assert "pg_isready" not in wait_body
+    assert "pg_isready -h 127.0.0.1" in wait_body
+
+
+@pytest.mark.parametrize(
+    ("tcp_ready_after", "role_ready", "expected_status", "expected_tcp", "expected_roles"),
+    [(2, True, 0, 2, 1), (61, True, 1, 60, 0), (1, False, 1, 60, 60)],
+)
+def test_data_image_readiness_ignores_initdb_socket_and_requires_final_roles(
+    tmp_path: Path,
+    tcp_ready_after: int,
+    role_ready: bool,
+    expected_status: int,
+    expected_tcp: int,
+    expected_roles: int,
+) -> None:
+    smoke = (ROOT / "scripts/verify_data_images.sh").read_text(encoding="utf-8")
+    wait_body = smoke.split("wait_postgres() {", 1)[1].split("\n}", 1)[0]
+    calls = tmp_path / "readiness-calls"
+    harness = r'''
+postgres_container=isolated-test
+tcp_attempts=0
+docker() {
+  case "$*" in
+    *"pg_isready -h 127.0.0.1"*)
+      tcp_attempts=$((tcp_attempts + 1))
+      echo tcp >> "$READINESS_CALLS"
+      [ "$tcp_attempts" -ge "$TCP_READY_AFTER" ]
+      ;;
+    *"FROM pg_roles WHERE rolname = 'sms_accept'"*)
+      echo role >> "$READINESS_CALLS"
+      if [ "$ROLE_READY" = 1 ]; then printf '1\n'; fi
+      ;;
+    *) return 99 ;;
+  esac
+}
+sleep() { :; }
+wait_postgres() {
+''' + wait_body + '\n}\nwait_postgres\n'
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        env={**os.environ, "READINESS_CALLS": str(calls),
+             "TCP_READY_AFTER": str(tcp_ready_after), "ROLE_READY": str(int(role_ready))},
+        capture_output=True, text=True, check=False, timeout=5,
+    )
+    observed = calls.read_text().splitlines()
+    assert result.returncode == expected_status
+    assert observed.count("tcp") == expected_tcp
+    assert observed.count("role") == expected_roles
 
 
 def test_release_and_data_gates_accept_only_optional_absolute_report_path() -> None:

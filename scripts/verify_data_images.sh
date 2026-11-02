@@ -98,7 +98,9 @@ start_postgres() {
 
 wait_postgres() {
   for _ in $(seq 1 60); do
-    if [ "$(
+    # initdb 的临时实例仅监听 Unix socket；必须等正式 TCP 实例再校验角色。
+    if docker exec "$postgres_container" pg_isready -h 127.0.0.1 \
+      -U sms_owner -d sms_image_smoke >/dev/null 2>&1 && [ "$(
       docker exec "$postgres_container" psql -U sms_owner -d sms_image_smoke -Atc \
         "SELECT 1 FROM pg_roles WHERE rolname = 'sms_accept'" 2>/dev/null
     )" = "1" ]; then
