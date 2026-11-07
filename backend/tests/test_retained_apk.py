@@ -74,9 +74,23 @@ def test_web_retains_fixed_curl_for_each_architecture(architecture: str, package
     assert versions == ["8.23.0-r0"]
 
 
+@pytest.mark.parametrize("architecture", ["x86_64", "aarch64"])
+def test_web_retains_fixed_expat_for_each_architecture(architecture: str) -> None:
+    """两架构均覆盖 Expat 2.10.0 修复的四项 XML 解析安全缺陷。"""
+    manifest = json.loads((ASSETS / "manifest.json").read_text())
+    versions = [
+        record["version"]
+        for record in manifest["packages"]
+        if record["component"] == "web"
+        and record["architecture"] == architecture
+        and record["package"] == "libexpat"
+    ]
+    assert versions == ["2.10.0-r0"]
+
+
 @pytest.mark.parametrize(
     "path",
-    ["deploy/vendor-apk/web/x86_64/libexpat-2.9.0-r0.apk", "deploy/install-retained-apk.sh"],
+    ["deploy/vendor-apk/web/x86_64/libexpat-2.10.0-r0.apk", "deploy/install-retained-apk.sh"],
 )
 def test_retained_package_changes_require_release_control(path: str) -> None:
     from classify_ci_changes import classify_paths

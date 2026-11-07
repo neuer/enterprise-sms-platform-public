@@ -40,14 +40,14 @@
     {
       "component": "web",
       "architecture": "x86_64",
-      "filename": "libexpat-2.9.0-r0.apk",
-      "sha256": "32b127f31e0a919110a18a7f0bb3780d8fb66ba4d8d61b2d301d633f0e319d0e",
+      "filename": "libexpat-2.10.0-r0.apk",
+      "sha256": "e7e7408ea787ed06d00159b0ff1f9b65a63cf634f36d9e0fa7512ce2c489a503",
       "package": "libexpat",
-      "version": "2.9.0-r0",
+      "version": "2.10.0-r0",
       "license": "MIT",
       "repository": "v3.24/main",
       "origin": "dl-cdn.alpinelinux.org/alpine",
-      "retrieved": "2026-10-20"
+      "retrieved": "2026-11-07"
     },
     {
       "component": "web",
@@ -124,14 +124,14 @@
     {
       "component": "web",
       "architecture": "aarch64",
-      "filename": "libexpat-2.9.0-r0.apk",
-      "sha256": "7128bfe18b8a315b9cf90ddf0beffeee454648ae72ff7898ff7d7b09803a559d",
+      "filename": "libexpat-2.10.0-r0.apk",
+      "sha256": "99144fe0b1bb9316a3bc30c38707996767806661f4a0456fcf4565ac92e79b0f",
       "package": "libexpat",
-      "version": "2.9.0-r0",
+      "version": "2.10.0-r0",
       "license": "MIT",
       "repository": "v3.24/main",
       "origin": "dl-cdn.alpinelinux.org/alpine",
-      "retrieved": "2026-10-20"
+      "retrieved": "2026-11-07"
     },
     {
       "component": "web",
