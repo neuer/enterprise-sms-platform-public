@@ -289,6 +289,7 @@ async function revealSearched(): Promise<string> {
       <PhoneReveal
         v-if="canDecrypt && decryptId !== undefined"
         :key="decryptId"
+        :record-key="decryptId"
         :masked="displayMask"
         :reveal="revealSearched"
         testid="message-phone-decrypt"

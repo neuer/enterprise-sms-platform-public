@@ -4,7 +4,7 @@ defineProps<{ controller: AdminStepUpController }>()
 </script>
 <template>
   <el-dialog
-    :model-value="controller.state.open"
+    :model-value="controller.phase.value !== 'closed'"
     title="验证当前账号"
     width="min(420px, 92vw)"
     destroy-on-close
@@ -23,7 +23,7 @@ defineProps<{ controller: AdminStepUpController }>()
       autocomplete="current-password"
       placeholder="当前账号密码"
       :maxlength="128"
-      :disabled="controller.state.busy"
+      :disabled="controller.phase.value === 'authorizing'"
       data-testid="admin-step-up-password"
       @update:model-value="controller.updatePassword"
       @keyup.enter="controller.submit"
@@ -33,7 +33,7 @@ defineProps<{ controller: AdminStepUpController }>()
       <el-button @click="controller.cancel">取消</el-button>
       <el-button
         type="primary"
-        :loading="controller.state.busy"
+        :loading="controller.phase.value === 'authorizing'"
         :disabled="!controller.state.password"
         data-testid="admin-step-up-submit"
         @click="controller.submit"

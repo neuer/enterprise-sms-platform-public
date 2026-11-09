@@ -33,6 +33,7 @@ const {
   previewError,
   previewStale,
   busy,
+  submissionPhase,
   submittedSummary,
   errorMessage,
   errorAdmission,
@@ -98,6 +99,8 @@ function scrollToRail(): void {
 }
 
 const submitLabel = computed(() => {
+  if (submissionPhase.value === "submitting") return "正在确认受理结果"
+  if (submissionPhase.value === "response-unknown") return "重试确认原请求"
   const current = previewStale.value ? null : preview.value
   const cost = current ? ` · ${formatNumber(current.quota_cost)} 计费条` : ""
   if (form.isTest) return `立即发送${cost}`
@@ -511,7 +514,12 @@ onBeforeUnmount(() => {
         @reset="resetForAnother"
       />
 
-      <el-alert v-if="errorMessage" :title="errorMessage" type="error" :closable="false">
+      <el-alert
+        v-if="errorMessage"
+        :title="errorMessage"
+        :type="submissionPhase === 'response-unknown' ? 'warning' : 'error'"
+        :closable="false"
+      >
         <template v-if="errorAdmission" #default
           ><el-button link type="primary" data-testid="send-admission-ops-link" @click="goOpsQueue"
             >前往运维中心查看队列</el-button
