@@ -83,6 +83,7 @@ const activeApps = computed(() => apps.value.filter((item) => item.status === 1)
 const isControlled = computed(() => status.value?.mode === "controlled")
 const operationBusy = computed(
   () =>
+    loading.value ||
     operationRestoring.value ||
     operationCompletionRefreshing.value ||
     !!loadErrorMessage.value ||

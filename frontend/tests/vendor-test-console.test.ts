@@ -1026,6 +1026,33 @@ describe("系统配置页真实联调控制台", () => {
     wrapper.unmount()
   })
 
+  it("权威快照读取失败后，手动重连在途仍禁用操作直到新快照完整返回", async () => {
+    let lookups = 0
+    const pending = deferred<ReturnType<typeof response>>()
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (!url.endsWith("/vendor-test/status")) return undefined
+        lookups += 1
+        if (lookups === 2) return response({ code: "TEMPORARY", message: "暂时不可用" }, 503)
+        if (lookups === 3) return pending.promise
+        return undefined
+      }),
+    )
+    const wrapper = mountConsole()
+    await flushPromises()
+    await (wrapper.vm as unknown as { load: () => Promise<boolean> }).load()
+    await flushPromises()
+    expect(wrapper.text()).toContain("当前状态未确认")
+    await wrapper.getComponent(LoadErrorAlert).get("button").trigger("click")
+    await flushPromises()
+    expect(wrapper.get("[data-testid='vendor-credentials']").attributes("disabled")).toBeDefined()
+    pending.resolve(response(baseStatus))
+    await flushPromises()
+    expect(wrapper.get("[data-testid='vendor-credentials']").attributes("disabled")).toBeUndefined()
+    wrapper.unmount()
+  })
+
   it.each(["succeeded", "failed"])("新操作接管后旧恢复的 %s 不能覆盖或清除新 owner", async (status) => {
     const old = {
       operation_id: "00000000-0000-4000-8000-000000000509",
