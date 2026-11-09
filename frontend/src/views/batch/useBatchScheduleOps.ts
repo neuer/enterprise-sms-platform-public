@@ -113,7 +113,7 @@ export function useBatchScheduleOps(deps: {
       !(await deps.confirmAuditedAction({
         isCurrent: () => deps.selected.value === target && canScheduleOps.value,
         title: "确认改期",
-        body: `批次 ${batch} 将改到新的定时时间，并重新执行审批判定；到达新时间前批次保持「已排期」。`,
+        body: `批次 ${batch} 将改到新的定时时间，并重新判断是否需要审批。需要审批的批次返回「待审批」，通过后才能发送；其余批次保持「已排期」。`,
         auditNote: "改期行为与操作人将写入审计日志。",
         confirmText: "确认改期",
       }))
