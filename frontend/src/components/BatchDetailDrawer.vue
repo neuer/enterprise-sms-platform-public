@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref, watch } from "vue"
 import { decryptMessagePhone, type BatchItem, type BatchMessage } from "../api/queries"
 import {
   activeOf,
@@ -25,6 +26,15 @@ import StatusTag from "./StatusTag.vue"
  * 与明细加载仍由批次列表页统一处理。
  */
 const open = defineModel<boolean>({ default: false })
+// Element 在关闭动画结束才回写 model；展示授权在 close 事件起点提前失效。
+const revealActive = ref(open.value)
+watch(
+  open,
+  (value) => {
+    revealActive.value = value
+  },
+  { flush: "sync" },
+)
 const detailStatus = defineModel<string>("detailStatus", { required: true })
 const detailPage = defineModel<number>("detailPage", { required: true })
 defineProps<{
@@ -62,7 +72,14 @@ async function revealPhone(messageId: number): Promise<string> {
 </script>
 
 <template>
-  <el-drawer v-model="open" size="min(560px, 92vw)" :teleported="false" class="batch-drawer">
+  <el-drawer
+    v-model="open"
+    size="min(560px, 92vw)"
+    :teleported="false"
+    class="batch-drawer"
+    @open="revealActive = true"
+    @close="revealActive = false"
+  >
     <template #header>
       <div v-if="selected" class="batch-drawer-head">
         <StatusTag v-if="!detailUnconfirmed" :status="selected.status" />
@@ -290,6 +307,8 @@ async function revealPhone(messageId: number): Promise<string> {
           ><template #default="{ row }"
             ><PhoneReveal
               v-if="canDecrypt"
+              :record-key="row.id"
+              :active="open && revealActive"
               :masked="row.phone"
               :reveal="() => revealPhone(row.id)"
               :testid="`batch-phone-decrypt-${row.id}`" /><PhoneMask
