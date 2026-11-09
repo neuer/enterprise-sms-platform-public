@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import type { AdminStepUpController } from "../composables/useAdminStepUp"
-defineProps<{ controller: AdminStepUpController }>()
+const props = defineProps<{ controller: AdminStepUpController }>()
+
+/** 只有用户请求关闭才取消授权；程序关闭和过渡结束不改变在途业务操作。 */
+function closePrompt(done: () => void): void {
+  props.controller.cancel()
+  done()
+}
 </script>
 <template>
   <el-dialog
@@ -9,11 +15,7 @@ defineProps<{ controller: AdminStepUpController }>()
     width="min(420px, 92vw)"
     destroy-on-close
     :close-on-click-modal="false"
-    @update:model-value="
-      (open: boolean) => {
-        if (!open) controller.cancel()
-      }
-    "
+    :before-close="closePrompt"
   >
     <p>{{ controller.state.label }}</p>
     <p>请输入当前登录认证源的密码。验证仅授权本次操作，五分钟内有效且只能使用一次。</p>

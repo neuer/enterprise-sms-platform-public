@@ -9,6 +9,7 @@ import { useConfirmActions } from "../lib/confirm"
 import { errorText } from "../lib/error"
 import { passwordPrechecks, passwordProblem, type Precheck } from "../lib/localAccount"
 import { formatDateTime } from "../lib/time"
+import { useUserDrawerOperation } from "../views/users/useUserDrawerOperation"
 
 /**
  * 重置本地密码抽屉：新临时密码只存在于本组件草稿，确认并提交后立即清空，不回显。
@@ -19,7 +20,6 @@ const props = defineProps<{ user: ManagedUser | null; policy: PasswordPolicy; st
 const emit = defineEmits<{ reset: [] }>()
 const { confirmAuditedAction } = useConfirmActions()
 
-const saving = ref(false)
 const resetPasswordDraft = ref("")
 
 const resetChecks = computed<Precheck[]>(() =>
@@ -37,6 +37,8 @@ function clearDraft(): void {
   resetPasswordDraft.value = ""
 }
 
+const { saving, retire, begin } = useUserDrawerOperation(open, clearDraft)
+
 function closePasswordReset(): void {
   open.value = false
   clearDraft()
@@ -45,55 +47,53 @@ function closePasswordReset(): void {
 async function confirmPasswordReset(): Promise<void> {
   const target = props.user
   if (!target) return
-  const draft = resetPasswordDraft.value
-  const passwordIssue = passwordProblem(draft, target.username, props.policy)
+  let password = resetPasswordDraft.value
+  const passwordIssue = passwordProblem(password, target.username, props.policy)
   if (passwordIssue) {
     ElMessage.warning(passwordIssue)
     return
   }
-  if (
-    !(await confirmAuditedAction({
-      isCurrent: () => props.user === target && resetPasswordDraft.value === draft && open.value,
-      title: "确认重置密码",
-      body: `将重置 ${target.display_name || target.username} 的本地密码，并立即吊销现有会话；用户下次登录必须修改密码。`,
-      auditNote: "重置行为、操作人与对象 account_id 将写入审计日志；临时密码不回显。",
-      confirmText: "确认重置",
-    }))
-  )
-    return
+  const operation = begin()
+  if (!operation) return
   try {
-    saving.value = true
+    if (
+      !(await confirmAuditedAction({
+        isCurrent: () => operation.ownsDraft() && props.user === target && resetPasswordDraft.value === password,
+        title: "确认重置密码",
+        body: `将重置 ${target.display_name || target.username} 的本地密码，并立即吊销现有会话；用户下次登录必须修改密码。`,
+        auditNote: "重置行为、操作人与对象 account_id 将写入审计日志；临时密码不回显。",
+        confirmText: "确认重置",
+      }))
+    )
+      return
+    clearDraft()
     const accountId = target.account_id
-    let password = draft
-    let expiresAt: string | null = null
-    try {
-      const saved = await props.stepUp.run(
-        { operation: "user_password_reset", target_id: String(accountId), parameters: { action: "reset" } },
-        "重置账号临时密码",
-        (token) => resetLocalPassword(accountId, password, token),
-      )
-      if (!saved) return
-      expiresAt = saved.temporary_password_expires_at
-    } finally {
-      password = ""
-    }
-    closePasswordReset()
+    const saved = await props.stepUp.run(
+      { operation: "user_password_reset", target_id: String(accountId), parameters: { action: "reset" } },
+      "重置账号临时密码",
+      (token) => (operation.ownsDraft() ? resetLocalPassword(accountId, password, token) : Promise.resolve(undefined)),
+    )
+    if (!saved || !operation.isCurrent()) return
+    const ownsDraft = operation.ownsDraft()
+    if (ownsDraft) closePasswordReset()
     ElMessage.success(
-      `临时密码已重置，有效至 ${formatDateTime(expiresAt)}；首次登录须修改，过期需管理员重置 · 本次操作已记入审计`,
+      `账号「${target.username}」临时密码已重置，有效至 ${formatDateTime(saved.temporary_password_expires_at)}；首次登录须修改，过期需管理员重置${ownsDraft ? "" : "；当前编辑未改动"} · 本次操作已记入审计`,
     )
     emit("reset")
   } catch (error) {
-    ElMessage.error(errorText(error, "密码重置失败"))
+    if (operation.isCurrent())
+      ElMessage.error(`账号「${target.username}」密码重置失败：${errorText(error, "请稍后重试")}`)
   } finally {
-    saving.value = false
+    password = ""
+    operation.finish()
   }
 }
 
-defineExpose({ prepare: clearDraft })
+defineExpose({ prepare: retire })
 </script>
 
 <template>
-  <el-drawer v-model="open" size="min(440px, 92vw)" :teleported="false" class="user-drawer" @closed="clearDraft">
+  <el-drawer v-model="open" size="min(440px, 92vw)" :teleported="false" class="user-drawer" @close="retire">
     <template #header>
       <div class="user-drawer-head">
         <div class="user-drawer-title">重置本地密码</div>
@@ -106,7 +106,7 @@ defineExpose({ prepare: clearDraft })
         <code>{{ user.username }}</code>
         <small>重置后立即吊销全部会话；用户下次登录必须修改密码。</small>
       </section>
-      <el-form label-position="top" class="user-form" @submit.prevent="confirmPasswordReset">
+      <el-form label-position="top" class="user-form" :disabled="saving" @submit.prevent="confirmPasswordReset">
         <el-form-item label="新临时密码" required>
           <el-input
             v-model="resetPasswordDraft"

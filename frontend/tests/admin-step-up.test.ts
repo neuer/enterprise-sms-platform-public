@@ -1,6 +1,8 @@
 import { createPinia } from "pinia"
 import { useSessionStore } from "../src/stores/session"
 import { defineComponent, h } from "vue"
+import ElementPlus from "element-plus"
+import AdminStepUpDialog from "../src/components/AdminStepUpDialog.vue"
 import { flushPromises, mount } from "@vue/test-utils"
 import { describe, expect, it, vi } from "vitest"
 import { useAdminStepUp, type AdminStepUpController } from "../src/composables/useAdminStepUp"
@@ -199,6 +201,119 @@ it.each(["success", "failure"])("新意图等待授权时，旧意图的 %s 不�
     expect(await currentWork).toBe("current-result")
     expect(currentAction).toHaveBeenCalledExactlyOnceWith("synthetic-current-token")
     expect(controller.phase.value).toBe("closed")
+  } finally {
+    wrapper.unmount()
+  }
+})
+
+it.each(["success", "failure"])("重认证弹窗自动关闭不吞掉在途业务写入的 %s", async (outcome) => {
+  api.issueAdminStepUp.mockResolvedValueOnce("synthetic-grant")
+  let controller!: AdminStepUpController
+  const wrapper = mount(
+    defineComponent({
+      setup() {
+        controller = useAdminStepUp()
+        return () => h(AdminStepUpDialog, { controller })
+      },
+    }),
+    { attachTo: document.body, global: { plugins: [ElementPlus] } },
+  )
+  let resolve!: (value: string) => void
+  let reject!: (value: Error) => void
+  const action = vi.fn(
+    () =>
+      new Promise<string>((yes, no) => {
+        resolve = yes
+        reject = no
+      }),
+  )
+  const work = controller.run(intent, "修改角色", action)
+  const observed = work.then(
+    (value) => ({ value }),
+    (error: Error) => ({ error: error.message }),
+  )
+  try {
+    await flushPromises()
+    controller.updatePassword("synthetic-password")
+    await controller.submit()
+    await flushPromises()
+    // Element Plus 在程序关闭的过渡结束也会回写 false；这不是用户取消。
+    const dialog = wrapper.findComponent({ name: "ElDialog" })
+    dialog.vm.$emit("close")
+    dialog.vm.$emit("update:modelValue", false)
+    await flushPromises()
+    if (outcome === "success") resolve("saved")
+    else reject(new Error("write failed"))
+    expect(await observed).toEqual(outcome === "success" ? { value: "saved" } : { error: "write failed" })
+    expect(action).toHaveBeenCalledTimes(1)
+  } finally {
+    wrapper.unmount()
+  }
+})
+
+it("用户关闭重认证立即清空口令，迟到令牌不能执行写入", async () => {
+  let grant!: (value: string) => void
+  api.issueAdminStepUp.mockImplementationOnce(
+    () =>
+      new Promise<string>((done) => {
+        grant = done
+      }),
+  )
+  let controller!: AdminStepUpController
+  const wrapper = mount(
+    defineComponent({
+      setup() {
+        controller = useAdminStepUp()
+        return () => h(AdminStepUpDialog, { controller })
+      },
+    }),
+    { attachTo: document.body, global: { plugins: [ElementPlus] } },
+  )
+  const action = vi.fn()
+  const work = controller.run(intent, "取消测试", action)
+  try {
+    await flushPromises()
+    controller.updatePassword("synthetic-password")
+    const submit = controller.submit()
+    await flushPromises()
+    await wrapper.findComponent({ name: "ElDialog" }).get("button.el-dialog__headerbtn").trigger("click")
+    expect(controller.state.password).toBe("")
+    expect(controller.phase.value).toBe("closed")
+    grant("late-grant")
+    await submit
+    expect(await work).toBeUndefined()
+    expect(action).not.toHaveBeenCalled()
+  } finally {
+    wrapper.unmount()
+  }
+})
+
+it("旧关闭动画的回写不能取消新打开的授权意图", async () => {
+  api.issueAdminStepUp.mockResolvedValue("synthetic-grant")
+  let controller!: AdminStepUpController
+  const wrapper = mount(
+    defineComponent({
+      setup() {
+        controller = useAdminStepUp()
+        return () => h(AdminStepUpDialog, { controller })
+      },
+    }),
+    { attachTo: document.body, global: { plugins: [ElementPlus] } },
+  )
+  try {
+    const first = controller.run(intent, "原意图", async () => "first")
+    await flushPromises()
+    controller.updatePassword("synthetic-password")
+    await controller.submit()
+    expect(await first).toBe("first")
+    await flushPromises()
+    const second = controller.run({ ...intent, target_id: "9" }, "新意图", async () => "second")
+    await flushPromises()
+    wrapper.findComponent({ name: "ElDialog" }).vm.$emit("update:modelValue", false)
+    expect(controller.phase.value).toBe("prompting")
+    controller.updatePassword("synthetic-password")
+    await controller.submit()
+    expect(await second).toBe("second")
   } finally {
     wrapper.unmount()
   }
