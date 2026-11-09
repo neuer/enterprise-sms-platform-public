@@ -5,6 +5,10 @@ import { vi } from "vitest"
 
 import UserView from "../src/views/UserView.vue"
 
+import UserCreateDrawer from "../src/components/UserCreateDrawer.vue"
+import UserPasswordResetDrawer from "../src/components/UserPasswordResetDrawer.vue"
+import UserRoleDrawer from "../src/components/UserRoleDrawer.vue"
+
 import AdminStepUpDialog from "../src/components/AdminStepUpDialog.vue"
 
 async function approveStepUp(wrapper: VueWrapper) {
@@ -149,6 +153,7 @@ describe("用户与角色", () => {
     expect(wrapper.get("[data-testid='create-role-permission']").text()).toContain("本部门记录与报表")
     await wrapper.get("[data-testid='create-username']").setValue("new.user")
     await wrapper.get("[data-testid='create-display-name']").setValue("新用户")
+    await wrapper.get("[data-testid='create-dept']").setValue("业务一部")
     await wrapper.get("[data-testid='create-password']").setValue("Temporary@123")
     await wrapper.get("[data-testid='save-local-user']").trigger("click")
     await flushPromises()
@@ -158,7 +163,7 @@ describe("用户与角色", () => {
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({
       username: "new.user",
       display_name: "新用户",
-      dept: "",
+      dept: "业务一部",
       role: "viewer",
       temporary_password: "Temporary@123",
     })
@@ -272,6 +277,7 @@ describe("用户与角色", () => {
 
     await wrapper.get("[data-testid='create-username']").setValue("x")
     await wrapper.get("[data-testid='create-display-name']").setValue("新用户")
+    await wrapper.get("[data-testid='create-dept']").setValue("业务一部")
     await wrapper.get("[data-testid='create-password']").setValue("Temporary@123")
     expect(save().attributes("disabled")).toBeDefined()
     expect(wrapper.get("[data-testid='create-precheck']").text()).toContain("用户名 3–64 位合规")
@@ -330,4 +336,98 @@ describe("用户与角色", () => {
     expect(last).not.toContain("status=")
     wrapper.unmount()
   })
+})
+
+it.each(["create", "reset", "role"].flatMap((kind) => ["success", "failure"].map((outcome) => ({ kind, outcome }))))(
+  "$kind 旧请求的 $outcome 不能关闭新抽屉或清空新草稿",
+  async ({ kind, outcome }) => {
+    let resolve!: (value: ReturnType<typeof response>) => void
+    const pending = new Promise<ReturnType<typeof response>>((done) => {
+      resolve = done
+    })
+    const fetch = routeFetch((url) => {
+      if (url === "/api/v1/web/admin/users/local" || url.endsWith("/8/password/reset") || url.endsWith("/8/role"))
+        return pending
+      return undefined
+    })
+    vi.stubGlobal("fetch", fetch)
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const wrapper = mount(UserView, { attachTo: document.body, global: { plugins: [createPinia(), ElementPlus] } })
+    try {
+      await flushPromises()
+      const trigger = kind === "create" ? "create-local-user" : kind === "reset" ? "reset-password-8" : "role-8"
+      await wrapper.get(`[data-testid='${trigger}']`).trigger("click")
+      const drawer =
+        kind === "create"
+          ? wrapper.findComponent(UserCreateDrawer)
+          : kind === "reset"
+            ? wrapper.findComponent(UserPasswordResetDrawer)
+            : wrapper.findComponent(UserRoleDrawer)
+      if (kind === "create") {
+        await wrapper.get("[data-testid='create-username']").setValue("old.user")
+        await wrapper.get("[data-testid='create-display-name']").setValue("旧提交")
+        await wrapper.get("[data-testid='create-dept']").setValue("业务一部")
+        await wrapper.get("[data-testid='create-password']").setValue("Temporary@123")
+        await wrapper.get("[data-testid='save-local-user']").trigger("click")
+      } else if (kind === "reset") {
+        await wrapper.get("[data-testid='reset-password-input']").setValue("Temporary@123")
+        await wrapper.get("[data-testid='confirm-password-reset']").trigger("click")
+        await approveStepUp(wrapper)
+      } else {
+        await drawer
+          .findAll("button")
+          .find((button) => button.text() === "保存角色")!
+          .trigger("click")
+        await approveStepUp(wrapper)
+      }
+      await flushPromises()
+      drawer.vm.$emit("update:modelValue", false)
+      await flushPromises()
+      await wrapper.get(`[data-testid='${trigger}']`).trigger("click")
+      if (kind === "create") {
+        await wrapper.get("[data-testid='create-username']").setValue("new.draft")
+        await wrapper.get("[data-testid='create-display-name']").setValue("新草稿")
+      } else if (kind === "reset") {
+        await wrapper.get("[data-testid='reset-password-input']").setValue("Unsubmitted@123")
+      }
+      resolve(outcome === "success" ? response(localUser) : response({ code: "CONFLICT", message: "原请求失败" }, 409))
+      await flushPromises()
+      expect(drawer.props().modelValue).toBe(true)
+      if (kind === "create")
+        expect((wrapper.get("[data-testid='create-username']").element as HTMLInputElement).value).toBe("new.draft")
+      if (kind === "reset")
+        expect((wrapper.get("[data-testid='reset-password-input']").element as HTMLInputElement).value).toBe(
+          "Unsubmitted@123",
+        )
+    } finally {
+      wrapper.unmount()
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    }
+  },
+)
+
+it("非管理员开户即时校验非空部门，管理员仍可留空", async () => {
+  vi.stubGlobal("fetch", routeFetch())
+  const wrapper = mount(UserView, { global: { plugins: [createPinia(), ElementPlus] } })
+  try {
+    await flushPromises()
+    await wrapper.get("[data-testid='create-local-user']").trigger("click")
+    await wrapper.get("[data-testid='create-username']").setValue("dept.user")
+    await wrapper.get("[data-testid='create-display-name']").setValue("部门验证")
+    await wrapper.get("[data-testid='create-password']").setValue("Temporary@123")
+    const save = () => wrapper.get("[data-testid='save-local-user']")
+    expect(save().attributes("disabled")).toBeDefined()
+    await wrapper.get("[data-testid='create-dept']").setValue("  ")
+    expect(save().attributes("disabled")).toBeDefined()
+    await wrapper.get("[data-testid='create-dept']").setValue("业务一部")
+    expect(save().attributes("disabled")).toBeUndefined()
+    await wrapper.get("[data-testid='create-dept']").setValue("")
+    wrapper.findComponent(UserCreateDrawer).findComponent({ name: "ElSelect" }).vm.$emit("update:modelValue", "admin")
+    await flushPromises()
+    expect(save().attributes("disabled")).toBeUndefined()
+  } finally {
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  }
 })

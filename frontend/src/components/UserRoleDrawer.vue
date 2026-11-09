@@ -8,18 +8,24 @@ import type { AdminStepUpController } from "../composables/useAdminStepUp"
 import { errorText } from "../lib/error"
 import { ROLE_LABELS } from "../lib/labels"
 import { ROLE_DESCRIPTIONS, providerLabel } from "../lib/localAccount"
+import { useUserDrawerOperation } from "../views/users/useUserDrawerOperation"
 
 /** 角色策略抽屉：保存经 step-up 并递增 security_version；成功后发出 saved，由用户页刷新台账。 */
 const open = defineModel<boolean>({ default: false })
 const props = defineProps<{ user: ManagedUser | null; stepUp: AdminStepUpController }>()
 const emit = defineEmits<{ saved: [] }>()
 
-const saving = ref(false)
 const roleDraft = ref<UserRole>("viewer")
 const overrideDraft = ref(false)
 
+const { saving, retire, begin } = useUserDrawerOperation(open, () => {
+  roleDraft.value = "viewer"
+  overrideDraft.value = false
+})
+
 /** 按目标账号回填草稿；本地账号角色恒为人工覆盖。 */
 function prepare(user: ManagedUser): void {
+  retire()
   roleDraft.value = user.role
   overrideDraft.value = user.provider_code === "local" ? true : user.role_override
 }
@@ -27,7 +33,8 @@ function prepare(user: ManagedUser): void {
 async function saveRole(): Promise<void> {
   const selected = props.user
   if (!selected) return
-  saving.value = true
+  const operation = begin()
+  if (!operation) return
   try {
     const roleOverride = selected.provider_code === "local" ? true : overrideDraft.value
     const accountId = selected.account_id
@@ -39,16 +46,21 @@ async function saveRole(): Promise<void> {
         parameters: { role, role_override: roleOverride },
       },
       "修改账号角色策略",
-      (token) => updateUserRole(accountId, role, roleOverride, token),
+      (token) =>
+        operation.ownsDraft() ? updateUserRole(accountId, role, roleOverride, token) : Promise.resolve(undefined),
     )
-    if (!saved) return
-    open.value = false
-    ElMessage.success("角色策略已更新，既有会话已失效 · 本次操作已记入审计")
+    if (!saved || !operation.isCurrent()) return
+    const ownsDraft = operation.ownsDraft()
+    if (ownsDraft) open.value = false
+    ElMessage.success(
+      `账号「${selected.username}」角色策略已更新，既有会话已失效${ownsDraft ? "" : "；当前编辑未改动"} · 本次操作已记入审计`,
+    )
     emit("saved")
   } catch (error) {
-    ElMessage.error(errorText(error, "角色更新失败"))
+    if (operation.isCurrent())
+      ElMessage.error(`账号「${selected.username}」角色更新失败：${errorText(error, "请稍后重试")}`)
   } finally {
-    saving.value = false
+    operation.finish()
   }
 }
 
@@ -56,7 +68,7 @@ defineExpose({ prepare })
 </script>
 
 <template>
-  <el-drawer v-model="open" size="min(440px, 92vw)" :teleported="false" class="user-drawer">
+  <el-drawer v-model="open" size="min(440px, 92vw)" :teleported="false" class="user-drawer" @close="retire">
     <template #header>
       <div class="user-drawer-head">
         <div class="user-drawer-title">角色策略</div>
@@ -69,7 +81,7 @@ defineExpose({ prepare })
         <code>{{ user.username }}</code>
         <small>{{ providerLabel(user.provider_code) }} · {{ user.dept || "未分配部门" }}</small>
       </section>
-      <el-form label-position="top" class="user-form">
+      <el-form label-position="top" class="user-form" :disabled="saving">
         <el-form-item label="目标角色">
           <el-select v-model="roleDraft" :disabled="user.provider_code === 'ad' && !overrideDraft">
             <el-option v-for="(label, value) in ROLE_LABELS" :key="value" :label="label" :value="value" />

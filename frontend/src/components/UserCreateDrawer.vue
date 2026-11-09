@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ElMessage } from "element-plus"
-import { computed, reactive, ref } from "vue"
+import { computed, reactive } from "vue"
 
 import type { PasswordPolicy, UserRole } from "../api/auth"
 import { createLocalUser } from "../api/users"
@@ -15,6 +15,7 @@ import {
   type Precheck,
 } from "../lib/localAccount"
 import { formatDateTime } from "../lib/time"
+import { useUserDrawerOperation } from "../views/users/useUserDrawerOperation"
 
 /**
  * 创建本地账号抽屉：临时密码只存在于本组件表单，随本次请求提交后立即清空，不回显、不外传。
@@ -24,7 +25,6 @@ const open = defineModel<boolean>({ default: false })
 const props = defineProps<{ policy: PasswordPolicy; stepUp: AdminStepUpController }>()
 const emit = defineEmits<{ created: [] }>()
 
-const saving = ref(false)
 const createForm = reactive({
   username: "",
   display_name: "",
@@ -57,6 +57,7 @@ const canCreate = computed(
     !saving.value &&
     !usernameProblem(createForm.username) &&
     Boolean(createForm.display_name.trim()) &&
+    (createForm.role === "admin" || Boolean(createForm.dept.trim())) &&
     !passwordProblem(createForm.temporary_password, createForm.username, props.policy),
 )
 
@@ -67,6 +68,8 @@ function resetCreateForm(): void {
   createForm.role = "viewer"
   createForm.temporary_password = ""
 }
+
+const { saving, retire, begin } = useUserDrawerOperation(open, resetCreateForm)
 
 function closeCreate(): void {
   open.value = false
@@ -85,12 +88,17 @@ async function saveLocalUser(): Promise<void> {
     ElMessage.warning("请输入显示名称")
     return
   }
+  if (createForm.role !== "admin" && !createForm.dept.trim()) {
+    ElMessage.warning("非管理员账号必须填写部门")
+    return
+  }
   const passwordIssue = passwordProblem(createForm.temporary_password, username, props.policy)
   if (passwordIssue) {
     ElMessage.warning(passwordIssue)
     return
   }
-  saving.value = true
+  const operation = begin()
+  if (!operation) return
   try {
     const payload = {
       username,
@@ -99,6 +107,7 @@ async function saveLocalUser(): Promise<void> {
       role: createForm.role,
       temporary_password: createForm.temporary_password,
     }
+    createForm.temporary_password = ""
     let expiresAt: string | null = null
     try {
       if (payload.role === "admin") {
@@ -111,7 +120,7 @@ async function saveLocalUser(): Promise<void> {
         const saved = await props.stepUp.run(
           { operation: "user_create_admin", target_id: "new", parameters },
           `创建管理员 ${username}`,
-          (token) => createLocalUser(payload, token),
+          (token) => (operation.ownsDraft() ? createLocalUser(payload, token) : Promise.resolve(undefined)),
         )
         if (!saved) return
         expiresAt = saved.temporary_password_expires_at
@@ -121,30 +130,32 @@ async function saveLocalUser(): Promise<void> {
     } finally {
       payload.temporary_password = ""
     }
-    closeCreate()
+    if (!operation.isCurrent()) return
+    const ownsDraft = operation.ownsDraft()
+    if (ownsDraft) closeCreate()
     ElMessage.success(
-      `本地账号已创建，临时密码有效至 ${formatDateTime(expiresAt)}；首次登录须修改，过期需管理员重置 · 本次操作已记入审计`,
+      `本地账号「${username}」已创建，临时密码有效至 ${formatDateTime(expiresAt)}；首次登录须修改，过期需管理员重置${ownsDraft ? "" : "；当前编辑未改动"} · 本次操作已记入审计`,
     )
     emit("created")
   } catch (error) {
-    ElMessage.error(errorText(error, "本地账号创建失败"))
+    if (operation.isCurrent()) ElMessage.error(`本地账号「${username}」创建失败：${errorText(error, "请稍后重试")}`)
   } finally {
-    saving.value = false
+    operation.finish()
   }
 }
 
-defineExpose({ prepare: resetCreateForm })
+defineExpose({ prepare: retire })
 </script>
 
 <template>
-  <el-drawer v-model="open" size="min(440px, 92vw)" :teleported="false" class="user-drawer" @closed="resetCreateForm">
+  <el-drawer v-model="open" size="min(440px, 92vw)" :teleported="false" class="user-drawer" @close="retire">
     <template #header>
       <div class="user-drawer-head">
         <div class="user-drawer-title">创建本地账号</div>
         <code>POST /api/v1/web/admin/users/local · 临时密码不回显</code>
       </div>
     </template>
-    <el-form label-position="top" class="user-form" @submit.prevent="saveLocalUser">
+    <el-form label-position="top" class="user-form" :disabled="saving" @submit.prevent="saveLocalUser">
       <el-form-item label="用户名" required>
         <el-input v-model="createForm.username" data-testid="create-username" autocomplete="off" maxlength="64" />
         <small class="field-rule">3–64 位 ASCII 字母、数字、点、下划线或短横线；不区分大小写，创建后不可修改。</small>
@@ -152,8 +163,9 @@ defineExpose({ prepare: resetCreateForm })
       <el-form-item label="显示名称" required>
         <el-input v-model="createForm.display_name" data-testid="create-display-name" maxlength="128" />
       </el-form-item>
-      <el-form-item label="部门">
-        <el-input v-model="createForm.dept" maxlength="128" />
+      <el-form-item label="部门" :required="createForm.role !== 'admin'">
+        <el-input v-model="createForm.dept" data-testid="create-dept" maxlength="128" />
+        <small class="field-rule">非管理员账号必须填写部门；管理员可以留空。</small>
       </el-form-item>
       <el-form-item label="角色">
         <el-select v-model="createForm.role">
