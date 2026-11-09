@@ -1,6 +1,6 @@
 import type { UploadRequestOptions } from "element-plus"
 import { ElMessage } from "element-plus"
-import { computed, reactive, ref, toRef, watch } from "vue"
+import { computed, reactive, ref, shallowRef, toRef, watch } from "vue"
 
 import { ApiRequestError } from "../../api/client"
 import { listSigns } from "../../api/signs"
@@ -81,6 +81,13 @@ export function useSendDraft() {
   // 准入 503（DEPENDENCY_UNAVAILABLE）时展示通往运维中心队列页签的出口。
   const errorAdmission = ref(false)
   const sendResult = ref<SendResult | null>(null)
+  // 只在本组件内保留原提交快照；传输结果未知时人工重试不能重新组包。
+  const submissionAttempt = shallowRef<{ payload: WebMessagePayload; generation: number } | null>(null)
+  const submissionPhase = computed(() => {
+    if (sendResult.value) return "accepted"
+    if (!submissionAttempt.value) return "editing"
+    return busy.value && submissionAttempt.value.generation === requestGeneration ? "submitting" : "response-unknown"
+  })
   const idempotencyKey = ref(newIdempotencyKey())
   const {
     items: templates,
@@ -152,19 +159,20 @@ export function useSendDraft() {
   const sendDisabled = computed(
     () =>
       busy.value ||
-      recipientCount.value === 0 ||
-      (form.source === "paste" && invalidMobiles.value.length > 0) ||
-      !contentReady.value ||
-      (form.category === "market" && !form.consentConfirmed) ||
-      testLimitExceeded.value ||
-      recipientLimitExceeded.value ||
-      scheduleInPast.value ||
-      contentTooLong.value ||
-      templateParamsTooLong.value ||
-      (form.source === "import" &&
-        consumedImportId.value !== null &&
-        imported.value?.import_id === consumedImportId.value) ||
-      (form.scheduleEnabled && (!form.scheduledAt || !Number.isFinite(Date.parse(form.scheduledAt)))),
+      (!submissionAttempt.value &&
+        (recipientCount.value === 0 ||
+          (form.source === "paste" && invalidMobiles.value.length > 0) ||
+          !contentReady.value ||
+          (form.category === "market" && !form.consentConfirmed) ||
+          testLimitExceeded.value ||
+          recipientLimitExceeded.value ||
+          scheduleInPast.value ||
+          contentTooLong.value ||
+          templateParamsTooLong.value ||
+          (form.source === "import" &&
+            consumedImportId.value !== null &&
+            imported.value?.import_id === consumedImportId.value) ||
+          (form.scheduleEnabled && (!form.scheduledAt || !Number.isFinite(Date.parse(form.scheduledAt)))))),
   )
   const scheduledAtValue = computed(() => (form.scheduleEnabled && form.scheduledAt ? form.scheduledAt : ""))
 
@@ -219,6 +227,10 @@ export function useSendDraft() {
     ],
     () => {
       if (applyingConsumedReset) return
+      if (submissionPhase.value === "response-unknown") {
+        errorMessage.value = "草稿已修改，将作为新请求提交；原请求的受理结果仍未确认，修改不会撤销它。"
+      }
+      submissionAttempt.value = null
       const currentImportId = imported.value?.import_id ?? null
       if (consumedImportId.value && currentImportId === consumedImportId.value) {
         applyingConsumedReset = true
@@ -374,16 +386,19 @@ export function useSendDraft() {
   }
 
   async function submit(): Promise<void> {
+    if (busy.value || disposed) return
+    const retry = submissionAttempt.value
     // 大文本粘贴后 300ms 防抖窗口内也可能点击提交：先落盘最新解析，再做禁用校验与组包。
     flushMobilesParse()
-    if (scheduleExpiredNow()) {
+    if (!retry && scheduleExpiredNow()) {
       nowMs.value = Date.now()
       errorMessage.value = "定时时间早于当前时刻；请选择未来的发送时间，或取消定时立即发送。"
       return
     }
     if (
-      (form.contentMode === "content" && exceedsCodePoints(form.content, CONTENT_CODE_POINT_MAX)) ||
-      templateParamsTooLong.value
+      !retry &&
+      ((form.contentMode === "content" && exceedsCodePoints(form.content, CONTENT_CODE_POINT_MAX)) ||
+        templateParamsTooLong.value)
     ) {
       errorMessage.value = "内容超过字符上限，未发送"
       return
@@ -397,7 +412,7 @@ export function useSendDraft() {
     const revision = draftRevision
     resetFeedback()
     busy.value = true
-    const payload: WebMessagePayload = {
+    const payload: WebMessagePayload = retry?.payload ?? {
       category: form.category,
       biz_id: idempotencyKey.value,
       ...contentPayload(),
@@ -407,12 +422,16 @@ export function useSendDraft() {
       consent_confirmed: form.consentConfirmed,
       remark: form.remark || undefined,
     }
-    if (form.source === "import" && imported.value) payload.import_id = imported.value.import_id
-    else payload.mobiles = [...pastedMobiles.value]
+    if (!retry) {
+      if (form.source === "import" && imported.value) payload.import_id = imported.value.import_id
+      else payload.mobiles = [...pastedMobiles.value]
+    }
+    submissionAttempt.value = { payload, generation }
     try {
       const result = await sendWebMessage(payload)
       if (disposed || generation !== requestGeneration || revision !== draftRevision) return
       sendResult.value = result
+      submissionAttempt.value = null
       if (payload.import_id && imported.value?.import_id === payload.import_id) {
         consumedImportId.value = payload.import_id
       }
@@ -422,6 +441,10 @@ export function useSendDraft() {
         : `${payload.category === "market" ? "营销短信" : "通知短信"} · ${payload.import_id ? "文件导入" : "手工粘贴"} · ${scheduleText}`
     } catch (error) {
       if (disposed || generation !== requestGeneration || revision !== draftRevision) return
+      // 只有首次请求的明确业务拒绝能证明未受理；未知请求的后续错误不能撤销原事实。
+      const rejected =
+        !retry && error instanceof ApiRequestError && error.status >= 400 && error.status < 500 && error.status !== 408
+      if (rejected) submissionAttempt.value = null
       // 准入 503 附 reason 时给出中文解释与运维中心出口；未知 reason 回退通用文案不吞诊断。
       if (error instanceof ApiRequestError && error.status === 503) {
         const reason = error.code === "DEPENDENCY_UNAVAILABLE" ? admissionReasonOf(error) : null
@@ -431,6 +454,10 @@ export function useSendDraft() {
       } else {
         errorMessage.value = errorText(error, "发送受理失败")
       }
+      if (!rejected) {
+        const diagnostic = errorAdmission.value ? ` ${errorMessage.value}` : ""
+        errorMessage.value = `受理结果尚未确认。可重试确认原请求；修改草稿会建立新请求，不会撤销原请求。${diagnostic}`
+      }
     } finally {
       if (!disposed && generation === requestGeneration) busy.value = false
     }
@@ -439,6 +466,7 @@ export function useSendDraft() {
   /** 清空草稿准备下一批，并轮换幂等键。 */
   function resetForAnother(): void {
     if (busy.value || disposed) return
+    submissionAttempt.value = null
     form.mobilesText = ""
     form.content = ""
     form.templateId = ""
@@ -475,6 +503,7 @@ export function useSendDraft() {
 
   function markDisposed(): void {
     disposed = true
+    submissionAttempt.value = null
     cancelInvalidDownload()
     consumedImportId.value = null
   }
@@ -510,6 +539,7 @@ export function useSendDraft() {
     previewError,
     previewStale,
     busy,
+    submissionPhase,
     submittedSummary,
     errorMessage,
     errorAdmission,

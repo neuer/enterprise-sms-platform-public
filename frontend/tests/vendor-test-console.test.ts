@@ -6,6 +6,8 @@ import { afterEach, beforeEach, vi } from "vitest"
 import type { VendorTestStatus } from "../src/api/admin"
 import VendorTestConsole from "../src/components/VendorTestConsole.vue"
 import VendorTestStepUpDialog from "../src/components/VendorTestStepUpDialog.vue"
+import VendorCredentialDialog from "../src/components/VendorCredentialDialog.vue"
+import LoadErrorAlert from "../src/components/LoadErrorAlert.vue"
 import vendorTestStepUpSource from "../src/components/VendorTestStepUpDialog.vue?raw"
 
 const baseStatus: VendorTestStatus = {
@@ -924,7 +926,7 @@ describe("系统配置页真实联调控制台", () => {
     wrapper.unmount()
   })
 
-  it("恢复操作持续失败达到重试上限后停止并提示", async () => {
+  it("恢复操作达到重试上限仍阻断，手动重连只确认原操作", async () => {
     vi.useFakeTimers()
     const operation = {
       operation_id: "00000000-0000-4000-8000-000000000507",
@@ -938,6 +940,7 @@ describe("系统配置页真实联调控制台", () => {
       completed_at: null,
     }
     let lookups = 0
+    let recovered = false
     sessionStorage.setItem(
       "sms-platform:vendor-test:operation:v1",
       JSON.stringify({
@@ -950,6 +953,7 @@ describe("系统配置页真实联调控制台", () => {
       consoleFetch(baseStatus, (url) => {
         if (!url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return undefined
         lookups += 1
+        if (recovered) return response({ ...operation, status: "succeeded" })
         return response({ code: "TEMPORARY", message: "暂时不可用" }, 503)
       }),
     )
@@ -969,6 +973,151 @@ describe("系统配置页真实联调控制台", () => {
     await flushPromises()
     expect(lookups).toBe(30)
     expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).not.toBeNull()
+    expect(wrapper.get("[data-testid='vendor-credentials']").attributes("disabled")).toBeDefined()
+    recovered = true
+    await wrapper.getComponent(LoadErrorAlert).get("button").trigger("click")
+    await flushPromises()
+    expect(lookups).toBe(31)
+    expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).toBeNull()
+    expect(wrapper.get("[data-testid='vendor-credentials']").attributes("disabled")).toBeUndefined()
+    expect(vi.mocked(fetch).mock.calls.every(([, init]) => !init?.method || init.method === "GET")).toBe(true)
+    wrapper.unmount()
+  })
+
+  it("终态刷新达到上限仍阻断，人工重连完整刷新后才解除", async () => {
+    vi.useFakeTimers()
+    const operation = {
+      operation_id: "00000000-0000-4000-8000-000000000508",
+      operation_type: "activate",
+      status: "succeeded",
+      safe_code: null,
+      vendor_code: null,
+    }
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({ operation_id: operation.operation_id, operation_type: operation.operation_type }),
+    )
+    let lookups = 0
+    let recovered = false
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (url.endsWith(`/vendor-test/operations/${operation.operation_id}`)) return response(operation)
+        if (url.endsWith("/admin/apps")) {
+          lookups += 1
+          if (lookups > 1 && !recovered) return response({ code: "TEMPORARY", message: "暂时不可用" }, 503)
+        }
+        return undefined
+      }),
+    )
+    const wrapper = mountConsole()
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(1600 * 31)
+    await flushPromises()
+    expect(lookups).toBe(31)
+    expect(wrapper.get("[data-testid='vendor-credentials']").attributes("disabled")).toBeDefined()
+    expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).not.toBeNull()
+    recovered = true
+    await wrapper.getComponent(LoadErrorAlert).get("button").trigger("click")
+    await flushPromises()
+    expect(lookups).toBe(32)
+    expect(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")).toBeNull()
+    expect(wrapper.get("[data-testid='vendor-credentials']").attributes("disabled")).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it.each(["succeeded", "failed"])("新操作接管后旧恢复的 %s 不能覆盖或清除新 owner", async (status) => {
+    const old = {
+      operation_id: "00000000-0000-4000-8000-000000000509",
+      operation_type: "activate",
+      status,
+      safe_code: null,
+      vendor_code: null,
+    }
+    const current = { ...old, operation_id: "00000000-0000-4000-8000-000000000510", status: "running" }
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({ operation_id: old.operation_id, operation_type: old.operation_type }),
+    )
+    const pending = deferred<ReturnType<typeof response>>()
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) =>
+        url.endsWith(`/vendor-test/operations/${old.operation_id}`) ? pending.promise : undefined,
+      ),
+    )
+    const success = vi.spyOn(ElMessage, "success")
+    const error = vi.spyOn(ElMessage, "error")
+    const wrapper = mountConsole()
+    await flushPromises()
+    wrapper.getComponent(VendorCredentialDialog).vm.$emit("operation", current)
+    pending.resolve(response(old))
+    await flushPromises()
+    expect(wrapper.text()).toContain("执行中")
+    expect(wrapper.get("[data-testid='vendor-credentials']").attributes("disabled")).toBeDefined()
+    expect(JSON.parse(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")!).operation_id).toBe(
+      current.operation_id,
+    )
+    expect(success).not.toHaveBeenCalled()
+    expect(error).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it("未知操作状态只继续查询原 ID，不能开放真实操作", async () => {
+    const operation = {
+      operation_id: "00000000-0000-4000-8000-000000000511",
+      operation_type: "activate",
+      status: "future-unconfirmed",
+    }
+    sessionStorage.setItem(
+      "sms-platform:vendor-test:operation:v1",
+      JSON.stringify({ operation_id: operation.operation_id, operation_type: operation.operation_type }),
+    )
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) =>
+        url.endsWith(`/vendor-test/operations/${operation.operation_id}`) ? response(operation) : undefined,
+      ),
+    )
+    const wrapper = mountConsole()
+    await flushPromises()
+    expect(wrapper.text()).toContain("future-unconfirmed")
+    expect(wrapper.get("[data-testid='vendor-credentials']").attributes("disabled")).toBeDefined()
+    expect(wrapper.get("[data-testid='vendor-activate']").attributes("disabled")).toBeDefined()
+    wrapper.unmount()
+  })
+
+  it("新操作接管后旧终态刷新不得清除 ID、回写模式或保持旧加载遮罩", async () => {
+    const old = {
+      operation_id: "00000000-0000-4000-8000-000000000512",
+      operation_type: "activate",
+      status: "succeeded",
+      safe_code: null,
+      vendor_code: null,
+    }
+    const current = { ...old, operation_id: "00000000-0000-4000-8000-000000000513", status: "running" }
+    const pending = deferred<ReturnType<typeof response>>()
+    let loads = 0
+    vi.stubGlobal(
+      "fetch",
+      consoleFetch(baseStatus, (url) => {
+        if (url.endsWith("/vendor-test/status") && ++loads > 1) return pending.promise
+        return undefined
+      }),
+    )
+    const wrapper = mountConsole()
+    await flushPromises()
+    wrapper.getComponent(VendorCredentialDialog).vm.$emit("operation", old)
+    await flushPromises()
+    wrapper.getComponent(VendorCredentialDialog).vm.$emit("operation", current)
+    pending.resolve(response({ ...baseStatus, mode: "controlled" }))
+    await flushPromises()
+    expect(wrapper.text()).toContain("待激活")
+    expect(wrapper.text()).toContain("执行中")
+    expect((wrapper.vm as unknown as { loading: boolean }).loading).toBe(false)
+    expect(JSON.parse(sessionStorage.getItem("sms-platform:vendor-test:operation:v1")!).operation_id).toBe(
+      current.operation_id,
+    )
     wrapper.unmount()
   })
 

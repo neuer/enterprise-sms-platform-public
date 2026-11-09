@@ -21,7 +21,7 @@ const props = withDefaults(
     /** 透传到「授权查看」按钮的 data-testid。 */
     testid?: string
   }>(),
-  { active: true },
+  { active: true, recordKey: undefined, testid: undefined },
 )
 
 const emit = defineEmits<{

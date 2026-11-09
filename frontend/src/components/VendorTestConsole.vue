@@ -52,9 +52,7 @@ const pollRead = useLatestRead()
 // 轮询连续失败只提示一次，恢复成功后重置；避免控制代理短暂不可用时每个轮询周期弹一条错误。
 let pollFailureNotified = false
 
-// ── 三条轮询链统一收编 usePolling（#593 语义）：页面隐藏自动暂停、恢复可见补一次。
-// 操作轮询固定 800ms，出错续轮（任务内吞错返回 false）不扩 backoff；10 分钟未终态兜底停止，
-// sessionStorage 记录保留，刷新页面可重新恢复确认。
+// 三条链按原操作恢复；轮询暂停不等于操作结束，超时仍保留 ID 和未确认阻断。
 const OPERATION_POLL_INTERVAL_MS = 800
 const OPERATION_POLL_MAX_DURATION_MS = 10 * 60_000
 // 恢复 / 完成态刷新重试：固定 1.6s，30 次（≈48s）后停止并提示，页面保留手动重连入口。
@@ -79,11 +77,6 @@ const OPERATION_STATUS_LABELS: Record<string, string> = {
   failed: "操作失败",
 }
 
-// 已知操作状态上屏为中文；服务端新增未知状态时原样显示，避免吞掉诊断信息。
-function operationStatusLabel(status: string): string {
-  return OPERATION_STATUS_LABELS[status] ?? status
-}
-
 const activeRecipients = computed(() => recipients.value.filter((item) => item.status === "active"))
 const errorMessage = computed(() => restoreErrorMessage.value || loadErrorMessage.value)
 const activeApps = computed(() => apps.value.filter((item) => item.status === 1))
@@ -92,8 +85,8 @@ const operationBusy = computed(
   () =>
     operationRestoring.value ||
     operationCompletionRefreshing.value ||
-    activeOperation.value?.status === "requested" ||
-    activeOperation.value?.status === "running",
+    !!loadErrorMessage.value ||
+    (activeOperation.value !== null && !terminal(activeOperation.value)),
 )
 const credentialOperation = computed(() =>
   status.value?.credential_configured ? "rotate_credentials" : "install_credentials",
@@ -114,13 +107,13 @@ const resetOperationFailed = computed(
 
 const statusPresentation = computed(() => {
   if (!status.value) {
-    // 加载失败停留在 null：横幅已给出错误与重连入口，头部必须同步为失败终态，
-    // 不能继续显示“状态读取中”造成两个互相矛盾的状态并存。
     if (errorMessage.value) {
       return { title: "状态读取失败", detail: "控制代理暂不可用，处置后点击上方重新连接", tone: "danger" }
     }
     return { title: "状态读取中", detail: "正在连接本机控制代理", tone: "neutral" }
   }
+  if (loadErrorMessage.value)
+    return { title: "当前状态未确认", detail: "下方保留上次快照，请重新连接后再操作", tone: "danger" }
   if (status.value.pause_kind === "daily") {
     return { title: "日预算已封顶", detail: "达到 100 条后当日不可人工恢复", tone: "danger" }
   }
@@ -247,20 +240,18 @@ async function restoreOperation(): Promise<boolean> {
   }
 }
 
-// 刷新后恢复在途操作：仅在确有已保存操作时由 onMounted 启动，立即执行一次。
 const restorePolling = usePolling(restoreOperation, {
   intervalMs: RETRY_INTERVAL_MS,
   immediate: true,
   maxAttempts: RETRY_MAX_ATTEMPTS,
-  onTimeout: () => {
-    operationRestoring.value = false
-    ElMessage.error("操作状态恢复多次失败，已停止自动重试；请确认控制代理恢复后刷新页面重试")
-  },
+  onTimeout: () => ElMessage.error("操作状态恢复多次失败，已停止自动重试；可重新连接确认原操作"),
 })
 
 async function refreshCompletedProjection(): Promise<boolean> {
+  const operationId = activeOperation.value?.operation_id
   operationCompletionRefreshing.value = true
   const refreshed = await load()
+  if (activeOperation.value?.operation_id !== operationId) return true
   if (refreshed) {
     forgetOperation()
     operationCompletionRefreshing.value = false
@@ -269,14 +260,10 @@ async function refreshCompletedProjection(): Promise<boolean> {
   return false
 }
 
-// 终态后的权威投影刷新：失败按固定间隔续轮直至完整刷新成功或达到兜底上限。
 const completionRefreshPolling = usePolling(refreshCompletedProjection, {
   intervalMs: RETRY_INTERVAL_MS,
   maxAttempts: RETRY_MAX_ATTEMPTS,
-  onTimeout: () => {
-    operationCompletionRefreshing.value = false
-    ElMessage.error("完成态刷新多次失败，已停止自动重试；请确认控制代理恢复后刷新页面")
-  },
+  onTimeout: () => ElMessage.error("完成态刷新多次失败，已停止自动重试；可重新连接确认当前状态"),
 })
 
 function finishOperation(operation: VendorTestOperation): void {
@@ -314,37 +301,44 @@ async function pollOperation(): Promise<boolean> {
         : await getVendorTestOperation(current.operation_id, signal)
     if (signal.aborted || activeOperation.value?.operation_id !== next.operation_id) return true
     pollFailureNotified = false
+    restoreErrorMessage.value = ""
     activeOperation.value = next
     if (terminal(next)) {
       finishOperation(next)
       return true
     }
   } catch (error) {
-    if (signal.aborted) return true
-    // 出错续轮：吞错返回 false，按固定间隔等下一周期；连续失败只提示一次。
+    if (signal.aborted || activeOperation.value?.operation_id !== current.operation_id) return true
     if (!pollFailureNotified) {
       pollFailureNotified = true
-      ElMessage.error(errorText(error, "操作状态查询失败"))
+      restoreErrorMessage.value = errorText(error, "操作状态查询失败")
+      ElMessage.error(restoreErrorMessage.value)
     }
   }
   return false
 }
 
-// 操作在途轮询：enabled 挂在操作在途状态上，终态自动停；超时兜底后记录仍在 sessionStorage。
 const operationPolling = usePolling(pollOperation, {
   intervalMs: OPERATION_POLL_INTERVAL_MS,
-  enabled: computed(() => {
-    const operation = activeOperation.value
-    return operation !== null && !terminal(operation)
-  }),
+  enabled: computed(() => activeOperation.value !== null && !terminal(activeOperation.value)),
   maxDurationMs: OPERATION_POLL_MAX_DURATION_MS,
   onTimeout: () => {
-    ElMessage.error("操作状态确认超时（已超过 10 分钟）；操作记录保留，刷新页面可重新确认结果")
+    restoreErrorMessage.value = "操作状态确认超时（已超过 10 分钟）；操作记录保留，可重新连接确认结果"
+    ElMessage.error(restoreErrorMessage.value)
   },
 })
 
 function trackOperation(operation: VendorTestOperation): void {
+  restorePolling.stop()
+  completionRefreshPolling.stop()
   operationPolling.stop()
+  restoreRead.cancel()
+  pollRead.cancel()
+  loadRead.cancel()
+  loading.value = false
+  operationRestoring.value = false
+  operationCompletionRefreshing.value = false
+  restoreErrorMessage.value = ""
   pollFailureNotified = false
   rememberOperation(operation)
   activeOperation.value = operation
@@ -352,8 +346,17 @@ function trackOperation(operation: VendorTestOperation): void {
   else operationPolling.start()
 }
 
+/** 手动重连只恢复原查询链，不重新创建控制操作。 */
+function reconnect(): void {
+  if (operationCompletionRefreshing.value) completionRefreshPolling.restart()
+  else {
+    void load()
+    if (operationRestoring.value) restorePolling.restart()
+    else if (activeOperation.value && !terminal(activeOperation.value)) operationPolling.restart()
+  }
+}
+
 async function requestActivation(): Promise<void> {
-  // 取消 / 关闭时操作者保留当前关闭状态。
   if (
     !(await confirmAction({
       title: "激活真实厂商受控联调",
@@ -397,7 +400,6 @@ async function resume(): Promise<void> {
     return
   }
   if (status.value?.pause_kind === "critical") {
-    // 取消 / 关闭时保持安全阻断。
     if (
       !(await confirmAction({
         title: "恢复安全阻断",
@@ -470,7 +472,7 @@ onMounted(() => {
 
 <template>
   <section v-loading="loading" class="vendor-test-console" aria-labelledby="vendor-test-heading">
-    <LoadErrorAlert :message="errorMessage" retry-text="重新连接控制代理" @retry="load" />
+    <LoadErrorAlert :message="errorMessage" retry-text="重新连接控制代理" @retry="reconnect" />
 
     <header class="vendor-test-status" :class="`is-${statusPresentation.tone}`">
       <div class="vendor-test-state-mark" aria-hidden="true"><i></i><span>LIVE</span></div>
@@ -630,7 +632,7 @@ onMounted(() => {
         <code>{{ activeOperation.operation_id }}</code>
       </div>
       <div class="vendor-operation-state" :class="activeOperation.status">
-        <i></i><strong>{{ operationStatusLabel(activeOperation.status) }}</strong>
+        <i></i><strong>{{ OPERATION_STATUS_LABELS[activeOperation.status] ?? activeOperation.status }}</strong>
       </div>
       <div v-if="activeOperation.batch_no"
         ><span>批次引用</span><code>{{ activeOperation.batch_no }}</code></div
@@ -657,10 +659,7 @@ onMounted(() => {
   </section>
 </template>
 
-<!--
-  本样式块刻意非 scoped，与二次认证对话框的样式块共用 vendor- 前缀隔离全局命名空间；
-  样式本身仅作用于切回触发按钮与操作指引。
--->
+<!-- 非 scoped 样式与二次认证对话框共用 vendor- 前缀隔离命名空间。 -->
 <style>
 @layer components {
   .vendor-reset-trigger {

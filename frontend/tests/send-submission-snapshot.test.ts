@@ -4,6 +4,7 @@ import { flushPromises, mount } from "@vue/test-utils"
 import ElementPlus from "element-plus"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { SendResult, WebMessagePayload } from "../src/api/webMessages"
+import { ApiRequestError } from "../src/api/client"
 
 const api = vi.hoisted(() => ({
   sendWebMessage: vi.fn(),
@@ -21,7 +22,14 @@ vi.mock("../src/api/dashboard", () => ({
 import SendView from "../src/views/SendView.vue"
 
 type Editor = {
-  form: { content: string; mobilesText: string; category: string; remark: string }
+  form: {
+    content: string
+    mobilesText: string
+    category: string
+    remark: string
+    scheduleEnabled: boolean
+    scheduledAt: string
+  }
   pastedMobiles: string[]
   busy: boolean
   sendResult: SendResult | null
@@ -55,6 +63,73 @@ beforeEach(() => {
 })
 
 describe("提交快照与草稿生命周期", () => {
+  it("响应丢失后明确提示未知，人工确认复用冻结请求并展示服务端历史摘要", async () => {
+    api.sendWebMessage.mockRejectedValueOnce(new TypeError("Failed to fetch"))
+    const { wrapper, vm } = await setup()
+    try {
+      await vm.submit()
+      await flushPromises()
+      expect(wrapper.text()).toContain("受理结果尚未确认")
+      expect(wrapper.get('[data-testid="send-button"]').text()).toContain("重试确认原请求")
+      expect(wrapper.text()).not.toContain("未发送")
+      expect(api.sendWebMessage).toHaveBeenCalledTimes(1)
+      const original = api.sendWebMessage.mock.calls[0][0] as WebMessagePayload
+      // 解析结果不是草稿身份；重试不能重新读取这个可变数组。
+      vm.pastedMobiles.push("199" + "0".repeat(7) + "2")
+      api.sendWebMessage.mockResolvedValueOnce({
+        ...result("original-batch"),
+        idempotent: true,
+        scheduled_at: "2099-01-02T12:34:00+08:00",
+      })
+      await wrapper.get('[data-testid="send-button"]').trigger("click")
+      await flushPromises()
+      expect(api.sendWebMessage.mock.calls[1][0]).toEqual(original)
+      expect(api.sendWebMessage.mock.calls[1][0].mobiles).toHaveLength(1)
+      expect(vm.sendResult?.batch_no).toBe("original-batch")
+      expect(wrapper.get('[data-testid="submitted-summary"]').text()).toContain("历史批次 · 2099-01-02 12:34")
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it("原定时时间已过仍可确认未知请求；实质编辑后重新校验并明确旧请求未撤销", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2099-01-01T12:00:00+08:00"))
+    api.sendWebMessage.mockRejectedValue(new TypeError("Failed to fetch"))
+    const { wrapper, vm } = await setup()
+    try {
+      vm.form.scheduleEnabled = true
+      vm.form.scheduledAt = "2099-01-01T12:01:00+08:00"
+      await vm.submit()
+      clock.mockReturnValue(Date.parse("2099-01-01T12:02:00+08:00"))
+      await vm.submit()
+      expect(api.sendWebMessage).toHaveBeenCalledTimes(2)
+      expect(api.sendWebMessage.mock.calls[1][0]).toEqual(api.sendWebMessage.mock.calls[0][0])
+      vm.form.content = "新草稿"
+      await flushPromises()
+      expect(wrapper.text()).toContain("修改不会撤销")
+      expect(wrapper.get('[data-testid="send-button"]').text()).not.toContain("重试确认")
+      await vm.submit()
+      expect(api.sendWebMessage).toHaveBeenCalledTimes(2)
+    } finally {
+      clock.mockRestore()
+      wrapper.unmount()
+    }
+  })
+
+  it("明确的业务拒绝仍展示原错误并允许修改重试", async () => {
+    api.sendWebMessage.mockRejectedValue(new ApiRequestError(422, "CONSENT_REQUIRED", "需要营销同意"))
+    const { wrapper, vm } = await setup()
+    try {
+      await vm.submit()
+      await flushPromises()
+      expect(wrapper.text()).toContain("需要营销同意")
+      expect(wrapper.text()).not.toContain("受理结果尚未确认")
+      expect(wrapper.get('[data-testid="send-button"]').text()).not.toContain("重试确认")
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it("消费后编辑在真实发送页显示重新上传说明，新导入清除说明", async () => {
     const { wrapper, vm } = await setup()
     const draft = wrapper.vm as unknown as {

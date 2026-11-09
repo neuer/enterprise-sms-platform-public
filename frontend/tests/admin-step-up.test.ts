@@ -153,3 +153,53 @@ it("当前授权的业务写入失败仍向调用方传播", async () => {
   expect(await settled).toBe(error)
   wrapper.unmount()
 })
+
+it.each(["success", "failure"])("新意图等待授权时，旧意图的 %s 不影响其提示、loading 或执行", async (outcome) => {
+  api.issueAdminStepUp.mockReset()
+  let resolveOld!: (token: string) => void
+  let rejectOld!: (error: Error) => void
+  let resolveCurrent!: (token: string) => void
+  api.issueAdminStepUp.mockImplementationOnce(
+    () =>
+      new Promise<string>((resolve, reject) => {
+        resolveOld = resolve
+        rejectOld = reject
+      }),
+  )
+  api.issueAdminStepUp.mockImplementationOnce(
+    () =>
+      new Promise<string>((resolve) => {
+        resolveCurrent = resolve
+      }),
+  )
+  const { wrapper, controller } = setup()
+  const oldAction = vi.fn()
+  const currentAction = vi.fn().mockResolvedValue("current-result")
+  try {
+    expect(controller.phase.value).toBe("closed")
+    const oldWork = controller.run(intent, "原意图", oldAction)
+    expect(controller.phase.value).toBe("prompting")
+    controller.updatePassword("synthetic-old-password")
+    const oldSubmit = controller.submit()
+    const currentIntent = { ...intent, target_id: "8" }
+    const currentWork = controller.run(currentIntent, "新意图", currentAction)
+    expect(await oldWork).toBeUndefined()
+    controller.updatePassword("synthetic-current-password")
+    const currentSubmit = controller.submit()
+    if (outcome === "success") resolveOld("synthetic-old-token")
+    else rejectOld(new Error("synthetic-old-error"))
+    await oldSubmit
+    expect(controller.phase.value).toBe("authorizing")
+    expect(controller.state.label).toBe("新意图")
+    expect(controller.state.error).toBe("")
+    expect(oldAction).not.toHaveBeenCalled()
+    expect(currentAction).not.toHaveBeenCalled()
+    resolveCurrent("synthetic-current-token")
+    await currentSubmit
+    expect(await currentWork).toBe("current-result")
+    expect(currentAction).toHaveBeenCalledExactlyOnceWith("synthetic-current-token")
+    expect(controller.phase.value).toBe("closed")
+  } finally {
+    wrapper.unmount()
+  }
+})

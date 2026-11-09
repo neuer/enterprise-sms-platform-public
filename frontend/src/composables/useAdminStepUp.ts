@@ -1,11 +1,15 @@
 import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
-import { onScopeDispose, reactive } from "vue"
+import { computed, onScopeDispose, reactive } from "vue"
 import { issueAdminStepUp, type AdminIntent } from "../api/adminStepUp"
 import { errorText } from "../lib/error"
 
 /** 授权口令只留在当前组件内存；关闭、清会话和销毁都会废弃迟到响应。 */
 export function useAdminStepUp() {
   const state = reactive({ open: false, busy: false, password: "", label: "", error: "" })
+  // 仅投影互斥展示阶段；原 intent/generation/settle 仍负责授权与退役事实。
+  const phase = computed<"closed" | "prompting" | "authorizing">(() =>
+    !state.open ? "closed" : state.busy ? "authorizing" : "prompting",
+  )
   let generation = 0
   let disposed = false
   let intent: AdminIntent | null = null
@@ -81,6 +85,6 @@ export function useAdminStepUp() {
     cancel()
     window.removeEventListener(SESSION_CLEARING_EVENT, cancel)
   })
-  return { state, run, submit, cancel, updatePassword }
+  return { state, phase, run, submit, cancel, updatePassword }
 }
 export type AdminStepUpController = ReturnType<typeof useAdminStepUp>
