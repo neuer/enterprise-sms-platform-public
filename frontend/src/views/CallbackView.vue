@@ -298,7 +298,7 @@ onMounted(() => {
       ><span>重试序列</span
       ><p
         >投递失败按默认 60s → 5m → 15m → 1h → 1h 重试，5 次后转 dead。每次投递尝试读取当前
-        callback_retry_schedule；已生成的下次重试时间不会仅因修改参数而提前或延后。</p
+        callback_retry_schedule；已生成的下次重试时间不会仅因修改参数而提前或延后。重试计数不含首次投递；等待重试时包含已安排的下一次重试。</p
       ></div
     >
     <div
@@ -343,7 +343,7 @@ onMounted(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="尝试 / 下次重试" width="142">
+        <el-table-column label="重试计数 / 下次重试" width="142">
           <template #default="{ row }">
             <span class="retry-count">{{ row.retry_count }}/5</span>
             <small v-if="row.status === 'retrying' && row.next_retry_at">{{ formatDateTime(row.next_retry_at) }}</small>
@@ -409,7 +409,7 @@ onMounted(() => {
               ><dt>引用</dt><dd>{{ item.reference_count }}</dd></div
             >
             <div
-              ><dt>重试</dt><dd>{{ item.retry_count }}/5</dd></div
+              ><dt>重试计数</dt><dd>{{ item.retry_count }}/5</dd></div
             >
             <div v-if="item.status === 'retrying' && item.next_retry_at"
               ><dt>下次重试</dt><dd>{{ formatDateTime(item.next_retry_at) }}</dd></div
@@ -493,7 +493,7 @@ onMounted(() => {
           </dd>
         </div>
         <div
-          ><dt>尝试</dt><dd class="mono-id">{{ selected.retry_count }}/5</dd></div
+          ><dt>重试计数</dt><dd class="mono-id">{{ selected.retry_count }}/5</dd></div
         >
         <div
           ><dt>下次重试</dt
