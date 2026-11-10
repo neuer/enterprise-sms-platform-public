@@ -367,7 +367,7 @@
 
 .inline-fields {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 10px;
   margin-top: 10px;
 }
@@ -412,8 +412,13 @@
 .send-preview,
 .send-rail {
   position: sticky;
-  top: 14px;
+  /* 顶栏吸顶且高 56px：偏移须让出顶栏，否则确认栏首卡会被顶栏盖住；
+     栏高超过视口时在栏内滚动，栏尾的提交按钮与受理结果始终可达。 */
+  top: 70px;
   display: grid;
+  max-height: calc(100vh - 84px);
+  overflow-y: auto;
+  scrollbar-width: thin;
   gap: 12px;
   min-width: 0;
 }
@@ -859,6 +864,8 @@
 
   .send-preview {
     position: static;
+    max-height: none;
+    overflow-y: visible;
   }
 }
 

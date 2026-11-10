@@ -380,6 +380,17 @@
   }
 }
 
+/* 标签不做出现动画：ElTag 默认以 zoom-in 过渡 appear，列表每次加载/翻页时文字先到、标签再弹出，
+   状态列会闪一下；这里取消进入过渡。 */
+.el-tag.el-zoom-in-center-enter-active {
+  transition: none;
+}
+
+.el-tag.el-zoom-in-center-enter-from {
+  transform: none;
+  opacity: 1;
+}
+
 /* el-tag / el-alert 默认浅色效果按暗色面板重混：Element Plus 的 light-9 底色接近纯白，
    在深色界面里是刺眼的亮块且前景被冲淡；这里改成深底浅色文字，保留原有色调语义。
    明亮模式的亮底深字版本在本文件后部。 */

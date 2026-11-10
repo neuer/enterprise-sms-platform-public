@@ -109,6 +109,12 @@ function focusPageHeading(): void {
   heading.focus()
 }
 
+/** 侧栏可独立滚动：窗口高度不足时当前页的导航项可能在折叠线以下，路由变化后把它滚回可视区。 */
+function revealActiveNavLink(): void {
+  const link = sidebarRoot.value?.querySelector<HTMLElement>(".nav-link.active")
+  if (typeof link?.scrollIntoView === "function") link.scrollIntoView({ block: "nearest" })
+}
+
 function closeNavigationFromUser(): void {
   const trigger = navTrigger
   navigationOpen.value = false
@@ -234,10 +240,11 @@ watch(
     const wasOpen = navigationOpen.value && mobileDrawer.value
     closeNavigation()
     navTrigger = null
-    if (!wasOpen) return
     await nextTick()
-    focusPageHeading()
+    revealActiveNavLink()
+    if (wasOpen) focusPageHeading()
   },
+  { immediate: true },
 )
 watch(lockWorkspace, async (locked) => {
   if (!locked) return

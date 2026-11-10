@@ -768,8 +768,7 @@
     margin 160ms;
 }
 
-.login-bubble.is-editable:not(:disabled):hover .login-pen,
-.login-bubble.is-editable:not(:disabled):focus-visible .login-pen {
+.login-bubble.is-editable:not(:disabled) .login-pen {
   width: 13px;
   margin-left: 8px;
   opacity: 0.8;
