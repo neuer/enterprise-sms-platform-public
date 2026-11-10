@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from zoneinfo import ZoneInfo
 
-from app.services.alert import emit_alert_best_effort
+from app.services.alert import alert_reference, emit_alert_best_effort
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
 from app.services.raw_lease import (
@@ -309,6 +309,7 @@ class ReplyIngestService:
                 extra={"source": "reply"},
             )
             return
+        reference, reference_detail = alert_reference("stream_id", stream_id)
         await emit_alert_best_effort(
             self.alerts,
             logger=LOGGER,
@@ -317,8 +318,8 @@ class ReplyIngestService:
             alert_type="vendor_raw_stream_quarantined",
             level="crit",
             title="raw spill terminal 不完整，已认证 chunk 已隔离为截断事实",
-            detail={"source": "reply", "stream_id": stream_id},
-            dedup_key=f"vendor_raw_stream_quarantined:reply:{stream_id}",
+            detail={"source": "reply", **reference_detail},
+            dedup_key=f"vendor_raw_stream_quarantined:reply:{reference}",
         )
 
     async def _alert_oversized_complete(self) -> None:

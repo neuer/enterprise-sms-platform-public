@@ -3663,7 +3663,9 @@ components:
         alert_type: { type: string }
         level: { type: string, enum: [info, warn, crit] }
         title: { type: string }
-        detail: { anyOf: [{ type: object, additionalProperties: true }, { type: 'null' }] }
+        detail:
+          description: 'UUID 形业务标识含手机号形数字片段时，以 batch_no_ref、stream_id_ref 或 custom_id_ref 返回 uuid-alpha: 引用；去掉前缀并将 g-p 逐位映射为 0-9 可还原 UUID，批次号与分片 custom_id 再去掉连字符。'
+          anyOf: [{ type: object, additionalProperties: true }, { type: 'null' }]
         channels: { type: string }
         created_at: { type: string, format: date-time }
 

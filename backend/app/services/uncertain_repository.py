@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import text
 
 from app.core.runtime_resources import ManagedAsyncEngine, database_engine
+from app.services.alert import alert_reference
 from app.services.alert_repository import SqlAlertService
 from app.services.callback_repository import enqueue_batch_finished
 from app.services.uncertain import RawCandidate, UncertainChunk
@@ -101,11 +102,12 @@ class SqlUncertainRepository:
             await engine.dispose()
 
     async def alert_overdue(self, chunk: UncertainChunk) -> None:
+        _reference, reference_detail = alert_reference("custom_id", chunk.custom_id)
         await SqlAlertService(self.settings).emit(
             alert_type="uncertain_overdue",
             level="crit",
             title="发送结果未知超过24小时",
-            detail={"chunk_id": chunk.chunk_id, "custom_id": chunk.custom_id},
+            detail={"chunk_id": chunk.chunk_id, **reference_detail},
             dedup_key=f"uncertain_overdue:{chunk.chunk_id}",
         )
 
