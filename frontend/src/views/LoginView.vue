@@ -8,6 +8,7 @@ import { EGRET_PATHS, EGRET_SYMBOL_ID, EGRET_VIEWBOX } from "../assets/brand/egr
 import LoginChatHead from "../components/LoginChatHead.vue"
 import LoginEgret from "../components/LoginEgret.vue"
 import LoginHero from "../components/LoginHero.vue"
+import LoginPeekButton from "../components/LoginPeekButton.vue"
 import LoginThreadItem from "../components/LoginThreadItem.vue"
 import { useLatestRead } from "../composables/useLatestRead"
 import { useLoginDisplay } from "./login/useLoginDisplay"
@@ -51,6 +52,8 @@ const account = ref("")
 const username = ref("")
 const password = ref("")
 const capsLock = ref(false)
+/** 显示密码开关：仅改变输入框可见性，每次换步复位为隐藏。 */
+const reveal = ref(false)
 const policy = ref<PasswordPolicy>(DEFAULT_POLICY)
 const ruleState = ref<boolean[]>([])
 /** 账号输入时白鹭点头：1/2 交替以重启动画；密码步不点头，不随按键给出任何可见反馈。 */
@@ -93,6 +96,7 @@ function isEnabled(code: ProviderCode): boolean {
 function setStep(next: Step): void {
   step.value = next
   capsLock.value = false
+  reveal.value = false
   if (disposed || !INPUT_STEPS.includes(next)) return
   void nextTick(() => (next === "account" ? usernameInput.value : passwordInput.value)?.focus())
 }
@@ -553,7 +557,9 @@ onBeforeUnmount(() => {
             v-model="password"
             data-testid="login-password"
             name="password"
-            type="password"
+            :type="reveal ? 'text' : 'password'"
+            autocapitalize="off"
+            spellcheck="false"
             aria-labelledby="login-field-label"
             :autocomplete="step === 'new-password' || step === 'confirm-password' ? 'new-password' : 'current-password'"
             :class="{ 'is-parked': !secretStep }"
@@ -564,6 +570,7 @@ onBeforeUnmount(() => {
             @keydown="onPasswordKey"
             @keyup="onPasswordKey"
           />
+          <LoginPeekButton v-if="secretStep && !composerOff" v-model="reveal" />
           <button class="login-send" data-testid="login-send" type="submit" aria-label="发送" :disabled="composerOff">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" /></svg>
           </button>

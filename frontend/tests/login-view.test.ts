@@ -331,6 +331,64 @@ describe("对话式登录", () => {
     await vi.waitFor(() => expect(router.currentRoute.value.path).toBe("/dashboard"))
   })
 
+  it("密码步提供显示开关，换步后复位为隐藏且账号步不出现", async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response([localProvider]))
+      .mockResolvedValueOnce(response({ code: "UNAUTHORIZED", message: "账号或密码错误", detail: null }, 401))
+    vi.stubGlobal("fetch", fetch)
+    const { wrapper } = await mountLogin()
+    mounted = wrapper
+
+    await choose(wrapper, "local")
+    expect(wrapper.find("[data-testid='login-peek']").exists()).toBe(false)
+    await send(wrapper, "login-username", "admin")
+
+    const password = wrapper.get("[data-testid='login-password']")
+    const peek = wrapper.get("[data-testid='login-peek']")
+    expect(password.attributes("type")).toBe("password")
+    expect(peek.attributes("aria-pressed")).toBe("false")
+    expect(peek.attributes("aria-label")).toBe("显示密码")
+
+    await peek.trigger("click")
+    expect(password.attributes("type")).toBe("text")
+    expect(peek.attributes("aria-pressed")).toBe("true")
+    expect(peek.attributes("aria-label")).toBe("隐藏密码")
+
+    await send(wrapper, "login-password", "wrong-password")
+    expect(wrapper.get("[data-testid='login-password']").attributes("type")).toBe("password")
+    expect(wrapper.get("[data-testid='login-peek']").attributes("aria-pressed")).toBe("false")
+    expect(wrapper.html()).not.toContain("wrong-password")
+  })
+
+  it("对话区尺寸变化后重新贴底，卸载时停止观察", async () => {
+    const observers: { callback: ResizeObserverCallback; disconnect: ReturnType<typeof vi.fn> }[] = []
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        disconnect = vi.fn()
+        constructor(callback: ResizeObserverCallback) {
+          observers.push({ callback, disconnect: this.disconnect })
+        }
+        observe(): void {}
+        unobserve(): void {}
+      },
+    )
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(response([localProvider])))
+    const { wrapper } = await mountLogin()
+
+    const thread = wrapper.get(".login-thread").element
+    Object.defineProperty(thread, "scrollHeight", { configurable: true, value: 480 })
+    thread.scrollTop = 0
+    expect(observers).toHaveLength(1)
+    observers[0].callback([], {} as ResizeObserver)
+    await flushPromises()
+    expect(thread.scrollTop).toBe(480)
+
+    wrapper.unmount()
+    expect(observers[0].disconnect).toHaveBeenCalledTimes(1)
+  })
+
   it("无 Web Locks 时提示短会话并提交 access_only", async () => {
     vi.stubGlobal("navigator", {})
     const fetch = vi

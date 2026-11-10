@@ -1,4 +1,4 @@
-import { nextTick, ref, type Ref } from "vue"
+import { nextTick, onBeforeUnmount, onMounted, ref, type Ref } from "vue"
 
 import type { Chip, Item, MineItem, NewItem, Part } from "../../lib/loginConversation"
 
@@ -19,6 +19,19 @@ export function useLoginThread(netWarn: Ref<boolean>) {
       if (thread) thread.scrollTop = thread.scrollHeight
     })
   }
+
+  // 对话区或可视视口变化（窗口缩放、转屏、键盘弹出）后重新贴底，最新一条不被挡在可视区外。
+  let observer: ResizeObserver | undefined
+  onMounted(() => {
+    window.visualViewport?.addEventListener("resize", scrollToEnd)
+    if (typeof ResizeObserver === "undefined" || !threadRef.value) return
+    observer = new ResizeObserver(scrollToEnd)
+    observer.observe(threadRef.value)
+  })
+  onBeforeUnmount(() => {
+    window.visualViewport?.removeEventListener("resize", scrollToEnd)
+    observer?.disconnect()
+  })
 
   function push(item: NewItem): Item {
     items.value.push({ ...item, id: ++seq } as Item)

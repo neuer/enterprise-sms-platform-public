@@ -840,8 +840,10 @@
 
 .page-heading {
   display: flex;
+  gap: 12px 24px;
   align-items: flex-end;
   justify-content: space-between;
+  margin-bottom: 18px;
 }
 
 .eyebrow {
@@ -1578,9 +1580,6 @@
 .empty-state p {
   overflow-wrap: anywhere;
   word-break: break-word;
-}
-.page-heading {
-  margin-bottom: 18px;
 }
 .page-heading h1 {
   color: var(--tx-hi);

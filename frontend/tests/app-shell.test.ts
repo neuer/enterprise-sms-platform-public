@@ -117,6 +117,48 @@ describe("应用骨架", () => {
     wrapper.unmount()
   })
 
+  it("首屏与路由切换后把侧栏当前导航项滚入可视区", async () => {
+    const scrollIntoView = vi.fn()
+    const original = HTMLElement.prototype.scrollIntoView
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        { path: "/apps", component: { template: "<div>应用管理</div>" } },
+        { path: "/audit", component: { template: "<div>审计日志</div>" } },
+        { path: "/:pathMatch(.*)*", component: { template: "<div />" } },
+      ],
+    })
+    const pinia = createPinia()
+    useSessionStore(pinia).apply("jwt", {
+      account_id: 1,
+      identity_id: 11,
+      provider_code: "local",
+      username: "admin01",
+      display_name: "开发管理员",
+      dept: "平台技术部",
+      role: "admin",
+    })
+    await router.push("/apps")
+    await router.isReady()
+
+    const wrapper = mount(App, { global: { plugins: [pinia, router] } })
+    try {
+      await flushPromises()
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" })
+      expect(scrollIntoView.mock.contexts.at(-1)).toBe(wrapper.get(".nav-link.active").element)
+      expect(wrapper.get(".nav-link.active").attributes("href")).toBe("/apps")
+
+      scrollIntoView.mockClear()
+      await router.push("/audit")
+      await flushPromises()
+      expect(scrollIntoView).toHaveBeenCalledTimes(1)
+      expect((scrollIntoView.mock.contexts[0] as HTMLElement).getAttribute("href")).toBe("/audit")
+    } finally {
+      wrapper.unmount()
+      HTMLElement.prototype.scrollIntoView = original
+    }
+  })
   it("仪表盘与顶栏共享同一余额快照且不重复轮询", async () => {
     vi.useFakeTimers()
     const router = createRouter({

@@ -4,7 +4,7 @@ import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
 
 import FilterSeg from "../components/FilterSeg.vue"
 import { ElMessage } from "element-plus"
-import { computed, onBeforeUnmount, onMounted, ref } from "vue"
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRouter } from "vue-router"
 
 import { getDashboard } from "../api/dashboard"
@@ -97,6 +97,14 @@ onBeforeUnmount(() => railObserver?.disconnect())
 function scrollToRail(): void {
   rail.value?.scrollIntoView({ behavior: "smooth", block: "start" })
 }
+
+// 确认栏吸顶且可内部滚动；受理结果出现在栏尾，窗口较低时可能落在可视区外，出现后滚入可视区。
+watch(sendResult, async (result) => {
+  if (!result) return
+  await nextTick()
+  const card = rail.value?.querySelector<HTMLElement>('[data-testid="send-result"]')
+  if (typeof card?.scrollIntoView === "function") card.scrollIntoView({ block: "nearest" })
+})
 
 const submitLabel = computed(() => {
   if (submissionPhase.value === "submitting") return "正在确认受理结果"

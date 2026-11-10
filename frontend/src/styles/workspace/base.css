@@ -148,6 +148,16 @@ main {
   margin: 0 auto;
 }
 
+/* 页头骨架：说明文字吃掉剩余宽度并允许换行，尾部徽标/按钮组保持原尺寸，窄桌面下不被挤成多行。 */
+.page-heading > :first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.page-heading > :not(:first-child) {
+  flex: none;
+}
+
 @media (max-width: 959px) {
   .sidebar {
     position: fixed;
