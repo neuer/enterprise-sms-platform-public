@@ -291,18 +291,22 @@ class OutboxEventPageModel(PageModel):
     items: list[OutboxEventModel]
 
 
-class UnmatchedQueryModel(BaseModel):
+class UnmatchedFilterModel(BaseModel):
     phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
-    start: datetime | None = None
-    end: datetime | None = None
+    start: datetime | None = Field(
+        default=None, description="报告时间下界（含），按 report_time 过滤，须带时区"
+    )
+    end: datetime | None = Field(
+        default=None, description="报告时间上界（含），按 report_time 过滤，须带时区"
+    )
+
+
+class UnmatchedQueryModel(UnmatchedFilterModel):
     page: int = Field(default=1, ge=1, le=PAGE_MAX)
     page_size: int = Field(default=20, ge=1, le=100)
 
 
-class UnmatchedExportModel(BaseModel):
-    phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
-    start: datetime | None = None
-    end: datetime | None = None
+class UnmatchedExportModel(UnmatchedFilterModel):
     decrypted: bool = False
 
 

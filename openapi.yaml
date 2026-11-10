@@ -3806,8 +3806,8 @@ components:
       type: object
       properties:
         phone: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] }
-        start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-        end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        start: { description: "报告时间下界（含），按 report_time 过滤，须带时区", anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        end: { description: "报告时间上界（含），按 report_time 过滤，须带时区", anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         page: { type: integer, minimum: 1, maximum: 1000000, default: 1 }
         page_size: { type: integer, minimum: 1, maximum: 100, default: 20 }
 
@@ -3815,8 +3815,8 @@ components:
       type: object
       properties:
         phone: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] }
-        start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-        end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        start: { description: "报告时间下界（含），按 report_time 过滤，须带时区", anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        end: { description: "报告时间上界（含），按 report_time 过滤，须带时区", anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         decrypted: { type: boolean, default: false }
 
     JobModel:

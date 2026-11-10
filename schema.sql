@@ -1791,6 +1791,8 @@ CREATE TABLE unmatched_report (
 );
 CREATE INDEX idx_unmatched_hmac ON unmatched_report(phone_hmac, created_at);
 CREATE INDEX idx_unmatched_time ON unmatched_report(created_at);
+CREATE INDEX idx_unmatched_report_time ON unmatched_report(report_time, id)
+    WHERE report_time IS NOT NULL;
 
 -- ─────────────── 后台任务健康（v1.5） ───────────────
 CREATE TABLE job_run (
