@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue"
+import { RouterLink } from "vue-router"
 
 import { getDashboard, type DashboardChannelMonitor, type DashboardSnapshot } from "../api/dashboard"
 import BalanceChart from "../components/BalanceChart.vue"
@@ -15,13 +16,16 @@ import { formatNumber, formatPercent } from "../lib/format"
 import { CATEGORY_LABELS } from "../lib/labels"
 import { formatDateTime, formatHm, formatHms } from "../lib/time"
 import { errorText } from "../lib/error"
+import { useSessionStore } from "../stores/session"
 
+const session = useSessionStore()
 const snapshot = ref<DashboardSnapshot | null>(null)
 const loading = ref(false)
 const errorMessage = ref("")
 const lastChannelSuccessAt = ref<string | null>(null)
 
 const totalMessages = computed(() => snapshot.value?.categories.reduce((sum, item) => sum + item.total, 0) ?? 0)
+const populatedCategories = computed(() => snapshot.value?.categories.filter((item) => item.total > 0) ?? [])
 const totalSegments = computed(
   () => snapshot.value?.categories.reduce((sum, item) => sum + item.total_segments, 0) ?? 0,
 )
@@ -157,12 +161,12 @@ onMounted(refreshPolling.start)
           <span class="kpi-go">→ 报表</span>
           <strong>{{ formatNumber(totalMessages) }}</strong>
           <small>{{ formatNumber(totalSegments) }} 计费条</small>
-          <div class="category-strip" aria-label="分类消息量">
+          <div class="category-strip" role="img" :aria-label="totalMessages ? '分类消息量' : '今日暂无消息'">
             <span
-              v-for="item in snapshot.categories"
+              v-for="item in populatedCategories"
               :key="item.category"
               :class="item.category"
-              :style="{ flexGrow: Math.max(item.total, 1) }"
+              :style="{ flexGrow: item.total }"
               :title="`${CATEGORY_LABELS[item.category]} ${item.total}`"
             ></span>
           </div>
@@ -186,14 +190,20 @@ onMounted(refreshPolling.start)
           </div>
         </el-card>
       </router-link>
-      <router-link to="/approvals" class="metric-link" data-testid="metric-approvals">
+      <component
+        :is="session.canApprove ? RouterLink : 'div'"
+        :to="session.canApprove ? '/approvals' : undefined"
+        class="metric-link"
+        data-testid="metric-approvals"
+      >
         <el-card shadow="never" class="metric-card warning">
           <span>待审批</span>
-          <span class="kpi-go">→ 审批</span>
+          <span v-if="session.canApprove" class="kpi-go">→ 审批</span>
           <strong>{{ formatNumber(snapshot.pending_approvals) }}</strong>
-          <small>当前权限范围</small><p>及时处理避免发送窗口顺延</p>
+          <small>当前权限范围</small>
+          <p>{{ session.canApprove ? "及时处理避免发送窗口顺延" : "审批操作由审批人或管理员处理" }}</p>
         </el-card>
-      </router-link>
+      </component>
       <router-link v-if="operations" to="/reports" class="metric-link" data-testid="metric-balance">
         <el-card
           shadow="never"

@@ -1,5 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils"
 import ElementPlus, { ElMessage } from "element-plus"
+import { createPinia } from "pinia"
 import { vi } from "vitest"
 
 const chart = vi.hoisted(() => ({
@@ -21,6 +22,8 @@ vi.mock("echarts/renderers", () => ({ CanvasRenderer: {} }))
 import BalanceChart from "../src/components/BalanceChart.vue"
 import TrendChart from "../src/components/TrendChart.vue"
 import DashboardView from "../src/views/DashboardView.vue"
+import { useSessionStore } from "../src/stores/session"
+import type { UserRole } from "../src/api/auth"
 
 const RouterLinkStub = {
   name: "RouterLink",
@@ -28,9 +31,11 @@ const RouterLinkStub = {
   template: `<a :href="typeof to === 'string' ? to : '#'"><slot /></a>`,
 }
 
-function mountDashboard() {
+function mountDashboard(role: UserRole = "admin") {
+  const pinia = createPinia()
+  useSessionStore(pinia).role = role
   return mount(DashboardView, {
-    global: { plugins: [ElementPlus], stubs: { RouterLink: RouterLinkStub } },
+    global: { plugins: [pinia, ElementPlus], stubs: { RouterLink: RouterLinkStub } },
   })
 }
 
@@ -104,6 +109,55 @@ const incompleteSnapshot = {
 }
 
 describe("仪表盘", () => {
+  it.each(["admin", "approver", "operator", "viewer"] as const)("%s 的审批入口与角色权限一致", async (role) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(snapshot)))
+    sessionStorage.setItem("sms_token", "jwt")
+    const wrapper = mountDashboard(role)
+    await flushPromises()
+
+    const metric = wrapper.get("[data-testid='metric-approvals']")
+    const canApprove = role === "admin" || role === "approver"
+    expect(metric.element.tagName).toBe(canApprove ? "A" : "DIV")
+    expect(metric.attributes("href")).toBe(canApprove ? "/approvals" : undefined)
+    expect(metric.find(".kpi-go").exists()).toBe(canApprove)
+    expect(metric.text()).toContain("2")
+    if (!canApprove) {
+      expect(metric.attributes("tabindex")).toBeUndefined()
+      expect(metric.text()).toContain("审批操作由审批人或管理员处理")
+    }
+    wrapper.unmount()
+  })
+
+  it("零消息不伪造分类占比，有消息时只显示实际非零分类", async () => {
+    const zero = {
+      ...snapshot,
+      categories: snapshot.categories.map((item) => ({ ...item, total: 0, total_segments: 0 })),
+    }
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(response(zero))
+      .mockResolvedValueOnce(
+        response({
+          ...zero,
+          categories: zero.categories.map((item) => ({ ...item, total: item.category === "notice" ? 9 : 0 })),
+        }),
+      )
+    vi.stubGlobal("fetch", fetch)
+    sessionStorage.setItem("sms_token", "jwt")
+    const wrapper = mountDashboard()
+    await flushPromises()
+
+    expect(wrapper.get(".category-strip").attributes("aria-label")).toBe("今日暂无消息")
+    expect(wrapper.findAll(".category-strip span")).toHaveLength(0)
+    await wrapper.get(".dashboard-refresh .el-button").trigger("click")
+    await flushPromises()
+    const segments = wrapper.findAll(".category-strip span")
+    expect(segments).toHaveLength(1)
+    expect(segments[0].attributes("title")).toBe("通知 9")
+    expect(wrapper.get(".category-strip").attributes("aria-label")).toBe("分类消息量")
+    wrapper.unmount()
+  })
+
   it("展示服务端统计、处置计数和任务健康", async () => {
     const fetch = vi.fn().mockResolvedValue(response(snapshot))
     vi.stubGlobal("fetch", fetch)

@@ -137,10 +137,12 @@
   margin: 12px 0 7px;
   overflow: hidden;
   border-radius: 3px;
+  background: var(--hair);
 }
 
 .category-strip span {
-  min-width: 5px;
+  flex-basis: 0;
+  min-width: 0;
 }
 
 .category-strip .verify {
@@ -513,7 +515,7 @@
 .channel-monitor-link:hover .channel-monitor {
   border-color: color-mix(in srgb, var(--verdi-text) 45%, transparent);
 }
-.metric-link:hover .metric-card {
+.metric-link[href]:hover .metric-card {
   border-color: color-mix(in srgb, var(--verdi-text) 45%, transparent);
 }
 .disposition-link:hover .disposition-row {
