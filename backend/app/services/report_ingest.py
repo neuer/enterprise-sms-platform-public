@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 from zoneinfo import ZoneInfo
 
-from app.services.alert import emit_alert_best_effort
+from app.services.alert import alert_reference, emit_alert_best_effort
 from app.services.crypto import CryptoService, EncryptionContext
 from app.services.masking import mask_phone_text
 from app.services.raw_lease import (
@@ -242,18 +242,19 @@ class ReportIngestService:
             if candidate is None:
                 return
             denominator = candidate.delivered + candidate.failed
+            reference, reference_detail = alert_reference("batch_no", candidate.batch_no)
             await self.alerts.emit(
                 alert_type="failure_rate",
                 level="warn",
                 title="批次失败率超过阈值",
                 detail={
-                    "batch_no": candidate.batch_no,
+                    **reference_detail,
                     "delivered": candidate.delivered,
                     "failed": candidate.failed,
                     "failure_rate_percent": round(candidate.failed * 100 / denominator, 2),
                     "threshold_percent": candidate.threshold,
                 },
-                dedup_key=f"failure_rate:{candidate.batch_no}",
+                dedup_key=f"failure_rate:{reference}",
             )
         except Exception as exc:
             LOGGER.error(
@@ -349,6 +350,7 @@ class ReportIngestService:
                 extra={"source": source},
             )
             return
+        reference, reference_detail = alert_reference("stream_id", stream_id)
         await emit_alert_best_effort(
             self.alerts,
             logger=LOGGER,
@@ -357,8 +359,8 @@ class ReportIngestService:
             alert_type="vendor_raw_stream_quarantined",
             level="crit",
             title="raw spill terminal 不完整，已认证 chunk 已隔离为截断事实",
-            detail={"source": source, "stream_id": stream_id},
-            dedup_key=f"vendor_raw_stream_quarantined:{source}:{stream_id}",
+            detail={"source": source, **reference_detail},
+            dedup_key=f"vendor_raw_stream_quarantined:{source}:{reference}",
         )
 
     async def _alert_oversized_complete(self, source: str) -> None:

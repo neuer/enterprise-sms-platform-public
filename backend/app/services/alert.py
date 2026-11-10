@@ -12,11 +12,13 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from email.message import EmailMessage
 from time import monotonic
-from typing import Protocol
+from typing import Literal, Protocol
 from urllib.parse import parse_qs, urlsplit
+from uuid import UUID
 
 import httpx
 
+from app.core.audit import audit_uuid_ref
 from app.core.bounded_executor import run_bounded
 
 LOGGER = logging.getLogger(__name__)
@@ -198,6 +200,25 @@ def validate_alert_destinations(
         allowed = frozenset(host.casefold() for host in allowed_smtp_hosts)
         if smtp_host not in allowed:
             raise ValueError("alert_smtp_host 不在部署允许列表")
+
+
+def alert_reference(
+    name: Literal["batch_no", "stream_id", "custom_id"], value: str
+) -> tuple[str, dict[str, object]]:
+    """为合法 UUID 形业务标识避开手机号形数字片段，保留普通引用与去重键。
+
+    仅在既有 PII 校验会误判时编码 UUID，并用 *_ref 明确其引用语义。
+    非 UUID 原样交给告警校验，不能借此绕过手机号拦截。
+    """
+    if PHONE_IN_TEXT.search(value):
+        try:
+            identifier = UUID(value)
+        except ValueError:
+            pass
+        else:
+            reference = "uuid-alpha:" + audit_uuid_ref(identifier)
+            return reference, {f"{name}_ref": reference}
+    return value, {name: value}
 
 
 def _assert_no_pii(value: object, *, key: str | None = None) -> None:

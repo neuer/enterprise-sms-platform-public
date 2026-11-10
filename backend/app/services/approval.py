@@ -7,6 +7,7 @@ from typing import Protocol
 
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.sensitive_text import reject_phone_in_text
+from app.services.alert import alert_reference
 from app.services.category import queue_for_category
 
 
@@ -181,12 +182,13 @@ class ApprovalService:
                     event_id=f"approval:{case.approval_id}:expired",
                     marker_ttl_s=172800,
                 )
+            reference, reference_detail = alert_reference("batch_no", case.batch_no)
             await self.alerts.emit(
                 alert_type="approval_expired",
                 level="info",
                 title="短信审批已过期关闭",
-                detail={"batch_no": case.batch_no, "dept": case.dept},
-                dedup_key=f"approval_expired:{case.batch_no}",
+                detail={**reference_detail, "dept": case.dept},
+                dedup_key=f"approval_expired:{reference}",
                 dedup_hours=48,
             )
         return len(expired)

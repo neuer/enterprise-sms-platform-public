@@ -4,6 +4,7 @@ import io
 import smtplib
 import time
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -230,6 +231,39 @@ async def test_alert_metadata_rejects_plain_phone_numbers(title: str, dedup_key:
         )
 
     assert repository.claims == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["batch_no", "stream_id", "custom_id"])
+async def test_business_reference_does_not_exempt_plain_phone(field: Any) -> None:
+    repository = FakeRepository(EMPTY)
+    key, detail = alert_module.alert_reference(field, "1" + "2" * 10)
+    with pytest.raises(ValueError, match="PII"):
+        await AlertService(repository).emit(
+            alert_type="unsafe",
+            level="warn",
+            title="引用校验",
+            detail=detail,
+            dedup_key=key,
+        )
+    assert repository.claims == []
+
+
+@pytest.mark.parametrize("value", ["batch-1", "BATCH-8", "abcdefab-cdef-abcd-efab-cdefabcdefab"])
+def test_ordinary_alert_reference_keeps_existing_metadata_and_dedup(value: str) -> None:
+    assert alert_module.alert_reference("batch_no", value) == (value, {"batch_no": value})
+
+
+def test_encoded_alert_reference_preserves_uuid_identity() -> None:
+    identifiers = [UUID(hex="f" * 20 + "1" + digit * 10 + "a") for digit in ("2", "3")]
+    references = [alert_module.alert_reference("stream_id", str(value))[0] for value in identifiers]
+    assert len(set(references)) == 2
+    for original, reference in zip(identifiers, references, strict=True):
+        decoded = reference.removeprefix("uuid-alpha:").translate(
+            str.maketrans("ghijklmnop", "0123456789")
+        )
+        assert UUID(decoded) == original
+        assert not any(char.isdigit() for char in reference)
 
 
 def test_existing_alert_producers_depend_on_unified_sql_service() -> None:
