@@ -51,6 +51,7 @@ from app.vendor.identifiers import (
 )
 from app.vendor.zhihui import (
     RawPulledPayload,
+    VendorProtocolError,
     VendorResponseTooLarge,
     decode_pulled_payload,
 )
@@ -169,6 +170,17 @@ class ReplyIngestService:
         self.alerts = alerts
         self.spill = spill
         self._spill_degraded = False
+
+    def validate_existing(self, data: object) -> None:
+        """重评估复用当前逐项解析器，只在内存校验，不写业务事实。"""
+
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise VendorProtocolError("GetReply.data must be an object array")
+        for item in data:
+            try:
+                self._parse(item)
+            except (ValueError, KeyError, TypeError):
+                raise VendorProtocolError("vendor reply item parsing failed") from None
 
     def _parse(self, item: dict[str, Any]) -> ProtectedReply:
         value = _normalized(item)

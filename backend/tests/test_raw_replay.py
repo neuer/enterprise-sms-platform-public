@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -51,9 +52,7 @@ class FakeRepository:
     ) -> None:
         self.record = record
         self.claimed = (
-            claimed
-            if claimed is not None
-            else record is not None and not record.processed
+            claimed if claimed is not None else record is not None and not record.processed
         )
         self.claim_calls: list[int] = []
         self.errors: list[tuple[int, str]] = []
@@ -119,6 +118,36 @@ class FakeProcessor:
     async def process_existing(self, raw_id: int, data: object, **_: object) -> int:
         self.events.append((self.label, (raw_id, data)))
         return len(data) if isinstance(data, list) else 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("completed", [True, False, None])
+async def test_operator_replay_reports_authoritative_completion(completed: bool | None) -> None:
+    """扫描数相同但整体终态不同，不能把部分处理报告为完成。"""
+
+    from app.services.raw_replay import RawReplayNotFound, RawReplayOutcome
+
+    raw = payload([{"customId": "one"}, {"customId": "two"}])
+    record = RawReplayRecord(9, "report", b"cipher", hashlib.sha256(raw).hexdigest(), 1, False)
+    repository = FakeRepository(record)
+
+    class Processor(FakeProcessor):
+        async def process_existing(self, raw_id: int, data: object, **_: object) -> int:
+            repository.record = None if completed is None else replace(record, processed=completed)
+            return 2
+
+    service = RawReplayService(
+        repository, FakeCrypto(raw), Processor("report", []), FakeProcessor("reply", [])
+    )
+    if completed is None:
+        with pytest.raises(RawReplayNotFound):
+            await service.replay_for_operator(9, actor="admin01", ip="10.0.0.8", principal=ADMIN)
+    else:
+        result = await service.replay_for_operator(
+            9, actor="admin01", ip="10.0.0.8", principal=ADMIN
+        )
+        assert result == RawReplayOutcome(processed_items=2, processed=completed)
+    assert repository.audits[0]["items"] == 2
 
 
 class FakeReportRepository:
@@ -369,9 +398,7 @@ async def test_unsupported_wire_encoding_remains_rejected_during_replay() -> Non
 
 @pytest.mark.asyncio
 async def test_human_replay_fails_closed_before_claim_when_actor_mismatches() -> None:
-    repository = FakeRepository(
-        RawReplayRecord(9, "report", b"x", "0" * 64, 1, False)
-    )
+    repository = FakeRepository(RawReplayRecord(9, "report", b"x", "0" * 64, 1, False))
     service = RawReplayService(
         repository,
         FakeCrypto(b""),
@@ -388,9 +415,7 @@ async def test_human_replay_fails_closed_before_claim_when_actor_mismatches() ->
 
 @pytest.mark.asyncio
 async def test_system_replay_rejects_human_principal_before_claim() -> None:
-    repository = FakeRepository(
-        RawReplayRecord(9, "reply", b"x", "0" * 64, 1, False)
-    )
+    repository = FakeRepository(RawReplayRecord(9, "reply", b"x", "0" * 64, 1, False))
     service = RawReplayService(
         repository,
         FakeCrypto(b""),

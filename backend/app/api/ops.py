@@ -246,6 +246,7 @@ class QueueResumeModel(BaseModel):
 
 class ReplayResultModel(BaseModel):
     processed_items: int
+    processed: bool
 
 
 class ReevaluateResultModel(BaseModel):
@@ -714,7 +715,7 @@ async def replay_raw(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ReplayResultModel:
     try:
-        count = await service.replay(
+        outcome = await service.replay_for_operator(
             id,
             actor=claims.login_name,
             ip=_ip(request),
@@ -724,7 +725,10 @@ async def replay_raw(
         raise ApiError(404, "NOT_FOUND", "原始报文不存在", None) from None
     except (RawReplayConflict, RawIntegrityConflict) as error:
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
-    return ReplayResultModel(processed_items=count)
+    return ReplayResultModel(
+        processed_items=outcome.processed_items,
+        processed=outcome.processed,
+    )
 
 
 @router.post(

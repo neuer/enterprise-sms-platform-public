@@ -31,6 +31,7 @@ from app.services.ops import (
 )
 from app.services.ops_repository import SqlOpsRepository
 from app.services.outbox import OutboxEventPage, OutboxEventRecord, OutboxStats
+from app.services.raw_replay import RawReplayOutcome
 
 NOW = datetime(2026, 7, 12, 8, 0, tzinfo=UTC)
 PUBLIC_ID = UUID("c0a80101-0000-4000-8000-000000000134")
@@ -172,16 +173,16 @@ class FakeReplay:
         self.calls: list[tuple[int, str, str, int, int]] = []
         self.reevaluations: list[tuple[int, str, str, int, int]] = []
 
-    async def replay(
+    async def replay_for_operator(
         self,
         raw_id: int,
         *,
         actor: str,
         ip: str,
         principal: SecurityPrincipal,
-    ) -> int:
+    ) -> RawReplayOutcome:
         self.calls.append((raw_id, actor, ip, principal.account_id, principal.identity_id))
-        return 3
+        return RawReplayOutcome(processed_items=3, processed=True)
 
     async def reevaluate(
         self,
@@ -370,7 +371,7 @@ def test_ops_writes_are_audited_and_return_contract_statuses() -> None:
     headers = {"Authorization": "Bearer admin.jwt"}
 
     replay = browser.post("/api/v1/web/admin/raw-logs/2/replay", headers=headers)
-    assert replay.status_code == 200 and replay.json() == {"processed_items": 3}
+    assert replay.status_code == 200 and replay.json() == {"processed_items": 3, "processed": True}
     trigger = browser.post("/api/v1/web/admin/jobs/poll_report/trigger", headers=headers)
     repeated = browser.post("/api/v1/web/admin/jobs/poll_report/trigger", headers=headers)
     assert trigger.status_code == 202

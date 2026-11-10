@@ -560,6 +560,14 @@ async def test_sms_accept_http_replays_empty_and_nonempty_raw(
     unmatched_raw = await store("report", [_report_item(unmatched_custom, "orphan")])
     reply_raw = await store("reply", [_reply_item(reply_custom, "收到")])
     optout_raw = await store("reply", [_reply_item(optout_custom, "退订")])
+    mixed_report = await store("report", [
+        _report_item(unmatched_custom, "orphan"),
+        _report_item(unmatched_custom, "bad") | {"reportStatus": True},
+    ])
+    mixed_reply = await store("reply", [
+        _reply_item(reply_custom, "收到"),
+        _reply_item(reply_custom, ""),
+    ])
     truncated_payload, truncated_digest, truncated_version = _seal(crypto, "report", [])
     truncated_raw = await _insert_raw(
         owner,
@@ -630,11 +638,27 @@ async def test_sms_accept_http_replays_empty_and_nonempty_raw(
                 correlation=correlation,
             )
             assert played.status_code == 200, played.text
+            assert played.json()["processed"] is True
             again = await _post(
                 client, f"/api/v1/web/admin/raw-logs/{raw_id}/replay", "proposer"
             )
             assert again.status_code == 409
             assert again.json()["code"] == "STATE_CONFLICT"
+
+        for raw_id in (mixed_report, mixed_reply):
+            # 重评估必须逐项校验，不能把合法包络中的坏条目放回自动队列。
+            evaluated = await _post(
+                client, f"/api/v1/web/admin/raw-logs/{raw_id}/reevaluate", "proposer"
+            )
+            assert evaluated.status_code == 200, evaluated.text
+            assert evaluated.json()["parse_state"] == "protocol_invalid"
+            assert evaluated.json()["replay_eligibility"] == "manual"
+            for _ in range(2):
+                partial = await _post(
+                    client, f"/api/v1/web/admin/raw-logs/{raw_id}/replay", "proposer"
+                )
+                assert partial.status_code == 200, partial.text
+                assert partial.json() == {"processed_items": 2, "processed": False}
 
         truncated = await _post(
             client, f"/api/v1/web/admin/raw-logs/{truncated_raw}/reevaluate", "proposer"
@@ -702,6 +726,11 @@ async def test_sms_accept_http_replays_empty_and_nonempty_raw(
         reply_empty = await raw_row(empty_reply)
         assert bool(reply_empty["processed"]) is True
         assert int(reply_empty["item_count"]) == 0
+        for raw_id in (mixed_report, mixed_reply):
+            partial_row = await raw_row(raw_id)
+            assert bool(partial_row["processed"]) is False
+            assert partial_row["parse_state"] == "protocol_invalid"
+            assert partial_row["replay_eligibility"] == "manual"
 
         projection = (
             await connection.execute(

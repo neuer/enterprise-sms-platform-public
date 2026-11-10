@@ -68,7 +68,7 @@ function response(body: unknown, status = 200) {
 
 function result(url: string, method: string): unknown {
   if (method === "POST") {
-    if (url.includes("/replay")) return { processed_items: 3 }
+    if (url.includes("/replay")) return { processed_items: 3, processed: true }
     if (url.includes("/reevaluate")) {
       return { parse_state: "unattempted", replay_eligibility: "automatic", reason: "unattempted", parser_version: 1 }
     }
@@ -280,6 +280,33 @@ function vnodeText(node: unknown): string {
 }
 
 describe("统一运维中心", () => {
+  it.each([true, false])("重放按权威 processed=%s 区分整体完成与部分处理，并刷新列表", async (processed) => {
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      if (input.endsWith("/replay")) return response({ processed_items: 5, processed })
+      return response(result(input, init?.method || "GET"))
+    })
+    vi.stubGlobal("fetch", fetch)
+    vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
+    const success = vi.spyOn(ElMessage, "success").mockClear()
+    const warning = vi.spyOn(ElMessage, "warning").mockClear()
+    const wrapper = await mountOps({ tab: "raw" })
+    await flushPromises()
+    await wrapper
+      .findAll("button")
+      .find((item) => item.text() === "重放")!
+      .trigger("click")
+    await flushPromises()
+    if (processed) {
+      expect(success).toHaveBeenCalledWith("重放完成，处理 5 项 · 本次操作已记入审计")
+      expect(warning).not.toHaveBeenCalled()
+    } else {
+      expect(warning).toHaveBeenCalledWith("已检查 5 项，报文仍未全部处理，请查看错误摘要 · 本次操作已记入审计")
+      expect(success).not.toHaveBeenCalled()
+    }
+    expect(fetch.mock.calls.filter(([url]) => url.includes("/raw-logs?"))).toHaveLength(2)
+    wrapper.unmount()
+  })
+
   it("按 Tab 懒加载并执行确认式 raw 重放和任务触发", async () => {
     const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
     vi.stubGlobal("fetch", fetch)

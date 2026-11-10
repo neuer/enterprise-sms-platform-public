@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -10,7 +11,7 @@ import pytest
 from sqlalchemy.exc import OperationalError
 
 from app.core.auth.accounts import SecurityPrincipal
-from app.services.crypto import EncryptionContext
+from app.services.crypto import CryptoService, EncryptionContext
 from app.services.raw_parse import (
     ELIGIBILITY_AUTOMATIC,
     ELIGIBILITY_MANUAL,
@@ -42,6 +43,8 @@ from app.services.raw_spill import (
     CAPTURE_TRUNCATED,
     CAPTURE_UNKNOWN_LEGACY,
 )
+from app.services.reply_ingest import ReplyIngestService
+from app.services.report_ingest import ReportIngestService
 from app.vendor.zhihui import VendorApiError, VendorProtocolError
 
 ADMIN = SecurityPrincipal(1, 10, "admin01", "平台部", "admin")
@@ -76,8 +79,12 @@ class FakeReevaluateRepository:
         self.claim_calls: list[tuple[int, bool]] = []
 
     async def claim_raw_for_replay(
-        self, raw_id: int, *, allow_manual: bool = True,
-        principal: object = None, ip: str | None = None
+        self,
+        raw_id: int,
+        *,
+        allow_manual: bool = True,
+        principal: object = None,
+        ip: str | None = None,
     ) -> object:
         self.claim_calls.append((raw_id, allow_manual))
         if self.record is None:
@@ -380,13 +387,11 @@ async def test_parser_reevaluate_promotes_manual_json_after_successful_decode() 
     service = RawReplayService(
         repository,  # type: ignore[arg-type]
         FakeCrypto(raw),
-        object(),  # type: ignore[arg-type]
+        ReportIngestService(None, object(), object()),  # type: ignore[arg-type]
         object(),  # type: ignore[arg-type]
     )
 
-    disposition = await service.reevaluate(
-        11, actor="admin01", ip="10.0.0.8", principal=ADMIN
-    )
+    disposition = await service.reevaluate(11, actor="admin01", ip="10.0.0.8", principal=ADMIN)
 
     assert disposition.parse_state == PARSE_UNATTEMPTED
     assert disposition.replay_eligibility == ELIGIBILITY_AUTOMATIC
@@ -401,6 +406,73 @@ async def test_parser_reevaluate_promotes_manual_json_after_successful_decode() 
     assert repository.audits[0]["after"]["parser_version"] == RAW_PARSER_VERSION
     assert repository.audits[0]["account_id"] == 1
     assert "phone" not in str(repository.audits).casefold()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "patch"),
+    [
+        ("report", {}),
+        ("report", {"reportStatus": True}),
+        ("report", {"reportStatus": 8}),
+        ("report", {"reportTime": "2026-02-30T10:00:00+08:00"}),
+        ("report", {"phone": "invalid"}),
+        ("reply", {}),
+        ("reply", {"contents": ""}),
+        ("reply", {"contents": "x" * 501}),
+        ("reply", {"replyTime": "bad-time"}),
+        ("reply", {"phone": "invalid"}),
+    ],
+)
+async def test_reevaluate_checks_each_item_without_business_writes(
+    source: str, patch: dict[str, object]
+) -> None:
+    """包络正常不等于条目合法；重评估不调用任何仓库写入方法。"""
+
+    item: dict[str, object] = {
+        "taskId": "semantic-test",
+        "customId": "semantic-custom",
+        "phone": "13800138000",
+        "reportStatus": 1,
+        "reportDescription": "DELIVRD",
+        "reportTime": "2026-11-10T10:00:00+08:00",
+        "contents": "收到",
+        "replyTime": "2026-11-10T10:00:00+08:00",
+    }
+    raw = json.dumps({"code": 0, "msg": "ok", "data": [item, item | patch]}).encode()
+    repository = FakeReevaluateRepository(
+        RawReplayRecord(
+            12,
+            source,
+            b"cipher",
+            hashlib.sha256(raw).hexdigest(),
+            1,
+            False,
+            parse_state=PARSE_PROTOCOL_INVALID,
+            replay_eligibility=ELIGIBILITY_MANUAL,
+        )
+    )
+    key = base64.b64encode(b"s" * 32).decode()
+    crypto = CryptoService.from_secret_values(key, key)
+    # object() 没有任何仓库方法，若验证路径投影业务，本测试立即失败。
+    service = RawReplayService(
+        repository,
+        FakeCrypto(raw),
+        ReportIngestService(None, object(), crypto),  # type: ignore[arg-type]
+        ReplyIngestService(None, object(), crypto),  # type: ignore[arg-type]
+    )
+    disposition = await service.reevaluate(12, actor="admin01", ip="10.0.0.8", principal=ADMIN)
+    if patch:
+        assert disposition.parse_state == PARSE_PROTOCOL_INVALID
+        assert disposition.replay_eligibility == ELIGIBILITY_MANUAL
+        assert (
+            repository.updates[0]["error"] == "VendorProtocolError: vendor response parsing failed"
+        )
+    else:
+        assert disposition.parse_state == PARSE_UNATTEMPTED
+        assert disposition.replay_eligibility == ELIGIBILITY_AUTOMATIC
+    assert repository.claim_calls == []
+    assert "13800138000" not in str(repository.updates) + str(repository.audits)
 
 
 @pytest.mark.asyncio
@@ -429,9 +501,7 @@ async def test_parser_reevaluate_keeps_http_never_and_refuses_truncated() -> Non
         object(),  # type: ignore[arg-type]
         object(),  # type: ignore[arg-type]
     )
-    disposition = await service.reevaluate(
-        12, actor="admin01", ip="10.0.0.8", principal=ADMIN
-    )
+    disposition = await service.reevaluate(12, actor="admin01", ip="10.0.0.8", principal=ADMIN)
     assert disposition.replay_eligibility == ELIGIBILITY_NEVER
     assert disposition.reason == "http_status"
     assert http_repo.updates[0]["error"] == "VendorProtocolError: vendor HTTP status 500"
@@ -498,9 +568,7 @@ async def test_parser_reevaluate_keeps_processed_never() -> None:
         object(),  # type: ignore[arg-type]
     )
 
-    disposition = await service.reevaluate(
-        14, actor="admin01", ip="10.0.0.8", principal=ADMIN
-    )
+    disposition = await service.reevaluate(14, actor="admin01", ip="10.0.0.8", principal=ADMIN)
 
     assert disposition.parse_state == PARSE_PROCESSED
     assert disposition.replay_eligibility == ELIGIBILITY_NEVER

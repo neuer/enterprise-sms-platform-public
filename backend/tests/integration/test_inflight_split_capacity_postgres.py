@@ -206,8 +206,9 @@ async def _attempt_snapshot(engine: Any, chunk_id: int) -> dict[str, Any]:
 async def _seed_parent(
     engine: Any,
     *,
-    app_id: int,
+    app_id: int | None,
     limit: int,
+    channel: str = "api",
     status: str = "submitting",
     phones: int = 4,
 ) -> tuple[int, int, ChunkPayload]:
@@ -220,7 +221,7 @@ async def _seed_parent(
             app_id=app_id,
             estimated=1,
             limit=limit,
-        )
+        ) if app_id is not None else None
         batch_id = int(
             (
                 await connection.execute(
@@ -231,7 +232,7 @@ async def _seed_parent(
                           display_content_enc,send_content_enc,status,total,
                           segments
                         ) VALUES(
-                          :batch_no,'notice','api',:app_id,'平台部','[encrypted]',
+                          :batch_no,'notice',:channel,:app_id,'平台部','[encrypted]',
                           :cipher,:cipher,'sending',:phones,1
                         ) RETURNING id
                         """
@@ -239,19 +240,21 @@ async def _seed_parent(
                     {
                         "batch_no": batch_no,
                         "app_id": app_id,
+                        "channel": channel,
                         "cipher": b"synthetic-ciphertext",
                         "phones": phones,
                     },
                 )
             ).scalar_one()
         )
-        await bind_in_flight_reservation(
-            connection,
-            reservation_id=reserved.id,
-            generation=reserved.generation,
-            batch_id=batch_id,
-            app_id=app_id,
-        )
+        if reserved is not None:
+            await bind_in_flight_reservation(
+                connection,
+                reservation_id=reserved.id,
+                generation=reserved.generation,
+                batch_id=batch_id,
+                app_id=app_id,
+            )
         chunk_id = int(
             (
                 await connection.execute(
@@ -310,12 +313,13 @@ async def _seed_parent(
                     "phone_mask": "138****0000",
                 },
             )
-        await materialize_in_flight_reservation(
-            connection,
-            batch_id=batch_id,
-            actual_chunks=1,
-            limit=limit,
-        )
+        if reserved is not None:
+            await materialize_in_flight_reservation(
+                connection,
+                batch_id=batch_id,
+                actual_chunks=1,
+                limit=limit,
+            )
     payload = ChunkPayload(
         chunk_id=chunk_id,
         batch_id=batch_id,
@@ -325,7 +329,7 @@ async def _seed_parent(
         template_id="",
         sign_name="",
     )
-    return reserved.id, chunk_id, payload
+    return reserved.id if reserved is not None else 0, chunk_id, payload
 
 
 @pytest_asyncio.fixture
@@ -344,6 +348,80 @@ async def split_env() -> Any:
             event.remove(sync_engine, "begin", _set_audit_transaction_context)
             sync_engine._sms_inflight_audit_begin = False
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["submitting", "split_capacity_blocked"])
+async def test_web_without_app_splits_once_and_recovers_existing_blocked_chunk(
+    split_env: Any, status: str,
+) -> None:
+    """无应用 Web 批次无需应用预留；历史容量阻塞也能由原恢复器接续。"""
+    engine = split_env
+    _, parent_id, payload = await _seed_parent(
+        engine, app_id=None, limit=1, channel="web", status=status,
+    )
+    if status == "split_capacity_blocked":
+        with correlation_scope(uuid4()):
+            async with engine.begin() as connection:
+                await retry_capacity_blocked_splits(connection)
+
+    async def split() -> list[int]:
+        with correlation_scope(uuid4()):
+            async with engine.begin() as connection:
+                return await complete_vendor_split(connection, payload)
+
+    first, second = await asyncio.gather(split(), split())
+    assert first == second and len(first) == 2
+    assert await _chunk_status(engine, parent_id) == "failed"
+    # 即便调用者忘记携带父片信息，仓储仍以数据库身份阻止子片再次拆分。
+    with correlation_scope(uuid4()):
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE sms_chunk SET status='submitting' WHERE id=:id"),
+                {"id": first[0]},
+            )
+            child_payload = ChunkPayload(
+                first[0], payload.batch_id, "child", ("a", "b"), "", "", "",
+            )
+            assert await complete_vendor_split(connection, child_payload) == []
+    async with engine.connect() as connection:
+        assert await connection.scalar(
+            text("SELECT count(*) FROM sms_chunk WHERE batch_id=:id"),
+            {"id": payload.batch_id},
+        ) == 3
+        assert await connection.scalar(
+            text("SELECT count(*) FROM send_inflight_reservation WHERE batch_id=:id"),
+            {"id": payload.batch_id},
+        ) == 0
+        allocation = (await connection.execute(
+            text("SELECT sum(recipient_count),sum(segment_count),sum(request_count) "
+                 "FROM usage_chunk_allocation WHERE batch_id=:id"),
+            {"id": payload.batch_id},
+        )).one()
+        assert tuple(allocation) == (4, 4, 1)
+        assert await connection.scalar(
+            text("SELECT count(*) FROM outbox_event WHERE event_type='chunk.ready' "
+                 "AND aggregate_id=ANY(:ids)"),
+            {"ids": [str(item) for item in first]},
+        ) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel, has_app", [("api", False), ("web", True)])
+async def test_split_web_exception_does_not_bypass_unproven_or_app_bound_capacity(
+    split_env: Any, channel: str, has_app: bool,
+) -> None:
+    engine = split_env
+    app_id = await _insert_app(engine, uuid4().hex[:16], limit=1) if has_app else None
+    _, parent_id, payload = await _seed_parent(
+        engine, app_id=app_id, limit=1, channel=channel,
+    )
+    with correlation_scope(uuid4()):
+        async with engine.begin() as connection:
+            assert await complete_vendor_split(connection, payload) == []
+    assert await _chunk_status(engine, parent_id) == "split_capacity_blocked"
+    if app_id is not None:
+        assert await _balance(engine, app_id) == 1
 
 
 @pytest.mark.asyncio

@@ -3894,9 +3894,10 @@ components:
 
     ReplayResultModel:
       type: object
-      required: [processed_items]
+      required: [processed_items, processed]
       properties:
-        processed_items: { type: integer }
+        processed_items: { type: integer, description: 本次扫描的条目数，兼容字段；不表示全部解析成功 }
+        processed: { type: boolean, description: 数据库确认整份 raw 已处理；false 时仍有未完成解析，不得展示全部成功 }
 
     ReevaluateResultModel:
       type: object
