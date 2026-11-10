@@ -49,6 +49,7 @@ from app.vendor.identifiers import (
 )
 from app.vendor.zhihui import (
     RawPulledPayload,
+    VendorProtocolError,
     VendorResponseTooLarge,
     decode_pulled_payload,
 )
@@ -614,6 +615,17 @@ class ReportIngestService:
             detail={"raw_id": raw_id, "skipped_count": skipped, "source": source},
             dedup_key=f"raw_item_skipped:{source}:{raw_id}",
         )
+
+    def validate_existing(self, data: object) -> None:
+        """重评估复用当前逐项解析器，只在内存校验，不写业务事实。"""
+
+        if not isinstance(data, list) or any(not isinstance(item, dict) for item in data):
+            raise VendorProtocolError("GetReport.data must be an object array")
+        for item in data:
+            try:
+                self._parse(item)
+            except (ValueError, KeyError, TypeError):
+                raise VendorProtocolError("vendor report item parsing failed") from None
 
     def _parse(self, item: dict[str, Any]) -> ProtectedReport:
         value = _normalized(item)

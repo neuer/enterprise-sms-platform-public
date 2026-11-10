@@ -148,7 +148,8 @@ def test_payload_sql_select_list_is_well_formed() -> None:
 
 
 @pytest.mark.asyncio
-async def test_payload_carries_persisted_retry_count() -> None:
+@pytest.mark.parametrize("parent_chunk_id", [None, 3])
+async def test_payload_carries_persisted_retry_count(parent_chunk_id: int | None) -> None:
     class FakeCrypto:
         def decrypt_phone(
             self,
@@ -182,6 +183,7 @@ async def test_payload_carries_persisted_retry_count() -> None:
                     "batch_no": "batch-1",
                     "custom_id": "custom-1 ",
                     "retry_count": 4,
+                    "parent_chunk_id": parent_chunk_id,
                     "send_content_enc": b"content",
                     "sign_name": "青鸾",
                     "vendor_template_id": None,
@@ -202,7 +204,9 @@ async def test_payload_carries_persisted_retry_count() -> None:
     payload = await store._payload(connection, 7)  # type: ignore[arg-type]
 
     assert payload.retry_count == 4
+    assert payload.parent_chunk_id == parent_chunk_id
     assert "c.retry_count" in connection.calls[0][0]
+    assert "c.parent_chunk_id" in connection.calls[0][0]
 
 
 @pytest.mark.asyncio

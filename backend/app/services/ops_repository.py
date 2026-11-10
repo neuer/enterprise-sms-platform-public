@@ -1041,8 +1041,8 @@ class SqlOpsRepository:
     async def list_unmatched(self, query: UnmatchedQuery) -> OpsPage[UnmatchedRecord]:
         where = """
           (:has_phone=false OR phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[])))
-          AND (CAST(:start AS timestamptz) IS NULL OR created_at>=:start)
-          AND (CAST(:end AS timestamptz) IS NULL OR created_at<=:end)
+          AND (CAST(:start AS timestamptz) IS NULL OR report_time>=:start)
+          AND (CAST(:end AS timestamptz) IS NULL OR report_time<=:end)
         """
         params = self._page_params(query.page, query.page_size) | {
             "has_phone": bool(query.phone_hmacs),

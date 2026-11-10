@@ -50,7 +50,7 @@ class ChunkPayloadMixin:
             text(
                 """
                 SELECT c.id chunk_id, c.batch_id, c.custom_id,c.retry_count,
-                       c.status chunk_status,
+                       c.status chunk_status, c.parent_chunk_id,
                        COALESCE(c.selected_vendor,'zhihui') selected_vendor,
                        COALESCE(c.route_generation,1) route_generation,
                        c.next_vendor, COALESCE(c.route_policy_version,1) route_policy_version,
@@ -132,6 +132,9 @@ class ChunkPayloadMixin:
             route_generation=max(1, int(row.get("route_generation") or 1)),
             category=str(row.get("category") or "notice"),
             is_test=bool(row["is_test"]),
+            parent_chunk_id=(
+                int(row["parent_chunk_id"]) if row.get("parent_chunk_id") is not None else None
+            ),
             status=str(row.get("chunk_status") or "pending"),
             next_vendor=(str(row["next_vendor"]) if row.get("next_vendor") is not None else None),
             route_policy_version=max(1, int(row.get("route_policy_version") or 1)),

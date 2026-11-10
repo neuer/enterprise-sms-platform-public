@@ -3806,8 +3806,8 @@ components:
       type: object
       properties:
         phone: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] }
-        start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-        end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        start: { description: "报告时间下界（含），按 report_time 过滤，须带时区", anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        end: { description: "报告时间上界（含），按 report_time 过滤，须带时区", anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         page: { type: integer, minimum: 1, maximum: 1000000, default: 1 }
         page_size: { type: integer, minimum: 1, maximum: 100, default: 20 }
 
@@ -3815,8 +3815,8 @@ components:
       type: object
       properties:
         phone: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }] }
-        start: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
-        end: { anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        start: { description: "报告时间下界（含），按 report_time 过滤，须带时区", anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
+        end: { description: "报告时间上界（含），按 report_time 过滤，须带时区", anyOf: [{ type: string, format: date-time }, { type: 'null' }] }
         decrypted: { type: boolean, default: false }
 
     JobModel:
@@ -3894,9 +3894,10 @@ components:
 
     ReplayResultModel:
       type: object
-      required: [processed_items]
+      required: [processed_items, processed]
       properties:
-        processed_items: { type: integer }
+        processed_items: { type: integer, description: 本次扫描的条目数，兼容字段；不表示全部解析成功 }
+        processed: { type: boolean, description: 数据库确认整份 raw 已处理；false 时仍有未完成解析，不得展示全部成功 }
 
     ReevaluateResultModel:
       type: object

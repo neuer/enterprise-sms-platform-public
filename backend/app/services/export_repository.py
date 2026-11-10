@@ -114,9 +114,9 @@ def _message_where() -> str:
 
 def _unmatched_where() -> str:
     return """
-      (CAST(:start AS timestamptz) IS NULL OR u.created_at>=:start)
-      AND (CAST(:end AS timestamptz) IS NULL OR u.created_at<=:end)
-      AND (CAST(:end_exclusive AS timestamptz) IS NULL OR u.created_at<:end_exclusive)
+      (CAST(:start AS timestamptz) IS NULL OR u.report_time>=:start)
+      AND (CAST(:end AS timestamptz) IS NULL OR u.report_time<=:end)
+      AND (CAST(:end_exclusive AS timestamptz) IS NULL OR u.report_time<:end_exclusive)
       AND (:has_phone=false OR
         u.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[])))
     """

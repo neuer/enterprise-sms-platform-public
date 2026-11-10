@@ -35,7 +35,10 @@ async def complete_vendor_split(
         raise InFlightInvariantViolation("split", "incomplete children")
     parent_status = (
         await connection.execute(
-            text("SELECT status FROM sms_chunk WHERE id=:id FOR UPDATE"),
+            text(
+                "SELECT status FROM sms_chunk "
+                "WHERE id=:id AND parent_chunk_id IS NULL FOR UPDATE"
+            ),
             {"id": chunk.chunk_id},
         )
     ).scalar_one_or_none()
@@ -47,8 +50,10 @@ async def complete_vendor_split(
         {"id": chunk.batch_id},
     )
     app_limit = await _split_app_limit(connection, chunk.batch_id)
-    expanded = False
-    if app_limit is not None:
+    # 普通 Web 发送从受理开始就不持有应用在途预留；不能把没有应用
+    # 误判为容量不足。绑定应用的系统补发仍走同一应用容量守卫。
+    expanded = app_limit == 0
+    if app_limit is not None and app_limit > 0:
         from app.services.pipeline import InFlightLimitExceeded
         from app.services.send_inflight import (
             InFlightInvariantViolation,
@@ -144,13 +149,16 @@ async def _existing_split_children(
 
 
 async def _split_app_limit(connection: AsyncConnection, batch_id: int) -> int | None:
+    """0 仅表示无应用 Web 批次；其它无法确认的应用容量保持失败关闭。"""
+
     row = (
         await connection.execute(
             text(
                 """
-                SELECT a.max_in_flight_chunks
+                SELECT CASE WHEN b.channel='web' AND b.app_id IS NULL THEN 0
+                       ELSE a.max_in_flight_chunks END
                 FROM sms_batch b
-                JOIN app a ON a.id=b.app_id
+                LEFT JOIN app a ON a.id=b.app_id
                 WHERE b.id=:batch_id
                 """
             ),
@@ -159,7 +167,7 @@ async def _split_app_limit(connection: AsyncConnection, batch_id: int) -> int | 
     ).scalar_one_or_none()
     if row is None:
         return None
-    return max(1, int(row))
+    return max(0, int(row))
 
 
 async def _settle_split_vendor_attempt(

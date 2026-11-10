@@ -896,6 +896,24 @@ async def test_vendor_reflection_is_replaced_before_chunk_persistence() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("is_child", [False, True])
+async def test_1006_unsplittable_or_reloaded_child_is_terminal(is_child: bool) -> None:
+    """单号码无法再折半；子片从 Outbox 重载也不能重新获得拆分次数。"""
+    store = FakeStore()
+    original = ChunkPayload(
+        3, 2, "a" * 32,
+        ("13800138000", "13900139000") if is_child else ("13800138000",),
+        "通知", "", "", parent_chunk_id=1 if is_child else None,
+    )
+    gateway = FakeGateway([VendorApiError(1006, "too many"), "should-not-run"])
+    outcome = await SendWorker(gateway, store, FakeBucket()).submit(original, lane="realtime")
+    assert outcome is SubmitOutcome.FAILED
+    assert gateway.calls == 1
+    assert ("failed", (3, 1006)) in store.events
+    assert not any(event[0] == "split" for event in store.events)
+
+
+@pytest.mark.asyncio
 async def test_1006_splits_once_and_submits_children() -> None:
     store = FakeStore()
     original = ChunkPayload(3, 2, "a" * 32, ("13800138000", "13900139000"), "通知", "", "")

@@ -412,7 +412,8 @@ async def test_export_half_open_day_includes_fractional_last_second(dataset):
     alias = "m" if dataset == "message" else "u"
     predicate = _message_where() if dataset == "message" else _unmatched_where()
     query = f"""SELECT {alias}.created_at FROM (
-      SELECT stamp AS created_at, ''::text AS phone_hmac, ''::text AS status
+      SELECT stamp AS created_at, stamp AS report_time,
+             ''::text AS phone_hmac, ''::text AS status
       FROM (VALUES ('2026-01-31 23:59:59.999999+08'::timestamptz),
                    ('2026-02-01 00:00:00+08'::timestamptz)) moments(stamp)
     ) {alias} CROSS JOIN (SELECT ''::text AS dept, ''::text AS category,

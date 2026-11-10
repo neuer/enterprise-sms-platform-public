@@ -221,6 +221,7 @@ class ChunkPayload:
     route_policy_version: int = ROUTE_POLICY_VERSION
     failover_from_attempt_id: int | None = None
     is_test: bool = False
+    parent_chunk_id: int | None = None
 
 
 class Gateway(Protocol):
@@ -787,7 +788,12 @@ class SendWorker:
                 vendor_code=error.code,
             )
             return SubmitOutcome.RETRY_SCHEDULED
-        if policy.shrink_batch_once and allow_split:
+        if (
+            policy.shrink_batch_once
+            and allow_split
+            and len(chunk.phones) > 1
+            and chunk.parent_chunk_id is None
+        ):
             children = await self.store.split_once(chunk)
             if children:
                 for child in children:

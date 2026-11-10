@@ -246,6 +246,7 @@ class QueueResumeModel(BaseModel):
 
 class ReplayResultModel(BaseModel):
     processed_items: int
+    processed: bool
 
 
 class ReevaluateResultModel(BaseModel):
@@ -290,18 +291,22 @@ class OutboxEventPageModel(PageModel):
     items: list[OutboxEventModel]
 
 
-class UnmatchedQueryModel(BaseModel):
+class UnmatchedFilterModel(BaseModel):
     phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
-    start: datetime | None = None
-    end: datetime | None = None
+    start: datetime | None = Field(
+        default=None, description="报告时间下界（含），按 report_time 过滤，须带时区"
+    )
+    end: datetime | None = Field(
+        default=None, description="报告时间上界（含），按 report_time 过滤，须带时区"
+    )
+
+
+class UnmatchedQueryModel(UnmatchedFilterModel):
     page: int = Field(default=1, ge=1, le=PAGE_MAX)
     page_size: int = Field(default=20, ge=1, le=100)
 
 
-class UnmatchedExportModel(BaseModel):
-    phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
-    start: datetime | None = None
-    end: datetime | None = None
+class UnmatchedExportModel(UnmatchedFilterModel):
     decrypted: bool = False
 
 
@@ -714,7 +719,7 @@ async def replay_raw(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> ReplayResultModel:
     try:
-        count = await service.replay(
+        outcome = await service.replay_for_operator(
             id,
             actor=claims.login_name,
             ip=_ip(request),
@@ -724,7 +729,10 @@ async def replay_raw(
         raise ApiError(404, "NOT_FOUND", "原始报文不存在", None) from None
     except (RawReplayConflict, RawIntegrityConflict) as error:
         raise ApiError(409, "STATE_CONFLICT", str(error), None) from None
-    return ReplayResultModel(processed_items=count)
+    return ReplayResultModel(
+        processed_items=outcome.processed_items,
+        processed=outcome.processed,
+    )
 
 
 @router.post(

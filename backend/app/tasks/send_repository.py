@@ -865,7 +865,7 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
             raise RuntimeError("vendor critical pause was not persisted")
 
     async def split_once(self, chunk: ChunkPayload) -> list[ChunkPayload]:
-        if len(chunk.phones) < 2:
+        if len(chunk.phones) < 2 or chunk.parent_chunk_id is not None:
             return []
         engine = self._engine()
         try:

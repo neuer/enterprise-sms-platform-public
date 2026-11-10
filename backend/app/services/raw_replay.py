@@ -73,6 +73,14 @@ class RawReplayClaim:
     lease: RawProcessingLease | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RawReplayOutcome:
+    """人工重放的扫描数量与数据库确认的整体完成状态。"""
+
+    processed_items: int
+    processed: bool
+
+
 class RawReplayRepository(Protocol):
     async def claim_raw_for_replay(
         self,
@@ -138,6 +146,8 @@ class RawCrypto(Protocol):
 
 
 class ExistingRawProcessor(Protocol):
+    def validate_existing(self, data: object) -> None: ...
+
     async def process_existing(
         self,
         raw_id: int,
@@ -327,6 +337,22 @@ class RawReplayService:
             )
         return count
 
+    async def replay_for_operator(
+        self,
+        raw_id: int,
+        *,
+        actor: str,
+        ip: str,
+        principal: SecurityPrincipal,
+    ) -> RawReplayOutcome:
+        """人工重放后读取权威终态，不能把扫描完毕当作全部解析成功。"""
+
+        count = await self.replay(raw_id, actor=actor, ip=ip, principal=principal)
+        record = await self.repository.load_raw_for_reevaluate(raw_id)
+        if record is None:
+            raise RawReplayNotFound(raw_id)
+        return RawReplayOutcome(processed_items=count, processed=record.processed)
+
     async def _write_system_audit(
         self,
         raw_id: int,
@@ -394,10 +420,12 @@ class RawReplayService:
             else:
                 operation = "GetReport" if record.source == "report" else "GetReply"
                 try:
-                    decode_pulled_payload(
+                    data = decode_pulled_payload(
                         RawPulledPayload(raw, record.http_status, record.content_encoding),
                         operation,
                     )
+                    processor = self.reports if record.source == "report" else self.replies
+                    processor.validate_existing(data)
                     decoded_ok = True
                 except VendorError as error:
                     decode_error = error

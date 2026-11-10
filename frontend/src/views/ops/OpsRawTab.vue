@@ -160,7 +160,11 @@ async function replay(item: RawLogItem): Promise<void> {
     )
       return
     const result = await replayRaw(item.id)
-    ElMessage.success(`重放完成，处理 ${result.processed_items} 项 · 本次操作已记入审计`)
+    if (result.processed) {
+      ElMessage.success(`重放完成，处理 ${result.processed_items} 项 · 本次操作已记入审计`)
+    } else {
+      ElMessage.warning(`已检查 ${result.processed_items} 项，报文仍未全部处理，请查看错误摘要 · 本次操作已记入审计`)
+    }
     await load("raw")
   } catch (error) {
     ElMessage.error(errorText(error, "重放失败"))

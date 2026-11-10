@@ -74,7 +74,7 @@ export function listRawLogs(query: RawLogQuery = {}, signal?: AbortSignal): Prom
 }
 
 export const replayRaw = (id: number) =>
-  apiRequest<{ processed_items: number }>(`/admin/raw-logs/${id}/replay`, { method: "POST" })
+  apiRequest<{ processed_items: number; processed: boolean }>(`/admin/raw-logs/${id}/replay`, { method: "POST" })
 
 export const reevaluateRaw = (id: number) =>
   apiRequest<RawReevaluateResult>(`/admin/raw-logs/${id}/reevaluate`, { method: "POST" })
