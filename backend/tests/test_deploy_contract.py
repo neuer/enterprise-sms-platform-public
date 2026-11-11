@@ -829,3 +829,11 @@ def test_lifecycle_partition_maintenance_stays_in_owner_migrate_boundary() -> No
 
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
     assert "COPY backend/scripts_support ./scripts_support" in dockerfile
+
+
+def test_independent_mailer_installs_the_api_retained_packages() -> None:
+    """mailer 与 API 同基础层，必须在断网步骤安装同一份保留的安全更新包。"""
+    mailer = (ROOT / "deploy/security-report/Dockerfile").read_text()
+    assert "RUN --network=none --mount=type=bind,source=deploy/vendor-apk/api" in mailer
+    assert "sh /install-retained-apk.sh" in mailer
+    assert "RUN apk add" not in mailer
