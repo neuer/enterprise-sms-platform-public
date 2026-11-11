@@ -6,13 +6,16 @@ Alpine 官方签名包，分别覆盖 x86_64 和 aarch64。构建根据基础层
 安装不查询镜像站、不添加签名密钥、不允许未信任包。只读 bind mount 不进入最终层。
 
 `manifest.json` 记录包名、版本、架构、上游仓库、许可证标识及取得日期。
-包来源为 Alpine 官方 dl-cdn 镜像；当前保留的 Web/PostgreSQL 包使用 v3.24/main。
+包来源为 Alpine 官方 dl-cdn 镜像；当前保留的 API/Web/PostgreSQL 包使用 v3.24/main。
 保留原始 APK 字节与其中的元数据，禁止解包重签或以其他架构包代替。
 
 Python/PostgreSQL 基础层固定到 Alpine 3.24.3，Redis 7 基础层固定到 Alpine 3.21.9，
 分别包含 musl 1.2.6-r3 / 1.2.5-r12 与 zlib 1.3.2-r1 安全修复。
 Redis 新基础层已包含 libcrypto3/libssl3 3.3.7-r2，故删除重复覆盖包。
 后端锁文件及 pyasn1 >=0.6.5 的依赖下限同时修复 ASN.1 解码拒绝服务问题。
+独立 mailer 与 API 使用同一 Python 基础层，共用 api 目录的保留包。
+API 与 PostgreSQL 基础层自带的 krb5-libs 由 1.22.3-r0 覆盖，Web 与 PostgreSQL 的 libxslt 由
+1.1.43-r4 覆盖；基础 digest 升级后若已包含修复，应删除确已多余的覆盖包。
 宿主 vendor-control-agent 使用独立持久 venv，必须单独更新、重启并读取实际版本；
 仅重建应用镜像不能替代宿主环境验收。
 

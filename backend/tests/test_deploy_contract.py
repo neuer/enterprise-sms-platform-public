@@ -51,7 +51,7 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
         "47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951" in frontend
     )
     assert "RUN apk add" not in backend
-    for dockerfile in (frontend, postgres):
+    for dockerfile in (backend, frontend, postgres):
         assert "RUN --network=none --mount=type=bind" in dockerfile
         assert "sh /install-retained-apk.sh" in dockerfile
         assert "RUN apk add" not in dockerfile
@@ -829,3 +829,11 @@ def test_lifecycle_partition_maintenance_stays_in_owner_migrate_boundary() -> No
 
     dockerfile = (ROOT / "backend/Dockerfile").read_text(encoding="utf-8")
     assert "COPY backend/scripts_support ./scripts_support" in dockerfile
+
+
+def test_independent_mailer_installs_the_api_retained_packages() -> None:
+    """mailer 与 API 同基础层，必须在断网步骤安装同一份保留的安全更新包。"""
+    mailer = (ROOT / "deploy/security-report/Dockerfile").read_text()
+    assert "RUN --network=none --mount=type=bind,source=deploy/vendor-apk/api" in mailer
+    assert "sh /install-retained-apk.sh" in mailer
+    assert "RUN apk add" not in mailer

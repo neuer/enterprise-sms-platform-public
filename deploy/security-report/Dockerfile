@@ -11,6 +11,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 ARG GIT_SHA=development
 LABEL org.opencontainers.image.revision="${GIT_SHA}"
 
+# Retained signed packages shared with the API (same Python/Alpine base); no mirror access.
+RUN --network=none --mount=type=bind,source=deploy/vendor-apk/api,target=/apks,ro \
+    --mount=type=bind,source=deploy/install-retained-apk.sh,target=/install-retained-apk.sh,ro \
+    sh /install-retained-apk.sh
+
 RUN adduser -D -u 10001 security-report \
     && sed -i 's/^security-report:!:[0-9]*:/security-report:!:0:/' /etc/shadow \
     && python -c "import ssl; assert ssl.create_default_context().get_ca_certs()"
