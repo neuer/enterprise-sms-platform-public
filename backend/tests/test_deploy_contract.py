@@ -51,7 +51,7 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
         "47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951" in frontend
     )
     assert "RUN apk add" not in backend
-    for dockerfile in (frontend, postgres):
+    for dockerfile in (backend, frontend, postgres):
         assert "RUN --network=none --mount=type=bind" in dockerfile
         assert "sh /install-retained-apk.sh" in dockerfile
         assert "RUN apk add" not in dockerfile

@@ -64,6 +64,18 @@
     {
       "component": "web",
       "architecture": "x86_64",
+      "filename": "libxslt-1.1.43-r4.apk",
+      "sha256": "40e6cc7d09ce1e69421c2b37e1da4e9afef486843f21c3a79339cd6d93c1c617",
+      "package": "libxslt",
+      "version": "1.1.43-r4",
+      "license": "X11",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-11-11"
+    },
+    {
+      "component": "web",
+      "architecture": "x86_64",
       "filename": "pcre2-10.49-r0.apk",
       "sha256": "2919897914820f42a17a8d7d37df310d2dfad1c82ebe5f539cc5c765f916752a",
       "package": "pcre2",
@@ -148,6 +160,18 @@
     {
       "component": "web",
       "architecture": "aarch64",
+      "filename": "libxslt-1.1.43-r4.apk",
+      "sha256": "1c67e25df3dd6b69d4dd1782428b98751d80ba4223167f4caac044d4d91d0666",
+      "package": "libxslt",
+      "version": "1.1.43-r4",
+      "license": "X11",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-11-11"
+    },
+    {
+      "component": "web",
+      "architecture": "aarch64",
       "filename": "pcre2-10.49-r0.apk",
       "sha256": "03efd0b29f7f38deb10a9ccb54f56e19683eb7ac27eb1f347e6dbd2e59ea000d",
       "package": "pcre2",
@@ -172,6 +196,30 @@
     {
       "component": "postgres",
       "architecture": "x86_64",
+      "filename": "krb5-libs-1.22.3-r0.apk",
+      "sha256": "fad5b46a953e6a37a1bb61a84538fa08ecb6a07816f439eb06f2735aebfcbfbf",
+      "package": "krb5-libs",
+      "version": "1.22.3-r0",
+      "license": "MIT",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-11-11"
+    },
+    {
+      "component": "postgres",
+      "architecture": "x86_64",
+      "filename": "libxslt-1.1.43-r4.apk",
+      "sha256": "40e6cc7d09ce1e69421c2b37e1da4e9afef486843f21c3a79339cd6d93c1c617",
+      "package": "libxslt",
+      "version": "1.1.43-r4",
+      "license": "X11",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-11-11"
+    },
+    {
+      "component": "postgres",
+      "architecture": "x86_64",
       "filename": "su-exec-0.3-r0.apk",
       "sha256": "4003163f58cd4a75df79973171d25e4912df4284d8bac9850ac267b58b969be5",
       "package": "su-exec",
@@ -184,6 +232,30 @@
     {
       "component": "postgres",
       "architecture": "aarch64",
+      "filename": "krb5-libs-1.22.3-r0.apk",
+      "sha256": "f62ef1b759878909fb173e87bf899de428a12c4d4a7a518619d3258e579c25a0",
+      "package": "krb5-libs",
+      "version": "1.22.3-r0",
+      "license": "MIT",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-11-11"
+    },
+    {
+      "component": "postgres",
+      "architecture": "aarch64",
+      "filename": "libxslt-1.1.43-r4.apk",
+      "sha256": "1c67e25df3dd6b69d4dd1782428b98751d80ba4223167f4caac044d4d91d0666",
+      "package": "libxslt",
+      "version": "1.1.43-r4",
+      "license": "X11",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-11-11"
+    },
+    {
+      "component": "postgres",
+      "architecture": "aarch64",
       "filename": "su-exec-0.3-r0.apk",
       "sha256": "e40ecb44d07d25686f0e0836f4990e7c47d5d44d8956bcb523f5cab9108dd156",
       "package": "su-exec",
@@ -192,6 +264,30 @@
       "repository": "v3.24/main",
       "origin": "dl-cdn.alpinelinux.org/alpine",
       "retrieved": "2026-10-11"
+    },
+    {
+      "component": "api",
+      "architecture": "x86_64",
+      "filename": "krb5-libs-1.22.3-r0.apk",
+      "sha256": "fad5b46a953e6a37a1bb61a84538fa08ecb6a07816f439eb06f2735aebfcbfbf",
+      "package": "krb5-libs",
+      "version": "1.22.3-r0",
+      "license": "MIT",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-11-11"
+    },
+    {
+      "component": "api",
+      "architecture": "aarch64",
+      "filename": "krb5-libs-1.22.3-r0.apk",
+      "sha256": "f62ef1b759878909fb173e87bf899de428a12c4d4a7a518619d3258e579c25a0",
+      "package": "krb5-libs",
+      "version": "1.22.3-r0",
+      "license": "MIT",
+      "repository": "v3.24/main",
+      "origin": "dl-cdn.alpinelinux.org/alpine",
+      "retrieved": "2026-11-11"
     }
   ]
 }

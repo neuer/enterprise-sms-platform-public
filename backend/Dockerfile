@@ -27,6 +27,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:$PATH"
 
+# Retained signed packages; installation never consults a mutable mirror.
+RUN --network=none --mount=type=bind,source=deploy/vendor-apk/api,target=/apks,ro \
+    --mount=type=bind,source=deploy/install-retained-apk.sh,target=/install-retained-apk.sh,ro \
+    sh /install-retained-apk.sh
+
 RUN adduser -D -u 10001 sms \
     && sed -i 's/^sms:!:[0-9]*:/sms:!:0:/' /etc/shadow \
     && mkdir -p \

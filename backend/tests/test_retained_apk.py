@@ -20,7 +20,7 @@ def test_retained_packages_match_complete_dual_architecture_manifest() -> None:
     checksums: dict[Path, list[str]] = {}
     for record in manifest["packages"]:
         component, architecture = record["component"], record["architecture"]
-        assert component in {"web", "postgres"}
+        assert component in {"web", "postgres", "api"}
         assert architecture in {"x86_64", "aarch64"}
         assert record["origin"] == "dl-cdn.alpinelinux.org/alpine"
         assert record["repository"] == "v3.24/main"
@@ -37,7 +37,7 @@ def test_retained_packages_match_complete_dual_architecture_manifest() -> None:
             (record["package"], record["version"])
         )
     assert expected == set(ASSETS.glob("**/*.apk"))
-    assert set(components) == {"web", "postgres"}
+    assert set(components) == {"web", "postgres", "api"}
     for architectures in components.values():
         assert set(architectures) == {"x86_64", "aarch64"}
         assert architectures["x86_64"] == architectures["aarch64"]
@@ -86,6 +86,36 @@ def test_web_retains_fixed_expat_for_each_architecture(architecture: str) -> Non
         and record["package"] == "libexpat"
     ]
     assert versions == ["2.10.0-r0"]
+
+
+@pytest.mark.parametrize("architecture", ["x86_64", "aarch64"])
+@pytest.mark.parametrize("component", ["api", "postgres"])
+def test_krb5_libs_retained_for_images_that_ship_it(architecture: str, component: str) -> None:
+    """api 与 postgres 基础层自带的 krb5-libs 1.22.2-r1 有未修复缺陷，需 1.22.3-r0 覆盖。"""
+    manifest = json.loads((ASSETS / "manifest.json").read_text())
+    versions = [
+        record["version"]
+        for record in manifest["packages"]
+        if record["component"] == component
+        and record["architecture"] == architecture
+        and record["package"] == "krb5-libs"
+    ]
+    assert versions == ["1.22.3-r0"]
+
+
+@pytest.mark.parametrize("architecture", ["x86_64", "aarch64"])
+@pytest.mark.parametrize("component", ["web", "postgres"])
+def test_libxslt_retained_for_images_that_ship_it(architecture: str, component: str) -> None:
+    """web 与 postgres 基础层自带的 libxslt 1.1.43-r3 需 1.1.43-r4 覆盖。"""
+    manifest = json.loads((ASSETS / "manifest.json").read_text())
+    versions = [
+        record["version"]
+        for record in manifest["packages"]
+        if record["component"] == component
+        and record["architecture"] == architecture
+        and record["package"] == "libxslt"
+    ]
+    assert versions == ["1.1.43-r4"]
 
 
 @pytest.mark.parametrize(
