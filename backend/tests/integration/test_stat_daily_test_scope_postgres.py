@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.services.reporting import ReportFilterNotReady, ReportingService
 from app.services.reporting_repository import SqlReportingRepository
@@ -60,11 +60,11 @@ def _upgrade_statements() -> tuple[str, ...]:
     return tuple(module.UPGRADE_STATEMENTS)
 
 
-def _repositories() -> tuple[SqlStatsRepository, ReportingService]:
+def _repositories(engine: AsyncEngine) -> tuple[SqlStatsRepository, ReportingService]:
     stats = SqlStatsRepository()
     reporting = SqlReportingRepository()
-    stats._engine = _engine  # type: ignore[method-assign]
-    reporting._engine = _engine  # type: ignore[method-assign]
+    stats._engine = lambda: engine  # type: ignore[method-assign]
+    reporting._engine = lambda: engine  # type: ignore[method-assign]
     return stats, ReportingService(reporting)
 
 
@@ -244,7 +244,7 @@ async def test_layered_aggregate_filters_boundaries_and_concurrent_replace() -> 
     """5 条测试加 6 条普通按各自口径返回，空日完成，未补算的筛选明确未就绪。"""
 
     engine = _engine()
-    stats, service = _repositories()
+    stats, service = _repositories(engine)
     batch_ids: list[int] = []
     try:
         async with engine.begin() as connection:

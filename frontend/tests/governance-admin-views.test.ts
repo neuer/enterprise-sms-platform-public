@@ -26,12 +26,7 @@ async function authorizeOpenDialog(wrapper: VueWrapper) {
 }
 
 function response(body: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: { get: (name: string) => (name === "content-length" && body === undefined ? "0" : null) },
-    json: async () => body,
-  }
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
 }
 
 /** ElMessageBox.confirm 的消息为 h() VNode（lib/confirm.ts confirm-dialog），递归提取文本用于断言。 */
@@ -747,7 +742,7 @@ describe("管理员治理页面", () => {
   })
 
   it("新建抽屉按三段分组并对危险默认值就地警示", async () => {
-    const fetch = vi.fn().mockResolvedValue(response([app]))
+    const fetch = vi.fn().mockImplementation(async () => response([app]))
     vi.stubGlobal("fetch", fetch)
     const wrapper = mount(AppManagementView, {
       attachTo: document.body,
@@ -851,7 +846,7 @@ describe("管理员治理页面", () => {
   })
 
   it("频控覆盖只接受三个文档键和正整数", async () => {
-    const fetch = vi.fn().mockResolvedValue(response([app]))
+    const fetch = vi.fn().mockImplementation(async () => response([app]))
     vi.stubGlobal("fetch", fetch)
     const wrapper = mount(AppManagementView, {
       attachTo: document.body,

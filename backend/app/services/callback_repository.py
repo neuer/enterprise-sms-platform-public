@@ -224,22 +224,18 @@ class SqlCallbackRepository:
 
     async def callback_allow_cidrs(self) -> str:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text("SELECT value FROM sys_config WHERE key='callback_allow_cidrs'")
-                )
-                return str(result.scalar_one())
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT value FROM sys_config WHERE key='callback_allow_cidrs'")
+            )
+            return str(result.scalar_one())
 
     async def due_ids(self, limit: int = 100) -> list[int]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id FROM callback_task
                         WHERE status='pending'
                            OR (
@@ -255,12 +251,10 @@ class SqlCallbackRepository:
                         ),id
                         LIMIT :limit
                         """
-                    ),
-                    {"limit": limit},
-                )
-                return [int(value) for value in result.scalars()]
-        finally:
-            await engine.dispose()
+                ),
+                {"limit": limit},
+            )
+            return [int(value) for value in result.scalars()]
 
     async def list_page(
         self,
@@ -297,15 +291,14 @@ class SqlCallbackRepository:
             " LEFT JOIN callback_batch_event e ON e.task_id=t.id "
         )
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                total_result = await connection.execute(
-                    text("SELECT count(*)" + source + "WHERE " + where),
-                    params,
-                )
-                rows_result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            total_result = await connection.execute(
+                text("SELECT count(*)" + source + "WHERE " + where),
+                params,
+            )
+            rows_result = await connection.execute(
+                text(
+                    """
                         SELECT t.id,t.event_id,t.correlation_id,
                           t.app_id,a.name app_name,t.event,
                           trim(b.batch_no) batch_no,
@@ -315,27 +308,25 @@ class SqlCallbackRepository:
                           (t.lease_id IS NOT NULL AND t.lease_expires_at<=now()) stalled,
                           t.last_http_code,t.last_error,
                           t.created_at,t.finished_at, """
-                        + list_retry_columns()
-                        + ","
-                        + batch_events.finished_snapshot_column()
-                        + " AS finished_snapshot "
-                        + source
-                        + "WHERE "
-                        + where
-                        + " ORDER BY t.created_at DESC LIMIT :limit OFFSET :offset"
-                    ),
-                    params,
-                )
-                dead_result = await connection.execute(
-                    text("SELECT count(*) FROM callback_task WHERE status='dead'"),
-                )
-                return {
-                    "total": int(total_result.scalar_one()),
-                    "dead_total": int(dead_result.scalar_one()),
-                    "items": [dict(row) for row in rows_result.mappings()],
-                }
-        finally:
-            await engine.dispose()
+                    + list_retry_columns()
+                    + ","
+                    + batch_events.finished_snapshot_column()
+                    + " AS finished_snapshot "
+                    + source
+                    + "WHERE "
+                    + where
+                    + " ORDER BY t.created_at DESC LIMIT :limit OFFSET :offset"
+                ),
+                params,
+            )
+            dead_result = await connection.execute(
+                text("SELECT count(*) FROM callback_task WHERE status='dead'"),
+            )
+            return {
+                "total": int(total_result.scalar_one()),
+                "dead_total": int(dead_result.scalar_one()),
+                "items": [dict(row) for row in rows_result.mappings()],
+            }
 
     async def manual_retry(
         self,
@@ -344,19 +335,18 @@ class SqlCallbackRepository:
         principal: SecurityPrincipal,
     ) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                # 恢复保护状态前先锁批次，与幂等退役保持 batch → callback 的顺序。
-                await connection.execute(
-                    text("""
+        async with engine.begin() as connection:
+            # 恢复保护状态前先锁批次，与幂等退役保持 batch → callback 的顺序。
+            await connection.execute(
+                text("""
                     SELECT public.lock_callback_idempotency_batch(:task_id)
                 """),
-                    {"task_id": task_id},
-                )
+                {"task_id": task_id},
+            )
 
-                result = await connection.execute(
-                    text(
-                        """
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE callback_task t SET status='pending',retry_count=0,
                           next_retry_at=NULL,last_http_code=NULL,last_error=NULL,
                           lease_id=NULL,lease_expires_at=NULL,finished_at=NULL
@@ -376,38 +366,36 @@ class SqlCallbackRepository:
                           )
                         RETURNING t.id
                         """
-                    ),
-                    {"task_id": task_id},
-                )
-                if result.scalar_one_or_none() is None:
-                    queried = await connection.execute(text(diagnosis_sql()), {"task_id": task_id})
-                    row = queried.mappings().one_or_none()
-                    if row is None:
-                        raise CallbackTaskNotFound("回调任务不存在")
-                    raise conflict_for_reason(row["retry_block_reason"])
-                await insert_audit(
-                    connection,
-                    AuditEvent(
-                        principal=principal,
-                        role=principal.role,
-                        action="callback_retry",
-                        object_type="callback_task",
-                        object_id=str(task_id),
-                        after={"status": "pending"},
-                    ),
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {"task_id": task_id},
+            )
+            if result.scalar_one_or_none() is None:
+                queried = await connection.execute(text(diagnosis_sql()), {"task_id": task_id})
+                row = queried.mappings().one_or_none()
+                if row is None:
+                    raise CallbackTaskNotFound("回调任务不存在")
+                raise conflict_for_reason(row["retry_block_reason"])
+            await insert_audit(
+                connection,
+                AuditEvent(
+                    principal=principal,
+                    role=principal.role,
+                    action="callback_retry",
+                    object_type="callback_task",
+                    object_id=str(task_id),
+                    after={"status": "pending"},
+                ),
+            )
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO worker_lease_event(
                           task_kind,task_id,event_type,lease_id
                         ) VALUES ('callback',:task_id,'manual_retry',NULL)
                         """
-                    ),
-                    {"task_id": task_id},
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {"task_id": task_id},
+            )
 
     async def claim(
         self,
@@ -419,11 +407,10 @@ class SqlCallbackRepository:
             raise ValueError("callback lease must be at least 3 seconds")
         lease_id = uuid4()
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         WITH candidate AS (
                           SELECT id,(lease_id IS NOT NULL) takeover
                           FROM callback_task
@@ -456,43 +443,41 @@ class SqlCallbackRepository:
                         )
                         SELECT * FROM claimed
                         """
-                    ),
-                    {
-                        "task_id": task_id,
-                        "lease_id": lease_id,
-                        "lease_seconds": lease_seconds,
-                    },
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return None
-                event_type = "takeover" if bool(row["takeover"]) else "acquired"
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "task_id": task_id,
+                    "lease_id": lease_id,
+                    "lease_seconds": lease_seconds,
+                },
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            event_type = "takeover" if bool(row["takeover"]) else "acquired"
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO worker_lease_event(
                           task_kind,task_id,event_type,lease_id
                         ) VALUES ('callback',:task_id,:event_type,:lease_id)
                         """
-                    ),
-                    {
-                        "task_id": task_id,
-                        "event_type": event_type,
-                        "lease_id": lease_id,
-                    },
-                )
-                return CallbackClaim(
-                    int(row["id"]),
-                    int(row["app_id"]),
-                    UUID(str(row["event_id"])),
-                    str(row["event"]),
-                    int(row["retry_count"]),
-                    UUID(str(row["lease_id"])),
-                    row["lease_expires_at"],
-                    UUID(str(row["correlation_id"])),
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "task_id": task_id,
+                    "event_type": event_type,
+                    "lease_id": lease_id,
+                },
+            )
+            return CallbackClaim(
+                int(row["id"]),
+                int(row["app_id"]),
+                UUID(str(row["event_id"])),
+                str(row["event"]),
+                int(row["retry_count"]),
+                UUID(str(row["lease_id"])),
+                row["lease_expires_at"],
+                UUID(str(row["correlation_id"])),
+            )
 
     async def heartbeat(
         self,
@@ -503,11 +488,10 @@ class SqlCallbackRepository:
     ) -> bool:
         engine = self._engine()
         renewed = False
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE callback_task
                         SET lease_expires_at=now()+make_interval(
                           secs=>:lease_seconds
@@ -516,6 +500,22 @@ class SqlCallbackRepository:
                           AND lease_id=:lease_id AND lease_expires_at>now()
                         RETURNING id
                         """
+                ),
+                {
+                    "task_id": task_id,
+                    "lease_id": lease_id,
+                    "lease_seconds": lease_seconds,
+                },
+            )
+            renewed = result.scalar_one_or_none() is not None
+            if renewed:
+                await connection.execute(
+                    text(
+                        """
+                            UPDATE callback_authority_lease
+                            SET expires_at=now()+make_interval(secs=>:lease_seconds)
+                            WHERE task_id=:task_id AND lease_id=:lease_id
+                            """
                     ),
                     {
                         "task_id": task_id,
@@ -523,24 +523,6 @@ class SqlCallbackRepository:
                         "lease_seconds": lease_seconds,
                     },
                 )
-                renewed = result.scalar_one_or_none() is not None
-                if renewed:
-                    await connection.execute(
-                        text(
-                            """
-                            UPDATE callback_authority_lease
-                            SET expires_at=now()+make_interval(secs=>:lease_seconds)
-                            WHERE task_id=:task_id AND lease_id=:lease_id
-                            """
-                        ),
-                        {
-                            "task_id": task_id,
-                            "lease_id": lease_id,
-                            "lease_seconds": lease_seconds,
-                        },
-                    )
-        finally:
-            await engine.dispose()
         if not renewed:
             await self._record_lease_event(task_id, "heartbeat_lost", lease_id)
         return renewed
@@ -575,11 +557,10 @@ class SqlCallbackRepository:
 
         engine = self._engine()
         deferred = False
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE callback_task SET status='retrying',
                           next_retry_at=now()+make_interval(secs=>:delay_s),
                           lease_id=NULL,lease_expires_at=NULL,
@@ -589,31 +570,29 @@ class SqlCallbackRepository:
                           AND lease_id=:lease_id AND lease_expires_at>now()
                         RETURNING id
                         """
+                ),
+                {
+                    "task_id": task_id,
+                    "lease_id": lease_id,
+                    "retry_count": retry_count,
+                    "delay_s": delay_s,
+                },
+            )
+            deferred = result.scalar_one_or_none() is not None
+            if deferred:
+                await enqueue_outbox(
+                    connection,
+                    OutboxEventSpec(
+                        event_type="callback.ready",
+                        aggregate_type="callback_task",
+                        aggregate_id=str(task_id),
+                        task_name="app.tasks.deliver_callback",
+                        queue="callback",
+                        args=(task_id,),
+                        dedup_key=f"callback:{task_id}:authority-busy:{lease_id}",
                     ),
-                    {
-                        "task_id": task_id,
-                        "lease_id": lease_id,
-                        "retry_count": retry_count,
-                        "delay_s": delay_s,
-                    },
+                    available_delay_seconds=delay_s,
                 )
-                deferred = result.scalar_one_or_none() is not None
-                if deferred:
-                    await enqueue_outbox(
-                        connection,
-                        OutboxEventSpec(
-                            event_type="callback.ready",
-                            aggregate_type="callback_task",
-                            aggregate_id=str(task_id),
-                            task_name="app.tasks.deliver_callback",
-                            queue="callback",
-                            args=(task_id,),
-                            dedup_key=f"callback:{task_id}:authority-busy:{lease_id}",
-                        ),
-                        available_delay_seconds=delay_s,
-                    )
-        finally:
-            await engine.dispose()
         if not deferred:
             await self._fencing_miss(task_id, lease_id)
 
@@ -629,11 +608,10 @@ class SqlCallbackRepository:
     ) -> None:
         engine = self._engine()
         next_retry: object | None = None
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE callback_task SET
                           status='retrying',retry_count=retry_count+1,
                           next_retry_at=now()+make_interval(secs=>:delay_s),
@@ -644,35 +622,33 @@ class SqlCallbackRepository:
                           AND lease_id=:lease_id AND lease_expires_at>now()
                         RETURNING retry_count
                         """
+                ),
+                {
+                    "task_id": task_id,
+                    "lease_id": lease_id,
+                    "retry_count": retry_count,
+                    "delay_s": delay_s,
+                    "http_code": http_code,
+                    "error": _safe_error(error),
+                },
+            )
+            next_retry = result.scalar_one_or_none()
+            if next_retry is not None:
+                assert isinstance(next_retry, int) and not isinstance(next_retry, bool)
+                await enqueue_outbox(
+                    connection,
+                    OutboxEventSpec(
+                        event_type="callback.ready",
+                        aggregate_type="callback_task",
+                        aggregate_id=str(task_id),
+                        task_name="app.tasks.deliver_callback",
+                        queue="callback",
+                        args=(task_id,),
+                        dedup_key=f"callback:{task_id}:attempt:{int(next_retry)}",
                     ),
-                    {
-                        "task_id": task_id,
-                        "lease_id": lease_id,
-                        "retry_count": retry_count,
-                        "delay_s": delay_s,
-                        "http_code": http_code,
-                        "error": _safe_error(error),
-                    },
+                    available_delay_seconds=delay_s,
+                    capacity_wait="callback_retry",
                 )
-                next_retry = result.scalar_one_or_none()
-                if next_retry is not None:
-                    assert isinstance(next_retry, int) and not isinstance(next_retry, bool)
-                    await enqueue_outbox(
-                        connection,
-                        OutboxEventSpec(
-                            event_type="callback.ready",
-                            aggregate_type="callback_task",
-                            aggregate_id=str(task_id),
-                            task_name="app.tasks.deliver_callback",
-                            queue="callback",
-                            args=(task_id,),
-                            dedup_key=f"callback:{task_id}:attempt:{int(next_retry)}",
-                        ),
-                        available_delay_seconds=delay_s,
-                        capacity_wait="callback_retry",
-                    )
-        finally:
-            await engine.dispose()
         if next_retry is None:
             await self._fencing_miss(task_id, lease_id)
 
@@ -687,11 +663,10 @@ class SqlCallbackRepository:
     ) -> None:
         engine = self._engine()
         updated = False
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE callback_task SET
                           status='dead',finished_at=now(),next_retry_at=NULL,
                           lease_id=NULL,lease_expires_at=NULL,
@@ -701,41 +676,36 @@ class SqlCallbackRepository:
                           AND lease_id=:lease_id AND lease_expires_at>now()
                         RETURNING id
                         """
-                    ),
-                    {
-                        "task_id": task_id,
-                        "lease_id": lease_id,
-                        "retry_count": retry_count,
-                        "http_code": http_code,
-                        "error": _safe_error(error),
-                    },
-                )
-                updated = result.scalar_one_or_none() is not None
-                if updated:
-                    await connection.execute(
-                        text(
-                            """
+                ),
+                {
+                    "task_id": task_id,
+                    "lease_id": lease_id,
+                    "retry_count": retry_count,
+                    "http_code": http_code,
+                    "error": _safe_error(error),
+                },
+            )
+            updated = result.scalar_one_or_none() is not None
+            if updated:
+                await connection.execute(
+                    text(
+                        """
                             INSERT INTO worker_lease_event(
                               task_kind,task_id,event_type,lease_id
                             ) VALUES ('callback',:task_id,'dead',:lease_id)
                             """
-                        ),
-                        {"task_id": task_id, "lease_id": lease_id},
-                    )
-        finally:
-            await engine.dispose()
+                    ),
+                    {"task_id": task_id, "lease_id": lease_id},
+                )
         if not updated:
             await self._fencing_miss(task_id, lease_id)
 
     async def _state_update(self, statement: str, params: dict[str, object]) -> None:
         engine = self._engine()
         updated = False
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(text(statement), params)
-                updated = result.scalar_one_or_none() is not None
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            result = await connection.execute(text(statement), params)
+            updated = result.scalar_one_or_none() is not None
         if not updated:
             task_id = params["task_id"]
             assert isinstance(task_id, int) and not isinstance(task_id, bool)
@@ -754,24 +724,21 @@ class SqlCallbackRepository:
         lease_id: UUID,
     ) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO worker_lease_event(
                           task_kind,task_id,event_type,lease_id
                         ) VALUES ('callback',:task_id,:event_type,:lease_id)
                         """
-                    ),
-                    {
-                        "task_id": task_id,
-                        "event_type": event_type,
-                        "lease_id": lease_id,
-                    },
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "task_id": task_id,
+                    "event_type": event_type,
+                    "lease_id": lease_id,
+                },
+            )
 
     async def load_material(
         self,
@@ -779,11 +746,10 @@ class SqlCallbackRepository:
         lease_id: UUID,
     ) -> CallbackMaterial | None:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                task_result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            task_result = await connection.execute(
+                text(
+                    """
                         SELECT t.id,t.event_id,t.correlation_id,t.app_id,a.name app_name,
                           t.event,t.url,t.batch_id,
                           t.message_ids,t.message_times,t.event_keys,t.callback_secret_enc,
@@ -798,42 +764,42 @@ class SqlCallbackRepository:
                             OR a.callback_report_enabled=true
                           )
                         """
-                    ),
-                    {"task_id": task_id, "lease_id": lease_id},
+                ),
+                {"task_id": task_id, "lease_id": lease_id},
+            )
+            row = task_result.mappings().one_or_none()
+            if row is None or row["batch_id"] is None:
+                return None
+            task = CallbackTaskRef(
+                task_id=int(row["id"]),
+                event_id=UUID(str(row["event_id"])),
+                correlation_id=UUID(str(row["correlation_id"])),
+                app_name=str(row["app_name"]),
+                event=str(row["event"]),
+                url=str(row["url"]),
+                callback_secret_enc=bytes(row["callback_secret_enc"]),
+                callback_secret_key_version=int(row["callback_secret_key_version"]),
+                signature_version=int(row["signature_version"]),
+                batch_id=int(row["batch_id"]),
+                message_ids=tuple(int(value) for value in row["message_ids"]),
+                message_times=tuple(row["message_times"]),
+            )
+            if task.event == "batch.finished":
+                batch_result = await connection.execute(
+                    text(batch_events.FINISHED_SNAPSHOT_SQL),
+                    {"task_id": task.task_id},
                 )
-                row = task_result.mappings().one_or_none()
-                if row is None or row["batch_id"] is None:
-                    return None
-                task = CallbackTaskRef(
-                    task_id=int(row["id"]),
-                    event_id=UUID(str(row["event_id"])),
-                    correlation_id=UUID(str(row["correlation_id"])),
-                    app_name=str(row["app_name"]),
-                    event=str(row["event"]),
-                    url=str(row["url"]),
-                    callback_secret_enc=bytes(row["callback_secret_enc"]),
-                    callback_secret_key_version=int(row["callback_secret_key_version"]),
-                    signature_version=int(row["signature_version"]),
-                    batch_id=int(row["batch_id"]),
-                    message_ids=tuple(int(value) for value in row["message_ids"]),
-                    message_times=tuple(row["message_times"]),
+                batch_row = batch_result.mappings().one_or_none()
+                if batch_row is None:
+                    raise batch_events.CallbackSnapshotUnavailable("批次终态缺少冻结汇总")
+                return CallbackMaterial(
+                    task,
+                    batch=batch_events.batch_from_snapshot(batch_row),
                 )
-                if task.event == "batch.finished":
-                    batch_result = await connection.execute(
-                        text(batch_events.FINISHED_SNAPSHOT_SQL),
-                        {"task_id": task.task_id},
-                    )
-                    batch_row = batch_result.mappings().one_or_none()
-                    if batch_row is None:
-                        raise batch_events.CallbackSnapshotUnavailable("批次终态缺少冻结汇总")
-                    return CallbackMaterial(
-                        task,
-                        batch=batch_events.batch_from_snapshot(batch_row),
-                    )
-                if task.event == "message.report":
-                    messages_result = await connection.execute(
-                        text(
-                            """
+            if task.event == "message.report":
+                messages_result = await connection.execute(
+                    text(
+                        """
                             WITH refs AS (
                               SELECT * FROM unnest(
                                 CAST(:message_ids AS bigint[]),
@@ -852,37 +818,35 @@ class SqlCallbackRepository:
                             JOIN sms_batch b ON b.id=m.batch_id
                             ORDER BY r.ord
                             """
+                    ),
+                    {
+                        "message_ids": list(task.message_ids),
+                        "message_times": list(task.message_times),
+                        "event_keys": list(row["event_keys"]),
+                    },
+                )
+                rows = list(messages_result.mappings())
+                if not rows:
+                    raise ValueError("callback message references unavailable")
+                return CallbackMaterial(
+                    task,
+                    message_report=MessageReportData(
+                        str(rows[0]["batch_no"]),
+                        str(rows[0]["biz_id"]) if rows[0]["biz_id"] is not None else None,
+                        tuple(
+                            CallbackMessage(
+                                bytes(item["phone_enc"]),
+                                str(item["phone_hmac"]),
+                                int(item["key_version"]),
+                                str(item["status"]),
+                                str(item["report_desc"] or ""),
+                                item["report_time"],
+                            )
+                            for item in rows
                         ),
-                        {
-                            "message_ids": list(task.message_ids),
-                            "message_times": list(task.message_times),
-                            "event_keys": list(row["event_keys"]),
-                        },
-                    )
-                    rows = list(messages_result.mappings())
-                    if not rows:
-                        raise ValueError("callback message references unavailable")
-                    return CallbackMaterial(
-                        task,
-                        message_report=MessageReportData(
-                            str(rows[0]["batch_no"]),
-                            str(rows[0]["biz_id"]) if rows[0]["biz_id"] is not None else None,
-                            tuple(
-                                CallbackMessage(
-                                    bytes(item["phone_enc"]),
-                                    str(item["phone_hmac"]),
-                                    int(item["key_version"]),
-                                    str(item["status"]),
-                                    str(item["report_desc"] or ""),
-                                    item["report_time"],
-                                )
-                                for item in rows
-                            ),
-                        ),
-                    )
-                raise ValueError("unsupported callback event")
-        finally:
-            await engine.dispose()
+                    ),
+                )
+            raise ValueError("unsupported callback event")
 
     async def acquire_authority(
         self,
@@ -892,31 +856,30 @@ class SqlCallbackRepository:
         """短事务内锁定 app 并登记最长 30 秒的在途权限租约。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                app_result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            app_result = await connection.execute(
+                text(
+                    """
                         SELECT t.app_id FROM callback_task t
                         WHERE t.id=:task_id
                         """
-                    ),
-                    {"task_id": task_id},
-                )
-                app_id = app_result.scalar_one_or_none()
-                if app_id is None:
-                    return False
-                await lock_callback_authority(connection, int(app_id))
-                await connection.execute(
-                    text(
-                        "DELETE FROM callback_authority_lease "
-                        "WHERE app_id=:app_id AND expires_at<=now()"
-                    ),
-                    {"app_id": app_id},
-                )
-                inserted = await connection.execute(
-                    text(
-                        """
+                ),
+                {"task_id": task_id},
+            )
+            app_id = app_result.scalar_one_or_none()
+            if app_id is None:
+                return False
+            await lock_callback_authority(connection, int(app_id))
+            await connection.execute(
+                text(
+                    "DELETE FROM callback_authority_lease "
+                    "WHERE app_id=:app_id AND expires_at<=now()"
+                ),
+                {"app_id": app_id},
+            )
+            inserted = await connection.execute(
+                text(
+                    """
                         INSERT INTO callback_authority_lease(
                           app_id,task_id,lease_id,expires_at
                         )
@@ -929,55 +892,49 @@ class SqlCallbackRepository:
                           AND (t.event<>'message.report' OR a.callback_report_enabled=true)
                         ON CONFLICT DO NOTHING RETURNING app_id
                         """
-                    ),
-                    {"task_id": task_id, "lease_id": lease_id},
-                )
-                if inserted.scalar_one_or_none() is not None:
-                    return True
-                busy = await connection.execute(
-                    text(
-                        "SELECT 1 FROM callback_authority_lease "
-                        "WHERE app_id=:app_id AND expires_at>now()"
-                    ),
-                    {"app_id": app_id},
-                )
-                if busy.scalar_one_or_none() is not None:
-                    raise CallbackAuthorityBusy("callback authority lease is busy")
-                return False
-        finally:
-            await engine.dispose()
+                ),
+                {"task_id": task_id, "lease_id": lease_id},
+            )
+            if inserted.scalar_one_or_none() is not None:
+                return True
+            busy = await connection.execute(
+                text(
+                    "SELECT 1 FROM callback_authority_lease "
+                    "WHERE app_id=:app_id AND expires_at>now()"
+                ),
+                {"app_id": app_id},
+            )
+            if busy.scalar_one_or_none() is not None:
+                raise CallbackAuthorityBusy("callback authority lease is busy")
+            return False
 
     async def release_authority(self, task_id: int, lease_id: UUID) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        "DELETE FROM callback_authority_lease "
-                        "WHERE task_id=:task_id AND lease_id=:lease_id"
-                    ),
-                    {"task_id": task_id, "lease_id": lease_id},
-                )
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM callback_authority_lease "
+                    "WHERE task_id=:task_id AND lease_id=:lease_id"
+                ),
+                {"task_id": task_id, "lease_id": lease_id},
+            )
 
     async def confirm_authority(self, task_id: int, lease_id: UUID) -> bool:
         """DNS 校验后再次串行化 app 变更，并把授权覆盖到有界 POST 完成。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                current = await connection.execute(
-                    text("SELECT app_id FROM callback_task WHERE id=:task_id"),
-                    {"task_id": task_id},
-                )
-                app_id = current.scalar_one_or_none()
-                if app_id is None:
-                    return False
-                await lock_callback_authority(connection, int(app_id))
-                current = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            current = await connection.execute(
+                text("SELECT app_id FROM callback_task WHERE id=:task_id"),
+                {"task_id": task_id},
+            )
+            app_id = current.scalar_one_or_none()
+            if app_id is None:
+                return False
+            await lock_callback_authority(connection, int(app_id))
+            current = await connection.execute(
+                text(
+                    """
                         SELECT a.id FROM callback_task t JOIN app a ON a.id=t.app_id
                         WHERE t.id=:task_id AND t.status='retrying'
                           AND t.lease_id=:lease_id AND t.lease_expires_at>now()
@@ -985,28 +942,26 @@ class SqlCallbackRepository:
                           AND a.callback_secret_enc=t.callback_secret_enc
                           AND (t.event<>'message.report' OR a.callback_report_enabled=true)
                         """
-                    ),
-                    {"task_id": task_id, "lease_id": lease_id},
-                )
-                confirmed_app_id = current.scalar_one_or_none()
-                if confirmed_app_id is None:
-                    return False
-                renewed = await connection.execute(
-                    text(
-                        """
+                ),
+                {"task_id": task_id, "lease_id": lease_id},
+            )
+            confirmed_app_id = current.scalar_one_or_none()
+            if confirmed_app_id is None:
+                return False
+            renewed = await connection.execute(
+                text(
+                    """
                         UPDATE callback_authority_lease
                         SET expires_at=now()+interval '30 seconds'
                         WHERE app_id=:app_id AND task_id=:task_id
                           AND lease_id=:lease_id AND expires_at>now()
                         RETURNING app_id
                         """
-                    ),
-                    {
-                        "app_id": confirmed_app_id,
-                        "task_id": task_id,
-                        "lease_id": lease_id,
-                    },
-                )
-                return renewed.scalar_one_or_none() is not None
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "app_id": confirmed_app_id,
+                    "task_id": task_id,
+                    "lease_id": lease_id,
+                },
+            )
+            return renewed.scalar_one_or_none() is not None

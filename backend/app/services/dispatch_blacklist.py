@@ -117,11 +117,8 @@ async def filter_chunk_phones(store: Any, chunk: Any) -> DispatchDecision:
     if not isinstance(crypto, CryptoService):
         crypto = CryptoService.from_settings(store.settings)
     engine = store._engine()
-    try:
-        async with engine.begin() as connection:
-            return await decide_dispatch(connection, crypto, chunk)
-    finally:
-        await engine.dispose()
+    async with engine.begin() as connection:
+        return await decide_dispatch(connection, crypto, chunk)
 
 
 async def lock_blacklist_subjects(connection: AsyncConnection, digests: list[str]) -> None:
@@ -325,11 +322,8 @@ async def _read_generation(connection: AsyncConnection) -> int:
 
 async def _generation(store: Any) -> int:
     engine = store._engine()
-    try:
-        async with engine.connect() as connection:
-            return await _read_generation(connection)
-    finally:
-        await engine.dispose()
+    async with engine.connect() as connection:
+        return await _read_generation(connection)
 
 
 async def _exclude_one(

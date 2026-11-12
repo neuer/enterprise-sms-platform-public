@@ -190,25 +190,22 @@ async def load_and_apply_job_intervals() -> None:
 async def load_beat_schedule() -> BeatSchedule:
     settings = get_settings()
     engine = database_engine(settings.database_url)
-    try:
-        async with engine.connect() as connection:
-            result = await connection.execute(
-                text(
-                    "SELECT key,value FROM sys_config "
-                    "WHERE key IN ("
-                    "'report_poll_seconds','report_timeout_scan_seconds',"
-                    "'reply_poll_seconds','reconcile_interval_min',"
-                    "'approval_scan_seconds',"
-                    "'scheduled_scan_seconds','balance_poll_seconds'"
-                    ",'anomaly_scan_minutes'"
-                    ",'usage_projection_reconcile_seconds'"
-                    ")"
-                )
+    async with engine.connect() as connection:
+        result = await connection.execute(
+            text(
+                "SELECT key,value FROM sys_config "
+                "WHERE key IN ("
+                "'report_poll_seconds','report_timeout_scan_seconds',"
+                "'reply_poll_seconds','reconcile_interval_min',"
+                "'approval_scan_seconds',"
+                "'scheduled_scan_seconds','balance_poll_seconds'"
+                ",'anomaly_scan_minutes'"
+                ",'usage_projection_reconcile_seconds'"
+                ")"
             )
-            config = {str(row["key"]): str(row["value"]) for row in result.mappings()}
-            return build_beat_schedule(config)
-    finally:
-        await engine.dispose()
+        )
+        config = {str(row["key"]): str(row["value"]) for row in result.mappings()}
+        return build_beat_schedule(config)
 
 
 def encode_startup_schedule(schedule: BeatSchedule) -> str:

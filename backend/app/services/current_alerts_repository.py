@@ -51,16 +51,15 @@ class SqlCurrentAlertRepository:
         specs: tuple[JobSpec, ...],
     ) -> DatabaseCurrentFacts:
         engine = self._engine()
-        try:
-            async with asyncio.timeout(self.database_timeout_s), engine.connect() as connection:
-                config_result = await connection.execute(text("SELECT key,value FROM sys_config"))
-                policy = RuntimePolicy.from_mapping(
-                    {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
-                )
+        async with asyncio.timeout(self.database_timeout_s), engine.connect() as connection:
+            config_result = await connection.execute(text("SELECT key,value FROM sys_config"))
+            policy = RuntimePolicy.from_mapping(
+                {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
+            )
 
-                job_result = await connection.execute(
-                    text(
-                        """
+            job_result = await connection.execute(
+                text(
+                    """
                         WITH specs AS (
                           SELECT unnest(CAST(:job_names AS text[])) job_name
                         )
@@ -77,60 +76,60 @@ class SqlCurrentAlertRepository:
                         ) r ON true
                         ORDER BY s.job_name,r.started_at DESC NULLS LAST
                         """
-                    ),
-                    {"job_names": [spec.job_name for spec in specs]},
+                ),
+                {"job_names": [spec.job_name for spec in specs]},
+            )
+            grouped: dict[str, list[RowMapping]] = defaultdict(list)
+            latest_success: dict[str, datetime | None] = {}
+            for row in job_result.mappings():
+                job_name = str(row["job_name"])
+                latest_success[job_name] = cast(
+                    datetime | None,
+                    row["latest_success_at"],
                 )
-                grouped: dict[str, list[RowMapping]] = defaultdict(list)
-                latest_success: dict[str, datetime | None] = {}
-                for row in job_result.mappings():
-                    job_name = str(row["job_name"])
-                    latest_success[job_name] = cast(
-                        datetime | None,
-                        row["latest_success_at"],
+                if row["started_at"] is not None:
+                    grouped[job_name].append(row)
+            jobs: list[CurrentJobFact] = []
+            for spec in specs:
+                rows = grouped.get(spec.job_name, [])
+                latest = rows[0] if rows else None
+                jobs.append(
+                    CurrentJobFact(
+                        spec.job_name,
+                        (
+                            JobRunSnapshot(
+                                spec.job_name,
+                                cast(datetime, latest["started_at"]),
+                                cast(datetime | None, latest["finished_at"]),
+                                str(latest["status"]),
+                            )
+                            if latest is not None
+                            else None
+                        ),
+                        tuple(str(row["status"]) for row in rows),
+                        latest_success.get(spec.job_name),
                     )
-                    if row["started_at"] is not None:
-                        grouped[job_name].append(row)
-                jobs: list[CurrentJobFact] = []
-                for spec in specs:
-                    rows = grouped.get(spec.job_name, [])
-                    latest = rows[0] if rows else None
-                    jobs.append(
-                        CurrentJobFact(
-                            spec.job_name,
-                            (
-                                JobRunSnapshot(
-                                    spec.job_name,
-                                    cast(datetime, latest["started_at"]),
-                                    cast(datetime | None, latest["finished_at"]),
-                                    str(latest["status"]),
-                                )
-                                if latest is not None
-                                else None
-                            ),
-                            tuple(str(row["status"]) for row in rows),
-                            latest_success.get(spec.job_name),
-                        )
-                    )
-
-                usage_result = await connection.execute(
-                    text(
-                        "SELECT kind,mismatched_dimensions,absolute_delta,checked_at "
-                        "FROM usage_projection_drift ORDER BY kind"
-                    )
-                )
-                usage = tuple(
-                    UsageDriftFact(
-                        str(row["kind"]),
-                        int(row["mismatched_dimensions"]),
-                        int(row["absolute_delta"]),
-                        cast(datetime, row["checked_at"]),
-                    )
-                    for row in usage_result.mappings()
                 )
 
-                operation_result = await connection.execute(
-                    text(
-                        f"""
+            usage_result = await connection.execute(
+                text(
+                    "SELECT kind,mismatched_dimensions,absolute_delta,checked_at "
+                    "FROM usage_projection_drift ORDER BY kind"
+                )
+            )
+            usage = tuple(
+                UsageDriftFact(
+                    str(row["kind"]),
+                    int(row["mismatched_dimensions"]),
+                    int(row["absolute_delta"]),
+                    cast(datetime, row["checked_at"]),
+                )
+                for row in usage_result.mappings()
+            )
+
+            operation_result = await connection.execute(
+                text(
+                    f"""
                         SELECT balance.balance,balance.fetched_at balance_checked_at,
                           uncertain.*,callback.*,outbox.*,raw.*
                         FROM (
@@ -169,14 +168,14 @@ class SqlCurrentAlertRepository:
                           ORDER BY fetched_at DESC,id DESC LIMIT 1
                         ) balance ON true
                         """
-                    ),
-                    {"uncertain_hours": policy.uncertain_alert_hours},
-                )
-                operation = operation_result.mappings().one()
+                ),
+                {"uncertain_hours": policy.uncertain_alert_hours},
+            )
+            operation = operation_result.mappings().one()
 
-                spill_result = await connection.execute(
-                    text(
-                        """
+            spill_result = await connection.execute(
+                text(
+                    """
                         SELECT alert_type,detail->>'source' source,max(created_at) created_at
                         FROM alert_log
                         WHERE alert_type IN (
@@ -185,41 +184,39 @@ class SqlCurrentAlertRepository:
                         GROUP BY alert_type,detail->>'source'
                         ORDER BY alert_type,detail->>'source'
                         """
-                    )
                 )
-                spill_alerts = tuple(
-                    RawSpillAlertFact(
-                        str(row["alert_type"]),
-                        cast(Literal["report", "reply"], str(row["source"])),
-                        cast(datetime, row["created_at"]),
-                    )
-                    for row in spill_result.mappings()
+            )
+            spill_alerts = tuple(
+                RawSpillAlertFact(
+                    str(row["alert_type"]),
+                    cast(Literal["report", "reply"], str(row["source"])),
+                    cast(datetime, row["created_at"]),
                 )
-                return DatabaseCurrentFacts(
-                    policy,
-                    tuple(jobs),
-                    usage,
-                    int(operation["balance"])
-                    if operation["balance"] is not None
-                    else None,
-                    cast(datetime | None, operation["balance_checked_at"]),
-                    int(operation["uncertain_overdue"]),
-                    cast(datetime | None, operation["uncertain_since"]),
-                    int(operation["callback_dead"]),
-                    cast(datetime | None, operation["callback_dead_since"]),
-                    int(operation["outbox_dead"]),
-                    cast(datetime | None, operation["outbox_dead_since"]),
-                    int(operation["outbox_active"]),
-                    cast(datetime | None, operation["outbox_oldest_active_at"]),
-                    int(operation["raw_manual"]),
-                    cast(datetime | None, operation["raw_manual_since"]),
-                    spill_alerts,
-                    int(operation["uncertain"]),
-                    int(operation["realtime_queue"]),
-                    int(operation["bulk_queue"]),
-                )
-        finally:
-            await engine.dispose()
+                for row in spill_result.mappings()
+            )
+            return DatabaseCurrentFacts(
+                policy,
+                tuple(jobs),
+                usage,
+                int(operation["balance"])
+                if operation["balance"] is not None
+                else None,
+                cast(datetime | None, operation["balance_checked_at"]),
+                int(operation["uncertain_overdue"]),
+                cast(datetime | None, operation["uncertain_since"]),
+                int(operation["callback_dead"]),
+                cast(datetime | None, operation["callback_dead_since"]),
+                int(operation["outbox_dead"]),
+                cast(datetime | None, operation["outbox_dead_since"]),
+                int(operation["outbox_active"]),
+                cast(datetime | None, operation["outbox_oldest_active_at"]),
+                int(operation["raw_manual"]),
+                cast(datetime | None, operation["raw_manual_since"]),
+                spill_alerts,
+                int(operation["uncertain"]),
+                int(operation["realtime_queue"]),
+                int(operation["bulk_queue"]),
+            )
 
     async def load_control(self) -> ControlCurrentFacts:
         async with asyncio.timeout(self.control_timeout_s):

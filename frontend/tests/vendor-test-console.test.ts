@@ -96,15 +96,10 @@ const statusCases: Array<[VendorTestStatus["mode"], VendorTestStatus["pause_kind
 ]
 
 function response(body: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
+  return new Response(JSON.stringify(body), {
     status,
-    headers: {
-      get: (name: string) => (name.toLowerCase() === "cache-control" ? "no-store" : null),
-    },
-    json: async () => body,
-    clone: () => response(body, status),
-  }
+    headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  })
 }
 
 function deferred<T>() {

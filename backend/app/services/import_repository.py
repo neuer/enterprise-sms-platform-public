@@ -241,8 +241,6 @@ class SqlImportRepository:
                     timeout_s=5,
                 )
             raise
-        finally:
-            await engine.dispose()
 
     async def register(
         self,
@@ -258,11 +256,10 @@ class SqlImportRepository:
         import_id = uuid4()
         source_file = f"import-{import_id}.smsx"
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         INSERT INTO import_task(
                           import_id,
                           creator,creator_account_id,creator_identity_id,
@@ -275,75 +272,70 @@ class SqlImportRepository:
                         )
                         RETURNING import_id,expires_at
                         """
-                    ),
-                    {
-                        "import_id": import_id,
-                        "creator": principal.login_name,
-                        "account_id": principal.account_id,
-                        "identity_id": principal.identity_id,
-                        "filename": canonical_import_filename(filename),
-                        "source_file": source_file,
+                ),
+                {
+                    "import_id": import_id,
+                    "creator": principal.login_name,
+                    "account_id": principal.account_id,
+                    "identity_id": principal.identity_id,
+                    "filename": canonical_import_filename(filename),
+                    "source_file": source_file,
+                    "source_size": source_size,
+                    "expire_hours": expire_hours,
+                },
+            )
+            row = result.mappings().one()
+            await bind_connection_audit_subject(
+                connection,
+                subject_kind="human",
+                actor_name=principal.login_name,
+                account_id=principal.account_id,
+                identity_id=principal.identity_id,
+            )
+            await insert_audit(
+                connection,
+                AuditEvent(
+                    principal=principal,
+                    role=principal.role,
+                    ip=ip,
+                    action="message_import",
+                    object_type="import_task",
+                    object_id=str(row["import_id"]),
+                    after={
                         "source_size": source_size,
-                        "expire_hours": expire_hours,
+                        "file_type": Path(filename).suffix.casefold(),
+                        "parse_status": "staging",
                     },
-                )
-                row = result.mappings().one()
-                await bind_connection_audit_subject(
-                    connection,
-                    subject_kind="human",
-                    actor_name=principal.login_name,
-                    account_id=principal.account_id,
-                    identity_id=principal.identity_id,
-                )
-                await insert_audit(
-                    connection,
-                    AuditEvent(
-                        principal=principal,
-                        role=principal.role,
-                        ip=ip,
-                        action="message_import",
-                        object_type="import_task",
-                        object_id=str(row["import_id"]),
-                        after={
-                            "source_size": source_size,
-                            "file_type": Path(filename).suffix.casefold(),
-                            "parse_status": "staging",
-                        },
-                    ),
-                )
-                return StoredImport(
-                    str(row["import_id"]),
-                    0,
-                    0,
-                    0,
-                    0,
-                    None,
-                    row["expires_at"],
-                    status="staging",
-                    source_file=source_file,
-                )
-        finally:
-            await engine.dispose()
+                ),
+            )
+            return StoredImport(
+                str(row["import_id"]),
+                0,
+                0,
+                0,
+                0,
+                None,
+                row["expires_at"],
+                status="staging",
+                source_file=source_file,
+            )
 
     async def attach_source(self, import_id: UUID, source_file: str) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                attached = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            attached = await connection.execute(
+                text(
+                    """
                         UPDATE import_task SET parse_status='pending'
                         WHERE import_id=:import_id AND parse_status='staging'
                           AND source_file=:source_file AND expires_at>now()
                         RETURNING id
                         """
-                    ),
-                    {"import_id": import_id, "source_file": source_file},
-                )
-                if attached.scalar_one_or_none() is None:
-                    raise ImportStateConflict("导入任务登记状态已失效")
-        finally:
-            await engine.dispose()
+                ),
+                {"import_id": import_id, "source_file": source_file},
+            )
+            if attached.scalar_one_or_none() is None:
+                raise ImportStateConflict("导入任务登记状态已失效")
 
     async def get_status(
         self,
@@ -352,11 +344,10 @@ class SqlImportRepository:
         principal: SecurityPrincipal,
     ) -> StoredImport | None:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT import_id,valid_cnt,invalid_cnt,dup_cnt,black_cnt,
                           invalid_file,expires_at,parse_status,parse_error
                         FROM import_task
@@ -365,28 +356,26 @@ class SqlImportRepository:
                           AND creator_identity_id IS NOT NULL
                           AND (expires_at>now() OR state='consumed')
                         """
-                    ),
-                    {
-                        "import_id": import_id,
-                        "account_id": principal.account_id,
-                    },
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return None
-                return StoredImport(
-                    str(row["import_id"]),
-                    int(row["valid_cnt"]),
-                    int(row["invalid_cnt"]),
-                    int(row["dup_cnt"]),
-                    int(row["black_cnt"]),
-                    (str(row["invalid_file"]) if row["invalid_file"] is not None else None),
-                    row["expires_at"],
-                    status=str(row["parse_status"]),
-                    error=(str(row["parse_error"]) if row["parse_error"] is not None else None),
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "import_id": import_id,
+                    "account_id": principal.account_id,
+                },
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            return StoredImport(
+                str(row["import_id"]),
+                int(row["valid_cnt"]),
+                int(row["invalid_cnt"]),
+                int(row["dup_cnt"]),
+                int(row["black_cnt"]),
+                (str(row["invalid_file"]) if row["invalid_file"] is not None else None),
+                row["expires_at"],
+                status=str(row["parse_status"]),
+                error=(str(row["parse_error"]) if row["parse_error"] is not None else None),
+            )
 
     async def fail_registration(self, import_id: UUID, error: str) -> None:
         """上传暂存失败时写入不含输入细节的稳定错误码。"""
@@ -394,28 +383,24 @@ class SqlImportRepository:
         if error not in {"IMPORT_STAGE_FAILED", "IMPORT_QUEUE_UNAVAILABLE"}:
             raise ValueError("invalid import registration error")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         UPDATE import_task SET parse_status='failed',parse_error=:error
                         WHERE import_id=:import_id
                           AND parse_status IN ('staging','pending')
                         """
-                    ),
-                    {"import_id": import_id, "error": error},
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {"import_id": import_id, "error": error},
+            )
 
     async def pending_parse_ids(self, limit: int = 100) -> list[str]:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         UPDATE import_task SET parse_status='failed',
                           parse_error='IMPORT_PARSE_FAILED',
                           parse_lease_id=NULL,parse_lease_expires_at=NULL
@@ -423,11 +408,11 @@ class SqlImportRepository:
                           AND parse_lease_expires_at<=now()
                           AND parse_attempts>=3
                         """
-                    )
                 )
-                result = await connection.execute(
-                    text(
-                        """
+            )
+            result = await connection.execute(
+                text(
+                    """
                         SELECT import_id::text FROM import_task
                         WHERE source_file IS NOT NULL AND expires_at>now()
                           AND parse_attempts<3
@@ -440,21 +425,18 @@ class SqlImportRepository:
                           )
                         ORDER BY created_at,id LIMIT :limit
                         """
-                    ),
-                    {"limit": limit},
-                )
-                return [str(value) for value in result.scalars()]
-        finally:
-            await engine.dispose()
+                ),
+                {"limit": limit},
+            )
+            return [str(value) for value in result.scalars()]
 
     async def claim_parse(self, import_id: str) -> ImportParseClaim | None:
         lease_id = uuid4()
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                claimed = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            claimed = await connection.execute(
+                text(
+                    """
                         UPDATE import_task SET parse_status='processing',
                           parse_lease_id=:lease_id,parse_started_at=now(),
                           parse_lease_expires_at=now()+interval '5 minutes',
@@ -473,15 +455,15 @@ class SqlImportRepository:
                           )
                         RETURNING import_id,filename,source_file,source_size
                         """
-                    ),
-                    {"import_id": import_id, "lease_id": str(lease_id)},
-                )
-                row = claimed.mappings().one_or_none()
-                if row is None:
-                    return None
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {"import_id": import_id, "lease_id": str(lease_id)},
+            )
+            row = claimed.mappings().one_or_none()
+            if row is None:
+                return None
+            await connection.execute(
+                text(
+                    """
                         DELETE FROM import_phone
                         WHERE import_task_id=(
                           SELECT id FROM import_task
@@ -489,18 +471,16 @@ class SqlImportRepository:
                             AND parse_lease_id=CAST(:lease_id AS uuid)
                         )
                         """
-                    ),
-                    {"import_id": import_id, "lease_id": str(lease_id)},
-                )
-                return ImportParseClaim(
-                    UUID(str(row["import_id"])),
-                    lease_id,
-                    str(row["filename"]),
-                    str(row["source_file"]),
-                    int(row["source_size"]),
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {"import_id": import_id, "lease_id": str(lease_id)},
+            )
+            return ImportParseClaim(
+                UUID(str(row["import_id"])),
+                lease_id,
+                str(row["filename"]),
+                str(row["source_file"]),
+                int(row["source_size"]),
+            )
 
     async def append_parse_batch(
         self,
@@ -510,11 +490,10 @@ class SqlImportRepository:
         """按 lease fencing 批量写受保护号码并续租。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                renewed = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            renewed = await connection.execute(
+                text(
+                    """
                         UPDATE import_task SET
                           parse_lease_expires_at=now()+interval '5 minutes'
                         WHERE import_id=:import_id
@@ -523,19 +502,19 @@ class SqlImportRepository:
                           AND parse_lease_expires_at>now()
                         RETURNING id
                         """
-                    ),
-                    {
-                        "import_id": claim.import_id,
-                        "lease_id": claim.lease_id,
-                    },
-                )
-                task_id = renewed.scalar_one_or_none()
-                if task_id is None:
-                    return False
-                if phones:
-                    await connection.execute(
-                        text(
-                            """
+                ),
+                {
+                    "import_id": claim.import_id,
+                    "lease_id": claim.lease_id,
+                },
+            )
+            task_id = renewed.scalar_one_or_none()
+            if task_id is None:
+                return False
+            if phones:
+                await connection.execute(
+                    text(
+                        """
                             INSERT INTO import_phone(
                               import_task_id,phone_enc,phone_hmac,phone_mask,
                               key_version,source_row
@@ -545,22 +524,20 @@ class SqlImportRepository:
                             )
                             ON CONFLICT(import_task_id,phone_hmac) DO NOTHING
                             """
-                        ),
-                        [
-                            {
-                                "task_id": task_id,
-                                "phone_enc": item.phone_enc,
-                                "phone_hmac": item.phone_hmac,
-                                "phone_mask": item.phone_mask,
-                                "key_version": item.key_version,
-                                "source_row": item.source_row,
-                            }
-                            for item in phones
-                        ],
-                    )
-                return True
-        finally:
-            await engine.dispose()
+                    ),
+                    [
+                        {
+                            "task_id": task_id,
+                            "phone_enc": item.phone_enc,
+                            "phone_hmac": item.phone_hmac,
+                            "phone_mask": item.phone_mask,
+                            "key_version": item.key_version,
+                            "source_row": item.source_row,
+                        }
+                        for item in phones
+                    ],
+                )
+            return True
 
     async def finish_parse(
         self,
@@ -573,11 +550,10 @@ class SqlImportRepository:
         invalid_file: str | None,
     ) -> bool:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                finished = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            finished = await connection.execute(
+                text(
+                    """
                         UPDATE import_task SET parse_status='ready',
                           valid_cnt=:valid,invalid_cnt=:invalid,
                           dup_cnt=:duplicate,black_cnt=:blacklisted,
@@ -589,28 +565,28 @@ class SqlImportRepository:
                           AND parse_lease_expires_at>now()
                         RETURNING id
                         """
-                    ),
-                    {
-                        "import_id": claim.import_id,
-                        "lease_id": claim.lease_id,
-                        "valid": valid,
-                        "invalid": invalid,
-                        "duplicate": duplicate,
-                        "blacklisted": blacklisted,
-                        "invalid_file": invalid_file,
-                    },
-                )
-                row = finished.mappings().one_or_none()
-                if row is None:
-                    return False
-                await bind_connection_system_audit(
-                    connection,
-                    actor_name="import-parser",
-                    action="message_import",
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "import_id": claim.import_id,
+                    "lease_id": claim.lease_id,
+                    "valid": valid,
+                    "invalid": invalid,
+                    "duplicate": duplicate,
+                    "blacklisted": blacklisted,
+                    "invalid_file": invalid_file,
+                },
+            )
+            row = finished.mappings().one_or_none()
+            if row is None:
+                return False
+            await bind_connection_system_audit(
+                connection,
+                actor_name="import-parser",
+                action="message_import",
+            )
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,role,action,object_type,object_id,
                           after_val
@@ -626,26 +602,23 @@ class SqlImportRepository:
                           )
                         )
                         """
-                    ),
-                    {
-                        "object_id": str(claim.import_id),
-                        "valid": valid,
-                        "invalid": invalid,
-                        "duplicate": duplicate,
-                        "blacklisted": blacklisted,
-                    },
-                )
-                return True
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "object_id": str(claim.import_id),
+                    "valid": valid,
+                    "invalid": invalid,
+                    "duplicate": duplicate,
+                    "blacklisted": blacklisted,
+                },
+            )
+            return True
 
     async def release_parse(self, claim: ImportParseClaim) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                released = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            released = await connection.execute(
+                text(
+                    """
                         UPDATE import_task SET
                           parse_status=CASE
                             WHEN parse_attempts>=3 THEN 'failed'
@@ -661,17 +634,15 @@ class SqlImportRepository:
                           AND parse_lease_id=:lease_id
                         RETURNING id,parse_status
                         """
-                    ),
-                    {"import_id": claim.import_id, "lease_id": claim.lease_id},
+                ),
+                {"import_id": claim.import_id, "lease_id": claim.lease_id},
+            )
+            row = released.mappings().one_or_none()
+            if row is not None and row["parse_status"] == "failed":
+                await connection.execute(
+                    text("DELETE FROM import_phone WHERE import_task_id=:task_id"),
+                    {"task_id": int(row["id"])},
                 )
-                row = released.mappings().one_or_none()
-                if row is not None and row["parse_status"] == "failed":
-                    await connection.execute(
-                        text("DELETE FROM import_phone WHERE import_task_id=:task_id"),
-                        {"task_id": int(row["id"])},
-                    )
-        finally:
-            await engine.dispose()
 
     async def fail_parse(self, claim: ImportParseClaim, error: str) -> bool:
         if error not in {
@@ -681,11 +652,10 @@ class SqlImportRepository:
         }:
             raise ValueError("invalid import parse error")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                failed = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            failed = await connection.execute(
+                text(
+                    """
                         UPDATE import_task SET parse_status='failed',
                           parse_error=:error,parse_lease_id=NULL,
                           parse_lease_expires_at=NULL
@@ -694,42 +664,37 @@ class SqlImportRepository:
                           AND parse_lease_id=:lease_id
                         RETURNING id
                         """
-                    ),
-                    {
-                        "import_id": claim.import_id,
-                        "lease_id": claim.lease_id,
-                        "error": error,
-                    },
+                ),
+                {
+                    "import_id": claim.import_id,
+                    "lease_id": claim.lease_id,
+                    "error": error,
+                },
+            )
+            task_id = failed.scalar_one_or_none()
+            if task_id is not None:
+                await connection.execute(
+                    text("DELETE FROM import_phone WHERE import_task_id=:task_id"),
+                    {"task_id": task_id},
                 )
-                task_id = failed.scalar_one_or_none()
-                if task_id is not None:
-                    await connection.execute(
-                        text("DELETE FROM import_phone WHERE import_task_id=:task_id"),
-                        {"task_id": task_id},
-                    )
-                return task_id is not None
-        finally:
-            await engine.dispose()
+            return task_id is not None
 
     async def clear_source(self, claim: ImportParseClaim) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         UPDATE import_task SET source_file=NULL
                         WHERE import_id=:import_id AND source_file=:source_file
                           AND parse_status IN ('ready','failed')
                         """
-                    ),
-                    {
-                        "import_id": claim.import_id,
-                        "source_file": claim.source_file,
-                    },
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "import_id": claim.import_id,
+                    "source_file": claim.source_file,
+                },
+            )
 
     async def reserve(
         self,
@@ -740,11 +705,10 @@ class SqlImportRepository:
         """行锁串行预留；过期租约可抢占，已消费重试返回原批次。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                selected = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            selected = await connection.execute(
+                text(
+                    """
                         SELECT t.id,t.state,t.reservation_id,
                           t.reservation_expires_at,
                           trim(b.batch_no) consumed_batch_no
@@ -757,29 +721,29 @@ class SqlImportRepository:
                           AND (t.expires_at>now() OR t.state='consumed')
                         FOR UPDATE OF t
                         """
-                    ),
-                    {
-                        "import_id": import_id,
-                        "actor_account_id": principal.account_id,
-                    },
+                ),
+                {
+                    "import_id": import_id,
+                    "actor_account_id": principal.account_id,
+                },
+            )
+            task = selected.mappings().one_or_none()
+            if task is None:
+                raise ImportStateConflict("导入包不存在或已过期")
+            if task["state"] == "consumed":
+                batch_no = task["consumed_batch_no"]
+                reservation_id = task["reservation_id"]
+                if batch_no is None or reservation_id is None:
+                    raise ImportStateConflict("导入包历史状态不可重试")
+                return ImportReservation(
+                    UUID(str(reservation_id)),
+                    task["reservation_expires_at"],
+                    consumed_batch_no=str(batch_no),
                 )
-                task = selected.mappings().one_or_none()
-                if task is None:
-                    raise ImportStateConflict("导入包不存在或已过期")
-                if task["state"] == "consumed":
-                    batch_no = task["consumed_batch_no"]
-                    reservation_id = task["reservation_id"]
-                    if batch_no is None or reservation_id is None:
-                        raise ImportStateConflict("导入包历史状态不可重试")
-                    return ImportReservation(
-                        UUID(str(reservation_id)),
-                        task["reservation_expires_at"],
-                        consumed_batch_no=str(batch_no),
-                    )
-                reservation_id = uuid4()
-                reserved = await connection.execute(
-                    text(
-                        """
+            reservation_id = uuid4()
+            reserved = await connection.execute(
+                text(
+                    """
                         UPDATE import_task SET state='reserved',
                           reservation_id=:reservation_id,
                           reserved_by_account_id=:actor_account_id,
@@ -795,33 +759,31 @@ class SqlImportRepository:
                         )
                         RETURNING id,reservation_expires_at
                         """
-                    ),
-                    {
-                        "id": task["id"],
-                        "reservation_id": str(reservation_id),
-                        "actor_account_id": principal.account_id,
-                        "lease_seconds": self.RESERVATION_LEASE_SECONDS,
-                    },
-                )
-                reserved_row = reserved.mappings().one_or_none()
-                if reserved_row is None:
-                    raise ImportStateConflict("导入包正在被其他请求使用")
-                result = await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "id": task["id"],
+                    "reservation_id": str(reservation_id),
+                    "actor_account_id": principal.account_id,
+                    "lease_seconds": self.RESERVATION_LEASE_SECONDS,
+                },
+            )
+            reserved_row = reserved.mappings().one_or_none()
+            if reserved_row is None:
+                raise ImportStateConflict("导入包正在被其他请求使用")
+            result = await connection.execute(
+                text(
+                    """
                         SELECT phone_enc,phone_hmac,phone_mask,key_version,source_row
                         FROM import_phone WHERE import_task_id=:id ORDER BY source_row
                         """
-                    ),
-                    {"id": task["id"]},
-                )
-                return ImportReservation(
-                    reservation_id,
-                    reserved_row["reservation_expires_at"],
-                    tuple(ImportPhone(**dict(row)) for row in result.mappings()),
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {"id": task["id"]},
+            )
+            return ImportReservation(
+                reservation_id,
+                reserved_row["reservation_expires_at"],
+                tuple(ImportPhone(**dict(row)) for row in result.mappings()),
+            )
 
     async def release(
         self,
@@ -832,11 +794,10 @@ class SqlImportRepository:
         """校验/持久化失败时释放本人仍持有的预留；consumed 永不回退。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                released = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            released = await connection.execute(
+                text(
+                    """
                         UPDATE import_task SET state='ready',
                           reservation_id=NULL,reserved_by_account_id=NULL,
                           reserved_at=NULL,reservation_expires_at=NULL
@@ -845,15 +806,13 @@ class SqlImportRepository:
                           AND state='reserved' AND consumed_batch_id IS NULL
                         RETURNING id
                         """
-                    ),
-                    {
-                        "reservation_id": str(reservation_id),
-                        "actor_account_id": principal.account_id,
-                    },
-                )
-                return released.scalar_one_or_none() is not None
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "reservation_id": str(reservation_id),
+                    "actor_account_id": principal.account_id,
+                },
+            )
+            return released.scalar_one_or_none() is not None
 
     async def invalid_file(
         self,
@@ -864,26 +823,23 @@ class SqlImportRepository:
         """仅向创建人暴露仍在有效期内的无 PII 剔除清单。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT invalid_file FROM import_task
                         WHERE import_id=:import_id
                           AND creator_account_id=:actor_account_id
                           AND creator_identity_id IS NOT NULL
                           AND expires_at>now() AND invalid_file IS NOT NULL
                         """
-                    ),
-                    {
-                        "import_id": import_id,
-                        "actor_account_id": principal.account_id,
-                    },
-                )
-                relative = result.scalar_one_or_none()
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "import_id": import_id,
+                    "actor_account_id": principal.account_id,
+                },
+            )
+            relative = result.scalar_one_or_none()
         if relative is None:
             return None
         root = self.settings.import_storage_dir.resolve()

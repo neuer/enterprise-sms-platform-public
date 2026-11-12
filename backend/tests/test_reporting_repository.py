@@ -111,7 +111,7 @@ async def test_app_week_query_uses_fixed_bucket_join_and_department_scope() -> N
     }
     assert all("s.test_scope=:test_scope" in sql for sql, _ in connection.calls)
     assert all("stat_scope_day" not in sql for sql, _ in connection.calls)
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio

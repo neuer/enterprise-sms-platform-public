@@ -9,12 +9,7 @@ import { useSessionStore } from "../src/stores/session"
 vi.mock("vue-router", () => ({ useRoute: () => ({ query: {} }) }))
 
 function response(body: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: { get: () => null },
-    json: async () => body,
-  }
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
 }
 
 const scheduled = {

@@ -194,30 +194,14 @@ class SendAdmissionMixin:
             return None
         batch_size = max(1, int(getattr(self.config, "vendor_batch_size", 500) or 500))
         estimated = max(1, ceil(recipient_count / batch_size))
-        reserve = getattr(self.store, "reserve_in_flight_chunks", None)
-        if reserve is not None:
-            try:
-                return await reserve(app.app_id, estimated, app.max_in_flight_chunks)
-            except InFlightLimitExceeded:
-                raise
-            except InFlightQueryUnavailable:
-                raise
-            except InFlightInvariantViolation:
-                raise
-            except Exception as exc:
-                raise InFlightQueryUnavailable("在途分片预留不可用") from exc
-        counter = getattr(self.store, "count_in_flight_chunks", None)
-        if counter is None:
-            return None
         try:
-            current = await counter(app.app_id)
-        except InFlightQueryUnavailable:
+            return await self.store.reserve_in_flight_chunks(
+                app.app_id, estimated, app.max_in_flight_chunks
+            )
+        except (InFlightLimitExceeded, InFlightQueryUnavailable, InFlightInvariantViolation):
             raise
         except Exception as exc:
-            raise InFlightQueryUnavailable("在途分片查询不可用") from exc
-        if current + estimated > app.max_in_flight_chunks:
-            raise InFlightLimitExceeded("应用在途分片已达上限")
-        return None
+            raise InFlightQueryUnavailable("在途分片预留不可用") from exc
 
     def _enforce_market_api_bulk(
         self,

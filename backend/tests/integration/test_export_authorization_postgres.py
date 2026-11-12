@@ -4,7 +4,7 @@ import asyncio
 import os
 from types import SimpleNamespace
 from typing import Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import text
@@ -182,13 +182,22 @@ async def test_real_postgres_export_scope_matrix_and_download_audit_are_fail_clo
             )
         ]
         with audit_principal_scope(principals[0]), correlation_scope(uuid4()):
+            batch_filters = ExportFilterSet(
+                None, None, None, None, None,
+                UUID("a1234567-8901-4abc-8abc-abcdefabcdef").hex, (), "平台部",
+            )
             task = await repository.create(
                 principal=principals[0],
-                filters=filters(),
+                filters=batch_filters,
                 decrypted=True,
             )
         public_ids.append(str(task.public_id))
         async with engine.begin() as connection:
+            persisted_filters = await connection.scalar(
+                text("SELECT filters FROM export_task WHERE public_id=:public_id"),
+                {"public_id": str(task.public_id)},
+            )
+            assert ExportFilterSet.from_safe_json(persisted_filters) == batch_filters
             await connection.execute(
                 text(
                     """

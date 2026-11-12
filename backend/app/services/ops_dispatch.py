@@ -36,22 +36,19 @@ class OutboxJobSender:
         job_name = task_name.rsplit(".", 1)[-1]
         request_id = uuid4()
         engine = database_engine(self.settings.database_url)
-        try:
-            async with engine.begin() as connection:
-                await enqueue_outbox(
-                    connection,
-                    OutboxEventSpec(
-                        event_type="job.trigger",
-                        aggregate_type="job",
-                        aggregate_id=job_name,
-                        task_name="app.tasks.outbox.trigger_job",
-                        queue=queue,
-                        args=(task_name,),
-                        dedup_key=f"job.trigger:{job_name}:{request_id}",
-                    ),
-                )
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await enqueue_outbox(
+                connection,
+                OutboxEventSpec(
+                    event_type="job.trigger",
+                    aggregate_type="job",
+                    aggregate_id=job_name,
+                    task_name="app.tasks.outbox.trigger_job",
+                    queue=queue,
+                    args=(task_name,),
+                    dedup_key=f"job.trigger:{job_name}:{request_id}",
+                ),
+            )
 
 
 class TemplateSyncSender:
@@ -77,42 +74,39 @@ class TemplateSyncSender:
             raise ValueError("invalid template sync id")
         minute_bucket = int(self.clock().timestamp()) // 60
         engine = database_engine(self.settings.database_url)
-        try:
-            async with engine.begin() as connection:
-                await bind_connection_audit_subject(
-                    connection,
-                    subject_kind="human",
-                    actor_name=principal.login_name,
-                    account_id=principal.account_id,
-                    identity_id=principal.identity_id,
-                )
-                await insert_audit(
-                    connection,
-                    AuditEvent(
-                        principal=principal,
-                        role=principal.role,
-                        ip=ip,
-                        action="template_sync",
-                        object_type="template",
-                        object_id=str(template_id),
-                        after={"status": "requested"},
-                    ),
-                )
-                await enqueue_outbox(
-                    connection,
-                    OutboxEventSpec(
-                        event_type="template.sync",
-                        aggregate_type="sms_template",
-                        aggregate_id=str(template_id),
-                        task_name="app.tasks.sync_template",
-                        queue="realtime",
-                        args=(template_id,),
-                        dedup_key=f"template.sync:{template_id}:{minute_bucket}",
-                        max_attempts=3,
-                    ),
-                )
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await bind_connection_audit_subject(
+                connection,
+                subject_kind="human",
+                actor_name=principal.login_name,
+                account_id=principal.account_id,
+                identity_id=principal.identity_id,
+            )
+            await insert_audit(
+                connection,
+                AuditEvent(
+                    principal=principal,
+                    role=principal.role,
+                    ip=ip,
+                    action="template_sync",
+                    object_type="template",
+                    object_id=str(template_id),
+                    after={"status": "requested"},
+                ),
+            )
+            await enqueue_outbox(
+                connection,
+                OutboxEventSpec(
+                    event_type="template.sync",
+                    aggregate_type="sms_template",
+                    aggregate_id=str(template_id),
+                    task_name="app.tasks.sync_template",
+                    queue="realtime",
+                    args=(template_id,),
+                    dedup_key=f"template.sync:{template_id}:{minute_bucket}",
+                    max_attempts=3,
+                ),
+            )
 
 
 class SignSyncSender:
@@ -138,44 +132,41 @@ class SignSyncSender:
             raise ValueError("invalid sign sync id")
         minute_bucket = int(self.clock().timestamp()) // 60
         engine = database_engine(self.settings.database_url)
-        try:
-            async with engine.begin() as connection:
-                await bind_connection_audit_subject(
-                    connection,
-                    subject_kind="human",
-                    actor_name=principal.login_name,
-                    account_id=principal.account_id,
-                    identity_id=principal.identity_id,
-                )
-                await insert_audit(
-                    connection,
-                    AuditEvent(
-                        principal=principal,
-                        role=principal.role,
-                        ip=ip,
-                        action="sign_sync",
-                        object_type="sign",
-                        object_id=str(sign_id),
-                        after={"status": "requested"},
+        async with engine.begin() as connection:
+            await bind_connection_audit_subject(
+                connection,
+                subject_kind="human",
+                actor_name=principal.login_name,
+                account_id=principal.account_id,
+                identity_id=principal.identity_id,
+            )
+            await insert_audit(
+                connection,
+                AuditEvent(
+                    principal=principal,
+                    role=principal.role,
+                    ip=ip,
+                    action="sign_sync",
+                    object_type="sign",
+                    object_id=str(sign_id),
+                    after={"status": "requested"},
+                ),
+            )
+            await enqueue_outbox(
+                connection,
+                OutboxEventSpec(
+                    event_type="job.trigger",
+                    aggregate_type="sms_sign",
+                    aggregate_id=str(sign_id),
+                    task_name="app.tasks.outbox.trigger_job",
+                    queue="realtime",
+                    args=("app.tasks.sync_signs", sign_id),
+                    dedup_key=(
+                        f"job.trigger:sync_signs:{sign_id}:{minute_bucket}"
                     ),
-                )
-                await enqueue_outbox(
-                    connection,
-                    OutboxEventSpec(
-                        event_type="job.trigger",
-                        aggregate_type="sms_sign",
-                        aggregate_id=str(sign_id),
-                        task_name="app.tasks.outbox.trigger_job",
-                        queue="realtime",
-                        args=("app.tasks.sync_signs", sign_id),
-                        dedup_key=(
-                            f"job.trigger:sync_signs:{sign_id}:{minute_bucket}"
-                        ),
-                        max_attempts=3,
-                    ),
-                )
-        finally:
-            await engine.dispose()
+                    max_attempts=3,
+                ),
+            )
 
 
 class SignAdoptionSender:
@@ -203,50 +194,47 @@ class SignAdoptionSender:
         request_id = uuid4()
         try:
             engine = database_engine(self.settings.database_url)
-            try:
-                async with engine.begin() as connection:
-                    await bind_connection_audit_subject(
-                        connection,
-                        subject_kind="human",
-                        actor_name=principal.login_name,
-                        account_id=principal.account_id,
-                        identity_id=principal.identity_id,
-                    )
-                    superseded_bind = await self._reserve_adoption(
-                        connection,
-                        sign_id,
-                    )
-                    await insert_audit(
-                        connection,
-                        AuditEvent(
-                            principal=principal,
-                            role=principal.role,
-                            ip=ip,
-                            action="sign_adopt",
-                            object_type="sign",
-                            object_id=str(sign_id),
-                            after={
-                                "status": "requested",
-                                "vendor_sign_id": vendor_sign_id,
-                                "pending_bind_superseded": superseded_bind,
-                            },
-                        ),
-                    )
-                    await enqueue_outbox(
-                        connection,
-                        OutboxEventSpec(
-                            event_type="sign.adopt",
-                            aggregate_type="sms_sign",
-                            aggregate_id=str(sign_id),
-                            task_name="app.tasks.adopt_sign",
-                            queue="realtime",
-                            args=(sign_id, vendor_sign_id),
-                            dedup_key=f"sign.adopt:{sign_id}:{request_id}",
-                            max_attempts=3,
-                        ),
-                    )
-            finally:
-                await engine.dispose()
+            async with engine.begin() as connection:
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=principal.login_name,
+                    account_id=principal.account_id,
+                    identity_id=principal.identity_id,
+                )
+                superseded_bind = await self._reserve_adoption(
+                    connection,
+                    sign_id,
+                )
+                await insert_audit(
+                    connection,
+                    AuditEvent(
+                        principal=principal,
+                        role=principal.role,
+                        ip=ip,
+                        action="sign_adopt",
+                        object_type="sign",
+                        object_id=str(sign_id),
+                        after={
+                            "status": "requested",
+                            "vendor_sign_id": vendor_sign_id,
+                            "pending_bind_superseded": superseded_bind,
+                        },
+                    ),
+                )
+                await enqueue_outbox(
+                    connection,
+                    OutboxEventSpec(
+                        event_type="sign.adopt",
+                        aggregate_type="sms_sign",
+                        aggregate_id=str(sign_id),
+                        task_name="app.tasks.adopt_sign",
+                        queue="realtime",
+                        args=(sign_id, vendor_sign_id),
+                        dedup_key=f"sign.adopt:{sign_id}:{request_id}",
+                        max_attempts=3,
+                    ),
+                )
         except SQLAlchemyError as error:
             raise SignAdoptionUnavailable(
                 "sign adoption persistence unavailable"
@@ -318,19 +306,16 @@ class OutboxBatchSender:
     async def send_batch(self, batch_no: str, lane: str) -> None:
         request_id = uuid4()
         engine = database_engine(self.settings.database_url)
-        try:
-            async with engine.begin() as connection:
-                await enqueue_outbox(
-                    connection,
-                    OutboxEventSpec(
-                        event_type="batch.ready",
-                        aggregate_type="sms_batch",
-                        aggregate_id=batch_no,
-                        task_name="app.tasks.send.process_batch",
-                        queue=lane,
-                        args=(batch_no,),
-                        dedup_key=f"batch.ready:{request_id.hex}",
-                    ),
-                )
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await enqueue_outbox(
+                connection,
+                OutboxEventSpec(
+                    event_type="batch.ready",
+                    aggregate_type="sms_batch",
+                    aggregate_id=batch_no,
+                    task_name="app.tasks.send.process_batch",
+                    queue=lane,
+                    args=(batch_no,),
+                    dedup_key=f"batch.ready:{request_id.hex}",
+                ),
+            )

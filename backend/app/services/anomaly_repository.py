@@ -28,20 +28,17 @@ class SqlAnomalyRepository:
 
     async def config(self) -> AnomalyConfig:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT key,value FROM sys_config WHERE key IN (
                           'anomaly_enabled','anomaly_multiplier','anomaly_min_total'
                         )
                         """
-                    )
                 )
-                values = {str(row["key"]): str(row["value"]) for row in result.mappings()}
-        finally:
-            await engine.dispose()
+            )
+            values = {str(row["key"]): str(row["value"]) for row in result.mappings()}
         return AnomalyConfig(
             enabled=values.get("anomaly_enabled", "true").casefold() == "true",
             multiplier=int(values.get("anomaly_multiplier", "3")),
@@ -52,25 +49,24 @@ class SqlAnomalyRepository:
         start_date = scan_date - timedelta(days=7)
         end_date = scan_date - timedelta(days=1)
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                apps_result = await connection.execute(
-                    text("SELECT id,allowed_categories FROM app WHERE status=1 ORDER BY id")
+        async with engine.connect() as connection:
+            apps_result = await connection.execute(
+                text("SELECT id,allowed_categories FROM app WHERE status=1 ORDER BY id")
+            )
+            dimensions: list[tuple[int, str]] = []
+            for row in apps_result.mappings():
+                app_id = int(row["id"])
+                categories = str(row["allowed_categories"] or "").split(",")
+                dimensions.extend(
+                    (app_id, category.strip())
+                    for category in categories
+                    if category.strip() in CATEGORIES
                 )
-                dimensions: list[tuple[int, str]] = []
-                for row in apps_result.mappings():
-                    app_id = int(row["id"])
-                    categories = str(row["allowed_categories"] or "").split(",")
-                    dimensions.extend(
-                        (app_id, category.strip())
-                        for category in categories
-                        if category.strip() in CATEGORIES
-                    )
-                if not dimensions:
-                    return []
-                baseline_result = await connection.execute(
-                    text(
-                        """
+            if not dimensions:
+                return []
+            baseline_result = await connection.execute(
+                text(
+                    """
                         SELECT dim_value app_id,category,
                           count(DISTINCT stat_date) baseline_days,
                           COALESCE(sum(total_segments),0) seven_day_total
@@ -81,18 +77,16 @@ class SqlAnomalyRepository:
                           AND stat_date BETWEEN :start_date AND :end_date
                         GROUP BY dim_value,category
                         """
-                    ),
-                    {"start_date": start_date, "end_date": end_date},
+                ),
+                {"start_date": start_date, "end_date": end_date},
+            )
+            baselines = {
+                (int(row["app_id"]), str(row["category"])): (
+                    int(row["seven_day_total"]),
+                    int(row["baseline_days"]),
                 )
-                baselines = {
-                    (int(row["app_id"]), str(row["category"])): (
-                        int(row["seven_day_total"]),
-                        int(row["baseline_days"]),
-                    )
-                    for row in baseline_result.mappings()
-                }
-        finally:
-            await engine.dispose()
+                for row in baseline_result.mappings()
+            }
         date_key = scan_date.strftime("%Y%m%d")
         keys = [
             f"quota:volume:app:{app_id}:{category}:{date_key}" for app_id, category in dimensions

@@ -86,4 +86,4 @@ async def test_day_rebuild_is_locked_atomic_and_contains_all_rollups() -> None:
     assert "ON CONFLICT (stat_date)" in marker_sql
     assert marker_params == {"stat_date": date(2026, 7, 12), "scope_version": 1}
     assert "DEFAULT 'normal'" not in insert_sql
-    assert engine.disposed
+    assert not engine.disposed

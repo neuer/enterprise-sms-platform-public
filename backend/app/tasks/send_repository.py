@@ -125,39 +125,33 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
         """外呼前读取权威营销窗口；不可确认时停止发送。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text("SELECT value FROM sys_config WHERE key='market_send_window'")
-                )
-                value = result.scalar_one_or_none()
-                if value is None:
-                    raise RuntimeError("market send window unavailable")
-                return str(value)
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT value FROM sys_config WHERE key='market_send_window'")
+            )
+            value = result.scalar_one_or_none()
+            if value is None:
+                raise RuntimeError("market send window unavailable")
+            return str(value)
 
     async def load_worker_config(self) -> tuple[int, int, int]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT key, value FROM sys_config WHERE key IN (
                           'vendor_batch_size','vendor_qps','reserved_realtime_qps'
                         )
                         """
-                    )
                 )
-                values = {str(row["key"]): int(row["value"]) for row in result.mappings()}
-                return (
-                    values.get("vendor_batch_size", 500),
-                    values.get("vendor_qps", 5),
-                    values.get("reserved_realtime_qps", 2),
-                )
-        finally:
-            await engine.dispose()
+            )
+            values = {str(row["key"]): int(row["value"]) for row in result.mappings()}
+            return (
+                values.get("vendor_batch_size", 500),
+                values.get("vendor_qps", 5),
+                values.get("reserved_realtime_qps", 2),
+            )
 
     async def is_paused(self, lane: str) -> bool:
         critical = await self.redis.mget(["queue:paused:realtime", "queue:paused:bulk"])
@@ -198,47 +192,41 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
         """确认尚未调用厂商时把 submitting 放回 retrying，允许自动重试。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                released = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            released = await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk SET status='retrying',
                           vendor_msg='submit aborted before vendor call',
                           submitting_since=NULL,retry_not_before=now()
                         WHERE id=:id AND status='submitting'
                         RETURNING id
                         """
-                    ),
-                    {"id": chunk_id},
-                )
-                if released.scalar_one_or_none() is not None:
-                    await settle_live_test_attempt(connection, chunk_id, "released")
-        finally:
-            await engine.dispose()
+                ),
+                {"id": chunk_id},
+            )
+            if released.scalar_one_or_none() is not None:
+                await settle_live_test_attempt(connection, chunk_id, "released")
 
     async def release_control_claim(self, chunk_id: int) -> None:
         """厂商调用前状态失效时释放占额，分片保持可重试。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                released = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            released = await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk SET status='retrying',vendor_code=NULL,
                           vendor_msg='vendor control state unavailable',
                           submitting_since=NULL,retry_not_before=now()
                         WHERE id=:id AND status='submitting'
                         RETURNING id
                         """
-                    ),
-                    {"id": chunk_id},
-                )
-                if released.scalar_one_or_none() is not None:
-                    await settle_live_test_attempt(connection, chunk_id, "released")
-        finally:
-            await engine.dispose()
+                ),
+                {"id": chunk_id},
+            )
+            if released.scalar_one_or_none() is not None:
+                await settle_live_test_attempt(connection, chunk_id, "released")
 
     @staticmethod
     async def _enqueue_chunk_ready(
@@ -324,15 +312,14 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
             )
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                if bool(getattr(self.settings, "vendor_live_test", False)):
-                    payload = await self._payload(connection, chunk_id)
-                    if payload.denied_recipient_count:
-                        return SubmissionClaim(SubmissionClaimStatus.STALE)
-                chunk_result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            if bool(getattr(self.settings, "vendor_live_test", False)):
+                payload = await self._payload(connection, chunk_id)
+                if payload.denied_recipient_count:
+                    return SubmissionClaim(SubmissionClaimStatus.STALE)
+            chunk_result = await connection.execute(
+                text(
+                    """
                         SELECT c.id,c.batch_id,c.vendor_attempt_count
                         FROM sms_chunk c JOIN sms_batch b ON b.id=c.batch_id
                         WHERE c.id=:id
@@ -342,44 +329,42 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                           AND (c.retry_not_before IS NULL OR c.retry_not_before<=now())
                         FOR UPDATE OF c
                         """
-                    ),
-                    {"id": chunk_id, "expected_retry_count": expected_retry_count},
-                )
-                chunk = chunk_result.mappings().one_or_none()
-                if chunk is None:
-                    return SubmissionClaim(SubmissionClaimStatus.STALE)
+                ),
+                {"id": chunk_id, "expected_retry_count": expected_retry_count},
+            )
+            chunk = chunk_result.mappings().one_or_none()
+            if chunk is None:
+                return SubmissionClaim(SubmissionClaimStatus.STALE)
 
-                batch_status = await connection.execute(
-                    text("SELECT status FROM sms_batch WHERE id=:id FOR UPDATE"),
-                    {"id": int(chunk["batch_id"])},
-                )
-                if batch_status.scalar_one_or_none() not in {"queued", "sending"}:
-                    return SubmissionClaim(SubmissionClaimStatus.STALE)
+            batch_status = await connection.execute(
+                text("SELECT status FROM sms_batch WHERE id=:id FOR UPDATE"),
+                {"id": int(chunk["batch_id"])},
+            )
+            if batch_status.scalar_one_or_none() not in {"queued", "sending"}:
+                return SubmissionClaim(SubmissionClaimStatus.STALE)
 
-                attempt_no = int(chunk["vendor_attempt_count"]) + 1
-                budget = await self._reserve_submission_budget(
-                    connection, chunk_id, segments, attempt_no
-                )
-                if budget.status is not SubmissionClaimStatus.CLAIMED:
-                    return budget
-                transition = await connection.execute(
-                    text("""
+            attempt_no = int(chunk["vendor_attempt_count"]) + 1
+            budget = await self._reserve_submission_budget(
+                connection, chunk_id, segments, attempt_no
+            )
+            if budget.status is not SubmissionClaimStatus.CLAIMED:
+                return budget
+            transition = await connection.execute(
+                text("""
                     UPDATE sms_chunk SET status='submitting',submitting_since=now(),
                       retry_not_before=NULL,vendor_attempt_count=vendor_attempt_count+1
                     WHERE id=:id AND status IN ('pending','retrying')
                       AND retry_count=:expected_retry_count RETURNING id
                 """),
-                    {"id": chunk_id, "expected_retry_count": expected_retry_count},
-                )
-                if transition.scalar_one_or_none() is None:
-                    raise RuntimeError("submission claim lost cas")
-                await connection.execute(
-                    text("UPDATE sms_batch SET updated_at=now() WHERE id=:batch_id"),
-                    {"batch_id": int(chunk["batch_id"])},
-                )
-                return SubmissionClaim(SubmissionClaimStatus.CLAIMED)
-        finally:
-            await engine.dispose()
+                {"id": chunk_id, "expected_retry_count": expected_retry_count},
+            )
+            if transition.scalar_one_or_none() is None:
+                raise RuntimeError("submission claim lost cas")
+            await connection.execute(
+                text("UPDATE sms_batch SET updated_at=now() WHERE id=:batch_id"),
+                {"batch_id": int(chunk["batch_id"])},
+            )
+            return SubmissionClaim(SubmissionClaimStatus.CLAIMED)
 
     async def _reserve_submission_budget(
         self,
@@ -461,31 +446,28 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
             domain="vendor-task-id",
         )
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                submitted = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            submitted = await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk SET status='submitted', vendor_task_id=:task_id,
                           submitted_at=now(),submitting_since=NULL,retry_not_before=NULL
                         WHERE id=:id AND status='submitting'
                         RETURNING id
                         """
-                    ),
-                    {"id": chunk_id, "task_id": task_pseudonym},
-                )
-                if submitted.scalar_one_or_none() is None:
-                    return
-                await settle_live_test_attempt(connection, chunk_id, "confirmed")
-                await connection.execute(
-                    text(
-                        "UPDATE sms_message SET status='sent' WHERE chunk_id=:id "
+                ),
+                {"id": chunk_id, "task_id": task_pseudonym},
+            )
+            if submitted.scalar_one_or_none() is None:
+                return
+            await settle_live_test_attempt(connection, chunk_id, "confirmed")
+            await connection.execute(
+                text(
+                    "UPDATE sms_message SET status='sent' WHERE chunk_id=:id "
                         f"AND status='pending' AND {NO_REPORT_EVIDENCE}"
-                    ),
-                    {"id": chunk_id},
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {"id": chunk_id},
+            )
 
     async def _finalize_failed_messages(
         self,
@@ -549,44 +531,41 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
 
     async def mark_failed(self, chunk_id: int, code: int, message: str) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                candidate = await connection.execute(
-                    text(
-                        "SELECT batch_id FROM sms_chunk WHERE id=:id "
-                        "AND status='submitting' FOR UPDATE"
-                    ),
-                    {"id": chunk_id},
-                )
-                batch_id = candidate.scalar_one_or_none()
-                if batch_id is None:
-                    return
-                await connection.execute(
-                    text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
-                    {"id": int(batch_id)},
-                )
-                failed = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            candidate = await connection.execute(
+                text(
+                    "SELECT batch_id FROM sms_chunk WHERE id=:id "
+                    "AND status='submitting' FOR UPDATE"
+                ),
+                {"id": chunk_id},
+            )
+            batch_id = candidate.scalar_one_or_none()
+            if batch_id is None:
+                return
+            await connection.execute(
+                text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
+                {"id": int(batch_id)},
+            )
+            failed = await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk SET status='failed',vendor_code=:code,
                           vendor_msg=:message,submitting_since=NULL,retry_not_before=NULL
                         WHERE id=:id AND status='submitting'
                         RETURNING batch_id
                         """
-                    ),
-                    {"id": chunk_id, "code": code, "message": message},
-                )
-                transitioned_batch_id = failed.scalar_one_or_none()
-                if transitioned_batch_id is None:
-                    return
-                await settle_live_test_attempt(connection, chunk_id, "released")
-                await self._finalize_failed_messages(
-                    connection,
-                    chunk_id,
-                    int(transitioned_batch_id),
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {"id": chunk_id, "code": code, "message": message},
+            )
+            transitioned_batch_id = failed.scalar_one_or_none()
+            if transitioned_batch_id is None:
+                return
+            await settle_live_test_attempt(connection, chunk_id, "released")
+            await self._finalize_failed_messages(
+                connection,
+                chunk_id,
+                int(transitioned_batch_id),
+            )
 
     async def reject_disallowed_recipient(
         self,
@@ -598,11 +577,10 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
         if denied_count < 1:
             raise ValueError("denied_count must be positive")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                candidate = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            candidate = await connection.execute(
+                text(
+                    """
                         SELECT c.batch_id FROM sms_chunk c
                         JOIN sms_batch b ON b.id=c.batch_id
                         WHERE c.id=:id
@@ -610,42 +588,40 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                           AND b.status IN ('queued','sending')
                         FOR UPDATE OF c
                         """
-                    ),
-                    {"id": chunk_id},
-                )
-                batch_id = candidate.scalar_one_or_none()
-                if batch_id is None:
-                    return
-                batch_status = await connection.execute(
-                    text("SELECT status FROM sms_batch WHERE id=:id FOR UPDATE"),
-                    {"id": int(batch_id)},
-                )
-                if batch_status.scalar_one_or_none() not in {"queued", "sending"}:
-                    return
-                transitioned = await connection.execute(
-                    text(
-                        """
+                ),
+                {"id": chunk_id},
+            )
+            batch_id = candidate.scalar_one_or_none()
+            if batch_id is None:
+                return
+            batch_status = await connection.execute(
+                text("SELECT status FROM sms_batch WHERE id=:id FOR UPDATE"),
+                {"id": int(batch_id)},
+            )
+            if batch_status.scalar_one_or_none() not in {"queued", "sending"}:
+                return
+            transitioned = await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk SET status='failed',vendor_code=NULL,
                           vendor_msg=:message,submitting_since=NULL,retry_not_before=NULL
                         WHERE id=:id AND status IN ('pending','retrying','failover_pending')
                         RETURNING batch_id
                         """
-                    ),
-                    {
-                        "id": chunk_id,
-                        "message": (f"live-test recipient denied: count={denied_count}"),
-                    },
-                )
-                transitioned_batch_id = transitioned.scalar_one_or_none()
-                if transitioned_batch_id is None:
-                    return
-                await self._finalize_failed_messages(
-                    connection,
-                    chunk_id,
-                    int(transitioned_batch_id),
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "id": chunk_id,
+                    "message": (f"live-test recipient denied: count={denied_count}"),
+                },
+            )
+            transitioned_batch_id = transitioned.scalar_one_or_none()
+            if transitioned_batch_id is None:
+                return
+            await self._finalize_failed_messages(
+                connection,
+                chunk_id,
+                int(transitioned_batch_id),
+            )
 
     async def defer_daily_limit(
         self,
@@ -656,11 +632,10 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
         """日预算满时保持未下发语义，并仅调度到下一上海自然日。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk c SET status=CASE WHEN c.status='failover_pending'
                           THEN 'failover_pending' ELSE 'retrying' END,vendor_code=NULL,
                           retry_not_before=:reset_at
@@ -669,12 +644,10 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                           AND b.id=c.batch_id AND b.status IN ('queued','sending')
                         RETURNING b.category
                         """
-                    ),
-                    {"id": chunk_id, "reset_at": reset_at},
-                )
-                category = result.scalar_one_or_none()
-        finally:
-            await engine.dispose()
+                ),
+                {"id": chunk_id, "reset_at": reset_at},
+            )
+            category = result.scalar_one_or_none()
         if category is not None:
             actual_lane = self.lane_for(str(category))
             if actual_lane != lane:
@@ -687,21 +660,18 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
 
     async def mark_uncertain(self, chunk_id: int) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                transitioned = await connection.execute(
-                    text(
-                        "UPDATE sms_chunk SET status='uncertain',"
-                        "uncertain_since=COALESCE(submitting_since,now()),"
-                        "submitting_since=NULL,retry_not_before=NULL "
-                        "WHERE id=:id AND status='submitting' RETURNING id"
-                    ),
-                    {"id": chunk_id},
-                )
-                if transitioned.scalar_one_or_none() is not None:
-                    await settle_live_test_attempt(connection, chunk_id, "uncertain")
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            transitioned = await connection.execute(
+                text(
+                    "UPDATE sms_chunk SET status='uncertain',"
+                    "uncertain_since=COALESCE(submitting_since,now()),"
+                    "submitting_since=NULL,retry_not_before=NULL "
+                    "WHERE id=:id AND status='submitting' RETURNING id"
+                ),
+                {"id": chunk_id},
+            )
+            if transitioned.scalar_one_or_none() is not None:
+                await settle_live_test_attempt(connection, chunk_id, "uncertain")
 
     async def schedule_retry(
         self,
@@ -711,32 +681,29 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
         delay_s: int,
     ) -> bool:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                changed = await connection.execute(
-                    text(
-                        "UPDATE sms_chunk c SET status='retrying',vendor_code=:code,"
-                        "retry_count=retry_count+1,submitting_since=NULL,"
-                        "retry_not_before=now()+make_interval(secs=>:delay_s) "
-                        "FROM sms_batch b "
-                        "WHERE c.id=:id AND c.status='submitting' "
-                        "AND c.retry_count=:expected_retry_count "
-                        "AND c.retry_count<5 AND b.id=c.batch_id "
-                        "RETURNING b.category"
-                    ),
-                    {
-                        "id": chunk_id,
-                        "code": code,
-                        "expected_retry_count": expected_retry_count,
-                        "delay_s": delay_s,
-                    },
-                )
-                category = changed.scalar_one_or_none()
-                if category is None:
-                    return False
-                await settle_live_test_attempt(connection, chunk_id, "released")
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            changed = await connection.execute(
+                text(
+                    "UPDATE sms_chunk c SET status='retrying',vendor_code=:code,"
+                    "retry_count=retry_count+1,submitting_since=NULL,"
+                    "retry_not_before=now()+make_interval(secs=>:delay_s) "
+                    "FROM sms_batch b "
+                    "WHERE c.id=:id AND c.status='submitting' "
+                    "AND c.retry_count=:expected_retry_count "
+                    "AND c.retry_count<5 AND b.id=c.batch_id "
+                    "RETURNING b.category"
+                ),
+                {
+                    "id": chunk_id,
+                    "code": code,
+                    "expected_retry_count": expected_retry_count,
+                    "delay_s": delay_s,
+                },
+            )
+            category = changed.scalar_one_or_none()
+            if category is None:
+                return False
+            await settle_live_test_attempt(connection, chunk_id, "released")
         lane = self.lane_for(str(category))
         await self._enqueue_retry(chunk_id, lane, delay_s)
         return True
@@ -744,11 +711,10 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
     async def delay(self, chunk_id: int, code: int, delay_s: int) -> None:
         category = None
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk c SET status='retrying',vendor_code=:code,
                           retry_count=retry_count+1,
                           submitting_since=NULL,
@@ -758,100 +724,92 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                           AND c.retry_count<:retry_limit
                         RETURNING b.category
                         """
+                ),
+                {
+                    "id": chunk_id,
+                    "code": code,
+                    "delay_s": delay_s,
+                    "retry_limit": DELAYED_RETRY_LIMIT,
+                },
+            )
+            category = result.scalar_one_or_none()
+            if category is not None:
+                await settle_live_test_attempt(connection, chunk_id, "released")
+            else:
+                candidate = await connection.execute(
+                    text(
+                        "SELECT batch_id FROM sms_chunk "
+                        "WHERE id=:id AND status='submitting' FOR UPDATE"
                     ),
-                    {
-                        "id": chunk_id,
-                        "code": code,
-                        "delay_s": delay_s,
-                        "retry_limit": DELAYED_RETRY_LIMIT,
-                    },
+                    {"id": chunk_id},
                 )
-                category = result.scalar_one_or_none()
-                if category is not None:
-                    await settle_live_test_attempt(connection, chunk_id, "released")
-                else:
-                    candidate = await connection.execute(
-                        text(
-                            "SELECT batch_id FROM sms_chunk "
-                            "WHERE id=:id AND status='submitting' FOR UPDATE"
-                        ),
-                        {"id": chunk_id},
+                batch_id = candidate.scalar_one_or_none()
+                if batch_id is not None:
+                    await connection.execute(
+                        text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
+                        {"id": int(batch_id)},
                     )
-                    batch_id = candidate.scalar_one_or_none()
-                    if batch_id is not None:
-                        await connection.execute(
-                            text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
-                            {"id": int(batch_id)},
+                    failed = await connection.execute(
+                        text(
+                            "UPDATE sms_chunk SET status='failed',vendor_code=:code,"
+                            "vendor_msg=:reason,"
+                            "submitting_since=NULL,retry_not_before=NULL "
+                            "WHERE id=:id AND status='submitting' "
+                            "RETURNING batch_id"
+                        ),
+                        {"id": chunk_id, "code": code, "reason": DELAYED_RETRY_EXHAUSTED},
+                    )
+                    transitioned_batch_id = failed.scalar_one_or_none()
+                    if transitioned_batch_id is not None:
+                        await settle_live_test_attempt(
+                            connection,
+                            chunk_id,
+                            "released",
                         )
-                        failed = await connection.execute(
-                            text(
-                                "UPDATE sms_chunk SET status='failed',vendor_code=:code,"
-                                "vendor_msg=:reason,"
-                                "submitting_since=NULL,retry_not_before=NULL "
-                                "WHERE id=:id AND status='submitting' "
-                                "RETURNING batch_id"
-                            ),
-                            {"id": chunk_id, "code": code, "reason": DELAYED_RETRY_EXHAUSTED},
+                        await self._finalize_failed_messages(
+                            connection,
+                            chunk_id,
+                            int(transitioned_batch_id),
                         )
-                        transitioned_batch_id = failed.scalar_one_or_none()
-                        if transitioned_batch_id is not None:
-                            await settle_live_test_attempt(
-                                connection,
-                                chunk_id,
-                                "released",
-                            )
-                            await self._finalize_failed_messages(
-                                connection,
-                                chunk_id,
-                                int(transitioned_batch_id),
-                            )
-        finally:
-            await engine.dispose()
         if category is not None:
             lane = self.lane_for(str(category))
             await self._enqueue_retry(chunk_id, lane, delay_s)
 
     async def balance_blocked(self, batch_id: int, chunk_id: int) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                transitioned = await connection.execute(
-                    text(
-                        "UPDATE sms_chunk SET status='retrying',vendor_code=999,"
-                        "submitting_since=NULL,retry_not_before=now() "
-                        "WHERE id=:id AND batch_id=:batch_id AND status='submitting' RETURNING id"
-                    ),
-                    {"id": chunk_id, "batch_id": batch_id},
-                )
-                if transitioned.scalar_one_or_none() is None:
-                    return
-                await connection.execute(
-                    text("UPDATE sms_batch SET status='balance_blocked' WHERE id=:id"),
-                    {"id": batch_id},
-                )
-                await settle_live_test_attempt(connection, chunk_id, "released")
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            transitioned = await connection.execute(
+                text(
+                    "UPDATE sms_chunk SET status='retrying',vendor_code=999,"
+                    "submitting_since=NULL,retry_not_before=now() "
+                    "WHERE id=:id AND batch_id=:batch_id AND status='submitting' RETURNING id"
+                ),
+                {"id": chunk_id, "batch_id": batch_id},
+            )
+            if transitioned.scalar_one_or_none() is None:
+                return
+            await connection.execute(
+                text("UPDATE sms_batch SET status='balance_blocked' WHERE id=:id"),
+                {"id": batch_id},
+            )
+            await settle_live_test_attempt(connection, chunk_id, "released")
 
     async def pause_blocked(self, chunk_id: int, code: int) -> None:
         """熔断码把在途 chunk 回退 retrying，恢复队列后由 reconcile 重投。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                transitioned = await connection.execute(
-                    text(
-                        "UPDATE sms_chunk SET status='retrying',vendor_code=:code,"
-                        "submitting_since=NULL,retry_not_before=now() "
-                        "WHERE id=:id AND status='submitting' RETURNING id"
-                    ),
-                    {"id": chunk_id, "code": code},
-                )
-                if transitioned.scalar_one_or_none() is None:
-                    return
-                await settle_live_test_attempt(connection, chunk_id, "released")
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            transitioned = await connection.execute(
+                text(
+                    "UPDATE sms_chunk SET status='retrying',vendor_code=:code,"
+                    "submitting_since=NULL,retry_not_before=now() "
+                    "WHERE id=:id AND status='submitting' RETURNING id"
+                ),
+                {"id": chunk_id, "code": code},
+            )
+            if transitioned.scalar_one_or_none() is None:
+                return
+            await settle_live_test_attempt(connection, chunk_id, "released")
 
     async def pause_queues(self, code: int) -> None:
         result = await self.redis.eval(
@@ -868,21 +826,15 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
         if len(chunk.phones) < 2 or chunk.parent_chunk_id is not None:
             return []
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                child_ids = await complete_vendor_split(connection, chunk)
-                return [await self._payload(connection, child_id) for child_id in child_ids]
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            child_ids = await complete_vendor_split(connection, chunk)
+            return [await self._payload(connection, child_id) for child_id in child_ids]
 
     async def _update_chunk(self, statement: str, values: dict[str, Any]) -> int:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(text(statement), values)
-                return int(result.rowcount)
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            result = await connection.execute(text(statement), values)
+            return int(result.rowcount)
 
 
 if TYPE_CHECKING:

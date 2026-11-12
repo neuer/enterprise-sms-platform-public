@@ -1,7 +1,7 @@
 import { afterEach, vi } from "vitest"
 
 import { detectSessionMode, hasWebLocks, withRefreshLock } from "../src/api/refreshLock"
-import { isSafeSingleTabMode } from "../src/api/sessionMode"
+import { isAccessOnlySessionMode } from "../src/api/sessionMode"
 import {
   beginRefreshTabBinding,
   getRefreshTabBinding,
@@ -18,7 +18,7 @@ describe("跨标签页 Refresh Lock", () => {
   it("没有 Web Locks 时本页串行且进入 Access-Only", async () => {
     vi.stubGlobal("navigator", {})
     expect(hasWebLocks()).toBe(false)
-    expect(isSafeSingleTabMode()).toBe(true)
+    expect(isAccessOnlySessionMode()).toBe(true)
     expect(detectSessionMode()).toBe("access_only")
 
     const order: string[] = []
@@ -63,7 +63,7 @@ describe("跨标签页 Refresh Lock", () => {
       },
     }
     vi.stubGlobal("navigator", { locks })
-    expect(isSafeSingleTabMode()).toBe(false)
+    expect(isAccessOnlySessionMode()).toBe(false)
 
     let releaseFirst!: () => void
     const firstGate = new Promise<void>((resolve) => {

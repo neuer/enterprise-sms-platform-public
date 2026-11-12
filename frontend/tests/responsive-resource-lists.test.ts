@@ -80,12 +80,13 @@ function mockRows(resource: (typeof resources)[number], count: number) {
     vendor_state: index % 2 === 0 ? "rejected" : "approved",
     vendor_reject_reason: null,
   }))
-  const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL, _init?: RequestInit) => ({
-    ok: true,
-    status: 200,
-    headers: { get: () => null },
-    json: async () => (String(input).includes("/admin/apps") ? [] : rows),
-  }))
+  const fetchMock = vi.fn().mockImplementation(
+    async (input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(JSON.stringify(String(input).includes("/admin/apps") ? [] : rows), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+  )
   vi.stubGlobal("fetch", fetchMock)
   return fetchMock
 }

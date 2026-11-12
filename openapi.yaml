@@ -3036,7 +3036,7 @@ paths:
                     display_status: { anyOf: [{ type: string, enum: [pending, sent, delivered, failed, unknown, other, cancelled, rejected, expired, needs_review] }, { type: 'null' }], description: 展示状态，与页面生命周期筛选一致 }
                     app_id: { anyOf: [{ type: integer, minimum: 1 }, { type: 'null' }] }
                     dept: { anyOf: [{ type: string, maxLength: 128 }, { type: 'null' }], description: 不得包含手机号 }
-                    batch_no: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }], description: 不得包含手机号 }
+                    batch_no: { anyOf: [{ type: string, maxLength: 32 }, { type: 'null' }], description: 32 位小写 hex 批次引用允许数字片段；其他值不得包含手机号 }
                     phone: { anyOf: [{ type: string, pattern: '^1\d{10}$' }, { type: 'null' }], description: 请求后立即转phone_hmac，export_task.filters禁止保存明文 }
                     is_test: { anyOf: [{ type: boolean }, { type: 'null' }], description: 未传为全部；false 仅普通消息，必须显式传递 }
                 decrypted: { type: boolean, default: false, description: 是否导出明文手机号（按角色，记审计） }

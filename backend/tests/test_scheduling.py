@@ -24,7 +24,6 @@ def test_scheduling_repository_always_uses_process_shared_pool(
     )
 
     assert SqlSchedulingRepository(settings)._engine() is shared_engine
-    assert SqlSchedulingRepository(settings, pooled=True)._engine() is shared_engine
 
 
 class FakeRepository:

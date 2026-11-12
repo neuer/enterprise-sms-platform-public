@@ -112,7 +112,7 @@ async def test_raw_reply_is_persisted_in_independent_transaction() -> None:
     assert params["capture_state"] == "complete"
     assert params["parse_state"] == "unattempted"
     assert params["replay_eligibility"] == "automatic"
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,7 @@ async def test_reply_insert_is_database_idempotent_and_associates_custom_before_
     assert params["phone_hmacs"] == list(reply.phone_hmacs)
     assert params["dedup_key_version"] == reply.dedup_key_version
     assert "13800138000" not in str(params)
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio

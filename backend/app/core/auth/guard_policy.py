@@ -138,24 +138,21 @@ class SqlAuthGuardPolicyLoader:
         observe_policy_cache_miss()
         observe_guard_db_query()
         engine = database_engine(self.settings.database_url_for("auth"))
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT key,value,updated_at
                         FROM sys_config
                         WHERE key = ANY(CAST(:keys AS text[]))
                         """
-                    ),
-                    {"keys": list(AUTH_GUARD_KEYS)},
-                )
-                rows = [
-                    (str(row["key"]), str(row["value"]), row["updated_at"])
-                    for row in result.mappings()
-                ]
-        finally:
-            await engine.dispose()
+                ),
+                {"keys": list(AUTH_GUARD_KEYS)},
+            )
+            rows = [
+                (str(row["key"]), str(row["value"]), row["updated_at"])
+                for row in result.mappings()
+            ]
         if {key for key, _value, _updated in rows} != set(AUTH_GUARD_KEYS):
             raise InvalidRuntimePolicy("auth guard keys are incomplete")
         return AuthGuardPolicy.from_mapping(

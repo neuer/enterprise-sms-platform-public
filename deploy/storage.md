@@ -161,11 +161,9 @@ canonical、root 控制且与 `/var/lib/docker` 同一设备；这些控制目�
 防止卷元数据或目标层静默落到 OS 盘、临时文件系统或其它 VMDK。预检失败不得用
 `ExecStartPre=-...`、临时删除依赖或手工执行 Compose 绕过。
 
-如果专用生产主机已在 `109c10865b2aac3989bc4cebf3c60788f44b168c` 完成宿主资产首装并
-已技术首启 Docker，从而保留了非空 data-root 元数据，但因旧 preflight 期待 `0711` 而失败，
-只能使用 [部署手册](README.md#安装受控包装器与-systemd) 中固定旧 SHA 的一次性、仅
-`storage-preflight` 修复流程。该流程不要求 Docker root 为空，但严禁删除或重建其内容；
-它也不授权手工 `chmod`、直接覆盖预检文件或开始平台 bootstrap。
+Docker data-root 的当前权限合同固定为 `root:root 0710`。绑定旧提交的 `0711→0710`
+一次性修复已退役；旧事务残留按 [部署手册](README.md#安装受控包装器与-systemd)
+保留证据并单独恢复，不得删除或重建 data-root、手工修改权限或借首装覆盖资产。
 
 ## 70/80/90 阈值
 

@@ -173,26 +173,22 @@ class UncertainResolutionService:
             return await self.apply_effect(resolution_id)
         except Exception:
             engine = self._engine()
-            try:
-                async with engine.connect() as connection:
-                    row = (await connection.execute(text("""
+            async with engine.connect() as connection:
+                row = (await connection.execute(text("""
                         SELECT * FROM sms_uncertain_resolution
                         WHERE id=:id AND state='manual_intervention_required'
                     """), {"id": resolution_id})).mappings().one_or_none()
-                if row is not None:
-                    return _row(row)
-            finally:
-                await engine.dispose()
+            if row is not None:
+                return _row(row)
             raise
 
     async def _mark_applying(self, resolution_id: int) -> UncertainResolution:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                current = (
-                    await connection.execute(
-                        text(
-                            """
+        async with engine.begin() as connection:
+            current = (
+                await connection.execute(
+                    text(
+                        """
                             SELECT id,chunk_id,batch_id,action,state,
                               proposer_account_id,confirmer_account_id,
                               child_batch_id,effect_generation,effect_error,
@@ -201,20 +197,20 @@ class UncertainResolutionService:
                             FROM sms_uncertain_resolution
                             WHERE id=:id FOR UPDATE
                             """
-                        ),
-                        {"id": resolution_id},
-                    )
-                ).mappings().one_or_none()
-                if current is None:
-                    raise UncertainResolutionNotFound
-                if str(current["state"]) in {"effect_applied", "closed"}:
-                    return _row(current)
-                if str(current["state"]) not in APPROVED_EFFECT_STATES:
-                    raise UncertainResolutionConflict("处置单不可执行")
-                updated = (
-                    await connection.execute(
-                        text(
-                            """
+                    ),
+                    {"id": resolution_id},
+                )
+            ).mappings().one_or_none()
+            if current is None:
+                raise UncertainResolutionNotFound
+            if str(current["state"]) in {"effect_applied", "closed"}:
+                return _row(current)
+            if str(current["state"]) not in APPROVED_EFFECT_STATES:
+                raise UncertainResolutionConflict("处置单不可执行")
+            updated = (
+                await connection.execute(
+                    text(
+                        """
                             UPDATE sms_uncertain_resolution
                             SET state='applying', effect_error=NULL
                             WHERE id=:id AND state=ANY(:states)
@@ -222,37 +218,32 @@ class UncertainResolutionService:
                               proposer_account_id,confirmer_account_id,
                               child_batch_id,effect_generation,effect_error
                             """
-                        ),
-                        {
-                            "id": resolution_id,
-                            "states": list(APPROVED_EFFECT_STATES),
-                        },
-                    )
-                ).mappings().one_or_none()
-                if updated is None:
-                    raise UncertainResolutionConflict("处置单不可执行")
-                merged = dict(updated)
-                merged["source_app_id"] = current["source_app_id"]
-                merged["source_channel"] = current["source_channel"]
-                merged["source_category"] = current["source_category"]
-                merged["source_dept"] = current["source_dept"]
-                return _row(merged)
-        finally:
-            await engine.dispose()
+                    ),
+                    {
+                        "id": resolution_id,
+                        "states": list(APPROVED_EFFECT_STATES),
+                    },
+                )
+            ).mappings().one_or_none()
+            if updated is None:
+                raise UncertainResolutionConflict("处置单不可执行")
+            merged = dict(updated)
+            merged["source_app_id"] = current["source_app_id"]
+            merged["source_channel"] = current["source_channel"]
+            merged["source_category"] = current["source_category"]
+            merged["source_dept"] = current["source_dept"]
+            return _row(merged)
 
     async def _run_not_accepted(self, current: UncertainResolution) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await _apply_not_accepted(
-                    connection,
-                    resolution_id=current.id,
-                    chunk_id=current.chunk_id,
-                    batch_id=current.batch_id,
-                    generation=current.effect_generation,
-                )
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await _apply_not_accepted(
+                connection,
+                resolution_id=current.id,
+                chunk_id=current.chunk_id,
+                batch_id=current.batch_id,
+                generation=current.effect_generation,
+            )
 
     async def _run_resend(self, current: UncertainResolution) -> int:
         """只恢复已证明的内部 child；同名或结果不明的旧记录不能触发新发送。"""
@@ -260,62 +251,59 @@ class UncertainResolutionService:
         from app.api.messages import _pipeline
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                locked, context, app_ctx = await lock_uncertain_resend(
-                    connection, _effect_principal(current)
-                )
-                relation = await _child_relation(connection, locked.id)
-                if relation is not None and bool(relation["provenance_verified"]):
-                    _check_child_context(relation, locked, context)
-                    return int(relation["child_batch_id"])
-                candidates = await _legacy_resend_candidates(connection, locked)
-                request = await self._build_resend(
-                    connection,
-                    chunk_id=locked.chunk_id,
-                    resolution_id=locked.id,
-                    generation=locked.effect_generation,
-                    actor=_effect_principal(locked),
-                    usage_subject=context.usage_subject,
-                )
-                if candidates:
-                    if len(candidates) != 1:
-                        raise UncertainResolutionConflict("重发子批次来源冲突")
-                    candidate = candidates[0]
-                    _check_child_context(candidate, locked, context)
-                    if not bool(candidate["system_audit"]):
-                        raise UncertainResolutionConflict("重发子批次来源无法证明")
-                    pipeline = await _pipeline(app_ctx)
-                    legacy_request = replace(request, biz_id=str(candidate["biz_id"]))
-                    try:
-                        await pipeline._ensure_same_request(
-                            IdempotencyScope("uncertain-resend", str(locked.id)),
-                            str(candidate["biz_id"]),
-                            legacy_request,
-                            app_ctx,
-                            pipeline._resolve_policy(app_ctx, legacy_request, None),
-                        )
-                    except Exception as exc:
-                        raise UncertainResolutionConflict("重发子批次指纹无法证明") from exc
-                    child_id = int(candidate["child_batch_id"])
-                    await bind_uncertain_child(connection, locked, child_id, recovered=True)
-                    return child_id
-                if relation is not None or locked.child_batch_id is not None:
-                    raise UncertainResolutionConflict("重发子批次来源无法证明")
-            pipeline = await _pipeline(app_ctx)
-            # COMMIT 响应丢失由下一次 effect 读取原子关系，不猜测返回的 batch_no。
-            await pipeline.accept(app_ctx, request)
-            async with engine.begin() as connection:
-                locked, context, _app_ctx = await lock_uncertain_resend(
-                    connection, _effect_principal(current)
-                )
-                relation = await _child_relation(connection, locked.id)
-                if relation is None or not bool(relation["provenance_verified"]):
-                    raise UncertainResolutionConflict("重发子批次缺少可信创建关系")
+        async with engine.begin() as connection:
+            locked, context, app_ctx = await lock_uncertain_resend(
+                connection, _effect_principal(current)
+            )
+            relation = await _child_relation(connection, locked.id)
+            if relation is not None and bool(relation["provenance_verified"]):
                 _check_child_context(relation, locked, context)
                 return int(relation["child_batch_id"])
-        finally:
-            await engine.dispose()
+            candidates = await _legacy_resend_candidates(connection, locked)
+            request = await self._build_resend(
+                connection,
+                chunk_id=locked.chunk_id,
+                resolution_id=locked.id,
+                generation=locked.effect_generation,
+                actor=_effect_principal(locked),
+                usage_subject=context.usage_subject,
+            )
+            if candidates:
+                if len(candidates) != 1:
+                    raise UncertainResolutionConflict("重发子批次来源冲突")
+                candidate = candidates[0]
+                _check_child_context(candidate, locked, context)
+                if not bool(candidate["system_audit"]):
+                    raise UncertainResolutionConflict("重发子批次来源无法证明")
+                pipeline = await _pipeline(app_ctx)
+                legacy_request = replace(request, biz_id=str(candidate["biz_id"]))
+                try:
+                    await pipeline._ensure_same_request(
+                        IdempotencyScope("uncertain-resend", str(locked.id)),
+                        str(candidate["biz_id"]),
+                        legacy_request,
+                        app_ctx,
+                        pipeline._resolve_policy(app_ctx, legacy_request, None),
+                    )
+                except Exception as exc:
+                    raise UncertainResolutionConflict("重发子批次指纹无法证明") from exc
+                child_id = int(candidate["child_batch_id"])
+                await bind_uncertain_child(connection, locked, child_id, recovered=True)
+                return child_id
+            if relation is not None or locked.child_batch_id is not None:
+                raise UncertainResolutionConflict("重发子批次来源无法证明")
+        pipeline = await _pipeline(app_ctx)
+        # COMMIT 响应丢失由下一次 effect 读取原子关系，不猜测返回的 batch_no。
+        await pipeline.accept(app_ctx, request)
+        async with engine.begin() as connection:
+            locked, context, _app_ctx = await lock_uncertain_resend(
+                connection, _effect_principal(current)
+            )
+            relation = await _child_relation(connection, locked.id)
+            if relation is None or not bool(relation["provenance_verified"]):
+                raise UncertainResolutionConflict("重发子批次缺少可信创建关系")
+            _check_child_context(relation, locked, context)
+            return int(relation["child_batch_id"])
 
     async def _close_resend(
         self, current: UncertainResolution, child_id: int
@@ -323,12 +311,11 @@ class UncertainResolutionService:
         """关闭 CAS 绑定已核验 child 和 generation，旧执行者不能关闭新处置。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                row = (
-                    (
-                        await connection.execute(
-                            text("""
+        async with engine.begin() as connection:
+            row = (
+                (
+                    await connection.execute(
+                        text("""
                     UPDATE sms_uncertain_resolution r
                     SET state='closed', effect_applied_at=now(), effect_error=NULL
                     WHERE r.id=:id AND r.effect_generation=:generation
@@ -339,21 +326,19 @@ class UncertainResolutionService:
                           AND c.generation=:generation AND c.provenance_verified)
                     RETURNING r.*
                 """),
-                            {
-                                "id": current.id,
-                                "generation": current.effect_generation,
-                                "child_id": child_id,
-                            },
-                        )
+                        {
+                            "id": current.id,
+                            "generation": current.effect_generation,
+                            "child_id": child_id,
+                        },
                     )
-                    .mappings()
-                    .one_or_none()
                 )
-                if row is None:
-                    raise UncertainResolutionConflict("处置 generation 或 child 已变化")
-                return _row(row)
-        finally:
-            await engine.dispose()
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                raise UncertainResolutionConflict("处置 generation 或 child 已变化")
+            return _row(row)
 
     async def _mark_closed(
         self, resolution_id: int, *, generation: int | None = None,
@@ -403,13 +388,12 @@ class UncertainResolutionService:
         expected_generation: int | None = None,
     ) -> UncertainResolution:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                updated = (
-                    (
-                        await connection.execute(
-                            text(
-                                f"""
+        async with engine.begin() as connection:
+            updated = (
+                (
+                    await connection.execute(
+                        text(
+                            f"""
                             UPDATE sms_uncertain_resolution
                             SET state=:state, {extra}
                             WHERE id=:id AND state=ANY(:from_states)
@@ -419,39 +403,37 @@ class UncertainResolutionService:
                               proposer_account_id,confirmer_account_id,
                               child_batch_id,effect_generation,effect_error
                             """
-                            ),
-                            {
-                                "id": resolution_id,
-                                "state": state,
-                                "from_states": list(from_states),
-                                "generation": expected_generation,
-                            },
-                        )
+                        ),
+                        {
+                            "id": resolution_id,
+                            "state": state,
+                            "from_states": list(from_states),
+                            "generation": expected_generation,
+                        },
                     )
-                    .mappings()
-                    .one_or_none()
                 )
-                if updated is None:
-                    current = (
-                        await connection.execute(
-                            text(
-                                """
+                .mappings()
+                .one_or_none()
+            )
+            if updated is None:
+                current = (
+                    await connection.execute(
+                        text(
+                            """
                                 SELECT id,chunk_id,batch_id,action,state,
                                   proposer_account_id,confirmer_account_id,
                                   child_batch_id,effect_generation,effect_error
                                 FROM sms_uncertain_resolution
                                 WHERE id=:id
                                 """
-                            ),
-                            {"id": resolution_id},
-                        )
-                    ).mappings().one()
-                    if str(current["state"]) == state:
-                        return _row(current)
-                    raise UncertainResolutionConflict("处置单状态已变化")
-                return _row(updated)
-        finally:
-            await engine.dispose()
+                        ),
+                        {"id": resolution_id},
+                    )
+                ).mappings().one()
+                if str(current["state"]) == state:
+                    return _row(current)
+                raise UncertainResolutionConflict("处置单状态已变化")
+            return _row(updated)
 
     async def _build_resend(
         self,

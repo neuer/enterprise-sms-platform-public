@@ -31,7 +31,6 @@ from app.services.batch_query import BatchAccessScope, BatchNotFound, BatchQuery
 from app.services.blacklist import BlacklistCacheUnavailable
 from app.services.category import CategoryNotAllowed
 from app.services.crypto import CryptoService, ProtectedPhone
-from app.services.freq import FrequencyFenceLost
 from app.services.idempotency import IdempotencyCoordinationTimeout, IdempotencyCoordinator
 from app.services.pipeline import (
     AcceptCommitConflict,
@@ -424,7 +423,7 @@ def _scheduling_service(
 ) -> SchedulingService:
     redis: Any = redis_client(settings.redis_control_url)
     return SchedulingService(
-        SqlSchedulingRepository(settings, pooled=True),
+        SqlSchedulingRepository(settings),
         QuotaService(redis),
         CeleryQueuePublisher(),
         approval_expire_hours=approval_expire_hours,
@@ -557,7 +556,7 @@ def _error(error: Exception) -> ApiError:
         return ApiError(409, "STATE_CONFLICT", str(error), None)
     if isinstance(
         error,
-        (FrequencyFenceLost, IdempotencyCoordinationTimeout, IdempotencyClaimLost),
+        (IdempotencyCoordinationTimeout, IdempotencyClaimLost),
     ):
         return ApiError(
             503,
@@ -631,7 +630,6 @@ async def send_message(
         VendorTestRecipientDenied,
         UsageProjectionUnavailable,
         UsageReservationConflict,
-        FrequencyFenceLost,
         IdempotencyCoordinationTimeout,
         IdempotencyClaimLost,
         AcceptCommitConflict,
@@ -793,7 +791,6 @@ async def send_vendor_test_api_uat(
         VendorTestRecipientDenied,
         UsageProjectionUnavailable,
         UsageReservationConflict,
-        FrequencyFenceLost,
         IdempotencyCoordinationTimeout,
         IdempotencyClaimLost,
         AcceptCommitConflict,

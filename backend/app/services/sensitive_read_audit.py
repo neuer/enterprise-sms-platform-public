@@ -29,22 +29,19 @@ class SensitiveReadAuditor:
         if principal is None:
             raise RuntimeError("sensitive read audit principal unavailable")
         engine: ManagedAsyncEngine = database_engine(self.settings.database_url)
-        try:
-            async with engine.begin() as connection:
-                await insert_audit(
-                    connection,
-                    AuditEvent(
-                        principal=principal,
-                        role=getattr(principal, "role", None),
-                        action=action,
-                        object_type=object_type,
-                        object_id=object_id,
-                        ip=ip,
-                        after={"result_count": count},
-                    ),
-                )
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await insert_audit(
+                connection,
+                AuditEvent(
+                    principal=principal,
+                    role=getattr(principal, "role", None),
+                    action=action,
+                    object_type=object_type,
+                    object_id=object_id,
+                    ip=ip,
+                    after={"result_count": count},
+                ),
+            )
 
 
 def get_sensitive_read_auditor() -> SensitiveReadAuditor:

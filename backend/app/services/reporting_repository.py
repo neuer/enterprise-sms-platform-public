@@ -154,18 +154,17 @@ class SqlReportingRepository:
             "test_scope": query.test_scope,
         }
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                connection = await connection.execution_options(isolation_level="REPEATABLE READ")
-                async with connection.begin():
-                    await self._ensure_filtered_scope_ready(connection, query)
-                    dimensions = list((await connection.execute(overview, params)).mappings())
-                    top_dims = [str(row["dim_value"]) for row in dimensions if not row["is_other"]]
-                    trend_params = {**params, "top_dims": top_dims}
-                    trend_rows = list(
-                        (
-                            await connection.execute(
-                                text(f"""
+        async with engine.connect() as connection:
+            connection = await connection.execution_options(isolation_level="REPEATABLE READ")
+            async with connection.begin():
+                await self._ensure_filtered_scope_ready(connection, query)
+                dimensions = list((await connection.execute(overview, params)).mappings())
+                top_dims = [str(row["dim_value"]) for row in dimensions if not row["is_other"]]
+                trend_params = {**params, "top_dims": top_dims}
+                trend_rows = list(
+                    (
+                        await connection.execute(
+                            text(f"""
                         WITH base AS ({base})
                         SELECT period_start,
                           CASE WHEN dim_value=ANY(CAST(:top_dims AS text[]))
@@ -174,38 +173,74 @@ class SqlReportingRepository:
                           sum(total)::bigint total,sum(total_segments)::bigint total_segments
                         FROM base GROUP BY 1,2,3 ORDER BY period_start
                     """),
-                                trend_params,
-                            )
-                        ).mappings()
-                    )
-                    rows = list(
-                        (
-                            await connection.execute(
-                                text(f"""
+                            trend_params,
+                        )
+                    ).mappings()
+                )
+                rows = list(
+                    (
+                        await connection.execute(
+                            text(f"""
                         WITH base AS ({base})
                         SELECT * FROM base
                         ORDER BY {sort} {direction},dim_label {direction},
                           dim_value {direction},period_start {direction}
                         LIMIT :size OFFSET :offset
                     """),
-                                {
-                                    **params,
-                                    "size": query.size,
-                                    "offset": (query.page - 1) * query.size,
-                                },
-                            )
-                        ).mappings()
-                    )
-            periods = tuple(sorted({row["period_start"] for row in trend_rows}))
-            trend_values = {
-                (row["period_start"], str(row["dim_value"]), bool(row["is_other"])): (
-                    int(row["total"]),
-                    int(row["total_segments"]),
+                            {
+                                **params,
+                                "size": query.size,
+                                "offset": (query.page - 1) * query.size,
+                            },
+                        )
+                    ).mappings()
                 )
-                for row in trend_rows
-            }
-            dim_summary = tuple(
-                ReportingDimSummary(
+        periods = tuple(sorted({row["period_start"] for row in trend_rows}))
+        trend_values = {
+            (row["period_start"], str(row["dim_value"]), bool(row["is_other"])): (
+                int(row["total"]),
+                int(row["total_segments"]),
+            )
+            for row in trend_rows
+        }
+        dim_summary = tuple(
+            ReportingDimSummary(
+                str(row["dim_value"]),
+                str(row["dim_label"]),
+                int(row["total"]),
+                int(row["total_segments"]),
+                int(row["delivered"]),
+                int(row["failed"]),
+                int(row["unknown_cnt"]),
+                success_rate(int(row["delivered"]), int(row["failed"])),
+                bool(row["is_other"]),
+            )
+            for row in dimensions
+        )
+        return ReportingData(
+            dim_summary,
+            ReportingTrend(
+                periods,
+                tuple(
+                    ReportingTrendSeries(
+                        dim.dim_value,
+                        dim.dim_label,
+                        tuple(
+                            trend_values.get((period, dim.dim_value, dim.is_other), (0, 0))[0]
+                            for period in periods
+                        ),
+                        tuple(
+                            trend_values.get((period, dim.dim_value, dim.is_other), (0, 0))[1]
+                            for period in periods
+                        ),
+                        dim.is_other,
+                    )
+                    for dim in dim_summary
+                ),
+            ),
+            tuple(
+                ReportingTotals(
+                    row["period_start"],
                     str(row["dim_value"]),
                     str(row["dim_label"]),
                     int(row["total"]),
@@ -213,47 +248,9 @@ class SqlReportingRepository:
                     int(row["delivered"]),
                     int(row["failed"]),
                     int(row["unknown_cnt"]),
-                    success_rate(int(row["delivered"]), int(row["failed"])),
-                    bool(row["is_other"]),
                 )
-                for row in dimensions
-            )
-            return ReportingData(
-                dim_summary,
-                ReportingTrend(
-                    periods,
-                    tuple(
-                        ReportingTrendSeries(
-                            dim.dim_value,
-                            dim.dim_label,
-                            tuple(
-                                trend_values.get((period, dim.dim_value, dim.is_other), (0, 0))[0]
-                                for period in periods
-                            ),
-                            tuple(
-                                trend_values.get((period, dim.dim_value, dim.is_other), (0, 0))[1]
-                                for period in periods
-                            ),
-                            dim.is_other,
-                        )
-                        for dim in dim_summary
-                    ),
-                ),
-                tuple(
-                    ReportingTotals(
-                        row["period_start"],
-                        str(row["dim_value"]),
-                        str(row["dim_label"]),
-                        int(row["total"]),
-                        int(row["total_segments"]),
-                        int(row["delivered"]),
-                        int(row["failed"]),
-                        int(row["unknown_cnt"]),
-                    )
-                    for row in rows
-                ),
-                sum(int(row["detail_count"]) for row in dimensions),
-                sum(int(row["dimension_count"]) for row in dimensions),
-            )
-        finally:
-            await engine.dispose()
+                for row in rows
+            ),
+            sum(int(row["detail_count"]) for row in dimensions),
+            sum(int(row["dimension_count"]) for row in dimensions),
+        )

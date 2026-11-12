@@ -86,11 +86,10 @@ class SqlVendorTestSecurityAuditRepository:
         if safe_code is not None:
             payload["safe_code"] = safe_code
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,actor_account_id,actor_identity_id,
                           role,action,object_type,object_id,after_val
@@ -100,20 +99,18 @@ class SqlVendorTestSecurityAuditRepository:
                           CAST(:after AS jsonb)
                         )
                         """
+                ),
+                {
+                    "actor": principal.login_name,
+                    "actor_account_id": principal.account_id,
+                    "actor_identity_id": principal.identity_id,
+                    "role": principal.role,
+                    "action": action,
+                    "object_id": correlation_id,
+                    "after": json.dumps(
+                        payload,
+                        sort_keys=True,
+                        separators=(",", ":"),
                     ),
-                    {
-                        "actor": principal.login_name,
-                        "actor_account_id": principal.account_id,
-                        "actor_identity_id": principal.identity_id,
-                        "role": principal.role,
-                        "action": action,
-                        "object_id": correlation_id,
-                        "after": json.dumps(
-                            payload,
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ),
-                    },
-                )
-        finally:
-            await engine.dispose()
+                },
+            )

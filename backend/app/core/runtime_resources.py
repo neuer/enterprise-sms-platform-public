@@ -118,7 +118,7 @@ class _MeasuredConnectionContext(AbstractAsyncContextManager[AsyncConnection]):
 
 
 class ManagedAsyncEngine:
-    """共享 AsyncEngine；repository 的历史 dispose 调用不再关闭进程池。"""
+    """进程共享的 AsyncEngine；连接上下文归还连接，生命周期入口关闭池。"""
 
     def __init__(self, engine: AsyncEngine, component: str, budget: DatabasePoolBudget) -> None:
         self._engine = engine
@@ -137,9 +137,6 @@ class ManagedAsyncEngine:
 
     def begin(self) -> _MeasuredConnectionContext:
         return _MeasuredConnectionContext(self._engine.begin(), self.component)
-
-    async def dispose(self, *_: object, **__: object) -> None:
-        """兼容旧 repository；共享池只允许统一 shutdown 关闭。"""
 
     async def close(self) -> None:
         await self._engine.dispose()

@@ -82,24 +82,20 @@ class SqlReportRepository:
         from app.services.report_timeout import parse_report_timeout_hours
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text("SELECT value FROM sys_config WHERE key='report_timeout_hours'")
-                )
-                return parse_report_timeout_hours(result.scalar_one_or_none())
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT value FROM sys_config WHERE key='report_timeout_hours'")
+            )
+            return parse_report_timeout_hours(result.scalar_one_or_none())
 
     async def load_sweep_config(self) -> dict[str, str]:
         """读取超时扫描有界参数；缺键由调用方回落到注册默认值。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT key, value FROM sys_config WHERE key IN (
                           'report_timeout_batch_limit',
                           'report_timeout_message_limit',
@@ -108,11 +104,9 @@ class SqlReportRepository:
                           'report_timeout_lock_ms'
                         )
                         """
-                    )
                 )
-                return {str(row["key"]): str(row["value"]) for row in result.mappings()}
-        finally:
-            await engine.dispose()
+            )
+            return {str(row["key"]): str(row["value"]) for row in result.mappings()}
 
     async def persist_raw(self, **values: Any) -> int:
         """独立事务提交完整 raw 密文，返回后业务解析才可开始。"""
@@ -132,11 +126,10 @@ class SqlReportRepository:
         payload["processing_lease_id"] = str(lease_id) if lease_id is not None else None
         payload["lease_seconds"] = RAW_LEASE_SECONDS
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         INSERT INTO raw_vendor_log (
                           source,payload_enc,payload_sha256,key_version,http_status,
                           content_encoding,custom_ids,item_count,processing_started_at,
@@ -153,22 +146,17 @@ class SqlReportRepository:
                           {PERSIST_LEASE_VALUES.strip()}
                         ) RETURNING id
                         """
-                    ),
-                    payload,
-                )
-                raw_id = int(result.scalar_one())
-        finally:
-            await engine.dispose()
+                ),
+                payload,
+            )
+            raw_id = int(result.scalar_one())
         if lease_id is not None:
             self.remember_lease(RawProcessingLease(raw_id, lease_id, 1))
         return raw_id
 
     async def renew_processing_lease(self, lease: RawProcessingLease) -> datetime:
         engine = self._engine()
-        try:
-            return await renew_raw_lease(engine, lease)
-        finally:
-            await engine.dispose()
+        return await renew_raw_lease(engine, lease)
 
     async def record_heartbeat_failure(
         self,
@@ -178,13 +166,10 @@ class SqlReportRepository:
         """记录无 PII 的 heartbeat_lost；失败向外抛出让 Heartbeat 记日志。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await record_raw_heartbeat_lost(
-                    connection, raw_id=lease.raw_id, lease_id=lease.lease_id
-                )
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await record_raw_heartbeat_lost(
+                connection, raw_id=lease.raw_id, lease_id=lease.lease_id
+            )
 
     async def update_metadata(
         self,
@@ -198,38 +183,32 @@ class SqlReportRepository:
 
         token = self._lease_for(raw_id, lease)
         engine = self._engine()
-        try:
-            await commit_fenced_raw_update(
-                engine,
-                FENCED_METADATA_SQL + " AND source='report'",
-                {
-                    "id": raw_id,
-                    "custom_ids": custom_ids,
-                    "item_count": item_count,
-                    "lease_id": str(token.lease_id),
-                    "epoch": token.epoch,
-                },
-                lease=token,
-            )
-        finally:
-            await engine.dispose()
+        await commit_fenced_raw_update(
+            engine,
+            FENCED_METADATA_SQL + " AND source='report'",
+            {
+                "id": raw_id,
+                "custom_ids": custom_ids,
+                "item_count": item_count,
+                "lease_id": str(token.lease_id),
+                "epoch": token.epoch,
+            },
+            lease=token,
+        )
 
     async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]:
         if not custom_ids:
             return []
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        "SELECT trim(custom_id) FROM sms_chunk "
-                        "WHERE trim(custom_id)=ANY(CAST(:custom_ids AS text[])) ORDER BY 1"
-                    ),
-                    {"custom_ids": custom_ids},
-                )
-                return [str(value) for value in result.scalars()]
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT trim(custom_id) FROM sms_chunk "
+                    "WHERE trim(custom_id)=ANY(CAST(:custom_ids AS text[])) ORDER BY 1"
+                ),
+                {"custom_ids": custom_ids},
+            )
+            return [str(value) for value in result.scalars()]
 
     @staticmethod
     async def _lock_batch(connection: AsyncConnection, batch_id: int) -> None:
@@ -400,12 +379,11 @@ class SqlReportRepository:
         report: ProtectedReport,
     ) -> ReportApplyResult | None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await self._persist_event(connection, raw_id, report)
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await self._persist_event(connection, raw_id, report)
+            result = await connection.execute(
+                text(
+                    """
                         SELECT m.id,m.created_at,m.batch_id,
                                c.id chunk_id,
                                COALESCE(c.selected_vendor,'zhihui') selected_vendor,
@@ -421,53 +399,53 @@ class SqlReportRepository:
                           AND m.phone_hmac=ANY(CAST(:phone_hmacs AS char(64)[]))
                         ORDER BY m.created_at DESC LIMIT 2
                         """
-                    ),
-                    {
-                        "match_custom_id": report.match_custom_id,
-                        "phone_hmacs": list(report.phone_hmacs),
-                    },
+                ),
+                {
+                    "match_custom_id": report.match_custom_id,
+                    "phone_hmacs": list(report.phone_hmacs),
+                },
+            )
+            matches = list(result.mappings())
+            if not matches:
+                return None
+            if len(matches) > 1:
+                LOGGER.warning(
+                    "ambiguous report match skipped",
+                    extra={"custom_id_len": len(report.match_custom_id)},
                 )
-                matches = list(result.mappings())
-                if not matches:
-                    return None
-                if len(matches) > 1:
-                    LOGGER.warning(
-                        "ambiguous report match skipped",
-                        extra={"custom_id_len": len(report.match_custom_id)},
-                    )
-                    return None
-                row = matches[0]
-                # 与发送终结保持 chunk → batch → message 的锁顺序。
-                # 锁后再读供应商归属，避免锁外快照跨过 failover 转换。
-                authority = (
-                    await connection.execute(
-                        text(
-                            """
+                return None
+            row = matches[0]
+            # 与发送终结保持 chunk → batch → message 的锁顺序。
+            # 锁后再读供应商归属，避免锁外快照跨过 failover 转换。
+            authority = (
+                await connection.execute(
+                    text(
+                        """
                             SELECT COALESCE(c.selected_vendor,'zhihui') selected_vendor,
                               (SELECT coalesce(array_agg(a.vendor_id), '{}')
                                FROM sms_vendor_attempt a WHERE a.chunk_id=c.id
                                AND a.outcome IN ('submitted','uncertain')) irreversible_vendors
                             FROM sms_chunk c WHERE c.id=:id FOR UPDATE OF c
                             """
-                        ),
-                        {"id": row["chunk_id"]},
-                    )
-                ).mappings().one_or_none()
-                if authority is None:
-                    return None
-                raw_vendors = authority.get("irreversible_vendors") or ()
-                irreversible = frozenset(str(item) for item in raw_vendors)
-                if not report_may_apply(
-                    report_vendor_id=getattr(report, "vendor_id", "zhihui"),
-                    selected_vendor=str(authority.get("selected_vendor") or "zhihui"),
-                    irreversible_vendors=irreversible,
-                ):
-                    return None
-                batch_id = int(row["batch_id"])
-                await self._lock_batch(connection, batch_id)
-                locked_message = await connection.execute(
-                    text(
-                        f"""
+                    ),
+                    {"id": row["chunk_id"]},
+                )
+            ).mappings().one_or_none()
+            if authority is None:
+                return None
+            raw_vendors = authority.get("irreversible_vendors") or ()
+            irreversible = frozenset(str(item) for item in raw_vendors)
+            if not report_may_apply(
+                report_vendor_id=getattr(report, "vendor_id", "zhihui"),
+                selected_vendor=str(authority.get("selected_vendor") or "zhihui"),
+                irreversible_vendors=irreversible,
+            ):
+                return None
+            batch_id = int(row["batch_id"])
+            await self._lock_batch(connection, batch_id)
+            locked_message = await connection.execute(
+                text(
+                    f"""
                         SELECT id,created_at,batch_id,status,
                           CASE WHEN {TRUSTED_REPORT_EVIDENCE} THEN
                             status IS DISTINCT FROM (
@@ -479,19 +457,19 @@ class SqlReportRepository:
                         WHERE id=:id AND created_at=:created_at AND batch_id=:batch_id
                         FOR UPDATE OF m
                         """
-                    ),
-                    {
-                        "id": row["id"],
-                        "created_at": row["created_at"],
-                        "batch_id": batch_id,
-                    },
-                )
-                if (locked_row := locked_message.mappings().one_or_none()) is None:
-                    return None
-                row = locked_row
-                projection = await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "id": row["id"],
+                    "created_at": row["created_at"],
+                    "batch_id": batch_id,
+                },
+            )
+            if (locked_row := locked_message.mappings().one_or_none()) is None:
+                return None
+            row = locked_row
+            projection = await connection.execute(
+                text(
+                    """
                         INSERT INTO report_event_projection(
                           event_key,batch_id,message_id,message_created_at,
                           projection_changed
@@ -502,22 +480,22 @@ class SqlReportRepository:
                         ON CONFLICT(event_key) DO NOTHING
                         RETURNING event_key
                         """
-                    ),
-                    {
-                        "event_key": report.event_key,
-                        "batch_id": batch_id,
-                        "message_id": row["id"],
-                        "message_created_at": row["created_at"],
-                    },
+                ),
+                {
+                    "event_key": report.event_key,
+                    "batch_id": batch_id,
+                    "message_id": row["id"],
+                    "message_created_at": row["created_at"],
+                },
+            )
+            if projection.scalar_one_or_none() is None:
+                repaired = await self._repair_report_projection(
+                    connection, batch_id, [(int(row["id"]), row["created_at"])]
                 )
-                if projection.scalar_one_or_none() is None:
-                    repaired = await self._repair_report_projection(
-                        connection, batch_id, [(int(row["id"]), row["created_at"])]
-                    )
-                    return ReportApplyResult(batch_id, changed=bool(repaired))
-                updated = await connection.execute(
-                    text(
-                        """
+                return ReportApplyResult(batch_id, changed=bool(repaired))
+            updated = await connection.execute(
+                text(
+                    """
                         UPDATE sms_message m SET status=:status,
                           report_status=:report_status,report_desc=:report_desc,
                           report_time=:report_time,
@@ -612,35 +590,35 @@ class SqlReportRepository:
                           )
                         RETURNING m.id
                         """
-                    ),
-                    {
-                        "status": report.message_status,
-                        "report_status": report.report_status,
-                        "report_desc": report.report_desc,
-                        "report_time": report.report_time,
-                        "event_key": report.event_key,
-                        "id": row["id"],
-                        "created_at": row["created_at"],
-                    },
-                )
-                changed = updated.scalar_one_or_none() is not None
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "status": report.message_status,
+                    "report_status": report.report_status,
+                    "report_desc": report.report_desc,
+                    "report_time": report.report_time,
+                    "event_key": report.event_key,
+                    "id": row["id"],
+                    "created_at": row["created_at"],
+                },
+            )
+            changed = updated.scalar_one_or_none() is not None
+            await connection.execute(
+                text(
+                    """
                         UPDATE report_event_projection
                         SET projection_changed=:changed
                         WHERE event_key=CAST(:event_key AS char(64))
                         """
-                    ),
-                    {"event_key": report.event_key, "changed": changed},
-                )
-                if not changed:
-                    return ReportApplyResult(batch_id, changed=False)
-                # 晚到回执可能落在固定聚合窗口之外：标记消息归属日为脏，
-                # 由 aggregate_stats 在近 5 天窗口之外补算（#342）。
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {"event_key": report.event_key, "changed": changed},
+            )
+            if not changed:
+                return ReportApplyResult(batch_id, changed=False)
+            # 晚到回执可能落在固定聚合窗口之外：标记消息归属日为脏，
+            # 由 aggregate_stats 在近 5 天窗口之外补算（#342）。
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO stat_dirty_date(stat_date)
                         VALUES (
                           CAST(
@@ -650,24 +628,24 @@ class SqlReportRepository:
                         )
                         ON CONFLICT(stat_date) DO NOTHING
                         """
-                    ),
-                    {"created_at": row["created_at"]},
-                )
-                await self._refresh_batch(
-                    connection,
-                    batch_id,
-                    batch_locked=True,
-                    source_report_event_key=report.event_key,
-                    # 可信旧事实与消息状态漂移时，不能拿损坏的状态计算增量。
-                    # 仅实际生效的新事件回退到既有全量校正；未生效仍保持原语义。
-                    status_delta=(
-                        None if row["prior_report_state_drift"]
-                        else (str(row["status"]), report.message_status)
-                    ),
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {"created_at": row["created_at"]},
+            )
+            await self._refresh_batch(
+                connection,
+                batch_id,
+                batch_locked=True,
+                source_report_event_key=report.event_key,
+                # 可信旧事实与消息状态漂移时，不能拿损坏的状态计算增量。
+                # 仅实际生效的新事件回退到既有全量校正；未生效仍保持原语义。
+                status_delta=(
+                    None if row["prior_report_state_drift"]
+                    else (str(row["status"]), report.message_status)
+                ),
+            )
+            await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk c
                         SET late_evidence_at=COALESCE(c.late_evidence_at,now())
                         FROM sms_message m
@@ -675,22 +653,20 @@ class SqlReportRepository:
                           AND c.id=m.chunk_id
                           AND c.status='unknown_terminal'
                         """
-                    ),
-                    {"id": row["id"], "created_at": row["created_at"]},
-                )
-                await enqueue_message_report(
-                    connection,
-                    batch_id=batch_id,
-                    message_id=int(row["id"]),
-                    created_at=row["created_at"],
-                    event_key=report.event_key,
-                    message_status=report.message_status,
-                    report_desc=report.report_desc,
-                    report_time=report.report_time,
-                )
-                return ReportApplyResult(batch_id, changed=True)
-        finally:
-            await engine.dispose()
+                ),
+                {"id": row["id"], "created_at": row["created_at"]},
+            )
+            await enqueue_message_report(
+                connection,
+                batch_id=batch_id,
+                message_id=int(row["id"]),
+                created_at=row["created_at"],
+                event_key=report.event_key,
+                message_status=report.message_status,
+                report_desc=report.report_desc,
+                report_time=report.report_time,
+            )
+            return ReportApplyResult(batch_id, changed=True)
 
     async def _repair_report_projection(
         self,
@@ -726,11 +702,10 @@ class SqlReportRepository:
 
     async def failure_rate_candidate(self, batch_id: int) -> FailureRateAlert | None:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id batch_id,batch_no,status,delivered,failed,
                           COALESCE((SELECT value::int FROM sys_config
                             WHERE key='fail_rate_threshold'),20) threshold,
@@ -738,22 +713,19 @@ class SqlReportRepository:
                             WHERE key='fail_rate_min_total'),50) min_total
                         FROM sms_batch WHERE id=:batch_id
                         """
-                    ),
-                    {"batch_id": batch_id},
-                )
-                row = result.mappings().one_or_none()
-                return evaluate_failure_rate(row) if row is not None else None
-        finally:
-            await engine.dispose()
+                ),
+                {"batch_id": batch_id},
+            )
+            row = result.mappings().one_or_none()
+            return evaluate_failure_rate(row) if row is not None else None
 
     async def persist_unmatched(self, raw_id: int, report: ProtectedReport) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await self._persist_event(connection, raw_id, report)
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await self._persist_event(connection, raw_id, report)
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO unmatched_report (
                           event_key,vendor_task_id,custom_id,
                           phone_enc,phone_hmac,phone_mask,
@@ -767,22 +739,20 @@ class SqlReportRepository:
                           :report_desc,CAST(:report_time AS timestamptz)
                         ON CONFLICT(event_key) DO NOTHING
                         """
-                    ),
-                    {
-                        "event_key": report.event_key,
-                        "vendor_task_id": report.vendor_task_id,
-                        "custom_id": report.custom_id,
-                        "phone_enc": report.phone_enc,
-                        "phone_hmac": report.phone_hmac,
-                        "phone_mask": report.phone_mask,
-                        "key_version": report.key_version,
-                        "report_status": report.report_status,
-                        "report_desc": report.report_desc,
-                        "report_time": report.report_time,
-                    },
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "event_key": report.event_key,
+                    "vendor_task_id": report.vendor_task_id,
+                    "custom_id": report.custom_id,
+                    "phone_enc": report.phone_enc,
+                    "phone_hmac": report.phone_hmac,
+                    "phone_mask": report.phone_mask,
+                    "key_version": report.key_version,
+                    "report_status": report.report_status,
+                    "report_desc": report.report_desc,
+                    "report_time": report.report_time,
+                },
+            )
 
     async def mark_processed(
         self,
@@ -859,15 +829,12 @@ class SqlReportRepository:
         }
         if system_audit_intent:
             params["system_replay_audit_state"] = SYSTEM_REPLAY_AUDIT_PENDING
-        try:
-            await commit_fenced_raw_update(
-                engine,
-                fenced_terminal_sql(system_audit_intent=system_audit_intent),
-                params,
-                lease=token,
-            )
-        finally:
-            await engine.dispose()
+        await commit_fenced_raw_update(
+            engine,
+            fenced_terminal_sql(system_audit_intent=system_audit_intent),
+            params,
+            lease=token,
+        )
         self._leases.pop(raw_id, None)
 
     async def expire_due_reports(
@@ -945,8 +912,6 @@ class SqlReportRepository:
                     more_remaining = True
         except TimeoutError:
             more_remaining = True
-        finally:
-            await engine.dispose()
         return SweepResult(
             candidates=candidates,
             batches_changed=batches_changed,

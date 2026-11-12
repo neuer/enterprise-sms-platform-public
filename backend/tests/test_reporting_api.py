@@ -20,7 +20,10 @@ from app.services.reporting import (
 
 class FakeFacade:
     async def verify(self, _token: str) -> JwtClaims:
-        return JwtClaims("viewer01", "只读用户", "业务一部", "viewer")
+        return JwtClaims(
+            account_id=1, identity_id=1, provider_code="local",
+            login_name="viewer01", display_name="只读用户", dept="业务一部", role="viewer",
+        )
 
 
 class FakeReportingService:

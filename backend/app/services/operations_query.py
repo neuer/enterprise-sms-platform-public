@@ -335,44 +335,41 @@ class SqlOperationsQueryRepository:
         }
         source = " FROM sms_message m JOIN sms_batch b ON b.id=m.batch_id "
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                count_result = await connection.execute(
-                    text("SELECT count(*)" + source + "WHERE " + where),
-                    params,
-                )
-                rows_result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            count_result = await connection.execute(
+                text("SELECT count(*)" + source + "WHERE " + where),
+                params,
+            )
+            rows_result = await connection.execute(
+                text(
+                    """
                         SELECT m.id,m.phone_mask,m.status,b.status AS batch_status,
                           ("""
-                        + MESSAGE_DISPLAY_STATUS_SQL
-                        + """) AS display_status,
+                    + MESSAGE_DISPLAY_STATUS_SQL
+                    + """) AS display_status,
                           m.report_desc,m.report_time,
                           m.created_at,trim(b.batch_no) batch_no,b.category,
                           b.display_content_enc,
                           CASE WHEN b.channel='web' THEN b.creator ELSE a.name END sender
                         """
-                        + source
-                        + " LEFT JOIN app a ON a.id=b.app_id WHERE "
-                        + where
-                        + " ORDER BY m.created_at DESC,m.id DESC LIMIT :limit OFFSET :offset"
-                    ),
-                    params,
+                    + source
+                    + " LEFT JOIN app a ON a.id=b.app_id WHERE "
+                    + where
+                    + " ORDER BY m.created_at DESC,m.id DESC LIMIT :limit OFFSET :offset"
+                ),
+                params,
+            )
+            items: list[MessageQueryItem] = []
+            for row in rows_result.mappings():
+                values = dict(row)
+                content = decrypt_batch_display_content(
+                    self.crypto,
+                    values.pop("display_content_enc"),
+                    str(values["batch_no"]),
                 )
-                items: list[MessageQueryItem] = []
-                for row in rows_result.mappings():
-                    values = dict(row)
-                    content = decrypt_batch_display_content(
-                        self.crypto,
-                        values.pop("display_content_enc"),
-                        str(values["batch_no"]),
-                    )
-                    items.append(MessageQueryItem(content=content, **values))
-                badge = await self._phone_badge(connection, phone_hmacs, predicate, scope_params)
-                return MessageQueryPage(int(count_result.scalar_one()), tuple(items), badge)
-        finally:
-            await engine.dispose()
+                items.append(MessageQueryItem(content=content, **values))
+            badge = await self._phone_badge(connection, phone_hmacs, predicate, scope_params)
+            return MessageQueryPage(int(count_result.scalar_one()), tuple(items), badge)
 
     async def timeline(
         self,
@@ -391,12 +388,11 @@ class SqlOperationsQueryRepository:
             **scope_params,
         }
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                badge = await self._phone_badge(connection, phone_hmacs, predicate, scope_params)
-                events_result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            badge = await self._phone_badge(connection, phone_hmacs, predicate, scope_params)
+            events_result = await connection.execute(
+                text(
+                    f"""
                         SELECT * FROM (
                           SELECT m.created_at ts,'out' direction,b.category,
                             trim(b.batch_no) batch_no,
@@ -437,75 +433,73 @@ class SqlOperationsQueryRepository:
                             AND {predicate}
                         ) events ORDER BY ts DESC,direction LIMIT :event_limit
                         """
-                    ),
-                    params,
-                )
-                events: list[TimelineEvent] = []
-                for row in events_result.mappings():
-                    values = dict(row)
-                    timestamp = values["ts"]
-                    if not isinstance(timestamp, datetime):
-                        raise ValueError("timeline timestamp is invalid")
-                    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-                        raise ValueError("timeline timestamp must include timezone")
-                    object_id = str(values.pop("content_object_id"))
-                    batch_content = values.pop("batch_content_enc")
-                    reply_content = values.pop("reply_content_enc")
-                    content = (
-                        decrypt_batch_display_content(
-                            self.crypto,
-                            batch_content,
-                            object_id,
-                        )
-                        if values["direction"] == "out"
-                        else decrypt_reply_content(
-                            self.crypto,
-                            reply_content,
-                            object_id,
-                        )
+                ),
+                params,
+            )
+            events: list[TimelineEvent] = []
+            for row in events_result.mappings():
+                values = dict(row)
+                timestamp = values["ts"]
+                if not isinstance(timestamp, datetime):
+                    raise ValueError("timeline timestamp is invalid")
+                if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                    raise ValueError("timeline timestamp must include timezone")
+                object_id = str(values.pop("content_object_id"))
+                batch_content = values.pop("batch_content_enc")
+                reply_content = values.pop("reply_content_enc")
+                content = (
+                    decrypt_batch_display_content(
+                        self.crypto,
+                        batch_content,
+                        object_id,
                     )
-                    events.append(
-                        TimelineEvent(
-                            ts=timestamp,
-                            direction=str(values["direction"]),
-                            category=(
-                                str(values["category"]) if values["category"] is not None else None
-                            ),
-                            batch_no=(
-                                str(values["batch_no"]) if values["batch_no"] is not None else None
-                            ),
-                            content=content,
-                            status=(
-                                str(values["status"]) if values["status"] is not None else None
-                            ),
-                            sender=(
-                                str(values["sender"]) if values["sender"] is not None else None
-                            ),
-                            batch_status=(
-                                str(values["batch_status"])
-                                if values.get("batch_status") is not None
-                                else None
-                            ),
-                            display_status=(
-                                str(values["display_status"])
-                                if values.get("display_status") is not None
-                                else None
-                            ),
-                            exclusion_reason=(
-                                str(values["exclusion_reason"])
-                                if values.get("exclusion_reason") is not None
-                                else None
-                            ),
-                        )
+                    if values["direction"] == "out"
+                    else decrypt_reply_content(
+                        self.crypto,
+                        reply_content,
+                        object_id,
                     )
-                truncated = len(events) > TIMELINE_EVENT_LIMIT
-                return Timeline(
-                    badge,
-                    tuple(events[:TIMELINE_EVENT_LIMIT]),
-                    truncated,
                 )
-        finally:
-            await engine.dispose()
+                events.append(
+                    TimelineEvent(
+                        ts=timestamp,
+                        direction=str(values["direction"]),
+                        category=(
+                            str(values["category"]) if values["category"] is not None else None
+                        ),
+                        batch_no=(
+                            str(values["batch_no"]) if values["batch_no"] is not None else None
+                        ),
+                        content=content,
+                        status=(
+                            str(values["status"]) if values["status"] is not None else None
+                        ),
+                        sender=(
+                            str(values["sender"]) if values["sender"] is not None else None
+                        ),
+                        batch_status=(
+                            str(values["batch_status"])
+                            if values.get("batch_status") is not None
+                            else None
+                        ),
+                        display_status=(
+                            str(values["display_status"])
+                            if values.get("display_status") is not None
+                            else None
+                        ),
+                        exclusion_reason=(
+                            str(values["exclusion_reason"])
+                            if values.get("exclusion_reason") is not None
+                            else None
+                        ),
+                    )
+                )
+            truncated = len(events) > TIMELINE_EVENT_LIMIT
+            return Timeline(
+                badge,
+                tuple(events[:TIMELINE_EVENT_LIMIT]),
+                truncated,
+            )
 
     async def authorized_phone(
         self,
@@ -518,39 +512,36 @@ class SqlOperationsQueryRepository:
         predicate, scope_params = scope.sql()
         params = {"message_id": message_id, **scope_params}
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT m.phone_enc,m.key_version,trim(m.phone_hmac) phone_hmac,
                           trim(b.batch_no) batch_no
                         FROM sms_message m JOIN sms_batch b ON b.id=m.batch_id
                         WHERE m.id=:message_id AND {predicate}
                         ORDER BY m.created_at DESC LIMIT 1
                         """
-                    ),
-                    params,
-                )
-                row = result.mappings().first()
-                if row is None:
-                    return None
-                await insert_audit(
-                    connection,
-                    AuditEvent(
-                        principal=principal,
-                        role=principal.role,
-                        action="message_phone_decrypt",
-                        object_type="sms_message",
-                        object_id=str(message_id),
-                        ip=ip,
-                        after={"count": 1, "batch_no": str(row["batch_no"])},
-                    ),
-                )
-                return (
-                    bytes(row["phone_enc"]),
-                    int(row["key_version"]),
-                    str(row["phone_hmac"]),
-                )
-        finally:
-            await engine.dispose()
+                ),
+                params,
+            )
+            row = result.mappings().first()
+            if row is None:
+                return None
+            await insert_audit(
+                connection,
+                AuditEvent(
+                    principal=principal,
+                    role=principal.role,
+                    action="message_phone_decrypt",
+                    object_type="sms_message",
+                    object_id=str(message_id),
+                    ip=ip,
+                    after={"count": 1, "batch_no": str(row["batch_no"])},
+                ),
+            )
+            return (
+                bytes(row["phone_enc"]),
+                int(row["key_version"]),
+                str(row["phone_hmac"]),
+            )

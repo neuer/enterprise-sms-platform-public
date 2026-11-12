@@ -61,7 +61,6 @@ BACKEND_RUNTIME_FILES = {
 }
 CI_CONTROL_SCRIPTS = {
     "scripts/classify_ci_changes.py",
-    "scripts/reuse_pr_ci_evidence.py",
     "scripts/verify_ci_results.py",
     "scripts/gate_policy.py",
     "scripts/check_backend_static.py",
@@ -267,25 +266,9 @@ def _classify_event_with_count(
     base_sha: str,
     before_sha: str,
     head_sha: str,
-    trusted_pr_evidence: bool = False,
 ) -> tuple[Classification, int]:
     if event_name in FORCE_ALL_EVENTS:
         return _full(f"forced-{event_name}"), 0
-    if event_name == "post_merge":
-        if trusted_pr_evidence:
-            return (
-                Classification(
-                    False,
-                    False,
-                    False,
-                    False,
-                    frozenset({"reused-pr-ci-evidence"}),
-                    False,
-                    False,
-                ),
-                0,
-            )
-        return _full("untrusted-post-merge"), 0
     if event_name == "pull_request":
         if not base_sha or not head_sha:
             return _full("missing-pr-sha"), 0
@@ -299,16 +282,6 @@ def _classify_event_with_count(
 
     paths = _git_paths(repo, revision_range)
     result = classify_paths(paths)
-    if event_name == "push" and trusted_pr_evidence:
-        result = Classification(
-            False,
-            False,
-            False,
-            False,
-            frozenset({"reused-pr-ci-evidence"}),
-            False,
-            False,
-        )
     return result, len(paths)
 
 
@@ -319,7 +292,6 @@ def classify_event(
     base_sha: str,
     before_sha: str,
     head_sha: str,
-    trusted_pr_evidence: bool = False,
 ) -> Classification:
     result, _ = _classify_event_with_count(
         repo=repo,
@@ -327,7 +299,6 @@ def classify_event(
         base_sha=base_sha,
         before_sha=before_sha,
         head_sha=head_sha,
-        trusted_pr_evidence=trusted_pr_evidence,
     )
     return result
 
@@ -350,11 +321,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--base-sha", default="")
     parser.add_argument("--before-sha", default="")
     parser.add_argument("--head-sha", default="")
-    parser.add_argument(
-        "--trusted-pr-evidence",
-        choices=("true", "false"),
-        default="false",
-    )
     parser.add_argument("--github-output", required=True, type=Path)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     return parser.parse_args(argv)
@@ -369,7 +335,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             base_sha=args.base_sha,
             before_sha=args.before_sha,
             head_sha=args.head_sha,
-            trusted_pr_evidence=args.trusted_pr_evidence == "true",
         )
         write_github_outputs(args.github_output, result)
     except (ChangeDetectionError, OSError):

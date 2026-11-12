@@ -13,13 +13,7 @@ import ReportTrendChart from "../src/components/ReportTrendChart.vue"
 import ReportView from "../src/views/ReportView.vue"
 
 function response(body: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: { get: () => null },
-    json: async () => body,
-    blob: async () => new Blob(["csv"]),
-  }
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
 }
 
 const report = {
@@ -228,7 +222,7 @@ describe("统计报表页", () => {
           created_at: "2026-07-12T08:00:00+08:00",
         }),
       )
-      .mockResolvedValueOnce(response(null))
+      .mockResolvedValueOnce(new Response("csv", { headers: { "Content-Type": "text/csv" } }))
     vi.stubGlobal("fetch", fetch)
     vi.stubGlobal(
       "URL",
@@ -317,7 +311,7 @@ describe("统计报表页", () => {
         }),
       )
       .mockResolvedValueOnce(response({ token: "single-use-token", expires_in: 300 }))
-      .mockResolvedValueOnce(response(null))
+      .mockResolvedValueOnce(new Response("csv", { headers: { "Content-Type": "text/csv" } }))
     vi.stubGlobal("fetch", fetch)
     vi.stubGlobal(
       "URL",
@@ -453,7 +447,7 @@ describe("统计报表页", () => {
   })
 
   it("修改筛选条件后提示已变更且不自动重查", async () => {
-    const fetch = vi.fn().mockResolvedValue(response(report))
+    const fetch = vi.fn().mockImplementation(async () => response(report))
     vi.stubGlobal("fetch", fetch)
     const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
@@ -469,7 +463,10 @@ describe("统计报表页", () => {
   })
 
   it("请求失败时显示可重试错误", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ message: "报表暂不可用" }, 500)))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response({ message: "报表暂不可用" }, 500)),
+    )
     const wrapper = mount(ReportView, { global: { plugins: [createPinia(), ElementPlus] } })
     await flushPromises()
     expect(wrapper.text()).toContain("报表暂不可用")

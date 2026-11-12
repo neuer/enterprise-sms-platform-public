@@ -897,23 +897,15 @@ class JwtService:
             )
         except Exception:
             raise SessionStateUnavailable("refresh token state unavailable") from None
-        returned_binding = ""
-        if isinstance(result, (list, tuple)):
-            try:
-                status = int(result[0])
-                returned_binding = self._redis_text(result[1])
-            except (IndexError, TypeError, ValueError):
-                raise SessionStateUnavailable("refresh token state unavailable") from None
-        else:
-            # 兼容历史测试/窄实现的整数 Lua 返回；真实 Redis 返回二元数组。
-            try:
-                status = int(result)
-            except (TypeError, ValueError):
-                raise SessionStateUnavailable("refresh token state unavailable") from None
-            if status == 1:
-                returned_binding = replacement_binding
+        if not isinstance(result, (list, tuple)) or len(result) != 2:
+            raise SessionStateUnavailable("refresh token state unavailable")
+        try:
+            status = int(result[0])
+            returned_binding = self._redis_text(result[1])
+        except (TypeError, ValueError):
+            raise SessionStateUnavailable("refresh token state unavailable") from None
         if status == 1:
-            if returned_binding and not hmac.compare_digest(
+            if not hmac.compare_digest(
                 returned_binding,
                 replacement_binding,
             ):
