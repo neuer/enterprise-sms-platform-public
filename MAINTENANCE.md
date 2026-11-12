@@ -47,7 +47,7 @@ required `ci-gate`、会话解决和冲突保护全部满足后才能合并，�
 均独立完整执行，不取消运行中或排队中的旧提交，也不以 PR 证据复用代替实际执行。
 分支 push/fork PR 仅保留同一分支的最新一次；人工与定时运行使用独立并发组。
 若合并提交没有 CI，使用现有 `workflow_dispatch` 执行完整 CI，并确认运行绑定目标
-SHA；不要手工填写内部 `post_merge_*` 参数。
+SHA。旧 `post_merge_*` 参数与 PR 证据复用入口已退役，人工运行不接受免检参数。
 清理已合并分支前检查远端 ref，存在后续提交时保留；合并本身不代表测试部署完成。
 
 CI 每次独立运行检查，不读取本地免检回执。门禁/前端契约由完整后端清单执行；
@@ -172,19 +172,9 @@ scripts/test_update.sh promote --ref origin/main
 
 ## 生产发布
 
-2026-09-10 一次性跨版本例外：操作者明确批准以当天 09:45 的整机虚拟机快照承担人工恢复，
-仅放行离线四镜像 `0084_auth_security_and_ad_freshness` → `0116_usage_release_generation`，
-清单必须声明 `cold_cutover`，不得冒充 `expand`。生成包时必须显式接受
-`--allow-offline-no-conditional-evidence` 才能省略本候选的数据库恢复演练证据；数据镜像验证、
-精确 main、CI、四镜像扫描、来源证明与包签名仍必须通过。此例外不扩展到其它版本或日常发布。
-激活失败或激活中断后再请求 resume，固定停止 web、API、worker、outbox 与 beat，进入
-`recovery_required`，不自动恢复旧应用或降级数据库。操作者负责整机恢复；快照不能撤销已发送
-短信、已消费报告或已投递回调，开放业务后的故障必须先核对外部副作用，不能直接恢复旧事实后重发。
-prepare 和停机前再次只读核对活动应用已有非空来源白名单及有限日配额；不满足即拒绝切换，
-不得自动创建豁免或扩大权限。迁移到目标后，受控入口记录并设置旧 API Key 的有限候选为
-`legacy_data_hmac_pepper_v1,legacy_sha256`，仅允许原值为空或同值；其它值冲突即停机。
-执行前必须准备独立 pepper，并保留旧 data_hmac_key 文件原文作为 legacy secret；不批量改写摘要。
-宿主包更新仍独立执行。本例外优先于下述旧离线迁移闭集及部署索引中的“不扩展”限制。
+历史 `0080–0116` 离线迁移例外及 `cold_cutover` 入口已退役。现役生产与共享测试按最新维护基线支持，
+不再生成、激活、续跑或回退这些历史升级包；`release status` 继续只读展示既有状态，历史事件日志继续保留。
+保留 Alembic 迁移链、发布证据和运行数据；当前发布失败仍按现役恢复合同处理。
 
 1. 最终候选必须是受保护 `main` 的精确 SHA。质量、安全与 G2 在日常合并流程完成；临时
    Release Gate 只负责制品生成，不再重复这些门禁。
@@ -200,16 +190,10 @@ prepare 和停机前再次只读核对活动应用已有非空来源白名单及
    生产只安装固定路径的公钥与 key ID。
 5. 首次空主机由独立 `release bootstrap --confirm-empty-host` 完成；普通更新才执行
    `release prepare`、`release activate`、`release status`。临时离线更新默认仅允许无迁移四镜像
-   整包；已批准例外仅包括 `0080_security_daily_delivery_generation`→
-   `0081_sign_adoption_contract`、`0081_sign_adoption_contract`→
-   `0082_outbox_realtime_report_queue` 与 `0082_outbox_realtime_report_queue`→
-   `0084_auth_security_and_ad_freshness`（一次整包覆盖中间修订
-   `0083_password_change_token_lease`）三个全四镜像 expand，其他离线迁移仍拒绝。无迁移候选若未变更数据镜像
+   整包，版本间离线迁移一律拒绝。无迁移候选若未变更数据镜像
    定义/固定基础镜像、初始化脚本、Compose 存储/拓扑、schema 或 Alembic，可在显式传入
    `--allow-offline-no-conditional-evidence` 时省略本候选专属的数据镜像、备份恢复证据和同包
-   预生产。上述 expand 仍必须提供并绑定 `data_images`，显式风险参数只允许省略
-   `backup_restore_change`；每日备份、数据卷、迁移头、签名、四镜像完整性、健康、账本检查与
-   失败补偿不得省略。
+   预生产。每日备份、数据卷、迁移头、签名、四镜像完整性、健康、账本检查与失败补偿不得省略。
 
 离线包上传失败、验签失败、导入失败或发布失败时必须保留 staging、release 状态和已导入镜像
 供审计，禁止无范围 `prune`。执行前记录 manifest SHA-256；Phase 0 只有一名管理员时允许同一
