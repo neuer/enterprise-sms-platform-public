@@ -11,12 +11,13 @@ describe("人工发送工作台", () => {
   it("测试发送显示后端运行策略中的号码上限", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (url: string) => ({
-        ok: true,
-        status: 200,
-        headers: { get: () => null },
-        json: async () => (String(url).endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 7 } } : []),
-      })),
+      vi.fn(
+        async (url: string) =>
+          new Response(
+            JSON.stringify(String(url).endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 7 } } : []),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+      ),
     )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
@@ -49,7 +50,12 @@ describe("人工发送工作台", () => {
   it("粘贴号码格式无效时即时提示并禁止提交", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => [] }),
+      vi
+        .fn()
+        .mockImplementation(
+          async () =>
+            new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }),
+        ),
     )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     const vm = wrapper.vm as unknown as { form: { mobilesText: string; content: string } }
@@ -73,7 +79,12 @@ describe("人工发送工作台", () => {
   it("营销发送未勾选同意时禁止提交", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => [] }),
+      vi
+        .fn()
+        .mockImplementation(
+          async () =>
+            new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }),
+        ),
     )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
 
@@ -113,7 +124,12 @@ describe("人工发送工作台", () => {
     ]
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }),
+      vi
+        .fn()
+        .mockImplementation(
+          async () =>
+            new Response(JSON.stringify(templates), { status: 200, headers: { "Content-Type": "application/json" } }),
+        ),
     )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
@@ -160,7 +176,12 @@ describe("人工发送工作台", () => {
     ]
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }),
+      vi
+        .fn()
+        .mockImplementation(
+          async () =>
+            new Response(JSON.stringify(templates), { status: 200, headers: { "Content-Type": "application/json" } }),
+        ),
     )
     const router = createRouter({
       history: createMemoryHistory(),
@@ -198,7 +219,12 @@ describe("人工发送工作台", () => {
     ]
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({ ok: true, status: 200, headers: { get: () => null }, json: async () => templates }),
+      vi
+        .fn()
+        .mockImplementation(
+          async () =>
+            new Response(JSON.stringify(templates), { status: 200, headers: { "Content-Type": "application/json" } }),
+        ),
     )
     const router = createRouter({
       history: createMemoryHistory(),
@@ -234,21 +260,11 @@ describe("人工发送工作台", () => {
     }
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       if (url === "/api/v1/web/templates")
-        return { ok: true, status: 200, headers: { get: (_name: string): string | null => null }, json: async () => [] }
+        return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } })
       if (url === imported.invalid_download_url)
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: (_name: string): string | null => null },
-          blob: async () => new Blob(["masked"]),
-        }
+        return new Response("masked", { status: 200, headers: { "Content-Type": "text/csv" } })
       expect(init?.method).toBe("POST")
-      return {
-        ok: true,
-        status: 200,
-        headers: { get: (_name: string): string | null => null },
-        json: async () => imported,
-      }
+      return new Response(JSON.stringify(imported), { status: 200, headers: { "Content-Type": "application/json" } })
     })
     vi.stubGlobal("fetch", fetch)
     vi.stubGlobal(
@@ -287,28 +303,21 @@ describe("人工发送工作台", () => {
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       const target = String(url)
       if (target.endsWith("/templates") || target.endsWith("/reports/dashboard")) {
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: () => null },
-          json: async () => (target.endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 5 } } : []),
-        }
+        return new Response(
+          JSON.stringify(target.endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 5 } } : []),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )
       }
       if (target.endsWith("/messages/send")) {
         sentBodies.push(JSON.parse(String(init?.body)) as { biz_id: string })
         if (sentBodies.length === 1) {
-          return {
-            ok: false,
+          return new Response(JSON.stringify({ code: "INTERNAL_ERROR", message: "网络丢失", detail: null }), {
             status: 500,
-            headers: { get: () => null },
-            json: async () => ({ code: "INTERNAL_ERROR", message: "网络丢失", detail: null }),
-          }
+            headers: { "Content-Type": "application/json" },
+          })
         }
-        return {
-          ok: true,
-          status: 200,
-          headers: { get: () => null },
-          json: async () => ({
+        return new Response(
+          JSON.stringify({
             batch_no: "b1",
             status: "queued",
             accepted: 1,
@@ -321,9 +330,10 @@ describe("人工发送工作台", () => {
             deferred_reason: null,
             scheduled_at: null,
           }),
-        }
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )
       }
-      return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({}) }
+      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } })
     })
     vi.stubGlobal("fetch", fetch)
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
@@ -420,22 +430,15 @@ describe("人工发送工作台", () => {
       vi.fn(async (url: string) => {
         const target = String(url)
         if (target.endsWith("/templates") || target.endsWith("/reports/dashboard")) {
-          return {
-            ok: true,
-            status: 200,
-            headers: { get: () => null },
-            json: async () => (target.endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 5 } } : []),
-          }
+          return new Response(
+            JSON.stringify(target.endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 5 } } : []),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          )
         }
         if (target.endsWith("/messages/send")) {
-          return {
-            ok: true,
-            status: 200,
-            headers: { get: () => null },
-            json: async () => result,
-          }
+          return new Response(JSON.stringify(result), { status: 200, headers: { "Content-Type": "application/json" } })
         }
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => ({}) }
+        return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } })
       }),
     )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
@@ -481,17 +484,18 @@ describe("人工发送工作台", () => {
     return vi.fn(async (url: string) => {
       const target = String(url)
       if (target.endsWith("/billing/preview")) {
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => previewBody }
+        return new Response(JSON.stringify(previewBody), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        })
       }
       if (target.endsWith("/reports/dashboard")) {
-        return {
-          ok: true,
+        return new Response(JSON.stringify({ ui_policy: { test_send_max: 5 } }), {
           status: 200,
-          headers: { get: () => null },
-          json: async () => ({ ui_policy: { test_send_max: 5 } }),
-        }
+          headers: { "Content-Type": "application/json" },
+        })
       }
-      return { ok: true, status: 200, headers: { get: () => null }, json: async () => [] }
+      return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } })
     })
   }
 
@@ -599,25 +603,21 @@ describe("人工发送工作台", () => {
     const fetch = vi.fn(async (url: string, init?: RequestInit) => {
       const target = String(url)
       if (target.endsWith("/messages/import") && init?.method === "POST") {
-        return {
-          ok: true,
+        return new Response(JSON.stringify({ ...readyBody, valid: 0, status: "pending" }), {
           status: 202,
-          headers: { get: () => null },
-          json: async () => ({ ...readyBody, valid: 0, status: "pending" }),
-        }
+          headers: { "Content-Type": "application/json" },
+        })
       }
       if (target.endsWith("/messages/import/imp-9")) {
-        return { ok: true, status: 200, headers: { get: () => null }, json: async () => readyBody }
+        return new Response(JSON.stringify(readyBody), { status: 200, headers: { "Content-Type": "application/json" } })
       }
       if (target.endsWith("/reports/dashboard")) {
-        return {
-          ok: true,
+        return new Response(JSON.stringify({ ui_policy: { test_send_max: 5 } }), {
           status: 200,
-          headers: { get: () => null },
-          json: async () => ({ ui_policy: { test_send_max: 5 } }),
-        }
+          headers: { "Content-Type": "application/json" },
+        })
       }
-      return { ok: true, status: 200, headers: { get: () => null }, json: async () => [] }
+      return new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } })
     })
     vi.stubGlobal("fetch", fetch)
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
@@ -704,12 +704,13 @@ describe("人工发送工作台", () => {
   it("测试发送超出号码上限即时提示并禁止提交", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (url: string) => ({
-        ok: true,
-        status: 200,
-        headers: { get: () => null },
-        json: async () => (String(url).endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 1 } } : []),
-      })),
+      vi.fn(
+        async (url: string) =>
+          new Response(
+            JSON.stringify(String(url).endsWith("/reports/dashboard") ? { ui_policy: { test_send_max: 1 } } : []),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          ),
+      ),
     )
     const wrapper = mount(SendView, { global: { plugins: [ElementPlus] } })
     await flushPromises()
@@ -770,11 +771,8 @@ describe("人工发送工作台", () => {
         const target = String(url)
         if (target.endsWith("/messages/send")) {
           sentBodies.push(JSON.parse(String(init?.body)) as { mobiles?: string[] })
-          return {
-            ok: true,
-            status: 200,
-            headers: { get: () => null },
-            json: async () => ({
+          return new Response(
+            JSON.stringify({
               batch_no: "b-big",
               status: "queued",
               accepted: 301,
@@ -787,7 +785,8 @@ describe("人工发送工作台", () => {
               deferred_reason: null,
               scheduled_at: null,
             }),
-          }
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          )
         }
         return base(url)
       }),

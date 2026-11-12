@@ -21,12 +21,7 @@ import {
 } from "../src/lib/time"
 
 function response(body: unknown) {
-  return {
-    ok: true,
-    status: 200,
-    headers: { get: () => null },
-    json: async () => body,
-  }
+  return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } })
 }
 
 /** 模拟日期控件 value-format：取本地钟面，不读取该时刻的 UTC 偏移。 */

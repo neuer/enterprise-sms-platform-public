@@ -12,12 +12,7 @@ import {
 import { useSessionStore } from "../src/stores/session"
 
 function response(body: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: { get: () => null },
-    json: async () => body,
-  }
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
 }
 
 const admin = {
@@ -80,7 +75,7 @@ describe("Provider 与 JWT 会话", () => {
   })
 
   it("读取登录页可用认证源", async () => {
-    const fetch = vi.fn().mockResolvedValue(
+    const fetch = vi.fn().mockImplementation(async () =>
       response([
         { code: "local", name: "本地账号", auth_flow: "password" },
         { code: "ad", name: "AD 账号", auth_flow: "password" },
@@ -102,7 +97,7 @@ describe("Provider 与 JWT 会话", () => {
 
   it("登录后保存稳定账号摘要与 Bearer token", async () => {
     const storageSignal = vi.spyOn(Storage.prototype, "setItem")
-    const fetch = vi.fn().mockResolvedValue(
+    const fetch = vi.fn().mockImplementation(async () =>
       response({
         token: "jwt-token",
         expires_in: 900,
@@ -149,7 +144,7 @@ describe("Provider 与 JWT 会话", () => {
     session.apply("local-access", admin)
     const fetch = vi
       .fn()
-      .mockResolvedValue(
+      .mockImplementation(async () =>
         response({ code: "AUTH_CONTEXT_CHANGED", message: "账号安全状态已变化，请重新登录后重试" }, 409),
       )
     vi.stubGlobal("fetch", fetch)
@@ -169,7 +164,7 @@ describe("Provider 与 JWT 会话", () => {
   it("首次登录只把 change token 返回给调用组件且不写任何浏览器存储", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
+      vi.fn().mockImplementation(async () =>
         response({
           change_token: "change-once",
           expires_in: 600,
@@ -300,7 +295,10 @@ describe("Provider 与 JWT 会话", () => {
   it("BFCache 恢复时必须向服务端重新验证，失败则清除全部标签页", async () => {
     const storageSignal = vi.spyOn(Storage.prototype, "setItem")
     sessionStorage.setItem(REFRESH_TAB_ID_KEY, "a".repeat(32))
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ code: "UNAUTHORIZED" }, 401)))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response({ code: "UNAUTHORIZED" }, 401)),
+    )
     const session = useSessionStore()
     session.apply("jwt-token", admin)
 
@@ -383,11 +381,12 @@ describe("历史 Storage 残留不得再次导入 Access Token", () => {
     session.restore()
     expect(authorization()).toEqual({ Authorization: "Bearer legacy-access" })
     expect(() => session.clear()).not.toThrow()
-    const fetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
+    const fetch = vi.fn().mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
     )
     vi.stubGlobal("fetch", fetch)
     try {
@@ -402,7 +401,7 @@ describe("历史 Storage 残留不得再次导入 Access Token", () => {
   })
 
   it.each([
-    ["成功", response({}, 204), false],
+    ["成功", response(undefined, 204), false],
     ["失败", new Error("offline"), true],
   ] as const)("服务端 logout %s 后本地清理单调且不得再导入", async (_label, logoutResult, rejects) => {
     seedLegacyAccess()
@@ -436,7 +435,10 @@ describe("历史 Storage 残留不得再次导入 Access Token", () => {
     session.restore()
     expect(() => session.clear()).not.toThrow()
     const getItem = vi.spyOn(Storage.prototype, "getItem")
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ code: "UNAUTHORIZED" }, 401)))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response({ code: "UNAUTHORIZED" }, 401)),
+    )
     try {
       await expect(session.revalidateOnResume()).resolves.toBe(false)
       session.restore()
@@ -539,7 +541,7 @@ describe("历史 Storage 残留不得再次导入 Access Token", () => {
 
   it("无 Web Locks 登录不写 tab binding 且响应为短会话", async () => {
     vi.stubGlobal("navigator", {})
-    const fetch = vi.fn().mockResolvedValue(
+    const fetch = vi.fn().mockImplementation(async () =>
       response({
         session_mode: "access_only",
         token: "jwt-token",

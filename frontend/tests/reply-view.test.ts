@@ -7,14 +7,7 @@ import ReplyView from "../src/views/ReplyView.vue"
 import { useSessionStore } from "../src/stores/session"
 
 function response(body: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: {
-      get: (name: string) => (name === "content-length" && status === 200 && body === undefined ? "0" : null),
-    },
-    json: async () => body,
-  }
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
 }
 
 function reply(overrides: Record<string, unknown> = {}) {
@@ -82,7 +75,7 @@ describe("回复查询", () => {
 
   it("取消退订确认时不发起加黑请求", async () => {
     vi.spyOn(ElMessageBox, "confirm").mockRejectedValue("cancel")
-    const fetch = vi.fn().mockResolvedValue(response({ total: 1, items: [reply()] }))
+    const fetch = vi.fn().mockImplementation(async () => response({ total: 1, items: [reply()] }))
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -100,7 +93,10 @@ describe("回复查询", () => {
   })
 
   it("已加黑的回复在状态列显示已加黑且不再提供加黑入口", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ total: 1, items: [reply({ blacklisted: true })] })))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response({ total: 1, items: [reply({ blacklisted: true })] })),
+    )
     const pinia = createPinia()
     setActivePinia(pinia)
     useSessionStore().role = "operator"
@@ -119,7 +115,7 @@ describe("回复查询", () => {
 
   it("手机号格式不合法时内联提示、提交前拦截且不发起查询请求", async () => {
     const warning = vi.spyOn(ElMessage, "warning")
-    const fetch = vi.fn().mockResolvedValue(response({ total: 0, items: [] }))
+    const fetch = vi.fn().mockImplementation(async () => response({ total: 0, items: [] }))
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -144,7 +140,7 @@ describe("回复查询", () => {
   })
 
   it("按条件查询无结果时切换为筛选空态，重置后恢复默认空态", async () => {
-    const fetch = vi.fn().mockResolvedValue(response({ total: 0, items: [] }))
+    const fetch = vi.fn().mockImplementation(async () => response({ total: 0, items: [] }))
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -176,7 +172,10 @@ describe("回复查询", () => {
   })
 
   it("普通回复文案不高亮为退订语", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ total: 1, items: [reply({ content: "请勿再发" })] })))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response({ total: 1, items: [reply({ content: "请勿再发" })] })),
+    )
     const pinia = createPinia()
     setActivePinia(pinia)
     useSessionStore().role = "viewer"
@@ -188,7 +187,10 @@ describe("回复查询", () => {
   })
 
   it("viewer 角色可见状态列但隐藏处置列与加黑入口", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ total: 1, items: [reply({ blacklisted: true })] })))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response({ total: 1, items: [reply({ blacklisted: true })] })),
+    )
     const pinia = createPinia()
     setActivePinia(pinia)
     useSessionStore().role = "viewer"
@@ -204,7 +206,7 @@ describe("回复查询", () => {
   })
 
   it("处置 seg 切换按 all/pending_optout/blacklisted 传参并回到第一页", async () => {
-    const fetch = vi.fn().mockResolvedValue(response({ total: 0, items: [] }))
+    const fetch = vi.fn().mockImplementation(async () => response({ total: 0, items: [] }))
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -239,7 +241,7 @@ describe("回复查询", () => {
   })
 
   it("回复时间范围按 ISO8601 +08:00 提交", async () => {
-    const fetch = vi.fn().mockResolvedValue(response({ total: 0, items: [] }))
+    const fetch = vi.fn().mockImplementation(async () => response({ total: 0, items: [] }))
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()
     setActivePinia(pinia)

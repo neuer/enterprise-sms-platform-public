@@ -60,7 +60,9 @@ describe("应用骨架", () => {
     vi.useFakeTimers()
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(new Response(JSON.stringify({ counts: { pending: 0 }, items: [], total: 0 }))),
+      vi
+        .fn()
+        .mockImplementation(async () => new Response(JSON.stringify({ counts: { pending: 0 }, items: [], total: 0 }))),
     )
     const router = createRouter({
       history: createMemoryHistory(),
@@ -299,12 +301,10 @@ describe("应用骨架", () => {
       expect(String(url)).toContain("/api/v1/web/approvals?")
       expect(String(url)).toContain("status=pending")
       expect(String(url)).toContain("size=1")
-      return {
-        ok: true,
+      return new Response(JSON.stringify({ total: 12, counts, items: [] }), {
         status: 200,
-        headers: { get: () => null },
-        json: async () => ({ total: 12, counts, items: [] }),
-      }
+        headers: { "Content-Type": "application/json" },
+      })
     })
     vi.stubGlobal("fetch", fetch)
     const router = createRouter({
@@ -344,12 +344,13 @@ describe("应用骨架", () => {
   it("审批页路由期间暂停角标轮询，离开后立即补刷并恢复周期", async () => {
     vi.useFakeTimers()
     const counts = { pending: 5, approved: 0, rejected: 0, expired: 0, pending_urgent: 0 }
-    const fetch = vi.fn(async (_url: string) => ({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => ({ total: 5, counts, items: [] }),
-    }))
+    const fetch = vi.fn(
+      async (_url: string) =>
+        new Response(JSON.stringify({ total: 5, counts, items: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    )
     vi.stubGlobal("fetch", fetch)
     const router = createRouter({
       history: createMemoryHistory(),
@@ -730,32 +731,21 @@ describe("应用骨架", () => {
       dept: "平台技术部",
       role: "admin",
     })
-    const fetch = vi.fn(
-      async (
-        url: string,
-      ): Promise<{
-        ok: boolean
-        status: number
-        headers: { get: () => string | null }
-        json: () => Promise<unknown>
-      }> => {
-        if (url.endsWith("/password-policy")) {
-          return {
-            ok: true,
-            status: 200,
-            headers: { get: () => null },
-            json: async () => ({
-              min_length: 12,
-              max_length: 128,
-              required_character_classes: 3,
-              forbid_username: true,
-              description: "12–128 位，至少包含三类字符，不能包含用户名",
-            }),
-          }
-        }
-        return { ok: true, status: 200, headers: { get: () => "0" }, json: async () => undefined }
-      },
-    )
+    const fetch = vi.fn(async (url: string): Promise<Response> => {
+      if (url.endsWith("/password-policy")) {
+        return new Response(
+          JSON.stringify({
+            min_length: 12,
+            max_length: 128,
+            required_character_classes: 3,
+            forbid_username: true,
+            description: "12–128 位，至少包含三类字符，不能包含用户名",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )
+      }
+      return new Response(JSON.stringify(undefined), { status: 200, headers: { "Content-Type": "application/json" } })
+    })
     vi.stubGlobal("fetch", fetch)
     await router.push("/dashboard")
     await router.isReady()
@@ -826,7 +816,10 @@ describe("应用骨架", () => {
       dept: "平台技术部",
       role: "admin",
     })
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, status: 200 }))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 204 })),
+    )
     await router.push("/dashboard")
     await router.isReady()
     const wrapper = mount(App, { global: { plugins: [pinia, router] } })

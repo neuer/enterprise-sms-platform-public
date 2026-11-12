@@ -33,19 +33,21 @@ describe("review: 批次渠道授权边界", () => {
       scheduled_at: null,
       created_at: "2026-09-12T14:00:00+08:00",
     }
-    const fetch = vi.fn(async (url: string) => ({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () =>
-        url.includes("/details?")
-          ? { total: 0, items: [] }
-          : url.includes("/batches/SYNTHETIC-API-BATCH")
-            ? batch
-            : url.includes("/admin/apps")
-              ? []
-              : { total: 1, items: [batch] },
-    }))
+    const fetch = vi.fn(
+      async (url: string) =>
+        new Response(
+          JSON.stringify(
+            url.includes("/details?")
+              ? { total: 0, items: [] }
+              : url.includes("/batches/SYNTHETIC-API-BATCH")
+                ? batch
+                : url.includes("/admin/apps")
+                  ? []
+                  : { total: 1, items: [batch] },
+          ),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+    )
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()
     setActivePinia(pinia)

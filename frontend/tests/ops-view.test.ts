@@ -57,13 +57,7 @@ const publicId = "c0a80101-0000-4000-8000-000000000134"
 const outboxEventId = "c0a80101-0000-4000-8000-000000000199"
 
 function response(body: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: { get: (name: string) => (name === "content-length" && body === undefined ? "0" : null) },
-    json: async () => body,
-    blob: async () => new Blob(["masked-export"]),
-  }
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
 }
 
 function result(url: string, method: string): unknown {
@@ -360,7 +354,11 @@ describe("统一运维中心", () => {
 
   it("展示 unmatched 掩码并支持密文导出与 break-glass 恢复", async () => {
     sessionStorage.setItem("sms_token", "jwt-ops")
-    const fetch = vi.fn(async (input: string, init?: RequestInit) => response(result(input, init?.method || "GET")))
+    const fetch = vi.fn(async (input: string, init?: RequestInit) =>
+      input.endsWith("/download")
+        ? new Response("masked-export", { headers: { "Content-Type": "text/csv" } })
+        : response(result(input, init?.method || "GET")),
+    )
     vi.stubGlobal("fetch", fetch)
     const confirm = vi.spyOn(ElMessageBox, "confirm").mockResolvedValue("confirm" as never)
     const wrapper = await mountOps()
