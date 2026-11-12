@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.api import reports as module
 from app.core.auth.jwt import JwtClaims
+from app.core.auth.roles import Role
 from app.core.auth.runtime import get_auth_facade
 from app.core.errors import ApiError, api_error_handler
 from app.services.dashboard import (
@@ -24,12 +25,18 @@ from app.services.dashboard import (
 
 class FakeFacade:
     async def verify(self, _token: str) -> JwtClaims:
-        return JwtClaims("viewer01", "只读用户", "业务一部", "viewer")
+        return JwtClaims(
+            account_id=1, identity_id=1, provider_code="local",
+            login_name="viewer01", display_name="只读用户", dept="业务一部", role="viewer",
+        )
 
 
 class AdminFacade:
     async def verify(self, _token: str) -> JwtClaims:
-        return JwtClaims("admin01", "管理员", "平台部", "admin")
+        return JwtClaims(
+            account_id=1, identity_id=1, provider_code="local",
+            login_name="admin01", display_name="管理员", dept="平台部", role="admin",
+        )
 
 
 class FakeDashboardService:
@@ -173,10 +180,13 @@ def test_admin_balance_uses_lightweight_repository_and_keeps_unknown(balance: in
 
 
 @pytest.mark.parametrize("role", ["viewer", "operator", "approver"])
-def test_balance_rejects_non_admin_without_querying_global_facts(role: str) -> None:
+def test_balance_rejects_non_admin_without_querying_global_facts(role: Role) -> None:
     class RoleFacade:
         async def verify(self, _token: str) -> JwtClaims:
-            return JwtClaims("reader", "用户", "业务部", role)
+            return JwtClaims(
+                account_id=1, identity_id=1, provider_code="local",
+                login_name="reader", display_name="用户", dept="业务部", role=role,
+            )
 
     client, _ = make_client()
     repository = FakeBalanceRepository(9000)

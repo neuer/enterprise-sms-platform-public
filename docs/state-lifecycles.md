@@ -37,7 +37,7 @@
 | A01/A03/A08/B19/B22 授权 | 在单次令牌消费、外呼和下载实际副作用点复核账号、会话、部门、应用配置版本；事务锁内再次检查到期 | done/旧 JWT/历史创建权不是永久授权；取消 UI 不返还已消费令牌；refresh grace 不延长 AD 完整认证期限；撤销和权威不可用失败关闭 |
 
 资源恢复必须由现有仓储/服务入口执行。本表没有授予直接改 SQL、删除事实账本、运行清理、
-真实短信、共享测试更新或生产部署的权限。发布、测试更新、备份与生命周期工具仍遵守 D122 冻结。
+真实短信、共享测试更新或生产部署的权限。发布、测试更新、备份与生命周期工具按 D122/D125 逐项评估、独立提交；不恢复已退役入口。
 
 ## 协议验收落点
 
@@ -161,7 +161,7 @@
 | ID / 状态族 | owner 与正交状态 | 事件与验收不变量 | 保留或局部调整 | 测试入口 |
 |---|---|---|---|---|
 | D01 发布外层状态存储 | [release_store.py](../deploy/scripts/release_store.py)<br>ReleaseState + _TRANSITIONS | staged→prepared→activating→succeeded；失败转 rolling_back/recovery_required<br>**非法边及终态跳转拒绝；状态原子持久化** | 保留现实现。这是已有显式状态机，对照保留；不列入隐式改造数 | [test_state_machine_properties.py](../backend/tests/quality/test_state_machine_properties.py) |
-| D02 测试更新外层状态存储 | [test_update_store.py](../deploy/scripts/test_update_store.py)<br>TestUpdateState + _TRANSITIONS/events chain | prepared→checkpointed/migrated/applied→verified；失败 blocked 或回滚；受控恢复<br>**只有 verified 算成功；事件链与 state 同步** | 保留现实现。保留显式邻接表；按 D122 冻结边界不作架构重构 | [test_test_update_store.py](../backend/tests/test_test_update_store.py) |
+| D02 测试更新外层状态存储 | [test_update_store.py](../deploy/scripts/test_update_store.py)<br>TestUpdateState + _TRANSITIONS/events chain | prepared→checkpointed/migrated/applied→verified；失败 blocked 或回滚；受控恢复<br>**只有 verified 算成功；事件链与 state 同步** | 保留现实现。保留显式邻接表；按 D122/D125 保留现役协议，只逐项评估退役路径 | [test_test_update_store.py](../backend/tests/test_test_update_store.py) |
 | D03 发布步骤、执行日志与重入决策 | [release_manager.py](../deploy/scripts/release_manager.py)<br>outer state/step journal/evidence/active SHA/health/rollback progress | 逐步切换→验证→finalize；进程中断后 reconcile 决定 resume/rollback/manual<br>**命令退出码不等于发布完成；证据必须绑定同一候选** | 保留现实现。记录每步可重入条件与不可逆点；保留外层 FSM 与步骤台账分层 | [test_release_manager.py](../backend/tests/test_release_manager.py) |
 | D04 测试更新内部切换 | [test_update_apply.py](../deploy/scripts/test_update_apply.py)<br>[test_update_promote.py](../deploy/scripts/test_update_promote.py)<br>prepare/apply/verify 步骤 + 外层 TestUpdateState | prepared→checkpointed→migrated→applied→verified；无迁移失败自动回退镜像与 commit<br>**代码根、持久数据和验证证据不能错配；不得擅自回退 schema** | 保留现实现。公有基线激活与重对齐入口已按 D125 退役 | [test_test_update_apply.py](../backend/tests/test_test_update_apply.py) |
 | D05 写者协议切换与准入屏障 | [app_ratelimit_cutover.py](../backend/app/services/app_ratelimit_cutover.py)<br>[writer_cutover.py](../deploy/scripts/writer_cutover.py)<br>preparing/old_writers_fenced/waiting_window/active_v2/active_v1/aborted_closed + generation | 关闭准入→隔离旧写者→等待窗口→验证目标写者→启用→开准入<br>**仅 active_v2 不足以证明可发；generation、release binding 和 admission 均须匹配** | 保留现实现。保留 Lua CAS 与正式入口；不靠本地 marker 手工跳阶段 | [test_app_ratelimit_writer_cutover.py](../backend/tests/test_app_ratelimit_writer_cutover.py) |

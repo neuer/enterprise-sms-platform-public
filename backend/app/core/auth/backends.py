@@ -30,9 +30,6 @@ class SessionStateUnavailable(RuntimeError):
     """数据库或 Redis 会话权威状态不可用；所有鉴权路径必须 fail closed。"""
 
 
-# 旧名称只用于重构期间尚未迁移的调用方，不改变新 API 错误语义。
-DirectoryUnavailable = ProviderUnavailable
-
 DevelopmentRole = Literal["admin", "approver", "operator", "viewer"]
 AuthenticationPurpose = Literal["login", "reauthentication"]
 
@@ -52,13 +49,3 @@ class AuthenticatedIdentity:
     admission: AdmissionReservation | None = field(default=None, repr=False, compare=False)
     provider_id: int | None = None
     provider_version: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class DirectoryIdentity:
-    """待迁移用户管理代码的临时兼容投影。"""
-
-    username: str
-    display_name: str
-    dept: str
-    groups: tuple[str, ...]
