@@ -91,12 +91,10 @@ class UsageLedgerService(UsageFrequencyMixin, UsageReleaseMixin):
         redis: UsageRedis,
         settings: Settings | None = None,
         *,
-        pooled: bool = True,
         clock: Callable[[], datetime] = utc_now,
     ) -> None:
         self.redis = redis
         self.settings = settings or get_settings()
-        self.pooled = pooled
         self.clock = clock
 
     async def start_reservation(

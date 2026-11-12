@@ -109,11 +109,7 @@ async def _release_usage(
     async def effect(claim: OutboxClaim) -> int:
         if claim.args != (reservation_id,):
             raise ValueError("usage release outbox args mismatch")
-        return await UsageLedgerService(
-            redis,
-            settings,
-            pooled=False,
-        ).apply_release(UUID(reservation_id))
+        return await UsageLedgerService(redis, settings).apply_release(UUID(reservation_id))
 
     try:
         return await OutboxExecutor(SqlOutboxRepository(settings)).run(
@@ -202,11 +198,7 @@ async def _publish_usage_projection(reservation_id: str, event_id: str) -> int:
     async def effect(claim: OutboxClaim) -> int:
         if claim.args != (reservation_id,):
             raise ValueError("usage projection outbox args mismatch")
-        return await UsageLedgerService(
-            redis,
-            settings,
-            pooled=False,
-        ).publish_projection(UUID(reservation_id))
+        return await UsageLedgerService(redis, settings).publish_projection(UUID(reservation_id))
 
     try:
         return await OutboxExecutor(SqlOutboxRepository(settings)).run(

@@ -325,7 +325,6 @@ async def test_usage_facts_release_rebuild_rotation_and_drift_are_recoverable() 
         service = UsageLedgerService(
             redis,
             settings,
-            pooled=False,
             clock=lambda: now,
         )
         first = await service.start_reservation(
@@ -637,7 +636,7 @@ async def test_uncertain_retry_rebuilds_and_orphan_recovery_spares_committed() -
                 },
             )
             app_id = int(result.scalar_one())
-        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        service = UsageLedgerService(redis, settings, clock=lambda: now)
         await service.ensure_ready(now)
         request_key = f"acceptance:{uuid4()}"
         first = await service.start_reservation(
@@ -822,7 +821,7 @@ async def test_concurrent_quota_reservations_are_serialized_in_postgres() -> Non
             },
         )
         app_id = int(result.scalar_one())
-    service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+    service = UsageLedgerService(redis, settings, clock=lambda: now)
     reservations = [
         await service.start_reservation(
             request_key=f"acceptance:{uuid4()}",
@@ -919,7 +918,7 @@ async def test_concurrent_releases_update_shared_projection_without_deadlock() -
             },
         )
         app_id = int(result.scalar_one())
-    service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+    service = UsageLedgerService(redis, settings, clock=lambda: now)
     await service.ensure_ready(now)
     reservations = await asyncio.gather(
         *(
@@ -1030,7 +1029,7 @@ async def test_recover_orphans_retries_stuck_release_requested() -> None:
                 },
             )
             app_id = int(result.scalar_one())
-        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        service = UsageLedgerService(redis, settings, clock=lambda: now)
         await service.ensure_ready(now)
         reservation = await service.start_reservation(
             request_key=f"acceptance:{uuid4()}",
@@ -1376,7 +1375,7 @@ async def test_frequency_subject_merge_combines_live_same_window_projections() -
         assert f"freq:m:{expired_app}:{digest_b}:d" not in values
 
         redis.fail = True
-        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        service = UsageLedgerService(redis, settings, clock=lambda: now)
         with pytest.raises(UsageProjectionUnavailable):
             await service.rebuild()
         redis.fail = False
@@ -1685,7 +1684,7 @@ async def test_frequency_subject_merge_keeps_newest_live_window() -> None:
         assert f"freq:m:{same_app}:{digest_b}:d" not in values
         assert f"freq:m:{reverse_app}:{digest_b}:d" not in values
 
-        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        service = UsageLedgerService(redis, settings, clock=lambda: now)
         await service.rebuild()
         assert redis.values[f"freq:v:{digest_a}:m"] == "5"
         assert redis.values[f"freq:v:{digest_a}:d"] == "4"
@@ -2328,7 +2327,7 @@ async def test_expired_source_projection_merge_completes_terminal_release() -> N
         assert entry_keys[str(verify_day_id)] == f"freq:v:{digest_a}:d"
         assert entry_keys[str(market_id)] == f"freq:m:{app_id}:{digest_a}:d"
 
-        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        service = UsageLedgerService(redis, settings, clock=lambda: now)
         redis.fail = True
         with pytest.raises(UsageProjectionUnavailable):
             await service.rebuild()
@@ -2633,7 +2632,7 @@ async def test_expired_source_merge_and_release_are_safe_under_concurrency() -> 
                 expires_at=expired_at,
             )
 
-        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        service = UsageLedgerService(redis, settings, clock=lambda: now)
 
         async def merge_once() -> tuple[UUID, str]:
             async with engine.begin() as connection:
@@ -2758,7 +2757,7 @@ async def test_frequency_many_sql_is_chunk_bounded_for_new_and_existing_subjects
                 },
             )
             app_id = int(result.scalar_one())
-        service = UsageLedgerService(redis, settings, pooled=False, clock=lambda: now)
+        service = UsageLedgerService(redis, settings, clock=lambda: now)
         first = await service.start_reservation(
             request_key=f"acceptance:{uuid4()}",
             app_id=app_id,

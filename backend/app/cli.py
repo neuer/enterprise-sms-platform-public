@@ -742,11 +742,9 @@ async def run_usage_projection_rebuild(settings: Settings) -> int:
 
     redis = Redis.from_url(settings.redis_control_url, decode_responses=True)
     try:
-        return await UsageLedgerService(
-            redis,
-            settings,
-            pooled=False,
-        ).rebuild(actor="operator:usage-projection-cli")
+        return await UsageLedgerService(redis, settings).rebuild(
+            actor="operator:usage-projection-cli"
+        )
     finally:
         await redis.aclose()
 
@@ -761,11 +759,9 @@ async def run_usage_ledger_explain(
 
     redis = Redis.from_url(settings.redis_control_url, decode_responses=True)
     try:
-        return await UsageLedgerService(
-            redis,
-            settings,
-            pooled=False,
-        ).explain(reservation_id=reservation_id, batch_no=batch_no)
+        return await UsageLedgerService(redis, settings).explain(
+            reservation_id=reservation_id, batch_no=batch_no
+        )
     finally:
         await redis.aclose()
 

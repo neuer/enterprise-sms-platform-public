@@ -321,7 +321,7 @@ def get_current_alert_service(_actor: AdminActor) -> CurrentAlertService:
 
 
 def get_outbox_repository(_actor: AdminActor) -> SqlOutboxRepository:
-    return SqlOutboxRepository(pooled=True)
+    return SqlOutboxRepository()
 
 
 def get_ops_service(

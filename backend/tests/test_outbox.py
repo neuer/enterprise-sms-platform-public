@@ -536,7 +536,6 @@ def test_outbox_repository_always_uses_process_shared_pool(
     )
 
     assert SqlOutboxRepository(settings)._engine() is shared_engine
-    assert SqlOutboxRepository(settings, pooled=True)._engine() is shared_engine
 
 
 @pytest.mark.asyncio
