@@ -148,7 +148,7 @@ async def test_local_login_projection_uses_provider_and_normalized_global_name()
     assert "ap.code='local'" in sql
     assert "ai.normalized_login_name=:normalized_login_name" in sql
     assert params == {"normalized_login_name": "operator01"}
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -177,7 +177,7 @@ async def test_force_logout_targets_numeric_account_id_and_audits_same_id() -> N
     audit_sql, audit_params = connection.calls[2]
     assert "force_logout" in audit_sql
     assert audit_params["object_id"] == "8"
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -216,7 +216,7 @@ async def test_security_session_loader_reads_stable_account_and_identity() -> No
     assert "local_credential" not in sql
     assert "password_hash" not in sql
     assert params == {"account_id": 42, "identity_id": 77}
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -249,7 +249,7 @@ async def test_password_change_updates_hash_and_version_without_hash_in_audit() 
     assert audit_params["account_id"] == 8
     assert audit_params["identity_id"] == 18
     assert "$argon2id" not in str(audit_params)
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -281,7 +281,7 @@ async def test_password_change_token_is_stored_as_bound_hash_only() -> None:
         "expires_at": expires_at,
     }
     assert "jwt" not in str(params).casefold()
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -334,7 +334,7 @@ async def test_initial_password_change_consumes_token_and_updates_password_atomi
     audit_sql, audit_params = connection.calls[6]
     assert "local_password_change" in audit_sql
     assert "$argon2id" not in str(audit_params)
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -355,7 +355,7 @@ async def test_initial_password_change_rejects_used_or_stale_token_without_updat
         )
 
     assert len(connection.calls) == 2
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -408,7 +408,7 @@ async def test_initial_password_change_claims_and_releases_fenced_lease() -> Non
     assert "processing_lease_id=:lease_id" in release_sql
     assert release_params == {"token_id": 91, "lease_id": claim.lease_id}
     assert released
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -472,7 +472,7 @@ async def test_valid_external_identity_conflict_is_rejected_before_account_creat
     assert "'provider_code',CAST(:provider_code AS text)" in audit_sql
     assert audit_params["provider_code"] == "ad"
     assert "guid-ad-admin" not in str(audit_params)
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -536,4 +536,4 @@ async def test_external_login_role_sync_preserves_effective_admin_invariant() ->
     assert connection.calls[0][1] == {"lock_id": ADMIN_INVARIANT_LOCK_ID}
     assert "SELECT ua.id" in connection.calls[6][0]
     assert "external_role_mapping" in connection.calls[6][0]
-    assert engine.disposed
+    assert not engine.disposed

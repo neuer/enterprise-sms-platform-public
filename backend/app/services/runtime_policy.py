@@ -436,10 +436,7 @@ class SqlRuntimePolicyLoader:
 
     async def load(self) -> RuntimePolicy:
         engine = database_engine(self.settings.database_url)
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(text("SELECT key,value FROM sys_config"))
-                values = {str(row["key"]): str(row["value"]) for row in result.mappings()}
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(text("SELECT key,value FROM sys_config"))
+            values = {str(row["key"]): str(row["value"]) for row in result.mappings()}
         return RuntimePolicy.from_mapping(values)

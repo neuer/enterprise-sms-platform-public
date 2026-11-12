@@ -423,7 +423,7 @@ def _scheduling_service(
 ) -> SchedulingService:
     redis: Any = redis_client(settings.redis_control_url)
     return SchedulingService(
-        SqlSchedulingRepository(settings, pooled=True),
+        SqlSchedulingRepository(settings),
         QuotaService(redis),
         CeleryQueuePublisher(),
         approval_expire_hours=approval_expire_hours,

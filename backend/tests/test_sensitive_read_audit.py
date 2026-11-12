@@ -68,7 +68,7 @@ async def test_sensitive_read_audit_uses_stable_principal_and_value_free_payload
     assert event.after == {"result_count": 2}
     assert "content" not in event.after
     assert event.ip == "192.0.2.10"
-    assert engine.disposed is True
+    assert engine.disposed is False
 
 
 @pytest.mark.asyncio

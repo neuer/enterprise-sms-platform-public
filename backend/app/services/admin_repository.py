@@ -85,12 +85,9 @@ class SqlAdminRepository:
 
     async def list_configs(self) -> tuple[ConfigRow, ...]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(text(CONFIG_SELECT))
-                return tuple(self._config(row) for row in result.mappings())
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(text(CONFIG_SELECT))
+            return tuple(self._config(row) for row in result.mappings())
 
     async def update_configs(
         self,
@@ -111,107 +108,106 @@ class SqlAdminRepository:
         if any(key.startswith("__") for key in keys):
             raise InvalidAdminQuery("配置项不存在或已被删除")
         engine = self._engine()
-        try:
-            async with (
-                hold_admin_authorization(
-                    self.settings,
-                    authorization,
-                    operation="config_update",
-                    target="default",
-                    parameters=parameters,
-                    engine=engine,
-                ) as connection,
-            ):
-                await bind_connection_audit_subject(
-                    connection,
-                    subject_kind="human",
-                    actor_name=principal.login_name,
-                    account_id=principal.account_id,
-                    identity_id=principal.identity_id,
-                )
-                await connection.execute(
-                    text("SELECT pg_advisory_xact_lock(:lock_id)"),
-                    {"lock_id": CONFIG_UPDATE_LOCK_ID},
-                )
-                locked = await connection.execute(
-                    text(
-                        """
+        async with (
+            hold_admin_authorization(
+                self.settings,
+                authorization,
+                operation="config_update",
+                target="default",
+                parameters=parameters,
+                engine=engine,
+            ) as connection,
+        ):
+            await bind_connection_audit_subject(
+                connection,
+                subject_kind="human",
+                actor_name=principal.login_name,
+                account_id=principal.account_id,
+                identity_id=principal.identity_id,
+            )
+            await connection.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_id)"),
+                {"lock_id": CONFIG_UPDATE_LOCK_ID},
+            )
+            locked = await connection.execute(
+                text(
+                    """
                         SELECT key,value,value_type,description,updated_by,updated_at
                         FROM sys_config
                         ORDER BY key FOR UPDATE
                         """
-                    )
                 )
-                before = {str(row["key"]): self._config(row) for row in locked.mappings()}
-                if any(key not in before for key in keys):
-                    raise InvalidAdminQuery("配置项不存在或已被删除")
-                for item in updates:
-                    row = before[item.key]
-                    if row.value_type != CONFIG_SPECS[item.key].value_type:
-                        raise InvalidAdminQuery("配置类型与注册表不一致")
-                    if canonical_app_revision(row.updated_at) != canonical_app_revision(
-                        item.expected_updated_at,
-                    ):
-                        raise ApiError(409, "STATE_CONFLICT", "配置已变化，请刷新后重新认证", None)
-                updates = tuple(item for item in updates if item.value is not None)
-                if not updates:
-                    return tuple(before.values())
-                keys = [item.key for item in updates]
-                effective = {key: row.value for key, row in before.items()}
-                for item in updates:
-                    if item.value is None:
-                        raise InvalidAdminQuery(f"配置 {item.key} 缺少值")
-                    effective[item.key] = item.value
-                # 既有凭据只以密文存在，API 不持有解密能力。未轮换该项时，
-                # 目标已在首次保存时校验，其他配置更新不得尝试解封。
-                if WECOM_WEBHOOK_KEY not in keys:
-                    effective[WECOM_WEBHOOK_KEY] = ""
-                try:
-                    RuntimePolicy.from_mapping(effective)
-                    validate_alert_destinations(
-                        effective,
-                        self.settings.alert_smtp_allowed_host_set,
-                    )
-                except InvalidRuntimePolicy as error:
-                    raise InvalidAdminQuery(str(error)) from error
-                except ValueError as error:
-                    raise InvalidAdminQuery(str(error)) from error
-                stored_values = {
-                    item.key: (
-                        encrypt_wecom_webhook(item.value or "", self._credential_cipher())
-                        if item.key == WECOM_WEBHOOK_KEY
-                        else item.value
-                    )
-                    for item in updates
-                }
-                await connection.execute(
-                    text(
-                        """
+            )
+            before = {str(row["key"]): self._config(row) for row in locked.mappings()}
+            if any(key not in before for key in keys):
+                raise InvalidAdminQuery("配置项不存在或已被删除")
+            for item in updates:
+                row = before[item.key]
+                if row.value_type != CONFIG_SPECS[item.key].value_type:
+                    raise InvalidAdminQuery("配置类型与注册表不一致")
+                if canonical_app_revision(row.updated_at) != canonical_app_revision(
+                    item.expected_updated_at,
+                ):
+                    raise ApiError(409, "STATE_CONFLICT", "配置已变化，请刷新后重新认证", None)
+            updates = tuple(item for item in updates if item.value is not None)
+            if not updates:
+                return tuple(before.values())
+            keys = [item.key for item in updates]
+            effective = {key: row.value for key, row in before.items()}
+            for item in updates:
+                if item.value is None:
+                    raise InvalidAdminQuery(f"配置 {item.key} 缺少值")
+                effective[item.key] = item.value
+            # 既有凭据只以密文存在，API 不持有解密能力。未轮换该项时，
+            # 目标已在首次保存时校验，其他配置更新不得尝试解封。
+            if WECOM_WEBHOOK_KEY not in keys:
+                effective[WECOM_WEBHOOK_KEY] = ""
+            try:
+                RuntimePolicy.from_mapping(effective)
+                validate_alert_destinations(
+                    effective,
+                    self.settings.alert_smtp_allowed_host_set,
+                )
+            except InvalidRuntimePolicy as error:
+                raise InvalidAdminQuery(str(error)) from error
+            except ValueError as error:
+                raise InvalidAdminQuery(str(error)) from error
+            stored_values = {
+                item.key: (
+                    encrypt_wecom_webhook(item.value or "", self._credential_cipher())
+                    if item.key == WECOM_WEBHOOK_KEY
+                    else item.value
+                )
+                for item in updates
+            }
+            await connection.execute(
+                text(
+                    """
                         UPDATE sys_config SET value=:value,updated_by=:actor,updated_at=now()
                         WHERE key=:key
                         """
-                    ),
-                    [
-                        {
-                            "key": item.key,
-                            "value": stored_values[item.key],
-                            "actor": principal.login_name,
-                        }
-                        for item in updates
-                    ],
+                ),
+                [
+                    {
+                        "key": item.key,
+                        "value": stored_values[item.key],
+                        "actor": principal.login_name,
+                    }
+                    for item in updates
+                ],
+            )
+            for item in updates:
+                old_value = before[item.key].value
+                sensitive = item.key in SENSITIVE_CONFIG_KEYS
+                before_payload = (
+                    {"configured": bool(old_value)} if sensitive else {"value": old_value}
                 )
-                for item in updates:
-                    old_value = before[item.key].value
-                    sensitive = item.key in SENSITIVE_CONFIG_KEYS
-                    before_payload = (
-                        {"configured": bool(old_value)} if sensitive else {"value": old_value}
-                    )
-                    after_payload = (
-                        {"configured": bool(item.value)} if sensitive else {"value": item.value}
-                    )
-                    await connection.execute(
-                        text(
-                            """
+                after_payload = (
+                    {"configured": bool(item.value)} if sensitive else {"value": item.value}
+                )
+                await connection.execute(
+                    text(
+                        """
                             INSERT INTO audit_log(
                               actor,actor_subject_kind,actor_account_id,
                               actor_identity_id,role,ip,action,object_type,object_id,
@@ -222,26 +218,26 @@ class SqlAdminRepository:
                               'sys_config',:key,CAST(:before AS jsonb),CAST(:after AS jsonb)
                             )
                             """
-                        ),
-                        {
-                            "actor": principal.login_name,
-                            "actor_account_id": principal.account_id,
-                            "actor_identity_id": principal.identity_id,
-                            "ip": ip,
-                            "key": item.key,
-                            "before": json.dumps(before_payload, ensure_ascii=False),
-                            "after": json.dumps(after_payload, ensure_ascii=False),
-                        },
-                    )
-                if any(item.key == "ad_session_max_age_minutes" for item in updates):
-                    minutes = next(
-                        item.value for item in updates if item.key == "ad_session_max_age_minutes"
-                    )
-                    if minutes is None:
-                        raise InvalidAdminQuery("认证会话策略缺少最大认证年龄")
-                    bumped = await connection.execute(
-                        text(
-                            """
+                    ),
+                    {
+                        "actor": principal.login_name,
+                        "actor_account_id": principal.account_id,
+                        "actor_identity_id": principal.identity_id,
+                        "ip": ip,
+                        "key": item.key,
+                        "before": json.dumps(before_payload, ensure_ascii=False),
+                        "after": json.dumps(after_payload, ensure_ascii=False),
+                    },
+                )
+            if any(item.key == "ad_session_max_age_minutes" for item in updates):
+                minutes = next(
+                    item.value for item in updates if item.key == "ad_session_max_age_minutes"
+                )
+                if minutes is None:
+                    raise InvalidAdminQuery("认证会话策略缺少最大认证年龄")
+                bumped = await connection.execute(
+                    text(
+                        """
                             UPDATE auth_session_policy
                             SET revision = revision + 1,
                                 ad_session_max_age_minutes = :minutes,
@@ -252,26 +248,21 @@ class SqlAdminRepository:
                               EXTRACT(EPOCH FROM updated_at)::bigint AS updated_at_epoch,
                               min_accepted_policy_revision
                             """
-                        ),
-                        {"minutes": int(minutes), "actor": principal.login_name},
-                    )
-                    if next(iter(bumped.mappings()), None) is None:
-                        raise InvalidAdminQuery("认证会话策略权威行不存在")
-                result = await connection.execute(text(CONFIG_SELECT))
-                return tuple(self._config(row) for row in result.mappings())
-        finally:
-            await engine.dispose()
+                    ),
+                    {"minutes": int(minutes), "actor": principal.login_name},
+                )
+                if next(iter(bumped.mappings()), None) is None:
+                    raise InvalidAdminQuery("认证会话策略权威行不存在")
+            result = await connection.execute(text(CONFIG_SELECT))
+            return tuple(self._config(row) for row in result.mappings())
 
     async def load_auth_session_policy(self) -> AuthSessionPolicy:
         """读取权威 AD 会话策略行，供提交后 CAS 发布。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(text(POLICY_SELECT))
-                row = next(iter(result.mappings()), None)
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(text(POLICY_SELECT))
+            row = next(iter(result.mappings()), None)
         if row is None:
             raise InvalidAdminQuery("认证会话策略权威行不存在")
         return policy_from_mapping(row)
@@ -309,15 +300,14 @@ class SqlAdminRepository:
             "offset": (query.page - 1) * query.page_size,
         }
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                total_result = await connection.execute(
-                    text(f"SELECT count(*) FROM audit_log WHERE {where}"),
-                    params,
-                )
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            total_result = await connection.execute(
+                text(f"SELECT count(*) FROM audit_log WHERE {where}"),
+                params,
+            )
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT id,correlation_id,actor,actor_subject_kind,actor_account_id,
                           actor_identity_id,actor_app_id,role,host(ip) ip,
                           action,object_type,object_id,before_val,after_val,created_at
@@ -325,55 +315,50 @@ class SqlAdminRepository:
                         ORDER BY created_at DESC,id DESC
                         LIMIT :limit OFFSET :offset
                         """
+                ),
+                params,
+            )
+            items = tuple(
+                AuditRecord(
+                    int(row["id"]),
+                    str(row["actor"]),
+                    str(row["role"]) if row["role"] is not None else None,
+                    str(row["ip"]) if row["ip"] is not None else None,
+                    str(row["action"]),
+                    str(row["object_type"]) if row["object_type"] is not None else None,
+                    str(row["object_id"]) if row["object_id"] is not None else None,
+                    row["before_val"],
+                    row["after_val"],
+                    row["created_at"],
+                    str(row["actor_subject_kind"]),
+                    (
+                        int(row["actor_account_id"])
+                        if row["actor_account_id"] is not None
+                        else None
                     ),
-                    params,
+                    (
+                        int(row["actor_identity_id"])
+                        if row["actor_identity_id"] is not None
+                        else None
+                    ),
+                    (int(row["actor_app_id"]) if row["actor_app_id"] is not None else None),
+                    UUID(str(row["correlation_id"])),
                 )
-                items = tuple(
-                    AuditRecord(
-                        int(row["id"]),
-                        str(row["actor"]),
-                        str(row["role"]) if row["role"] is not None else None,
-                        str(row["ip"]) if row["ip"] is not None else None,
-                        str(row["action"]),
-                        str(row["object_type"]) if row["object_type"] is not None else None,
-                        str(row["object_id"]) if row["object_id"] is not None else None,
-                        row["before_val"],
-                        row["after_val"],
-                        row["created_at"],
-                        str(row["actor_subject_kind"]),
-                        (
-                            int(row["actor_account_id"])
-                            if row["actor_account_id"] is not None
-                            else None
-                        ),
-                        (
-                            int(row["actor_identity_id"])
-                            if row["actor_identity_id"] is not None
-                            else None
-                        ),
-                        (int(row["actor_app_id"]) if row["actor_app_id"] is not None else None),
-                        UUID(str(row["correlation_id"])),
-                    )
-                    for row in result.mappings()
-                )
-                return items, int(total_result.scalar_one())
-        finally:
-            await engine.dispose()
+                for row in result.mappings()
+            )
+            return items, int(total_result.scalar_one())
 
     async def list_audit_actions(self) -> tuple[str, ...]:
         """审计动作去重清单；只读明细列，不触碰载荷。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT action FROM audit_log
                         GROUP BY action ORDER BY action LIMIT 500
                         """
-                    )
                 )
-                return tuple(str(row["action"]) for row in result.mappings())
-        finally:
-            await engine.dispose()
+            )
+            return tuple(str(row["action"]) for row in result.mappings())

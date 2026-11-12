@@ -112,50 +112,44 @@ class SqlUserManagementRepository:
             params["status"] = query.status
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                count = await connection.execute(
-                    text(f"SELECT count(*) {USER_FROM}{where}"),
-                    params,
-                )
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            count = await connection.execute(
+                text(f"SELECT count(*) {USER_FROM}{where}"),
+                params,
+            )
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT {USER_COLUMNS} {USER_FROM}{where}
                         ORDER BY ua.updated_at DESC,ua.id DESC
                         LIMIT :limit OFFSET :offset
                         """
-                    ),
-                    params,
-                )
-                return UserPage(
-                    tuple(_record(row) for row in result.mappings()),
-                    int(count.scalar_one()),
-                    query.page,
-                    query.page_size,
-                )
-        finally:
-            await engine.dispose()
+                ),
+                params,
+            )
+            return UserPage(
+                tuple(_record(row) for row in result.mappings()),
+                int(count.scalar_one()),
+                query.page,
+                query.page_size,
+            )
 
     async def get(self, account_id: int) -> UserRecord:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT {USER_COLUMNS} {USER_FROM}
                         WHERE ua.id=:account_id
                         """
-                    ),
-                    {"account_id": account_id},
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    raise UserNotFound(account_id)
-                return _record(row)
-        finally:
-            await engine.dispose()
+                ),
+                {"account_id": account_id},
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                raise UserNotFound(account_id)
+            return _record(row)
 
     async def create_local(
         self,
@@ -172,44 +166,43 @@ class SqlUserManagementRepository:
         dept = normalize_account_department(role, dept)
         engine = self._engine()
         try:
-            try:
-                async with engine.begin() as connection:
-                    await lock_admin_authorization(
-                        connection,
-                        authorization,
-                        operation="user_create_admin" if role == "admin" else "user_create",
-                        target="new",
-                        parameters={
-                            "username": username, "display_name": display_name,
-                            "dept": dept, "role": role,
-                        },
-                    )
-                    provider = await connection.execute(
-                        text(
-                            """
+            async with engine.begin() as connection:
+                await lock_admin_authorization(
+                    connection,
+                    authorization,
+                    operation="user_create_admin" if role == "admin" else "user_create",
+                    target="new",
+                    parameters={
+                        "username": username, "display_name": display_name,
+                        "dept": dept, "role": role,
+                    },
+                )
+                provider = await connection.execute(
+                    text(
+                        """
                             SELECT id FROM auth_provider
                             WHERE code='local' AND enabled=TRUE FOR SHARE
                             """
-                        )
                     )
-                    provider_id = provider.scalar_one_or_none()
-                    if provider_id is None:
-                        raise RuntimeError("内置本地认证源不可用")
-                    account_result = await connection.execute(
-                        text(
-                            """
+                )
+                provider_id = provider.scalar_one_or_none()
+                if provider_id is None:
+                    raise RuntimeError("内置本地认证源不可用")
+                account_result = await connection.execute(
+                    text(
+                        """
                             INSERT INTO user_account(
                               display_name,dept,role,role_override,status
                             ) VALUES(:display_name,:dept,:role,TRUE,1)
                             RETURNING id
                             """
-                        ),
-                        {"display_name": display_name, "dept": dept, "role": role},
-                    )
-                    account_id = int(account_result.scalar_one())
-                    identity_result = await connection.execute(
-                        text(
-                            """
+                    ),
+                    {"display_name": display_name, "dept": dept, "role": role},
+                )
+                account_id = int(account_result.scalar_one())
+                identity_result = await connection.execute(
+                    text(
+                        """
                             INSERT INTO auth_identity(
                               account_id,provider_id,login_name,normalized_login_name,
                               external_subject,status
@@ -218,33 +211,33 @@ class SqlUserManagementRepository:
                               :external_subject,1
                             ) RETURNING id
                             """
-                        ),
-                        {
-                            "account_id": account_id,
-                            "provider_id": int(provider_id),
-                            "login_name": username,
-                            "normalized_login_name": username,
-                            "external_subject": f"local:{username}",
-                        },
-                    )
-                    identity_id = int(identity_result.scalar_one())
-                    await connection.execute(
-                        text(
-                            f"""
+                    ),
+                    {
+                        "account_id": account_id,
+                        "provider_id": int(provider_id),
+                        "login_name": username,
+                        "normalized_login_name": username,
+                        "external_subject": f"local:{username}",
+                    },
+                )
+                identity_id = int(identity_result.scalar_one())
+                await connection.execute(
+                    text(
+                        f"""
                             INSERT INTO local_credential(
                               identity_id,password_hash,must_change_password,temporary_password_expires_at
                             ) VALUES(:identity_id,:password_hash,TRUE,
                               {TEMPORARY_PASSWORD_EXPIRY_SQL})
                             """
-                        ),
-                        {
-                            "identity_id": identity_id,
-                            "password_hash": password_hash,
-                        },
-                    )
-                    await connection.execute(
-                        text(
-                            """
+                    ),
+                    {
+                        "identity_id": identity_id,
+                        "password_hash": password_hash,
+                    },
+                )
+                await connection.execute(
+                    text(
+                        """
                             INSERT INTO audit_log(
                               actor,role,ip,action,object_type,object_id,after_val
                             ) VALUES(
@@ -256,31 +249,29 @@ class SqlUserManagementRepository:
                               )
                             )
                             """
-                        ),
-                        {
-                            "actor": actor,
-                            "ip": ip,
-                            "object_id": str(account_id),
-                            "target_role": role,
-                        },
-                    )
-                    result = await connection.execute(
-                        text(
-                            f"""
+                    ),
+                    {
+                        "actor": actor,
+                        "ip": ip,
+                        "object_id": str(account_id),
+                        "target_role": role,
+                    },
+                )
+                result = await connection.execute(
+                    text(
+                        f"""
                             SELECT {USER_COLUMNS} {USER_FROM}
                             WHERE ua.id=:account_id AND ai.id=:identity_id
                             """
-                        ),
-                        {"account_id": account_id, "identity_id": identity_id},
-                    )
-                    row = result.mappings().one_or_none()
-                    if row is None:
-                        raise RuntimeError("本地账号创建后无法读取")
-                    return _record(row)
-            except IntegrityError:
-                raise AccountSourceConflict("登录名已被其他认证身份占用") from None
-        finally:
-            await engine.dispose()
+                    ),
+                    {"account_id": account_id, "identity_id": identity_id},
+                )
+                row = result.mappings().one_or_none()
+                if row is None:
+                    raise RuntimeError("本地账号创建后无法读取")
+                return _record(row)
+        except IntegrityError:
+            raise AccountSourceConflict("登录名已被其他认证身份占用") from None
 
     async def set_role(
         self,
@@ -293,85 +284,84 @@ class SqlUserManagementRepository:
         ip: str,
     ) -> UserRecord:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await lock_admin_authorization(
-                    connection, authorization, operation="user_role_change", target=str(account_id),
-                    parameters={"role": role, "role_override": role_override},
-                )
-                row = await self._locked(connection, account_id)
-                current = _record(row)
-                if current.provider_code == "local" and not role_override:
-                    raise RoleMappingConflict("本地账号必须使用人工角色")
-                target_role = role
-                target_dept = current.dept
-                if current.provider_code != "local" and not role_override:
-                    mapping_result = await connection.execute(
-                        text(
-                            """
+        async with engine.begin() as connection:
+            await lock_admin_authorization(
+                connection, authorization, operation="user_role_change", target=str(account_id),
+                parameters={"role": role, "role_override": role_override},
+            )
+            row = await self._locked(connection, account_id)
+            current = _record(row)
+            if current.provider_code == "local" and not role_override:
+                raise RoleMappingConflict("本地账号必须使用人工角色")
+            target_role = role
+            target_dept = current.dept
+            if current.provider_code != "local" and not role_override:
+                mapping_result = await connection.execute(
+                    text(
+                        """
                             SELECT external_group,role,dept FROM external_role_mapping
                             WHERE provider_id=:provider_id
                               AND external_group=ANY(CAST(:groups AS text[]))
                             """
-                        ),
-                        {
-                            "provider_id": int(row["provider_id"]),
-                            "groups": list(current.source_groups),
-                        },
-                    )
-                    mapping_rows = list(mapping_result.mappings())
-                    mappings = {
-                        str(item["external_group"]): str(item["role"]) for item in mapping_rows
-                    }
-                    mapped_departments = {
-                        str(item["dept"]).strip()
-                        for item in mapping_rows
-                        if item["dept"] is not None and str(item["dept"]).strip()
-                    }
-                    if len(mapped_departments) != 1:
-                        raise RoleMappingConflict("最近目录来源组未映射到唯一授权部门")
-                    target_dept = mapped_departments.pop()
-                    try:
-                        target_role = (
-                            RoleResolver()
-                            .resolve(
-                                AuthenticatedIdentity(
-                                    provider_code=current.provider_code,
-                                    login_name=current.username,
-                                    external_subject="managed-existing-identity",
-                                    display_name=current.display_name,
-                                    dept=current.dept,
-                                    groups=current.source_groups,
-                                ),
-                                ExistingUser(current.role, False),
-                                mappings,
-                            )
-                            .role
+                    ),
+                    {
+                        "provider_id": int(row["provider_id"]),
+                        "groups": list(current.source_groups),
+                    },
+                )
+                mapping_rows = list(mapping_result.mappings())
+                mappings = {
+                    str(item["external_group"]): str(item["role"]) for item in mapping_rows
+                }
+                mapped_departments = {
+                    str(item["dept"]).strip()
+                    for item in mapping_rows
+                    if item["dept"] is not None and str(item["dept"]).strip()
+                }
+                if len(mapped_departments) != 1:
+                    raise RoleMappingConflict("最近目录来源组未映射到唯一授权部门")
+                target_dept = mapped_departments.pop()
+                try:
+                    target_role = (
+                        RoleResolver()
+                        .resolve(
+                            AuthenticatedIdentity(
+                                provider_code=current.provider_code,
+                                login_name=current.username,
+                                external_subject="managed-existing-identity",
+                                display_name=current.display_name,
+                                dept=current.dept,
+                                groups=current.source_groups,
+                            ),
+                            ExistingUser(current.role, False),
+                            mappings,
                         )
-                    except InvalidCredentials:
-                        raise RoleMappingConflict("最近目录来源组无法按当前映射恢复角色") from None
-                target_dept = normalize_account_department(target_role, target_dept)
-                await connection.execute(
-                    text(
-                        """
+                        .role
+                    )
+                except InvalidCredentials:
+                    raise RoleMappingConflict("最近目录来源组无法按当前映射恢复角色") from None
+            target_dept = normalize_account_department(target_role, target_dept)
+            await connection.execute(
+                text(
+                    """
                         UPDATE user_account SET
                           role=:role,role_override=:role_override,dept=:dept,
                           security_version=security_version+1,updated_at=now()
                         WHERE id=:account_id
                         """
-                    ),
-                    {
-                        "account_id": account_id,
-                        "role": target_role,
-                        "dept": target_dept,
-                        "role_override": role_override,
-                    },
-                )
-                await ensure_effective_admin(connection)
-                updated = _record(await self._locked(connection, account_id))
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "account_id": account_id,
+                    "role": target_role,
+                    "dept": target_dept,
+                    "role_override": role_override,
+                },
+            )
+            await ensure_effective_admin(connection)
+            updated = _record(await self._locked(connection, account_id))
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,role,ip,action,object_type,object_id,
                           before_val,after_val
@@ -392,24 +382,22 @@ class SqlUserManagementRepository:
                           )
                         )
                         """
-                    ),
-                    {
-                        "actor": actor,
-                        "ip": ip,
-                        "object_id": str(account_id),
-                        "before_role": current.role,
-                        "before_override": current.role_override,
-                        "before_dept": current.dept,
-                        "before_version": current.security_version,
-                        "after_dept": updated.dept,
-                        "after_version": updated.security_version,
-                        "after_role": updated.role,
-                        "after_override": updated.role_override,
-                    },
-                )
-                return updated
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "actor": actor,
+                    "ip": ip,
+                    "object_id": str(account_id),
+                    "before_role": current.role,
+                    "before_override": current.role_override,
+                    "before_dept": current.dept,
+                    "before_version": current.security_version,
+                    "after_dept": updated.dept,
+                    "after_version": updated.security_version,
+                    "after_role": updated.role,
+                    "after_override": updated.role_override,
+                },
+            )
+            return updated
 
     async def set_status(
         self,
@@ -422,36 +410,35 @@ class SqlUserManagementRepository:
         ip: str,
     ) -> UserRecord:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await lock_admin_authorization(
-                    connection,
-                    authorization,
-                    operation="user_status_change",
-                    target=str(account_id),
-                    parameters={"status": status},
-                )
-                row = await self._locked(connection, account_id)
-                current = _record(row)
-                target_dept = current.dept
-                if status == 1:
-                    target_dept = normalize_account_department(current.role, current.dept)
-                if status == 0 and account_id == actor_account_id:
-                    raise SelfDisableDenied("管理员不能禁用自己")
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await lock_admin_authorization(
+                connection,
+                authorization,
+                operation="user_status_change",
+                target=str(account_id),
+                parameters={"status": status},
+            )
+            row = await self._locked(connection, account_id)
+            current = _record(row)
+            target_dept = current.dept
+            if status == 1:
+                target_dept = normalize_account_department(current.role, current.dept)
+            if status == 0 and account_id == actor_account_id:
+                raise SelfDisableDenied("管理员不能禁用自己")
+            await connection.execute(
+                text(
+                    """
                         UPDATE user_account SET status=:status,dept=:dept,
                           security_version=security_version+1,updated_at=now()
                         WHERE id=:account_id
                         """
-                    ),
-                    {"account_id": account_id, "status": status, "dept": target_dept},
-                )
-                await ensure_effective_admin(connection)
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {"account_id": account_id, "status": status, "dept": target_dept},
+            )
+            await ensure_effective_admin(connection)
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,role,ip,action,object_type,object_id,
                           before_val,after_val
@@ -464,25 +451,23 @@ class SqlUserManagementRepository:
                             'dept',CAST(:after_dept AS text))
                         )
                         """
-                    ),
-                    {
-                        "actor": actor,
-                        "ip": ip,
-                        "object_id": str(account_id),
-                        "before_status": current.status,
-                        "after_status": status,
-                        "before_dept": current.dept,
-                        "after_dept": target_dept,
-                    },
-                )
-                return replace(
-                    current,
-                    status=status,
-                    dept=target_dept,
-                    security_version=current.security_version + 1,
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "actor": actor,
+                    "ip": ip,
+                    "object_id": str(account_id),
+                    "before_status": current.status,
+                    "after_status": status,
+                    "before_dept": current.dept,
+                    "after_dept": target_dept,
+                },
+            )
+            return replace(
+                current,
+                status=status,
+                dept=target_dept,
+                security_version=current.security_version + 1,
+            )
 
     async def reset_local_password(
         self,
@@ -494,22 +479,21 @@ class SqlUserManagementRepository:
         ip: str,
     ) -> UserRecord:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await lock_admin_authorization(
-                    connection,
-                    authorization,
-                    operation="user_password_reset",
-                    target=str(account_id),
-                    parameters={"action": "reset"},
-                )
-                row = await self._locked(connection, account_id)
-                current = _record(row)
-                if current.provider_code != "local":
-                    raise ProviderActionUnsupported("仅本地账号支持密码重置")
-                credential = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            await lock_admin_authorization(
+                connection,
+                authorization,
+                operation="user_password_reset",
+                target=str(account_id),
+                parameters={"action": "reset"},
+            )
+            row = await self._locked(connection, account_id)
+            current = _record(row)
+            if current.provider_code != "local":
+                raise ProviderActionUnsupported("仅本地账号支持密码重置")
+            credential = await connection.execute(
+                text(
+                    f"""
                         UPDATE local_credential SET
                           password_hash=:password_hash,must_change_password=TRUE,
                           temporary_password_expires_at={TEMPORARY_PASSWORD_EXPIRY_SQL},
@@ -518,24 +502,24 @@ class SqlUserManagementRepository:
                         WHERE identity_id=:identity_id
                         RETURNING temporary_password_expires_at
                         """
-                    ),
-                    {
-                        "identity_id": current.identity_id,
-                        "password_hash": password_hash,
-                    },
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "identity_id": current.identity_id,
+                    "password_hash": password_hash,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
                         UPDATE user_account SET security_version=security_version+1,
                           updated_at=now() WHERE id=:account_id
                         """
-                    ),
-                    {"account_id": account_id},
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {"account_id": account_id},
+            )
+            await connection.execute(
+                text(
+                    """
                         UPDATE password_change_token SET
                           status='revoked',
                           processing_lease_id=NULL,
@@ -543,12 +527,12 @@ class SqlUserManagementRepository:
                         WHERE account_id=:account_id
                           AND status IN ('available','processing')
                         """
-                    ),
-                    {"account_id": account_id},
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {"account_id": account_id},
+            )
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,role,ip,action,object_type,object_id,after_val
                         ) VALUES(
@@ -559,18 +543,16 @@ class SqlUserManagementRepository:
                           )
                         )
                         """
-                    ),
-                    {"actor": actor, "ip": ip, "object_id": str(account_id)},
-                )
-                await ensure_effective_admin(connection)
-                return replace(
-                    current,
-                    must_change_password=True,
-                    temporary_password_expires_at=credential.scalar_one(),
-                    security_version=current.security_version + 1,
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {"actor": actor, "ip": ip, "object_id": str(account_id)},
+            )
+            await ensure_effective_admin(connection)
+            return replace(
+                current,
+                must_change_password=True,
+                temporary_password_expires_at=credential.scalar_one(),
+                security_version=current.security_version + 1,
+            )
 
     async def _locked(self, connection: AsyncConnection, account_id: int) -> RowMapping:
         result = await connection.execute(

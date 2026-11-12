@@ -186,18 +186,17 @@ class SqlReplyQueryRepository:
             "offset": (page - 1) * PAGE_SIZE,
         }
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                count_result = await connection.execute(
-                    text(
-                        "SELECT count(*) FROM sms_reply r "
-                        "LEFT JOIN sms_batch b ON b.id=r.batch_id WHERE " + where
-                    ),
-                    params,
-                )
-                rows_result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            count_result = await connection.execute(
+                text(
+                    "SELECT count(*) FROM sms_reply r "
+                    "LEFT JOIN sms_batch b ON b.id=r.batch_id WHERE " + where
+                ),
+                params,
+            )
+            rows_result = await connection.execute(
+                text(
+                    """
                         SELECT r.id,r.phone_mask,trim(r.event_key) event_key,
                           e.content_enc,b.batch_no,r.reply_time,
                           EXISTS(
@@ -208,24 +207,22 @@ class SqlReplyQueryRepository:
                         JOIN reply_event e ON e.event_key=r.event_key
                         LEFT JOIN sms_batch b ON b.id=r.batch_id
                         WHERE """
-                        + where
-                        + " ORDER BY r.reply_time DESC NULLS LAST,r.created_at DESC "
-                        "LIMIT :limit OFFSET :offset"
-                    ),
-                    params,
+                    + where
+                    + " ORDER BY r.reply_time DESC NULLS LAST,r.created_at DESC "
+                    "LIMIT :limit OFFSET :offset"
+                ),
+                params,
+            )
+            items: list[ReplyItem] = []
+            for row in rows_result.mappings():
+                values = dict(row)
+                content = decrypt_reply_content(
+                    self.crypto,
+                    values.pop("content_enc"),
+                    str(values.pop("event_key")),
                 )
-                items: list[ReplyItem] = []
-                for row in rows_result.mappings():
-                    values = dict(row)
-                    content = decrypt_reply_content(
-                        self.crypto,
-                        values.pop("content_enc"),
-                        str(values.pop("event_key")),
-                    )
-                    items.append(ReplyItem(content=content, **values))
-                return ReplyPage(int(count_result.scalar_one()), tuple(items))
-        finally:
-            await engine.dispose()
+                items.append(ReplyItem(content=content, **values))
+            return ReplyPage(int(count_result.scalar_one()), tuple(items))
 
     async def optout(
         self,
@@ -240,11 +237,10 @@ class SqlReplyQueryRepository:
         if self.crypto is None:
             raise RuntimeError("reply crypto service is required")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT e.phone_enc,e.phone_hmac,e.phone_mask,e.key_version
                         FROM sms_reply r
                         JOIN reply_event e ON e.event_key=r.event_key
@@ -255,39 +251,37 @@ class SqlReplyQueryRepository:
                             OR b.dept=CAST(:dept AS varchar(128))
                           )
                         """
-                    ),
-                    {"reply_id": reply_id, "dept": dept},
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return False
-                phone_hmac = str(row["phone_hmac"]).strip()
-                phone = self.crypto.decrypt_phone(
-                    row["phone_enc"],
-                    int(row["key_version"]),
-                    phone_hmac,
-                    table="reply_event",
-                )
-                protected = self.crypto.protect_phone(phone, table="blacklist")
-                await upsert_blacklist_entries(
-                    connection,
-                    [
-                        BlacklistEntry(
-                            protected.phone_hmac,
-                            protected.phone_enc,
-                            protected.phone_mask,
-                            protected.key_version,
-                            "reply_optout",
-                            "上行回复退订",
-                            hmac_candidates=tuple(self.crypto.hmac_candidates(phone).items()),
-                        )
-                    ],
-                    principal=principal,
-                    ip=ip,
-                    source="reply_optout",
-                    audit_action="reply_optout",
-                    audit_object_id=str(reply_id),
-                )
-                return True
-        finally:
-            await engine.dispose()
+                ),
+                {"reply_id": reply_id, "dept": dept},
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return False
+            phone_hmac = str(row["phone_hmac"]).strip()
+            phone = self.crypto.decrypt_phone(
+                row["phone_enc"],
+                int(row["key_version"]),
+                phone_hmac,
+                table="reply_event",
+            )
+            protected = self.crypto.protect_phone(phone, table="blacklist")
+            await upsert_blacklist_entries(
+                connection,
+                [
+                    BlacklistEntry(
+                        protected.phone_hmac,
+                        protected.phone_enc,
+                        protected.phone_mask,
+                        protected.key_version,
+                        "reply_optout",
+                        "上行回复退订",
+                        hmac_candidates=tuple(self.crypto.hmac_candidates(phone).items()),
+                    )
+                ],
+                principal=principal,
+                ip=ip,
+                source="reply_optout",
+                audit_action="reply_optout",
+                audit_object_id=str(reply_id),
+            )
+            return True

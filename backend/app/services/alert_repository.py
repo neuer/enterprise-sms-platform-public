@@ -54,36 +54,30 @@ class SqlAlertRepository:
         """只读取渠道是否配置，不向告警生产者暴露 reusable credential。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        "SELECT wecom_configured,smtp_configured "
-                        "FROM alert_channel_availability()"
-                    )
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT wecom_configured,smtp_configured "
+                    "FROM alert_channel_availability()"
                 )
-                row = result.mappings().one()
-                return bool(row["wecom_configured"]), bool(row["smtp_configured"])
-        finally:
-            await engine.dispose()
+            )
+            row = result.mappings().one()
+            return bool(row["wecom_configured"]), bool(row["smtp_configured"])
 
     async def load_routing(self) -> AlertRouting:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT key,value FROM sys_config WHERE key IN (
                           'alert_wecom_webhook','alert_mail_to','alert_smtp_host',
                           'alert_smtp_port','alert_mail_from'
                         )
                         """
-                    )
                 )
-                values = {str(row["key"]): str(row["value"]) for row in result.mappings()}
-        finally:
-            await engine.dispose()
+            )
+            values = {str(row["key"]): str(row["value"]) for row in result.mappings()}
         stored_webhook = values.get("alert_wecom_webhook", "").strip()
         if stored_webhook:
             try:
@@ -141,22 +135,21 @@ class SqlAlertRepository:
         """
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                connection = await connection.execution_options(
-                    isolation_level="READ COMMITTED"
+        async with engine.connect() as connection:
+            connection = await connection.execution_options(
+                isolation_level="READ COMMITTED"
+            )
+            async with connection.begin():
+                await connection.execute(
+                    text(
+                        "SELECT pg_advisory_xact_lock("
+                        "hashtextextended(:dedup_key, 0))"
+                    ),
+                    {"dedup_key": dedup_key},
                 )
-                async with connection.begin():
-                    await connection.execute(
-                        text(
-                            "SELECT pg_advisory_xact_lock("
-                            "hashtextextended(:dedup_key, 0))"
-                        ),
-                        {"dedup_key": dedup_key},
-                    )
-                    result = await connection.execute(
-                        text(
-                            """
+                result = await connection.execute(
+                    text(
+                        """
                             INSERT INTO alert_log (
                               alert_type,level,title,detail,channels,dedup_key
                             )
@@ -170,64 +163,59 @@ class SqlAlertRepository:
                             )
                             RETURNING id
                             """
-                        ),
-                        {
-                            "alert_type": alert_type,
-                            "level": level,
-                            "title": title,
-                            "detail": json.dumps(detail, ensure_ascii=False, sort_keys=True),
-                            "channels": channels,
-                            "dedup_key": dedup_key,
-                            "dedup_hours": dedup_hours,
-                        },
-                    )
-                    claimed = result.scalar_one_or_none()
-                    if claimed is not None:
-                        for channel in ("wecom", "smtp"):
-                            if channel not in channels.split(","):
-                                continue
-                            await enqueue_outbox(
-                                connection,
-                                OutboxEventSpec(
-                                    event_type="alert.delivery",
-                                    aggregate_type="alert_log",
-                                    aggregate_id=str(claimed),
-                                    task_name="app.tasks.outbox.deliver_alert",
-                                    queue="callback",
-                                    args=(int(claimed), channel),
-                                    dedup_key=f"alert:{claimed}:{channel}",
-                                ),
-                            )
-                    return int(claimed) if claimed is not None else None
-        finally:
-            await engine.dispose()
+                    ),
+                    {
+                        "alert_type": alert_type,
+                        "level": level,
+                        "title": title,
+                        "detail": json.dumps(detail, ensure_ascii=False, sort_keys=True),
+                        "channels": channels,
+                        "dedup_key": dedup_key,
+                        "dedup_hours": dedup_hours,
+                    },
+                )
+                claimed = result.scalar_one_or_none()
+                if claimed is not None:
+                    for channel in ("wecom", "smtp"):
+                        if channel not in channels.split(","):
+                            continue
+                        await enqueue_outbox(
+                            connection,
+                            OutboxEventSpec(
+                                event_type="alert.delivery",
+                                aggregate_type="alert_log",
+                                aggregate_id=str(claimed),
+                                task_name="app.tasks.outbox.deliver_alert",
+                                queue="callback",
+                                args=(int(claimed), channel),
+                                dedup_key=f"alert:{claimed}:{channel}",
+                            ),
+                        )
+                return int(claimed) if claimed is not None else None
 
     async def load_event(self, alert_id: int) -> AlertEventRow | None:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id,alert_type,level,title,detail,dedup_key
                         FROM alert_log WHERE id=:alert_id
                         """
-                    ),
-                    {"alert_id": alert_id},
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return None
-                return {
-                    "id": row["id"],
-                    "alert_type": row["alert_type"],
-                    "level": row["level"],
-                    "title": row["title"],
-                    "detail": row["detail"],
-                    "dedup_key": row["dedup_key"],
-                }
-        finally:
-            await engine.dispose()
+                ),
+                {"alert_id": alert_id},
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            return {
+                "id": row["id"],
+                "alert_type": row["alert_type"],
+                "level": row["level"],
+                "title": row["title"],
+                "detail": row["detail"],
+                "dedup_key": row["dedup_key"],
+            }
 
 
 class SqlAlertService(AlertService):

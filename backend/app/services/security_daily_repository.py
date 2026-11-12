@@ -123,42 +123,36 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         """读取日报生成开关与 UI 配置的收件人数。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                enabled_result = await connection.execute(
-                    text("SELECT value FROM sys_config WHERE key='security_daily_enabled'")
-                )
-                enabled_row = enabled_result.mappings().one_or_none()
-                count_result = await connection.execute(
-                    text("SELECT count(*) FROM security_daily_recipient")
-                )
-                count = int(count_result.scalar_one())
-                if count > MAX_RESEND_RECIPIENTS:
-                    raise SecurityDailyConfigurationError("安全日报收件人数量超出范围")
-                return _bool_config(str(enabled_row["value"]) if enabled_row else None), count
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            enabled_result = await connection.execute(
+                text("SELECT value FROM sys_config WHERE key='security_daily_enabled'")
+            )
+            enabled_row = enabled_result.mappings().one_or_none()
+            count_result = await connection.execute(
+                text("SELECT count(*) FROM security_daily_recipient")
+            )
+            count = int(count_result.scalar_one())
+            if count > MAX_RESEND_RECIPIENTS:
+                raise SecurityDailyConfigurationError("安全日报收件人数量超出范围")
+            return _bool_config(str(enabled_row["value"]) if enabled_row else None), count
 
     async def configuration(self) -> SecurityDailyConfiguration:
         """读取安全日报 UI 配置；缺少新 Key 时按未配置处理。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                config_result = await connection.execute(
-                    text(
-                        "SELECT key,value FROM sys_config WHERE key IN "
-                        "('security_daily_enabled','security_daily_resend_api_key',"
-                        "'security_daily_config_version')"
-                    )
+        async with engine.connect() as connection:
+            config_result = await connection.execute(
+                text(
+                    "SELECT key,value FROM sys_config WHERE key IN "
+                    "('security_daily_enabled','security_daily_resend_api_key',"
+                    "'security_daily_config_version')"
                 )
-                config = {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
-                recipients_result = await connection.execute(
-                    text("SELECT position,address FROM security_daily_recipient ORDER BY position")
-                )
-                recipients = tuple(str(row["address"]) for row in recipients_result.mappings())
-        finally:
-            await engine.dispose()
+            )
+            config = {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
+            recipients_result = await connection.execute(
+                text("SELECT position,address FROM security_daily_recipient ORDER BY position")
+            )
+            recipients = tuple(str(row["address"]) for row in recipients_result.mappings())
         return SecurityDailyConfiguration(
             enabled=_bool_config(config.get("security_daily_enabled")),
             api_key=validate_resend_api_key(config.get("security_daily_resend_api_key", "")),
@@ -170,19 +164,16 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         """以 sms_send 可见的非敏感投影判断自动投递是否已配置。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        "SELECT key,value FROM sys_config WHERE key IN "
-                        "('security_daily_enabled','security_daily_resend_configured',"
-                        "'security_daily_recipient_count','security_daily_config_version',"
-                        "'security_daily_config_publish_state','security_daily_recipient_set_digest')"
-                    )
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT key,value FROM sys_config WHERE key IN "
+                    "('security_daily_enabled','security_daily_resend_configured',"
+                    "'security_daily_recipient_count','security_daily_config_version',"
+                    "'security_daily_config_publish_state','security_daily_recipient_set_digest')"
                 )
-                config = {str(row["key"]): str(row["value"]) for row in result.mappings()}
-        finally:
-            await engine.dispose()
+            )
+            config = {str(row["key"]): str(row["value"]) for row in result.mappings()}
         try:
             recipient_count = int(config.get("security_daily_recipient_count", "0"))
         except ValueError as error:
@@ -248,8 +239,6 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 )
         except SQLAlchemyError:
             return None
-        finally:
-            await engine.dispose()
         category_counter: dict[str, int] = {}
         for row in category_result.mappings():
             category = _audit_category(str(row["action"]))
@@ -291,79 +280,78 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
         parameters = security_daily_write_parameters(update, expected_config_version)
         recipients = validate_resend_recipients(update.recipients)
         engine = self._engine()
-        try:
-            async with (
-                hold_admin_authorization(
-                    self.settings,
-                    authorization,
-                    operation="security_daily_config_update",
-                    target="default",
-                    parameters=parameters,
-                    engine=engine,
-                ) as connection,
-            ):
-                await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
-                current_result = await connection.execute(
-                    text("SELECT value FROM sys_config WHERE key='security_daily_resend_api_key'")
+        async with (
+            hold_admin_authorization(
+                self.settings,
+                authorization,
+                operation="security_daily_config_update",
+                target="default",
+                parameters=parameters,
+                engine=engine,
+            ) as connection,
+        ):
+            await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
+            current_result = await connection.execute(
+                text("SELECT value FROM sys_config WHERE key='security_daily_resend_api_key'")
+            )
+            current_row = current_result.mappings().one_or_none()
+            current_key = str(current_row["value"]) if current_row is not None else ""
+            version_result = await connection.execute(
+                text(
+                    "SELECT value FROM sys_config "
+                    "WHERE key='security_daily_config_version' FOR UPDATE"
                 )
-                current_row = current_result.mappings().one_or_none()
-                current_key = str(current_row["value"]) if current_row is not None else ""
-                version_result = await connection.execute(
+            )
+            version_row = version_result.mappings().one_or_none()
+            current_version = int(version_row["value"]) if version_row is not None else 0
+            if current_version != expected_config_version:
+                raise SecurityDailyStateConflict("安全日报配置已变化，请刷新后重新认证")
+            next_version = current_version + 1
+            if not 1 <= next_version <= 9223372036854775807:
+                raise SecurityDailyConfigurationError("安全日报配置版本无效")
+            api_key = (
+                validate_resend_api_key(update.api_key)
+                if update.api_key is not None
+                else validate_resend_api_key(current_key)
+            )
+            values = {
+                "security_daily_enabled": "true" if update.enabled else "false",
+                "security_daily_resend_api_key": api_key,
+                "security_daily_recipient_count": str(len(recipients)),
+                "security_daily_resend_configured": "true" if api_key else "false",
+                "security_daily_config_version": str(next_version),
+                "security_daily_recipient_set_digest": recipient_set_digest(recipients),
+            }
+            for key, value in values.items():
+                await connection.execute(
                     text(
-                        "SELECT value FROM sys_config "
-                        "WHERE key='security_daily_config_version' FOR UPDATE"
-                    )
+                        "UPDATE sys_config SET value=:value,updated_by=:actor,"
+                        "updated_at=now() WHERE key=:key"
+                    ),
+                    {"key": key, "value": value, "actor": principal.login_name},
                 )
-                version_row = version_result.mappings().one_or_none()
-                current_version = int(version_row["value"]) if version_row is not None else 0
-                if current_version != expected_config_version:
-                    raise SecurityDailyStateConflict("安全日报配置已变化，请刷新后重新认证")
-                next_version = current_version + 1
-                if not 1 <= next_version <= 9223372036854775807:
-                    raise SecurityDailyConfigurationError("安全日报配置版本无效")
-                api_key = (
-                    validate_resend_api_key(update.api_key)
-                    if update.api_key is not None
-                    else validate_resend_api_key(current_key)
+            await connection.execute(text("DELETE FROM security_daily_recipient"))
+            for position, address in enumerate(recipients, start=1):
+                await connection.execute(
+                    text(
+                        "INSERT INTO security_daily_recipient(position,address) "
+                        "VALUES(:position,:address)"
+                    ),
+                    {"position": position, "address": address},
                 )
-                values = {
-                    "security_daily_enabled": "true" if update.enabled else "false",
-                    "security_daily_resend_api_key": api_key,
-                    "security_daily_recipient_count": str(len(recipients)),
-                    "security_daily_resend_configured": "true" if api_key else "false",
-                    "security_daily_config_version": str(next_version),
-                    "security_daily_recipient_set_digest": recipient_set_digest(recipients),
-                }
-                for key, value in values.items():
-                    await connection.execute(
-                        text(
-                            "UPDATE sys_config SET value=:value,updated_by=:actor,"
-                            "updated_at=now() WHERE key=:key"
-                        ),
-                        {"key": key, "value": value, "actor": principal.login_name},
-                    )
-                await connection.execute(text("DELETE FROM security_daily_recipient"))
-                for position, address in enumerate(recipients, start=1):
-                    await connection.execute(
-                        text(
-                            "INSERT INTO security_daily_recipient(position,address) "
-                            "VALUES(:position,:address)"
-                        ),
-                        {"position": position, "address": address},
-                    )
-                operation_uuid = uuid4()
-                operation_id = str(operation_uuid)
-                await self._upsert_publish_state(
-                    connection,
-                    config_version=next_version,
-                    publish_state="file_pending",
-                    operation_id=operation_id,
-                    actor=principal.login_name,
-                )
-                for publish_state in ("db_committed", "file_pending"):
-                    await connection.execute(
-                        text(
-                            """
+            operation_uuid = uuid4()
+            operation_id = str(operation_uuid)
+            await self._upsert_publish_state(
+                connection,
+                config_version=next_version,
+                publish_state="file_pending",
+                operation_id=operation_id,
+                actor=principal.login_name,
+            )
+            for publish_state in ("db_committed", "file_pending"):
+                await connection.execute(
+                    text(
+                        """
                             INSERT INTO audit_log(
                               actor,actor_subject_kind,actor_account_id,actor_identity_id,
                               role,ip,action,object_type,object_id,after_val
@@ -373,33 +361,31 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                               'security_daily_config','default',CAST(:after AS jsonb)
                             )
                             """
+                    ),
+                    {
+                        "actor": principal.login_name,
+                        "actor_account_id": principal.account_id,
+                        "actor_identity_id": principal.identity_id,
+                        "ip": ip,
+                        "after": json.dumps(
+                            {
+                                "enabled": update.enabled,
+                                "resend_configured": bool(api_key),
+                                "recipient_count": len(recipients),
+                                "config_version": next_version,
+                                "publish_state": publish_state,
+                                "operation_ref": audit_uuid_ref(operation_uuid),
+                            },
+                            ensure_ascii=False,
                         ),
-                        {
-                            "actor": principal.login_name,
-                            "actor_account_id": principal.account_id,
-                            "actor_identity_id": principal.identity_id,
-                            "ip": ip,
-                            "after": json.dumps(
-                                {
-                                    "enabled": update.enabled,
-                                    "resend_configured": bool(api_key),
-                                    "recipient_count": len(recipients),
-                                    "config_version": next_version,
-                                    "publish_state": publish_state,
-                                    "operation_ref": audit_uuid_ref(operation_uuid),
-                                },
-                                ensure_ascii=False,
-                            ),
-                        },
-                    )
-                return SecurityDailyConfiguration(
-                    update.enabled,
-                    api_key,
-                    recipients,
-                    next_version,
+                    },
                 )
-        finally:
-            await engine.dispose()
+            return SecurityDailyConfiguration(
+                update.enabled,
+                api_key,
+                recipients,
+                next_version,
+            )
 
     async def _upsert_publish_state(
         self,
@@ -491,8 +477,6 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                     )
         except SQLAlchemyError:
             return
-        finally:
-            await engine.dispose()
 
     async def ingest_payload(
         self,
@@ -545,33 +529,32 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             """
             statement = base_insert + conflict_update + conflict_where + " RETURNING id"
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(statement),
-                    {
-                        "report_date": report_date,
-                        "period_start": period_start,
-                        "period_end": period_end,
-                        "status": validated["status"],
-                        "generation_source": generation_source,
-                        "payload": json.dumps(validated, ensure_ascii=False),
-                        "generated_at": generated_at,
-                        "recipient_count": min(3, max(0, recipient_count)),
-                    },
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return False
-                record_id = int(row["id"])
-                await bind_connection_system_audit(
-                    connection,
-                    actor_name="security-report-collector",
-                    action="security_daily_generated",
-                )
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(statement),
+                {
+                    "report_date": report_date,
+                    "period_start": period_start,
+                    "period_end": period_end,
+                    "status": validated["status"],
+                    "generation_source": generation_source,
+                    "payload": json.dumps(validated, ensure_ascii=False),
+                    "generated_at": generated_at,
+                    "recipient_count": min(3, max(0, recipient_count)),
+                },
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return False
+            record_id = int(row["id"])
+            await bind_connection_system_audit(
+                connection,
+                actor_name="security-report-collector",
+                action="security_daily_generated",
+            )
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,role,action,object_type,object_id,after_val
                         ) VALUES(
@@ -580,22 +563,20 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                           :object_id,CAST(:after AS jsonb)
                         )
                         """
+                ),
+                {
+                    "object_id": str(record_id),
+                    "after": json.dumps(
+                        {
+                            "status": validated["status"],
+                            "generation_status": "ready",
+                            "generation_source": generation_source,
+                        },
+                        ensure_ascii=False,
                     ),
-                    {
-                        "object_id": str(record_id),
-                        "after": json.dumps(
-                            {
-                                "status": validated["status"],
-                                "generation_status": "ready",
-                                "generation_source": generation_source,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                )
-                return True
-        finally:
-            await engine.dispose()
+                },
+            )
+            return True
 
     async def mark_unavailable(
         self,
@@ -638,30 +619,29 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                 """
             )
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(statement),
-                    {
-                        "report_date": report_date,
-                        "period_start": period_start,
-                        "period_end": period_end,
-                        "generation_source": generation_source,
-                        "error": reason[:256],
-                    },
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return False
-                record_id = int(row["id"])
-                await bind_connection_system_audit(
-                    connection,
-                    actor_name="security-report-collector",
-                    action="security_daily_generation_unavailable",
-                )
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(statement),
+                {
+                    "report_date": report_date,
+                    "period_start": period_start,
+                    "period_end": period_end,
+                    "generation_source": generation_source,
+                    "error": reason[:256],
+                },
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return False
+            record_id = int(row["id"])
+            await bind_connection_system_audit(
+                connection,
+                actor_name="security-report-collector",
+                action="security_daily_generation_unavailable",
+            )
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,role,action,object_type,object_id,after_val
                         ) VALUES(
@@ -670,30 +650,27 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                           :object_id,CAST(:after AS jsonb)
                         )
                         """
+                ),
+                {
+                    "object_id": str(record_id),
+                    "after": json.dumps(
+                        {
+                            "generation_status": "unavailable",
+                            "generation_source": generation_source,
+                        },
+                        ensure_ascii=False,
                     ),
-                    {
-                        "object_id": str(record_id),
-                        "after": json.dumps(
-                            {
-                                "generation_status": "unavailable",
-                                "generation_source": generation_source,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                )
-                return True
-        finally:
-            await engine.dispose()
+                },
+            )
+            return True
 
     async def overview(self, *, now: datetime) -> SecurityDailyOverview:
         configuration = await self.configuration()
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                latest_result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            latest_result = await connection.execute(
+                text(
+                    """
                         SELECT id,report_date,period_start,period_end,status,
                           generation_status,delivery_status,generated_at,delivered_at,
                           recipient_count,retry_count,last_error,last_error_at,updated_at,
@@ -701,23 +678,21 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         FROM security_daily_report
                         ORDER BY report_date DESC,id DESC LIMIT 1
                         """
-                    )
                 )
-                latest = latest_result.mappings().one_or_none()
-                generated_result = await connection.execute(
-                    text(
-                        "SELECT max(generated_at) FROM security_daily_report "
-                        "WHERE generation_status='ready'"
-                    )
+            )
+            latest = latest_result.mappings().one_or_none()
+            generated_result = await connection.execute(
+                text(
+                    "SELECT max(generated_at) FROM security_daily_report "
+                    "WHERE generation_status='ready'"
                 )
-                delivered_result = await connection.execute(
-                    text(
-                        "SELECT max(delivered_at) FROM security_daily_report "
-                        "WHERE delivery_status='sent'"
-                    )
+            )
+            delivered_result = await connection.execute(
+                text(
+                    "SELECT max(delivered_at) FROM security_daily_report "
+                    "WHERE delivery_status='sent'"
                 )
-        finally:
-            await engine.dispose()
+            )
         enabled = configuration.enabled
         resend_configured = bool(configuration.api_key)
         recipient_count = len(configuration.recipients)
@@ -778,50 +753,44 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             "last_error,last_error_at,updated_at,NULL::jsonb AS payload"
         )
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                count_result = await connection.execute(
-                    text(f"SELECT count(*) FROM security_daily_report WHERE {where}"),
-                    params,
-                )
-                result = await connection.execute(
-                    text(
-                        f"SELECT {columns} FROM security_daily_report WHERE {where} "
+        async with engine.connect() as connection:
+            count_result = await connection.execute(
+                text(f"SELECT count(*) FROM security_daily_report WHERE {where}"),
+                params,
+            )
+            result = await connection.execute(
+                text(
+                    f"SELECT {columns} FROM security_daily_report WHERE {where} "
                         "ORDER BY report_date DESC,id DESC LIMIT :limit OFFSET :offset"
-                    ),
-                    params,
-                )
-                items = tuple(_record(row, include_payload=False) for row in result.mappings())
-                return SecurityDailyPage(
-                    items,
-                    int(count_result.scalar_one()),
-                    query.page,
-                    query.page_size,
-                )
-        finally:
-            await engine.dispose()
+                ),
+                params,
+            )
+            items = tuple(_record(row, include_payload=False) for row in result.mappings())
+            return SecurityDailyPage(
+                items,
+                int(count_result.scalar_one()),
+                query.page,
+                query.page_size,
+            )
 
     async def get_report(self, report_id: int) -> SecurityDailyReportRecord | None:
         """按记录 id 读取单条日报（含 payload）。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id,report_date,period_start,period_end,status,
                           generation_status,generation_source,delivery_status,generated_at,delivered_at,
                           recipient_count,retry_count,last_error,last_error_at,updated_at,payload
                         FROM security_daily_report WHERE id=:report_id
                         """
-                    ),
-                    {"report_id": report_id},
-                )
-                row = result.mappings().one_or_none()
-                return _record(row, include_payload=True) if row is not None else None
-        finally:
-            await engine.dispose()
+                ),
+                {"report_id": report_id},
+            )
+            row = result.mappings().one_or_none()
+            return _record(row, include_payload=True) if row is not None else None
 
     async def get_latest_report(
         self,
@@ -837,11 +806,10 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             predicates += " AND generation_source=:generation_source"
             params["generation_source"] = generation_source
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT id,report_date,period_start,period_end,status,
                           generation_status,generation_source,delivery_status,generated_at,delivered_at,
                           recipient_count,retry_count,last_error,last_error_at,updated_at,payload
@@ -849,30 +817,25 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         WHERE {predicates}
                         ORDER BY id DESC LIMIT 1
                         """
-                    ),
-                    params,
-                )
-                row = result.mappings().one_or_none()
-                return _record(row, include_payload=True) if row is not None else None
-        finally:
-            await engine.dispose()
+                ),
+                params,
+            )
+            row = result.mappings().one_or_none()
+            return _record(row, include_payload=True) if row is not None else None
 
     async def exists_sent_delivery(self, report_date: date) -> bool:
         """当天是否已有任意一条记录投递成功（自动与手动共用）。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        "SELECT 1 FROM security_daily_report "
-                        "WHERE report_date=:report_date AND delivery_status='sent' LIMIT 1"
-                    ),
-                    {"report_date": report_date},
-                )
-                return result.scalar_one_or_none() is not None
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT 1 FROM security_daily_report "
+                    "WHERE report_date=:report_date AND delivery_status='sent' LIMIT 1"
+                ),
+                {"report_date": report_date},
+            )
+            return result.scalar_one_or_none() is not None
 
     async def latest_delivery_request(self, report_id: int) -> SecurityDailyDeliveryRequest | None:
         return await fetch_latest_delivery_request(self._engine, report_id)
@@ -914,153 +877,152 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
             audit_ip = ip
             requested_by = principal.login_name
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
-                version_result = await connection.execute(
-                    text("SELECT value FROM sys_config WHERE key='security_daily_config_version'")
-                )
-                version_raw = version_result.scalar_one_or_none()
-                config_version = int(version_raw) if version_raw is not None else 1
-                if config_version < 1:
-                    raise SecurityDailyConfigurationError("安全日报配置版本无效")
-                if (
-                    expected_config_version is not None
-                    and config_version != expected_config_version
-                ):
-                    raise SecurityDailyStateConflict("安全日报发信配置版本已变化")
-                locked_result = await connection.execute(
+        async with engine.begin() as connection:
+            await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
+            version_result = await connection.execute(
+                text("SELECT value FROM sys_config WHERE key='security_daily_config_version'")
+            )
+            version_raw = version_result.scalar_one_or_none()
+            config_version = int(version_raw) if version_raw is not None else 1
+            if config_version < 1:
+                raise SecurityDailyConfigurationError("安全日报配置版本无效")
+            if (
+                expected_config_version is not None
+                and config_version != expected_config_version
+            ):
+                raise SecurityDailyStateConflict("安全日报发信配置版本已变化")
+            locked_result = await connection.execute(
+                text(
+                    "SELECT delivery_status,retry_count,"
+                    "COALESCE(delivery_generation,1) AS delivery_generation "
+                    "FROM security_daily_report WHERE id=:id FOR UPDATE"
+                ),
+                {"id": report.id},
+            )
+            locked = locked_result.mappings().one_or_none()
+            if locked is None:
+                raise SecurityDailyStateConflict("日报已不存在")
+            delivery_status = str(locked["delivery_status"])
+            retry_count = int(locked["retry_count"])
+            report_generation = int(locked["delivery_generation"])
+            superseded_pending = False
+            delivery_id = str(report.id)
+            next_generation = report_generation
+            if action == "send" and delivery_status in {
+                "pending",
+                "sending",
+                "sent",
+                "unknown",
+            }:
+                existing = await connection.execute(
                     text(
-                        "SELECT delivery_status,retry_count,"
-                        "COALESCE(delivery_generation,1) AS delivery_generation "
-                        "FROM security_daily_report WHERE id=:id FOR UPDATE"
+                        "SELECT request_id,requested_at,state,config_version,"
+                        "COALESCE(delivery_generation,1) AS delivery_generation,"
+                        "COALESCE(recipient_set_digest,'') AS recipient_set_digest "
+                        "FROM security_daily_delivery_request "
+                        "WHERE report_id=:report_id ORDER BY requested_at DESC LIMIT 1"
                     ),
-                    {"id": report.id},
+                    {"report_id": report.id},
                 )
-                locked = locked_result.mappings().one_or_none()
-                if locked is None:
-                    raise SecurityDailyStateConflict("日报已不存在")
-                delivery_status = str(locked["delivery_status"])
-                retry_count = int(locked["retry_count"])
-                report_generation = int(locked["delivery_generation"])
-                superseded_pending = False
-                delivery_id = str(report.id)
-                next_generation = report_generation
-                if action == "send" and delivery_status in {
-                    "pending",
-                    "sending",
-                    "sent",
-                    "unknown",
-                }:
-                    existing = await connection.execute(
-                        text(
-                            "SELECT request_id,requested_at,state,config_version,"
-                            "COALESCE(delivery_generation,1) AS delivery_generation,"
-                            "COALESCE(recipient_set_digest,'') AS recipient_set_digest "
-                            "FROM security_daily_delivery_request "
-                            "WHERE report_id=:report_id ORDER BY requested_at DESC LIMIT 1"
-                        ),
-                        {"report_id": report.id},
-                    )
-                    row = existing.mappings().one_or_none()
-                    if row is not None:
-                        existing_state = cast(DeliveryRequestState, str(row["state"]))
-                        existing_version = int(row["config_version"])
-                        existing_generation = int(row["delivery_generation"])
-                        unpublished = control_evidence == "missing"
-                        if (
-                            delivery_status != "sent"
-                            and existing_state == "pending"
-                            and existing_version != config_version
-                            and unpublished
-                        ):
-                            await connection.execute(
-                                text(
-                                    """
+                row = existing.mappings().one_or_none()
+                if row is not None:
+                    existing_state = cast(DeliveryRequestState, str(row["state"]))
+                    existing_version = int(row["config_version"])
+                    existing_generation = int(row["delivery_generation"])
+                    unpublished = control_evidence == "missing"
+                    if (
+                        delivery_status != "sent"
+                        and existing_state == "pending"
+                        and existing_version != config_version
+                        and unpublished
+                    ):
+                        await connection.execute(
+                            text(
+                                """
                                     UPDATE security_daily_delivery_request
                                     SET state='failed',completed_at=now(),error=:error
                                     WHERE request_id=:request_id AND state='pending'
                                     """
-                                ),
-                                {
-                                    "request_id": row["request_id"],
-                                    "error": _SUPERSEDED_REQUEST_ERROR,
-                                },
-                            )
-                            superseded_pending = True
-                            next_generation = existing_generation + 1
-                        elif (
-                            delivery_status == "sent"
-                            and existing_version != config_version
-                            and existing_state == "sent"
-                        ):
-                            next_generation = existing_generation + 1
-                        elif control_evidence in {"published", "claimed", "result", "unknown"}:
-                            return SecurityDailyDeliveryRequest(
-                                request_id=UUID(str(row["request_id"])),
-                                report_date=report.report_date,
-                                action="send",
-                                state=existing_state,
-                                requested_at=row["requested_at"],
-                                idempotent=True,
-                                config_version=existing_version,
-                                delivery_id=delivery_id,
-                                delivery_generation=existing_generation,
-                                recipient_set_digest=str(row["recipient_set_digest"]),
-                            )
-                        else:
-                            if existing_state == "pending" and delivery_status != "sent":
-                                # 对丢失控制文件的同版本续投做退避，避免每分钟重复落盘。
-                                await connection.execute(
-                                    text(
-                                        "UPDATE security_daily_report "
-                                        "SET updated_at=now() WHERE id=:id"
-                                    ),
-                                    {"id": report.id},
-                                )
-                            return SecurityDailyDeliveryRequest(
-                                request_id=UUID(str(row["request_id"])),
-                                report_date=report.report_date,
-                                action="send",
-                                state=existing_state,
-                                requested_at=row["requested_at"],
-                                idempotent=True,
-                                config_version=existing_version,
-                                delivery_id=delivery_id,
-                                delivery_generation=existing_generation,
-                                recipient_set_digest=str(row["recipient_set_digest"]),
-                            )
-                    create_new_generation = (
-                        superseded_pending or next_generation > report_generation
-                    )
-                    if not create_new_generation:
-                        return SecurityDailyDeliveryRequest(
-                            request_id=request_id,
-                            report_date=report.report_date,
-                            action=action,
-                            state="sent" if delivery_status == "sent" else "pending",
-                            requested_at=datetime.now(SHANGHAI_TZ),
-                            idempotent=True,
-                            config_version=config_version,
-                            delivery_id=delivery_id,
-                            delivery_generation=report_generation,
-                            recipient_set_digest=recipient_set_digest,
+                            ),
+                            {
+                                "request_id": row["request_id"],
+                                "error": _SUPERSEDED_REQUEST_ERROR,
+                            },
                         )
-                if action == "retry" and delivery_status != "failed":
-                    raise SecurityDailyStateConflict("只有投递失败的日报允许重试")
-                next_retry = retry_count + (
-                    1
-                    if action == "retry" or delivery_status == "failed" or superseded_pending
-                    else 0
+                        superseded_pending = True
+                        next_generation = existing_generation + 1
+                    elif (
+                        delivery_status == "sent"
+                        and existing_version != config_version
+                        and existing_state == "sent"
+                    ):
+                        next_generation = existing_generation + 1
+                    elif control_evidence in {"published", "claimed", "result", "unknown"}:
+                        return SecurityDailyDeliveryRequest(
+                            request_id=UUID(str(row["request_id"])),
+                            report_date=report.report_date,
+                            action="send",
+                            state=existing_state,
+                            requested_at=row["requested_at"],
+                            idempotent=True,
+                            config_version=existing_version,
+                            delivery_id=delivery_id,
+                            delivery_generation=existing_generation,
+                            recipient_set_digest=str(row["recipient_set_digest"]),
+                        )
+                    else:
+                        if existing_state == "pending" and delivery_status != "sent":
+                            # 对丢失控制文件的同版本续投做退避，避免每分钟重复落盘。
+                            await connection.execute(
+                                text(
+                                    "UPDATE security_daily_report "
+                                    "SET updated_at=now() WHERE id=:id"
+                                ),
+                                {"id": report.id},
+                            )
+                        return SecurityDailyDeliveryRequest(
+                            request_id=UUID(str(row["request_id"])),
+                            report_date=report.report_date,
+                            action="send",
+                            state=existing_state,
+                            requested_at=row["requested_at"],
+                            idempotent=True,
+                            config_version=existing_version,
+                            delivery_id=delivery_id,
+                            delivery_generation=existing_generation,
+                            recipient_set_digest=str(row["recipient_set_digest"]),
+                        )
+                create_new_generation = (
+                    superseded_pending or next_generation > report_generation
                 )
-                # 每次投递请求使用独立 request_id，避免同一报告/快照重复生成时
-                # 复用同一 dedup_key（唯一约束冲突会让“立即生成”变成 500）。
-                dedup_key = (
-                    f"security-daily:{action}:{report.report_date}:{next_retry}:{request_id}"
-                )
-                await connection.execute(
-                    text(
-                        """
+                if not create_new_generation:
+                    return SecurityDailyDeliveryRequest(
+                        request_id=request_id,
+                        report_date=report.report_date,
+                        action=action,
+                        state="sent" if delivery_status == "sent" else "pending",
+                        requested_at=datetime.now(SHANGHAI_TZ),
+                        idempotent=True,
+                        config_version=config_version,
+                        delivery_id=delivery_id,
+                        delivery_generation=report_generation,
+                        recipient_set_digest=recipient_set_digest,
+                    )
+            if action == "retry" and delivery_status != "failed":
+                raise SecurityDailyStateConflict("只有投递失败的日报允许重试")
+            next_retry = retry_count + (
+                1
+                if action == "retry" or delivery_status == "failed" or superseded_pending
+                else 0
+            )
+            # 每次投递请求使用独立 request_id，避免同一报告/快照重复生成时
+            # 复用同一 dedup_key（唯一约束冲突会让“立即生成”变成 500）。
+            dedup_key = (
+                f"security-daily:{action}:{report.report_date}:{next_retry}:{request_id}"
+            )
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO security_daily_delivery_request(
                           request_id,report_id,report_date,action,state,dedup_key,
                           requested_by,config_version,delivery_generation,
@@ -1071,22 +1033,22 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                           :recipient_set_digest
                         )
                         """
-                    ),
-                    {
-                        "request_id": request_id,
-                        "report_id": report.id,
-                        "report_date": report.report_date,
-                        "action": action,
-                        "dedup_key": dedup_key,
-                        "actor": requested_by,
-                        "config_version": config_version,
-                        "delivery_generation": next_generation,
-                        "recipient_set_digest": recipient_set_digest,
-                    },
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "request_id": request_id,
+                    "report_id": report.id,
+                    "report_date": report.report_date,
+                    "action": action,
+                    "dedup_key": dedup_key,
+                    "actor": requested_by,
+                    "config_version": config_version,
+                    "delivery_generation": next_generation,
+                    "recipient_set_digest": recipient_set_digest,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
                         UPDATE security_daily_report
                         SET delivery_status='pending',retry_count=:retry_count,
                             delivery_generation=:delivery_generation,
@@ -1099,22 +1061,22 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                             updated_at=now()
                         WHERE id=:id
                         """
-                    ),
-                    {
-                        "id": report.id,
-                        "retry_count": next_retry,
-                        "delivery_generation": next_generation,
-                    },
+                ),
+                {
+                    "id": report.id,
+                    "retry_count": next_retry,
+                    "delivery_generation": next_generation,
+                },
+            )
+            if system:
+                await bind_connection_system_audit(
+                    connection,
+                    actor_name=actor,
+                    action=f"security_daily_{action}",
                 )
-                if system:
-                    await bind_connection_system_audit(
-                        connection,
-                        actor_name=actor,
-                        action=f"security_daily_{action}",
-                    )
-                await connection.execute(
-                    text(
-                        """
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,actor_account_id,actor_identity_id,
                           role,ip,action,object_type,object_id,after_val
@@ -1124,51 +1086,48 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                           :object_id,CAST(:after AS jsonb)
                         )
                         """
+                ),
+                {
+                    "actor": actor,
+                    "actor_kind": actor_kind,
+                    "actor_account_id": actor_account_id,
+                    "actor_identity_id": actor_identity_id,
+                    "role": role,
+                    "ip": audit_ip,
+                    "action": f"security_daily_{action}",
+                    "object_id": report.report_date.isoformat(),
+                    "after": json.dumps(
+                        {
+                            "delivery_ref": audit_uuid_ref(request_id),
+                            "status": "requested",
+                            "config_version": config_version,
+                            "delivery_generation": next_generation,
+                        },
+                        ensure_ascii=False,
                     ),
-                    {
-                        "actor": actor,
-                        "actor_kind": actor_kind,
-                        "actor_account_id": actor_account_id,
-                        "actor_identity_id": actor_identity_id,
-                        "role": role,
-                        "ip": audit_ip,
-                        "action": f"security_daily_{action}",
-                        "object_id": report.report_date.isoformat(),
-                        "after": json.dumps(
-                            {
-                                "delivery_ref": audit_uuid_ref(request_id),
-                                "status": "requested",
-                                "config_version": config_version,
-                                "delivery_generation": next_generation,
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                )
-                return SecurityDailyDeliveryRequest(
-                    request_id=request_id,
-                    report_date=report.report_date,
-                    action=action,
-                    state="pending",
-                    requested_at=datetime.now(SHANGHAI_TZ),
-                    idempotent=False,
-                    config_version=config_version,
-                    delivery_id=delivery_id,
-                    delivery_generation=next_generation,
-                    recipient_set_digest=recipient_set_digest,
-                )
-        finally:
-            await engine.dispose()
+                },
+            )
+            return SecurityDailyDeliveryRequest(
+                request_id=request_id,
+                report_date=report.report_date,
+                action=action,
+                state="pending",
+                requested_at=datetime.now(SHANGHAI_TZ),
+                idempotent=False,
+                config_version=config_version,
+                delivery_id=delivery_id,
+                delivery_generation=next_generation,
+                recipient_set_digest=recipient_set_digest,
+            )
 
     async def pending_delivery_requests(self) -> tuple[tuple[UUID, date], ...]:
         """返回待由独立 mailer 结果文件确认的有限请求集合。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT request_id,report_date
                         FROM security_daily_delivery_request
                         WHERE state IN ('pending','unknown')
@@ -1176,69 +1135,66 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         ORDER BY report_date DESC, requested_at DESC
                         LIMIT 100
                         """
-                    )
                 )
-                return tuple(
-                    (UUID(str(row["request_id"])), row["report_date"]) for row in result.mappings()
-                )
-        finally:
-            await engine.dispose()
+            )
+            return tuple(
+                (UUID(str(row["request_id"])), row["report_date"]) for row in result.mappings()
+            )
 
     async def apply_control_result(self, result: SecurityDailyControlResult) -> None:
         """以请求锁为边界单调回写 mailer 的 sent/failed 结果并追加系统审计。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
-                request_result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
+            request_result = await connection.execute(
+                text(
+                    """
                         SELECT report_id,report_date,state,error,config_version,
                                COALESCE(delivery_generation,1) AS delivery_generation
                         FROM security_daily_delivery_request
                         WHERE request_id=:request_id
                         FOR UPDATE
                         """
-                    ),
-                    {"request_id": result.request_id},
-                )
-                request = request_result.mappings().one_or_none()
-                if request is None:
-                    raise SecurityDailyStateConflict("安全日报投递请求不存在")
-                if request["report_date"] != result.report_date:
-                    raise SecurityDailyStateConflict("安全日报投递请求日期不匹配")
-                current_state = str(request["state"])
-                if current_state == "sent":
-                    return
-                if result.state == "failed" and current_state not in {
-                    "pending",
-                    "unknown",
-                }:
-                    return
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {"request_id": result.request_id},
+            )
+            request = request_result.mappings().one_or_none()
+            if request is None:
+                raise SecurityDailyStateConflict("安全日报投递请求不存在")
+            if request["report_date"] != result.report_date:
+                raise SecurityDailyStateConflict("安全日报投递请求日期不匹配")
+            current_state = str(request["state"])
+            if current_state == "sent":
+                return
+            if result.state == "failed" and current_state not in {
+                "pending",
+                "unknown",
+            }:
+                return
+            await connection.execute(
+                text(
+                    """
                         UPDATE security_daily_delivery_request
                         SET state=:state,completed_at=:completed_at,error=:error
                         WHERE request_id=:request_id
                         """
-                    ),
-                    {
-                        "request_id": result.request_id,
-                        "state": result.state,
-                        "completed_at": result.completed_at,
-                        "error": result.error,
-                    },
-                )
-                await bind_connection_system_audit(
-                    connection,
-                    actor_name="security-report-mailer",
-                    action="security_daily_delivery_result",
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "request_id": result.request_id,
+                    "state": result.state,
+                    "completed_at": result.completed_at,
+                    "error": result.error,
+                },
+            )
+            await bind_connection_system_audit(
+                connection,
+                actor_name="security-report-mailer",
+                action="security_daily_delivery_result",
+            )
+            await connection.execute(
+                text(
+                    """
                         UPDATE security_daily_report
                         SET delivery_status=:delivery_status,
                             delivered_at=CASE WHEN :state='sent' THEN :completed_at
@@ -1250,19 +1206,19 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                         WHERE id=:report_id
                           AND COALESCE(delivery_generation,1) <= :delivery_generation
                         """
-                    ),
-                    {
-                        "report_id": request["report_id"],
-                        "delivery_status": "sent" if result.state == "sent" else "failed",
-                        "state": result.state,
-                        "completed_at": result.completed_at,
-                        "error": result.error,
-                        "delivery_generation": int(request["delivery_generation"]),
-                    },
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "report_id": request["report_id"],
+                    "delivery_status": "sent" if result.state == "sent" else "failed",
+                    "state": result.state,
+                    "completed_at": result.completed_at,
+                    "error": result.error,
+                    "delivery_generation": int(request["delivery_generation"]),
+                },
+            )
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,role,action,object_type,object_id,after_val
                         ) VALUES(
@@ -1271,36 +1227,33 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                           :object_id,CAST(:after AS jsonb)
                         )
                         """
+                ),
+                {
+                    "object_id": result.report_date.isoformat(),
+                    "after": json.dumps(
+                        {
+                            "delivery_ref": audit_uuid_ref(result.request_id),
+                            "state": result.state,
+                            "delivery_generation": int(request["delivery_generation"]),
+                            "config_version": int(request["config_version"]),
+                        },
+                        ensure_ascii=False,
                     ),
-                    {
-                        "object_id": result.report_date.isoformat(),
-                        "after": json.dumps(
-                            {
-                                "delivery_ref": audit_uuid_ref(result.request_id),
-                                "state": result.state,
-                                "delivery_generation": int(request["delivery_generation"]),
-                                "config_version": int(request["config_version"]),
-                            },
-                            ensure_ascii=False,
-                        ),
-                    },
-                )
-        finally:
-            await engine.dispose()
+                },
+            )
 
     async def mark_request_failed(self, request_id: UUID, message: str) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
-                await bind_connection_system_audit(
-                    connection,
-                    actor_name="security-report-mailer",
-                    action="security_daily_delivery_result",
-                )
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
+            await bind_connection_system_audit(
+                connection,
+                actor_name="security-report-mailer",
+                action="security_daily_delivery_result",
+            )
+            await connection.execute(
+                text(
+                    """
                         WITH changed AS (
                           UPDATE security_daily_delivery_request
                           SET state='failed',completed_at=now(),error=:error
@@ -1323,32 +1276,29 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                           report_date::text,CAST(:after AS jsonb)
                         FROM updated
                         """
+                ),
+                {
+                    "request_id": request_id,
+                    "error": message[:256],
+                    "after": json.dumps(
+                        {"delivery_ref": audit_uuid_ref(request_id), "state": "failed"},
+                        ensure_ascii=False,
                     ),
-                    {
-                        "request_id": request_id,
-                        "error": message[:256],
-                        "after": json.dumps(
-                            {"delivery_ref": audit_uuid_ref(request_id), "state": "failed"},
-                            ensure_ascii=False,
-                        ),
-                    },
-                )
-        finally:
-            await engine.dispose()
+                },
+            )
 
     async def mark_request_unknown(self, request_id: UUID, message: str) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
-                await bind_connection_system_audit(
-                    connection,
-                    actor_name="security-report-mailer",
-                    action="security_daily_delivery_result",
-                )
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(text(f"SELECT pg_advisory_xact_lock({_DELIVERY_LOCK_ID})"))
+            await bind_connection_system_audit(
+                connection,
+                actor_name="security-report-mailer",
+                action="security_daily_delivery_result",
+            )
+            await connection.execute(
+                text(
+                    """
                         WITH changed AS (
                           UPDATE security_daily_delivery_request
                           SET state='unknown',completed_at=now(),error=:error
@@ -1371,37 +1321,32 @@ class SqlSecurityDailyRepository(SecurityDailyRepository):
                           report_date::text,CAST(:after AS jsonb)
                         FROM updated
                         """
+                ),
+                {
+                    "request_id": request_id,
+                    "error": message[:256],
+                    "after": json.dumps(
+                        {"delivery_ref": audit_uuid_ref(request_id), "state": "unknown"},
+                        ensure_ascii=False,
                     ),
-                    {
-                        "request_id": request_id,
-                        "error": message[:256],
-                        "after": json.dumps(
-                            {"delivery_ref": audit_uuid_ref(request_id), "state": "unknown"},
-                            ensure_ascii=False,
-                        ),
-                    },
-                )
-        finally:
-            await engine.dispose()
+                },
+            )
 
     async def mark_delivery_failed(self, report_id: int, message: str) -> bool:
         """投递前置条件不满足时显式标记失败，避免静默跳过。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE security_daily_report
                         SET delivery_status='failed',last_error=:error,
                             last_error_at=now(),updated_at=now()
                         WHERE id=:report_id
                         RETURNING id
                         """
-                    ),
-                    {"report_id": report_id, "error": message[:256]},
-                )
-                return result.scalar_one_or_none() is not None
-        finally:
-            await engine.dispose()
+                ),
+                {"report_id": report_id, "error": message[:256]},
+            )
+            return result.scalar_one_or_none() is not None

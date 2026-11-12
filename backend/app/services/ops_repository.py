@@ -106,11 +106,10 @@ class SqlOpsRepository:
         if not specs:
             return ()
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         WITH specs AS (
                           SELECT * FROM unnest(
                             CAST(:job_names AS text[]),CAST(:intervals AS integer[])
@@ -141,30 +140,28 @@ class SqlOpsRepository:
                         LEFT JOIN stats st USING(job_name)
                         ORDER BY s.job_name
                         """
-                    ),
-                    {
-                        "job_names": [spec.job_name for spec in specs],
-                        "intervals": [spec.expect_interval_s for spec in specs],
-                        "now": now,
-                        "day_start": now - timedelta(hours=24),
-                    },
+                ),
+                {
+                    "job_names": [spec.job_name for spec in specs],
+                    "intervals": [spec.expect_interval_s for spec in specs],
+                    "now": now,
+                    "day_start": now - timedelta(hours=24),
+                },
+            )
+            return tuple(
+                JobRecord(
+                    str(row["job_name"]),
+                    row["last_run_at"],
+                    str(row["last_status"]) if row["last_status"] is not None else None,
+                    int(row["last_duration_ms"])
+                    if row["last_duration_ms"] is not None
+                    else None,
+                    int(row["last_items"]),
+                    float(row["success_rate_24h"]),
+                    bool(row["stalled"]),
                 )
-                return tuple(
-                    JobRecord(
-                        str(row["job_name"]),
-                        row["last_run_at"],
-                        str(row["last_status"]) if row["last_status"] is not None else None,
-                        int(row["last_duration_ms"])
-                        if row["last_duration_ms"] is not None
-                        else None,
-                        int(row["last_items"]),
-                        float(row["success_rate_24h"]),
-                        bool(row["stalled"]),
-                    )
-                    for row in result.mappings()
-                )
-        finally:
-            await engine.dispose()
+                for row in result.mappings()
+            )
 
     async def audit_job_trigger(
         self,
@@ -185,48 +182,42 @@ class SqlOpsRepository:
         if principal.actor_name != actor:
             raise RuntimeError("job trigger audit principal unavailable")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await bind_connection_audit_subject(
-                    connection,
-                    subject_kind="human",
-                    actor_name=principal.login_name,
-                    account_id=principal.account_id,
-                    identity_id=principal.identity_id,
-                )
-                await insert_audit(
-                    connection,
-                    AuditEvent(
-                        principal=principal,
-                        role=principal.role,
-                        ip=ip,
-                        action="job_trigger",
-                        object_type="job",
-                        object_id=job_name,
-                        after={"status": "requested"},
-                    ),
-                )
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await bind_connection_audit_subject(
+                connection,
+                subject_kind="human",
+                actor_name=principal.login_name,
+                account_id=principal.account_id,
+                identity_id=principal.identity_id,
+            )
+            await insert_audit(
+                connection,
+                AuditEvent(
+                    principal=principal,
+                    role=principal.role,
+                    ip=ip,
+                    action="job_trigger",
+                    object_type="job",
+                    object_id=job_name,
+                    after={"status": "requested"},
+                ),
+            )
 
     async def queue_snapshot(self) -> QueueSnapshot:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT
                           (SELECT balance FROM balance_snapshot
                            ORDER BY fetched_at DESC,id DESC LIMIT 1) balance,
                           COALESCE((SELECT value::integer FROM sys_config
                             WHERE key='balance_alert_threshold'),10000) threshold
                         """
-                    )
                 )
-                row = result.mappings().one()
-        finally:
-            await engine.dispose()
+            )
+            row = result.mappings().one()
         values = await self.redis.mget(
             "queue:paused:realtime",
             "queue:paused:bulk",
@@ -265,43 +256,40 @@ class SqlOpsRepository:
         if principal.actor_name != actor:
             raise RuntimeError("queue resume audit principal unavailable")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await bind_connection_audit_subject(
-                    connection,
-                    subject_kind="human",
-                    actor_name=principal.login_name,
-                    account_id=principal.account_id,
-                    identity_id=principal.identity_id,
-                )
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await bind_connection_audit_subject(
+                connection,
+                subject_kind="human",
+                actor_name=principal.login_name,
+                account_id=principal.account_id,
+                identity_id=principal.identity_id,
+            )
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE sms_batch SET status='queued',updated_at=now()
                         WHERE status='balance_blocked'
                         RETURNING trim(batch_no) batch_no,category
                         """
-                    )
                 )
-                batches = tuple(
-                    PausedBatch(str(row["batch_no"]), str(row["category"]))
-                    for row in result.mappings()
-                )
-                await insert_audit(
-                    connection,
-                    AuditEvent(
-                        principal=principal,
-                        role=principal.role,
-                        ip=ip,
-                        action="queue_resume",
-                        object_type="queue",
-                        object_id="all",
-                        after=queue_resume_facts(check, len(batches), force=force),
-                    ),
-                )
-                return batches
-        finally:
-            await engine.dispose()
+            )
+            batches = tuple(
+                PausedBatch(str(row["batch_no"]), str(row["category"]))
+                for row in result.mappings()
+            )
+            await insert_audit(
+                connection,
+                AuditEvent(
+                    principal=principal,
+                    role=principal.role,
+                    ip=ip,
+                    action="queue_resume",
+                    object_type="queue",
+                    object_id="all",
+                    after=queue_resume_facts(check, len(batches), force=force),
+                ),
+            )
+            return batches
 
     async def clear_queue_pauses(self, snapshot: QueueSnapshot) -> bool:
         """只清除已核验的精确暂停代次；新停止信号必须保留。"""
@@ -344,11 +332,10 @@ class SqlOpsRepository:
         """
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT id FROM raw_vendor_log
                         WHERE processed=false
                           AND capture_state='complete'
@@ -360,34 +347,29 @@ class SqlOpsRepository:
                         ORDER BY replay_attempts,id
                         LIMIT :limit
                         """
-                    ),
-                    {"limit": limit, "max_attempts": max_attempts},
-                )
-                return [int(value) for value in result.scalars()]
-        finally:
-            await engine.dispose()
+                ),
+                {"limit": limit, "max_attempts": max_attempts},
+            )
+            return [int(value) for value in result.scalars()]
 
     async def list_pending_system_replay_audit_ids(self, *, limit: int = 20) -> list[int]:
         """已处理但系统审计未完成的 raw，只补审计、不再认领。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id FROM raw_vendor_log
                         WHERE processed=true
                           AND system_replay_audit_state=:pending
                         ORDER BY id
                         LIMIT :limit
                         """
-                    ),
-                    {"pending": SYSTEM_REPLAY_AUDIT_PENDING, "limit": limit},
-                )
-                return [int(value) for value in result.scalars()]
-        finally:
-            await engine.dispose()
+                ),
+                {"pending": SYSTEM_REPLAY_AUDIT_PENDING, "limit": limit},
+            )
+            return [int(value) for value in result.scalars()]
 
     async def claim_raw_for_replay(
         self,
@@ -404,11 +386,10 @@ class SqlOpsRepository:
         capture_sql = "'complete','complete_too_large'" if allow_manual else "'complete'"
         lease_id = new_lease_id()
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         WITH claimed AS (
                           UPDATE raw_vendor_log
                           SET {CLAIM_LEASE_SET_SQL.strip()},
@@ -445,49 +426,47 @@ class SqlOpsRepository:
                           AND NOT EXISTS (SELECT 1 FROM claimed)
                         LIMIT 1
                         """
+                ),
+                {
+                    "raw_id": raw_id,
+                    "lease_id": str(lease_id),
+                    "lease_seconds": RAW_LEASE_SECONDS,
+                },
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            claimed = bool(row["claimed"])
+            lease = None
+            if claimed:
+                lease = lease_from_row(row) or RawProcessingLease(int(row["id"]), lease_id, 1)
+            if claimed and allow_manual:
+                assert principal is not None
+                assert lease is not None
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=principal.login_name,
+                    account_id=principal.account_id,
+                    identity_id=principal.identity_id,
+                )
+                await insert_audit(
+                    connection,
+                    AuditEvent(
+                        principal=principal,
+                        role=principal.role,
+                        ip=ip,
+                        action="raw_replay_requested",
+                        object_type="raw_vendor_log",
+                        object_id=str(raw_id),
+                        after={"lease_epoch": lease.epoch},
                     ),
-                    {
-                        "raw_id": raw_id,
-                        "lease_id": str(lease_id),
-                        "lease_seconds": RAW_LEASE_SECONDS,
-                    },
                 )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return None
-                claimed = bool(row["claimed"])
-                lease = None
-                if claimed:
-                    lease = lease_from_row(row) or RawProcessingLease(int(row["id"]), lease_id, 1)
-                if claimed and allow_manual:
-                    assert principal is not None
-                    assert lease is not None
-                    await bind_connection_audit_subject(
-                        connection,
-                        subject_kind="human",
-                        actor_name=principal.login_name,
-                        account_id=principal.account_id,
-                        identity_id=principal.identity_id,
-                    )
-                    await insert_audit(
-                        connection,
-                        AuditEvent(
-                            principal=principal,
-                            role=principal.role,
-                            ip=ip,
-                            action="raw_replay_requested",
-                            object_type="raw_vendor_log",
-                            object_id=str(raw_id),
-                            after={"lease_epoch": lease.epoch},
-                        ),
-                    )
-                return RawReplayClaim(
-                    record=self._raw_replay_record(row),
-                    claimed=claimed,
-                    lease=lease,
-                )
-        finally:
-            await engine.dispose()
+            return RawReplayClaim(
+                record=self._raw_replay_record(row),
+                claimed=claimed,
+                lease=lease,
+            )
 
     def _raw_replay_record(self, row: RowMapping) -> RawReplayRecord:
         return RawReplayRecord(
@@ -521,20 +500,17 @@ class SqlOpsRepository:
         """该未处理 raw 是否已耗尽自动重放次数（告警一次并转人工）。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.scalar(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.scalar(
+                text(
+                    """
                         SELECT replay_attempts>=:max_attempts FROM raw_vendor_log
                         WHERE id=:raw_id AND processed=false
                         """
-                    ),
-                    {"raw_id": raw_id, "max_attempts": max_attempts},
-                )
-                return bool(result)
-        finally:
-            await engine.dispose()
+                ),
+                {"raw_id": raw_id, "max_attempts": max_attempts},
+            )
+            return bool(result)
 
     async def mark_replay_error(
         self,
@@ -548,48 +524,42 @@ class SqlOpsRepository:
         columns = mark_error_column_values(message, exc=exc)
         token = require_lease(lease, raw_id)
         engine = self._engine()
-        try:
-            await commit_fenced_raw_update(
-                engine,
-                FENCED_TERMINAL_SQL,
-                {
-                    "id": raw_id,
-                    "processed": False,
-                    "error": message,
-                    "parse_state": columns["parse_state"],
-                    "replay_eligibility": columns["replay_eligibility"],
-                    "lease_id": str(token.lease_id),
-                    "epoch": token.epoch,
-                },
-                lease=token,
-            )
-        finally:
-            await engine.dispose()
+        await commit_fenced_raw_update(
+            engine,
+            FENCED_TERMINAL_SQL,
+            {
+                "id": raw_id,
+                "processed": False,
+                "error": message,
+                "parse_state": columns["parse_state"],
+                "replay_eligibility": columns["replay_eligibility"],
+                "lease_id": str(token.lease_id),
+                "epoch": token.epoch,
+            },
+            lease=token,
+        )
 
     async def load_raw_for_reevaluate(self, raw_id: int) -> RawReplayRecord | None:
         """读取 raw 供 parser 升级重评估：不占租约，不增加 replay_attempts。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id,source,payload_enc,payload_sha256,key_version,
                           processed,item_count,http_status,content_encoding,
                           capture_state,parse_state,replay_eligibility,error
                         FROM raw_vendor_log
                         WHERE id=:raw_id
                         """
-                    ),
-                    {"raw_id": raw_id},
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return None
-                return self._raw_replay_record(row)
-        finally:
-            await engine.dispose()
+                ),
+                {"raw_id": raw_id},
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            return self._raw_replay_record(row)
 
     async def apply_raw_reevaluation(
         self,
@@ -615,20 +585,19 @@ class SqlOpsRepository:
         ):
             raise RawReplayConflict("已处理 raw 不得改回可重放状态")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await bind_connection_audit_subject(
-                    connection,
-                    subject_kind="human",
-                    actor_name=principal.login_name,
-                    account_id=principal.account_id,
-                    identity_id=principal.identity_id,
-                )
-                current = (
-                    (
-                        await connection.execute(
-                            text(
-                                """
+        async with engine.begin() as connection:
+            await bind_connection_audit_subject(
+                connection,
+                subject_kind="human",
+                actor_name=principal.login_name,
+                account_id=principal.account_id,
+                identity_id=principal.identity_id,
+            )
+            current = (
+                (
+                    await connection.execute(
+                        text(
+                            """
                             SELECT processed,parse_state,replay_eligibility,
                               (
                                 processing_lease_id IS NOT NULL
@@ -638,40 +607,40 @@ class SqlOpsRepository:
                             WHERE id=:raw_id
                             FOR UPDATE
                             """
-                            ),
-                            {"raw_id": raw_id},
-                        )
+                        ),
+                        {"raw_id": raw_id},
                     )
-                    .mappings()
-                    .one_or_none()
                 )
-                if current is None:
-                    raise RawReplayConflict("原始报文不存在")
-                already_applied = (
-                    bool(current["processed"]) == expected_processed
-                    and str(current["parse_state"]) == disposition.parse_state
-                    and str(current["replay_eligibility"]) == disposition.replay_eligibility
-                )
-                if already_applied:
-                    existing_audit = await connection.scalar(
-                        text(
-                            """
+                .mappings()
+                .one_or_none()
+            )
+            if current is None:
+                raise RawReplayConflict("原始报文不存在")
+            already_applied = (
+                bool(current["processed"]) == expected_processed
+                and str(current["parse_state"]) == disposition.parse_state
+                and str(current["replay_eligibility"]) == disposition.replay_eligibility
+            )
+            if already_applied:
+                existing_audit = await connection.scalar(
+                    text(
+                        """
                             SELECT 1 FROM audit_log
                             WHERE action='raw_reevaluate'
                               AND object_type='raw_vendor_log'
                               AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
                             LIMIT 1
                             """
-                        ),
-                        {"raw_id": raw_id},
-                    )
-                    if existing_audit is not None:
-                        return
-                if bool(current["live_lease"]):
-                    raise RawLeaseLost("raw processing lease held")
-                result = await connection.execute(
-                    text(
-                        """
+                    ),
+                    {"raw_id": raw_id},
+                )
+                if existing_audit is not None:
+                    return
+            if bool(current["live_lease"]):
+                raise RawLeaseLost("raw processing lease held")
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE raw_vendor_log
                         SET parse_state=:parse_state,
                             replay_eligibility=:replay_eligibility,
@@ -686,34 +655,32 @@ class SqlOpsRepository:
                             OR processing_lease_expires_at<=now()
                           )
                         """
-                    ),
-                    {
-                        "raw_id": raw_id,
-                        "parse_state": disposition.parse_state,
-                        "replay_eligibility": disposition.replay_eligibility,
-                        "error": error,
-                        "expected_processed": expected_processed,
-                        "expected_parse_state": expected_parse_state,
-                        "expected_eligibility": expected_eligibility,
-                    },
-                )
-                if getattr(result, "rowcount", 1) == 0:
-                    raise RawReplayConflict("raw 状态已变化，请刷新后重试")
-                await insert_audit(
-                    connection,
-                    AuditEvent(
-                        principal=principal,
-                        role=principal.role,
-                        ip=ip,
-                        action="raw_reevaluate",
-                        object_type="raw_vendor_log",
-                        object_id=str(raw_id),
-                        before=before,
-                        after=after,
-                    ),
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "raw_id": raw_id,
+                    "parse_state": disposition.parse_state,
+                    "replay_eligibility": disposition.replay_eligibility,
+                    "error": error,
+                    "expected_processed": expected_processed,
+                    "expected_parse_state": expected_parse_state,
+                    "expected_eligibility": expected_eligibility,
+                },
+            )
+            if getattr(result, "rowcount", 1) == 0:
+                raise RawReplayConflict("raw 状态已变化，请刷新后重试")
+            await insert_audit(
+                connection,
+                AuditEvent(
+                    principal=principal,
+                    role=principal.role,
+                    ip=ip,
+                    action="raw_reevaluate",
+                    object_type="raw_vendor_log",
+                    object_id=str(raw_id),
+                    before=before,
+                    after=after,
+                ),
+            )
 
     async def has_human_raw_replay_audit(self, raw_id: int) -> bool:
         """该 raw 是否已有 raw_replay 审计事实（人类补写前的结果边界）。
@@ -722,23 +689,20 @@ class SqlOpsRepository:
         """
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                found = await connection.scalar(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            found = await connection.scalar(
+                text(
+                    """
                         SELECT 1 FROM audit_log
                         WHERE action='raw_replay'
                           AND object_type='raw_vendor_log'
                           AND object_id=CAST(CAST(:raw_id AS bigint) AS text)
                         LIMIT 1
                         """
-                    ),
-                    {"raw_id": raw_id},
-                )
-                return found is not None
-        finally:
-            await engine.dispose()
+                ),
+                {"raw_id": raw_id},
+            )
+            return found is not None
 
     async def audit_raw_replay(
         self,
@@ -766,37 +730,36 @@ class SqlOpsRepository:
         elif principal is None or principal.actor_name != actor:
             raise RuntimeError("raw replay audit principal unavailable")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                if system_producer:
-                    epoch = lease_epoch
-                    if epoch is None:
-                        epoch = int(
-                            await connection.scalar(
-                                text(
-                                    """
+        async with engine.begin() as connection:
+            if system_producer:
+                epoch = lease_epoch
+                if epoch is None:
+                    epoch = int(
+                        await connection.scalar(
+                            text(
+                                """
                                     SELECT processing_lease_epoch
                                     FROM raw_vendor_log WHERE id=:raw_id
                                     """
-                                ),
-                                {"raw_id": raw_id},
-                            )
-                            or 0
+                            ),
+                            {"raw_id": raw_id},
                         )
-                    producer_domain = self.settings.audit_producer_domain or "realtime"
-                    await bind_connection_system_audit(
-                        connection,
-                        actor_name=actor,
-                        action="raw_replay",
-                        producer_domain=producer_domain,
+                        or 0
                     )
-                    # sms_send 只有 audit_log INSERT，没有 SELECT。冲突推断
-                    # 会触发表级读权限检查；重复写入只吞 unique_violation。
-                    try:
-                        async with connection.begin_nested():
-                            await connection.execute(
-                                text(
-                                    """
+                producer_domain = self.settings.audit_producer_domain or "realtime"
+                await bind_connection_system_audit(
+                    connection,
+                    actor_name=actor,
+                    action="raw_replay",
+                    producer_domain=producer_domain,
+                )
+                # sms_send 只有 audit_log INSERT，没有 SELECT。冲突推断
+                # 会触发表级读权限检查；重复写入只吞 unique_violation。
+                try:
+                    async with connection.begin_nested():
+                        await connection.execute(
+                            text(
+                                """
                                     INSERT INTO audit_log(
                                       actor,actor_subject_kind,role,action,object_type,
                                       object_id,after_val
@@ -812,57 +775,57 @@ class SqlOpsRepository:
                                       )
                                     )
                                     """
-                                ),
-                                {
-                                    "actor": actor,
-                                    "raw_id": raw_id,
-                                    "source": source,
-                                    "items": items,
-                                    "lease_epoch": epoch,
-                                    "producer_domain": producer_domain,
-                                },
-                            )
-                    except IntegrityError as error:
-                        if not _is_unique_violation(error):
-                            raise
-                    completed = await connection.execute(
-                        text(
-                            """
+                            ),
+                            {
+                                "actor": actor,
+                                "raw_id": raw_id,
+                                "source": source,
+                                "items": items,
+                                "lease_epoch": epoch,
+                                "producer_domain": producer_domain,
+                            },
+                        )
+                except IntegrityError as error:
+                    if not _is_unique_violation(error):
+                        raise
+                completed = await connection.execute(
+                    text(
+                        """
                             UPDATE raw_vendor_log
                             SET system_replay_audit_state=:completed
                             WHERE id=:raw_id
                               AND system_replay_audit_state=:pending
                             """
-                        ),
-                        {
-                            "raw_id": raw_id,
-                            "pending": SYSTEM_REPLAY_AUDIT_PENDING,
-                            "completed": SYSTEM_REPLAY_AUDIT_COMPLETED,
-                        },
-                    )
-                    if getattr(completed, "rowcount", 0) == 0:
-                        state = await connection.scalar(
-                            text(
-                                """
+                    ),
+                    {
+                        "raw_id": raw_id,
+                        "pending": SYSTEM_REPLAY_AUDIT_PENDING,
+                        "completed": SYSTEM_REPLAY_AUDIT_COMPLETED,
+                    },
+                )
+                if getattr(completed, "rowcount", 0) == 0:
+                    state = await connection.scalar(
+                        text(
+                            """
                                 SELECT system_replay_audit_state
                                 FROM raw_vendor_log WHERE id=:raw_id
                                 """
-                            ),
-                            {"raw_id": raw_id},
-                        )
-                        if state != SYSTEM_REPLAY_AUDIT_COMPLETED:
-                            raise RuntimeError("system raw replay audit incomplete")
-                    return
-                assert principal is not None
-                await bind_connection_audit_subject(
-                    connection,
-                    subject_kind="human",
-                    actor_name=principal.login_name,
-                    account_id=principal.account_id,
-                    identity_id=principal.identity_id,
-                )
-                intent_id = await connection.scalar(
-                    text("""
+                        ),
+                        {"raw_id": raw_id},
+                    )
+                    if state != SYSTEM_REPLAY_AUDIT_COMPLETED:
+                        raise RuntimeError("system raw replay audit incomplete")
+                return
+            assert principal is not None
+            await bind_connection_audit_subject(
+                connection,
+                subject_kind="human",
+                actor_name=principal.login_name,
+                account_id=principal.account_id,
+                identity_id=principal.identity_id,
+            )
+            intent_id = await connection.scalar(
+                text("""
                     SELECT a.id FROM audit_log a JOIN raw_vendor_log r
                       ON a.object_id=CAST(r.id AS text)
                     WHERE r.id=:raw_id AND a.object_type='raw_vendor_log'
@@ -870,24 +833,22 @@ class SqlOpsRepository:
                       AND a.after_val->>'lease_epoch'=CAST(r.processing_lease_epoch AS text)
                     ORDER BY a.id DESC LIMIT 1
                 """),
-                    {"raw_id": raw_id},
-                )
-                if intent_id is None:
-                    raise RuntimeError("raw replay original intent unavailable")
-                await insert_audit(
-                    connection,
-                    AuditEvent(
-                        principal=principal,
-                        role=principal.role,
-                        ip=ip,
-                        action="raw_replay",
-                        object_type="raw_vendor_log",
-                        object_id=str(raw_id),
-                        after={"source": source, "items": items, "intent_audit_id": int(intent_id)},
-                    ),
-                )
-        finally:
-            await engine.dispose()
+                {"raw_id": raw_id},
+            )
+            if intent_id is None:
+                raise RuntimeError("raw replay original intent unavailable")
+            await insert_audit(
+                connection,
+                AuditEvent(
+                    principal=principal,
+                    role=principal.role,
+                    ip=ip,
+                    action="raw_replay",
+                    object_type="raw_vendor_log",
+                    object_id=str(raw_id),
+                    after={"source": source, "items": items, "intent_audit_id": int(intent_id)},
+                ),
+            )
 
     async def list_alerts(self, query: AlertQuery) -> OpsPage[AlertRecord]:
         where = """
@@ -903,35 +864,32 @@ class SqlOpsRepository:
             "end": query.end,
         }
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                count = await connection.execute(
-                    text("SELECT count(*) FROM alert_log WHERE " + where), params
+        async with engine.connect() as connection:
+            count = await connection.execute(
+                text("SELECT count(*) FROM alert_log WHERE " + where), params
+            )
+            result = await connection.execute(
+                text(
+                    "SELECT id,alert_type,level,title,detail,channels,created_at "
+                    "FROM alert_log WHERE "
+                    + where
+                    + " ORDER BY created_at DESC,id DESC LIMIT :limit OFFSET :offset"
+                ),
+                params,
+            )
+            items = tuple(
+                AlertRecord(
+                    int(row["id"]),
+                    str(row["alert_type"]),
+                    cast(AlertLevel, str(row["level"])),
+                    str(row["title"]),
+                    row["detail"],
+                    str(row["channels"]),
+                    row["created_at"],
                 )
-                result = await connection.execute(
-                    text(
-                        "SELECT id,alert_type,level,title,detail,channels,created_at "
-                        "FROM alert_log WHERE "
-                        + where
-                        + " ORDER BY created_at DESC,id DESC LIMIT :limit OFFSET :offset"
-                    ),
-                    params,
-                )
-                items = tuple(
-                    AlertRecord(
-                        int(row["id"]),
-                        str(row["alert_type"]),
-                        cast(AlertLevel, str(row["level"])),
-                        str(row["title"]),
-                        row["detail"],
-                        str(row["channels"]),
-                        row["created_at"],
-                    )
-                    for row in result.mappings()
-                )
-                return OpsPage(items, int(count.scalar_one()), query.page, query.page_size)
-        finally:
-            await engine.dispose()
+                for row in result.mappings()
+            )
+            return OpsPage(items, int(count.scalar_one()), query.page, query.page_size)
 
     async def list_raw_logs(self, query: RawLogQuery) -> OpsPage[RawLogRecord]:
         where = """
@@ -943,57 +901,53 @@ class SqlOpsRepository:
             "processed": query.processed,
         }
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                count = await connection.execute(
-                    text("SELECT count(*) FROM raw_vendor_log WHERE " + where), params
+        async with engine.connect() as connection:
+            count = await connection.execute(
+                text("SELECT count(*) FROM raw_vendor_log WHERE " + where), params
+            )
+            result = await connection.execute(
+                text(
+                    "SELECT id,source,item_count,cardinality(custom_ids) custom_id_count,"
+                    "processed,error,fetched_at,capture_state,parse_state,"
+                    "replay_eligibility FROM raw_vendor_log WHERE "
+                    + where
+                    + " ORDER BY fetched_at DESC,id DESC LIMIT :limit OFFSET :offset"
+                ),
+                params,
+            )
+            items = tuple(
+                RawLogRecord(
+                    int(row["id"]),
+                    cast(RawSource, str(row["source"])),
+                    int(row["item_count"]),
+                    int(row["custom_id_count"]),
+                    bool(row["processed"]),
+                    str(row["error"]) if row["error"] is not None else None,
+                    row["fetched_at"],
+                    str(row.get("capture_state") or "complete"),
+                    str(row.get("parse_state") or "unattempted"),
+                    str(row.get("replay_eligibility") or "manual"),
                 )
-                result = await connection.execute(
-                    text(
-                        "SELECT id,source,item_count,cardinality(custom_ids) custom_id_count,"
-                        "processed,error,fetched_at,capture_state,parse_state,"
-                        "replay_eligibility FROM raw_vendor_log WHERE "
-                        + where
-                        + " ORDER BY fetched_at DESC,id DESC LIMIT :limit OFFSET :offset"
-                    ),
-                    params,
-                )
-                items = tuple(
-                    RawLogRecord(
-                        int(row["id"]),
-                        cast(RawSource, str(row["source"])),
-                        int(row["item_count"]),
-                        int(row["custom_id_count"]),
-                        bool(row["processed"]),
-                        str(row["error"]) if row["error"] is not None else None,
-                        row["fetched_at"],
-                        str(row.get("capture_state") or "complete"),
-                        str(row.get("parse_state") or "unattempted"),
-                        str(row.get("replay_eligibility") or "manual"),
-                    )
-                    for row in result.mappings()
-                )
-                return OpsPage(items, int(count.scalar_one()), query.page, query.page_size)
-        finally:
-            await engine.dispose()
+                for row in result.mappings()
+            )
+            return OpsPage(items, int(count.scalar_one()), query.page, query.page_size)
 
     async def list_uncertain(self, page: int, page_size: int) -> OpsPage[UncertainRecord]:
         params = self._page_params(page, page_size)
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                count = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            count = await connection.execute(
+                text(
+                    """
                         SELECT count(*) FROM sms_chunk
                         WHERE status IN ('uncertain','unknown_terminal')
                         """
-                    ),
-                    params,
-                )
-                result = await connection.execute(
-                    text(
-                        """
+                ),
+                params,
+            )
+            result = await connection.execute(
+                text(
+                    """
                         SELECT c.id chunk_id,trim(b.batch_no) batch_no,
                           trim(c.custom_id) custom_id,c.phone_count,c.vendor_code,
                           COALESCE(c.uncertain_since,b.created_at) uncertain_since,
@@ -1008,35 +962,33 @@ class SqlOpsRepository:
                         ORDER BY COALESCE(c.uncertain_since,b.created_at),c.id
                         LIMIT :limit OFFSET :offset
                         """
-                    ),
-                    params,
+                ),
+                params,
+            )
+            items = tuple(
+                UncertainRecord(
+                    int(row["chunk_id"]),
+                    str(row["batch_no"]),
+                    str(row["custom_id"]),
+                    int(row["phone_count"]),
+                    int(row["vendor_code"]) if row["vendor_code"] is not None else None,
+                    row["uncertain_since"],
+                    int(row["age_seconds"]),
+                    str(row["status"]),
+                    int(row["resolution_id"]) if row.get("resolution_id") is not None else None,
+                    str(row["resolution_action"])
+                    if row.get("resolution_action") is not None
+                    else None,
+                    str(row["resolution_state"])
+                    if row.get("resolution_state") is not None
+                    else None,
+                    int(row["proposer_account_id"])
+                    if row.get("proposer_account_id") is not None
+                    else None,
                 )
-                items = tuple(
-                    UncertainRecord(
-                        int(row["chunk_id"]),
-                        str(row["batch_no"]),
-                        str(row["custom_id"]),
-                        int(row["phone_count"]),
-                        int(row["vendor_code"]) if row["vendor_code"] is not None else None,
-                        row["uncertain_since"],
-                        int(row["age_seconds"]),
-                        str(row["status"]),
-                        int(row["resolution_id"]) if row.get("resolution_id") is not None else None,
-                        str(row["resolution_action"])
-                        if row.get("resolution_action") is not None
-                        else None,
-                        str(row["resolution_state"])
-                        if row.get("resolution_state") is not None
-                        else None,
-                        int(row["proposer_account_id"])
-                        if row.get("proposer_account_id") is not None
-                        else None,
-                    )
-                    for row in result.mappings()
-                )
-                return OpsPage(items, int(count.scalar_one()), page, page_size)
-        finally:
-            await engine.dispose()
+                for row in result.mappings()
+            )
+            return OpsPage(items, int(count.scalar_one()), page, page_size)
 
     async def list_unmatched(self, query: UnmatchedQuery) -> OpsPage[UnmatchedRecord]:
         where = """
@@ -1051,36 +1003,33 @@ class SqlOpsRepository:
             "end": query.end,
         }
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                count = await connection.execute(
-                    text("SELECT count(*) FROM unmatched_report WHERE " + where), params
+        async with engine.connect() as connection:
+            count = await connection.execute(
+                text("SELECT count(*) FROM unmatched_report WHERE " + where), params
+            )
+            result = await connection.execute(
+                text(
+                    "SELECT id,vendor_task_id,custom_id,phone_mask,report_status,"
+                    "report_desc,report_time,created_at FROM unmatched_report WHERE "
+                    + where
+                    + " ORDER BY created_at DESC,id DESC LIMIT :limit OFFSET :offset"
+                ),
+                params,
+            )
+            items = tuple(
+                UnmatchedRecord(
+                    int(row["id"]),
+                    str(row["vendor_task_id"]) if row["vendor_task_id"] is not None else None,
+                    str(row["custom_id"]) if row["custom_id"] is not None else None,
+                    str(row["phone_mask"]),
+                    int(row["report_status"]) if row["report_status"] is not None else None,
+                    str(row["report_desc"]) if row["report_desc"] is not None else None,
+                    row["report_time"],
+                    row["created_at"],
                 )
-                result = await connection.execute(
-                    text(
-                        "SELECT id,vendor_task_id,custom_id,phone_mask,report_status,"
-                        "report_desc,report_time,created_at FROM unmatched_report WHERE "
-                        + where
-                        + " ORDER BY created_at DESC,id DESC LIMIT :limit OFFSET :offset"
-                    ),
-                    params,
-                )
-                items = tuple(
-                    UnmatchedRecord(
-                        int(row["id"]),
-                        str(row["vendor_task_id"]) if row["vendor_task_id"] is not None else None,
-                        str(row["custom_id"]) if row["custom_id"] is not None else None,
-                        str(row["phone_mask"]),
-                        int(row["report_status"]) if row["report_status"] is not None else None,
-                        str(row["report_desc"]) if row["report_desc"] is not None else None,
-                        row["report_time"],
-                        row["created_at"],
-                    )
-                    for row in result.mappings()
-                )
-                return OpsPage(items, int(count.scalar_one()), query.page, query.page_size)
-        finally:
-            await engine.dispose()
+                for row in result.mappings()
+            )
+            return OpsPage(items, int(count.scalar_one()), query.page, query.page_size)
 
     @staticmethod
     def _page_params(page: int, page_size: int) -> dict[str, object]:

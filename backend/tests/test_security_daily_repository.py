@@ -155,7 +155,7 @@ async def test_auto_delivery_configuration_uses_only_nonsecret_projection() -> N
     assert "security_daily_resend_configured" in sql
     assert "security_daily_recipient_count" in sql
     assert "security_daily_resend_api_key" not in sql
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio

@@ -277,22 +277,19 @@ class SqlUserRepository:
         normalized_login_name: str,
     ) -> LocalAccountRecord | None:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         {LOCAL_ACCOUNT_SELECT}
                         WHERE ap.code='local'
                           AND ai.normalized_login_name=:normalized_login_name
                         """
-                    ),
-                    {"normalized_login_name": normalized_login_name},
-                )
-                row = result.mappings().one_or_none()
-                return _local_record(row) if row is not None else None
-        finally:
-            await engine.dispose()
+                ),
+                {"normalized_login_name": normalized_login_name},
+            )
+            row = result.mappings().one_or_none()
+            return _local_record(row) if row is not None else None
 
     async def upgrade_local_password_hash(
         self, *, expected: LocalAccountRecord, password_hash: str,
@@ -368,29 +365,24 @@ class SqlUserRepository:
                 return True
         except SQLAlchemyError:
             raise SessionStateUnavailable("本地凭据维护状态暂不可用") from None
-        finally:
-            await engine.dispose()
 
     async def find_local_account_by_id(
         self,
         account_id: int,
     ) -> LocalAccountRecord | None:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         {LOCAL_ACCOUNT_SELECT}
                         WHERE ap.code='local' AND ua.id=:account_id
                         """
-                    ),
-                    {"account_id": account_id},
-                )
-                row = result.mappings().one_or_none()
-                return _local_record(row) if row is not None else None
-        finally:
-            await engine.dispose()
+                ),
+                {"account_id": account_id},
+            )
+            row = result.mappings().one_or_none()
+            return _local_record(row) if row is not None else None
 
     async def resolve_identity(
         self,
@@ -408,20 +400,17 @@ class SqlUserRepository:
 
     async def _record_local_login(self, account: PlatformAccount, ip: str) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         UPDATE user_account SET last_login_at=now(),updated_at=now()
                         WHERE id=:account_id AND status=1
                         """
-                    ),
-                    {"account_id": account.account_id},
-                )
-                await self._audit_login(connection, account, ip)
-        finally:
-            await engine.dispose()
+                ),
+                {"account_id": account.account_id},
+            )
+            await self._audit_login(connection, account, ip)
 
     async def _synchronize_external(
         self,
@@ -433,12 +422,11 @@ class SqlUserRepository:
             raise InvalidCredentials("目录身份缺少平台所需属性")
         engine = self._engine()
         try:
-            try:
-                async with engine.begin() as connection:
-                    await lock_admin_invariant(connection)
-                    provider_result = await connection.execute(
-                        text(
-                            """
+            async with engine.begin() as connection:
+                await lock_admin_invariant(connection)
+                provider_result = await connection.execute(
+                    text(
+                        """
                             SELECT id FROM auth_provider
                             WHERE code=:provider_code AND enabled=TRUE
                               AND id=:authenticated_provider_id
@@ -446,19 +434,19 @@ class SqlUserRepository:
                                   :authenticated_provider_version
                             FOR SHARE
                             """
-                        ),
-                        {
-                            "provider_code": identity.provider_code,
-                            "authenticated_provider_id": identity.provider_id,
-                            "authenticated_provider_version": identity.provider_version,
-                        },
-                    )
-                    provider_id = provider_result.scalar_one_or_none()
-                    if provider_id is None:
-                        raise InvalidCredentials("认证源未启用")
-                    current_result = await connection.execute(
-                        text(
-                            """
+                    ),
+                    {
+                        "provider_code": identity.provider_code,
+                        "authenticated_provider_id": identity.provider_id,
+                        "authenticated_provider_version": identity.provider_version,
+                    },
+                )
+                provider_id = provider_result.scalar_one_or_none()
+                if provider_id is None:
+                    raise InvalidCredentials("认证源未启用")
+                current_result = await connection.execute(
+                    text(
+                        """
                             SELECT
                               ua.id AS account_id,ai.id AS identity_id,
                               ua.role,ua.role_override,ua.security_version,
@@ -469,86 +457,86 @@ class SqlUserRepository:
                               AND ai.external_subject=:external_subject
                             FOR UPDATE
                             """
-                        ),
-                        {
-                            "provider_id": int(provider_id),
-                            "external_subject": identity.external_subject,
-                        },
-                    )
-                    current = current_result.mappings().one_or_none()
-                    if current is None:
-                        conflict = await connection.execute(
-                            text(
-                                """
+                    ),
+                    {
+                        "provider_id": int(provider_id),
+                        "external_subject": identity.external_subject,
+                    },
+                )
+                current = current_result.mappings().one_or_none()
+                if current is None:
+                    conflict = await connection.execute(
+                        text(
+                            """
                                 SELECT id FROM auth_identity
                                 WHERE normalized_login_name=:normalized_login_name
                                 FOR UPDATE
                                 """
-                            ),
-                            {"normalized_login_name": normalized},
-                        )
-                        if conflict.scalar_one_or_none() is not None:
-                            raise AccountSourceConflict("登录名已被其他认证身份占用")
-                    elif (
-                        int(current["account_status"]) != 1 or int(current["identity_status"]) != 1
-                    ):
-                        raise InvalidCredentials("用户名或密码错误")
-                    mapping_result = await connection.execute(
-                        text(
-                            """
+                        ),
+                        {"normalized_login_name": normalized},
+                    )
+                    if conflict.scalar_one_or_none() is not None:
+                        raise AccountSourceConflict("登录名已被其他认证身份占用")
+                elif (
+                    int(current["account_status"]) != 1 or int(current["identity_status"]) != 1
+                ):
+                    raise InvalidCredentials("用户名或密码错误")
+                mapping_result = await connection.execute(
+                    text(
+                        """
                             SELECT external_group,role,dept FROM external_role_mapping
                             WHERE provider_id=:provider_id
                               AND external_group=ANY(CAST(:groups AS text[]))
                             """
-                        ),
-                        {
-                            "provider_id": int(provider_id),
-                            "groups": list(identity.groups),
-                        },
+                    ),
+                    {
+                        "provider_id": int(provider_id),
+                        "groups": list(identity.groups),
+                    },
+                )
+                mapping_rows = list(mapping_result.mappings())
+                mappings = {
+                    str(row["external_group"]): str(row["role"]) for row in mapping_rows
+                }
+                mapped_departments = {
+                    str(row["dept"]).strip()
+                    for row in mapping_rows
+                    if row["dept"] is not None and str(row["dept"]).strip()
+                }
+                if len(mapped_departments) != 1:
+                    raise InvalidCredentials("目录组未映射到唯一授权部门")
+                mapped_dept = mapped_departments.pop()
+                existing = (
+                    ExistingUser(
+                        role=cast(Role, current["role"]),
+                        role_override=bool(current["role_override"]),
                     )
-                    mapping_rows = list(mapping_result.mappings())
-                    mappings = {
-                        str(row["external_group"]): str(row["role"]) for row in mapping_rows
-                    }
-                    mapped_departments = {
-                        str(row["dept"]).strip()
-                        for row in mapping_rows
-                        if row["dept"] is not None and str(row["dept"]).strip()
-                    }
-                    if len(mapped_departments) != 1:
-                        raise InvalidCredentials("目录组未映射到唯一授权部门")
-                    mapped_dept = mapped_departments.pop()
-                    existing = (
-                        ExistingUser(
-                            role=cast(Role, current["role"]),
-                            role_override=bool(current["role_override"]),
-                        )
-                        if current is not None
-                        else None
-                    )
-                    role = RoleResolver().resolve(identity, existing, mappings).role
-                    if current is None:
-                        account_result = await connection.execute(
-                            text(
-                                """
+                    if current is not None
+                    else None
+                )
+                role = RoleResolver().resolve(identity, existing, mappings).role
+                if current is None:
+                    account_result = await connection.execute(
+                        text(
+                            """
                                 INSERT INTO user_account(
                                   display_name,dept,role,role_override,status,last_login_at
                                 ) VALUES(
                                   :display_name,:dept,:role,FALSE,1,now()
                                 ) RETURNING id
                                 """
-                            ),
-                            {
-                                "display_name": identity.display_name,
-                                "dept": mapped_dept,
-                                "role": role,
-                            },
-                        )
-                        created = account_result.mappings().one()
-                        account_id = int(created["id"])
-                        identity_result = await connection.execute(
-                            text(
-                                """
+                        ),
+                        {
+                            "display_name": identity.display_name,
+                            "dept": mapped_dept,
+                            "role": role,
+                        },
+                    )
+                    created = account_result.mappings().one()
+                    account_id = int(created["id"])
+                    identity_result = await connection.execute(
+                        text(
+                            """
                                 INSERT INTO auth_identity(
                                   account_id,provider_id,login_name,
                                   normalized_login_name,external_subject,status,
@@ -559,23 +547,23 @@ class SqlUserRepository:
                                   CAST(:source_groups AS text[]),now()
                                 ) RETURNING id
                                 """
-                            ),
-                            {
-                                "account_id": account_id,
-                                "provider_id": int(provider_id),
-                                "login_name": normalized,
-                                "normalized_login_name": normalized,
-                                "external_subject": identity.external_subject,
-                                "source_groups": list(identity.groups),
-                            },
-                        )
-                        identity_id = int(identity_result.scalar_one())
-                    else:
-                        account_id = int(current["account_id"])
-                        identity_id = int(current["identity_id"])
-                        await connection.execute(
-                            text(
-                                """
+                        ),
+                        {
+                            "account_id": account_id,
+                            "provider_id": int(provider_id),
+                            "login_name": normalized,
+                            "normalized_login_name": normalized,
+                            "external_subject": identity.external_subject,
+                            "source_groups": list(identity.groups),
+                        },
+                    )
+                    identity_id = int(identity_result.scalar_one())
+                else:
+                    account_id = int(current["account_id"])
+                    identity_id = int(current["identity_id"])
+                    await connection.execute(
+                        text(
+                            """
                                 UPDATE user_account SET
                                   display_name=CAST(:display_name AS varchar(128)),
                                   dept=CAST(:dept AS varchar(128)),
@@ -589,17 +577,17 @@ class SqlUserRepository:
                                   last_login_at=now(),updated_at=now()
                                 WHERE id=:account_id
                                 """
-                            ),
-                            {
-                                "account_id": account_id,
-                                "display_name": identity.display_name,
-                                "dept": mapped_dept,
-                                "role": role,
-                            },
-                        )
-                        await connection.execute(
-                            text(
-                                """
+                        ),
+                        {
+                            "account_id": account_id,
+                            "display_name": identity.display_name,
+                            "dept": mapped_dept,
+                            "role": role,
+                        },
+                    )
+                    await connection.execute(
+                        text(
+                            """
                                 UPDATE auth_identity SET
                                   login_name=:login_name,
                                   normalized_login_name=:normalized_login_name,
@@ -607,38 +595,38 @@ class SqlUserRepository:
                                   last_synced_at=now(),updated_at=now()
                                 WHERE id=:identity_id
                                 """
-                            ),
-                            {
-                                "identity_id": identity_id,
-                                "login_name": normalized,
-                                "normalized_login_name": normalized,
-                                "source_groups": list(identity.groups),
-                            },
-                        )
-                        await ensure_effective_admin(connection)
-                    authoritative = await connection.execute(
-                        text(
-                            f"""
+                        ),
+                        {
+                            "identity_id": identity_id,
+                            "login_name": normalized,
+                            "normalized_login_name": normalized,
+                            "source_groups": list(identity.groups),
+                        },
+                    )
+                    await ensure_effective_admin(connection)
+                authoritative = await connection.execute(
+                    text(
+                        f"""
                             {SECURITY_SESSION_SELECT}
                             WHERE ua.id=:account_id AND ai.id=:identity_id
                             """
-                        ),
-                        {"account_id": account_id, "identity_id": identity_id},
-                    )
-                    session = authoritative.mappings().one()
-                    account = _security_account(session)
-                    await self._audit_login(connection, account, ip)
-                    return account
-            except (AccountSourceConflict, IntegrityError):
-                async with engine.begin() as audit_connection:
-                    await bind_connection_system_audit(
-                        audit_connection,
-                        actor_name="auth-system",
-                        action="account_source_conflict",
-                    )
-                    await audit_connection.execute(
-                        text(
-                            """
+                    ),
+                    {"account_id": account_id, "identity_id": identity_id},
+                )
+                session = authoritative.mappings().one()
+                account = _security_account(session)
+                await self._audit_login(connection, account, ip)
+                return account
+        except (AccountSourceConflict, IntegrityError):
+            async with engine.begin() as audit_connection:
+                await bind_connection_system_audit(
+                    audit_connection,
+                    actor_name="auth-system",
+                    action="account_source_conflict",
+                )
+                await audit_connection.execute(
+                    text(
+                        """
                             INSERT INTO audit_log(
                               actor,actor_subject_kind,role,ip,action,object_type,
                               object_id,after_val
@@ -652,16 +640,14 @@ class SqlUserRepository:
                               )
                             )
                             """
-                        ),
-                        {
-                            "ip": ip,
-                            "object_id": normalized,
-                            "provider_code": identity.provider_code,
-                        },
-                    )
-                raise AccountSourceConflict("登录名已被其他认证身份占用") from None
-        finally:
-            await engine.dispose()
+                    ),
+                    {
+                        "ip": ip,
+                        "object_id": normalized,
+                        "provider_code": identity.provider_code,
+                    },
+                )
+            raise AccountSourceConflict("登录名已被其他认证身份占用") from None
 
     @staticmethod
     async def _audit_login(connection: AsyncConnection, account: PlatformAccount, ip: str) -> None:
@@ -714,11 +700,10 @@ class SqlUserRepository:
         """只持久化令牌指纹，并绑定签发时的本地主体安全上下文。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                inserted = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            inserted = await connection.execute(
+                text(
+                    """
                         INSERT INTO password_change_token(
                           token_hash,account_id,identity_id,provider_code,purpose,
                           normalized_login_name,issued_security_version,
@@ -742,21 +727,19 @@ class SqlUserRepository:
                           AND lc.temporary_password_expires_at > clock_timestamp()
                         RETURNING id
                         """
-                    ),
-                    {
-                        "token_hash": token_hash,
-                        "account_id": account_id,
-                        "identity_id": identity_id,
-                        "provider_code": provider_code,
-                        "login_name": login_name,
-                        "security_version": security_version,
-                        "expires_at": expires_at,
-                    },
-                )
-                if inserted.scalar_one_or_none() is None:
-                    raise InvalidCredentials("本地改密上下文已失效")
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "token_hash": token_hash,
+                    "account_id": account_id,
+                    "identity_id": identity_id,
+                    "provider_code": provider_code,
+                    "login_name": login_name,
+                    "security_version": security_version,
+                    "expires_at": expires_at,
+                },
+            )
+            if inserted.scalar_one_or_none() is None:
+                raise InvalidCredentials("本地改密上下文已失效")
 
     async def claim_password_change_token(
         self,
@@ -841,8 +824,6 @@ class SqlUserRepository:
                 )
         except SQLAlchemyError as error:
             raise SessionStateUnavailable("改密令牌状态暂不可用") from error
-        finally:
-            await engine.dispose()
 
     async def release_password_change_token(
         self,
@@ -873,8 +854,6 @@ class SqlUserRepository:
                 return released.scalar_one_or_none() is not None
         except SQLAlchemyError as error:
             raise SessionStateUnavailable("改密令牌状态暂不可用") from error
-        finally:
-            await engine.dispose()
 
     async def consume_password_change_and_update(
         self,
@@ -1010,8 +989,6 @@ class SqlUserRepository:
                 )
         except SQLAlchemyError as error:
             raise SessionStateUnavailable("改密事务状态暂不可用") from error
-        finally:
-            await engine.dispose()
 
     async def change_local_password(
         self,
@@ -1027,12 +1004,11 @@ class SqlUserRepository:
         """短事务 CAS 安全版本与凭据版本；Argon2 不得在本锁内执行。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await lock_admin_invariant(connection)
-                cas = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await lock_admin_invariant(connection)
+            cas = await connection.execute(
+                text(
+                    """
                         UPDATE user_account ua
                         SET security_version = ua.security_version + 1,
                             updated_at = now()
@@ -1051,18 +1027,18 @@ class SqlUserRepository:
                           )
                         RETURNING ua.id
                         """
-                    ),
-                    {
-                        "account_id": account_id,
-                        "identity_id": identity_id,
-                        "expected_security_version": expected_security_version,
-                    },
-                )
-                if cas.scalar_one_or_none() is None:
-                    raise AuthContextChanged("账号安全状态已变化")
-                updated = await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "account_id": account_id,
+                    "identity_id": identity_id,
+                    "expected_security_version": expected_security_version,
+                },
+            )
+            if cas.scalar_one_or_none() is None:
+                raise AuthContextChanged("账号安全状态已变化")
+            updated = await connection.execute(
+                text(
+                    """
                         UPDATE local_credential
                         SET password_hash = :password_hash,
                             must_change_password = FALSE,
@@ -1075,25 +1051,25 @@ class SqlUserRepository:
                           AND must_change_password = FALSE
                         RETURNING identity_id
                         """
-                    ),
-                    {
-                        "identity_id": identity_id,
-                        "password_hash": password_hash,
-                        "expected_credential_version": expected_credential_version,
-                    },
-                )
-                if updated.scalar_one_or_none() is None:
-                    raise AuthContextChanged("账号安全状态已变化")
-                await bind_connection_audit_subject(
-                    connection,
-                    subject_kind="human",
-                    actor_name=actor,
-                    account_id=account_id,
-                    identity_id=identity_id,
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "identity_id": identity_id,
+                    "password_hash": password_hash,
+                    "expected_credential_version": expected_credential_version,
+                },
+            )
+            if updated.scalar_one_or_none() is None:
+                raise AuthContextChanged("账号安全状态已变化")
+            await bind_connection_audit_subject(
+                connection,
+                subject_kind="human",
+                actor_name=actor,
+                account_id=account_id,
+                identity_id=identity_id,
+            )
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,actor_account_id,actor_identity_id,
                           role,ip,action,object_type,object_id,after_val
@@ -1104,17 +1080,15 @@ class SqlUserRepository:
                           jsonb_build_object('provider_code','local')
                         )
                         """
-                    ),
-                    {
-                        "actor": actor,
-                        "account_id": account_id,
-                        "identity_id": identity_id,
-                        "ip": ip,
-                        "object_id": str(account_id),
-                    },
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "actor": actor,
+                    "account_id": account_id,
+                    "identity_id": identity_id,
+                    "ip": ip,
+                    "object_id": str(account_id),
+                },
+            )
 
     async def load_security_session(
         self,
@@ -1122,13 +1096,10 @@ class SqlUserRepository:
         identity_id: int,
     ) -> PlatformAccount:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                return await load_security_session_from_connection(
-                    connection, account_id, identity_id,
-                )
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            return await load_security_session_from_connection(
+                connection, account_id, identity_id,
+            )
 
     async def invalidate_sessions(
         self,
@@ -1137,23 +1108,22 @@ class SqlUserRepository:
         ip: str,
     ) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await lock_admin_invariant(connection)
-                updated = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await lock_admin_invariant(connection)
+            updated = await connection.execute(
+                text(
+                    """
                         UPDATE user_account SET security_version = security_version + 1,
                           updated_at=now() WHERE id=:account_id RETURNING id
                         """
-                    ),
-                    {"account_id": account_id},
-                )
-                if updated.scalar_one_or_none() is None:
-                    raise AccountNotFound(account_id)
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {"account_id": account_id},
+            )
+            if updated.scalar_one_or_none() is None:
+                raise AccountNotFound(account_id)
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,actor_account_id,actor_identity_id,
                           role,ip,action,object_type,object_id
@@ -1163,26 +1133,23 @@ class SqlUserRepository:
                           'user_account',:object_id
                         )
                         """
-                    ),
-                    {
-                        "actor": actor.login_name,
-                        "actor_account_id": actor.account_id,
-                        "actor_identity_id": actor.identity_id,
-                        "role": actor.role,
-                        "ip": ip,
-                        "object_id": str(account_id),
-                    },
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "actor": actor.login_name,
+                    "actor_account_id": actor.account_id,
+                    "actor_identity_id": actor.identity_id,
+                    "role": actor.role,
+                    "ip": ip,
+                    "object_id": str(account_id),
+                },
+            )
 
     async def audit_logout(self, actor: PlatformAccount, ip: str) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,actor_account_id,actor_identity_id,
                           role,ip,action,object_type,object_id
@@ -1192,28 +1159,25 @@ class SqlUserRepository:
                           'user_account',:object_id
                         )
                         """
-                    ),
-                    {
-                        "actor": actor.login_name,
-                        "actor_account_id": actor.account_id,
-                        "actor_identity_id": actor.identity_id,
-                        "role": actor.role,
-                        "ip": ip,
-                        "object_id": str(actor.account_id),
-                    },
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "actor": actor.login_name,
+                    "actor_account_id": actor.account_id,
+                    "actor_identity_id": actor.identity_id,
+                    "role": actor.role,
+                    "ip": ip,
+                    "object_id": str(actor.account_id),
+                },
+            )
 
     async def audit_refresh(self, actor: PlatformAccount, ip: str) -> None:
         """持久化成功 refresh 事件；失败必须由调用方吊销新会话。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,actor_account_id,actor_identity_id,
                           role,ip,action,object_type,object_id
@@ -1223,15 +1187,13 @@ class SqlUserRepository:
                           'user_account',:object_id
                         )
                         """
-                    ),
-                    {
-                        "actor": actor.login_name,
-                        "actor_account_id": actor.account_id,
-                        "actor_identity_id": actor.identity_id,
-                        "role": actor.role,
-                        "ip": ip,
-                        "object_id": str(actor.account_id),
-                    },
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "actor": actor.login_name,
+                    "actor_account_id": actor.account_id,
+                    "actor_identity_id": actor.identity_id,
+                    "role": actor.role,
+                    "ip": ip,
+                    "object_id": str(actor.account_id),
+                },
+            )

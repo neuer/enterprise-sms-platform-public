@@ -665,7 +665,7 @@ async def test_import_repository_persists_reserves_and_scopes_removed_file(
     assert connection.calls[0][1]["expire_hours"] == 6  # type: ignore[index]
     assert "make_interval" in connection.calls[0][0]
     assert "13800138000" not in str(connection.calls)
-    assert engine.disposed
+    assert not engine.disposed
 
     phone_row = {
         "phone_enc": b"cipher",
@@ -875,7 +875,7 @@ async def test_recovery_repository_selects_only_recoverable_work(
     ]
     assert all("state IN ('completed','dead')" in sql for sql, _ in rearmed)
     assert all("lease_id=NULL" in sql and "lease_expires_at=NULL" in sql for sql, _ in rearmed)
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -1046,7 +1046,7 @@ async def test_report_repository_commits_raw_then_updates_matched_and_unmatched(
 
     with pytest.raises(InvalidRuntimePolicy, match="report_timeout_hours"):
         await repository.report_timeout_hours()
-    assert engine.disposed
+    assert not engine.disposed
 
     connection = FakeConnection([FakeResult(scalar="48")])
     bind_engine(monkeypatch, repository, connection)

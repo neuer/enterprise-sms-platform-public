@@ -73,10 +73,9 @@ class SqlResendRepository:
         """当前主体仍能访问源批次且已覆盖全部失败时，只返回已有普通重发。"""
         predicate, params = scope.sql()
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(f"""
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(f"""
                     SELECT trim(child.batch_no) batch_no,child.total,child.status
                     FROM sms_batch b
                     JOIN sms_resend_action a ON a.source_batch_id=b.id
@@ -95,48 +94,45 @@ class SqlResendRepository:
                             )))
                       )
                     """),
-                    {"batch_no": batch_no, "channel": channel, **params},
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return None
-                return ExistingResend(str(row["batch_no"]), int(row["total"]), str(row["status"]))
-        finally:
-            await engine.dispose()
+                {"batch_no": batch_no, "channel": channel, **params},
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            return ExistingResend(str(row["batch_no"]), int(row["total"]), str(row["status"]))
 
     async def load(self, batch_no: str, scope: BatchAccessScope) -> ResendSource:
         predicate, scope_params = scope.sql()
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                batch_result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            batch_result = await connection.execute(
+                text(
+                    f"""
                         SELECT trim(b.batch_no) AS batch_no,b.category,b.channel,
                                b.dept,b.send_content_enc,b.sign_name,
                                b.consent_confirmed,b.is_test
                         FROM sms_batch b
                         WHERE b.batch_no=:batch_no AND {predicate}
                         """
-                    ),
-                    {"batch_no": batch_no, **scope_params},
+                ),
+                {"batch_no": batch_no, **scope_params},
+            )
+            batch = batch_result.mappings().one_or_none()
+            if batch is None:
+                raise BatchNotFound
+            coverage = await read_coverage(connection, batch_no, predicate, scope_params)
+            if coverage is None:
+                raise BatchNotFound
+            if coverage.block_reason is not None:
+                raise ResendBlocked(
+                    coverage.block_reason,
+                    covered=coverage.covered_failed,
+                    uncovered=coverage.uncovered_failed,
+                    child_batch_no=coverage.child_batch_no,
                 )
-                batch = batch_result.mappings().one_or_none()
-                if batch is None:
-                    raise BatchNotFound
-                coverage = await read_coverage(connection, batch_no, predicate, scope_params)
-                if coverage is None:
-                    raise BatchNotFound
-                if coverage.block_reason is not None:
-                    raise ResendBlocked(
-                        coverage.block_reason,
-                        covered=coverage.covered_failed,
-                        uncovered=coverage.uncovered_failed,
-                        child_batch_no=coverage.child_batch_no,
-                    )
-                phone_result = await connection.execute(
-                    text(
-                        """
+            phone_result = await connection.execute(
+                text(
+                    """
                         SELECT m.id,m.created_at,m.phone_enc,
                             trim(m.phone_hmac) phone_hmac,m.key_version
                         FROM sms_message m
@@ -144,36 +140,34 @@ class SqlResendRepository:
                         WHERE b.batch_no=:batch_no AND m.status='failed'
                         ORDER BY m.id
                         """
-                    ),
-                    {"batch_no": batch_no},
-                )
-                phones = tuple(
-                    EncryptedFailedPhone(
-                        cast(bytes, row["phone_enc"]),
+                ),
+                {"batch_no": batch_no},
+            )
+            phones = tuple(
+                EncryptedFailedPhone(
+                    cast(bytes, row["phone_enc"]),
+                    str(row["phone_hmac"]),
+                    int(row["key_version"]),
+                    FailedSourceReference(
+                        int(row["id"]),
+                        row["created_at"],
                         str(row["phone_hmac"]),
                         int(row["key_version"]),
-                        FailedSourceReference(
-                            int(row["id"]),
-                            row["created_at"],
-                            str(row["phone_hmac"]),
-                            int(row["key_version"]),
-                        ),
-                    )
-                    for row in phone_result.mappings()
+                    ),
                 )
-                return ResendSource(
-                    batch_no=str(batch["batch_no"]),
-                    dept=str(batch["dept"]),
-                    category=str(batch["category"]),
-                    channel=str(batch["channel"]),
-                    send_content_enc=cast(bytes, batch["send_content_enc"]),
-                    sign_name=(str(batch["sign_name"]) if batch["sign_name"] is not None else None),
-                    consent_confirmed=bool(batch["consent_confirmed"]),
-                    is_test=bool(batch["is_test"]),
-                    failed_phones=phones,
-                )
-        finally:
-            await engine.dispose()
+                for row in phone_result.mappings()
+            )
+            return ResendSource(
+                batch_no=str(batch["batch_no"]),
+                dept=str(batch["dept"]),
+                category=str(batch["category"]),
+                channel=str(batch["channel"]),
+                send_content_enc=cast(bytes, batch["send_content_enc"]),
+                sign_name=(str(batch["sign_name"]) if batch["sign_name"] is not None else None),
+                consent_confirmed=bool(batch["consent_confirmed"]),
+                is_test=bool(batch["is_test"]),
+                failed_phones=phones,
+            )
 
 
 class ResendService:

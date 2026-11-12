@@ -53,11 +53,8 @@ class ResendSupplementService:
 
     async def preview(self, batch_no: str, scope: BatchAccessScope) -> SupplementPreview:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                return await self._preview(connection, batch_no, scope)
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            return await self._preview(connection, batch_no, scope)
 
     async def confirm(
         self,
@@ -69,15 +66,12 @@ class ResendSupplementService:
         accept: Callable[[SendRequest], Awaitable[BatchResponse]],
     ) -> SupplementSubmit:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                prepared = await self._prepare_confirm(
-                    connection, batch_no, intent_id, scope, actor
-                )
-            if isinstance(prepared, SupplementSubmit):
-                return prepared
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            prepared = await self._prepare_confirm(
+                connection, batch_no, intent_id, scope, actor
+            )
+        if isinstance(prepared, SupplementSubmit):
+            return prepared
         if isinstance(prepared, ResendBlocked):
             raise prepared
         result = await accept(prepared)

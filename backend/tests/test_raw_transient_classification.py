@@ -132,4 +132,4 @@ async def test_mark_error_forwards_exception_chain_without_writing_it() -> None:
         assert params["replay_eligibility"] == ELIGIBILITY_AUTOMATIC
         assert params["parse_state"] == PARSE_TRANSIENT_FAILURE
         assert "statement timeout" not in str(params["error"])
-        assert engine.disposed
+        assert not engine.disposed

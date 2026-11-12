@@ -223,8 +223,6 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                 alert=True,
             )
             return InvokeClaim(InvokeClaimKind.DENIED, reason=reason)
-        finally:
-            await engine.dispose()
 
     async def load_authoritative_next_action(
         self,
@@ -236,13 +234,12 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
         """COMMIT 结果未知时按 attempt/chunk/generation 回读事实。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                row = (
-                    (
-                        await connection.execute(
-                            text(
-                                """
+        async with engine.connect() as connection:
+            row = (
+                (
+                    await connection.execute(
+                        text(
+                            """
                             SELECT a.id, a.generation, a.outcome, c.status,
                                    c.next_vendor, c.route_generation,
                                    c.route_policy_version, c.failover_from_attempt_id
@@ -251,26 +248,24 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                             WHERE a.id=:attempt_id AND a.chunk_id=:chunk_id
                               AND a.generation=:generation
                             """
-                            ),
-                            {
-                                "attempt_id": attempt_id,
-                                "chunk_id": chunk_id,
-                                "generation": expected_generation,
-                            },
-                        )
+                        ),
+                        {
+                            "attempt_id": attempt_id,
+                            "chunk_id": chunk_id,
+                            "generation": expected_generation,
+                        },
                     )
-                    .mappings()
-                    .one_or_none()
                 )
-                if row is None:
-                    return None
-                return self._report_from_locked_state(
-                    attempt=row,
-                    chunk=row,
-                    requested=str(row["outcome"]),
-                )
-        finally:
-            await engine.dispose()
+                .mappings()
+                .one_or_none()
+            )
+            if row is None:
+                return None
+            return self._report_from_locked_state(
+                attempt=row,
+                chunk=row,
+                requested=str(row["outcome"]),
+            )
 
     async def repair_legacy_safe_reject_submitting(
         self,

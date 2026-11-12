@@ -140,11 +140,8 @@ class SqlAuthSecurityEventRepository:
         """供启动/集成合同断言实际连接角色，不回显 DSN。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                user = await connection.scalar(text("SELECT current_user"))
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            user = await connection.scalar(text("SELECT current_user"))
         return str(user)
 
     async def ensure_transition(self, transition: AuthSecurityTransition) -> None:
@@ -199,8 +196,6 @@ class SqlAuthSecurityEventRepository:
         except Exception as error:
             observe_transition_failure(transition.action)
             raise SessionStateUnavailable("auth security audit unavailable") from error
-        finally:
-            await engine.dispose()
 
     async def record_dead_letter(self, record: AuthTransitionDeadLetter) -> None:
         """只写运维死信，绝不补写锁定/封禁审计。"""
@@ -235,5 +230,3 @@ class SqlAuthSecurityEventRepository:
                         raise
         except Exception as error:
             raise SessionStateUnavailable("auth transition dead letter unavailable") from error
-        finally:
-            await engine.dispose()

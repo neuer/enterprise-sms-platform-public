@@ -33,7 +33,6 @@ async def touch_runtime_heartbeat(
 
     if component not in REQUIRED_COMPONENTS:
         raise ValueError("unknown runtime heartbeat component")
-    owned = engine is None
     selected = engine
     try:
         if selected is None:
@@ -71,9 +70,6 @@ async def touch_runtime_heartbeat(
             "runtime heartbeat unavailable",
             extra={"component": component, "error_type": type(exc).__name__},
         )
-    finally:
-        if owned and selected is not None:
-            await selected.dispose()
 
 
 def parse_heartbeat_components(raw: str) -> tuple[str, ...]:

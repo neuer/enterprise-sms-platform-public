@@ -65,11 +65,10 @@ class SqlReplyRepository:
         payload["processing_lease_id"] = str(lease_id) if lease_id is not None else None
         payload["lease_seconds"] = RAW_LEASE_SECONDS
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         INSERT INTO raw_vendor_log(
                           source,payload_enc,payload_sha256,key_version,http_status,
                           content_encoding,custom_ids,item_count,processing_started_at,
@@ -86,22 +85,17 @@ class SqlReplyRepository:
                           {PERSIST_LEASE_VALUES.strip()}
                         ) RETURNING id
                         """
-                    ),
-                    payload,
-                )
-                raw_id = int(result.scalar_one())
-        finally:
-            await engine.dispose()
+                ),
+                payload,
+            )
+            raw_id = int(result.scalar_one())
         if lease_id is not None:
             self.remember_lease(RawProcessingLease(raw_id, lease_id, 1))
         return raw_id
 
     async def renew_processing_lease(self, lease: RawProcessingLease) -> datetime:
         engine = self._engine()
-        try:
-            return await renew_raw_lease(engine, lease)
-        finally:
-            await engine.dispose()
+        return await renew_raw_lease(engine, lease)
 
     async def record_heartbeat_failure(
         self,
@@ -111,13 +105,10 @@ class SqlReplyRepository:
         """记录无 PII 的 heartbeat_lost；失败向外抛出让 Heartbeat 记日志。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await record_raw_heartbeat_lost(
-                    connection, raw_id=lease.raw_id, lease_id=lease.lease_id
-                )
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await record_raw_heartbeat_lost(
+                connection, raw_id=lease.raw_id, lease_id=lease.lease_id
+            )
 
     async def update_metadata(
         self,
@@ -131,48 +122,41 @@ class SqlReplyRepository:
 
         token = self._lease_for(raw_id, lease)
         engine = self._engine()
-        try:
-            await commit_fenced_raw_update(
-                engine,
-                FENCED_METADATA_SQL + " AND source='reply'",
-                {
-                    "id": raw_id,
-                    "custom_ids": custom_ids,
-                    "item_count": item_count,
-                    "lease_id": str(token.lease_id),
-                    "epoch": token.epoch,
-                },
-                lease=token,
-            )
-        finally:
-            await engine.dispose()
+        await commit_fenced_raw_update(
+            engine,
+            FENCED_METADATA_SQL + " AND source='reply'",
+            {
+                "id": raw_id,
+                "custom_ids": custom_ids,
+                "item_count": item_count,
+                "lease_id": str(token.lease_id),
+                "epoch": token.epoch,
+            },
+            lease=token,
+        )
 
     async def filter_known_custom_ids(self, custom_ids: list[str]) -> list[str]:
         if not custom_ids:
             return []
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        "SELECT trim(custom_id) FROM sms_chunk "
-                        "WHERE trim(custom_id)=ANY(CAST(:custom_ids AS text[])) ORDER BY 1"
-                    ),
-                    {"custom_ids": custom_ids},
-                )
-                return [str(value) for value in result.scalars()]
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT trim(custom_id) FROM sms_chunk "
+                    "WHERE trim(custom_id)=ANY(CAST(:custom_ids AS text[])) ORDER BY 1"
+                ),
+                {"custom_ids": custom_ids},
+            )
+            return [str(value) for value in result.scalars()]
 
     async def store_reply(self, raw_id: int, reply: ProtectedReply) -> None:
         if raw_id < 1:
             raise ValueError("raw_id must be positive")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         WITH event_insert AS (
                           INSERT INTO reply_event(
                             event_key,event_key_version,raw_id,vendor_task_id,custom_id,
@@ -221,27 +205,25 @@ class SqlReplyRepository:
                           '[encrypted]',CAST(:reply_time AS timestamptz)
                         FROM event_insert
                         """
-                    ),
-                    {
-                        "raw_id": raw_id,
-                        "vendor_task_id": reply.vendor_task_id,
-                        "custom_id": reply.custom_id,
-                        "match_custom_id": reply.match_custom_id,
-                        "phone_enc": reply.phone_enc,
-                        "phone_hmac": reply.phone_hmac,
-                        "phone_hmacs": list(reply.phone_hmacs),
-                        "phone_mask": reply.phone_mask,
-                        "key_version": reply.key_version,
-                        "ext_code": reply.ext_code,
-                        "content_enc": reply.content_enc,
-                        "is_optout": reply.is_optout,
-                        "reply_time": reply.reply_time,
-                        "dedup_hash": reply.dedup_hash,
-                        "dedup_key_version": reply.dedup_key_version,
-                    },
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "raw_id": raw_id,
+                    "vendor_task_id": reply.vendor_task_id,
+                    "custom_id": reply.custom_id,
+                    "match_custom_id": reply.match_custom_id,
+                    "phone_enc": reply.phone_enc,
+                    "phone_hmac": reply.phone_hmac,
+                    "phone_hmacs": list(reply.phone_hmacs),
+                    "phone_mask": reply.phone_mask,
+                    "key_version": reply.key_version,
+                    "ext_code": reply.ext_code,
+                    "content_enc": reply.content_enc,
+                    "is_optout": reply.is_optout,
+                    "reply_time": reply.reply_time,
+                    "dedup_hash": reply.dedup_hash,
+                    "dedup_key_version": reply.dedup_key_version,
+                },
+            )
 
     async def mark_processed(
         self,
@@ -303,14 +285,11 @@ class SqlReplyRepository:
         }
         if system_audit_intent:
             params["system_replay_audit_state"] = SYSTEM_REPLAY_AUDIT_PENDING
-        try:
-            await commit_fenced_raw_update(
-                engine,
-                fenced_terminal_sql(system_audit_intent=system_audit_intent)
-                + " AND source='reply'",
-                params,
-                lease=token,
-            )
-        finally:
-            await engine.dispose()
+        await commit_fenced_raw_update(
+            engine,
+            fenced_terminal_sql(system_audit_intent=system_audit_intent)
+            + " AND source='reply'",
+            params,
+            lease=token,
+        )
         self._leases.pop(raw_id, None)

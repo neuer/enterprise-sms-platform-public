@@ -144,52 +144,46 @@ class SqlStatsRepository:
         start_at = start_local.astimezone(UTC)
         end_at = (start_local + timedelta(days=1)).astimezone(UTC)
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text("SELECT pg_advisory_xact_lock(:lock_key)"),
-                    {"lock_key": stat_date.toordinal()},
-                )
-                await connection.execute(
-                    text("DELETE FROM stat_dirty_date WHERE stat_date=:stat_date"),
-                    {"stat_date": stat_date},
-                )
-                await connection.execute(
-                    text("DELETE FROM stat_daily WHERE stat_date=:stat_date"),
-                    {"stat_date": stat_date},
-                )
-                result = await connection.execute(
-                    AGGREGATE_SQL,
-                    {
-                        "stat_date": stat_date,
-                        "start_at": start_at,
-                        "end_at": end_at,
-                    },
-                )
-                await connection.execute(
-                    MARKER_SQL,
-                    {
-                        "stat_date": stat_date,
-                        "scope_version": STAT_TEST_SCOPE_VERSION,
-                    },
-                )
-                return int(result.rowcount or 0)
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("SELECT pg_advisory_xact_lock(:lock_key)"),
+                {"lock_key": stat_date.toordinal()},
+            )
+            await connection.execute(
+                text("DELETE FROM stat_dirty_date WHERE stat_date=:stat_date"),
+                {"stat_date": stat_date},
+            )
+            await connection.execute(
+                text("DELETE FROM stat_daily WHERE stat_date=:stat_date"),
+                {"stat_date": stat_date},
+            )
+            result = await connection.execute(
+                AGGREGATE_SQL,
+                {
+                    "stat_date": stat_date,
+                    "start_at": start_at,
+                    "end_at": end_at,
+                },
+            )
+            await connection.execute(
+                MARKER_SQL,
+                {
+                    "stat_date": stat_date,
+                    "scope_version": STAT_TEST_SCOPE_VERSION,
+                },
+            )
+            return int(result.rowcount or 0)
 
     async def list_dirty_dates(self, *, limit: int = 40) -> tuple[date, ...]:
         """晚到回执标记的待补算归属日；限量防止单轮聚合无界。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text("SELECT stat_date FROM stat_dirty_date ORDER BY stat_date LIMIT :limit"),
-                    {"limit": limit},
-                )
-                return tuple(result.scalars())
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT stat_date FROM stat_dirty_date ORDER BY stat_date LIMIT :limit"),
+                {"limit": limit},
+            )
+            return tuple(result.scalars())
 
     async def list_scope_backfill_dates(
         self, *, limit: int = SCOPE_BACKFILL_LIMIT
@@ -203,12 +197,9 @@ class SqlStatsRepository:
         if limit < 1:
             raise ValueError("scope backfill limit must be positive")
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    BACKFILL_SQL,
-                    {"scope_version": STAT_TEST_SCOPE_VERSION, "limit": limit},
-                )
-                return tuple(_as_date(row) for row in result.scalars())
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                BACKFILL_SQL,
+                {"scope_version": STAT_TEST_SCOPE_VERSION, "limit": limit},
+            )
+            return tuple(_as_date(row) for row in result.scalars())

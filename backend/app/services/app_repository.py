@@ -93,26 +93,23 @@ class SqlAppRepository:
         """每次管理请求读取可变安全参数，不从环境变量复制配置。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT key, value FROM sys_config
                         WHERE key IN ('key_grace_hours', 'callback_allow_cidrs')
                         """
-                    )
                 )
-                config = {str(row["key"]): str(row["value"]) for row in result.mappings()}
-                return (
-                    int(config.get("key_grace_hours", "72")),
-                    config.get(
-                        "callback_allow_cidrs",
-                        "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
-                    ),
-                )
-        finally:
-            await engine.dispose()
+            )
+            config = {str(row["key"]): str(row["value"]) for row in result.mappings()}
+            return (
+                int(config.get("key_grace_hours", "72")),
+                config.get(
+                    "callback_allow_cidrs",
+                    "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16",
+                ),
+            )
 
     @staticmethod
     async def _audit(
@@ -146,33 +143,27 @@ class SqlAppRepository:
 
     async def list(self) -> builtins.list[AppRow]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                rows = await connection.execute(
-                    text(
-                        f"SELECT {APP_COLUMNS} FROM app "
+        async with engine.connect() as connection:
+            rows = await connection.execute(
+                text(
+                    f"SELECT {APP_COLUMNS} FROM app "
                         "WHERE usage_subject_kind='api_app' ORDER BY id"
-                    )
                 )
-                return [_safe_row(row) for row in rows.mappings()]
-        finally:
-            await engine.dispose()
+            )
+            return [_safe_row(row) for row in rows.mappings()]
 
     async def get(self, app_id: int) -> AppRow | None:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"SELECT {APP_COLUMNS} FROM app "
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    f"SELECT {APP_COLUMNS} FROM app "
                         "WHERE id = :app_id AND usage_subject_kind='api_app'"
-                    ),
-                    {"app_id": app_id},
-                )
-                row = result.mappings().one_or_none()
-                return _safe_row(row) if row is not None else None
-        finally:
-            await engine.dispose()
+                ),
+                {"app_id": app_id},
+            )
+            row = result.mappings().one_or_none()
+            return _safe_row(row) if row is not None else None
 
     @asynccontextmanager
     async def _authorized_write(
@@ -224,19 +215,17 @@ class SqlAppRepository:
         ip: str,
         **values: Unpack[AppCreateValues],
     ) -> int:
-        engine = self._engine()
-        try:
-            async with self._authorized_write(
-                authorization,
-                operation="app_create",
-                app_id=None,
-                expected_updated_at=None,
-                values=values,
-            ) as connection:
-                try:
-                    result = await connection.execute(
-                        text(
-                            """
+        async with self._authorized_write(
+            authorization,
+            operation="app_create",
+            app_id=None,
+            expected_updated_at=None,
+            values=values,
+        ) as connection:
+            try:
+                result = await connection.execute(
+                    text(
+                        """
                         INSERT INTO app (
                           name, dept, api_key_hash, api_key_prefix,
                           api_key_hash_version, api_key_hash_algorithm,
@@ -262,50 +251,48 @@ class SqlAppRepository:
                           :callback_secret_enc, :callback_report_enabled, :actor
                         ) RETURNING id
                         """
+                    ),
+                    {
+                        **values,
+                        "actor": actor,
+                        "ip": ip,
+                        "api_key_hash_version": values.get("api_key_hash_version"),
+                        "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
+                        or (
+                            "api_pepper"
+                            if values.get("api_key_hash_version") is not None
+                            else None
                         ),
-                        {
-                            **values,
-                            "actor": actor,
-                            "ip": ip,
-                            "api_key_hash_version": values.get("api_key_hash_version"),
-                            "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
-                            or (
-                                "api_pepper"
-                                if values.get("api_key_hash_version") is not None
-                                else None
-                            ),
-                            "freq_override": (
-                                json.dumps(values["freq_override"])
-                                if values["freq_override"] is not None
-                                else None
-                            ),
-                            "allowed_ips": list(values["allowed_ips"]),
-                        },
-                    )
-                except IntegrityError as error:
-                    if _is_app_name_conflict(error):
-                        raise AppNameConflict("应用名称已存在") from error
-                    raise
-                app_id = int(result.scalar_one())
-                await self._audit(
-                    connection,
-                    actor=actor,
-                    ip=ip,
-                    action="app_create",
-                    app_id=app_id,
-                    after={
-                        "name": values["name"],
-                        "allowed_categories": values["allowed_categories"],
-                        "daily_quota": values["daily_quota"],
+                        "freq_override": (
+                            json.dumps(values["freq_override"])
+                            if values["freq_override"] is not None
+                            else None
+                        ),
                         "allowed_ips": list(values["allowed_ips"]),
-                        "allow_market_api_bulk": values["allow_market_api_bulk"],
-                        "has_ip_exemption": values["ip_allowlist_exempt_until"] is not None,
-                        "has_quota_exemption": values["unlimited_quota_exempt_until"] is not None,
                     },
                 )
-                return app_id
-        finally:
-            await engine.dispose()
+            except IntegrityError as error:
+                if _is_app_name_conflict(error):
+                    raise AppNameConflict("应用名称已存在") from error
+                raise
+            app_id = int(result.scalar_one())
+            await self._audit(
+                connection,
+                actor=actor,
+                ip=ip,
+                action="app_create",
+                app_id=app_id,
+                after={
+                    "name": values["name"],
+                    "allowed_categories": values["allowed_categories"],
+                    "daily_quota": values["daily_quota"],
+                    "allowed_ips": list(values["allowed_ips"]),
+                    "allow_market_api_bulk": values["allow_market_api_bulk"],
+                    "has_ip_exemption": values["ip_allowlist_exempt_until"] is not None,
+                    "has_quota_exemption": values["unlimited_quota_exempt_until"] is not None,
+                },
+            )
+            return app_id
 
     async def update(
         self,
@@ -317,18 +304,16 @@ class SqlAppRepository:
         ip: str,
         **values: Unpack[AppUpdateValues],
     ) -> AppRow:
-        engine = self._engine()
-        try:
-            async with self._authorized_write(
-                authorization,
-                operation="app_update",
-                app_id=app_id,
-                expected_updated_at=expected_updated_at,
-                values=values,
-            ) as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with self._authorized_write(
+            authorization,
+            operation="app_update",
+            app_id=app_id,
+            expected_updated_at=expected_updated_at,
+            values=values,
+        ) as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         UPDATE app SET
                           dept=:dept, allowed_categories=:allowed_categories,
                           default_sign=:default_sign,
@@ -350,41 +335,39 @@ class SqlAppRepository:
                         WHERE id=:app_id AND usage_subject_kind='api_app'
                         RETURNING {APP_COLUMNS}
                         """
+                ),
+                {
+                    **values,
+                    "actor": actor,
+                    "ip": ip,
+                    "app_id": app_id,
+                    "freq_override": (
+                        json.dumps(values["freq_override"])
+                        if values["freq_override"] is not None
+                        else None
                     ),
-                    {
-                        **values,
-                        "actor": actor,
-                        "ip": ip,
-                        "app_id": app_id,
-                        "freq_override": (
-                            json.dumps(values["freq_override"])
-                            if values["freq_override"] is not None
-                            else None
-                        ),
-                        "allowed_ips": list(values["allowed_ips"]),
-                    },
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    raise AppNotFound("应用不存在")
-                await self._audit(
-                    connection,
-                    actor=actor,
-                    ip=ip,
-                    action="app_update",
-                    app_id=app_id,
-                    after={
-                        "allowed_categories": values["allowed_categories"],
-                        "daily_quota": values["daily_quota"],
-                        "allowed_ips": list(values["allowed_ips"]),
-                        "allow_market_api_bulk": values["allow_market_api_bulk"],
-                        "has_ip_exemption": values["ip_allowlist_exempt_until"] is not None,
-                        "has_quota_exemption": values["unlimited_quota_exempt_until"] is not None,
-                    },
-                )
-                return _safe_row(row)
-        finally:
-            await engine.dispose()
+                    "allowed_ips": list(values["allowed_ips"]),
+                },
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                raise AppNotFound("应用不存在")
+            await self._audit(
+                connection,
+                actor=actor,
+                ip=ip,
+                action="app_update",
+                app_id=app_id,
+                after={
+                    "allowed_categories": values["allowed_categories"],
+                    "daily_quota": values["daily_quota"],
+                    "allowed_ips": list(values["allowed_ips"]),
+                    "allow_market_api_bulk": values["allow_market_api_bulk"],
+                    "has_ip_exemption": values["ip_allowlist_exempt_until"] is not None,
+                    "has_quota_exemption": values["unlimited_quota_exempt_until"] is not None,
+                },
+            )
+            return _safe_row(row)
 
     async def disable(
         self,
@@ -395,18 +378,16 @@ class SqlAppRepository:
         authorization: AdminAuthorization,
         expected_updated_at: datetime,
     ) -> None:
-        engine = self._engine()
-        try:
-            async with self._authorized_write(
-                authorization,
-                operation="app_disable",
-                app_id=app_id,
-                expected_updated_at=expected_updated_at,
-                values={},
-            ) as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with self._authorized_write(
+            authorization,
+            operation="app_disable",
+            app_id=app_id,
+            expected_updated_at=expected_updated_at,
+            values={},
+        ) as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE app SET status=0,
                           api_key_hash=:revoked_hash,
                           api_key_prefix='revoked0',
@@ -419,23 +400,21 @@ class SqlAppRepository:
                           updated_at=now()
                         WHERE id=:app_id AND usage_subject_kind='api_app'
                         """
-                    ),
-                    {
-                        "app_id": app_id,
-                        "revoked_hash": hashlib.sha256(secrets.token_bytes(32)).hexdigest(),
-                    },
-                )
-                if result.rowcount != 1:
-                    raise AppNotFound("应用不存在")
-                await self._audit(
-                    connection,
-                    actor=actor,
-                    ip=ip,
-                    action="app_disable",
-                    app_id=app_id,
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "app_id": app_id,
+                    "revoked_hash": hashlib.sha256(secrets.token_bytes(32)).hexdigest(),
+                },
+            )
+            if result.rowcount != 1:
+                raise AppNotFound("应用不存在")
+            await self._audit(
+                connection,
+                actor=actor,
+                ip=ip,
+                action="app_disable",
+                app_id=app_id,
+            )
 
     async def rotate_key(
         self,
@@ -447,18 +426,16 @@ class SqlAppRepository:
         ip: str,
         **values: Unpack[AppKeyRotation],
     ) -> None:
-        engine = self._engine()
-        try:
-            async with self._authorized_write(
-                authorization,
-                operation="app_rotate_key",
-                app_id=app_id,
-                expected_updated_at=expected_updated_at,
-                values=values,
-            ) as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with self._authorized_write(
+            authorization,
+            operation="app_rotate_key",
+            app_id=app_id,
+            expected_updated_at=expected_updated_at,
+            values=values,
+        ) as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE app SET
                           api_key_prev_hash=api_key_hash,
                           api_key_prev_prefix=api_key_prefix,
@@ -473,31 +450,29 @@ class SqlAppRepository:
                         WHERE id=:app_id AND status=1
                           AND usage_subject_kind='api_app'
                         """
+                ),
+                {
+                    **values,
+                    "actor": actor,
+                    "ip": ip,
+                    "app_id": app_id,
+                    "api_key_hash_version": values.get("api_key_hash_version"),
+                    "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
+                    or (
+                        "api_pepper" if values.get("api_key_hash_version") is not None else None
                     ),
-                    {
-                        **values,
-                        "actor": actor,
-                        "ip": ip,
-                        "app_id": app_id,
-                        "api_key_hash_version": values.get("api_key_hash_version"),
-                        "api_key_hash_algorithm": values.get("api_key_hash_algorithm")
-                        or (
-                            "api_pepper" if values.get("api_key_hash_version") is not None else None
-                        ),
-                    },
-                )
-                if result.rowcount != 1:
-                    raise AppNotFound("应用不存在或已停用")
-                await self._audit(
-                    connection,
-                    actor=actor,
-                    ip=ip,
-                    action="app_rotate_key",
-                    app_id=app_id,
-                    after={"old_key_expires_at": str(values["old_key_expires_at"])},
-                )
-        finally:
-            await engine.dispose()
+                },
+            )
+            if result.rowcount != 1:
+                raise AppNotFound("应用不存在或已停用")
+            await self._audit(
+                connection,
+                actor=actor,
+                ip=ip,
+                action="app_rotate_key",
+                app_id=app_id,
+                after={"old_key_expires_at": str(values["old_key_expires_at"])},
+            )
 
     async def revoke_old_key(
         self,
@@ -508,18 +483,16 @@ class SqlAppRepository:
         authorization: AdminAuthorization,
         expected_updated_at: datetime,
     ) -> None:
-        engine = self._engine()
-        try:
-            async with self._authorized_write(
-                authorization,
-                operation="app_revoke_old_key",
-                app_id=app_id,
-                expected_updated_at=expected_updated_at,
-                values={},
-            ) as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with self._authorized_write(
+            authorization,
+            operation="app_revoke_old_key",
+            app_id=app_id,
+            expected_updated_at=expected_updated_at,
+            values={},
+        ) as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE app SET api_key_prev_hash=NULL,
                           api_key_prev_prefix=NULL, api_key_prev_expires=NULL,
                           api_key_prev_hash_version=NULL,
@@ -527,20 +500,18 @@ class SqlAppRepository:
                           updated_at=now()
                         WHERE id=:app_id AND usage_subject_kind='api_app'
                         """
-                    ),
-                    {"app_id": app_id},
-                )
-                if result.rowcount != 1:
-                    raise AppNotFound("应用不存在")
-                await self._audit(
-                    connection,
-                    actor=actor,
-                    ip=ip,
-                    action="app_revoke_old_key",
-                    app_id=app_id,
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {"app_id": app_id},
+            )
+            if result.rowcount != 1:
+                raise AppNotFound("应用不存在")
+            await self._audit(
+                connection,
+                actor=actor,
+                ip=ip,
+                action="app_revoke_old_key",
+                app_id=app_id,
+            )
 
     async def rotate_callback_secret(
         self,
@@ -552,39 +523,35 @@ class SqlAppRepository:
         ip: str,
         callback_secret_enc: bytes,
     ) -> None:
-        engine = self._engine()
-        try:
-            async with self._authorized_write(
-                authorization,
-                operation="app_rotate_callback_secret",
-                app_id=app_id,
-                expected_updated_at=expected_updated_at,
-                values={"callback_secret_enc": callback_secret_enc, "actor": actor, "ip": ip},
-            ) as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with self._authorized_write(
+            authorization,
+            operation="app_rotate_callback_secret",
+            app_id=app_id,
+            expected_updated_at=expected_updated_at,
+            values={"callback_secret_enc": callback_secret_enc, "actor": actor, "ip": ip},
+        ) as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE app SET callback_secret_enc=:callback_secret_enc,
                           updated_at=now()
                         WHERE id=:app_id AND status=1
                           AND usage_subject_kind='api_app'
                         """
-                    ),
-                    {
-                        "callback_secret_enc": callback_secret_enc,
-                        "actor": actor,
-                        "ip": ip,
-                        "app_id": app_id,
-                    },
-                )
-                if result.rowcount != 1:
-                    raise AppNotFound("应用不存在或已停用")
-                await self._audit(
-                    connection,
-                    actor=actor,
-                    ip=ip,
-                    action="app_rotate_callback_secret",
-                    app_id=app_id,
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "callback_secret_enc": callback_secret_enc,
+                    "actor": actor,
+                    "ip": ip,
+                    "app_id": app_id,
+                },
+            )
+            if result.rowcount != 1:
+                raise AppNotFound("应用不存在或已停用")
+            await self._audit(
+                connection,
+                actor=actor,
+                ip=ip,
+                action="app_rotate_callback_secret",
+                app_id=app_id,
+            )

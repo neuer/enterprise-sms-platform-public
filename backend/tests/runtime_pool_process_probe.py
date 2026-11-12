@@ -41,7 +41,6 @@ def _worker(channel: Connection) -> None:
 
         try:
             pids = set(await asyncio.gather(*(load() for _ in range(6))))
-            await engine.dispose()
             assert _engine() is engine
             assert await _pid() in pids
             assert len(pids) <= 2

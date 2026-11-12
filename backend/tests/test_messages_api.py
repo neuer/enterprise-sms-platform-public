@@ -82,9 +82,8 @@ async def test_scheduling_dependencies_reuse_api_pools_and_cancel_skips_policy(
             return type("PolicyStub", (), {"approval_expire_hours": 7})()
 
     class FakeRepository:
-        def __init__(self, selected_settings: object, *, pooled: bool) -> None:
+        def __init__(self, selected_settings: object) -> None:
             assert selected_settings is settings
-            assert pooled is True
             repositories.append(self)
 
     monkeypatch.setattr(messages_module, "get_settings", lambda: settings)

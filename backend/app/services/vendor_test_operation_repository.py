@@ -152,55 +152,52 @@ class SqlVendorTestOperationRepository:
         if not conflicting_types or not conflicting_types.issubset(OPERATION_TYPES):
             raise VendorTestOperationConflict("operation 冲突集合无效")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await lock_vendor_test_lifecycle(connection)
-                existing = await connection.execute(
-                    text(
-                        f"SELECT {_COLUMNS} FROM vendor_test_operation "
+        async with engine.begin() as connection:
+            await lock_vendor_test_lifecycle(connection)
+            existing = await connection.execute(
+                text(
+                    f"SELECT {_COLUMNS} FROM vendor_test_operation "
                         "WHERE id=CAST(:id AS uuid) FOR UPDATE"
-                    ),
-                    {"id": operation_id},
-                )
-                row = _one_or_none(existing)
-                if row is not None:
-                    record = _record(row)
-                    self._assert_contract(
-                        record,
-                        operation_type,
-                        principal=principal,
-                        batch_no=batch_no,
-                        checkpoint_id=checkpoint_id,
-                    )
-                    return record
-                placeholders: list[str] = []
-                conflict_params: dict[str, object] = {"id": operation_id}
-                for index, item in enumerate(sorted(conflicting_types)):
-                    key = f"conflict_type_{index}"
-                    placeholders.append(f":{key}")
-                    conflict_params[key] = item
-                conflict = await connection.execute(
-                    text(
-                        "SELECT id FROM vendor_test_operation "
-                        "WHERE id<>CAST(:id AS uuid) "
-                        "AND status IN ('requested','running') "
-                        f"AND operation_type IN ({','.join(placeholders)}) "
-                        "LIMIT 1"
-                    ),
-                    conflict_params,
-                )
-                if _one_or_none(conflict) is not None:
-                    raise VendorTestOperationConflict("已有联调操作正在执行")
-                return await self._request_in_transaction(
-                    connection,
-                    operation_id,
+                ),
+                {"id": operation_id},
+            )
+            row = _one_or_none(existing)
+            if row is not None:
+                record = _record(row)
+                self._assert_contract(
+                    record,
                     operation_type,
                     principal=principal,
                     batch_no=batch_no,
                     checkpoint_id=checkpoint_id,
                 )
-        finally:
-            await engine.dispose()
+                return record
+            placeholders: list[str] = []
+            conflict_params: dict[str, object] = {"id": operation_id}
+            for index, item in enumerate(sorted(conflicting_types)):
+                key = f"conflict_type_{index}"
+                placeholders.append(f":{key}")
+                conflict_params[key] = item
+            conflict = await connection.execute(
+                text(
+                    "SELECT id FROM vendor_test_operation "
+                        "WHERE id<>CAST(:id AS uuid) "
+                        "AND status IN ('requested','running') "
+                        f"AND operation_type IN ({','.join(placeholders)}) "
+                        "LIMIT 1"
+                ),
+                conflict_params,
+            )
+            if _one_or_none(conflict) is not None:
+                raise VendorTestOperationConflict("已有联调操作正在执行")
+            return await self._request_in_transaction(
+                connection,
+                operation_id,
+                operation_type,
+                principal=principal,
+                batch_no=batch_no,
+                checkpoint_id=checkpoint_id,
+            )
 
     async def _request_in_transaction(
         self,
@@ -277,11 +274,10 @@ class SqlVendorTestOperationRepository:
     async def mark_running(self, operation_id: str) -> VendorTestOperation:
         operation_id = _operation_id(operation_id)
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                updated = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            updated = await connection.execute(
+                text(
+                    f"""
                         UPDATE vendor_test_operation SET
                           status='running',
                           lease_expires_at=CASE
@@ -296,30 +292,28 @@ class SqlVendorTestOperationRepository:
                           )
                         RETURNING {_COLUMNS}
                         """
-                    ),
-                    {
-                        "id": operation_id,
-                        "lease_seconds": UAT_ACCEPTANCE_LEASE_SECONDS,
-                    },
-                )
-                row = _one_or_none(updated)
-                if row is not None:
-                    return _record(row)
-                current = await connection.execute(
-                    text(
-                        f"SELECT {_COLUMNS} FROM vendor_test_operation WHERE id=CAST(:id AS uuid)"
-                    ),
-                    {"id": operation_id},
-                )
-                row = _one_or_none(current)
-                if row is None:
-                    raise VendorTestOperationConflict("operation 不存在")
-                record = _record(row)
-                if record.status not in {"running", *TERMINAL_STATUSES}:
-                    raise VendorTestOperationConflict("operation 状态冲突")
-                return record
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "id": operation_id,
+                    "lease_seconds": UAT_ACCEPTANCE_LEASE_SECONDS,
+                },
+            )
+            row = _one_or_none(updated)
+            if row is not None:
+                return _record(row)
+            current = await connection.execute(
+                text(
+                    f"SELECT {_COLUMNS} FROM vendor_test_operation WHERE id=CAST(:id AS uuid)"
+                ),
+                {"id": operation_id},
+            )
+            row = _one_or_none(current)
+            if row is None:
+                raise VendorTestOperationConflict("operation 不存在")
+            record = _record(row)
+            if record.status not in {"running", *TERMINAL_STATUSES}:
+                raise VendorTestOperationConflict("operation 状态冲突")
+            return record
 
     async def claim_control_running(
         self,
@@ -329,24 +323,21 @@ class SqlVendorTestOperationRepository:
 
         operation_id = _operation_id(operation_id)
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                updated = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            updated = await connection.execute(
+                text(
+                    f"""
                         UPDATE vendor_test_operation SET status='running'
                         WHERE id=CAST(:id AS uuid)
                           AND status='requested'
                           AND operation_type IN ({_CONTROL_OPERATION_SQL})
                         RETURNING {_COLUMNS}
                         """
-                    ),
-                    {"id": operation_id},
-                )
-                row = _one_or_none(updated)
-                return _record(row) if row is not None else None
-        finally:
-            await engine.dispose()
+                ),
+                {"id": operation_id},
+            )
+            row = _one_or_none(updated)
+            return _record(row) if row is not None else None
 
     async def fail_unclaimed_control(
         self,
@@ -360,11 +351,10 @@ class SqlVendorTestOperationRepository:
         if _SAFE_CODE.fullmatch(safe_code) is None:
             raise VendorTestOperationConflict("operation 安全码无效")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                updated = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            updated = await connection.execute(
+                text(
+                    f"""
                         UPDATE vendor_test_operation SET
                           status='failed',safe_code=:safe_code,
                           vendor_code=NULL,lease_expires_at=NULL,
@@ -374,21 +364,19 @@ class SqlVendorTestOperationRepository:
                           AND operation_type IN ({_CONTROL_OPERATION_SQL})
                         RETURNING {_COLUMNS}
                         """
-                    ),
-                    {"id": operation_id, "safe_code": safe_code},
-                )
-                row = _one_or_none(updated)
-                if row is None:
-                    return None
-                record = _record(row)
-                await self._audit(
-                    connection,
-                    action="vendor_test_operation_completed",
-                    record=record,
-                )
-                return record
-        finally:
-            await engine.dispose()
+                ),
+                {"id": operation_id, "safe_code": safe_code},
+            )
+            row = _one_or_none(updated)
+            if row is None:
+                return None
+            record = _record(row)
+            await self._audit(
+                connection,
+                action="vendor_test_operation_completed",
+                record=record,
+            )
+            return record
 
     async def attach_batch(
         self,
@@ -403,11 +391,10 @@ class SqlVendorTestOperationRepository:
         if validated_batch_no is None:
             raise VendorTestOperationConflict("operation batch 引用无效")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                updated = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            updated = await connection.execute(
+                text(
+                    f"""
                         UPDATE vendor_test_operation SET
                           batch_no=:batch_no,lease_expires_at=NULL
                         WHERE id=CAST(:id AS uuid)
@@ -416,21 +403,19 @@ class SqlVendorTestOperationRepository:
                           AND (batch_no IS NULL OR batch_no=:batch_no)
                         RETURNING {_COLUMNS}
                         """
-                    ),
-                    {"id": operation_id, "batch_no": validated_batch_no},
-                )
-                row = _one_or_none(updated)
-                if row is None:
-                    raise VendorTestOperationConflict("operation batch 状态冲突")
-                record = _record(row)
-                await self._audit(
-                    connection,
-                    action="vendor_test_operation_batch_attached",
-                    record=record,
-                )
-                return record
-        finally:
-            await engine.dispose()
+                ),
+                {"id": operation_id, "batch_no": validated_batch_no},
+            )
+            row = _one_or_none(updated)
+            if row is None:
+                raise VendorTestOperationConflict("operation batch 状态冲突")
+            record = _record(row)
+            await self._audit(
+                connection,
+                action="vendor_test_operation_batch_attached",
+                record=record,
+            )
+            return record
 
     async def claim_uat_running(
         self,
@@ -440,11 +425,10 @@ class SqlVendorTestOperationRepository:
 
         operation_id = _operation_id(operation_id)
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                updated = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            updated = await connection.execute(
+                text(
+                    f"""
                         UPDATE vendor_test_operation SET
                           status='running',
                           lease_expires_at=now()+make_interval(secs=>:lease_seconds)
@@ -455,27 +439,24 @@ class SqlVendorTestOperationRepository:
                           AND lease_expires_at > now()
                         RETURNING {_COLUMNS}
                         """
-                    ),
-                    {
-                        "id": operation_id,
-                        "lease_seconds": UAT_ACCEPTANCE_LEASE_SECONDS,
-                    },
-                )
-                row = _one_or_none(updated)
-                return _record(row) if row is not None else None
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "id": operation_id,
+                    "lease_seconds": UAT_ACCEPTANCE_LEASE_SECONDS,
+                },
+            )
+            row = _one_or_none(updated)
+            return _record(row) if row is not None else None
 
     async def heartbeat(self, operation_id: str) -> bool:
         """仅续租仍归当前请求拥有且尚未过期的 pre-batch UAT。"""
 
         operation_id = _operation_id(operation_id)
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                updated = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            updated = await connection.execute(
+                text(
+                    """
                         UPDATE vendor_test_operation SET
                           lease_expires_at=now()+make_interval(secs=>:lease_seconds)
                         WHERE id=CAST(:id AS uuid)
@@ -485,15 +466,13 @@ class SqlVendorTestOperationRepository:
                           AND lease_expires_at > now()
                         RETURNING id
                         """
-                    ),
-                    {
-                        "id": operation_id,
-                        "lease_seconds": UAT_ACCEPTANCE_LEASE_SECONDS,
-                    },
-                )
-                return _one_or_none(updated) is not None
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "id": operation_id,
+                    "lease_seconds": UAT_ACCEPTANCE_LEASE_SECONDS,
+                },
+            )
+            return _one_or_none(updated) is not None
 
     async def prepare_uat_acceptance(
         self, operation_id: str, *, biz_id: str, app_id: int, request_hash: str, key_version: int
@@ -509,11 +488,10 @@ class SqlVendorTestOperationRepository:
         if not biz_id or len(biz_id) > 32 or app_id < 1:
             raise ValueError("invalid UAT acceptance reference")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                updated = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            updated = await connection.execute(
+                text(
+                    """
                         UPDATE vendor_test_operation SET
                           lease_expires_at=now()+make_interval(secs=>:lease_seconds),
                           acceptance_biz_id=:biz_id,acceptance_app_id=:app_id,
@@ -530,19 +508,17 @@ class SqlVendorTestOperationRepository:
                           AND lease_expires_at > now()
                         RETURNING id
                         """
-                    ),
-                    {
-                        "id": operation_id,
-                        "biz_id": biz_id,
-                        "app_id": app_id,
-                        "request_hash": request_hash,
-                        "key_version": key_version,
-                        "lease_seconds": UAT_ACCEPTANCE_LEASE_SECONDS,
-                    },
-                )
-                return _one_or_none(updated) is not None
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "id": operation_id,
+                    "biz_id": biz_id,
+                    "app_id": app_id,
+                    "request_hash": request_hash,
+                    "key_version": key_version,
+                    "lease_seconds": UAT_ACCEPTANCE_LEASE_SECONDS,
+                },
+            )
+            return _one_or_none(updated) is not None
 
     @asynccontextmanager
     async def acceptance_guard(
@@ -553,21 +529,18 @@ class SqlVendorTestOperationRepository:
 
         operation_id = _operation_id(operation_id)
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         SELECT pg_advisory_xact_lock(
                           hashtextextended(:lock_name,0)
                         )
                         """
-                    ),
-                    {"lock_name": f"{_UAT_ACCEPTANCE_LOCK_PREFIX}{operation_id}"},
-                )
-                yield
-        finally:
-            await engine.dispose()
+                ),
+                {"lock_name": f"{_UAT_ACCEPTANCE_LOCK_PREFIX}{operation_id}"},
+            )
+            yield
 
     async def expire_uat_if_stale(
         self,
@@ -581,23 +554,22 @@ class SqlVendorTestOperationRepository:
         if _SAFE_CODE.fullmatch(safe_code) is None:
             raise VendorTestOperationConflict("operation 安全码无效")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                acquired = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            acquired = await connection.execute(
+                text(
+                    """
                         SELECT pg_try_advisory_xact_lock(
                           hashtextextended(:lock_name,0)
                         )
                         """
-                    ),
-                    {"lock_name": f"{_UAT_ACCEPTANCE_LOCK_PREFIX}{operation_id}"},
-                )
-                if not bool(acquired.scalar_one()):
-                    return None
-                updated = await connection.execute(
-                    text(
-                        f"""
+                ),
+                {"lock_name": f"{_UAT_ACCEPTANCE_LOCK_PREFIX}{operation_id}"},
+            )
+            if not bool(acquired.scalar_one()):
+                return None
+            updated = await connection.execute(
+                text(
+                    f"""
                         UPDATE vendor_test_operation AS operation SET
                           status='failed',safe_code=:safe_code,
                           vendor_code=NULL,lease_expires_at=NULL,
@@ -629,24 +601,22 @@ class SqlVendorTestOperationRepository:
                           )
                         RETURNING {_COLUMNS}
                         """
-                    ),
-                    {
-                        "id": operation_id,
-                        "safe_code": safe_code,
-                    },
-                )
-                row = _one_or_none(updated)
-                if row is None:
-                    return None
-                record = _record(row)
-                await self._audit(
-                    connection,
-                    action="vendor_test_operation_completed",
-                    record=record,
-                )
-                return record
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "id": operation_id,
+                    "safe_code": safe_code,
+                },
+            )
+            row = _one_or_none(updated)
+            if row is None:
+                return None
+            record = _record(row)
+            await self._audit(
+                connection,
+                action="vendor_test_operation_completed",
+                record=record,
+            )
+            return record
 
     async def complete(
         self,
@@ -674,11 +644,10 @@ class SqlVendorTestOperationRepository:
         checkpoint_id = _reference(checkpoint_id, maximum=128)
         batch_no = _reference(batch_no, maximum=64)
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                updated = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            updated = await connection.execute(
+                text(
+                    f"""
                         UPDATE vendor_test_operation SET
                           status=:status,safe_code=:safe_code,
                           vendor_code=:vendor_code,
@@ -690,82 +659,74 @@ class SqlVendorTestOperationRepository:
                           AND status IN ('requested','running')
                         RETURNING {_COLUMNS}
                         """
-                    ),
-                    {
-                        "id": operation_id,
-                        "status": status,
-                        "safe_code": safe_code,
-                        "vendor_code": vendor_code,
-                        "batch_no": batch_no,
-                        "checkpoint_id": checkpoint_id,
-                    },
-                )
-                row = _one_or_none(updated)
-                if row is not None:
-                    record = _record(row)
-                    await self._audit(
-                        connection,
-                        action="vendor_test_operation_completed",
-                        record=record,
-                    )
-                    return record
-                current = await connection.execute(
-                    text(
-                        f"SELECT {_COLUMNS} FROM vendor_test_operation "
-                        "WHERE id=CAST(:id AS uuid) FOR UPDATE"
-                    ),
-                    {"id": operation_id},
-                )
-                row = _one_or_none(current)
-                if row is None:
-                    raise VendorTestOperationConflict("operation 不存在")
+                ),
+                {
+                    "id": operation_id,
+                    "status": status,
+                    "safe_code": safe_code,
+                    "vendor_code": vendor_code,
+                    "batch_no": batch_no,
+                    "checkpoint_id": checkpoint_id,
+                },
+            )
+            row = _one_or_none(updated)
+            if row is not None:
                 record = _record(row)
-                expected_checkpoint = checkpoint_id or record.checkpoint_id
-                expected_batch = batch_no or record.batch_no
-                if (
-                    record.status != status
-                    or record.safe_code != safe_code
-                    or record.vendor_code != vendor_code
-                    or record.batch_no != expected_batch
-                    or record.checkpoint_id != expected_checkpoint
-                ):
-                    raise VendorTestOperationConflict("operation 终态冲突")
+                await self._audit(
+                    connection,
+                    action="vendor_test_operation_completed",
+                    record=record,
+                )
                 return record
-        finally:
-            await engine.dispose()
+            current = await connection.execute(
+                text(
+                    f"SELECT {_COLUMNS} FROM vendor_test_operation "
+                        "WHERE id=CAST(:id AS uuid) FOR UPDATE"
+                ),
+                {"id": operation_id},
+            )
+            row = _one_or_none(current)
+            if row is None:
+                raise VendorTestOperationConflict("operation 不存在")
+            record = _record(row)
+            expected_checkpoint = checkpoint_id or record.checkpoint_id
+            expected_batch = batch_no or record.batch_no
+            if (
+                record.status != status
+                or record.safe_code != safe_code
+                or record.vendor_code != vendor_code
+                or record.batch_no != expected_batch
+                or record.checkpoint_id != expected_checkpoint
+            ):
+                raise VendorTestOperationConflict("operation 终态冲突")
+            return record
 
     async def pending(self) -> tuple[VendorTestOperation, ...]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT {_COLUMNS} FROM vendor_test_operation
                         WHERE status IN ('requested','running')
                         ORDER BY requested_at,id LIMIT 100
                         """
-                    )
                 )
-                return tuple(_record(row) for row in result.mappings())
-        finally:
-            await engine.dispose()
+            )
+            return tuple(_record(row) for row in result.mappings())
 
     async def get(self, operation_id: str) -> VendorTestOperation | None:
         operation_id = _operation_id(operation_id)
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"SELECT {_COLUMNS} FROM vendor_test_operation WHERE id=CAST(:id AS uuid)"
-                    ),
-                    {"id": operation_id},
-                )
-                row = _one_or_none(result)
-                return _record(row) if row is not None else None
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    f"SELECT {_COLUMNS} FROM vendor_test_operation WHERE id=CAST(:id AS uuid)"
+                ),
+                {"id": operation_id},
+            )
+            row = _one_or_none(result)
+            return _record(row) if row is not None else None
 
     async def uat_result(
         self,
@@ -778,11 +739,10 @@ class SqlVendorTestOperationRepository:
         operation_id = _operation_id(operation_id)
         batch_no = _reference(batch_no, maximum=64)
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT trim(b.batch_no) batch_no,b.status batch_status,
                           c.status chunk_status,c.vendor_code
                         FROM sms_batch b
@@ -807,15 +767,13 @@ class SqlVendorTestOperationRepository:
                                OR trim(b.batch_no)=CAST(:batch_no AS varchar(64)))
                         ORDER BY b.id,c.id
                         """
-                    ),
-                    {
-                        "batch_no": batch_no,
-                        "operation_id": operation_id,
-                    },
-                )
-                rows = list(result.mappings())
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "batch_no": batch_no,
+                    "operation_id": operation_id,
+                },
+            )
+            rows = list(result.mappings())
         if not rows:
             return None
         batch_numbers = {str(row["batch_no"]).strip() for row in rows}

@@ -182,7 +182,7 @@ async def test_repository_loads_scoped_business_and_global_operational_facts() -
     assert "unmatched_report" in count_sql and "callback_task" in count_sql
     assert "sms_chunk" in count_sql and "app.dept" in count_sql
     assert repository.redis.calls == [("ratelimit:vendor", "tokens")]  # type: ignore[attr-defined]
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio
@@ -223,7 +223,7 @@ async def test_repository_marks_channel_stale_when_redis_snapshot_times_out() ->
     assert facts.operations.degraded_reason == "redis_unavailable"
     assert facts.operations.realtime_queue == 0
     assert facts.operations.bulk_queue == 0
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio

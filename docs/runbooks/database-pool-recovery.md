@@ -12,6 +12,11 @@ migrate、owner 运维、健康检查和故障处置
 所有组件的 pool 获取、asyncpg 建连和 SQL 执行均有独立超时。不得把超时设为无限，不得在
 JWT、dashboard、metrics、repository 或 Celery task 内调用 `create_async_engine`。
 
+业务代码从 `database_engine()` 借用进程共享池，只用 `connect()` / `begin()` 上下文归还
+连接、提交或回滚事务，不调用池级关闭。定时批次仓储不再提供无效的 `pooled` 开关。
+进程退出由 `close_runtime_resources()` 统一关闭共享池；prefork 子进程继续丢弃继承池并
+建立独立池。CLI 自建的短生命周期引擎仍由创建者显式 `dispose()`。
+
 ## 观测与告警
 
 持续采集以下低基数指标：

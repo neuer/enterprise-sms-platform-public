@@ -15,13 +15,11 @@ from app.vendor.routing import VendorRecord
 
 
 class SendTransactionEngine(Protocol):
-    """发送事务仅需已测量连接上下文；dispose 保持共享池兼容空操作。"""
+    """发送事务只借用已测量连接上下文，不持有共享池生命周期。"""
 
     def connect(self) -> AbstractAsyncContextManager[AsyncConnection]: ...
 
     def begin(self) -> AbstractAsyncContextManager[AsyncConnection]: ...
-
-    async def dispose(self) -> None: ...
 
 
 class SendPayloadDependencies(Protocol):

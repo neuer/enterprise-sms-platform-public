@@ -103,11 +103,10 @@ class SqlVendorEventAuditRepository:
 
     async def legacy_reply_facts(self, crypto: CryptoService) -> list[LegacyReplyFact]:
         engine = database_engine(self.settings.database_url)
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT trim(event_key) event_key,vendor_task_id,custom_id,
                           phone_enc,trim(phone_hmac) phone_hmac,phone_mask,key_version,
                           content_enc,reply_time,created_at
@@ -115,29 +114,27 @@ class SqlVendorEventAuditRepository:
                         WHERE raw_id IS NULL
                         ORDER BY created_at,event_key
                         """
-                    )
                 )
-                return [
-                    LegacyReplyFact(
-                        event_key=str(row["event_key"]),
-                        vendor_task_id=str(row["vendor_task_id"]),
-                        custom_id=(str(row["custom_id"]) if row["custom_id"] is not None else None),
-                        phone_enc=bytes(row["phone_enc"]),
-                        phone_hmac=str(row["phone_hmac"]),
-                        phone_mask=str(row["phone_mask"]),
-                        key_version=int(row["key_version"]),
-                        content=decrypt_reply_content(
-                            crypto,
-                            row["content_enc"],
-                            str(row["event_key"]),
-                        ),
-                        reply_time=row["reply_time"],
-                        created_at=row["created_at"],
-                    )
-                    for row in result.mappings()
-                ]
-        finally:
-            await engine.dispose()
+            )
+            return [
+                LegacyReplyFact(
+                    event_key=str(row["event_key"]),
+                    vendor_task_id=str(row["vendor_task_id"]),
+                    custom_id=(str(row["custom_id"]) if row["custom_id"] is not None else None),
+                    phone_enc=bytes(row["phone_enc"]),
+                    phone_hmac=str(row["phone_hmac"]),
+                    phone_mask=str(row["phone_mask"]),
+                    key_version=int(row["key_version"]),
+                    content=decrypt_reply_content(
+                        crypto,
+                        row["content_enc"],
+                        str(row["event_key"]),
+                    ),
+                    reply_time=row["reply_time"],
+                    created_at=row["created_at"],
+                )
+                for row in result.mappings()
+            ]
 
     async def duplicate_reply_groups(
         self,
