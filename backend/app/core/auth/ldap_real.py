@@ -429,7 +429,3 @@ class LdapPasswordProvider:
         # 任意成功（包括匿名 Bind）说明目录合同失效，不能退回快速 401。
         observe_ldap("sink_failure")
         raise ProviderUnavailable("LDAP 安全第二阶段暂不可用")
-
-
-# 兼容尚未迁移的导入；运行装配只使用 LdapPasswordProvider。
-LdapAuthBackend = LdapPasswordProvider
