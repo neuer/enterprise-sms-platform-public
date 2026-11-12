@@ -22,6 +22,7 @@ from app.services.idempotency import (
     IdempotencyConflict,
     IdempotencyFingerprint,
     IdempotencyScope,
+    resend_supplement_biz_id,
     uncertain_resend_biz_id,
 )
 from app.services.pipeline_admission import SendAdmissionMixin
@@ -230,7 +231,7 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
             if not (web_actor or api_actor):
                 raise ValueError("失败重发必须绑定稳定授权主体")
             if request.resend_supplement_id is not None:
-                if request.biz_id != request.resend_supplement_id.hex:
+                if request.biz_id != resend_supplement_biz_id(request.resend_supplement_id):
                     raise ValueError("补发业务键必须绑定预览意图")
                 return IdempotencyScope("resend-extra", str(request.resend_supplement_id))
             return IdempotencyScope("resend", request.resend_of)

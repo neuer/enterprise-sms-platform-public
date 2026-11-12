@@ -57,7 +57,7 @@ function applyRole(role: "admin" | "approver" | "operator"): ReturnType<typeof c
 }
 
 function okJson(payload: unknown) {
-  return { ok: true, status: 200, headers: { get: () => null }, json: async () => payload }
+  return new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } })
 }
 
 /** fetch 路由：/admin/apps 与 /signs 分别返回；默认 signs 列表。 */
@@ -336,12 +336,10 @@ describe("签名管理", () => {
   it("同步失败时给出错误反馈且按钮恢复可用", async () => {
     const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       if (String(input).includes("/sync")) {
-        return {
-          ok: false,
+        return new Response(JSON.stringify({ code: "VENDOR_ERROR", message: "厂商签名接口不可用", detail: null }), {
           status: 502,
-          headers: { get: () => null },
-          json: async () => ({ code: "VENDOR_ERROR", message: "厂商签名接口不可用", detail: null }),
-        }
+          headers: { "Content-Type": "application/json" },
+        })
       }
       return okJson([pendingSign])
     })

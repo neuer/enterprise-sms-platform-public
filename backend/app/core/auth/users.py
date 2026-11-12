@@ -1197,7 +1197,3 @@ class SqlUserRepository:
                     "object_id": str(actor.account_id),
                 },
             )
-
-
-# 兼容重构期间的模块导入；调用方必须迁移到稳定主体语义。
-PlatformUser = PlatformAccount

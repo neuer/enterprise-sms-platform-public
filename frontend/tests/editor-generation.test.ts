@@ -7,12 +7,7 @@ import BlacklistView from "../src/views/BlacklistView.vue"
 import SensitiveWordView from "../src/views/SensitiveWordView.vue"
 
 function response(body: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: { get: () => null },
-    json: async () => body,
-  }
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
 }
 
 function deferred<T>() {

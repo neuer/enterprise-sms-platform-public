@@ -10,6 +10,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from app.core.audit import AUDIT_BATCH_NO
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.auth.export_authorization import ExportDownloadAuthorization
 from app.core.sensitive_text import reject_phone_in_text
@@ -17,6 +18,15 @@ from app.services.crypto import CryptoService
 
 MAX_EXPORT_ROWS = 100_000
 DECRYPTED_EXPORT_ROLES = {"approver", "admin"}
+
+
+def validate_export_batch_no(value: str | None) -> str | None:
+    """沿用审计的规范批次引用例外；其余过滤文本仍拒绝手机号片段。"""
+
+    if value is None or AUDIT_BATCH_NO.fullmatch(value):
+        return value
+    reject_phone_in_text(value, field_name="batch_no")
+    return value
 
 
 class ExportForbidden(PermissionError):
@@ -91,7 +101,7 @@ class ExportFilterSet:
             raise ValueError("invalid export category")
         if self.is_test is not None and self.is_test not in {True, False}:
             raise ValueError("invalid export is_test")
-        reject_phone_in_text(self.batch_no, field_name="batch_no")
+        validate_export_batch_no(self.batch_no)
         reject_phone_in_text(self.scope_dept, field_name="dept")
 
     def safe_json(self) -> dict[str, object]:

@@ -22,7 +22,10 @@ class FakeKeyAuth:
 class FakeFacade:
     async def verify(self, token: str) -> JwtClaims:
         assert token == "jwt"
-        return JwtClaims("operator01", "操作员", "平台部", "operator")
+        return JwtClaims(
+            account_id=1, identity_id=1, provider_code="local",
+            login_name="operator01", display_name="操作员", dept="平台部", role="operator",
+        )
 
 
 class FakeQueryService:

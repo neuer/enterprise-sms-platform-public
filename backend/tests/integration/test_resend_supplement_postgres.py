@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import text
@@ -225,17 +225,28 @@ async def test_late_delivery_releases_stale_preview_and_commits_rejection(resend
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "intent_id",
+    [
+        UUID("40000000-0000-4000-8000-000000000882"),
+        UUID("a1234567-8901-4abc-8abc-abcdefabcdef"),
+    ],
+    ids=["legacy-key", "phone-shaped-uuid"],
+)
 async def test_outbox_failure_rolls_back_child_intent_and_coverage(
     resend_env: Any,
     monkeypatch: pytest.MonkeyPatch,
+    intent_id: UUID,
 ) -> None:
     """故障发生在完整子批次插入之后，确认覆盖不能先于发送事实提交。"""
     import app.services.pipeline_repository as repository
+    import app.services.resend_supplement as supplement
 
     env = resend_env
     actor, batch, source, _ids = await seed_legacy(env)
     subject = service(env)
     scope = BatchAccessScope(dept="平台部")
+    monkeypatch.setattr(supplement, "uuid4", lambda: intent_id)
     preview = await subject.preview(batch, scope)
     original = repository.enqueue_outbox
 
@@ -278,7 +289,11 @@ async def test_outbox_failure_rolls_back_child_intent_and_coverage(
         restored = await subject.confirm(
             batch, preview.intent_id, scope, actor=actor, accept=accept
         )
+        replay = await subject.confirm(
+            batch, preview.intent_id, scope, actor=actor, accept=accept
+        )
     assert restored.accepted == 1
+    assert replay.idempotent and replay.batch_no == restored.batch_no
 
 
 @pytest.mark.asyncio

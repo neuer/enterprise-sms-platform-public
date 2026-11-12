@@ -21,9 +21,9 @@ from classify_ci_changes import (  # noqa: E402
 )
 
 
-def test_every_main_push_forces_full_checks_even_with_reusable_evidence(tmp_path):
+def test_every_main_push_forces_full_checks(tmp_path: Path) -> None:
     result = classify_event(repo=tmp_path, event_name="main_push", base_sha="",
-                            before_sha="", head_sha="a" * 40, trusted_pr_evidence=True)
+                            before_sha="", head_sha="a" * 40)
     assert result.backend and result.frontend and result.security and result.g2
     assert result.release_control
 
@@ -408,7 +408,7 @@ def test_push_uses_two_dot_diff_for_the_exact_push_range(tmp_path: Path) -> None
     )
 
 
-def test_main_push_without_verified_pr_evidence_fails_closed_to_g2(
+def test_push_selects_g2_for_protected_changes(
     tmp_path: Path,
 ) -> None:
     repo = init_repo(tmp_path)
@@ -426,77 +426,6 @@ def test_main_push_without_verified_pr_evidence_fails_closed_to_g2(
         False,
         False,
     )
-
-
-def test_main_push_reuses_only_explicitly_verified_pr_evidence(tmp_path: Path) -> None:
-    repo = init_repo(tmp_path)
-    before_sha = commit_file(repo, "docs/plans/base.md", "base")
-    head_sha = commit_file(repo, "new-top-level/unknown.txt", "unknown")
-
-    result = classify_event(
-        repo=repo,
-        event_name="push",
-        base_sha="",
-        before_sha=before_sha,
-        head_sha=head_sha,
-        trusted_pr_evidence=True,
-    )
-
-    assert result == Classification(
-        False,
-        False,
-        False,
-        False,
-        frozenset({"reused-pr-ci-evidence"}),
-        False,
-        False,
-    )
-
-
-@pytest.mark.parametrize(
-    ("trusted", "expected"),
-    [
-        (
-            True,
-            Classification(
-                False,
-                False,
-                False,
-                False,
-                frozenset({"reused-pr-ci-evidence"}),
-                False,
-                False,
-            ),
-        ),
-        (
-            False,
-            Classification(
-                True,
-                True,
-                True,
-                True,
-                frozenset({"untrusted-post-merge"}),
-                True,
-                True,
-            ),
-        ),
-    ],
-)
-def test_post_merge_reuses_only_trusted_evidence_without_git(
-    tmp_path: Path,
-    trusted: bool,
-    expected: Classification,
-) -> None:
-    result = classify_event(
-        repo=tmp_path / "missing-repo",
-        event_name="post_merge",
-        base_sha="",
-        before_sha="",
-        head_sha="",
-        trusted_pr_evidence=trusted,
-    )
-
-    assert result == expected
 
 
 def test_high_risk_pull_request_requires_g2(
@@ -926,6 +855,7 @@ def test_manual_and_scheduled_events_force_all_without_git(
         ("push", "", ZERO_SHA, "head", "missing-push-sha"),
         ("push", "", "before", "", "missing-push-sha"),
         ("repository_dispatch", "", "", "", "unsupported-event"),
+        ("post_merge", "", "", "", "unsupported-event"),
     ],
 )
 def test_unreliable_event_metadata_fails_closed(
@@ -1030,3 +960,15 @@ def test_cli_writes_forced_outputs_without_echoing_paths(
     captured = capsys.readouterr()
     assert "changed_files=0" in captured.out
     assert "missing-repo" not in captured.out + captured.err
+
+
+def test_cli_rejects_retired_evidence_override(tmp_path: Path) -> None:
+    output = tmp_path / "outputs"
+    with pytest.raises(SystemExit) as error:
+        main([
+            "--event-name", "workflow_dispatch",
+            "--github-output", str(output),
+            "--trusted-pr-evidence", "true",
+        ])
+    assert error.value.code == 2
+    assert not output.exists()

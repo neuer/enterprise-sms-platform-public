@@ -8,12 +8,7 @@ import { resetAccessSessionModule } from "../src/api/sessionTokens"
 import LoginView from "../src/views/LoginView.vue"
 
 function response(body: unknown, status = 200) {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    headers: { get: () => null },
-    json: async () => body,
-  }
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
 }
 
 const localProvider = { code: "local", name: "本地账号", auth_flow: "password" }
@@ -98,7 +93,10 @@ describe("对话式登录", () => {
   })
 
   it("首次访问请用户显式选择认证源，未开通的 AD 只提示不切换", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider])))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response([localProvider])),
+    )
     const { wrapper } = await mountLogin()
     mounted = wrapper
 
@@ -194,13 +192,19 @@ describe("对话式登录", () => {
 
   it("记忆中的认证源未开通或为非法值时回到显式选择", async () => {
     localStorage.setItem("sms-login-provider", "ad")
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider])))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response([localProvider])),
+    )
     const first = await mountLogin()
     expect(first.wrapper.text()).toContain("请选择登录方式")
     first.wrapper.unmount()
 
     localStorage.setItem("sms-login-provider", "oauth2")
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider, adProvider])))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response([localProvider, adProvider])),
+    )
     const second = await mountLogin()
     mounted = second.wrapper
     expect(second.wrapper.text()).toContain("请选择登录方式")
@@ -435,7 +439,10 @@ describe("对话式登录", () => {
           callback(),
       },
     })
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider])))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response([localProvider])),
+    )
     const { wrapper } = await mountLogin()
     mounted = wrapper
 
@@ -695,7 +702,10 @@ describe("会话进度与白鹭反应", () => {
   it("待命台词首句随本地时段变化", async () => {
     vi.useFakeTimers({ toFake: ["Date"] })
     vi.setSystemTime(new Date(2026, 9, 8, 23, 30))
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response([localProvider])))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response([localProvider])),
+    )
     const { wrapper } = await mountLogin()
     mounted = wrapper
 

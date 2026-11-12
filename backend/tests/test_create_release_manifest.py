@@ -20,13 +20,6 @@ from create_release_manifest import (  # noqa: E402
     create_manifest,
 )
 
-OFFLINE_EXPAND_FROM = "0080_security_daily_delivery_generation"
-OFFLINE_EXPAND_TARGET = "0081_sign_adoption_contract"
-OFFLINE_REPORT_EXPAND_FROM = "0081_sign_adoption_contract"
-OFFLINE_REPORT_EXPAND_TARGET = "0082_outbox_realtime_report_queue"
-OFFLINE_AUTH_EXPAND_FROM = "0082_outbox_realtime_report_queue"
-OFFLINE_AUTH_EXPAND_TARGET = "0084_auth_security_and_ad_freshness"
-
 
 def _private_json(path: Path, value: object) -> Path:
     path.write_text(json.dumps(value), encoding="utf-8")
@@ -639,170 +632,6 @@ def test_offline_full_no_migration_manifest_allows_missing_conditional_evidence(
     }
 
 
-def test_offline_approved_all_four_expand_allows_explicit_evidence_waiver(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    arguments = _offline_inputs(tmp_path, schema_revision=OFFLINE_EXPAND_TARGET)
-    data = _private_json(
-        arguments["offline_index"].parent / "data-images.json",
-        {"passed": True},
-    )
-    arguments.update(
-        {
-            "migration_from": OFFLINE_EXPAND_FROM,
-            "changed": frozenset({"api", "web", "postgres", "redis"}),
-            "baseline": False,
-            "data_images": data,
-            "allow_offline_no_conditional_evidence": True,
-        }
-    )
-    _mock_attestation(monkeypatch)
-
-    create_manifest(**arguments)
-
-    manifest = json.loads(arguments["output"].read_text(encoding="utf-8"))
-    assert manifest["migration"] == {
-        "from": OFFLINE_EXPAND_FROM,
-        "target": OFFLINE_EXPAND_TARGET,
-        "compatibility": "expand",
-    }
-    assert all(image["changed"] for image in manifest["images"].values())
-    assert manifest["evidence"]["data_images"] == {
-        "file": "data-images.json",
-        "sha256": hashlib.sha256(data.read_bytes()).hexdigest(),
-        "size": data.stat().st_size,
-    }
-    assert manifest["evidence"]["backup_restore_change"] is None
-
-
-def test_offline_realtime_report_expand_is_an_approved_full_update(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    arguments = _offline_inputs(
-        tmp_path,
-        schema_revision=OFFLINE_REPORT_EXPAND_TARGET,
-    )
-    data = _private_json(
-        arguments["offline_index"].parent / "data-images.json",
-        {"passed": True},
-    )
-    arguments.update(
-        {
-            "migration_from": OFFLINE_REPORT_EXPAND_FROM,
-            "changed": frozenset({"api", "web", "postgres", "redis"}),
-            "baseline": False,
-            "data_images": data,
-            "allow_offline_no_conditional_evidence": True,
-        }
-    )
-    _mock_attestation(monkeypatch)
-
-    create_manifest(**arguments)
-
-    manifest = json.loads(arguments["output"].read_text(encoding="utf-8"))
-    assert manifest["migration"] == {
-        "from": OFFLINE_REPORT_EXPAND_FROM,
-        "target": OFFLINE_REPORT_EXPAND_TARGET,
-        "compatibility": "expand",
-    }
-
-
-@pytest.mark.parametrize("approved", [False, True])
-def test_cold_cutover_requires_explicit_snapshot_risk_acceptance(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, approved: bool,
-) -> None:
-    start, target = manifest_module.ONE_TIME_COLD_CUTOVER
-    arguments = _offline_inputs(tmp_path, schema_revision=target)
-    data = _private_json(arguments["offline_index"].parent / "data-images.json", {"passed": True})
-    arguments.update(
-        migration_from=start, changed=frozenset({"api", "web", "postgres", "redis"}),
-        baseline=False, data_images=data, allow_offline_no_conditional_evidence=approved,
-    )
-    _mock_attestation(monkeypatch)
-    if not approved:
-        with pytest.raises(ManifestCreationError, match="explicit risk acceptance"):
-            create_manifest(**arguments)
-        return
-    create_manifest(**arguments)
-    payload = json.loads(arguments["output"].read_text())
-    assert payload["migration"]["compatibility"] == "cold_cutover"
-    assert payload["evidence"]["backup_restore_change"] is None
-    assert payload["evidence"]["data_images"] is not None
-
-
-def test_offline_auth_security_expand_is_an_approved_full_update(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    arguments = _offline_inputs(
-        tmp_path,
-        schema_revision=OFFLINE_AUTH_EXPAND_TARGET,
-    )
-    data = _private_json(
-        arguments["offline_index"].parent / "data-images.json",
-        {"passed": True},
-    )
-    arguments.update(
-        {
-            "migration_from": OFFLINE_AUTH_EXPAND_FROM,
-            "changed": frozenset({"api", "web", "postgres", "redis"}),
-            "baseline": False,
-            "data_images": data,
-            "allow_offline_no_conditional_evidence": True,
-        }
-    )
-    _mock_attestation(monkeypatch)
-
-    create_manifest(**arguments)
-
-    manifest = json.loads(arguments["output"].read_text(encoding="utf-8"))
-    assert manifest["migration"] == {
-        "from": OFFLINE_AUTH_EXPAND_FROM,
-        "target": OFFLINE_AUTH_EXPAND_TARGET,
-        "compatibility": "expand",
-    }
-
-
-def test_offline_approved_expand_waiver_must_be_explicit(tmp_path: Path) -> None:
-    arguments = _offline_inputs(tmp_path, schema_revision=OFFLINE_EXPAND_TARGET)
-    data = _private_json(
-        arguments["offline_index"].parent / "data-images.json",
-        {"passed": True},
-    )
-    arguments.update(
-        {
-            "migration_from": OFFLINE_EXPAND_FROM,
-            "changed": frozenset({"api", "web", "postgres", "redis"}),
-            "baseline": False,
-            "data_images": data,
-        }
-    )
-
-    with pytest.raises(ManifestCreationError, match="explicit risk acceptance"):
-        create_manifest(**arguments)
-
-
-def test_offline_approved_expand_never_waives_data_image_evidence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    arguments = _offline_inputs(tmp_path, schema_revision=OFFLINE_EXPAND_TARGET)
-    arguments.update(
-        {
-            "migration_from": OFFLINE_EXPAND_FROM,
-            "changed": frozenset({"api", "web", "postgres", "redis"}),
-            "baseline": False,
-            "allow_offline_no_conditional_evidence": True,
-        }
-    )
-    _mock_attestation(monkeypatch)
-
-    with pytest.raises(ManifestCreationError, match="data image evidence"):
-        create_manifest(**arguments)
-
-
 def test_offline_missing_conditional_evidence_requires_explicit_risk_acceptance(
     tmp_path: Path,
 ) -> None:
@@ -828,7 +657,7 @@ def test_offline_missing_conditional_evidence_requires_explicit_risk_acceptance(
         ),
     ],
 )
-def test_offline_manifest_rejects_selective_and_unapproved_migrations(
+def test_offline_manifest_rejects_selective_images_and_migrations(
     tmp_path: Path,
     changed: frozenset[str],
     migration_from: str,
@@ -842,22 +671,7 @@ def test_offline_manifest_rejects_selective_and_unapproved_migrations(
         }
     )
 
-    with pytest.raises(ManifestCreationError, match="approved all-four expand"):
-        create_manifest(**arguments)
-
-
-def test_offline_approved_expand_rejects_selective_images(tmp_path: Path) -> None:
-    arguments = _offline_inputs(tmp_path, schema_revision=OFFLINE_EXPAND_TARGET)
-    arguments.update(
-        {
-            "migration_from": OFFLINE_EXPAND_FROM,
-            "changed": frozenset({"api"}),
-            "baseline": False,
-            "allow_offline_no_conditional_evidence": True,
-        }
-    )
-
-    with pytest.raises(ManifestCreationError, match="approved all-four expand"):
+    with pytest.raises(ManifestCreationError, match="all-four no-migration update"):
         create_manifest(**arguments)
 
 
@@ -1044,3 +858,31 @@ def test_rejects_release_source_not_bound_to_final_candidate(
             migration_target="0032_async_import_runtime",
             changed=frozenset({"api"}),
         )
+
+
+@pytest.mark.parametrize("accept_risk", [False, True])
+@pytest.mark.parametrize(
+    ("start", "target", "compatibility"),
+    [
+        ("0080_security_daily_delivery_generation", "0081_sign_adoption_contract", "expand"),
+        ("0081_sign_adoption_contract", "0082_outbox_realtime_report_queue", "expand"),
+        ("0082_outbox_realtime_report_queue", "0084_auth_security_and_ad_freshness", "expand"),
+        ("0084_auth_security_and_ad_freshness", "0116_usage_release_generation", "cold_cutover"),
+    ],
+)
+def test_offline_manifest_refuses_retired_updates_before_writing(
+    tmp_path: Path, start: str, target: str, compatibility: str, accept_risk: bool,
+) -> None:
+    arguments = _offline_inputs(tmp_path, schema_revision=target)
+    arguments.update(
+        migration_from=start,
+        changed=frozenset({"api", "web", "postgres", "redis"}),
+        baseline=False,
+        allow_offline_no_conditional_evidence=accept_risk,
+    )
+
+    with pytest.raises(ManifestCreationError, match="all-four no-migration update"):
+        create_manifest(**arguments)
+
+    assert not arguments["output"].exists()
+    assert not (arguments["output"].parent / "manifest.sig").exists()

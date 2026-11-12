@@ -45,6 +45,7 @@ from app.services.export import (
     ExportService,
     ExportTaskInfo,
     ExportTooLarge,
+    validate_export_batch_no,
 )
 from app.services.export_file import ExportFileCodec, PreparedExportDownload
 from app.services.export_repository import SqlExportRepository
@@ -101,11 +102,20 @@ class ExportFiltersModel(BaseModel):
     ] | None = None
     app_id: int | None = Field(default=None, ge=1)
     dept: str | None = Field(default=None, max_length=128)
-    batch_no: str | None = Field(default=None, max_length=32)
+    batch_no: str | None = Field(
+        default=None,
+        max_length=32,
+        description="32 位小写 hex 批次引用允许数字片段；其他值不得包含手机号",
+    )
     phone: str | None = Field(default=None, pattern=r"^1\d{10}$")
     is_test: bool | None = None
 
-    @field_validator("batch_no", "dept")
+    @field_validator("batch_no")
+    @classmethod
+    def safe_batch_reference(cls, value: str | None) -> str | None:
+        return validate_export_batch_no(value)
+
+    @field_validator("dept")
     @classmethod
     def safe_metadata(cls, value: str | None) -> str | None:
         reject_phone_in_text(value, field_name="export metadata")

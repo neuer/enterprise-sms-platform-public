@@ -19,6 +19,7 @@ from app.services.export import (
 )
 
 PUBLIC_ID = UUID("c0a80101-0000-4000-8000-000000000134")
+COLLIDING_BATCH_NO = UUID("a1234567-8901-4abc-8abc-abcdefabcdef").hex
 
 
 def principal(
@@ -336,6 +337,49 @@ async def test_export_rejects_phone_in_metadata_before_query(field: str, marker:
         )
     assert marker not in str(error.value)
     assert repository.calls == []
+
+
+@pytest.mark.asyncio
+async def test_export_keeps_canonical_batch_reference_with_numeric_collision() -> None:
+    """真实批次 UUID 的数字片段不妨碍导出、持久化和历史任务重载。"""
+    from app.api.reports import ExportFiltersModel
+
+    batch_no = COLLIDING_BATCH_NO
+    payload = ExportFiltersModel(batch_no=batch_no)
+    repository = FakeRepository()
+    service = ExportService(repository, crypto(), retention_days=30)
+    await service.create(
+        ExportRequestFilters(batch_no=payload.batch_no),
+        decrypted=False,
+        principal=principal(1, "admin", "admin"),
+    )
+    normalized = repository.calls[0][1]
+    assert isinstance(normalized, ExportFilterSet)
+    assert normalized.batch_no == batch_no
+    assert ExportFilterSet.from_safe_json(normalized.safe_json()) == normalized
+    with pytest.raises(ValueError):
+        ExportFiltersModel(dept=batch_no)
+    with pytest.raises(ValueError):
+        ExportFilterSet.from_safe_json({"dataset": "message", "scope_dept": batch_no})
+
+
+@pytest.mark.parametrize(
+    "batch_no",
+    [
+        COLLIDING_BATCH_NO.upper(),
+        "g" + COLLIDING_BATCH_NO[1:],
+        COLLIDING_BATCH_NO[:-1],
+        "0" + COLLIDING_BATCH_NO,
+    ],
+)
+def test_export_batch_reference_exception_requires_exact_canonical_shape(batch_no: str) -> None:
+    """批次引用例外不扩展到长度或字母表不符的手机号载荷。"""
+    from app.api.reports import ExportFiltersModel
+
+    with pytest.raises(ValueError):
+        ExportFiltersModel(batch_no=batch_no)
+    with pytest.raises(ValueError):
+        ExportFilterSet.from_safe_json({"dataset": "message", "batch_no": batch_no})
 
 
 def test_export_filter_keeps_false_and_legacy_rows_stay_unfiltered() -> None:

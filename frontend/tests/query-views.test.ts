@@ -8,12 +8,7 @@ import MessageView from "../src/views/MessageView.vue"
 import { useSessionStore } from "../src/stores/session"
 
 function response(body: unknown) {
-  return {
-    ok: true,
-    status: 200,
-    headers: { get: () => null },
-    json: async () => body,
-  }
+  return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } })
 }
 
 describe("批次与号码查询", () => {
@@ -134,12 +129,12 @@ describe("批次与号码查询", () => {
       .fn()
       .mockResolvedValueOnce(response({ total: 1, items: [batch] }))
       .mockResolvedValueOnce(response(batch))
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 503,
-        headers: { get: () => null },
-        json: async () => ({ message: "明细服务暂不可用" }),
-      })
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ message: "明细服务暂不可用" }), {
+          status: 503,
+          headers: { "Content-Type": "application/json" },
+        }),
+      )
     vi.stubGlobal("fetch", fetch)
     const toast = vi.spyOn(ElMessage, "error")
     const pinia = createPinia()
@@ -700,7 +695,7 @@ describe("批次与号码查询", () => {
   })
 
   it("号码列表支持类别状态筛选、分页并展示失败回报", async () => {
-    const fetch = vi.fn().mockResolvedValue(
+    const fetch = vi.fn().mockImplementation(async () =>
       response({
         total: 45,
         badge: { blacklisted: false, blacklist_source: null, recv_30d: 45 },
@@ -768,7 +763,7 @@ describe("批次与号码查询", () => {
   })
 
   it("重置号码搜索会清掉结果区隐藏的类别和状态", async () => {
-    const fetch = vi.fn().mockResolvedValue(
+    const fetch = vi.fn().mockImplementation(async () =>
       response({
         total: 1,
         badge: { blacklisted: false, blacklist_source: null, recv_30d: 1 },
@@ -819,7 +814,7 @@ describe("批次与号码查询", () => {
   })
 
   it("时间线展示号码徽标并将用户回复标为回声", async () => {
-    const fetch = vi.fn().mockResolvedValue(
+    const fetch = vi.fn().mockImplementation(async () =>
       response({
         badge: { blacklisted: true, blacklist_source: "reply_optout", recv_30d: 3 },
         truncated: true,
@@ -1014,7 +1009,7 @@ describe("批次与号码查询", () => {
   })
 
   it("号码查询时间范围按 ISO8601 +08:00 提交", async () => {
-    const fetch = vi.fn().mockResolvedValue(response({ total: 0, badge: null, items: [] }))
+    const fetch = vi.fn().mockImplementation(async () => response({ total: 0, badge: null, items: [] }))
     vi.stubGlobal("fetch", fetch)
     const pinia = createPinia()
     setActivePinia(pinia)

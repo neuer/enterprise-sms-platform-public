@@ -36,12 +36,12 @@ function applyRole(role: "admin" | "approver" | "operator"): ReturnType<typeof c
 function mockList(payload: unknown) {
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => payload,
-    }),
+    vi
+      .fn()
+      .mockImplementation(
+        async () =>
+          new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
   )
 }
 
@@ -134,12 +134,13 @@ describe("模板管理", () => {
     const draftTemplate = { ...template, id: 3, vendor_state: "draft" }
     const approvedTemplate = { ...template, id: 4, vendor_state: "approved" }
     const templates = [rejectedTemplate, draftTemplate, approvedTemplate]
-    const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => ({
-      ok: true,
-      status: String(input).endsWith("/templates/2/sync") ? 202 : 200,
-      headers: { get: () => null },
-      json: async () => templates,
-    }))
+    const fetchMock = vi.fn().mockImplementation(
+      async (input: RequestInfo | URL) =>
+        new Response(JSON.stringify(templates), {
+          status: String(input).endsWith("/templates/2/sync") ? 202 : 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    )
     vi.stubGlobal("fetch", fetchMock)
     vi.spyOn(ElMessage, "success").mockImplementation(() => ({ close: () => undefined }))
     const pinia = applyRole("operator")
@@ -301,12 +302,12 @@ describe("模板管理", () => {
   })
 
   it("校验不通过时不发起提交请求", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => [template],
-    })
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(
+        async () =>
+          new Response(JSON.stringify([template]), { status: 200, headers: { "Content-Type": "application/json" } }),
+      )
     vi.stubGlobal("fetch", fetchMock)
     const warning = vi.spyOn(ElMessage, "warning").mockImplementation(() => ({ close: () => undefined }))
     const pinia = applyRole("operator")
@@ -332,12 +333,13 @@ describe("模板管理", () => {
       vendor_template_id: null,
       vendor_state: "rejected",
     }
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => [rejectedTemplate],
-    })
+    const fetchMock = vi.fn().mockImplementation(
+      async () =>
+        new Response(JSON.stringify([rejectedTemplate]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    )
     vi.stubGlobal("fetch", fetchMock)
     vi.spyOn(ElMessageBox, "confirm").mockRejectedValue("cancel")
     const error = vi.spyOn(ElMessage, "error")
@@ -360,14 +362,12 @@ describe("模板管理", () => {
   it("同步失败时给出错误反馈", async () => {
     const fetchMock = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
       if (String(input).includes("/sync")) {
-        return {
-          ok: false,
+        return new Response(JSON.stringify({ code: "VENDOR_ERROR", message: "厂商模板接口不可用", detail: null }), {
           status: 502,
-          headers: { get: () => null },
-          json: async () => ({ code: "VENDOR_ERROR", message: "厂商模板接口不可用", detail: null }),
-        }
+          headers: { "Content-Type": "application/json" },
+        })
       }
-      return { ok: true, status: 200, headers: { get: () => null }, json: async () => [template] }
+      return new Response(JSON.stringify([template]), { status: 200, headers: { "Content-Type": "application/json" } })
     })
     vi.stubGlobal("fetch", fetchMock)
     const error = vi.spyOn(ElMessage, "error").mockImplementation(() => ({ close: () => undefined }))

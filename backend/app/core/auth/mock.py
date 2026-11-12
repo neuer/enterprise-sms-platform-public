@@ -49,7 +49,3 @@ class MockLdapProvider:
             groups=(f"mock:{user.role}",),
             development_role=user.role,
         )
-
-
-# 兼容尚未迁移的导入；运行装配只使用 MockLdapProvider。
-MockAuthBackend = MockLdapProvider

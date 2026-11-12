@@ -13,6 +13,7 @@ from app.core.auth.accounts import ActorPrincipal
 from app.core.runtime_resources import ManagedAsyncEngine, database_engine
 from app.services.batch_query import BatchAccessScope, BatchNotFound
 from app.services.crypto import CryptoService, EncryptionContext
+from app.services.idempotency import resend_supplement_biz_id
 from app.services.pipeline_contracts import BatchResponse, FailedSourceReference, SendRequest
 from app.services.resend_eligibility import ResendBlocked, read_coverage
 from app.settings import Settings, get_settings
@@ -313,7 +314,7 @@ class ResendSupplementService:
             sign_name=None if sign_name is None else str(sign_name),
             channel=str(source["channel"]),
             consent_confirmed=bool(source["consent_confirmed"]),
-            biz_id=intent_id.hex,
+            biz_id=resend_supplement_biz_id(intent_id),
             is_test=bool(source["is_test"]),
             resend_of=str(source["batch_no"]).strip(),
             resend_supplement_id=intent_id,

@@ -11,7 +11,10 @@ from app.services.sensitive import SensitiveWord, SensitiveWordAddResult, Sensit
 
 class FakeFacade:
     async def verify(self, token: str) -> JwtClaims:
-        return JwtClaims("admin01", "管理员", "平台部", "admin")
+        return JwtClaims(
+            account_id=1, identity_id=1, provider_code="local",
+            login_name="admin01", display_name="管理员", dept="平台部", role="admin",
+        )
 
 
 class FakeManager:

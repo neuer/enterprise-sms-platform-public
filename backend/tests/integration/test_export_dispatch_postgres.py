@@ -6,7 +6,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import text
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.services.export import ExportFilterSet
 from app.services.export_repository import ExportClaim, SqlExportRepository
+from tests.integration import test_dispatch_blacklist_postgres as dispatch_fixture
 from tests.integration.test_dispatch_blacklist_postgres import _insert_app, _prepare, _seed
 
 pytestmark = pytest.mark.skipif(
@@ -38,9 +39,20 @@ class SharedConnection:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("decrypted", [False, True])
+@pytest.mark.parametrize(
+    "batch_uuid",
+    [
+        UUID("40000000-0000-4000-8000-000000000882"),
+        UUID("a1234567-8901-4abc-8abc-abcdefabcdef"),
+    ],
+    ids=["plain", "phone-shaped"],
+)
 async def test_export_role_reads_exclusion_without_write_or_extra_column_grants(
     decrypted: bool,
+    batch_uuid: UUID,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(dispatch_fixture, "uuid4", lambda: batch_uuid)
     engine = create_async_engine(make_url(os.environ["OUTBOX_POSTGRES_DSN"]))
     try:
         await _prepare(engine)
