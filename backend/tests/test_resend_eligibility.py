@@ -11,7 +11,9 @@ from uuid import UUID
 
 import pytest
 
+from app.core.sensitive_text import reject_phone_business_id
 from app.services.batch_query import BatchAccessScope
+from app.services.idempotency import resend_supplement_biz_id
 from app.services.resend_eligibility import (
     ResendBlocked,
     decide_resend,
@@ -20,6 +22,30 @@ from app.services.resend_eligibility import (
 from app.services.resend_supplement import ResendSupplementService
 
 INTENT = UUID("40000000-0000-4000-8000-000000000882")
+
+
+def test_supplement_biz_id_preserves_accepted_legacy_key() -> None:
+    assert resend_supplement_biz_id(INTENT) == INTENT.hex
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "a1234567-8901-4abc-8abc-abcdefabcdef",
+        "44444444-4444-4444-8444-112345678900",
+        "11111111-1111-4111-8111-111111111111",
+    ],
+)
+def test_supplement_biz_id_avoids_phone_shape_without_losing_identity(value: str) -> None:
+    """系统 UUID 经过确定性映射通过同一保护规则，外部原始键仍须拒绝。"""
+    intent_id = UUID(value)
+    with pytest.raises(ValueError, match="不得包含手机号"):
+        reject_phone_business_id(intent_id.hex, field_name="biz_id")
+    biz_id = resend_supplement_biz_id(intent_id)
+    reject_phone_business_id(biz_id, field_name="biz_id")
+    assert len(biz_id) == 32 and "g" in biz_id
+    assert biz_id.replace("g", "1") == intent_id.hex
+    assert resend_supplement_biz_id(intent_id) == biz_id
 
 
 def test_open_receipts_block_the_only_ordinary_resend() -> None:

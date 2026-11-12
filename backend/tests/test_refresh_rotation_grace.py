@@ -201,7 +201,9 @@ async def test_wrong_tab_binding_is_rejected_before_redis_rotation() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("malformed", [["not-an-int"], {}])
+@pytest.mark.parametrize(
+    "malformed", [1, 0, -1, "1", ["not-an-int"], [1, ""], [1, "", "extra"], {}],
+)
 async def test_malformed_redis_result_is_fail_closed(malformed: object) -> None:
     class BrokenStore(FakeAtomicStore):
         async def eval(self, script: str, numkeys: int, *args: object) -> object:

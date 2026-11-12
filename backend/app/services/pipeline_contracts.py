@@ -239,8 +239,6 @@ class PipelineStore(Protocol):
 
     async def save(self, command: BatchCommand) -> StoredBatch: ...
 
-    async def count_in_flight_chunks(self, app_id: int) -> int: ...
-
     async def reserve_in_flight_chunks(
         self,
         app_id: int,
