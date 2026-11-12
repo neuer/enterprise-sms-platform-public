@@ -72,27 +72,7 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
 
     assert triggers["pull_request"]["branches"] == ["main"]
     assert triggers["push"]["branches"] == ["**"]
-    assert triggers["workflow_dispatch"] == {
-        "inputs": {
-            "post_merge_candidate": {
-                "description": (
-                    "Internal merge commit binding; leave empty for a full manual run"
-                ),
-                "required": False,
-                "type": "string",
-            },
-            "post_merge_head": {
-                "description": "Internal merged PR head binding",
-                "required": False,
-                "type": "string",
-            },
-            "post_merge_pr": {
-                "description": "Internal merged PR number binding",
-                "required": False,
-                "type": "string",
-            },
-        }
-    }
+    assert triggers["workflow_dispatch"] is None
     assert triggers["schedule"] == [{"cron": "17 18 * * *"}]
     assert workflow["permissions"] == {
         "checks": "read",
@@ -126,44 +106,22 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
         "security": "${{ steps.classify.outputs.security }}",
         "g2": "${{ steps.classify.outputs.g2 }}",
         "release_control": "${{ steps.classify.outputs.release_control }}",
-        "reused_pr_sha": "${{ steps.reuse.outputs.tested_sha }}",
     }
-    dispatch = next(step for step in changes["steps"] if step.get("id") == "dispatch")
-    assert dispatch["env"] == {
-        "POST_MERGE_CANDIDATE": "${{ inputs.post_merge_candidate || '' }}",
-        "POST_MERGE_HEAD": "${{ inputs.post_merge_head || '' }}",
-        "POST_MERGE_PR": "${{ inputs.post_merge_pr || '' }}",
-    }
-    for token in (
-        "present != 0 && present != 3",
-        'test "$GITHUB_EVENT_NAME" = workflow_dispatch',
-        'test "$GITHUB_SHA" = "$POST_MERGE_CANDIDATE"',
-        "refs/tags/post-merge-ci-${POST_MERGE_CANDIDATE}-",
-        '[[ "$suffix" =~ ^[0-9]+-[0-9]+$ ]]',
-        "mode=ordinary",
-        "mode=post_merge",
-    ):
-        assert token in dispatch["run"]
     checkout = next(
         step for step in changes["steps"] if step["name"] == "Checkout full history"
     )
     assert checkout["with"] == {"fetch-depth": 0}
     assert "ref" not in checkout["with"]
-    assert "echo \"candidate=$GITHUB_SHA\"" not in dispatch["run"]
     changes_commands = job_commands(changes)
     for command in (
         "scripts/check_spec_consistency.py",
         "scripts/check_invariants.py",
         "scripts/check_public_readiness.py",
         "scripts/release_metadata.py",
-        "scripts/reuse_pr_ci_evidence.py",
         "scripts/classify_ci_changes.py",
         "github.event.pull_request.head.sha || github.sha",
         'git merge-base origin/main "$GITHUB_SHA"',
         'event_name=pull_request',
-        "event_name=post_merge",
-        '--expected-head "$POST_MERGE_HEAD"',
-        '--pr-number "$POST_MERGE_PR"',
     ):
         assert command in changes_commands
     expected_concurrency_group = (
