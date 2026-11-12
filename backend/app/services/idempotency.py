@@ -9,10 +9,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from time import monotonic
 from typing import Protocol, TypedDict
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from app.core.redis_eval import RedisEval
-from app.core.sensitive_text import reject_phone_business_id
+from app.core.sensitive_text import PHONE_IN_METADATA, reject_phone_business_id
 from app.services.app_ratelimit import ControlPlaneUnavailable
 
 IDEMPOTENCY_TTL_S = 86400  # Redis 快速索引 TTL；DB 事实源按 scheduled_at+安全窗口延长
@@ -21,6 +21,13 @@ IDEMPOTENCY_WAIT_ATTEMPTS = 100
 IDEMPOTENCY_WAIT_INTERVAL_S = 0.05
 IDEMPOTENCY_WAIT_MARGIN_S = 5
 IDEMPOTENCY_CONTROL_TIMEOUT_S = 1.0
+
+
+def resend_supplement_biz_id(intent_id: UUID) -> str:
+    """保留合法旧键；数字碰撞时用非 hex 字母替换 1，保持 32 位且无碰撞。"""
+
+    value = intent_id.hex
+    return value.replace("1", "g") if PHONE_IN_METADATA.search(value) else value
 
 
 def uncertain_resend_biz_id(resolution_id: int, generation: int) -> str:
