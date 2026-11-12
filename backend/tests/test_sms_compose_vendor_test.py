@@ -39,7 +39,6 @@ with Path(os.environ["CONTROL_LOG"]).open("a", encoding="utf-8") as stream:
         "vendor_test_manager.py",
         "vendor_runtime_reset.py",
         "test_update_manager.py",
-        "public_baseline_manager.py",
         "test_secure_access_manager.py",
         "cloudflare_tunnel_manager.py",
         "prepare_runtime_secrets.py",
@@ -115,19 +114,6 @@ print(json.dumps({"schema_version": 1, "source_commit": """
         ),
         encoding="utf-8",
     )
-    (host_root / "public_baseline_manager.py").write_text(
-        """from __future__ import annotations
-import os
-import sys
-from pathlib import Path
-with Path(os.environ["CONTROL_LOG"]).open("a", encoding="utf-8") as stream:
-    stream.write(Path(__file__).name + "|" + "|".join(sys.argv[1:]))
-    stream.write("|locked=" + os.environ.get("SMS_LIFECYCLE_LOCKED", ""))
-    stream.write("|fd=" + os.environ.get("SMS_LIFECYCLE_LOCK_FD", ""))
-    stream.write("|source=" + os.environ.get("SMS_HOST_SOURCE_COMMIT", "") + "\\n")
-""",
-        encoding="utf-8",
-    )
     environment["SMS_SECURE_ACCESS_MANAGER_SMOKE"] = "0"
     environment["ASSET_LOG"] = str(asset_log)
     return wrapper, source_commit, asset_log
@@ -176,8 +162,10 @@ def test_production_rejects_control_planes_before_any_helper(
         ("test-update", "rollback"),
         ("test-update", "bootstrap-public-cutover"),
         ("test-update", "apply", "--compose-args", "down"),
-        ("test-update", "baseline-prepare", "--force"),
-        ("test-update", "baseline-status", "--json"),
+        ("test-update", "baseline-prepare"),
+        ("test-update", "baseline-status"),
+        ("test-update", "recover-rebaseline"),
+        ("test-update", "recover-rebaseline-verify"),
         ("secure-access",),
         ("secure-access", "shell"),
         ("secure-access", "start", "--origin", "http://evil"),
@@ -201,125 +189,6 @@ def test_control_planes_reject_arbitrary_passthrough(
     assert not log.exists()
 
 
-@pytest.mark.parametrize(
-    "command",
-    (
-        "baseline-prepare",
-        "baseline-apply",
-        "baseline-verify",
-        "baseline-status",
-        "baseline-finalize",
-        "baseline-cleanup",
-    ),
-)
-def test_public_baseline_commands_reject_the_ordinary_checkout_wrapper(
-    control_environment: tuple[dict[str, str], Path],
-    command: str,
-) -> None:
-    environment, log = control_environment
-
-    result = _run(environment, "test-update", command)
-
-    assert result.returncode == 2
-    assert not log.exists()
-
-
-@pytest.mark.parametrize(
-    ("external_command", "manager_command"),
-    (
-        ("baseline-prepare", "prepare"),
-        ("baseline-apply", "apply"),
-        ("baseline-verify", "verify"),
-        ("baseline-finalize", "finalize"),
-        ("baseline-cleanup", "cleanup"),
-    ),
-)
-def test_host_baseline_mutations_use_verified_assets_and_lifecycle_lock(
-    control_environment: tuple[dict[str, str], Path],
-    tmp_path: Path,
-    external_command: str,
-    manager_command: str,
-) -> None:
-    environment, log = control_environment
-    wrapper, source_commit, asset_log = _bootstrap_wrapper(tmp_path, environment)
-
-    result = _run_wrapper(wrapper, environment, "test-update", external_command)
-
-    assert result.returncode == 0, result.stderr
-    assert asset_log.read_text(encoding="utf-8") == "verify-assets\n"
-    line = log.read_text(encoding="utf-8").strip()
-    assert line.startswith(
-        f"public_baseline_manager.py|{manager_command}|"
-        "--root|/opt/sms-platform|"
-        "--runtime-root|/run/sms-platform/secrets|"
-        "--state-root|/var/lib/sms-platform/test-updates|"
-        "--manifest|/var/lib/sms-platform/test-updates/incoming/"
-        "baseline-manifest.json|"
-        "--request|/var/lib/sms-platform/test-updates/incoming/request.json|"
-        "--marker-file|/etc/sms-platform/test-environment|"
-    )
-    assert "|locked=1|fd=" in line
-    descriptor = line.split("|fd=", maxsplit=1)[1].split("|", maxsplit=1)[0]
-    assert descriptor.isdigit()
-    assert line.endswith(f"|source={source_commit}")
-
-
-def test_host_baseline_status_is_verified_but_does_not_claim_lifecycle_lock(
-    control_environment: tuple[dict[str, str], Path],
-    tmp_path: Path,
-) -> None:
-    environment, log = control_environment
-    wrapper, source_commit, asset_log = _bootstrap_wrapper(tmp_path, environment)
-
-    result = _run_wrapper(wrapper, environment, "test-update", "baseline-status")
-
-    assert result.returncode == 0, result.stderr
-    assert asset_log.read_text(encoding="utf-8") == "verify-assets\n"
-    line = log.read_text(encoding="utf-8").strip()
-    assert line.startswith("public_baseline_manager.py|status|")
-    assert f"|locked=|fd=|source={source_commit}" in line
-
-
-@pytest.mark.parametrize("command", ("baseline-status", "baseline-prepare"))
-def test_host_baseline_rejects_production_before_asset_verification(
-    control_environment: tuple[dict[str, str], Path],
-    tmp_path: Path,
-    command: str,
-) -> None:
-    environment, log = control_environment
-    wrapper, _source_commit, asset_log = _bootstrap_wrapper(tmp_path, environment)
-    environment["SMS_SECRETS_MODE"] = "production"
-
-    result = _run_wrapper(wrapper, environment, "test-update", command)
-
-    assert result.returncode == 2
-    assert "forbidden in production" in result.stderr
-    assert not asset_log.exists()
-    assert not log.exists()
-
-
-@pytest.mark.parametrize("command", ("baseline-status", "baseline-prepare"))
-def test_host_baseline_rejects_all_extra_arguments_before_asset_verification(
-    control_environment: tuple[dict[str, str], Path],
-    tmp_path: Path,
-    command: str,
-) -> None:
-    environment, log = control_environment
-    wrapper, _source_commit, asset_log = _bootstrap_wrapper(tmp_path, environment)
-
-    result = _run_wrapper(
-        wrapper,
-        environment,
-        "test-update",
-        command,
-        "--force",
-    )
-
-    assert result.returncode == 2
-    assert not asset_log.exists()
-    assert not log.exists()
-
-
 def test_vendor_mutations_and_test_update_mutations_inherit_the_verified_lock(
     control_environment: tuple[dict[str, str], Path],
 ) -> None:
@@ -330,7 +199,7 @@ def test_vendor_mutations_and_test_update_mutations_inherit_the_verified_lock(
         for command in ("activate", "pause", "resume", "rotate", "recover-rotation")
     ]
     updates = [
-        _run(environment, "test-update", command) for command in ("prepare", "recover-rebaseline")
+        _run(environment, "test-update", command) for command in ("prepare", "apply")
     ]
 
     assert all(result.returncode == 0 for result in mutations)
@@ -340,77 +209,9 @@ def test_vendor_mutations_and_test_update_mutations_inherit_the_verified_lock(
     for command in ("activate", "pause", "resume", "rotate", "recover-rotation"):
         assert any(f"vendor_test_manager.py|{command}|" in line for line in managers)
     assert any("test_update_manager.py|prepare|" in line for line in managers)
-    assert any("test_update_manager.py|recover-rebaseline|" in line for line in managers)
+    assert any("test_update_manager.py|apply|" in line for line in managers)
     assert all("|locked=1|fd=" in line for line in managers)
     assert all(line.rsplit("|fd=", 1)[1].isdigit() for line in managers)
-
-
-def test_rebaseline_verify_recovery_requires_host_bootstrap(
-    control_environment: tuple[dict[str, str], Path],
-) -> None:
-    environment, log = control_environment
-
-    result = _run(environment, "test-update", "recover-rebaseline-verify")
-
-    assert result.returncode == 2
-    assert not log.exists()
-
-
-def test_rebaseline_prepare_recovery_requires_host_bootstrap(
-    control_environment: tuple[dict[str, str], Path],
-) -> None:
-    environment, log = control_environment
-
-    result = _run(environment, "test-update", "recover-rebaseline-prepare")
-
-    assert result.returncode == 2
-    assert not log.exists()
-
-
-def test_host_rebaseline_prepare_recovery_inherits_the_verified_lock(
-    control_environment: tuple[dict[str, str], Path],
-    tmp_path: Path,
-) -> None:
-    environment, log = control_environment
-    wrapper, _source_commit, asset_log = _bootstrap_wrapper(tmp_path, environment)
-
-    result = _run_wrapper(
-        wrapper,
-        environment,
-        "test-update",
-        "recover-rebaseline-prepare",
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert asset_log.exists()
-    lines = log.read_text(encoding="utf-8").splitlines()
-    manager = next(
-        line
-        for line in lines
-        if "test_update_manager.py|recover-rebaseline-prepare|" in line
-    )
-    assert "|locked=1|fd=" in manager
-
-
-def test_host_rebaseline_verify_recovery_inherits_the_verified_lock(
-    control_environment: tuple[dict[str, str], Path],
-    tmp_path: Path,
-) -> None:
-    environment, log = control_environment
-    wrapper, _source_commit, asset_log = _bootstrap_wrapper(tmp_path, environment)
-
-    result = _run_wrapper(
-        wrapper,
-        environment,
-        "test-update",
-        "recover-rebaseline-verify",
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert asset_log.exists()
-    lines = log.read_text(encoding="utf-8").splitlines()
-    manager = next(line for line in lines if "public_baseline_manager.py|recover-verify|" in line)
-    assert "|locked=1|fd=" in manager
 
 
 def test_vendor_bootstrap_is_a_fixed_development_action_under_lifecycle_lock(
@@ -550,11 +351,9 @@ def test_secure_access_usage_is_development_only_and_not_a_credential_action() -
     assert '"PYTHONPATH=$HOST_CONTROL_ROOT"' in secure_dispatch
     assert "SMS_SECURE_ACCESS_INTERNAL=1" in source
     assert "bootstrap wrapper only permits test-update" in source
-    assert '[[ "$HOST_BOOTSTRAP" == 1 ]] || return 2' in source
-    assert '[[ "${SMS_PUBLIC_CUTOVER_CONFIRMED:-}" == 1 ]]' in source
-    assert "public_cutover_bootstrap.py" in source
-    assert "verify-assets >/dev/null" in source
-    assert "bootstrap-public-cutover | prepare | apply | verify" in source
+    assert "public_cutover" not in source
+    assert "public_baseline" not in source
+    assert "    prepare | apply | verify)" in source
     for forbidden in (
         "prepare_runtime_secrets",
         "run_with_lifecycle_lock",
@@ -635,3 +434,45 @@ def test_forged_private_control_action_is_rejected() -> None:
 
     assert result.returncode == 2
     assert "private locked action" in result.stderr
+
+
+def test_host_bootstrap_apply_inherits_the_verified_lock(
+    control_environment: tuple[dict[str, str], Path],
+    tmp_path: Path,
+) -> None:
+    environment, log = control_environment
+    wrapper, _source_commit, asset_log = _bootstrap_wrapper(tmp_path, environment)
+
+    result = _run_wrapper(wrapper, environment, "test-update", "apply")
+
+    assert result.returncode == 0, result.stderr
+    assert asset_log.exists()
+    lines = log.read_text(encoding="utf-8").splitlines()
+    manager = next(line for line in lines if "test_update_manager.py|apply|" in line)
+    assert "|locked=1|fd=" in manager
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "baseline-prepare",
+        "baseline-status",
+        "bootstrap-public-cutover",
+        "recover-rebaseline-prepare",
+        "recover-rebaseline-verify",
+    ],
+)
+def test_host_bootstrap_rejects_retired_baseline_entries(
+    control_environment: tuple[dict[str, str], Path],
+    tmp_path: Path,
+    command: str,
+) -> None:
+    """已退役的一次性基线/重对齐入口在主机引导包装器下同样失败关闭。"""
+    environment, log = control_environment
+    wrapper, _source_commit, asset_log = _bootstrap_wrapper(tmp_path, environment)
+
+    result = _run_wrapper(wrapper, environment, "test-update", command)
+
+    assert result.returncode == 2
+    assert not asset_log.exists()
+    assert not log.exists()

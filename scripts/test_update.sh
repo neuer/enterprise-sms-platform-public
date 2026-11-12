@@ -86,9 +86,6 @@ HOST_CONTROL_PATHS=(
   "deploy/scripts/render_trusted_proxy_conf.py"
   "deploy/scripts/vendor_test_files.py"
   "deploy/scripts/check_test_update_migration.py"
-  "deploy/scripts/public_baseline_activation.py"
-  "deploy/scripts/public_baseline_manager.py"
-  "deploy/scripts/public_cutover_bootstrap.py"
   "deploy/scripts/run_with_lifecycle_lock.py"
   "deploy/scripts/test_update_apply.py"
   "deploy/scripts/test_update_backup.py"
@@ -101,7 +98,6 @@ HOST_CONTROL_PATHS=(
   "deploy/scripts/protected_path_policy.py"
   "scripts/check_public_readiness.py"
   "scripts/export_public_snapshot.py"
-  "scripts/verify_public_snapshot_cutover.py"
   "scripts/verify_web_transport.py"
   "deploy/sms-compose"
   "deploy/trusted-proxies.conf"
@@ -124,7 +120,7 @@ if [[ -n "$VENDOR_ORIGIN" ]]; then
 fi
 
 usage() {
-  echo "usage: scripts/test_update.sh [plan|build|apply|rebaseline|recover-rebaseline-prepare|recover-rebaseline-verify|status|promote] [--ref origin/BRANCH]" >&2
+  echo "usage: scripts/test_update.sh [plan|build|apply|status|promote] [--ref origin/BRANCH]" >&2
 }
 
 github_repository_identity() {
@@ -154,11 +150,6 @@ print(path.lower())' "$1"
 remote_sms_compose() {
   ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
     "$TARGET" sudo "${REMOTE_CONTROL_ENV[@]}" "$REMOTE_SMS_COMPOSE" "$@"
-}
-
-remote_bootstrap_sms_compose() {
-  ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-    "$TARGET" sudo "${REMOTE_CONTROL_ENV[@]}" "$BOOTSTRAP_SMS_COMPOSE" "$@"
 }
 
 remote_git_read() {
@@ -205,12 +196,11 @@ verify_operator_git_after_switch() {
 
 github_write_preflight() {
   local authenticated_repository
-  if [[ "$COMMAND" != apply && "$COMMAND" != rebaseline &&
-        "$COMMAND" != recover-rebaseline-prepare && "$COMMAND" != promote ]]; then
+  if [[ "$COMMAND" != apply && "$COMMAND" != promote ]]; then
     return 0
   fi
   command -v gh >/dev/null 2>&1 || {
-    echo "test-update: apply/rebaseline/promote 需要 GitHub CLI" >&2
+    echo "test-update: apply/promote 需要 GitHub CLI" >&2
     return 1
   }
   gh auth status --hostname github.com >/dev/null 2>&1 || {
@@ -236,7 +226,7 @@ github_write_preflight() {
 
 if [[ $# -gt 0 ]]; then
   case "$1" in
-    plan | build | apply | rebaseline | recover-rebaseline-prepare | recover-rebaseline-verify | status | promote)
+    plan | build | apply | status | promote)
       COMMAND="$1"
       shift
       ;;
@@ -289,21 +279,6 @@ if [[ "$COMMAND" == promote && "$REF" != origin/main ]]; then
   echo "test-update: promote 只允许 origin/main" >&2
   exit 2
 fi
-if [[ "$COMMAND" == rebaseline && "$REF" != origin/main ]]; then
-  echo "test-update: rebaseline 只允许 origin/main" >&2
-  exit 2
-fi
-
-if [[ "$COMMAND" == recover-rebaseline-verify ]]; then
-  [[ "$REF" == origin/main ]] || { usage; exit 2; }
-  [[ -n "$VENDOR_ORIGIN" ]] || {
-    echo "test-update: recover-rebaseline-verify 要求配置 SMS_VENDOR_LIVE_TEST_ORIGIN" >&2
-    exit 2
-  }
-  remote_bootstrap_sms_compose test-update recover-rebaseline-verify
-  exit 0
-fi
-
 if [[ "$COMMAND" == status ]]; then
   LOCAL_ORIGIN_URL="$(git -C "$ROOT" remote get-url origin)"
   REMOTE_ORIGIN_URL="$(remote_git_preflight remote get-url origin)"
@@ -326,55 +301,6 @@ assert len(commit)==40 and all(c in "0123456789abcdef" for c in commit)
 payload={"repository":repo,"commit":commit,"test_update":json.loads(update_raw),"vendor_test":json.loads(vendor_raw)}
 print(json.dumps(payload,separators=(",",":"),sort_keys=True))' \
     "$LOCAL_REPOSITORY" "$REMOTE_COMMIT" "$UPDATE_STATUS" "$VENDOR_STATUS"
-  exit 0
-fi
-
-if [[ "$COMMAND" == recover-rebaseline-prepare ]]; then
-  [[ "$REF" == origin/main ]] || { usage; exit 2; }
-  if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
-    echo "test-update: 本地工作树必须干净" >&2
-    exit 1
-  fi
-  LOCAL_ORIGIN_URL="$(git -C "$ROOT" remote get-url origin)"
-  REMOTE_ORIGIN_URL="$(remote_git_preflight remote get-url origin)"
-  if ! LOCAL_REPOSITORY="$(github_repository_identity "$LOCAL_ORIGIN_URL")" ||
-    ! REMOTE_REPOSITORY="$(github_repository_identity "$REMOTE_ORIGIN_URL")"; then
-    echo "test-update: origin 必须是无凭据的 GitHub 仓库地址" >&2
-    exit 1
-  fi
-  [[ "$LOCAL_REPOSITORY" == "$REMOTE_REPOSITORY" ]] || {
-    echo "test-update: 本地与远端 origin 仓库不一致，拒绝跨仓库恢复" >&2
-    exit 1
-  }
-  github_write_preflight
-  RECOVERY_STATUS="$(
-    remote_bootstrap_sms_compose test-update recover-rebaseline-prepare
-  )"
-  read -r UPDATE_ID TARGET_COMMIT MIGRATION_TARGET < <(
-    python3 -c 'import json,sys
-value=json.loads(sys.argv[1])
-assert set(value)=={"commit","migration_target","status","update_id"}
-assert value["status"]=="checkpointed"
-assert isinstance(value["update_id"],str)
-assert isinstance(value["commit"],str) and len(value["commit"])==40
-assert isinstance(value["migration_target"],str)
-print(value["update_id"],value["commit"],value["migration_target"])' \
-      "$RECOVERY_STATUS"
-  )
-  remote_bootstrap_sms_compose test-update apply
-  remote_bootstrap_sms_compose test-update verify
-  verify_operator_git_after_switch recover-rebaseline-prepare
-  RECOVERY_STATUS_AFTER_VERIFY="$(remote_bootstrap_sms_compose test-update status)"
-  if ! printf '%s' "$RECOVERY_STATUS_AFTER_VERIFY" |
-    python3 "$ROOT/deploy/scripts/test_update_contract.py" verify-status \
-      "$UPDATE_ID" "$TARGET_COMMIT" "$MIGRATION_TARGET" >/dev/null; then
-    echo "test-update: 恢复后的远端终态未达到目标 verified" >&2
-    exit 1
-  fi
-  bash "$ROOT/scripts/record_test_deployment.sh" \
-    "$LOCAL_REPOSITORY" "$TARGET_COMMIT" origin/main \
-    "Resumed verified rebaseline without rebuilding or re-uploading images"
-  echo "test-update: state=verified commit=$TARGET_COMMIT update_id=$UPDATE_ID"
   exit 0
 fi
 
@@ -409,12 +335,6 @@ if ! git -C "$ROOT" cat-file -e "$REMOTE_COMMIT^{commit}" 2>/dev/null; then
   exit 1
 fi
 echo "test-update: preflight root=$REMOTE_ROOT base=$REMOTE_COMMIT target=$TARGET_COMMIT ref=$REF"
-
-if [[ "$COMMAND" == rebaseline ]] &&
-  ! git -C "$ROOT" merge-base --is-ancestor "$REMOTE_COMMIT" "$TARGET_COMMIT"; then
-  echo "test-update: rebaseline 只允许服务器基线为目标 main 的祖先" >&2
-  exit 1
-fi
 
 if [[ "$COMMAND" == promote ]]; then
   BASE_TREE="$(git -C "$ROOT" rev-parse "$REMOTE_COMMIT^{tree}")"
@@ -485,14 +405,10 @@ if [[ ${#CHANGED_PATHS[@]} -eq 0 ]]; then
   exit 1
 fi
 
-CLASSIFY_ACTION="classify-nul"
-if [[ "$COMMAND" == rebaseline ]]; then
-  CLASSIFY_ACTION="classify-rebaseline-nul"
-fi
 SCOPE_JSON="$(
   git -C "$ROOT" diff --name-only --no-renames -z \
     "$REMOTE_COMMIT" "$TARGET_COMMIT" |
-    python3 "$ROOT/deploy/scripts/test_update_contract.py" "$CLASSIFY_ACTION"
+    python3 "$ROOT/deploy/scripts/test_update_contract.py" classify-nul
 )" || {
   echo "test-update: 差异分类失败 root=$REMOTE_ROOT base=${REMOTE_COMMIT:0:12} target=${TARGET_COMMIT:0:12} changed=${#CHANGED_PATHS[@]}" >&2
   exit 1
@@ -534,13 +450,8 @@ elif [[ "$COMMAND" == apply && "$CI_REQUIRED" == 1 ]]; then
   python3 "$ROOT/scripts/verify_ci_commit.py" \
     --repository "$LOCAL_REPOSITORY" \
     --commit "$TARGET_COMMIT"
-elif [[ "$COMMAND" == rebaseline ]]; then
-  python3 "$ROOT/scripts/verify_ci_commit.py" \
-    --repository "$LOCAL_REPOSITORY" \
-    --commit "$TARGET_COMMIT"
 fi
-if [[ "$RISK" == high-risk &&
-      ("$COMMAND" == apply || "$COMMAND" == rebaseline) ]]; then
+if [[ "$RISK" == high-risk && "$COMMAND" == apply ]]; then
   REMOTE_SMS_COMPOSE="$BOOTSTRAP_SMS_COMPOSE"
   if ! CAPABILITY_JSON="$(remote_sms_compose test-update capability 2>/dev/null)" ||
     ! python3 -c 'import json,sys
@@ -621,10 +532,6 @@ if [[ "$MIGRATION_FROM" == "$MIGRATION_TARGET" ]]; then
 else
   MIGRATION_COMPATIBILITY="expand"
 fi
-if [[ "$COMMAND" == rebaseline && "$MIGRATION_COMPATIBILITY" != expand ]]; then
-  echo "test-update: rebaseline 要求服务器迁移头真实前移" >&2
-  exit 1
-fi
 
 PLANNED_COMPONENTS=()
 [[ "$API_CHANGED" == 0 ]] || PLANNED_COMPONENTS+=(api)
@@ -675,8 +582,6 @@ fi
 chmod 0600 "$BUNDLE"/*.tar
 
 UPDATE_ID="test-$(date -u +%Y%m%dT%H%M%SZ)-${TARGET_COMMIT:0:12}"
-REQUEST_OPERATION="apply"
-[[ "$COMMAND" != rebaseline ]] || REQUEST_OPERATION="rebaseline"
 API_REF_VALUE="${API_REF:-}"
 API_ID_VALUE="${API_ID:-}"
 API_DIGEST_VALUE=""
@@ -690,15 +595,15 @@ REDIS_DIGEST_VALUE=""
 [[ "$WEB_CHANGED" == 0 ]] || WEB_DIGEST_VALUE="$(shasum -a 256 "$BUNDLE/web.tar" | awk '{print $1}')"
 [[ "$REDIS_CHANGED" == 0 ]] || REDIS_DIGEST_VALUE="$(shasum -a 256 "$BUNDLE/redis.tar" | awk '{print $1}')"
 python3 -c 'import json,sys
-out,update_id,base,commit,ref,environment_mode,operation,source,target,compat,*values=sys.argv[1:]
+out,update_id,base,commit,ref,environment_mode,source,target,compat,*values=sys.argv[1:]
 images={}; components=[]
 for component,(image_ref,image_id,digest) in zip(("api","web","redis"),(values[0:3],values[3:6],values[6:9])):
  if image_ref:
   components.append(component); images[component]={"ref":image_ref,"id":image_id,"archive_file":component+".tar","archive_sha256":digest}
-payload={"schema_version":1,"update_id":update_id,"base_commit":base,"commit":commit,"source_ref":ref,"environment_mode":environment_mode,"operation":operation,"components":components,"images":images,"migration":{"from":source,"target":target,"compatibility":compat}}
+payload={"schema_version":1,"update_id":update_id,"base_commit":base,"commit":commit,"source_ref":ref,"environment_mode":environment_mode,"components":components,"images":images,"migration":{"from":source,"target":target,"compatibility":compat}}
 path=__import__("pathlib").Path(out); path.write_text(json.dumps(payload,separators=(",",":"),sort_keys=True)+"\n")' \
   "$BUNDLE/request.json" "$UPDATE_ID" "$REMOTE_COMMIT" "$TARGET_COMMIT" "$REF" \
-  "$ENVIRONMENT_MODE" "$REQUEST_OPERATION" \
+  "$ENVIRONMENT_MODE" \
   "$MIGRATION_FROM" "$MIGRATION_TARGET" "$MIGRATION_COMPATIBILITY" \
   "$API_REF_VALUE" "$API_ID_VALUE" "$API_DIGEST_VALUE" \
   "$WEB_REF_VALUE" "$WEB_ID_VALUE" "$WEB_DIGEST_VALUE" \

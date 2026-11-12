@@ -340,41 +340,6 @@ def test_driver_never_treats_diff_failure_as_no_change() -> None:
     assert "差异存在但路径枚举为空，拒绝继续" in source
 
 
-def test_driver_rejects_public_snapshot_cutover_without_private_object_work() -> None:
-    source = DRIVER.read_text(encoding="utf-8")
-
-    assert "--public-snapshot-cutover" in source
-    assert "public snapshot cutover 已禁用" in source
-    assert "PUBLIC_SNAPSHOT_CUTOVER" not in source
-    assert "CUTOVER_PACK_FILE" not in source
-    assert "pack-objects --stdout" not in source
-    assert 'payload["public_cutover"]' not in source
-    assert "deploy/scripts/test_update_contract.py" in source
-    assert "classify-nul" in source
-
-    result = subprocess.run(
-        [
-            "bash",
-            str(DRIVER),
-            "--public-snapshot-cutover",
-            "--ref",
-            "origin/feature",
-        ],
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "SMS_DOCKER_PUBLIC_SESSION": "1",
-            "SMS_TEST_UPDATE_TARGET": "operator@test-host",
-            "SMS_TEST_UPDATE_PORT": "22",
-        },
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 2
-    assert "不得向公开工作区导入私有 Git 对象" in result.stderr
-
-
 def test_driver_preflights_github_auth_before_mutation() -> None:
     source = DRIVER.read_text(encoding="utf-8")
     preflight = source.split("github_write_preflight() {", maxsplit=1)[1].split(
@@ -383,8 +348,6 @@ def test_driver_preflights_github_auth_before_mutation() -> None:
 
     for command in (
         '"$COMMAND" != apply',
-        '"$COMMAND" != rebaseline',
-        '"$COMMAND" != recover-rebaseline-prepare',
         '"$COMMAND" != promote',
     ):
         assert command in preflight
@@ -397,45 +360,6 @@ def test_driver_preflights_github_auth_before_mutation() -> None:
     assert source.index("github_write_preflight\n") < source.index(
         "# 固定远端阶段: sms-compose test-update prepare"
     )
-
-
-def test_rebaseline_is_narrower_than_daily_apply_and_requires_exact_ci_gate() -> None:
-    source = DRIVER.read_text(encoding="utf-8")
-
-    assert (
-        "[plan|build|apply|rebaseline|recover-rebaseline-prepare|recover-rebaseline-verify|status|promote]"
-        in source
-    )
-    assert "rebaseline 只允许 origin/main" in source
-    assert "merge-base --is-ancestor" in source
-    assert "classify-rebaseline-nul" in source
-    assert 'CLASSIFY_ACTION="classify-nul"' in source
-    assert "--require-full" not in source
-    assert "rebaseline 要求服务器迁移头真实前移" in source
-    assert 'components=${PLANNED_COMPONENTS[*]}' in source
-    assert 'REQUEST_OPERATION="apply"' in source
-    assert 'REQUEST_OPERATION="rebaseline"' in source
-    assert '"operation":operation' in source
-    assert "remote_bootstrap_sms_compose test-update recover-rebaseline-prepare" in source
-    assert source.index('if [[ "$COMMAND" == recover-rebaseline-prepare ]]') < source.index(
-        'docker buildx build --platform linux/amd64 --load'
-    )
-
-    result = subprocess.run(
-        ["bash", str(DRIVER), "rebaseline", "--ref", "origin/feature"],
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "SMS_DOCKER_PUBLIC_SESSION": "1",
-            "SMS_TEST_UPDATE_TARGET": "operator@test-host",
-            "SMS_TEST_UPDATE_PORT": "22",
-        },
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 2
-    assert "rebaseline 只允许 origin/main" in result.stderr
 
 
 def test_driver_classifier_accepts_g2_api_acceptance_as_non_runtime() -> None:
@@ -488,75 +412,6 @@ def test_driver_explicitly_propagates_fixed_host_control_environment_to_sudo() -
     )
     assert "sudo /usr/local/sbin/sms-compose vendor-test status" not in source
     assert "sudo /usr/local/sbin/sms-compose test-update prepare" not in source
-
-
-def test_rebaseline_verify_recovery_uses_bootstrap_with_configured_origin(
-    tmp_path: Path,
-) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    _write_executable(
-        fake_bin / "ssh",
-        """#!/usr/bin/env bash
-printf '%s\n' "$*"
-""",
-    )
-
-    result = subprocess.run(
-        ["bash", str(DRIVER), "recover-rebaseline-verify"],
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "SMS_DOCKER_PUBLIC_SESSION": "1",
-            "SMS_TEST_UPDATE_TARGET": "operator@test-host",
-            "SMS_TEST_UPDATE_PORT": "2222",
-            "SMS_VENDOR_LIVE_TEST_ORIGIN": "https://vendor.example.invalid",
-        },
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "-p 2222" in result.stdout
-    assert "SMS_VENDOR_LIVE_TEST_ORIGIN=https://vendor.example.invalid" in result.stdout
-    assert (
-        "/usr/local/libexec/sms-platform/test-secure-access/sms-compose-bootstrap "
-        "test-update recover-rebaseline-verify"
-    ) in result.stdout
-
-
-def test_rebaseline_verify_recovery_requires_vendor_origin_before_network(
-    tmp_path: Path,
-) -> None:
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    _write_executable(
-        fake_bin / "ssh",
-        """#!/usr/bin/env bash
-exit 99
-""",
-    )
-
-    result = subprocess.run(
-        ["bash", str(DRIVER), "recover-rebaseline-verify"],
-        cwd=ROOT,
-        env={
-            **os.environ,
-            "PATH": f"{fake_bin}:{os.environ['PATH']}",
-            "SMS_DOCKER_PUBLIC_SESSION": "1",
-            "SMS_TEST_UPDATE_TARGET": "operator@test-host",
-            "SMS_TEST_UPDATE_PORT": "22",
-            "SMS_VENDOR_LIVE_TEST_ORIGIN": "",
-        },
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 2
-    assert "要求配置 SMS_VENDOR_LIVE_TEST_ORIGIN" in result.stderr
 
 
 def test_driver_rejects_invalid_vendor_origin_before_network() -> None:

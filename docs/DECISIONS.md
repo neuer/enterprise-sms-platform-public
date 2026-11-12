@@ -1790,3 +1790,30 @@
   `app.services.pipeline_commit` 与 `app.tasks.send_repository_attempt` 关闭
   `possibly-undefined`（重试循环误报）。均登记在 `pyproject.toml` 覆盖项，随解冻处理。
   冻结文件里 4 处 `@asynccontextmanager -> AsyncIterator` 与 `settings.py` 多余条件同样留待解冻。
+
+## D125 退役一次性公开基线激活、跨历史切换与同历史重对齐入口
+
+- 背景：公开基线激活（D054 之后的一次性流程）、旧 public-cutover 服务端路径与同历史
+  `rebaseline`（D063，固定区间 0053→0061、0079→0081、0108→0119）都是“完成一次后退役”
+  的入口。迁移头已到 0138，这些入口不再有合法输入，却仍占用约 1.7 万行脚本与测试，并
+  留在 root-owned 主机控制清单中。
+- 决策：按仓库所有者 2026-11-12 的指示删除 `scripts/public_baseline_activate.py`、
+  `scripts/verify_public_snapshot_cutover.py`、`deploy/scripts/public_baseline_activation.py`、
+  `deploy/scripts/public_baseline_manager.py`、`deploy/scripts/public_cutover_bootstrap.py`
+  与 `docs/runbooks/public-baseline-activation.md`；`test_update_manager`、
+  `test_update_contract`、`test_update_verify`、`sms-compose` 与 `scripts/test_update.sh`
+  摘除 `rebaseline`、`recover-rebaseline*`、`baseline-*`、`bootstrap-public-cutover` 及请求
+  字段 `operation`、`public_cutover`。仓库所有者同日确认生产已首发并稳定，D122 的首发前
+  冻结条件已满足；本项是 D122 推迟的部署工具瘦身的第一项，只删除不新增能力。其余部署
+  工具的盘点与瘦身仍逐项评估、单独提交。
+- 安全边界：服务器基线不是目标祖先时 `verify_source_scope` 直接失败关闭，不再存在凭证据
+  放行的跨历史分支；退役命令在普通与主机引导包装器下均返回 2；请求携带已退役字段按未知
+  字段拒绝。`--public-snapshot-cutover` 的显式拒绝保留（D054）。
+- 兼容：六个已删路径登记为 `_RETIRED_BASELINE_TOMBSTONES`，按 high-risk 归类，使仍停在
+  旧提交的测试服务器可以用日常 `apply` 跨过本次删除；它们不属于主机控制资产。已安装在
+  `/usr/local/libexec/sms-platform/test-secure-access/` 的四个旧脚本不再被清单引用或导入，
+  可在下次主机安装后由操作者手工删除。`TestUpdateState.VERIFYING` 等状态值保留，以便读取
+  历史 journal。
+- 不变：日常 `plan/apply/status/promote`、暂停与不安全分片检查、密文 checkpoint、
+  expand-only 迁移、无迁移自动回退和 verify 均未改动。再次需要跨历史或重对齐时，必须重新
+  设计、评审并单独批准，不从 Git 历史直接恢复旧入口。

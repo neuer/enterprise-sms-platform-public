@@ -50,8 +50,6 @@ class VerifyOperations(Protocol):
 
     def probe_balance(self) -> None: ...
 
-    def recover_backend_services(self) -> None: ...
-
     def verify_backend_services(self) -> None: ...
 
     def restore_owned_update_pauses(self, update_id: str) -> None: ...
@@ -80,13 +78,7 @@ class TestUpdateVerify:
         commit: str,
         migration_from: str,
         migration_target: str,
-        expected_state: TestUpdateState = TestUpdateState.APPLIED,
     ) -> None:
-        if expected_state not in {
-            TestUpdateState.APPLIED,
-            TestUpdateState.VERIFYING,
-        }:
-            raise TestUpdateVerifyError("verify start state is invalid")
         step = "lock"
         locked = False
         try:
@@ -107,16 +99,13 @@ class TestUpdateVerify:
                 if environment_mode == "live":
                     step = "get_balance"
                     self.operations.probe_balance()
-                    if expected_state is TestUpdateState.VERIFYING:
-                        step = "recover_services"
-                        self.operations.recover_backend_services()
                 step = "services"
                 self.operations.verify_backend_services()
                 step = "restore_owned_pauses"
                 self.operations.restore_owned_update_pauses(update_id)
             self.operations.cleanup_rollback_images(update_id)
             self.store.transition(
-                expected_state,
+                TestUpdateState.APPLIED,
                 TestUpdateState.VERIFIED,
                 step="verify",
                 actual_commit=commit,
@@ -124,11 +113,7 @@ class TestUpdateVerify:
             )
         except Exception:
             rolled_back = False
-            if (
-                locked
-                and expected_state is TestUpdateState.APPLIED
-                and migration_from == migration_target
-            ):
+            if locked and migration_from == migration_target:
                 try:
                     actual_commit, actual_head = (
                         self.operations.rollback_no_migration(kind, update_id)
@@ -150,7 +135,7 @@ class TestUpdateVerify:
             if locked:
                 with contextlib.suppress(Exception):
                     self.store.block(
-                        expected_state,
+                        TestUpdateState.APPLIED,
                         step=step,
                         error_type="invariant_failed",
                         actual_commit=commit,

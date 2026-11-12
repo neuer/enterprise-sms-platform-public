@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import os
@@ -244,9 +243,6 @@ class FakePrepareOperations:
     def check_expand_migration(self, migration_from: str, target: str) -> None:
         self.events.append(("migration_check", migration_from, target))
 
-    def expand_rebaseline_secrets(self) -> None:
-        self.events.append("secret_expansion")
-
     def hold_fail_closed(self, update_id: str) -> None:
         self.events.append(("hold", update_id))
 
@@ -287,99 +283,6 @@ def test_backend_prepare_pauses_checks_unsafe_states_and_checkpoints() -> None:
         ("pause_owner", "test-1"),
     ]
     assert store.state is State.CHECKPOINTED
-
-
-def test_rebaseline_expands_secrets_after_checkpoint_and_migration_check() -> None:
-    store = FakeStore()
-    operations = FakePrepareOperations()
-
-    UpdateManager(store, operations).prepare(
-        _scope("high-risk", frozenset({"api", "web"})),
-        update_id="test-rebaseline",
-        commit="0" * 40,
-        migration_from="0053_idempotency_scope",
-        migration_target="0061_vendor_binding_outbox",
-        operation="rebaseline",
-    )
-
-    assert operations.events == [
-        "lock",
-        ("mode", "live"),
-        ("pause", "test-rebaseline"),
-        "counts",
-        ("checkpoint", "test-rebaseline"),
-        (
-            "migration_check",
-            "0053_idempotency_scope",
-            "0061_vendor_binding_outbox",
-        ),
-        "secret_expansion",
-        ("pause_owner", "test-rebaseline"),
-    ]
-    assert store.state is State.CHECKPOINTED
-
-
-def test_current_rebaseline_does_not_repeat_legacy_secret_expansion() -> None:
-    store = FakeStore()
-    operations = FakePrepareOperations()
-
-    UpdateManager(store, operations).prepare(
-        _scope("high-risk", frozenset({"api", "web"})),
-        update_id="test-current-rebaseline",
-        commit="0" * 40,
-        migration_from="0079_security_daily_publish_outbox",
-        migration_target="0081_sign_adoption_contract",
-        operation="rebaseline",
-    )
-
-    assert operations.events == [
-        "lock",
-        ("mode", "live"),
-        ("pause", "test-current-rebaseline"),
-        "counts",
-        ("checkpoint", "test-current-rebaseline"),
-        (
-            "migration_check",
-            "0079_security_daily_publish_outbox",
-            "0081_sign_adoption_contract",
-        ),
-        ("pause_owner", "test-current-rebaseline"),
-    ]
-    assert store.state is State.CHECKPOINTED
-
-
-@pytest.mark.parametrize(
-    ("mode", "base", "target", "allowed"),
-    [
-        (
-            "pre-live", "d715624d18e6897f6916fcef9fbdc8622d41eb15",
-            "0119_temporary_password_expiry", True,
-        ),
-        (
-            "live", "d715624d18e6897f6916fcef9fbdc8622d41eb15",
-            "0119_temporary_password_expiry", False,
-        ),
-        ("pre-live", "a" * 40, "0119_temporary_password_expiry", False),
-        ("pre-live", "d715624d18e6897f6916fcef9fbdc8622d41eb15", "0120_unapproved", False),
-    ],
-)
-def test_test_rebaseline_is_bound_to_exact_inactive_baseline(
-    tmp_path: Path, mode: str, base: str, target: str, allowed: bool,
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    operations.request = SimpleNamespace(
-        operation="rebaseline", migration_compatibility="expand",
-        migration_from="0108_chunk_failover_pending", migration_target=target,
-        environment_mode=mode, base_commit=base,
-    )
-    if allowed:
-        operations._require_approved_rebaseline_migration()
-        assert not update_manager_module._needs_legacy_rebaseline_secret_expansion(
-            "0108_chunk_failover_pending", target,
-        )
-    else:
-        with pytest.raises(ManagerError, match="scope is invalid"):
-            operations._require_approved_rebaseline_migration()
 
 
 def test_queued_and_scheduled_do_not_block_but_unsafe_chunk_states_do() -> None:
@@ -1051,36 +954,6 @@ def test_host_no_migration_rollback_restores_old_images_without_data_commands(
     assert ("stop_senders",) in calls
 
 
-def test_baseline_rollback_variant_preserves_image_tags_until_state_is_durable() -> None:
-    operations = object.__new__(HostTestUpdateOperations)
-    observed: list[tuple[str, str, bool]] = []
-
-    def rollback(
-        kind: str,
-        update_id: str,
-        *,
-        cleanup_images: bool,
-    ) -> tuple[str, str]:
-        observed.append((kind, update_id, cleanup_images))
-        return "a" * 40, "0039_manual_job_outbox"
-
-    operations._rollback_no_migration = rollback  # type: ignore[method-assign]
-
-    result = operations.rollback_no_migration_preserving_images(
-        "backend-safe",
-        "test-20260731T120000Z-aaaaaaaaaaaa",
-    )
-
-    assert result == ("a" * 40, "0039_manual_job_outbox")
-    assert observed == [
-        (
-            "backend-safe",
-            "test-20260731T120000Z-aaaaaaaaaaaa",
-            False,
-        )
-    ]
-
-
 def test_host_rollback_refuses_to_cross_a_migration(tmp_path: Path) -> None:
     class Host:
         def _psql(self, statement: str) -> str:
@@ -1207,181 +1080,6 @@ def test_host_update_balance_probe_uses_ephemeral_authorized_worker() -> None:
     assert "get_reply" not in calls[0][7]
 
 
-def _write_public_cutover_state(
-    path: Path,
-    *,
-    base: str,
-    target: str,
-    status: str = "ready",
-) -> None:
-    path.parent.mkdir(mode=0o700)
-    path.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "status": status,
-                "base_commit": base,
-                "target_commit": target,
-                "redis_image_id": f"sha256:{'1' * 64}",
-                "old_redis_image_id": f"sha256:{'2' * 64}",
-                "backup_dir": "/safe/backup",
-                "old_secrets_dir": "/safe/old-secrets",
-                "old_runtime_target": f"generations/generation-{'3' * 32}",
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    path.chmod(0o600)
-
-
-def test_public_cutover_control_redis_falls_back_to_transitional_container(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import test_update_manager as update_module
-
-    base = "a" * 40
-    target = "b" * 40
-    state = tmp_path / "state/state.json"
-    _write_public_cutover_state(state, base=base, target=target)
-    monkeypatch.setattr(update_module, "_PUBLIC_CUTOVER_BOOTSTRAP_STATE", state)
-
-    class Runner:
-        def __init__(self) -> None:
-            self.calls: list[list[str]] = []
-
-        def run(
-            self,
-            command: list[str] | tuple[str, ...],
-            **_kwargs: object,
-        ) -> bytes:
-            call = list(command)
-            self.calls.append(call)
-            if call[-2:] == ["rev-parse", "HEAD"]:
-                return f"{base}\n".encode()
-            if call[1:3] == ["ps", "--filter"]:
-                return b"abcdef123456\n"
-            if call[-2:] == ["{{.Image}}", "abcdef123456"]:
-                return f"sha256:{'1' * 64}\n".encode()
-            if call[-1:] == ["abcdef123456"] and "{{.State.Status}}" in call[-2]:
-                return b"sms-platform|redis-control|running|healthy\n"
-            if call[1:4] == ["exec", "-i", "abcdef123456"]:
-                return b"PONG\n"
-            raise AssertionError(call)
-
-    runner = Runner()
-    host = update_module.HostUpdateOperations(
-        root=tmp_path,
-        runtime_root=tmp_path / "runtime",
-        backup_config_file=tmp_path / "backup.json",
-        expected_uid=os.geteuid(),
-        runner=runner,  # type: ignore[arg-type]
-    )
-    host.bind_public_cutover(base=base, target=target)
-
-    assert host._redis("PING") == "PONG"
-    docker_exec = runner.calls[-1]
-    assert docker_exec[1:4] == ["exec", "-i", "abcdef123456"]
-    assert any("redis_control_password" in argument for argument in docker_exec)
-
-
-def test_public_cutover_redis_activation_pins_image_and_marks_state(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import test_update_manager as update_module
-
-    base = "a" * 40
-    target = "b" * 40
-    state = tmp_path / "state/state.json"
-    _write_public_cutover_state(state, base=base, target=target)
-    monkeypatch.setattr(update_module, "_PUBLIC_CUTOVER_BOOTSTRAP_STATE", state)
-    dotenv = tmp_path / ".env"
-    dotenv.write_text("ENVIRONMENT=development\n", encoding="utf-8")
-    dotenv.chmod(0o600)
-
-    class Runner:
-        def __init__(self) -> None:
-            self.calls: list[list[str]] = []
-
-        def run(
-            self,
-            command: list[str] | tuple[str, ...],
-            **_kwargs: object,
-        ) -> bytes:
-            call = list(command)
-            self.calls.append(call)
-            if call[1:3] == ["image", "inspect"]:
-                return f"{target}\n".encode()
-            if "compose" in call and "up" in call:
-                return b""
-            raise AssertionError(call)
-
-    runner = Runner()
-    host = update_module.HostUpdateOperations(
-        root=tmp_path,
-        runtime_root=tmp_path / "runtime",
-        backup_config_file=tmp_path / "backup.json",
-        expected_uid=os.geteuid(),
-        runner=runner,  # type: ignore[arg-type]
-    )
-    host.bind_public_cutover(base=base, target=target)
-
-    host.activate_public_cutover_redis()
-
-    assert f"SMS_REDIS_IMAGE=sha256:{'1' * 64}\n" in dotenv.read_text(
-        encoding="utf-8"
-    )
-    saved = json.loads(state.read_text(encoding="utf-8"))
-    assert saved["status"] == "activated"
-    compose_up = next(call for call in runner.calls if "up" in call)
-    assert compose_up[-3:] == ["redis", "redis-auth", "redis-control"]
-
-
-def test_backend_public_cutover_activates_redis_before_services() -> None:
-    events: list[object] = []
-
-    class Host:
-        def activate_public_cutover_redis(self) -> None:
-            events.append("redis")
-
-        def _run(self, *arguments: str) -> str:
-            events.append(arguments)
-            return ""
-
-    operations = object.__new__(HostTestUpdateOperations)
-    operations.request = SimpleNamespace(  # type: ignore[assignment]
-        components=frozenset({"api", "web"}),
-        public_cutover=SimpleNamespace(),
-    )
-    operations.host = Host()  # type: ignore[assignment]
-    operations._prepare_rollback_images = lambda components: events.append(  # type: ignore[method-assign]
-        ("rollback", components)
-    )
-    operations._activate_source_and_image = lambda component: events.append(  # type: ignore[method-assign]
-        ("activate", component)
-    )
-    operations._render_trusted_proxy_conf = lambda: events.append(  # type: ignore[method-assign]
-        "render"
-    )
-
-    operations.replace_backend_services(BACKEND_SERVICES)
-
-    assert events[:4] == [
-        ("rollback", frozenset({"api", "web"})),
-        ("activate", "api"),
-        "redis",
-        (
-            "up",
-            "-d",
-            "--no-deps",
-            "--force-recreate",
-            *BACKEND_SERVICES,
-        ),
-    ]
-
-
 def test_replace_backend_renders_trusted_proxy_before_web_up() -> None:
     events: list[object] = []
 
@@ -1393,7 +1091,6 @@ def test_replace_backend_renders_trusted_proxy_before_web_up() -> None:
     operations = object.__new__(HostTestUpdateOperations)
     operations.request = SimpleNamespace(  # type: ignore[assignment]
         components=frozenset({"api", "web"}),
-        public_cutover=None,
     )
     operations.host = Host()  # type: ignore[assignment]
     operations._prepare_rollback_images = lambda components: events.append(  # type: ignore[method-assign]
@@ -1444,7 +1141,6 @@ def test_replace_redis_services_pins_image_before_cutover_and_skips_later_replac
     operations = object.__new__(HostTestUpdateOperations)
     operations.request = SimpleNamespace(  # type: ignore[assignment]
         components=frozenset({"api", "redis"}),
-        public_cutover=None,
     )
     operations.host = Host()  # type: ignore[assignment]
     operations._redis_services_replaced = False
@@ -1496,7 +1192,6 @@ def test_replace_redis_services_noops_without_redis_component() -> None:
     operations = object.__new__(HostTestUpdateOperations)
     operations.request = SimpleNamespace(  # type: ignore[assignment]
         components=frozenset({"api"}),
-        public_cutover=None,
     )
     operations.host = Host()  # type: ignore[assignment]
     operations._redis_services_replaced = False
@@ -1523,7 +1218,6 @@ def test_replace_backend_activates_redis_component_and_recreates_domains() -> No
     operations = object.__new__(HostTestUpdateOperations)
     operations.request = SimpleNamespace(  # type: ignore[assignment]
         components=frozenset({"redis"}),
-        public_cutover=None,
     )
     operations.host = Host()  # type: ignore[assignment]
     operations._prepare_rollback_images = lambda components: events.append(  # type: ignore[method-assign]
@@ -1683,65 +1377,6 @@ def test_initial_rollback_image_binding_rejects_stale_existing_tag() -> None:
         operations.prepare_rollback_images()
 
 
-def test_verified_rollback_image_cleanup_is_idempotent_and_observed() -> None:
-    update_id = "test-20260731T120000Z-aaaaaaaaaaaa"
-    image_id = f"sha256:{'1' * 64}"
-    operations = object.__new__(HostTestUpdateOperations)
-    operations.request = SimpleNamespace(
-        update_id=update_id,
-        components=frozenset({"api"}),
-    )
-    calls: list[tuple[str, ...]] = []
-    present = True
-
-    def command(*arguments: str) -> str:
-        nonlocal present
-        calls.append(arguments)
-        if arguments[1:3] == ("image", "ls"):
-            return image_id if present else ""
-        if arguments[1:3] == ("image", "rm"):
-            present = False
-            return ""
-        raise AssertionError(arguments)
-
-    operations._command = command  # type: ignore[method-assign]
-
-    operations.cleanup_rollback_images_verified(update_id)
-    operations.cleanup_rollback_images_verified(update_id)
-
-    assert calls.count(
-        (
-            "docker",
-            "image",
-            "rm",
-            f"sms-platform-test-rollback-api:{update_id}",
-        )
-    ) == 1
-    assert present is False
-
-
-def test_verified_rollback_image_cleanup_rejects_residual_tag() -> None:
-    update_id = "test-20260731T120000Z-aaaaaaaaaaaa"
-    image_id = f"sha256:{'1' * 64}"
-    operations = object.__new__(HostTestUpdateOperations)
-    operations.request = SimpleNamespace(
-        update_id=update_id,
-        components=frozenset({"api"}),
-    )
-
-    def command(*arguments: str) -> str:
-        if arguments[1:3] == ("image", "ls"):
-            return image_id
-        if arguments[1:3] == ("image", "rm"):
-            return ""
-        raise AssertionError(arguments)
-
-    operations._command = command  # type: ignore[method-assign]
-
-    with pytest.raises(ManagerError, match="did not verify"):
-        operations.cleanup_rollback_images_verified(update_id)
-
-
 def test_live_update_mode_uses_postgres_recipient_truth_not_host_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1833,7 +1468,6 @@ def test_host_source_scope_fetches_requested_branch_and_uses_nul_safe_diff() -> 
         commit=commit,
         source_ref=source_ref,
         components=frozenset({"web"}),
-        public_cutover=None,
     )  # type: ignore[assignment]
 
     def command(*argv: str) -> str:
@@ -1890,7 +1524,6 @@ def test_host_source_scope_rejects_tracked_checkout_drift_before_fetch() -> None
         commit="b" * 40,
         source_ref="origin/main",
         components=frozenset({"web"}),
-        public_cutover=None,
     )  # type: ignore[assignment]
 
     def command(*argv: str) -> str:
@@ -1925,7 +1558,6 @@ def test_host_source_scope_retries_only_the_fixed_fetch_command(
         commit=commit,
         source_ref="origin/main",
         components=frozenset({"web"}),
-        public_cutover=None,
     )  # type: ignore[assignment]
     fetch_attempts = 0
 
@@ -1975,7 +1607,6 @@ def test_host_source_scope_fails_closed_after_fetch_retries_are_exhausted(
         commit="b" * 40,
         source_ref="origin/main",
         components=frozenset({"web"}),
-        public_cutover=None,
     )  # type: ignore[assignment]
 
     def command(*argv: str) -> str:
@@ -2001,873 +1632,6 @@ def test_host_source_scope_fails_closed_after_fetch_retries_are_exhausted(
     )
 
 
-def test_host_source_scope_revalidates_explicit_rebaseline_with_strict_classifier() -> None:
-    calls: list[tuple[str, ...]] = []
-    base = "a" * 40
-    commit = "b" * 40
-    update_id = "test-20260810T070301Z-bbbbbbbbbbbb"
-    fetched_ref = f"refs/test-updates/{update_id}/source"
-    operations = object.__new__(HostTestUpdateOperations)
-    operations.root = Path("/opt/sms-platform")
-    operations.request = SimpleNamespace(
-        update_id=update_id,
-        base_commit=base,
-        commit=commit,
-        source_ref="origin/main",
-        components=frozenset({"api", "web"}),
-        public_cutover=None,
-        migration_from="0053_idempotency_scope",
-        migration_target="0061_vendor_binding_outbox",
-        migration_compatibility="expand",
-        operation="rebaseline",
-    )  # type: ignore[assignment]
-
-    changed = "\0".join(
-        (
-            "deploy/scripts/prepare_runtime_secrets.py",
-            "deploy/scripts/vendor_runtime_reset.py",
-            "backend/migrations/versions/0061_vendor_binding_outbox.py",
-            "frontend/src/views/SignView.vue",
-            "",
-        )
-    )
-
-    def command(*argv: str) -> str:
-        calls.append(argv)
-        if argv[-2:] == ("status", "--porcelain"):
-            return ""
-        if argv[-2:] == ("rev-parse", "HEAD"):
-            return base
-        if "fetch" in argv:
-            return ""
-        if argv[-2:] == ("rev-parse", f"{fetched_ref}^{{commit}}"):
-            return commit
-        if "merge-base" in argv:
-            return base
-        if "diff" in argv:
-            return changed
-        raise AssertionError(argv)
-
-    operations._command = command  # type: ignore[method-assign]
-
-    scope = operations.verify_source_scope()
-
-    assert scope.components == frozenset({"api", "web"})
-    assert scope.migration_changed is True
-    assert scope.risk == "high-risk"
-    assert scope.high_risk_paths == (
-        "deploy/scripts/prepare_runtime_secrets.py",
-        "deploy/scripts/vendor_runtime_reset.py",
-        "frontend/src/views/SignView.vue",
-    )
-    fetch_call = next(call for call in calls if "fetch" in call)
-    assert "+refs/heads/main:" in fetch_call[-1]
-
-
-def test_host_source_scope_rejects_rebaseline_for_unrelated_histories() -> None:
-    base = "a" * 40
-    commit = "b" * 40
-    update_id = "test-20260810T070301Z-bbbbbbbbbbbb"
-    fetched_ref = f"refs/test-updates/{update_id}/source"
-    operations = object.__new__(HostTestUpdateOperations)
-    operations.root = Path("/opt/sms-platform")
-    operations.request = SimpleNamespace(
-        update_id=update_id,
-        base_commit=base,
-        commit=commit,
-        source_ref="origin/main",
-        components=frozenset({"api", "web"}),
-        public_cutover=None,
-        migration_from="0053_idempotency_scope",
-        migration_target="0061_vendor_binding_outbox",
-        migration_compatibility="expand",
-        operation="rebaseline",
-    )  # type: ignore[assignment]
-
-    def command(*argv: str) -> str:
-        if argv[-2:] == ("status", "--porcelain"):
-            return ""
-        if argv[-2:] == ("rev-parse", "HEAD"):
-            return base
-        if "fetch" in argv:
-            return ""
-        if argv[-2:] == ("rev-parse", f"{fetched_ref}^{{commit}}"):
-            return commit
-        if "merge-base" in argv:
-            raise ManagerError("unrelated histories")
-        raise AssertionError(argv)
-
-    operations._command = command  # type: ignore[method-assign]
-
-    with pytest.raises(ManagerError, match="descendant"):
-        operations.verify_source_scope()
-
-
-def _old_rebaseline_secret_root(root: Path) -> Path:
-    source = root / "deploy/secrets"
-    source.mkdir(parents=True, mode=0o700)
-    source.chmod(0o700)
-    for name in sorted(update_manager_module._REBASELINE_OLD_SECRET_NAMES):
-        path = source / name
-        path.write_bytes(b"existing-secret\n")
-        path.chmod(0o600)
-    development = source / update_manager_module._REBASELINE_DEV_SECRET
-    development.write_bytes(b"development-only\n")
-    development.chmod(0o600)
-    return source
-
-
-def _rebaseline_operations(root: Path) -> HostTestUpdateOperations:
-    operations = object.__new__(HostTestUpdateOperations)
-    operations.root = root
-    operations.runtime_root = root / "runtime"
-    operations.expected_uid = os.geteuid()
-    operations.request = SimpleNamespace(
-        operation="rebaseline",
-        migration_from="0053_idempotency_scope",
-        migration_target="0061_vendor_binding_outbox",
-        migration_compatibility="expand",
-        environment_mode="live",
-    )
-    return operations
-
-
-def test_rebaseline_secret_expansion_is_exact_idempotent_and_pairwise_valid(
-    tmp_path: Path,
-) -> None:
-    source = _old_rebaseline_secret_root(tmp_path)
-    operations = _rebaseline_operations(tmp_path)
-
-    operations.expand_rebaseline_secrets()
-
-    expected = (
-        update_manager_module._REBASELINE_OLD_SECRET_NAMES
-        | update_manager_module._REBASELINE_NEW_SECRET_NAMES
-        | {update_manager_module._REBASELINE_DEV_SECRET}
-    )
-    assert {path.name for path in source.iterdir()} == expected
-    first = {
-        name: (source / name).read_bytes()
-        for name in update_manager_module._REBASELINE_NEW_SECRET_NAMES
-    }
-    assert all(
-        stat.S_IMODE((source / name).stat().st_mode) == 0o600
-        for name in first
-    )
-    audit_values = {
-        base64.b64decode(first[name].strip(), validate=True)
-        for name in update_manager_module._REBASELINE_AUDIT_SECRET_NAMES
-    }
-    assert len(audit_values) == 4
-    assert all(len(value) == 32 for value in audit_values)
-    private_value = base64.b64decode(
-        first[update_manager_module._REBASELINE_ALERT_PRIVATE_KEY].strip(),
-        validate=True,
-    )
-    public_value = base64.b64decode(
-        first[update_manager_module._REBASELINE_ALERT_PUBLIC_KEY].strip(),
-        validate=True,
-    )
-    assert update_manager_module._x25519_public_key(private_value) == public_value
-
-    operations.expand_rebaseline_secrets()
-
-    assert {
-        name: (source / name).read_bytes()
-        for name in update_manager_module._REBASELINE_NEW_SECRET_NAMES
-    } == first
-
-
-def test_rebaseline_secret_expansion_recovers_private_first_keypair(
-    tmp_path: Path,
-) -> None:
-    source = _old_rebaseline_secret_root(tmp_path)
-    operations = _rebaseline_operations(tmp_path)
-    private_value = b"p" * 32
-    update_manager_module._write_rebaseline_key(
-        source / update_manager_module._REBASELINE_ALERT_PRIVATE_KEY,
-        private_value,
-        expected_uid=os.geteuid(),
-    )
-
-    operations.expand_rebaseline_secrets()
-
-    public_value = base64.b64decode(
-        (source / update_manager_module._REBASELINE_ALERT_PUBLIC_KEY)
-        .read_bytes()
-        .strip(),
-        validate=True,
-    )
-    assert public_value == update_manager_module._x25519_public_key(private_value)
-
-
-def test_rebaseline_secret_expansion_rejects_public_only_or_extra_inventory(
-    tmp_path: Path,
-) -> None:
-    source = _old_rebaseline_secret_root(tmp_path)
-    operations = _rebaseline_operations(tmp_path)
-    update_manager_module._write_rebaseline_key(
-        source / update_manager_module._REBASELINE_ALERT_PUBLIC_KEY,
-        b"q" * 32,
-        expected_uid=os.geteuid(),
-    )
-
-    with pytest.raises(ManagerError, match="incomplete"):
-        operations.expand_rebaseline_secrets()
-
-    (source / update_manager_module._REBASELINE_ALERT_PUBLIC_KEY).unlink()
-    extra = source / "unexpected"
-    extra.write_bytes(b"value\n")
-    extra.chmod(0o600)
-    with pytest.raises(ManagerError, match="inventory"):
-        operations.expand_rebaseline_secrets()
-
-
-def test_rebaseline_exclusive_secret_write_never_removes_an_existing_file(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "existing-key"
-    path.write_bytes(b"existing\n")
-    path.chmod(0o600)
-
-    with pytest.raises(ManagerError, match="could not be committed"):
-        update_manager_module._write_rebaseline_key(
-            path,
-            b"n" * 32,
-            expected_uid=os.geteuid(),
-        )
-
-    assert path.read_bytes() == b"existing\n"
-
-
-def test_rebaseline_runtime_secret_generation_uses_target_fixed_preprocessor(
-    tmp_path: Path,
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    calls: list[tuple[str, ...]] = []
-    operations._command = lambda *argv: calls.append(argv) or ""  # type: ignore[method-assign]
-
-    operations._prepare_rebaseline_runtime_secrets()
-
-    assert calls == [
-        (
-            "/usr/bin/python3",
-            str(tmp_path / "deploy/scripts/prepare_runtime_secrets.py"),
-            "prepare",
-            "--source-dir",
-            str(tmp_path / "deploy/secrets"),
-            "--runtime-root",
-            str(tmp_path / "runtime"),
-            "--mode",
-            "development",
-            "--vendor-credential-root",
-            "/var/lib/sms-platform/vendor-test/credentials",
-        )
-    ]
-
-
-def test_current_rebaseline_reuses_existing_runtime_secret_generation(
-    tmp_path: Path,
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    operations.request = SimpleNamespace(
-        operation="rebaseline",
-        migration_from="0079_security_daily_publish_outbox",
-        migration_target="0081_sign_adoption_contract",
-        migration_compatibility="expand",
-        environment_mode="live",
-    )
-    calls: list[tuple[str, ...]] = []
-    operations._command = lambda *argv: calls.append(argv) or ""  # type: ignore[method-assign]
-
-    operations._prepare_rebaseline_runtime_secrets()
-
-    assert calls == []
-
-
-def test_blocked_current_rebaseline_prepare_reuses_checkpoint_and_loaded_images(
-    tmp_path: Path,
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    update_id = "test-20260829T120940Z-fa28fa63f496"
-    base_commit = "a" * 40
-    target_commit = "b" * 40
-    operations.request = SimpleNamespace(
-        update_id=update_id,
-        operation="rebaseline",
-        base_commit=base_commit,
-        commit=target_commit,
-        migration_from="0079_security_daily_publish_outbox",
-        migration_target="0081_sign_adoption_contract",
-        migration_compatibility="expand",
-    )
-    operations.host_source_commit = "c" * 40
-    calls: list[object] = []
-
-    def command(*argv: str) -> str:
-        if "diff" in argv:
-            return ""
-        if "rev-parse" in argv:
-            return base_commit
-        if "status" in argv:
-            return ""
-        raise AssertionError(argv)
-
-    operations._command = command  # type: ignore[method-assign]
-    operations.require_lifecycle_lock = lambda: calls.append("lock")  # type: ignore[method-assign]
-    operations.current_migration_head = lambda: "0079_security_daily_publish_outbox"  # type: ignore[method-assign]
-    operations.require_owned_update_pauses = lambda value: calls.append(("pauses", value))  # type: ignore[method-assign]
-    operations.unsafe_status_counts = lambda: {  # type: ignore[method-assign]
-        "submitting": 0,
-        "retrying": 0,
-        "uncertain": 0,
-    }
-    operations.require_loaded_request_images = lambda: calls.append("images")  # type: ignore[method-assign]
-
-    class Store:
-        def read_consistent_state(self) -> dict[str, object]:
-            return {
-                "state": "blocked",
-                "step": "secret_expansion",
-                "error_type": "validation_failed",
-                "actual_commit": target_commit,
-                "actual_migration_head": "0079_security_daily_publish_outbox",
-                "event_sequence": 2,
-            }
-
-        def transition(
-            self,
-            expected: State,
-            target: State,
-            *,
-            step: str,
-            **_: object,
-        ) -> None:
-            calls.append((expected, target, step))
-
-    operations.recover_blocked_rebaseline_prepare(Store())  # type: ignore[arg-type]
-
-    assert calls == [
-        "lock",
-        ("pauses", update_id),
-        "images",
-        (State.BLOCKED, State.CHECKPOINTED, "recover_prepare"),
-    ]
-
-
-@pytest.mark.parametrize("already_recovered", [False, True])
-def test_blocked_rebaseline_recovery_restores_only_checkout_and_image_pointers(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    already_recovered: bool,
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    update_id = "test-20260810T102724Z-efc49767103e"
-    base_commit = "a" * 40
-    target_commit = "b" * 40
-    operations.request = SimpleNamespace(
-        update_id=update_id,
-        operation="rebaseline",
-        base_commit=base_commit,
-        commit=target_commit,
-        migration_from="0053_idempotency_scope",
-        migration_target="0061_vendor_binding_outbox",
-        migration_compatibility="expand",
-    )
-    dotenv = tmp_path / ".env"
-    dotenv.write_text(
-        f"SMS_API_IMAGE=sha256:{'9' * 64}\n"
-        f"SMS_WEB_IMAGE=sha256:{'8' * 64}\n",
-        encoding="utf-8",
-    )
-    dotenv.chmod(0o600)
-    old_api = f"sha256:{'1' * 64}"
-    old_web = f"sha256:{'2' * 64}"
-    head = base_commit if already_recovered else target_commit
-    calls: list[tuple[str, ...]] = []
-
-    class Host:
-        def _run(self, *argv: str) -> str:
-            calls.append(argv)
-            if argv == ("ps", "-q", "api"):
-                return "a" * 12
-            if argv == ("ps", "-q", "web"):
-                return "b" * 12
-            raise AssertionError(argv)
-
-    class Store:
-        def read_consistent_state(self) -> dict[str, object]:
-            return {
-                "state": "blocked",
-                "step": "migrate",
-                "error_type": "step_failed",
-                "actual_commit": target_commit,
-                "actual_migration_head": "0053_idempotency_scope",
-            }
-
-    def command(*argv: str) -> str:
-        nonlocal head
-        calls.append(argv)
-        if argv[-2:] == ("rev-parse", "HEAD"):
-            return head
-        if argv[-2:] == ("status", "--porcelain"):
-            return ""
-        if argv[:3] == ("git", "-C", str(tmp_path)) and "checkout" in argv:
-            head = base_commit
-            return ""
-        if argv[:2] == ("docker", "inspect"):
-            image_id = old_api if argv[-1] == "a" * 12 else old_web
-            return f"{image_id}|{base_commit}|0053_idempotency_scope"
-        raise AssertionError(argv)
-
-    operations.host = Host()  # type: ignore[assignment]
-    operations._command = command  # type: ignore[method-assign]
-    operations.current_migration_head = lambda: "0053_idempotency_scope"  # type: ignore[method-assign]
-    operations.require_lifecycle_lock = lambda: None  # type: ignore[method-assign]
-    operations.require_owned_update_pauses = lambda value: None  # type: ignore[method-assign]
-    monkeypatch.setattr(
-        update_manager_module,
-        "_restore_operator_git_read_access",
-        lambda root: calls.append(("restore-operator-git", str(root))),
-    )
-
-    operations.recover_blocked_rebaseline_before_migration(Store())  # type: ignore[arg-type]
-
-    assert head == base_commit
-    assert dotenv.read_text(encoding="utf-8").splitlines() == [
-        f"SMS_API_IMAGE={old_api}",
-        f"SMS_WEB_IMAGE={old_web}",
-    ]
-    assert not any(call and call[0] in {"up", "run"} for call in calls)
-    checkout_calls = [call for call in calls if "checkout" in call]
-    assert len(checkout_calls) == (0 if already_recovered else 1)
-    status_positions = [
-        index
-        for index, call in enumerate(calls)
-        if call[-2:] == ("status", "--porcelain")
-    ]
-    assert len(status_positions) == 2
-    assert all(
-        calls[status + 1] == ("restore-operator-git", str(tmp_path))
-        for status in status_positions
-    )
-    assert calls[-1] == ("restore-operator-git", str(tmp_path))
-
-
-@pytest.mark.parametrize(
-    ("initial_state", "initial_step", "recovery_proven", "verify_calls"),
-    [
-        (State.BLOCKED, "get_balance", False, 1),
-        (State.BLOCKED, "environment_mode", True, 1),
-        (State.BLOCKED, "recover_services", True, 1),
-        (State.BLOCKED, "services", True, 1),
-        (State.VERIFYING, "recover_verify", False, 1),
-        (State.VERIFIED, "verify", False, 0),
-    ],
-)
-def test_blocked_rebaseline_verify_recovery_is_exact_and_idempotent(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    initial_state: State,
-    initial_step: str,
-    recovery_proven: bool,
-    verify_calls: int,
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    update_id = "test-20260810T125640Z-5488823a73ef"
-    target_commit = "b" * 40
-    operations.request = SimpleNamespace(
-        update_id=update_id,
-        operation="rebaseline",
-        base_commit="a" * 40,
-        commit=target_commit,
-        migration_from="0053_idempotency_scope",
-        migration_target="0061_vendor_binding_outbox",
-        migration_compatibility="expand",
-    )
-    operations.host_source_commit = "c" * 40
-    events: list[object] = []
-
-    class Store:
-        state = initial_state
-
-        def read_consistent_state(self) -> dict[str, object]:
-            return {
-                "state": self.state.value,
-                "step": initial_step,
-                "error_type": (
-                    "invariant_failed" if self.state is State.BLOCKED else None
-                ),
-                "actual_commit": target_commit,
-                "actual_migration_head": "0061_vendor_binding_outbox",
-            }
-
-        def read_events(self) -> list[dict[str, object]]:
-            assert recovery_proven
-            return [
-                {
-                    "from_state": "blocked",
-                    "to_state": "verifying",
-                    "step": "recover_verify",
-                    "error_type": None,
-                    "actual_commit": target_commit,
-                    "actual_migration_head": "0061_vendor_binding_outbox",
-                },
-                {
-                    "from_state": "verifying",
-                    "to_state": "blocked",
-                    "step": initial_step,
-                    "error_type": "invariant_failed",
-                    "actual_commit": target_commit,
-                    "actual_migration_head": "0061_vendor_binding_outbox",
-                },
-            ]
-
-        def transition(
-            self,
-            expected: State,
-            target: State,
-            *,
-            step: str,
-            **_: object,
-        ) -> None:
-            assert self.state is expected
-            events.append((expected, target, step))
-            self.state = target
-
-    store = Store()
-
-    class Verify:
-        def __init__(self, received_store: object, received_operations: object) -> None:
-            assert received_store is store
-            assert received_operations is operations
-
-        def verify(self, kind: str, **kwargs: object) -> None:
-            events.append(("verify", kind, kwargs["expected_state"]))
-            store.transition(State.VERIFYING, State.VERIFIED, step="verify")
-
-    def command(*argv: str) -> str:
-        if argv[-2:] == ("rev-parse", "HEAD"):
-            return target_commit
-        if argv[-2:] == ("status", "--porcelain"):
-            return ""
-        raise AssertionError(argv)
-
-    operations._command = command  # type: ignore[method-assign]
-    operations.current_migration_head = lambda: "0061_vendor_binding_outbox"  # type: ignore[method-assign]
-    operations.require_lifecycle_lock = lambda: events.append("lock")  # type: ignore[method-assign]
-    operations.require_owned_update_pauses = lambda value: events.append(("pause", value))  # type: ignore[method-assign]
-    monkeypatch.setattr(update_manager_module, "TestUpdateVerify", Verify)
-    monkeypatch.setattr(
-        update_manager_module,
-        "_restore_operator_git_read_access",
-        lambda root: events.append(("restore-operator-git", root)),
-    )
-
-    assert operations.recover_blocked_rebaseline_verify(store) == "verified"  # type: ignore[arg-type]
-    assert store.state is State.VERIFIED
-    assert sum(event[0] == "verify" for event in events if isinstance(event, tuple)) == verify_calls
-    if initial_state is State.BLOCKED:
-        assert (State.BLOCKED, State.VERIFYING, "recover_verify") in events
-    if initial_state is State.VERIFIED:
-        assert not any(
-            isinstance(event, tuple) and event[0] == "pause" for event in events
-        )
-
-
-def test_rebaseline_verify_recovery_starts_only_fixed_backend_services(
-    tmp_path: Path,
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    update_id = "test-20260810T125640Z-5488823a73ef"
-    operations.request = SimpleNamespace(
-        update_id=update_id,
-        operation="rebaseline",
-        migration_from="0053_idempotency_scope",
-        migration_target="0061_vendor_binding_outbox",
-        migration_compatibility="expand",
-    )
-    events: list[object] = []
-
-    class Host:
-        def _run(self, *argv: str) -> str:
-            events.append(argv)
-            return ""
-
-    operations.host = Host()  # type: ignore[assignment]
-    operations.require_owned_update_pauses = (  # type: ignore[method-assign]
-        lambda value: events.append(("pause", value))
-    )
-
-    operations.recover_backend_services()
-
-    assert events == [
-        ("pause", update_id),
-        ("up", "-d", "--no-deps", *BACKEND_SERVICES),
-    ]
-
-
-def test_rebaseline_recovery_restores_operator_git_with_safe_helper(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    events: list[Path] = []
-    monkeypatch.setattr(
-        update_manager_module,
-        "_restore_operator_git_read_access",
-        lambda root: events.append(root),
-    )
-
-    operations.restore_operator_git_read_access()
-
-    assert events == [tmp_path]
-
-
-@pytest.mark.parametrize(
-    ("pause_state", "expected"),
-    [
-        (
-            "owned",
-            [
-                "pause_observe",
-                ("up", "-d", "--no-deps", *BACKEND_SERVICES),
-                "verify_services",
-                ("restore_pauses", "test-20260810T125640Z-5488823a73ef"),
-            ],
-        ),
-        ("released", ["pause_observe", "verify_services"]),
-    ],
-)
-def test_verified_rebaseline_service_recovery_is_exact_and_idempotent(
-    tmp_path: Path,
-    pause_state: str,
-    expected: list[object],
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    update_id = "test-20260810T125640Z-5488823a73ef"
-    operations.request = SimpleNamespace(
-        update_id=update_id,
-        operation="rebaseline",
-        migration_from="0053_idempotency_scope",
-        migration_target="0061_vendor_binding_outbox",
-        migration_compatibility="expand",
-    )
-    operations.pause_value = f"test-update:{update_id}"
-    events: list[object] = []
-
-    class Host:
-        def _redis(self, *argv: str) -> str:
-            assert argv[0] == "EVAL"
-            events.append("pause_observe")
-            return pause_state
-
-        def _run(self, *argv: str) -> str:
-            events.append(argv)
-            return ""
-
-    operations.host = Host()  # type: ignore[assignment]
-    operations.verify_backend_services = (  # type: ignore[method-assign]
-        lambda: events.append("verify_services")
-    )
-    operations.restore_owned_update_pauses = (  # type: ignore[method-assign]
-        lambda value: events.append(("restore_pauses", value))
-    )
-
-    operations.recover_verified_rebaseline_services()
-
-    assert events == expected
-
-
-def test_verified_rebaseline_service_recovery_rejects_partial_pause(
-    tmp_path: Path,
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    operations.request = SimpleNamespace(
-        update_id="test-20260810T125640Z-5488823a73ef",
-        operation="rebaseline",
-        migration_from="0053_idempotency_scope",
-        migration_target="0061_vendor_binding_outbox",
-        migration_compatibility="expand",
-    )
-    operations.pause_value = f"test-update:{operations.request.update_id}"
-    operations.host = SimpleNamespace(_redis=lambda *_argv: "blocked")  # type: ignore[assignment]
-
-    with pytest.raises(ManagerError, match="pause state is invalid"):
-        operations.recover_verified_rebaseline_services()
-
-
-def test_rebaseline_running_images_match_request_identity(tmp_path: Path) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    commit = "b" * 40
-    migration = "0061_vendor_binding_outbox"
-    image_ids = {
-        "api": f"sha256:{'1' * 64}",
-        "web": f"sha256:{'2' * 64}",
-    }
-    containers = {"api": "a" * 12, "web": "b" * 12}
-    operations.request = SimpleNamespace(
-        components=frozenset({"api", "web"}),
-        images={
-            component: SimpleNamespace(image_id=image_id)
-            for component, image_id in image_ids.items()
-        },
-        commit=commit,
-        migration_target=migration,
-    )
-
-    class Host:
-        def _run(self, *argv: str) -> str:
-            assert argv[:2] == ("ps", "-q")
-            return containers[argv[2]]
-
-    operations.host = Host()  # type: ignore[assignment]
-
-    def command(*argv: str) -> str:
-        component = next(
-            name for name, container in containers.items() if container == argv[-1]
-        )
-        return f"{image_ids[component]}|{commit}|{migration}"
-
-    operations._command = command  # type: ignore[method-assign]
-
-    operations.verify_running_image_identity()
-
-    operations._command = lambda *_argv: "mismatch"  # type: ignore[method-assign]
-    with pytest.raises(ManagerError, match="image identity is invalid"):
-        operations.verify_running_image_identity()
-
-
-def test_blocked_rebaseline_verify_recovery_rejects_other_verify_steps(
-    tmp_path: Path,
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    operations.request = SimpleNamespace(
-        update_id="test-20260810T125640Z-5488823a73ef",
-        operation="rebaseline",
-        commit="b" * 40,
-        migration_from="0053_idempotency_scope",
-        migration_target="0061_vendor_binding_outbox",
-        migration_compatibility="expand",
-    )
-    operations.host_source_commit = "b" * 40
-    operations.require_lifecycle_lock = lambda: None  # type: ignore[method-assign]
-
-    class Store:
-        def read_consistent_state(self) -> dict[str, object]:
-            return {
-                "state": "blocked",
-                "step": "services",
-                "error_type": "invariant_failed",
-                "actual_commit": "b" * 40,
-                "actual_migration_head": "0061_vendor_binding_outbox",
-            }
-
-        def read_events(self) -> list[dict[str, object]]:
-            return []
-
-    with pytest.raises(ManagerError, match="state is invalid"):
-        operations.recover_blocked_rebaseline_verify(Store())  # type: ignore[arg-type]
-
-
-def test_blocked_rebaseline_verify_recovery_requires_immutable_snapshot(
-    tmp_path: Path,
-) -> None:
-    operations = _rebaseline_operations(tmp_path)
-    operations.request = SimpleNamespace(
-        update_id="test-20260810T125640Z-5488823a73ef",
-        operation="rebaseline",
-        commit="b" * 40,
-        migration_from="0053_idempotency_scope",
-        migration_target="0061_vendor_binding_outbox",
-        migration_compatibility="expand",
-    )
-    operations.host_source_commit = None
-    operations.require_lifecycle_lock = lambda: None  # type: ignore[method-assign]
-
-    with pytest.raises(ManagerError, match="snapshot is invalid"):
-        operations.recover_blocked_rebaseline_verify(object())  # type: ignore[arg-type]
-
-
-def test_host_source_scope_verifies_unrelated_public_main_with_immutable_tool(
-    tmp_path: Path,
-) -> None:
-    calls: list[tuple[str, ...]] = []
-    base = "a" * 40
-    commit = "b" * 40
-    update_id = "test-20260728T063501Z-a06082dbc95c"
-    fetched_ref = f"refs/test-updates/{update_id}/source"
-    operations = object.__new__(HostTestUpdateOperations)
-    operations.root = Path("/opt/sms-platform")
-    operations.state_root = tmp_path
-    operations.expected_uid = os.geteuid()
-    operations.host_source_commit = commit
-    incoming = tmp_path / "incoming"
-    incoming.mkdir()
-    source_pack = incoming / "cutover-source.pack"
-    source_pack.write_bytes(b"synthetic source pack")
-    source_pack.chmod(0o600)
-    source_commit = "e" * 40
-    private_merge_base = "c" * 40
-    operations.request = SimpleNamespace(
-        update_id=update_id,
-        base_commit=base,
-        commit=commit,
-        source_ref="origin/main",
-        components=frozenset({"api", "web"}),
-        public_cutover=SimpleNamespace(
-            source_commit=source_commit,
-            private_merge_base=private_merge_base,
-            pack_file=source_pack.name,
-            pack_sha256=hashlib.sha256(source_pack.read_bytes()).hexdigest(),
-        ),
-    )  # type: ignore[assignment]
-
-    def command(*argv: str) -> str:
-        calls.append(argv)
-        if argv[-2:] == ("status", "--porcelain"):
-            return ""
-        if argv[-2:] == ("rev-parse", "HEAD"):
-            return base
-        if argv[-2:] == ("rev-parse", f"{fetched_ref}^{{commit}}"):
-            return commit
-        if "fetch" in argv:
-            return ""
-        if "diff" in argv and "--" in argv:
-            return ""
-        if "merge-base" in argv:
-            raise ManagerError("unrelated histories")
-        if argv[0] == "/usr/bin/python3":
-            return json.dumps(
-                {
-                    "components": ["api", "web"],
-                    "cutover": True,
-                    "logical_changed": 274,
-                    "migration_changed": True,
-                    "private_merge_base": private_merge_base,
-                    "publication_commit": "d" * 40,
-                    "risk": "high-risk",
-                    "runtime_changed": True,
-                    "source_commit": source_commit,
-                }
-            )
-        raise AssertionError(argv)
-
-    operations._command = command  # type: ignore[method-assign]
-
-    scope = operations.verify_source_scope()
-
-    assert scope.components == frozenset({"api", "web"})
-    assert scope.risk == "high-risk"
-    verifier_call = next(call for call in calls if call[0] == "/usr/bin/python3")
-    resolved_index = verifier_call.index("--resolved-ref")
-    assert verifier_call[resolved_index + 1] == fetched_ref
-    assert "--source-pack" in verifier_call
-    assert "--expected-source-commit" in verifier_call
-    assert "--expected-private-merge-base" in verifier_call
-    assert not source_pack.exists()
-
-
 def test_host_source_scope_never_uses_cutover_for_descendant_forbidden_diff() -> None:
     base = "a" * 40
     commit = "b" * 40
@@ -2882,7 +1646,6 @@ def test_host_source_scope_never_uses_cutover_for_descendant_forbidden_diff() ->
         commit=commit,
         source_ref="origin/main",
         components=frozenset({"api"}),
-        public_cutover=None,
     )  # type: ignore[assignment]
 
     def command(*argv: str) -> str:
@@ -2906,60 +1669,6 @@ def test_host_source_scope_never_uses_cutover_for_descendant_forbidden_diff() ->
 
     with pytest.raises(ValueError, match="forbidden"):
         operations.verify_source_scope()
-
-
-def test_host_source_scope_deletes_invalid_cutover_pack(
-    tmp_path: Path,
-) -> None:
-    base = "a" * 40
-    commit = "b" * 40
-    update_id = "test-20260728T074728Z-1d6f777b7206"
-    fetched_ref = f"refs/test-updates/{update_id}/source"
-    incoming = tmp_path / "incoming"
-    incoming.mkdir()
-    source_pack = incoming / "cutover-source.pack"
-    source_pack.write_bytes(b"invalid digest evidence")
-    source_pack.chmod(0o600)
-    operations = object.__new__(HostTestUpdateOperations)
-    operations.root = Path("/opt/sms-platform")
-    operations.state_root = tmp_path
-    operations.expected_uid = os.geteuid()
-    operations.host_source_commit = commit
-    operations.request = SimpleNamespace(
-        update_id=update_id,
-        base_commit=base,
-        commit=commit,
-        source_ref="origin/main",
-        components=frozenset({"api"}),
-        public_cutover=SimpleNamespace(
-            source_commit="c" * 40,
-            private_merge_base="d" * 40,
-            pack_file=source_pack.name,
-            pack_sha256="e" * 64,
-        ),
-    )  # type: ignore[assignment]
-
-    def command(*argv: str) -> str:
-        if argv[-2:] == ("status", "--porcelain"):
-            return ""
-        if argv[-2:] == ("rev-parse", "HEAD"):
-            return base
-        if argv[-2:] == ("rev-parse", f"{fetched_ref}^{{commit}}"):
-            return commit
-        if "fetch" in argv:
-            return ""
-        if "diff" in argv and "--" in argv:
-            return ""
-        if "merge-base" in argv:
-            raise ManagerError("unrelated histories")
-        raise AssertionError(argv)
-
-    operations._command = command  # type: ignore[method-assign]
-
-    with pytest.raises(ManagerError, match="unsafe"):
-        operations.verify_source_scope()
-
-    assert not source_pack.exists()
 
 
 def test_host_source_scope_rejects_target_that_changes_immutable_controller() -> None:
@@ -2994,4 +1703,42 @@ def test_host_source_scope_rejects_target_that_changes_immutable_controller() ->
     operations._command = command  # type: ignore[method-assign]
 
     with pytest.raises(ManagerError, match="snapshot"):
+        operations.verify_source_scope()
+
+
+def test_host_source_scope_rejects_unrelated_histories() -> None:
+    """服务器基线不是目标祖先时失败关闭，不存在跨历史切换路径。"""
+    base = "a" * 40
+    commit = "b" * 40
+    update_id = "test-20260810T070301Z-bbbbbbbbbbbb"
+    fetched_ref = f"refs/test-updates/{update_id}/source"
+    operations = object.__new__(HostTestUpdateOperations)
+    operations.root = Path("/opt/sms-platform")
+    operations.request = SimpleNamespace(
+        update_id=update_id,
+        base_commit=base,
+        commit=commit,
+        source_ref="origin/main",
+        components=frozenset({"api", "web"}),
+        migration_from="0135_example",
+        migration_target="0136_example",
+        migration_compatibility="expand",
+    )  # type: ignore[assignment]
+
+    def command(*argv: str) -> str:
+        if argv[-2:] == ("status", "--porcelain"):
+            return ""
+        if argv[-2:] == ("rev-parse", "HEAD"):
+            return base
+        if "fetch" in argv:
+            return ""
+        if argv[-2:] == ("rev-parse", f"{fetched_ref}^{{commit}}"):
+            return commit
+        if "merge-base" in argv:
+            raise ManagerError("unrelated histories")
+        raise AssertionError(argv)
+
+    operations._command = command  # type: ignore[method-assign]
+
+    with pytest.raises(ManagerError, match="descend from the server baseline"):
         operations.verify_source_scope()

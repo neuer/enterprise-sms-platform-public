@@ -112,9 +112,6 @@ def fixture(tmp_path: Path):
         "vendor_test_files.py",
         "check_test_update_migration.py",
         "run_with_lifecycle_lock.py",
-        "public_baseline_activation.py",
-        "public_baseline_manager.py",
-        "public_cutover_bootstrap.py",
         "test_update_apply.py",
         "test_update_backup.py",
         "test_update_contract.py",
@@ -126,7 +123,6 @@ def fixture(tmp_path: Path):
         "protected_path_policy.py",
         "check_public_readiness.py",
         "export_public_snapshot.py",
-        "verify_public_snapshot_cutover.py",
         "verify_web_transport.py",
     ):
         path = root / name
