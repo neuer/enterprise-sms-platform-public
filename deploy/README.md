@@ -168,134 +168,31 @@ APT/Git/磁盘/fstab/mount、secret、`.env`、Docker/Compose 或 systemd 生命
 `vendor-control-agent.service` 与 `/etc/sms-platform/test-host` 均不存在；旧主机不在本入口内
 自动删除或迁移，必须由另行批准的 OS 变更先行处置。
 
-该安装器的常规路径仍只用于首装；常规 release 不会更新上述 16 个 root-owned 文件。
-`sms-compose` 又是指向 production operator 可写 checkout 的 symlink，因此该 operator 必须按
-root-equivalent 受信身份管理。当前只额外提供一次、首次 bootstrap 前的 mountinfo credential
-修复入口：旧状态必须精确绑定
-`555fb20b0d630ece9099a88a463eb1ce1121c012`，目标固定为最后一个仍使用历史空 data-root
-`0711` 合同的 `109c10865b2aac3989bc4cebf3c60788f44b168c`，且变化
-集合必须恰好为 `storage-preflight`、`storage-unit`、`partition-service`、`backup-service`、
-`restore-drill-service`、`lifecycle-status-service` 六项普通文件。wrapper、配置、timer、drop-in
-或任意第七项发生变化都会失败关闭；五个 unit 必须保持原有 `CapabilityBoundingSet`，不得出现
-`CAP_SYS_PTRACE`，并精确加载 `/proc/1/mountinfo` credential 与受控环境标记。
+该安装器只用于首装及该次首装的中断恢复；常规 release 不会更新上述 16 个
+root-owned 文件。`sms-compose` 是指向 production operator 可写 checkout 的 symlink，
+因此该 operator 必须按 root-equivalent 受信身份管理。通用宿主资产更新仍须按 ENG-03
+单独交付，不能用首装入口覆盖现有资产。
+security-report collector 仍不在本 inventory 内，当前不得手工补装到生产；其第五镜像、
+Runtime 路径和日志轮转阻断见安全日报手册。
 
-该窄入口还要求 Docker/containerd 保持 masked/inactive、Docker root 为空，平台 unit 以及
-partition、backup、lifecycle-status 三个 timer 均 disabled/inactive，vendor unit 与 test-host
-标记完全不存在，restore-drill timer 保持 static/inactive，四个维护 service inactive，且
-`/var/lib/sms-platform/releases` 不存在或为空。它不适用于已 bootstrap 或已经准备 release 的
-主机，也不关闭通用宿主资产升级 ENG-03。整个 plan/apply/验收/accept 窗口必须由
-同一变更单独占；其他 root 操作者不得并发启动 Docker、平台、vendor、维护 unit 或准备
-release。先把 checkout 切到已审核的 `NEW_COMMIT`，再显式绑定
-旧、新两个固定 commit：
+维护范围只支持当前生产与共享测试，并按两者已更新到最新处理。绑定 `555fb20...` 和
+`109c108...` 的首次 bootstrap 前 mountinfo credential 修复、Docker 首启后 `0711→0710`
+修复均已退役；`--from-commit` 和 `upgrade-accept` 不再是有效命令。
+已完成安装的 schema-v1 状态仍可由 `status` 只读核验，来源 commit 不会被重写。
+若发现 `production-host-assets.upgrade.intent.json` 或对应隐藏 `.tmp` 暂存文件，
+`status` 返回 `drifted` 且退出非零，`plan/apply/resume/rollback` 拒绝继续；原文件与
+已安装资产全部保留。应保留现场并建立单独恢复变更，不得手工删改证据或借首装接管旧事务。
+
+当前首装失败后只允许同一候选 commit 续装，或确认回退该次未完成首装：
 
 ```bash
-OLD_COMMIT='555fb20b0d630ece9099a88a463eb1ce1121c012'
-NEW_COMMIT='109c10865b2aac3989bc4cebf3c60788f44b168c'
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py plan \
-  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py apply \
-  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT" \
-  --confirm-dedicated-production-host \
-  --confirm-vcenter-storage-reviewed
-```
-
-升级 `apply/resume` 只原子替换六项资产，并在一次写入后不可变、仅 root 可读的 upgrade intent
-中内嵌六项精确旧版本备份，然后返回
-`awaiting_acceptance`；canonical state 仍是旧 commit，`status` 固定返回非零 `upgrading`。
-不得在此时手工覆盖或删除文件。由操作者核对五个 unit 后执行 `daemon-reload`，再调用
-`upgrade-accept`。该命令持有 installer 锁，先确认 storage preflight 未在运行，并核验五个 unit
-均 `NeedDaemonReload=no`、候选固定 `LoadCredential` 行、live 环境标记与 capability 集合均满足
-受控合同，且 live `FragmentPath` 精确指向各自固定 `/etc/systemd/system` 目标；随后由命令自身
-同步启动一次 `sms-storage-preflight.service`。只有该次 `systemctl start` 成功返回，oneshot 最终
-回到 `inactive`，且 `Result=success`、`ExecMainStatus=0`，才允许提交新 state。验收不依赖
-oneshot 退出后 systemd 255 会清空的 `InvocationID` 或 ExecMain 时间戳：
-
-```bash
-sudo systemctl daemon-reload
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py upgrade-accept \
-  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py status
-```
-
-若 `upgrade-accept` 内部的 storage preflight 启动失败或 60 秒命令等待超时，canonical state 与
-root-owned upgrade intent 均保持原样，结果仍为 `upgrading`。先确认该 unit 已不在
-`active/activating/deactivating` 且 `Job` 为空，排除存储或 systemd 问题后，用完全相同的 OLD/NEW
-重跑 `upgrade-accept`；有进程或 PID 1 pending job 时，accept/resume/rollback 都会失败关闭。
-重跑一定会再同步执行一次新的 preflight，不会把超时后的旧 `Result` 当作成功。若启动已成功但
-命令在提交 state 前中断，同样重跑；不得手工改 state 或 intent。intent v1 中保留的
-`storage_invocation_id_before` 只用于既有 resume/rollback 结构兼容，不再作为 systemd 255 的
-验收证据。
-
-在 `upgrade-accept` 提交新 state 前，中断后只允许用同一 OLD/NEW 执行 `resume`，或带现有确认参数
-执行 `rollback`；rollback 会从 installer-owned 备份恢复精确旧文件。rollback 返回成功后必须再执行
-`sudo systemctl daemon-reload`，使 PID 1 丢弃可能已加载的候选 unit。新 state 一旦持久提交，
-rollback 拒绝，若只剩清理中断则由同参数 `resume` 收敛。该入口不执行 `daemon-reload`、unit
-enable、Git 切换、Docker/Compose、secret 或应用发布；唯一的 unit 生命周期动作是
-`upgrade-accept` 在上述受控合同内同步启动一次 storage preflight。security-report collector 仍不在
-本 inventory 内，当前不得手工补装到生产；其第五镜像、Runtime 路径和日志轮转阻断见安全日报手册。
-
-若 `upgrading` intent 已由不含该验收修复的旧目标 commit 创建，不得把 checkout 切到其它 commit 后
-跨 commit 复用该 intent，也不得手工改写 intent。应先在 intent 绑定的精确 checkout 上用同一
-OLD/NEW 执行官方 `rollback`，随后 `daemon-reload`；再切到固定 `109c108...`，重新执行
-plan/apply/daemon-reload/upgrade-accept。该历史路径的空 Docker root 仍精确要求 `root:root 0711`，
-仅用于完成 `555fb20...→109c108...`，不得作为新主机或新版本合同。到达 `109c108...` 后，按该
-版本的 Docker 技术首启门禁完成一次首启，使 daemon 将 data-root 收敛为 `0710`；随后停止并重新
-mask Docker/containerd，保持平台未 bootstrap，再使用下述第二 profile 到新合并 SHA。这样保留
-checkout、intent、宿主资产和 canonical state 始终绑定固定阶段，并避免当前 installer 静默重解释
-历史 `0711` 状态。
-
-另外只提供一个固定、一次性的 Docker 首启后权限合同修复 profile。它只用于 canonical
-state 精确为 `109c10865b2aac3989bc4cebf3c60788f44b168c`、尚未 bootstrap 的专用生产主机；
-唯一允许变化的宿主资产是 `storage-preflight`，用来把 `/var/lib/docker` 的精确模式合同从
-旧的 `0711` 收敛为全生命周期固定的 `root:root 0710`。候选 Docker Engine 29.7.2 在 daemon
-初始化 data-root 时会使用 `0710`，它比 `0711` 少了 other 执行权限，是更严格的稳态权限。
-不得手工 `chmod 0711` 制造短暂通过，也不得把 29.7.2 由此称为已正式批准。
-候选 `storage-preflight` 还必须与旧 payload 逐字节相同，唯一允许的差异是将唯一一处
-Docker MountRequirement `0o711` 替换为 `0o710`；同一资产内夹带任何其它字节
-变化也必须失败关闭。
-
-该 profile 明确允许 `/var/lib/docker` 保留首启后的非空元数据，安装器不会清理、搬迁或重建
-data-root。但执行窗口内 `docker.service`、`docker.socket`、`containerd.service` 必须全部
-masked/inactive；平台、vendor、四个维护 service 与四个 timer 必须保持首次 bootstrap 前的
-inactive 及 disabled/static 状态，`/var/lib/sms-platform/releases` 不存在或为空。任一边界不符、
-已准备 release 或已 bootstrap 都失败关闭。先将 checkout 切到已审核、干净且 `HEAD`
-精确等于新合并 SHA 的候选，再执行：
-
-```bash
-OLD_COMMIT='109c10865b2aac3989bc4cebf3c60788f44b168c'
-NEW_COMMIT='REPLACE_WITH_40_LOWERCASE_HEX_COMMIT'
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py plan \
-  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py apply \
-  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT" \
-  --confirm-dedicated-production-host \
-  --confirm-vcenter-storage-reviewed
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py upgrade-accept \
-  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py status
-```
-
-`plan/apply/resume` 会先用已绑定候选 commit 的 preflight 字节做一次内联只读检查，失败时
-不得替换宿主资产。`apply/resume` 仍在 installer 锁内写入 root-only repair intent，只原子
-替换该一项资产，且在
-`upgrade-accept` 成功前继续保留旧 canonical state。`upgrade-accept` 必须在同一锁内新启动一次
-正式 `sms-storage-preflight.service`，确认 unit 静止、PID 1 job 为空、`Result=success` 且
-`ExecMainStatus=0`，并重新核对运行边界和唯一候选资产，才最后提交新 state。失败或
-中断后只能使用同一 OLD/NEW 执行 `resume`、重试 `upgrade-accept`，或在 accept 前执行：
-
-```bash
+sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py resume \
+  --expected-commit "$CANDIDATE_COMMIT"
 sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py rollback \
-  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT" \
-  --confirm-rollback-this-install
+  --expected-commit "$CANDIDATE_COMMIT" --confirm-rollback-this-install
 ```
 
-rollback 只会恢复 intent 内那一份精确旧版 preflight，不改 Docker 数据和其它宿主资产。因为
-旧 preflight 会将真实 `0710` 报为错误，rollback 是可审计的安全 **No-Go**，不是恢复启动；
-不得据此解除 Docker mask 或继续 bootstrap。该一次性 profile 不是通用宿主资产更新机制，
-不关闭 ENG-03；RF-07 的包锁/基线批准与 RF-12 的防火墙/容器网段证据仍须独立验证和批准。
-
-常规首次安装成功后再做只读 unit 验证和显式宿主动作（上述两种窄修复已由 `upgrade-accept` 自行运行
-storage preflight，不重复执行这里的手工启动）：
+首次安装成功后再做只读 unit 验证和显式宿主动作：
 
 ```bash
 sudo systemd-analyze verify /etc/systemd/system/sms-platform.service
