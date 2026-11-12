@@ -932,20 +932,17 @@ def test_bookkeeping_moves_final_head_evidence_to_change_order() -> None:
     assert "`MAINTENANCE.md` 为准" in documents["PROGRESS.md"]
 
 
-def test_temporary_offline_updates_document_narrow_exceptions() -> None:
+def test_temporary_offline_updates_document_current_scope() -> None:
     index = read_required("README.md")
     maintenance = (ROOT / "MAINTENANCE.md").read_text(encoding="utf-8")
     handover = (ROOT / "HANDOVER.md").read_text(encoding="utf-8")
 
     for token in (
         "临时离线无迁移整包快速更新",
+        "版本间离线迁移一律拒绝",
+        "`cold_cutover` 入口已退役",
         "data_images",
         "backup_restore_change",
-        "0080_security_daily_delivery_generation",
-        "0081_sign_adoption_contract",
-        "0082_outbox_realtime_report_queue",
-        "0083_password_change_token_lease",
-        "0084_auth_security_and_ad_freshness",
         "--allow-offline-no-conditional-evidence",
         "不尝试 destructive downgrade",
         "不关闭每日备份",
