@@ -47,12 +47,13 @@ from app.services.pipeline import (
     StoredBatch,
     VendorTestConsoleOnly,
 )
-from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL, SqlPipelineStore
+from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL
 from app.services.send_admission import SendAdmissionRejected
 from app.services.send_inflight import (
     ACTIVE_INFLIGHT_STATES,
     OCCUPYING_CHUNK_STATES,
     AcceptCommitResolution,
+    InFlightReservation,
     _apply_reservation_delta,
     _load_bound_batch,
     apply_inflight_delta,
@@ -133,12 +134,6 @@ def test_split_expand_does_not_lock_reservation_before_balance() -> None:
     source = inspect.getsource(expand_in_flight_for_split)
     assert "FOR UPDATE" not in source
     assert "apply_inflight_delta" in source
-
-
-def test_count_in_flight_chunks_uses_occupying_states() -> None:
-    source = inspect.getsource(SqlPipelineStore.count_in_flight_chunks)
-    assert "send_chunk_occupying_states()" in source
-    assert "'pending', 'submitting', 'retrying', 'uncertain'" not in source
 
 
 def crypto() -> CryptoService:
@@ -252,13 +247,25 @@ class FakeStore:
         self.commands.append(command)
         return StoredBatch("new-batch", False)
 
-    async def count_in_flight_chunks(self, app_id: int) -> int:
-        return 0
+    async def reserve_in_flight_chunks(
+        self, app_id: int, estimated: int, limit: int,
+    ) -> InFlightReservation:
+        if estimated > limit:
+            raise InFlightLimitExceeded("应用在途分片已达上限")
+        return InFlightReservation(id=1, generation=1, estimated_chunks=estimated)
+
+    async def release_in_flight_reservation(
+        self, reservation_id: int, generation: int, reason: str,
+    ) -> bool:
+        return True
 
 
 class FailingStore(FakeStore):
     async def save(self, command: Any) -> StoredBatch:
         raise RuntimeError("database unavailable")
+
+    async def resolve_ambiguous_acceptance_commit(self, **_kwargs: object) -> object:
+        return AcceptCommitResolution("UNBOUND")
 
 
 class IdempotentStore(FakeStore):
@@ -281,9 +288,6 @@ class HistoricalBlacklistStore(FakeStore):
     async def blacklisted(self, phone_hmacs: set[str]) -> set[str]:
         self.seen = phone_hmacs
         return {self.blocked} & phone_hmacs
-
-
-
 
 
 class FakePublisher:
@@ -1121,9 +1125,11 @@ async def test_market_api_bulk_requires_explicit_preauthorization() -> None:
 @pytest.mark.asyncio
 async def test_in_flight_chunk_cap_blocks_new_acceptance() -> None:
     class BusyStore(FakeStore):
-        async def count_in_flight_chunks(self, app_id: int) -> int:
+        async def reserve_in_flight_chunks(
+            self, app_id: int, estimated: int, limit: int,
+        ) -> InFlightReservation:
             assert app_id == 7
-            return 200
+            raise InFlightLimitExceeded("应用在途分片已达上限")
 
     pipeline = SendPipeline(
         usage_ledger=FakeUsageLedger(),
@@ -1143,7 +1149,9 @@ async def test_in_flight_chunk_cap_blocks_new_acceptance() -> None:
 @pytest.mark.asyncio
 async def test_in_flight_query_failure_fails_closed() -> None:
     class BrokenStore(FakeStore):
-        async def count_in_flight_chunks(self, app_id: int) -> int:
+        async def reserve_in_flight_chunks(
+            self, app_id: int, estimated: int, limit: int,
+        ) -> InFlightReservation:
             raise RuntimeError("database unavailable")
 
     pipeline = SendPipeline(
@@ -1303,51 +1311,6 @@ async def test_unbound_commit_resolution_still_releases_inflight() -> None:
             SendRequest("notice", ["13800138000"], content="通知", biz_id="unb-1"),
         )
     assert store.releases == [(41, 1, "acceptance-failed")]
-
-
-@pytest.mark.asyncio
-async def test_save_failure_lookup_hit_does_not_release_inflight() -> None:
-    class CommitThenRaiseIdempotency(FakeIdempotency):
-        def __init__(self) -> None:
-            super().__init__()
-            self.lookups = 0
-
-        async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
-            self.lookups += 1
-            return "committed-batch" if self.lookups >= 3 else None
-
-    class TrackingFailingStore(FailingStore):
-        def __init__(self) -> None:
-            super().__init__()
-            self.releases: list[tuple[int, int, str]] = []
-
-        async def reserve_in_flight_chunks(self, app_id: int, estimated: int, limit: int) -> object:
-            return type("Reservation", (), {"id": 41, "generation": 1})()
-
-        async def release_in_flight_reservation(
-            self, reservation_id: int, generation: int, reason: str
-        ) -> bool:
-            self.releases.append((reservation_id, generation, reason))
-            return True
-
-    store = TrackingFailingStore()
-    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
-    request = SendRequest("notice", ["13800138000"], content="通知", biz_id="commit-hit")
-    policy = policy_for_category(request.category, app.allowed_categories)
-    pipeline = SendPipeline(
-        usage_ledger=FakeUsageLedger(),
-        store=store,
-        idempotency=CommitThenRaiseIdempotency(),
-        crypto=crypto(),
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-    )
-    pipeline.idempotency.stored_request_hash = pipeline._request_hash(
-        request, app, policy, key_version=1
-    )
-    result = await pipeline.accept(app, request)
-    assert result.batch_no == "existing"
-    assert store.releases == []
 
 
 @pytest.mark.asyncio
@@ -2433,7 +2396,7 @@ async def test_storage_failure_requests_release_of_reserved_usage() -> None:
     with pytest.raises(RuntimeError, match="database unavailable"):
         await pipeline.accept(
             ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
-            SendRequest("notice", ["13800138000"], content="系统通知"),
+            SendRequest("notice", ["13800138000"], content="系统通知", biz_id="storage-failed"),
         )
     assert len(ledger.quota) == 1
     assert ledger.releases == [
@@ -2749,7 +2712,7 @@ async def test_idempotent_fingerprint_conflict_releases_new_usage() -> None:
 
 
 @pytest.mark.asyncio
-async def test_save_failure_lookup_error_still_releases_usage() -> None:
+async def test_unbound_commit_fact_releases_usage_without_cache_lookup() -> None:
     class LookupBoom(FakeIdempotency):
         def __init__(self) -> None:
             super().__init__()
@@ -3316,7 +3279,7 @@ async def test_usage_release_failure_is_logged_without_masking_original_error(
     with pytest.raises(RuntimeError, match="database unavailable"):
         await pipeline.accept(
             ApiAppContext(1, "app", "研发部", frozenset({"notice"})),
-            SendRequest("notice", ["13800138000"], content="通知"),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="release-failed"),
         )
 
     assert "usage reservation release fact unavailable" in caplog.text
@@ -3337,3 +3300,21 @@ def test_pipeline_requires_ledger_at_construction(arguments: dict[str, Any]) -> 
         )
     assert store.commands == []
     assert publisher.events == []
+
+
+@pytest.mark.asyncio
+async def test_missing_inflight_reservation_port_fails_closed() -> None:
+    pipeline = SendPipeline(
+        usage_ledger=FakeUsageLedger(),
+        store=object(),  # type: ignore[arg-type]
+        idempotency=FakeIdempotency(),
+        crypto=crypto(),
+        publisher=FakePublisher(),
+        config=PipelineConfig(),
+    )
+    with pytest.raises(InFlightQueryUnavailable):
+        await pipeline._enforce_in_flight(
+            ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
+            SendRequest("notice", ["13800138000"], content="通知", biz_id="missing-port"),
+            recipient_count=1,
+        )
