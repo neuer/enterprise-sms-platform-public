@@ -23,8 +23,8 @@
 5. **逐步轮换**活动 Key；确认 current/previous 均可分别绑定不同算法。
 6. **确认无引用**后清空 `api_key_unclassified_algorithms`，删除 legacy credential。
 7. **应用兼容性**：保留算法列不代表旧应用可回退。摘要经 CAS 重哈希为独立 pepper 后，0084
-   旧应用无法验证新摘要；不得自动恢复该旧应用。新代码不得把未分类行当 SHA-256。0084→0116
-   单次停机升级按 MAINTENANCE.md 的 `cold_cutover` 例外处理，失败保持停机等待操作者处置。
+   旧应用无法验证新摘要；不得自动恢复该旧应用。新代码不得把未分类行当 SHA-256。历史
+   `cold_cutover` 入口已退役，现役发布与恢复按 [维护入口](../../MAINTENANCE.md#生产发布) 执行。
 
 ## 失败关闭
 

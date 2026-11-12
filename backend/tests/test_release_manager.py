@@ -31,20 +31,10 @@ from release_manager import (  # noqa: E402
     reconcile_release,
 )
 from release_manifest import (  # noqa: E402
-    OFFLINE_EXPAND_MIGRATION,
-    ONE_TIME_COLD_CUTOVER,
     load_manifest,
 )
 
 COMMIT = "c" * 40
-OFFLINE_REPORT_EXPAND_MIGRATION = (
-    "0081_sign_adoption_contract",
-    "0082_outbox_realtime_report_queue",
-)
-OFFLINE_AUTH_EXPAND_MIGRATION = (
-    "0082_outbox_realtime_report_queue",
-    "0084_auth_security_and_ad_freshness",
-)
 DEFAULT_PRODUCTION_ENVIRONMENT_FILE = release_manager_module._PRODUCTION_ENVIRONMENT_FILE
 IMAGE_NAMES = ("api", "web", "postgres", "redis")
 CONTROL_SMOKE_IMAGES = {
@@ -524,7 +514,6 @@ def _offline_bundle(
     changed: set[str] | None = None,
     large_archive: bool = False,
     migration_changed: bool = False,
-    migration_pair: tuple[str, str] | None = None,
     include_conditional_evidence: bool = True,
 ) -> tuple[Path, dict[str, Any], dict[str, str]]:
     changed = set(IMAGE_NAMES) if changed is None else changed
@@ -535,8 +524,8 @@ def _offline_bundle(
     bundle.mkdir(mode=0o700)
     bundle.chmod(0o700)
     app_version = "1.6.0"
-    if migration_changed or migration_pair is not None:
-        migration_from, schema_revision = migration_pair or OFFLINE_EXPAND_MIGRATION
+    if migration_changed:
+        migration_from, schema_revision = ("0011_baseline", "0012_baseline")
     else:
         migration_from, schema_revision = ("0012_baseline", "0012_baseline")
     migration_changed = migration_from != schema_revision
@@ -575,11 +564,7 @@ def _offline_bundle(
             "from": migration_from,
             "target": schema_revision,
             "compatibility": (
-                "cold_cutover"
-                if migration_pair == ONE_TIME_COLD_CUTOVER
-                else "expand"
-                if migration_changed
-                else "none"
+                "expand" if migration_changed else "none"
             ),
         },
         "evidence": {
@@ -1041,10 +1026,6 @@ class FakeRunner:
                     else ""
                 )
                 return self._result(command, value)
-            if "cold-cutover-admission" in command:
-                return self._result(command, "0\n")
-            if "cold-cutover" in command and "api_key_unclassified_algorithms" in command[-1]:
-                return self._result(command, "DO\n")
             if command[-4:] == ["exec", "-T", "postgres", "postgres"]:
                 raise AssertionError("version command must include --version")
             if command[-5:] == ["exec", "-T", "postgres", "postgres", "--version"]:
@@ -2075,107 +2056,6 @@ def test_production_offline_partial_load_failure_never_mutates_runtime_or_prunes
     assert manager.status(manifest["release_id"])["state"] == "failed"
 
 
-def test_one_time_cold_cutover_can_activate(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
-    manager.prepare(path)
-    manager.activate(manifest["release_id"])
-    assert runner.migration_head == ONE_TIME_COLD_CUTOVER[1]
-    policy_index = next(i for i, command in enumerate(runner.calls) if "cold-cutover" in command)
-    migrate_index = next(
-        i for i, command in enumerate(runner.calls) if command[-3:] == ["run", "--rm", "migrate"]
-    )
-    assert policy_index > migrate_index
-    assert manager.status(manifest["release_id"])["state"] == "succeeded"
-
-
-@pytest.mark.parametrize("phase", ["run_migrate", "recreate_backend", "verify"])
-@pytest.mark.parametrize("stop_fails", [False, True])
-def test_cold_cutover_failure_never_restores_old_application(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    phase: str,
-    stop_fails: bool,
-) -> None:
-    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
-    manager.prepare(path)
-    store = ReleaseStore(manager.release_root, manifest["release_id"])
-    store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
-    before = manager.environment_file.read_bytes()
-    runner.calls.clear()
-    if stop_fails:
-        runner.fail_action = "stop"
-    with pytest.raises(ReleaseManagerError, match="recovery_required"):
-        manager._compensate(
-            store,
-            load_manifest(path),
-            release_manager_module._ActivationStepError(
-                release_manager_module.ReleaseStepKind(phase),
-                ambiguous=True,
-            ),
-        )
-    assert manager.environment_file.read_bytes() == before
-    assert not any("up" in call or "run" in call for call in runner.calls)
-    assert any("stop" in call and "web" in call and "beat" in call for call in runner.calls)
-    assert store.read_state()["state"] == "recovery_required"
-    with pytest.raises(ReleaseManagerError, match="recovery_required"):
-        manager.resume(manifest["release_id"])
-
-
-def test_cold_cutover_interrupted_activation_refuses_automatic_resume(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
-    manager.prepare(path)
-    store = ReleaseStore(manager.release_root, manifest["release_id"])
-    store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
-    runner.calls.clear()
-    with pytest.raises(ReleaseManagerError, match="recovery_required"):
-        manager.resume(manifest["release_id"])
-    assert not any("up" in call or "run" in call for call in runner.calls)
-    assert store.read_state()["state"] == "recovery_required"
-
-
-@pytest.mark.parametrize("operation", ["resume", "rollback"])
-@pytest.mark.parametrize("rolling_back", [False, True])
-def test_cold_cutover_containment_precedes_forward_git_and_rollback_probes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    operation: str,
-    rolling_back: bool,
-) -> None:
-    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
-    manager.prepare(path)
-    store = ReleaseStore(manager.release_root, manifest["release_id"])
-    store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
-    if rolling_back:
-        store.transition(ReleaseState.ACTIVATING, ReleaseState.ROLLING_BACK)
-
-    def forbidden(*args: object, **kwargs: object) -> None:
-        raise AssertionError("forward/rollback probe must not precede cold containment")
-
-    monkeypatch.setattr(manager, "_validate_git", forbidden)
-    monkeypatch.setattr(manager, "_record_rollback_runtime_effects", forbidden)
-    monkeypatch.setattr(manager, "_observe_release_runtime", forbidden)
-    runner.calls.clear()
-    with pytest.raises(ReleaseManagerError, match="recovery_required"):
-        getattr(manager, operation)(manifest["release_id"])
-    assert any("stop" in call and "web" in call and "beat" in call for call in runner.calls)
-    assert not any("up" in call or "run" in call for call in runner.calls)
-    assert store.read_state()["state"] == "recovery_required"
-
-
 def test_production_offline_full_no_migration_update_can_compensate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2195,78 +2075,12 @@ def test_production_offline_full_no_migration_update_can_compensate(
     assert manager.status(manifest["release_id"])["state"] == "rolled_back"
 
 
-def test_production_offline_full_expand_update_can_activate(
+def test_succeeded_offline_source_still_rejects_forward_rollback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manifest_path, manifest, current_refs = _offline_bundle(
         tmp_path,
-        migration_changed=True,
-    )
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
-
-    manager.prepare(manifest_path)
-    assert manager.status(manifest["release_id"])["state"] == "prepared"
-
-    manager.activate(manifest["release_id"])
-
-    state = manager.status(manifest["release_id"])
-    assert state["state"] == "succeeded"
-    assert state["verified_migration_head"] == manifest["migration"]["target"]
-    assert runner.migration_head == manifest["migration"]["target"]
-    with pytest.raises(ReleaseManagerError, match="requires a forward rollback candidate"):
-        manager.rollback(manifest["release_id"])
-    assert manager.status(manifest["release_id"])["state"] == "succeeded"
-
-
-def test_production_offline_report_queue_expand_update_can_activate(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manifest_path, manifest, current_refs = _offline_bundle(
-        tmp_path,
-        migration_pair=OFFLINE_REPORT_EXPAND_MIGRATION,
-    )
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
-
-    manager.prepare(manifest_path)
-    manager.activate(manifest["release_id"])
-
-    state = manager.status(manifest["release_id"])
-    assert state["state"] == "succeeded"
-    assert state["verified_migration_head"] == OFFLINE_REPORT_EXPAND_MIGRATION[1]
-    assert runner.migration_head == OFFLINE_REPORT_EXPAND_MIGRATION[1]
-
-
-def test_production_offline_auth_security_expand_update_can_activate(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manifest_path, manifest, current_refs = _offline_bundle(
-        tmp_path,
-        migration_pair=OFFLINE_AUTH_EXPAND_MIGRATION,
-    )
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
-
-    manager.prepare(manifest_path)
-    manager.activate(manifest["release_id"])
-
-    state = manager.status(manifest["release_id"])
-    assert state["state"] == "succeeded"
-    assert state["verified_migration_head"] == OFFLINE_AUTH_EXPAND_MIGRATION[1]
-    assert runner.migration_head == OFFLINE_AUTH_EXPAND_MIGRATION[1]
-
-
-def test_succeeded_offline_expand_source_still_rejects_forward_rollback(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manifest_path, manifest, current_refs = _offline_bundle(
-        tmp_path,
-        migration_changed=True,
     )
     _configure_offline_trust(tmp_path, monkeypatch)
     manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
@@ -2284,13 +2098,12 @@ def test_succeeded_offline_expand_source_still_rejects_forward_rollback(
     assert manager.status(manifest["release_id"])["state"] == "succeeded"
 
 
-def test_production_offline_full_expand_staged_resume_revalidates_and_activates(
+def test_production_offline_staged_resume_revalidates_and_activates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manifest_path, manifest, current_refs = _offline_bundle(
         tmp_path,
-        migration_changed=True,
     )
     _configure_offline_trust(tmp_path, monkeypatch)
     manager, _, _, _ = _manager(tmp_path, manifest, current_refs)
@@ -2314,130 +2127,6 @@ def test_production_offline_full_expand_staged_resume_revalidates_and_activates(
     manager.resume(manifest["release_id"])
 
     assert manager.status(manifest["release_id"])["state"] == "succeeded"
-
-
-@pytest.mark.parametrize(
-    ("observed_head", "expected_state", "residual"),
-    [
-        (OFFLINE_EXPAND_MIGRATION[0], "rolled_back", []),
-        (
-            OFFLINE_EXPAND_MIGRATION[1],
-            "rolled_back",
-            [
-                "image:postgres",
-                "image:redis",
-                f"migration:{OFFLINE_EXPAND_MIGRATION[1]}",
-            ],
-        ),
-        ("0080_partial", "recovery_required", None),
-    ],
-)
-def test_production_offline_expand_migrate_failure_uses_observed_head(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    observed_head: str,
-    expected_state: str,
-    residual: list[str] | None,
-) -> None:
-    manifest_path, manifest, current_refs = _offline_bundle(
-        tmp_path,
-        migration_changed=True,
-    )
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
-    manager.prepare(manifest_path)
-    runner.fail_action = "run"
-    runner.migration_head_after_failed_run = observed_head
-
-    with pytest.raises(ReleaseManagerError, match=expected_state):
-        manager.activate(manifest["release_id"])
-
-    state = manager.status(manifest["release_id"])
-    assert state["state"] == expected_state
-    if residual is None:
-        assert "residual_changes" not in state
-        return
-    assert state["residual_changes"] == residual
-    expected_refs = current_refs.copy()
-    if observed_head == manifest["migration"]["target"]:
-        expected_refs.update(
-            {name: manifest["images"][name]["ref"] for name in ("postgres", "redis")}
-        )
-    assert manager._root_env_refs() == expected_refs
-    assert runner.runtime_refs == expected_refs
-
-
-def test_production_offline_expand_backend_failure_retains_schema_and_data(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manifest_path, manifest, current_refs = _offline_bundle(
-        tmp_path,
-        migration_changed=True,
-    )
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, _, _ = _manager(tmp_path, manifest, current_refs)
-    manager.prepare(manifest_path)
-    runner.fail_action = "up"
-    runner.fail_action_number = 3
-    runner.fail_after_effect = True
-
-    with pytest.raises(ReleaseManagerError, match="rolled_back"):
-        manager.activate(manifest["release_id"])
-
-    expected_refs = current_refs.copy()
-    expected_refs.update({name: manifest["images"][name]["ref"] for name in ("postgres", "redis")})
-    state = manager.status(manifest["release_id"])
-    assert state["state"] == "rolled_back"
-    assert state["residual_changes"] == [
-        "image:postgres",
-        "image:redis",
-        f"migration:{OFFLINE_EXPAND_MIGRATION[1]}",
-    ]
-    assert runner.migration_head == manifest["migration"]["target"]
-    assert manager._root_env_refs() == expected_refs
-    assert runner.runtime_refs == expected_refs
-
-
-def test_production_offline_expand_explicit_rollback_retains_schema_and_data(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manifest_path, manifest, current_refs = _offline_bundle(
-        tmp_path,
-        migration_changed=True,
-    )
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, root, release_root = _manager(tmp_path, manifest, current_refs)
-    manager.prepare(manifest_path)
-
-    def interrupt_after_migrate(action: str, _count: int) -> None:
-        if action == "run":
-            manager.request_stop(signal.SIGTERM, None)
-
-    runner.after_action = interrupt_after_migrate
-    with pytest.raises(ReleaseManagerError, match="interrupted"):
-        manager.activate(manifest["release_id"])
-
-    assert manager.status(manifest["release_id"])["state"] == "activating"
-    assert runner.migration_head == manifest["migration"]["target"]
-    runner.after_action = None
-    resumed = _restart_production_manager(manager, runner)
-
-    with pytest.raises(ReleaseManagerError, match="rolled_back"):
-        resumed.rollback(manifest["release_id"])
-
-    expected_refs = current_refs.copy()
-    expected_refs.update({name: manifest["images"][name]["ref"] for name in ("postgres", "redis")})
-    state = resumed.status(manifest["release_id"])
-    assert state["state"] == "rolled_back"
-    assert state["residual_changes"] == [
-        "image:postgres",
-        "image:redis",
-        f"migration:{OFFLINE_EXPAND_MIGRATION[1]}",
-    ]
-    assert resumed._root_env_refs() == expected_refs
-    assert runner.runtime_refs == expected_refs
 
 
 def test_production_offline_signature_failure_precedes_every_docker_command(
@@ -6720,75 +6409,6 @@ def test_cli_rejects_invalid_release_root_before_constructing_manager(
     assert constructed is False
 
 
-@pytest.mark.parametrize("failure", ["command", "journal"])
-def test_cold_cutover_legacy_policy_failure_contains_application(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    failure: str,
-) -> None:
-    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
-    manager.prepare(path)
-    original_run = runner.run
-    original_observation = ReleaseStore.record_observation
-
-    def fail_policy_command(
-        command: Sequence[str],
-        **kwargs: Any,
-    ) -> subprocess.CompletedProcess[str]:
-        if failure == "command" and "cold-cutover" in command:
-            return subprocess.CompletedProcess(list(command), 1, "", "policy conflict")
-        return original_run(command, **kwargs)
-
-    def fail_policy_journal(self: ReleaseStore, kind: str, detail: dict[str, Any]) -> Any:
-        if failure == "journal" and kind == "cold_cutover_legacy_key_policy":
-            raise OSError("journal unavailable")
-        return original_observation(self, kind, detail)
-
-    monkeypatch.setattr(runner, "run", fail_policy_command)
-    monkeypatch.setattr(ReleaseStore, "record_observation", fail_policy_journal)
-    with pytest.raises(ReleaseManagerError, match="recovery_required"):
-        manager.activate(manifest["release_id"])
-    assert manager.status(manifest["release_id"])["state"] == "recovery_required"
-    assert any("stop" in command and "web" in command for command in runner.calls)
-
-
-@pytest.mark.parametrize("phase", ["prepare", "activate"])
-@pytest.mark.parametrize("result", ["1\n", "", "garbled\n"])
-def test_cold_cutover_rejects_incompatible_admission_before_stopping(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    phase: str,
-    result: str,
-) -> None:
-    path, manifest, refs = _offline_bundle(tmp_path, migration_pair=ONE_TIME_COLD_CUTOVER)
-    _configure_offline_trust(tmp_path, monkeypatch)
-    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
-    if phase == "activate":
-        manager.prepare(path)
-    before = manager.environment_file.read_bytes()
-    runner.calls.clear()
-    original_run = runner.run
-
-    def admission_result(
-        command: Sequence[str],
-        **kwargs: Any,
-    ) -> subprocess.CompletedProcess[str]:
-        if "cold-cutover-admission" in command:
-            return subprocess.CompletedProcess(list(command), 0, result, "")
-        return original_run(command, **kwargs)
-
-    monkeypatch.setattr(runner, "run", admission_result)
-    with pytest.raises(ReleaseManagerError):
-        if phase == "prepare":
-            manager.prepare(path)
-        else:
-            manager.activate(manifest["release_id"])
-    assert manager.environment_file.read_bytes() == before
-    assert not any("stop" in call or "up" in call or "run" in call for call in runner.calls)
-
-
 @pytest.mark.parametrize(
     "field", ["nonce", "worker", "active_queues", "queue", "exchange", "routing_key"]
 )
@@ -6820,3 +6440,86 @@ def test_development_release_compose_rechecks_explicit_port_selection(
     environment.write_text("ENVIRONMENT=test\n")
     with pytest.raises(ReleaseManagerError, match="configuration rejected"):
         manager._compose()
+
+
+@pytest.mark.parametrize(
+    ("start", "target", "compatibility"),
+    [
+        ("0080_security_daily_delivery_generation", "0081_sign_adoption_contract", "expand"),
+        ("0081_sign_adoption_contract", "0082_outbox_realtime_report_queue", "expand"),
+        ("0082_outbox_realtime_report_queue", "0084_auth_security_and_ad_freshness", "expand"),
+        ("0084_auth_security_and_ad_freshness", "0116_usage_release_generation", "cold_cutover"),
+    ],
+)
+def test_retired_offline_updates_fail_before_runtime_commands(
+    tmp_path: Path, start: str, target: str, compatibility: str,
+) -> None:
+    path, manifest, refs = _offline_bundle(tmp_path)
+    manifest["migration"] = {"from": start, "target": target, "compatibility": compatibility}
+    _write_private_json(path, manifest)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    before = manager.environment_file.read_bytes()
+
+    with pytest.raises(ReleaseManagerError):
+        manager.prepare(path)
+
+    assert not runner.calls
+    assert manager.environment_file.read_bytes() == before
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_retired_release_status_preserves_historical_state_and_journal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal: bool,
+) -> None:
+    path, manifest, refs = _offline_bundle(tmp_path)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    manager.prepare(path)
+    store = ReleaseStore(manager.release_root, manifest["release_id"])
+    manifest["migration"] = {
+        "from": "0084_auth_security_and_ad_freshness",
+        "target": "0116_usage_release_generation",
+        "compatibility": "cold_cutover",
+    }
+    _write_private_json(store.release_dir / "manifest.json", manifest)
+    if terminal:
+        store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
+        store.transition(
+            ReleaseState.ACTIVATING, ReleaseState.RECOVERY_REQUIRED,
+            failure_type="cold_cutover_operator_recovery",
+        )
+    expected = store.read_state()
+    before = {p.name: p.read_bytes() for p in store.release_dir.iterdir() if p.is_file()}
+    runner.calls.clear()
+
+    assert manager.status(manifest["release_id"]) == expected
+    assert not runner.calls
+    assert {p.name: p.read_bytes() for p in store.release_dir.iterdir() if p.is_file()} == before
+
+
+@pytest.mark.parametrize("operation", ["activate", "resume", "rollback", "configure_activation"])
+def test_retired_stored_release_refuses_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str,
+) -> None:
+    path, manifest, refs = _offline_bundle(tmp_path)
+    _configure_offline_trust(tmp_path, monkeypatch)
+    manager, runner, _, _ = _manager(tmp_path, manifest, refs)
+    manager.prepare(path)
+    store = ReleaseStore(manager.release_root, manifest["release_id"])
+    manifest["migration"] = {
+        "from": "0084_auth_security_and_ad_freshness",
+        "target": "0116_usage_release_generation",
+        "compatibility": "cold_cutover",
+    }
+    _write_private_json(store.release_dir / "manifest.json", manifest)
+    before = manager.environment_file.read_bytes()
+    runner.calls.clear()
+
+    with pytest.raises(
+        ReleaseManagerError,
+        match="stored release manifest is invalid|activation configuration failed",
+    ):
+        getattr(manager, operation)(manifest["release_id"])
+
+    assert manager.environment_file.read_bytes() == before
+    assert not runner.calls

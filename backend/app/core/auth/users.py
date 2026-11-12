@@ -1235,7 +1235,3 @@ class SqlUserRepository:
                 )
         finally:
             await engine.dispose()
-
-
-# 兼容重构期间的模块导入；调用方必须迁移到稳定主体语义。
-PlatformUser = PlatformAccount

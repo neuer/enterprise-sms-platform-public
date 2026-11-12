@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, TypeGuard, get_args
 
-from app.core.auth.backends import AuthenticatedIdentity, DirectoryIdentity, InvalidCredentials
+from app.core.auth.backends import AuthenticatedIdentity, InvalidCredentials
 
 Role = Literal["admin", "approver", "operator", "viewer"]
 ROLE_PRIORITY: dict[str, int] = {"viewer": 1, "operator": 2, "approver": 3, "admin": 4}
@@ -33,7 +33,7 @@ class RoleResolver:
 
     def resolve(
         self,
-        identity: AuthenticatedIdentity | DirectoryIdentity,
+        identity: AuthenticatedIdentity,
         existing: ExistingUser | None,
         mappings: Mapping[str, str],
     ) -> RoleDecision:
@@ -41,10 +41,7 @@ class RoleResolver:
             return RoleDecision(existing.role)
 
         roles = [mappings[group] for group in identity.groups if group in mappings]
-        if (
-            isinstance(identity, AuthenticatedIdentity)
-            and identity.development_role is not None
-        ):
+        if identity.development_role is not None:
             roles.append(identity.development_role)
         valid_roles = [role for role in roles if role in ROLE_PRIORITY]
         if valid_roles:

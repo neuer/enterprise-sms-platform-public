@@ -574,9 +574,8 @@ VMDK 仍可读”等故障，不能覆盖整 VM、全部 VMDK 或 datastore 丢�
 ENG-02 随本次生产离线包实现进入候选验收，只有定向测试、预生产同包演练和生产信任根读回均
 通过后才可标记 `closed`；其余工程项仍按实际证据收口，本文不因文字修改声称已经实现。ENG-03
 未闭合前，只有明确不改变宿主资产
-inventory 的 application-only release 可进入后续评估。唯一窄例外是 Docker 首次启动前，从固定旧
-commit `555fb20b0d630ece9099a88a463eb1ce1121c012` 执行仅限六个存储预检资产的
-mountinfo credential 修复；它不适用于已 bootstrap 主机，也不关闭 ENG-03。
+inventory 的 application-only release 可进入后续评估。固定旧提交的首次 bootstrap 前
+修复已退役；该范围收缩不关闭 ENG-03，也不提供通用宿主资产升级授权。
 
 ### Gate 0：责任和变更治理
 
@@ -637,56 +636,17 @@ sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_a
 ```
 
 尖括号必须替换为将要安装的 40 位候选 commit，不能原样执行。
-若该主机已在固定旧 commit 完成首装，但仍未首次启动 Docker，上述 mountinfo
-credential 窄修复必须使用 [部署手册](../../deploy/README.md#安装受控包装器与-systemd)
-中固定的 `555fb20b0d630ece9099a88a463eb1ce1121c012` →
-`109c10865b2aac3989bc4cebf3c60788f44b168c`、`apply/resume/rollback/upgrade-accept`
-流程；禁止把 NEW 指向其它 commit、手工覆盖六个目标或直接改写 canonical state。该历史路径
-只接受空 data-root 的 `0711`；到达 `109c108...` 后须在该版本完成一次受控 Docker 技术首启，
-随后停止并重新 mask Docker/containerd、保持平台未 bootstrap，再使用下述第二 profile 收敛到
-当前全生命周期 `0710` 合同和新合并 SHA。
-若主机已在 `109c10865b2aac3989bc4cebf3c60788f44b168c` 完成宿主资产首装并已技术
-首启 Docker，但尚未 bootstrap，旧 preflight 会把 Docker 稳态 `root:root 0710` 报为错误。
-此时只能按部署手册中第二个固定 repair profile，使用下列同一 CLI 参数从该旧 SHA
-升级到已审核、干净的新合并 SHA：
+宿主资产安装器只支持当前首装与同一首装事务的恢复；绑定旧提交的两套修复 profile、
+`--from-commit` 与 `upgrade-accept` 已退役。已完成的旧版状态仍可只读核验。
+发现旧升级 intent 或暂存文件时，当前入口失败关闭并保留文件，按
+[部署手册](../../deploy/README.md#安装受控包装器与-systemd) 建立单独恢复变更。
+该脚本只安装固定仓库资产，不执行 APT、Git、`mkfs`、mount、fstab、Docker、systemd
+生命周期、secret、`.env` 或 release。安装后人工核对 `/etc/sms-platform/compose.env`
+与 lifecycle 配置，运行 `systemd-analyze verify`、`sms-storage-preflight` 和宿主 Python
+preflight；首个 bootstrap 前平台与四个 timer 保持 disabled/inactive。
 
-```bash
-OLD_COMMIT='109c10865b2aac3989bc4cebf3c60788f44b168c'
-NEW_COMMIT='<40位新合并commit>'
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py plan \
-  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py apply \
-  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT" \
-  --confirm-dedicated-production-host --confirm-vcenter-storage-reviewed
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py upgrade-accept \
-  --from-commit "$OLD_COMMIT" --expected-commit "$NEW_COMMIT"
-sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/install_production_host_assets.py status
-```
-
-该 profile 只允许 `storage-preflight` 一项宿主资产变化；Docker data-root 可非空但必须原样
-保留，Docker/containerd 三个 unit 必须 masked/inactive，平台、vendor、四个维护 service、
-四个 timer 和 release root 必须仍符合 pre-bootstrap 边界。候选 preflight 必须与旧 payload
-逐字节相同，唯一允许的差异是将唯一的 Docker MountRequirement `0o711` 替换为
-`0o710`；同一文件内任何其它字节变化都失败关闭。`apply/resume` 只写 root-only intent
-并原子替换该一项资产；替换前必须先用绑定候选 commit 的字节通过内联只读 preflight。
-`upgrade-accept` 必须新启动正式 preflight，读到
-`Result=success`/`ExecMainStatus=0` 且再次验真全部边界后才最后提交 canonical state。
-accept 前可用同一 OLD/NEW 和 `--confirm-rollback-this-install` 执行 `rollback`；它只恢复
-旧 preflight，因其会继续将 `0710` 报错，所以 rollback 是安全 No-Go，不是恢复启动。
-该一次性修复不关闭 ENG-03，也不得将 29.7.2 改标为 `approved`；RF-07 与 RF-12 仍只能
-依各自受限证据和责任人批准收口。
-该脚本只安装固定仓库资产，不执行 APT、Git、`mkfs`、mount、fstab、Docker、systemctl enable、
-secret、`.env` 或 release；唯一例外是窄升级的 `upgrade-accept` 在 installer 锁内同步启动一次
-`sms-storage-preflight.service`，绝不启动 Docker、平台、vendor 或维护服务。该命令失败或超时会
-保留旧 canonical state 与 upgrade intent；`active/activating/deactivating` 或 `Job` 非空时，
-accept/resume/rollback 均失败关闭。排障并确认 preflight 静止且 PID 1 无 pending job 后，只能用
-相同 OLD/NEW 重试，禁止手工改写状态。安装后人工核对 `/etc/sms-platform/compose.env` 与 lifecycle 配置，运行
-`systemd-analyze verify`、`sms-storage-preflight` 和宿主 Python preflight；首个 bootstrap 前平台与
-四个 timer 保持 disabled/inactive。
-
-仅常规首次安装路径在完成上述读回后，人工 `daemon-reload` 并先启动一次
-storage preflight，再解除 containerd/Docker 的 mask 并启动二者；两种窄修复路径已由
-`upgrade-accept` 同步完成该次预检，禁止手工重复启动。随后立即执行：
+首次安装完成上述读回后，人工 `daemon-reload` 并先启动一次 storage preflight，
+再解除 containerd/Docker 的 mask 并启动二者；随后立即执行：
 
 ```bash
 sudo /usr/bin/python3 /opt/sms-platform/deploy/scripts/production_host_preflight.py runtime

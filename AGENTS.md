@@ -54,7 +54,7 @@
 16. API 错误统一 `{code, message, detail}`；禁止裸 500
 17. 库表变更只走 Alembic；手机号相关表新增列必须遵守规则 2 的四列规范
 18. **计费条计算只允许 `services/billing.py`**（`1 if L≤70 else ceil(L/67)`，L=含签名与退订语的最终内容长度）；预扣/回补、预估、统计全部调用它（静态门禁，前后端）
-19. 号码频控走规则 11 的账本：verify 按号码全局计数，market 按应用与号码计数；窗口对齐分钟/上海自然日，app.freq_override 优先于 sys_config。新业务复用 `UsageLedgerService`，不得以 Redis INCR+EXPIRE 作为唯一事实；`services/freq.py` 现存直接计数路径的退出另行评估
+19. 号码频控走规则 11 的账本：verify 按号码全局计数，market 按应用与号码计数；窗口对齐分钟/上海自然日，app.freq_override 优先于 sys_config。新业务复用 `UsageLedgerService`，不得以 Redis INCR+EXPIRE 作为唯一事实；`services/freq.py` 仅保留共享配置值，不承载计数实现
 20. 营销合规在流水线单点处理：market 内容缺退订语且 unsubscribe_auto_append=true 时自动追加（在计费条计算**之前**）；Web market 未勾选同意 → 422 CONSENT_REQUIRED；consent_confirmed 与操作人写入审计
 21. **审计载荷禁止包含手机号列表**（明文或密文皆禁），只允许号码数量与 batch_no 引用（DB CHECK `ck_audit_payload_no_pii`）
 22. 模板渲染 `services/template.py` 单点实现：`{1}..{n}` 全量替换，参数个数不符 422 TEMPLATE_PARAM_MISMATCH，渲染后长度>500 拒绝（静态门禁：占位解析）
