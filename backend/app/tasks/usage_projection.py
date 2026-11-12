@@ -15,9 +15,7 @@ async def _reconcile() -> int:
     settings = get_settings()
     redis = Redis.from_url(settings.redis_control_url, decode_responses=True)
     try:
-        return await reconcile_usage_facts(
-            UsageLedgerService(redis, settings, pooled=False)
-        )
+        return await reconcile_usage_facts(UsageLedgerService(redis, settings))
     finally:
         await redis.aclose()
 

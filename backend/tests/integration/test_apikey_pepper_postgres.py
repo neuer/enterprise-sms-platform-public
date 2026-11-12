@@ -20,7 +20,7 @@ from app.core.apikey import (
     InvalidApiKey,
     SqlApiKeyRepository,
     derive_legacy_data_hmac_pepper,
-    issue_api_key_digest,
+    issue_api_key_record,
 )
 from app.core.health import ApiKeyPepperReferenceCheck
 from app.services.app_repository import SqlAppRepository
@@ -123,10 +123,10 @@ async def test_pepper_bound_key_survives_data_hmac_rotation_and_legacy_sha256(
     modern_key = f"modern-{nonce}-with-enough-entropy"
     legacy_key = f"legacy-{nonce}-with-enough-entropy"
     rotated_key = f"rotated-{nonce}-with-enough-entropy"
-    digest_v1, version_v1 = issue_api_key_digest(modern_key, settings=pepper_v1)
-    digest_v2, version_v2 = issue_api_key_digest(rotated_key, settings=pepper_rotated)
-    assert version_v1 == 1
-    assert version_v2 == 2
+    issued_v1 = issue_api_key_record(modern_key, settings=pepper_v1)
+    issued_v2 = issue_api_key_record(rotated_key, settings=pepper_rotated)
+    assert issued_v1.pepper_version == 1
+    assert issued_v2.pepper_version == 2
     app_ids: list[int] = []
     now = datetime.now(UTC).replace(second=0, microsecond=0)
 
@@ -134,8 +134,8 @@ async def test_pepper_bound_key_survives_data_hmac_rotation_and_legacy_sha256(
         app_id = await _insert_app(
             repository,
             key=modern_key,
-            digest=digest_v1,
-            version=version_v1,
+            digest=issued_v1.digest,
+            version=issued_v1.pepper_version,
             name=f"pepper-{nonce}",
         )
         app_ids.append(app_id)
@@ -165,9 +165,9 @@ async def test_pepper_bound_key_survives_data_hmac_rotation_and_legacy_sha256(
             repository,
             "rotate_key",
             app_id,
-            api_key_hash=digest_v2,
+            api_key_hash=issued_v2.digest,
             api_key_prefix=rotated_key[:8],
-            api_key_hash_version=version_v2,
+            api_key_hash_version=issued_v2.pepper_version,
             old_key_expires_at=now + timedelta(hours=72),
             actor="integration",
             ip="127.0.0.1",

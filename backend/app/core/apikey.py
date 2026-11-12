@@ -143,21 +143,6 @@ def issue_api_key_record(
     )
 
 
-def issue_api_key_digest(
-    key: str, *, settings: Settings | None = None
-) -> tuple[str, int | None]:
-    """兼容旧调用方：返回 (digest, pepper_version)。"""
-
-    issued = issue_api_key_record(key, settings=settings)
-    return issued.digest, issued.pepper_version
-
-
-def hash_api_key(key: str, *, settings: Settings | None = None) -> str:
-    """新写入使用 HMAC-SHA256(pepper, key)；非生产且无 pepper 时才写 SHA-256。"""
-
-    return issue_api_key_record(key, settings=settings).digest
-
-
 def _peppered_digest(key: str, pepper: bytes) -> str:
     # HMAC-SHA256(pepper, key) 用于高熵 API Key，不是口令 KDF。
     return hmac.new(  # codeql[py/weak-sensitive-data-hashing]

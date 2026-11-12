@@ -25,7 +25,7 @@ async def dispatch_forever(*, idle_seconds: float = 1.0) -> None:
     if not 0.1 <= idle_seconds <= 30:
         raise ValueError("invalid outbox idle interval")
     dispatcher = OutboxDispatcher(
-        SqlOutboxRepository(pooled=True),
+        SqlOutboxRepository(),
         CeleryOutboxPublisher(),
     )
     repository = dispatcher.repository

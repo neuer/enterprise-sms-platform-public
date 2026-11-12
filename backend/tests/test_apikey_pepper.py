@@ -20,8 +20,6 @@ from app.core.apikey import (
     UnknownPepperVersionError,
     _digest_matches,
     derive_legacy_data_hmac_pepper,
-    hash_api_key,
-    issue_api_key_digest,
     issue_api_key_record,
     load_api_key_pepper_keyring,
     parse_unclassified_algorithms,
@@ -69,7 +67,7 @@ def test_data_hmac_keyring_upgrade_must_not_change_api_key_digest(tmp_path: Path
         data_hmac_key=bare_hmac,
         api_key_pepper_key=pepper,
     )
-    digest, version = issue_api_key_digest(key, settings=first)
+    issued = issue_api_key_record(key, settings=first)
 
     upgraded = settings_with_secrets(
         tmp_path / "v2",
@@ -77,32 +75,33 @@ def test_data_hmac_keyring_upgrade_must_not_change_api_key_digest(tmp_path: Path
         data_hmac_key=keyring(2, {1: bare_hmac, 2: b64(b"H")}),
         api_key_pepper_key=pepper,
     )
-    assert issue_api_key_digest(key, settings=upgraded) == (digest, version)
+    assert issue_api_key_record(key, settings=upgraded) == issued
     assert _digest_matches(
-        key, digest, version, algorithm="api_pepper", settings=upgraded
+        key, issued.digest, issued.pepper_version, algorithm="api_pepper", settings=upgraded
     )
-    assert hash_api_key(key, settings=upgraded) != hashlib.sha256(key.encode()).hexdigest()
+    assert issued.algorithm == "api_pepper"
+    assert issued.digest != hashlib.sha256(key.encode()).hexdigest()
     assert first.credential("data_hmac_key") != upgraded.credential("data_hmac_key")
 
 
 def test_api_key_pepper_rotation_keeps_version_bound_digests(tmp_path: Path) -> None:
     key = "current_key_with_enough_entropy_123"
     v1 = settings_with_secrets(tmp_path / "p1", api_key_pepper_key=b64(b"p"))
-    digest, version = issue_api_key_digest(key, settings=v1)
-    assert version == 1
+    issued = issue_api_key_record(key, settings=v1)
+    assert issued.pepper_version == 1
 
     rotated = settings_with_secrets(
         tmp_path / "p2",
         api_key_pepper_key=keyring(2, {1: b64(b"p"), 2: b64(b"q")}),
     )
     assert _digest_matches(
-        key, digest, 1, algorithm="api_pepper", settings=rotated
+        key, issued.digest, 1, algorithm="api_pepper", settings=rotated
     )
-    new_digest, new_version = issue_api_key_digest(key, settings=rotated)
-    assert new_version == 2
-    assert new_digest != digest
+    renewed = issue_api_key_record(key, settings=rotated)
+    assert renewed.pepper_version == 2
+    assert renewed.digest != issued.digest
     assert not _digest_matches(
-        key, digest, 2, algorithm="api_pepper", settings=rotated
+        key, issued.digest, 2, algorithm="api_pepper", settings=rotated
     )
 
 
@@ -148,7 +147,7 @@ async def test_current_and_previous_keys_can_use_different_pepper_versions(
 def test_unknown_pepper_version_fail_closed_without_leaking_secret(tmp_path: Path) -> None:
     settings = settings_with_secrets(tmp_path, api_key_pepper_key=b64(b"p"))
     key = "current_key_with_enough_entropy_123"
-    digest, _version = issue_api_key_digest(key, settings=settings)
+    digest = issue_api_key_record(key, settings=settings).digest
     with pytest.raises(UnknownPepperVersionError) as error:
         _digest_matches(key, digest, 9, algorithm="api_pepper", settings=settings)
     leaked = f"{error.value!r} {load_api_key_pepper_keyring(settings)!r}"
@@ -167,7 +166,7 @@ async def test_authenticate_keeps_working_after_data_hmac_keyring_upgrade(
         data_hmac_key=b64(b"h"),
         api_key_pepper_key=b64(b"p"),
     )
-    digest, version = issue_api_key_digest(key, settings=created)
+    issued = issue_api_key_record(key, settings=created)
     upgraded = settings_with_secrets(
         tmp_path / "upgrade",
         data_hmac_key=keyring(2, {1: b64(b"h"), 2: b64(b"H")}),
@@ -181,10 +180,10 @@ async def test_authenticate_keeps_working_after_data_hmac_keyring_upgrade(
                     name="app-hmac",
                     dept="平台部",
                     allowed_categories="notice",
-                    current_hash=digest,
+                    current_hash=issued.digest,
                     previous_hash=None,
                     previous_expires_at=None,
-                    current_hash_version=version,
+                    current_hash_version=issued.pepper_version,
                     current_hash_algorithm="api_pepper",
                 )
             ]
@@ -201,7 +200,7 @@ async def test_unknown_pepper_version_authenticate_is_unauthorized_without_leak(
 ) -> None:
     settings = settings_with_secrets(tmp_path, api_key_pepper_key=b64(b"p"))
     key = "current_key_with_enough_entropy_123"
-    digest, _version = issue_api_key_digest(key, settings=settings)
+    digest = issue_api_key_record(key, settings=settings).digest
     auth = ApiKeyAuthenticator(
         _FakeRepo(
             [
@@ -236,11 +235,11 @@ def test_null_algorithm_is_not_silently_treated_as_sha256(tmp_path: Path) -> Non
     assert _digest_matches(
         key, legacy, None, algorithm="legacy_sha256", settings=settings
     )
-    modern, version = issue_api_key_digest(key, settings=settings)
-    assert version == 1
-    assert not _digest_matches(key, modern, None, settings=settings)
+    modern = issue_api_key_record(key, settings=settings)
+    assert modern.pepper_version == 1
+    assert not _digest_matches(key, modern.digest, None, settings=settings)
     assert _digest_matches(
-        key, modern, version, algorithm="api_pepper", settings=settings
+        key, modern.digest, modern.pepper_version, algorithm="api_pepper", settings=settings
     )
 
 

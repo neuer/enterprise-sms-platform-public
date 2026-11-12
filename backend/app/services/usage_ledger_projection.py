@@ -398,7 +398,6 @@ class UsageProjectionMixin:
 
     redis: UsageRedis
     settings: Settings
-    pooled: bool
     clock: Callable[[], datetime]
 
     def _engine(self) -> ManagedAsyncEngine:

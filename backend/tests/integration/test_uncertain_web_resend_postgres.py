@@ -66,7 +66,7 @@ class EngineBoundStore(SqlPipelineStore):
 
 class BoundLedger(UsageLedgerService):
     def __init__(self, redis: Any, settings: Any, engine: Any) -> None:
-        super().__init__(redis, settings, pooled=False, clock=lambda: datetime.now(UTC))
+        super().__init__(redis, settings, clock=lambda: datetime.now(UTC))
         self._bound_engine = engine
 
     def _engine(self) -> Any:

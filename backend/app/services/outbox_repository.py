@@ -153,14 +153,8 @@ async def enqueue_outbox(
 
 
 class SqlOutboxRepository:
-    def __init__(
-        self,
-        settings: Settings | None = None,
-        *,
-        pooled: bool = False,
-    ) -> None:
+    def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
-        self.pooled = pooled
 
     def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
