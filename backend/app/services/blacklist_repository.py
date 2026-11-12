@@ -204,39 +204,33 @@ class SqlBlacklistRepository:
         if conditions:
             where = " WHERE " + " AND ".join(conditions)
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                total = await connection.scalar(
-                    text(f"SELECT count(*) FROM blacklist{where}"),  # noqa: S608
-                    params,
-                )
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            total = await connection.scalar(
+                text(f"SELECT count(*) FROM blacklist{where}"),  # noqa: S608
+                params,
+            )
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT phone_hmac,phone_enc,phone_mask,key_version,source,remark,created_at
                         FROM blacklist{where} ORDER BY created_at DESC
                         LIMIT :limit OFFSET :offset
                         """  # noqa: S608
-                    ),
-                    params,
-                )
-                return BlacklistPage(
-                    total=int(total or 0),
-                    items=[BlacklistEntry(**dict(row)) for row in result.mappings()],
-                )
-        finally:
-            await engine.dispose()
+                ),
+                params,
+            )
+            return BlacklistPage(
+                total=int(total or 0),
+                items=[BlacklistEntry(**dict(row)) for row in result.mappings()],
+            )
 
     async def all_hmacs(self) -> set[str]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text("SELECT hmac_digest FROM blacklist_hmac_alias")
-                )
-                return {str(value).strip() for value in result.scalars()}
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT hmac_digest FROM blacklist_hmac_alias")
+            )
+            return {str(value).strip() for value in result.scalars()}
 
     async def upsert_many(
         self,
@@ -247,17 +241,14 @@ class SqlBlacklistRepository:
         source: str,
     ) -> BlacklistUpsertResult:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                return await upsert_blacklist_entries(
-                    connection,
-                    entries,
-                    principal=principal,
-                    ip=ip,
-                    source=source,
-                )
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            return await upsert_blacklist_entries(
+                connection,
+                entries,
+                principal=principal,
+                ip=ip,
+                source=source,
+            )
 
     async def delete(
         self,
@@ -267,12 +258,11 @@ class SqlBlacklistRepository:
         ip: str,
     ) -> bool:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await lock_blacklist_subjects(connection, [phone_hmac])
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await lock_blacklist_subjects(connection, [phone_hmac])
+            result = await connection.execute(
+                text(
+                    """
                         DELETE FROM blacklist
                         WHERE phone_hmac=COALESCE(
                           (
@@ -283,32 +273,30 @@ class SqlBlacklistRepository:
                         )
                         RETURNING 1
                         """
-                    ),
-                    {"phone_hmac": phone_hmac},
+                ),
+                {"phone_hmac": phone_hmac},
+            )
+            removed = result.scalar_one_or_none() is not None
+            if removed:
+                await bump_blacklist_generation(connection)
+            if removed:
+                await bind_connection_audit_subject(
+                    connection,
+                    subject_kind="human",
+                    actor_name=principal.login_name,
+                    account_id=principal.account_id,
+                    identity_id=principal.identity_id,
                 )
-                removed = result.scalar_one_or_none() is not None
-                if removed:
-                    await bump_blacklist_generation(connection)
-                if removed:
-                    await bind_connection_audit_subject(
-                        connection,
-                        subject_kind="human",
-                        actor_name=principal.login_name,
-                        account_id=principal.account_id,
-                        identity_id=principal.identity_id,
-                    )
-                    await insert_audit(
-                        connection,
-                        AuditEvent(
-                            principal=principal,
-                            role=principal.role,
-                            ip=ip,
-                            action="blacklist_delete",
-                            object_type="blacklist",
-                            object_id="batch",
-                            after={"count": 1},
-                        ),
-                    )
-                return removed
-        finally:
-            await engine.dispose()
+                await insert_audit(
+                    connection,
+                    AuditEvent(
+                        principal=principal,
+                        role=principal.role,
+                        ip=ip,
+                        action="blacklist_delete",
+                        object_type="blacklist",
+                        object_id="batch",
+                        after={"count": 1},
+                    ),
+                )
+            return removed

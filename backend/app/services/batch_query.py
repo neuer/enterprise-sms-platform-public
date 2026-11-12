@@ -150,24 +150,23 @@ class BatchQueryService:
         where = "\n AND ".join(clauses)
         base_where = "\n AND ".join(base_clauses)
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                counts_result = await connection.execute(
-                    text(
-                        "SELECT b.status AS status,count(*) AS n"
-                        " FROM sms_batch b WHERE " + base_where + " GROUP BY b.status"
-                    ),
-                    base_params,
-                )
-                status_counts = {
-                    str(row["status"]): int(row["n"]) for row in counts_result.mappings()
-                }
-                # 分面已覆盖同一权限和非状态筛选；复用它计算选中状态的总数。
-                selected_statuses = set(statuses) if statuses else set(status_counts)
-                total = sum(status_counts.get(status, 0) for status in selected_statuses)
-                rows_result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            counts_result = await connection.execute(
+                text(
+                    "SELECT b.status AS status,count(*) AS n"
+                    " FROM sms_batch b WHERE " + base_where + " GROUP BY b.status"
+                ),
+                base_params,
+            )
+            status_counts = {
+                str(row["status"]): int(row["n"]) for row in counts_result.mappings()
+            }
+            # 分面已覆盖同一权限和非状态筛选；复用它计算选中状态的总数。
+            selected_statuses = set(statuses) if statuses else set(status_counts)
+            total = sum(status_counts.get(status, 0) for status in selected_statuses)
+            rows_result = await connection.execute(
+                text(
+                    f"""
                         WITH batch_page AS MATERIALIZED (
                           SELECT b.id,b.batch_no,b.category,b.channel,b.app_id,b.creator,
                             b.dept,b.display_content_enc,b.status,b.deferred_reason,b.resend_of,
@@ -191,16 +190,14 @@ class BatchQueryService:
                         {self._message_status_counts_join()}
                         ORDER BY b.created_at DESC,b.id DESC
                         """
-                    ),
-                    params,
-                )
-                return {
-                    "total": total,
-                    "status_counts": status_counts,
-                    "items": [self._batch(row) for row in rows_result.mappings()],
-                }
-        finally:
-            await engine.dispose()
+                ),
+                params,
+            )
+            return {
+                "total": total,
+                "status_counts": status_counts,
+                "items": [self._batch(row) for row in rows_result.mappings()],
+            }
 
     async def get_batch(
         self,
@@ -209,11 +206,10 @@ class BatchQueryService:
     ) -> dict[str, object]:
         predicate, scope_params = scope.sql()
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT trim(b.batch_no) AS batch_no,b.category,b.channel,
                           a.name AS app_name,b.creator,b.dept,b.display_content_enc,b.status,
                           b.deferred_reason,trim(original.batch_no) AS resend_of,
@@ -234,19 +230,17 @@ class BatchQueryService:
                         {self._message_status_counts_join()}
                         WHERE b.batch_no=:batch_no AND {predicate}
                         """
-                    ),
-                    {"batch_no": batch_no, **scope_params},
-                )
-                row = result.mappings().first()
-                if row is None:
-                    raise BatchNotFound
-                item = self._batch(row)
-                coverage = await read_coverage(connection, batch_no, predicate, scope_params)
-                if coverage is not None:
-                    item.update(coverage.as_dict())
-                return item
-        finally:
-            await engine.dispose()
+                ),
+                {"batch_no": batch_no, **scope_params},
+            )
+            row = result.mappings().first()
+            if row is None:
+                raise BatchNotFound
+            item = self._batch(row)
+            coverage = await read_coverage(connection, batch_no, predicate, scope_params)
+            if coverage is not None:
+                item.update(coverage.as_dict())
+            return item
 
     async def list_details(
         self,
@@ -280,12 +274,11 @@ class BatchQueryService:
             WHERE b.batch_no=:batch_no AND {predicate} {status_predicate} {display_predicate}
         """
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                count = await connection.scalar(text(f"SELECT count(*) {source}"), params)
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            count = await connection.scalar(text(f"SELECT count(*) {source}"), params)
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT m.id,m.phone_mask AS phone,m.status,b.status AS batch_status,
                           ({MESSAGE_DISPLAY_STATUS_SQL}) AS display_status,
                           c.vendor_task_id,m.report_desc,m.report_time,
@@ -299,12 +292,10 @@ class BatchQueryService:
                         ORDER BY m.id
                         OFFSET :offset LIMIT :size
                         """
-                    ),
-                    params,
-                )
-                return {
-                    "total": int(count or 0),
-                    "items": [dict(row) for row in result.mappings()],
-                }
-        finally:
-            await engine.dispose()
+                ),
+                params,
+            )
+            return {
+                "total": int(count or 0),
+                "items": [dict(row) for row in result.mappings()],
+            }

@@ -58,5 +58,3 @@ async def lock_export_authorization(
             yield connection
     except SQLAlchemyError:
         raise ApiError(503, "AUTH_SESSION_UNAVAILABLE", "下载授权状态暂不可用", None) from None
-    finally:
-        await engine.dispose()

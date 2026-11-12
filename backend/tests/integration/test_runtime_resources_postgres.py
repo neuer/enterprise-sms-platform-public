@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import os
 from contextlib import suppress
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from sqlalchemy import text
@@ -11,6 +13,8 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 import app.core.runtime_resources as resources
+from app.services import balance_repository
+from app.settings import Settings
 
 pytestmark = pytest.mark.skipif(
     "OUTBOX_POSTGRES_DSN" not in os.environ,
@@ -174,22 +178,29 @@ async def test_real_prefork_workers_preserve_parent_and_close_independent_pools(
     import sys
 
     process = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "tests.runtime_pool_process_probe",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        sys.executable,
+        "-m",
+        "tests.runtime_pool_process_probe",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
     communication = asyncio.create_task(process.communicate())
 
     def phases(output: bytes) -> str:
         allowed = {
-            "parent-warmed", "workers-started", "child-discarded", "child-pool-exercised",
-            "child-resources-closed", "child-result-sent", "results-received",
+            "parent-warmed",
+            "workers-started",
+            "child-discarded",
+            "child-pool-exercised",
+            "child-resources-closed",
+            "child-result-sent",
+            "results-received",
         }
         observed = [
             line.removeprefix("prefork-phase:")
             for line in output.decode("utf-8", errors="replace").splitlines()
-            if line.startswith("prefork-phase:")
-            and line.removeprefix("prefork-phase:") in allowed
+            if line.startswith("prefork-phase:") and line.removeprefix("prefork-phase:") in allowed
         ]
         return ",".join(observed) or "no-phase"
 
@@ -215,3 +226,65 @@ async def test_real_prefork_workers_preserve_parent_and_close_independent_pools(
             communication.cancel()
             with suppress(asyncio.CancelledError):
                 await communication
+
+
+@pytest.mark.asyncio
+async def test_repository_returns_connections_and_rolls_back_without_closing_shared_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """仓储成功、SQL 失败和任务取消均归还连接；只有进程退出关闭共享池。"""
+
+    database_url = make_url(os.environ["OUTBOX_POSTGRES_DSN"])
+    resources._BUDGETS["background"] = resources.DatabasePoolBudget(1, 0, 1, 1, 5_000)
+    engine = resources.database_engine(database_url, component="background")
+    monkeypatch.setattr(balance_repository, "database_engine", lambda _: engine)
+    repository = balance_repository.SqlBalanceRepository(
+        cast(Settings, SimpleNamespace(database_url=database_url))
+    )
+    async with engine.connect() as connection:
+        pid = await connection.scalar(text("SELECT pg_backend_pid()"))
+        before = await connection.scalar(text("SELECT count(*) FROM balance_snapshot"))
+    try:
+        threshold = await repository.alert_threshold()
+        await repository.save_snapshot(12345)
+        with pytest.raises(DBAPIError):
+            await repository.save_snapshot(cast(int, None))
+        assert await repository.alert_threshold() == threshold
+        entered = asyncio.Event()
+
+        async def interrupted_write() -> None:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    text("INSERT INTO balance_snapshot(balance) VALUES(54321)")
+                )
+                entered.set()
+                await asyncio.Future()
+
+        task = asyncio.create_task(interrupted_write())
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        async with engine.connect() as connection:
+            assert await connection.scalar(text("SELECT pg_backend_pid()")) == pid
+            assert (
+                await connection.scalar(text("SELECT count(*) FROM balance_snapshot")) == before + 1
+            )
+        snapshot = next(
+            item
+            for item in resources.resource_snapshot().database_components
+            if item.component == "background"
+        )
+        assert snapshot.open == 1
+        assert snapshot.checked_out == 0
+    finally:
+        await resources.close_runtime_resources()
+    snapshot = next(
+        item
+        for item in resources.resource_snapshot().database_components
+        if item.component == "background"
+    )
+    assert snapshot.open == 0
+    assert snapshot.leaked_on_shutdown == 0

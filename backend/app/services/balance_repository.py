@@ -17,23 +17,17 @@ class SqlBalanceRepository:
 
     async def alert_threshold(self) -> int:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text("SELECT value FROM sys_config WHERE key='balance_alert_threshold'")
-                )
-                value = result.scalar_one_or_none()
-                return int(value) if value is not None else 10000
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT value FROM sys_config WHERE key='balance_alert_threshold'")
+            )
+            value = result.scalar_one_or_none()
+            return int(value) if value is not None else 10000
 
     async def save_snapshot(self, balance: int) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text("INSERT INTO balance_snapshot(balance) VALUES(:balance)"),
-                    {"balance": balance},
-                )
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("INSERT INTO balance_snapshot(balance) VALUES(:balance)"),
+                {"balance": balance},
+            )

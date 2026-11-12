@@ -35,40 +35,39 @@ class SqlRecoveryRepository:
 
     async def stalled(self) -> list[RecoveryWork]:
         engine: Any = database_engine(self.settings.database_url)
-        try:
-            async with engine.begin() as connection:
-                from types import SimpleNamespace
+        async with engine.begin() as connection:
+            from types import SimpleNamespace
 
-                from app.tasks.send_repository import SqlChunkStore
+            from app.tasks.send_repository import SqlChunkStore
 
-                repair_store = SqlChunkStore(
-                    crypto=SimpleNamespace(),  # type: ignore[arg-type]
-                    settings=self.settings,
-                    redis=object(),
+            repair_store = SqlChunkStore(
+                crypto=SimpleNamespace(),  # type: ignore[arg-type]
+                settings=self.settings,
+                redis=object(),
+            )
+            await repair_store.repair_legacy_safe_reject_submitting(connection)
+        # 每个阶段先提交再进入下一组锁；禁止持有前一批的 batch/余额锁再等新 chunk。
+        async with engine.begin() as connection:
+            candidates = await connection.execute(
+                text(
+                    "SELECT c.id FROM sms_chunk c WHERE c.status='submitting' "
+                    "OR EXISTS (SELECT 1 FROM sms_vendor_attempt a "
+                    "WHERE a.chunk_id=c.id AND a.outcome='invoking') "
+                    "ORDER BY c.id LIMIT 500"
                 )
-                await repair_store.repair_legacy_safe_reject_submitting(connection)
-            # 每个阶段先提交再进入下一组锁；禁止持有前一批的 batch/余额锁再等新 chunk。
-            async with engine.begin() as connection:
-                candidates = await connection.execute(
-                    text(
-                        "SELECT c.id FROM sms_chunk c WHERE c.status='submitting' "
-                        "OR EXISTS (SELECT 1 FROM sms_vendor_attempt a "
-                        "WHERE a.chunk_id=c.id AND a.outcome='invoking') "
-                        "ORDER BY c.id LIMIT 500"
-                    )
-                )
-                chunk_ids = [int(value) for value in candidates.scalars()]
-                await lock_send_chunks(connection, chunk_ids)
-                await connection.execute(
-                    text(
-                        "SELECT id FROM sms_vendor_attempt WHERE chunk_id=ANY(:ids) "
-                        "ORDER BY chunk_id,generation,id FOR UPDATE"
-                    ),
-                    {"ids": chunk_ids},
-                )
-                await connection.execute(
-                    text(
-                        """
+            )
+            chunk_ids = [int(value) for value in candidates.scalars()]
+            await lock_send_chunks(connection, chunk_ids)
+            await connection.execute(
+                text(
+                    "SELECT id FROM sms_vendor_attempt WHERE chunk_id=ANY(:ids) "
+                    "ORDER BY chunk_id,generation,id FOR UPDATE"
+                ),
+                {"ids": chunk_ids},
+            )
+            await connection.execute(
+                text(
+                    """
                         WITH repaired AS (
                           UPDATE sms_vendor_attempt a
                           SET outcome='submitted', updated_at=now()
@@ -155,39 +154,39 @@ class SqlRecoveryRepository:
                           updated_at=now()
                         FROM totals WHERE usage.usage_date=totals.usage_date
                         """
-                    ),
-                    {"chunk_ids": chunk_ids},
-                )
-            async with engine.begin() as connection:
-                from app.tasks.send_repository_split import retry_capacity_blocked_splits
-
-                await retry_capacity_blocked_splits(connection)
-            from app.services.send_inflight import (
-                bind_reserved_reservation_to_existing_batch,
-                repair_misreleased_bound_reservations,
+                ),
+                {"chunk_ids": chunk_ids},
             )
+        async with engine.begin() as connection:
+            from app.tasks.send_repository_split import retry_capacity_blocked_splits
 
-            async with engine.begin() as connection:
-                await bind_reserved_reservation_to_existing_batch(connection)
-            async with engine.begin() as connection:
-                await repair_misreleased_bound_reservations(connection)
-            async with engine.begin() as connection:
-                from app.services.send_inflight import reconcile_in_flight_reservations
+            await retry_capacity_blocked_splits(connection)
+        from app.services.send_inflight import (
+            bind_reserved_reservation_to_existing_batch,
+            repair_misreleased_bound_reservations,
+        )
 
-                await reconcile_in_flight_reservations(connection)
-            async with engine.begin() as connection:
-                batches = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await bind_reserved_reservation_to_existing_batch(connection)
+        async with engine.begin() as connection:
+            await repair_misreleased_bound_reservations(connection)
+        async with engine.begin() as connection:
+            from app.services.send_inflight import reconcile_in_flight_reservations
+
+            await reconcile_in_flight_reservations(connection)
+        async with engine.begin() as connection:
+            batches = await connection.execute(
+                text(
+                    """
                         SELECT trim(batch_no) batch_no,category FROM sms_batch
                         WHERE status='queued' AND updated_at<now()-interval '5 minutes'
                         ORDER BY updated_at LIMIT 100
                         """
-                    )
                 )
-                chunks = await connection.execute(
-                    text(
-                        """
+            )
+            chunks = await connection.execute(
+                text(
+                    """
                         SELECT trim(b.batch_no) batch_no,b.category,c.id chunk_id
                         FROM sms_chunk c JOIN sms_batch b ON b.id=c.batch_id
                         WHERE b.status='sending' AND (
@@ -199,48 +198,46 @@ class SqlRecoveryRepository:
                           AND b.updated_at<now()-interval '5 minutes'
                         ORDER BY b.updated_at,c.chunk_no LIMIT 500
                         """
-                    )
                 )
-                work = [
-                    RecoveryWork("batch", str(row["batch_no"]), None, str(row["category"]))
-                    for row in batches.mappings()
-                ] + [
-                    RecoveryWork(
-                        "chunk",
-                        str(row["batch_no"]),
-                        int(row["chunk_id"]),
-                        str(row["category"]),
+            )
+            work = [
+                RecoveryWork("batch", str(row["batch_no"]), None, str(row["category"]))
+                for row in batches.mappings()
+            ] + [
+                RecoveryWork(
+                    "chunk",
+                    str(row["batch_no"]),
+                    int(row["chunk_id"]),
+                    str(row["category"]),
+                )
+                for row in chunks.mappings()
+            ]
+            # 恢复器不能持有其他队列的投递能力；跨队列恢复在同一事实事务
+            # 登记 Outbox，由独立 dispatcher 投递，消费时仍重验状态/CAS。
+            for item in work:
+                lane = queue_for_category(item.category)
+                if item.kind == "chunk" and item.chunk_id is not None:
+                    await SqlChunkStore._enqueue_chunk_ready(connection, [item.chunk_id], lane)
+                elif item.kind == "batch":
+                    dedup_key = f"batch.ready:{item.batch_no}"
+                    await enqueue_outbox(
+                        connection,
+                        OutboxEventSpec(
+                            event_type="batch.ready", aggregate_type="sms_batch",
+                            aggregate_id=item.batch_no,
+                            task_name="app.tasks.send.process_batch",
+                            queue=lane, args=(item.batch_no,), dedup_key=dedup_key,
+                        ),
                     )
-                    for row in chunks.mappings()
-                ]
-                # 恢复器不能持有其他队列的投递能力；跨队列恢复在同一事实事务
-                # 登记 Outbox，由独立 dispatcher 投递，消费时仍重验状态/CAS。
-                for item in work:
-                    lane = queue_for_category(item.category)
-                    if item.kind == "chunk" and item.chunk_id is not None:
-                        await SqlChunkStore._enqueue_chunk_ready(connection, [item.chunk_id], lane)
-                    elif item.kind == "batch":
-                        dedup_key = f"batch.ready:{item.batch_no}"
-                        await enqueue_outbox(
-                            connection,
-                            OutboxEventSpec(
-                                event_type="batch.ready", aggregate_type="sms_batch",
-                                aggregate_id=item.batch_no,
-                                task_name="app.tasks.send.process_batch",
-                                queue=lane, args=(item.batch_no,), dedup_key=dedup_key,
-                            ),
-                        )
-                        await connection.execute(
-                            text("""
+                    await connection.execute(
+                        text("""
                             UPDATE outbox_event SET state='pending',next_attempt_at=now(),
                               attempts=0,failure_count=0,lease_id=NULL,lease_expires_at=NULL,
                               last_error=NULL,completed_at=NULL,updated_at=now()
                             WHERE dedup_key=:dedup_key AND event_type='batch.ready'
                               AND state IN ('completed','dead')
                             """),
-                            {"dedup_key": dedup_key},
-                        )
-                return [RecoveryWork(item.kind, item.batch_no, item.chunk_id,
-                                     item.category, outbox_persisted=True) for item in work]
-        finally:
-            await engine.dispose()
+                        {"dedup_key": dedup_key},
+                    )
+            return [RecoveryWork(item.kind, item.batch_no, item.chunk_id,
+                                 item.category, outbox_persisted=True) for item in work]

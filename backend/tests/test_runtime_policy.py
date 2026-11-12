@@ -249,7 +249,7 @@ def test_empty_callback_deployment_boundary_still_rejects_unsafe_cidrs() -> None
 
 
 @pytest.mark.asyncio
-async def test_loader_disposes_engine_handle_after_each_load(
+async def test_loader_returns_connections_without_closing_shared_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Result:
@@ -260,12 +260,15 @@ async def test_loader_disposes_engine_handle_after_each_load(
         async def execute(self, statement: object) -> Result:
             return Result()
 
+    returned_connections = 0
+
     class Context:
         async def __aenter__(self) -> Connection:
             return Connection()
 
         async def __aexit__(self, *_args: object) -> None:
-            return None
+            nonlocal returned_connections
+            returned_connections += 1
 
     class Engine:
         def __init__(self) -> None:
@@ -296,8 +299,8 @@ async def test_loader_disposes_engine_handle_after_each_load(
     await loader.load()
     await loader.load()
 
-    # dispose 在进程共享引擎上是 no-op，但每次 load 都必须归还句柄
-    assert engine.dispose_calls == 2
+    assert returned_connections == 2
+    assert engine.dispose_calls == 0
 
 
 @pytest.mark.parametrize("value", ["1", "24", "168"])

@@ -417,6 +417,7 @@ async def test_sql_monitor_lease_uses_managed_engine_context(
     await lease.release()
 
     assert engine.context.exited == 1
+    assert engine.dispose_calls == 0
     assert engine.connection.commits == 2
     assert "pg_try_advisory_lock" in engine.connection.statements[0]
     assert "pg_advisory_unlock" in engine.connection.statements[1]

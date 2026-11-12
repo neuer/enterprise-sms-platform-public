@@ -43,11 +43,10 @@ async def fetch_latest_delivery_request(
     """读取某条日报最近一次投递请求。"""
 
     engine = open_engine()
-    try:
-        async with engine.connect() as connection:
-            result = await connection.execute(
-                text(
-                    """
+    async with engine.connect() as connection:
+        result = await connection.execute(
+            text(
+                """
                     SELECT request_id,report_date,action,state,requested_at,
                            config_version,
                            COALESCE(delivery_generation,1) AS delivery_generation,
@@ -56,15 +55,13 @@ async def fetch_latest_delivery_request(
                     WHERE report_id=:report_id
                     ORDER BY requested_at DESC LIMIT 1
                     """
-                ),
-                {"report_id": report_id},
-            )
-            row = result.mappings().one_or_none()
-            if row is None:
-                return None
-            return _delivery_request(row, delivery_id=str(report_id))
-    finally:
-        await engine.dispose()
+            ),
+            {"report_id": report_id},
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        return _delivery_request(row, delivery_id=str(report_id))
 
 
 async def fetch_delivery_request(
@@ -73,11 +70,10 @@ async def fetch_delivery_request(
     """按 request_id 读取原投递请求，人工报告和自动报告共用这一入口。"""
 
     engine = open_engine()
-    try:
-        async with engine.connect() as connection:
-            result = await connection.execute(
-                text(
-                    """
+    async with engine.connect() as connection:
+        result = await connection.execute(
+            text(
+                """
                     SELECT request_id,report_id,report_date,action,state,requested_at,
                            config_version,
                            COALESCE(delivery_generation,1) AS delivery_generation,
@@ -86,17 +82,15 @@ async def fetch_delivery_request(
                     FROM security_daily_delivery_request
                     WHERE request_id=:request_id
                     """
-                ),
-                {"request_id": request_id},
-            )
-            row = result.mappings().one_or_none()
-            if row is None:
-                return None
-            error = row["error"]
-            return _delivery_request(
-                row,
-                delivery_id=str(row["report_id"]),
-                error=None if error is None else str(error),
-            )
-    finally:
-        await engine.dispose()
+            ),
+            {"request_id": request_id},
+        )
+        row = result.mappings().one_or_none()
+        if row is None:
+            return None
+        error = row["error"]
+        return _delivery_request(
+            row,
+            delivery_id=str(row["report_id"]),
+            error=None if error is None else str(error),
+        )

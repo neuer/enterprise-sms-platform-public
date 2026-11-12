@@ -269,7 +269,7 @@ async def test_claim_is_atomic_four_hour_dedup_and_does_not_persist_webhook(
     assert len(outbox_events) == 1
     assert outbox_events[0].event_type == "alert.delivery"
     assert outbox_events[0].args == (42, "wecom")
-    assert engine.disposed
+    assert not engine.disposed
 
 
 @pytest.mark.asyncio

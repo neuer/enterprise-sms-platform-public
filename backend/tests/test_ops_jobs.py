@@ -384,7 +384,7 @@ async def test_ops_senders_persist_unique_outbox_requests_without_broker_access(
     assert batch.args == ("a" * 32,)
     assert batch.dedup_key.startswith("batch.ready:")
     assert batch.dedup_key != "batch.ready:" + "a" * 32
-    assert all(selected.disposed for selected in engines)
+    assert all(not selected.disposed for selected in engines)
 
 
 @pytest.mark.asyncio

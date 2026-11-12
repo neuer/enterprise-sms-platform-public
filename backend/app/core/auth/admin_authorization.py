@@ -133,7 +133,6 @@ async def hold_admin_authorization(
     engine: ManagedAsyncEngine | None = None,
 ) -> AsyncGenerator[AsyncConnection, None]:
     """授权锁、业务写入与审计共用业务角色事务，不授予身份表访问权限。"""
-    owns_engine = engine is None
     engine = engine if engine is not None else database_engine(settings.database_url)
     try:
         async with engine.begin() as connection:
@@ -164,6 +163,3 @@ async def hold_admin_authorization(
             yield connection
     except SQLAlchemyError:
         raise ApiError(503, "AUTH_SESSION_UNAVAILABLE", "管理操作授权暂不可用", None) from None
-    finally:
-        if owns_engine:
-            await engine.dispose()

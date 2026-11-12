@@ -137,4 +137,4 @@ async def test_samples_use_allowed_categories_fixed_keys_and_seven_complete_days
     assert "total_segments" in baseline_sql
     assert "test_scope='all'" in baseline_sql
     assert params == {"start_date": date(2026, 7, 5), "end_date": date(2026, 7, 11)}
-    assert engine.disposed
+    assert not engine.disposed

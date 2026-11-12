@@ -46,95 +46,80 @@ class SqlSensitiveWordRepository:
             where = " WHERE word ILIKE :keyword"
             params["keyword"] = f"%{_escape_like(keyword)}%"
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                total = await connection.scalar(
-                    text(f"SELECT count(*) FROM sensitive_word{where}"),  # noqa: S608
-                    params,
-                )
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            total = await connection.scalar(
+                text(f"SELECT count(*) FROM sensitive_word{where}"),  # noqa: S608
+                params,
+            )
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT id,word,created_at FROM sensitive_word{where}
                         ORDER BY created_at DESC LIMIT :limit OFFSET :offset
                         """  # noqa: S608
-                    ),
-                    params,
-                )
-                return SensitiveWordPage(
-                    total=int(total or 0),
-                    items=[
-                        SensitiveWord(int(row["id"]), str(row["word"]), row["created_at"])
-                        for row in result.mappings()
-                    ],
-                )
-        finally:
-            await engine.dispose()
+                ),
+                params,
+            )
+            return SensitiveWordPage(
+                total=int(total or 0),
+                items=[
+                    SensitiveWord(int(row["id"]), str(row["word"]), row["created_at"])
+                    for row in result.mappings()
+                ],
+            )
 
     async def all_words(self) -> list[str]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(text("SELECT word FROM sensitive_word"))
-                return [str(value) for value in result.scalars()]
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(text("SELECT word FROM sensitive_word"))
+            return [str(value) for value in result.scalars()]
 
     async def current_revision(self) -> int:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text("SELECT value FROM sys_config WHERE key=:key"),
-                    {"key": SENSITIVE_WORD_REVISION_KEY},
-                )
-                value = result.scalar_one_or_none()
-                return int(value) if value is not None else 0
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT value FROM sys_config WHERE key=:key"),
+                {"key": SENSITIVE_WORD_REVISION_KEY},
+            )
+            value = result.scalar_one_or_none()
+            return int(value) if value is not None else 0
 
     async def add_many(self, words: list[str], *, actor: str) -> SensitiveWordAddResult:
         for word in words:
             reject_phone_in_text(word, field_name="敏感词")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         INSERT INTO sensitive_word(word,created_by)
                         SELECT value,:actor FROM unnest(CAST(:words AS text[])) value
                         ON CONFLICT(word) DO NOTHING RETURNING id,word,created_at
                         """
-                    ),
-                    {"words": words, "actor": actor},
-                )
-                created = [
-                    SensitiveWord(int(row["id"]), str(row["word"]), row["created_at"])
-                    for row in result.mappings()
-                ]
-                if created:
-                    await self._bump_revision(connection, actor)
-                await self._audit(connection, actor, "sensitive_word_add", len(created))
-                return SensitiveWordAddResult(created, skipped=len(words) - len(created))
-        finally:
-            await engine.dispose()
+                ),
+                {"words": words, "actor": actor},
+            )
+            created = [
+                SensitiveWord(int(row["id"]), str(row["word"]), row["created_at"])
+                for row in result.mappings()
+            ]
+            if created:
+                await self._bump_revision(connection, actor)
+            await self._audit(connection, actor, "sensitive_word_add", len(created))
+            return SensitiveWordAddResult(created, skipped=len(words) - len(created))
 
     async def delete(self, word_id: int, *, actor: str) -> bool:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text("DELETE FROM sensitive_word WHERE id=:id RETURNING 1"),
-                    {"id": word_id},
-                )
-                removed = result.scalar_one_or_none() is not None
-                if removed:
-                    await self._bump_revision(connection, actor)
-                    await self._audit(connection, actor, "sensitive_word_delete", 1)
-                return removed
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text("DELETE FROM sensitive_word WHERE id=:id RETURNING 1"),
+                {"id": word_id},
+            )
+            removed = result.scalar_one_or_none() is not None
+            if removed:
+                await self._bump_revision(connection, actor)
+                await self._audit(connection, actor, "sensitive_word_delete", 1)
+            return removed
 
     @staticmethod
     async def _bump_revision(connection: AsyncConnection, actor: str) -> None:

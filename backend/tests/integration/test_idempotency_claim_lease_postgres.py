@@ -962,15 +962,15 @@ async def _r8_cleanup_one(
             async with runtime.begin() as connection:
                 yield ConnectionProxy(connection)
 
-        async def dispose(self) -> None:
-            await runtime.dispose()
-
     repository = SqlHousekeepingRepository()
     repository._engine = lambda: EngineProxy()
-    return await repository.cleanup_page(
-        "idempotency", LifecyclePolicy(90, 90, 30), cutoff=datetime.now(UTC),
-        cursor=(identity - 1,), limit=1,
-    )
+    try:
+        return await repository.cleanup_page(
+            "idempotency", LifecyclePolicy(90, 90, 30), cutoff=datetime.now(UTC),
+            cursor=(identity - 1,), limit=1,
+        )
+    finally:
+        await runtime.dispose()
 
 
 @pytest.mark.asyncio
@@ -1316,9 +1316,12 @@ async def test_r8_callback_runtime_role_can_lock_and_retry_without_batch_write(
     event.listen(runtime.sync_engine, "begin", _set_audit_transaction_context)
     repository = SqlCallbackRepository()
     repository._engine = lambda: runtime
-    principal = await _create_admin(engine, login="synthetic-admin-" + uuid4().hex[:8])
-    with audit_principal_scope(principal), correlation_scope(uuid4()):
-        await repository.manual_retry(task_id, principal=principal)
+    try:
+        principal = await _create_admin(engine, login="synthetic-admin-" + uuid4().hex[:8])
+        with audit_principal_scope(principal), correlation_scope(uuid4()):
+            await repository.manual_retry(task_id, principal=principal)
+    finally:
+        await runtime.dispose()
     async with engine.connect() as connection:
         assert await connection.scalar(text(
             "SELECT status FROM callback_task WHERE id=:id"

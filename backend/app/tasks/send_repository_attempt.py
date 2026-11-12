@@ -107,34 +107,31 @@ class VendorAttemptStoreMixin:
         """按 generation 加载完整 attempt 历史，供跨任务路由。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                rows = (
-                    await connection.execute(
-                        text(
-                            """
+        async with engine.connect() as connection:
+            rows = (
+                await connection.execute(
+                    text(
+                        """
                             SELECT vendor_id, generation, outcome,
                                    safe_to_failover, vendor_code
                             FROM sms_vendor_attempt
                             WHERE chunk_id=:chunk_id
                             ORDER BY generation
                             """
-                        ),
-                        {"chunk_id": chunk_id},
-                    )
-                ).mappings()
-                return tuple(
-                    VendorAttempt(
-                        str(row["vendor_id"]),
-                        int(row["generation"]),
-                        str(row["outcome"]),
-                        bool(row["safe_to_failover"]),
-                        int(row["vendor_code"]) if row["vendor_code"] is not None else None,
-                    )
-                    for row in rows
+                    ),
+                    {"chunk_id": chunk_id},
                 )
-        finally:
-            await engine.dispose()
+            ).mappings()
+            return tuple(
+                VendorAttempt(
+                    str(row["vendor_id"]),
+                    int(row["generation"]),
+                    str(row["outcome"]),
+                    bool(row["safe_to_failover"]),
+                    int(row["vendor_code"]) if row["vendor_code"] is not None else None,
+                )
+                for row in rows
+            )
 
     async def begin_vendor_invoke(
         self,
@@ -147,28 +144,27 @@ class VendorAttemptStoreMixin:
         """在 HTTP 之前原子分配 generation 并写入 invoking。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                context = await lock_send_context(connection, chunk_id)
-                if context is None:
-                    raise RuntimeError("vendor attempt chunk missing")
-                chunk = context.chunk
-                if str(chunk["status"]) in ISOLATING_CHUNK_STATES:
-                    raise RuntimeError("vendor attempt blocked by terminal chunk")
-                if str(chunk["status"]) not in FIRST_INVOKE_CHUNK_STATES:
-                    raise RuntimeError("vendor attempt not first-invoke")
-                history = context.attempts
-                if any(
-                    str(row["outcome"]) in {"submitted", "uncertain", "invoking", "inconsistent"}
-                    for row in history
-                ):
-                    raise RuntimeError("vendor attempt already irreversible")
-                next_generation = max((int(row["generation"]) for row in history), default=0) + 1
-                inserted = (
-                    (
-                        await connection.execute(
-                            text(
-                                """
+        async with engine.begin() as connection:
+            context = await lock_send_context(connection, chunk_id)
+            if context is None:
+                raise RuntimeError("vendor attempt chunk missing")
+            chunk = context.chunk
+            if str(chunk["status"]) in ISOLATING_CHUNK_STATES:
+                raise RuntimeError("vendor attempt blocked by terminal chunk")
+            if str(chunk["status"]) not in FIRST_INVOKE_CHUNK_STATES:
+                raise RuntimeError("vendor attempt not first-invoke")
+            history = context.attempts
+            if any(
+                str(row["outcome"]) in {"submitted", "uncertain", "invoking", "inconsistent"}
+                for row in history
+            ):
+                raise RuntimeError("vendor attempt already irreversible")
+            next_generation = max((int(row["generation"]) for row in history), default=0) + 1
+            inserted = (
+                (
+                    await connection.execute(
+                        text(
+                            """
                             INSERT INTO sms_vendor_attempt (
                               chunk_id, vendor_id, generation, outcome,
                               adapter_id, routing_reason, invoke_started_at
@@ -178,42 +174,40 @@ class VendorAttemptStoreMixin:
                             )
                             RETURNING id, generation, vendor_id, outcome
                             """
-                            ),
-                            {
-                                "chunk_id": chunk_id,
-                                "vendor_id": vendor_id,
-                                "generation": next_generation,
-                                "adapter_id": adapter_id,
-                                "reason": reason[:64],
-                            },
-                        )
+                        ),
+                        {
+                            "chunk_id": chunk_id,
+                            "vendor_id": vendor_id,
+                            "generation": next_generation,
+                            "adapter_id": adapter_id,
+                            "reason": reason[:64],
+                        },
                     )
-                    .mappings()
-                    .one()
                 )
-                await connection.execute(
-                    text(
-                        """
+                .mappings()
+                .one()
+            )
+            await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk SET
                           selected_vendor=:vendor_id,
                           route_generation=:generation
                         WHERE id=:chunk_id
                         """
-                    ),
-                    {
-                        "chunk_id": chunk_id,
-                        "vendor_id": vendor_id,
-                        "generation": next_generation,
-                    },
-                )
-                return VendorAttemptRow(
-                    int(inserted["id"]),
-                    int(inserted["generation"]),
-                    str(inserted["vendor_id"]),
-                    str(inserted["outcome"]),
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "chunk_id": chunk_id,
+                    "vendor_id": vendor_id,
+                    "generation": next_generation,
+                },
+            )
+            return VendorAttemptRow(
+                int(inserted["id"]),
+                int(inserted["generation"]),
+                str(inserted["vendor_id"]),
+                str(inserted["outcome"]),
+            )
 
     async def finalize_vendor_attempt(
         self,
@@ -558,8 +552,6 @@ class VendorAttemptStoreMixin:
             if send_sqlstate(error) == "40P01":
                 raise RolledBackSendDeadlock("db_deadlock") from error
             raise
-        finally:
-            await engine.dispose()
         return report, enqueue
 
     def _report_from_locked_state(
@@ -770,12 +762,11 @@ class VendorAttemptStoreMixin:
         """把 invoking 行 CAS 到终态；败者不得再次调用供应商。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                updated = (
-                    await connection.execute(
-                        text(
-                            """
+        async with engine.begin() as connection:
+            updated = (
+                await connection.execute(
+                    text(
+                        """
                             UPDATE sms_vendor_attempt
                             SET outcome=:outcome,
                                 safe_to_failover=:safe_to_failover,
@@ -784,18 +775,16 @@ class VendorAttemptStoreMixin:
                             WHERE id=:id AND outcome='invoking'
                             RETURNING id
                             """
-                        ),
-                        {
-                            "id": attempt_id,
-                            "outcome": outcome,
-                            "safe_to_failover": safe_to_failover,
-                            "vendor_code": vendor_code,
-                        },
-                    )
-                ).scalar_one_or_none()
-                return updated is not None
-        finally:
-            await engine.dispose()
+                    ),
+                    {
+                        "id": attempt_id,
+                        "outcome": outcome,
+                        "safe_to_failover": safe_to_failover,
+                        "vendor_code": vendor_code,
+                    },
+                )
+            ).scalar_one_or_none()
+            return updated is not None
 
     async def record_vendor_attempt(
         self,
@@ -810,11 +799,10 @@ class VendorAttemptStoreMixin:
         """记录一次无 PII 的供应商副作用，供路由对账与指标聚合。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO sms_vendor_attempt (
                           chunk_id, vendor_id, generation, outcome,
                           safe_to_failover, vendor_code
@@ -823,30 +811,28 @@ class VendorAttemptStoreMixin:
                           :safe_to_failover, :vendor_code
                         )
                         """
-                    ),
-                    {
-                        "chunk_id": chunk_id,
-                        "vendor_id": vendor_id,
-                        "generation": generation,
-                        "outcome": outcome,
-                        "safe_to_failover": safe_to_failover,
-                        "vendor_code": vendor_code,
-                    },
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "chunk_id": chunk_id,
+                    "vendor_id": vendor_id,
+                    "generation": generation,
+                    "outcome": outcome,
+                    "safe_to_failover": safe_to_failover,
+                    "vendor_code": vendor_code,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk SET
                           selected_vendor=:vendor_id,
                           route_generation=:generation
                         WHERE id=:chunk_id
                         """
-                    ),
-                    {
-                        "chunk_id": chunk_id,
-                        "vendor_id": vendor_id,
-                        "generation": generation,
-                    },
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "chunk_id": chunk_id,
+                    "vendor_id": vendor_id,
+                    "generation": generation,
+                },
+            )

@@ -174,34 +174,31 @@ class SqlHousekeepingRepository:
 
     async def policy(self) -> LifecyclePolicy:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text("""
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("""
                     SELECT key,value FROM sys_config WHERE key IN (
                       'raw_log_retention_days','unmatched_retention_days',
                       'job_history_days','usage_ledger_retention_days',
                       'runtime_event_retention_days')
                 """)
-                )
-                values = {str(row["key"]): int(row["value"]) for row in result.mappings()}
-                policy = LifecyclePolicy(
-                    values.get("raw_log_retention_days", 90),
-                    values.get("unmatched_retention_days", 90),
-                    values.get("job_history_days", 30),
-                    values.get("usage_ledger_retention_days", 90),
-                    values.get("runtime_event_retention_days", 30),
-                )
-                if (
-                    min(policy.raw_days, policy.unmatched_days, policy.job_days, policy.usage_days)
-                    < 1
-                ):
-                    raise ValueError("lifecycle retention values must be positive")
-                if not 1 <= policy.runtime_event_days <= 365:
-                    raise ValueError("invalid runtime event retention policy")
-                return policy
-        finally:
-            await engine.dispose()
+            )
+            values = {str(row["key"]): int(row["value"]) for row in result.mappings()}
+            policy = LifecyclePolicy(
+                values.get("raw_log_retention_days", 90),
+                values.get("unmatched_retention_days", 90),
+                values.get("job_history_days", 30),
+                values.get("usage_ledger_retention_days", 90),
+                values.get("runtime_event_retention_days", 30),
+            )
+            if (
+                min(policy.raw_days, policy.unmatched_days, policy.job_days, policy.usage_days)
+                < 1
+            ):
+                raise ValueError("lifecycle retention values must be positive")
+            if not 1 <= policy.runtime_event_days <= 365:
+                raise ValueError("invalid runtime event retention policy")
+            return policy
 
     async def expired_imports(
         self,
@@ -213,32 +210,28 @@ class SqlHousekeepingRepository:
         if not 1 <= limit <= 1000:
             raise ValueError("invalid housekeeping page size")
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(f"""
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(f"""
                     SELECT t.id,t.invalid_file,t.source_file FROM import_task t
                     WHERE t.id>:after_id AND {IMPORT_ELIGIBLE}
                       AND NOT EXISTS (SELECT 1 FROM import_phone p WHERE p.import_task_id=t.id)
                     ORDER BY t.id LIMIT :limit
                 """),
-                    {"cutoff": cutoff, "after_id": after_id, "limit": limit},
-                )
-                return tuple(
-                    ExpiredImport(int(row["id"]), row["invalid_file"], row["source_file"])
-                    for row in result.mappings()
-                )
-        finally:
-            await engine.dispose()
+                {"cutoff": cutoff, "after_id": after_id, "limit": limit},
+            )
+            return tuple(
+                ExpiredImport(int(row["id"]), row["invalid_file"], row["source_file"])
+                for row in result.mappings()
+            )
 
     async def finish_import(self, import_id: int, *, cutoff: datetime) -> int:
         """仅在子号码全部排空后固化文件清理，不让父 DELETE 触发无界级联。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(f"""
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(f"""
                     WITH eligible AS MATERIALIZED (
                       SELECT t.id,t.state FROM import_task t
                       WHERE t.id=:import_id AND {IMPORT_ELIGIBLE}
@@ -253,11 +246,9 @@ class SqlHousekeepingRepository:
                       WHERE t.id=e.id AND e.state<>'consumed' RETURNING t.id
                     ) SELECT (SELECT count(*) FROM sanitized)+(SELECT count(*) FROM removed)
                 """),
-                    {"import_id": import_id, "cutoff": cutoff},
-                )
-                return int(result.scalar_one())
-        finally:
-            await engine.dispose()
+                {"import_id": import_id, "cutoff": cutoff},
+            )
+            return int(result.scalar_one())
 
     async def cleanup_page(
         self,
@@ -296,13 +287,12 @@ class SqlHousekeepingRepository:
         key_join = " AND ".join(f"p.{key}=d.{key}" for key, _ in plan.keys)
         lock_clause = f"FOR UPDATE OF {plan.locks} SKIP LOCKED" if plan.locks else ""
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                # 除行预算外约束锁等待/单语句时间；超时回滚当前页，已提交页不回滚。
-                await connection.execute(text("SET LOCAL lock_timeout='1s'"))
-                await connection.execute(text("SET LOCAL statement_timeout='5s'"))
-                result = await connection.execute(
-                    text(f"""
+        async with engine.begin() as connection:
+            # 除行预算外约束锁等待/单语句时间；超时回滚当前页，已提交页不回滚。
+            await connection.execute(text("SET LOCAL lock_timeout='1s'"))
+            await connection.execute(text("SET LOCAL statement_timeout='5s'"))
+            result = await connection.execute(
+                text(f"""
                     WITH due AS MATERIALIZED (
                       SELECT {key_columns} FROM {plan.table} p {plan.source}
                       WHERE {plan.predicate} {cursor_clause}
@@ -312,24 +302,22 @@ class SqlHousekeepingRepository:
                     DELETE FROM {plan.table} p USING due d WHERE {key_join}
                     RETURNING {key_columns}
                 """),
-                    params,
-                )
-                keys = [tuple(row[key] for key, _ in plan.keys) for row in result.mappings()]
-                count = len(keys)
-                return CleanupPage(
-                    count,
-                    max(keys) if keys else cursor,
-                    CleanupCounts(
-                        raw=count if plan.count_field == "raw" else 0,
-                        unmatched=count if plan.count_field == "unmatched" else 0,
-                        imports=count if plan.count_field == "imports" else 0,
-                        idempotency=count if plan.count_field == "idempotency" else 0,
-                        jobs=count if plan.count_field == "jobs" else 0,
-                        usage=count if plan.count_field == "usage" else 0,
-                    ),
-                )
-        finally:
-            await engine.dispose()
+                params,
+            )
+            keys = [tuple(row[key] for key, _ in plan.keys) for row in result.mappings()]
+            count = len(keys)
+            return CleanupPage(
+                count,
+                max(keys) if keys else cursor,
+                CleanupCounts(
+                    raw=count if plan.count_field == "raw" else 0,
+                    unmatched=count if plan.count_field == "unmatched" else 0,
+                    imports=count if plan.count_field == "imports" else 0,
+                    idempotency=count if plan.count_field == "idempotency" else 0,
+                    jobs=count if plan.count_field == "jobs" else 0,
+                    usage=count if plan.count_field == "usage" else 0,
+                ),
+            )
 
     async def _compact_runtime_events_page(
         self, table: str, *, cutoff: datetime, limit: int,
@@ -338,22 +326,19 @@ class SqlHousekeepingRepository:
         if cutoff.utcoffset() is None or not 1 <= limit <= 1000:
             raise ValueError("invalid runtime event compaction page")
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(text("SET LOCAL lock_timeout='1s'"))
-                await connection.execute(text("SET LOCAL statement_timeout='5s'"))
-                result = await connection.execute(
-                    text("""
+        async with engine.begin() as connection:
+            await connection.execute(text("SET LOCAL lock_timeout='1s'"))
+            await connection.execute(text("SET LOCAL statement_timeout='5s'"))
+            result = await connection.execute(
+                text("""
                         SELECT public.compact_runtime_events(
                             :stream, CAST(:cutoff AS timestamptz), :limit
                         ) AS affected
                     """),
-                    {"stream": RUNTIME_EVENT_STREAMS[table], "cutoff": cutoff, "limit": limit},
-                )
-                count = int(result.mappings().one()["affected"])
-                return CleanupPage(count, None, CleanupCounts(runtime_events=count))
-        finally:
-            await engine.dispose()
+                {"stream": RUNTIME_EVENT_STREAMS[table], "cutoff": cutoff, "limit": limit},
+            )
+            count = int(result.mappings().one()["affected"])
+            return CleanupPage(count, None, CleanupCounts(runtime_events=count))
 
 
     async def _cleanup_idempotency_page(
@@ -367,21 +352,20 @@ class SqlHousekeepingRepository:
         if isinstance(after_id, bool) or not isinstance(after_id, int):
             raise ValueError("invalid idempotency cleanup cursor")
         params = {"cutoff": cutoff, "after_id": after_id, "limit": limit}
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(text("SET LOCAL lock_timeout='1s'"))
-                await connection.execute(text("SET LOCAL statement_timeout='5s'"))
-                selected = await connection.execute(text("""
+        async with engine.begin() as connection:
+            await connection.execute(text("SET LOCAL lock_timeout='1s'"))
+            await connection.execute(text("SET LOCAL statement_timeout='5s'"))
+            selected = await connection.execute(text("""
                     SELECT i.id FROM idempotency_record i JOIN sms_batch b ON b.id=i.batch_id
                     WHERE i.id>:after_id AND i.expires_at<=CAST(:cutoff AS timestamptz)
                       AND NOT """ + IDEMPOTENCY_LIVE_SQL + """
                     ORDER BY i.id LIMIT :limit FOR UPDATE OF b SKIP LOCKED
                 """), params)
-                ids = [int(row["id"]) for row in selected.mappings()]
-                if not ids:
-                    return CleanupPage(0, cursor)
-                # 只从精确关联且指纹一致的结果保留到期时间，不猜测修复历史孤儿。
-                await connection.execute(text("""
+            ids = [int(row["id"]) for row in selected.mappings()]
+            if not ids:
+                return CleanupPage(0, cursor)
+            # 只从精确关联且指纹一致的结果保留到期时间，不猜测修复历史孤儿。
+            await connection.execute(text("""
                     UPDATE idempotency_claim q SET result_expires_at=i.expires_at
                     FROM idempotency_record i
                     WHERE i.id=ANY(:ids) AND q.state='completed' AND q.batch_id=i.batch_id
@@ -389,12 +373,10 @@ class SqlHousekeepingRepository:
                       AND trim(q.fingerprint)=trim(i.request_hash)
                       AND i.request_hash_key_version IS NOT NULL
                 """), {"ids": ids})
-                deleted = await connection.execute(text("""
+            deleted = await connection.execute(text("""
                     DELETE FROM idempotency_record i USING sms_batch b
                     WHERE i.id=ANY(:ids) AND i.batch_id=b.id
                       AND i.expires_at<=CAST(:cutoff AS timestamptz) AND NOT
                 """ + IDEMPOTENCY_LIVE_SQL + " RETURNING i.id"), {"ids": ids, "cutoff": cutoff})
-                count = len(list(deleted.mappings()))
-                return CleanupPage(count, (max(ids),), CleanupCounts(idempotency=count))
-        finally:
-            await engine.dispose()
+            count = len(list(deleted.mappings()))
+            return CleanupPage(count, (max(ids),), CleanupCounts(idempotency=count))

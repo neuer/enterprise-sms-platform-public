@@ -140,21 +140,18 @@ class SqlJobRunRepository:
 
     async def start(self, job_name: str, started_at: datetime) -> int:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         INSERT INTO job_run (job_name, started_at, status)
                         VALUES (:job_name, :started_at, 'running')
                         RETURNING id
                         """
-                    ),
-                    {"job_name": job_name, "started_at": started_at},
-                )
-                return int(result.scalar_one())
-        finally:
-            await engine.dispose()
+                ),
+                {"job_name": job_name, "started_at": started_at},
+            )
+            return int(result.scalar_one())
 
     async def finish(
         self,
@@ -167,11 +164,10 @@ class SqlJobRunRepository:
         error: str | None,
     ) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         UPDATE job_run
                         SET finished_at = :finished_at,
                             duration_ms = :duration_ms,
@@ -180,67 +176,59 @@ class SqlJobRunRepository:
                             error = :error
                         WHERE id = :run_id
                         """
-                    ),
-                    {
-                        "run_id": run_id,
-                        "finished_at": finished_at,
-                        "duration_ms": duration_ms,
-                        "items": items,
-                        "status": status,
-                        "error": error,
-                    },
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "run_id": run_id,
+                    "finished_at": finished_at,
+                    "duration_ms": duration_ms,
+                    "items": items,
+                    "status": status,
+                    "error": error,
+                },
+            )
 
     async def latest(self, job_name: str) -> JobRunSnapshot | None:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT job_name, started_at, finished_at, status
                         FROM job_run
                         WHERE job_name = :job_name
                         ORDER BY started_at DESC, id DESC
                         LIMIT 1
                         """
-                    ),
-                    {"job_name": job_name},
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return None
-                return JobRunSnapshot(
-                    job_name=str(row["job_name"]),
-                    started_at=cast(datetime, row["started_at"]),
-                    finished_at=cast(datetime | None, row["finished_at"]),
-                    status=str(row["status"]),
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {"job_name": job_name},
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            return JobRunSnapshot(
+                job_name=str(row["job_name"]),
+                started_at=cast(datetime, row["started_at"]),
+                finished_at=cast(datetime | None, row["finished_at"]),
+                status=str(row["status"]),
+            )
 
     async def consecutive_failures(self, job_name: str, *, limit: int) -> int:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT status
                         FROM job_run
                         WHERE job_name = :job_name
                         ORDER BY started_at DESC, id DESC
                         LIMIT :limit
                         """
-                    ),
-                    {"job_name": job_name, "limit": limit},
-                )
-                failures = consecutive_failed_count(result.scalars())
-                return failures
-        finally:
-            await engine.dispose()
+                ),
+                {"job_name": job_name, "limit": limit},
+            )
+            failures = consecutive_failed_count(result.scalars())
+            return failures
 
 
 def consecutive_failed_count(statuses: Iterable[str]) -> int:
@@ -568,7 +556,6 @@ class SqlJobMonitorLease:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
-        self._engine: ManagedAsyncEngine | None = None
         self._connection: AsyncConnection | None = None
         self._connection_context: AbstractAsyncContextManager[AsyncConnection] | None = None
 
@@ -588,22 +575,19 @@ class SqlJobMonitorLease:
             await connection.commit()
         except BaseException as error:
             # 响应/commit 中断时服务端可能已取得 session 锁；rollback 不会释放它。
-            # 先废弃物理连接，避免共享 pool 的兼容 dispose(no-op) 留下隐式持锁者。
+            # 先废弃物理连接，避免归还共享池后留下隐式持锁者。
             await connection.invalidate()
             await connection_context.__aexit__(
                 type(error),
                 error,
                 error.__traceback__,
             )
-            await engine.dispose()
             raise
 
         if not acquired:
             await connection_context.__aexit__(None, None, None)
-            await engine.dispose()
             return False
 
-        self._engine = engine
         self._connection = connection
         self._connection_context = connection_context
         return True
@@ -611,10 +595,8 @@ class SqlJobMonitorLease:
     async def release(self) -> None:
         connection = self._connection
         connection_context = self._connection_context
-        engine = self._engine
         self._connection = None
         self._connection_context = None
-        self._engine = None
         if connection is None:
             return
         try:
@@ -631,8 +613,6 @@ class SqlJobMonitorLease:
                 await connection_context.__aexit__(None, None, None)
             else:
                 await connection.close()
-            if engine is not None:
-                await engine.dispose()
 
 
 def create_default_heartbeat_service() -> JobHeartbeatService:

@@ -65,36 +65,30 @@ class SqlAuthProviderRepository:
 
     async def list_enabled(self) -> tuple[ProviderRecord, ...]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         SELECT {PROVIDER_COLUMNS}
                         FROM auth_provider
                         WHERE enabled=TRUE
                         ORDER BY CASE WHEN code='local' THEN 0 ELSE 1 END,name,code
                         """
-                    )
                 )
-                return tuple(_provider(row) for row in result.mappings())
-        finally:
-            await engine.dispose()
+            )
+            return tuple(_provider(row) for row in result.mappings())
 
     async def get(self, code: str) -> ProviderRecord:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(f"SELECT {PROVIDER_COLUMNS} FROM auth_provider WHERE code=:code"),
-                    {"code": code},
-                )
-                row = _one_or_none(result)
-                if row is None:
-                    raise ProviderNotFound("认证源不存在")
-                return _provider(row)
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(f"SELECT {PROVIDER_COLUMNS} FROM auth_provider WHERE code=:code"),
+                {"code": code},
+            )
+            row = _one_or_none(result)
+            if row is None:
+                raise ProviderNotFound("认证源不存在")
+            return _provider(row)
 
     async def save_draft(
         self,
@@ -106,26 +100,25 @@ class SqlAuthProviderRepository:
         ip: str,
     ) -> ProviderRecord:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await lock_admin_authorization(
-                    connection, authorization, operation="provider_save_draft", target=code,
-                    parameters={"config": config},
-                )
-                locked = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            await lock_admin_authorization(
+                connection, authorization, operation="provider_save_draft", target=code,
+                parameters={"config": config},
+            )
+            locked = await connection.execute(
+                text(
+                    f"""
                         SELECT {PROVIDER_COLUMNS}
                         FROM auth_provider WHERE code=:code FOR UPDATE
                         """
-                    ),
-                    {"code": code},
-                )
-                if _one_or_none(locked) is None:
-                    raise ProviderNotFound("认证源不存在")
-                result = await connection.execute(
-                    text(
-                        f"""
+                ),
+                {"code": code},
+            )
+            if _one_or_none(locked) is None:
+                raise ProviderNotFound("认证源不存在")
+            result = await connection.execute(
+                text(
+                    f"""
                         UPDATE auth_provider
                         SET draft_config=CAST(:config AS jsonb),
                             draft_version=draft_version+1,
@@ -136,28 +129,26 @@ class SqlAuthProviderRepository:
                         WHERE code=:code
                         RETURNING {PROVIDER_COLUMNS}
                         """
-                    ),
-                    {
-                        "code": code,
-                        "config": json.dumps(config, ensure_ascii=False),
-                    },
-                )
-                row = _one_or_none(result)
-                if row is None:
-                    raise ProviderNotFound("认证源不存在")
-                saved = _provider(row)
-                await self._audit(
-                    connection,
-                    code=code,
-                    version=saved.draft_version,
-                    action="save_draft",
-                    result_code="SAVED",
-                    actor=actor,
-                    ip=ip,
-                )
-                return saved
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "code": code,
+                    "config": json.dumps(config, ensure_ascii=False),
+                },
+            )
+            row = _one_or_none(result)
+            if row is None:
+                raise ProviderNotFound("认证源不存在")
+            saved = _provider(row)
+            await self._audit(
+                connection,
+                code=code,
+                version=saved.draft_version,
+                action="save_draft",
+                result_code="SAVED",
+                actor=actor,
+                ip=ip,
+            )
+            return saved
 
     async def record_test(
         self,
@@ -169,11 +160,10 @@ class SqlAuthProviderRepository:
         ip: str,
     ) -> ProviderRecord:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                updated = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            updated = await connection.execute(
+                text(
+                    f"""
                         UPDATE auth_provider
                         SET tested_version=CASE WHEN :success THEN :version ELSE NULL END,
                             last_tested_at=now(),
@@ -182,29 +172,27 @@ class SqlAuthProviderRepository:
                         WHERE code=:code AND draft_version=:version
                         RETURNING {PROVIDER_COLUMNS}
                         """
-                    ),
-                    {
-                        "code": code,
-                        "version": version,
-                        "success": result.success,
-                    },
-                )
-                row = _one_or_none(updated)
-                if row is None:
-                    raise StaleProviderDraft("测试期间认证源草稿已改变，请重新测试")
-                saved = _provider(row)
-                await self._audit(
-                    connection,
-                    code=code,
-                    version=version,
-                    action="test",
-                    result_code=result.result_code,
-                    actor=actor,
-                    ip=ip,
-                )
-                return saved
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "code": code,
+                    "version": version,
+                    "success": result.success,
+                },
+            )
+            row = _one_or_none(updated)
+            if row is None:
+                raise StaleProviderDraft("测试期间认证源草稿已改变，请重新测试")
+            saved = _provider(row)
+            await self._audit(
+                connection,
+                code=code,
+                version=version,
+                action="test",
+                result_code=result.result_code,
+                actor=actor,
+                ip=ip,
+            )
+            return saved
 
     async def activate(
         self,
@@ -216,15 +204,14 @@ class SqlAuthProviderRepository:
         expected_draft_version: int,
     ) -> ProviderRecord:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await lock_admin_authorization(
-                    connection, authorization, operation="provider_enable_disable", target=code,
-                    parameters={"enabled": True, "draft_version": expected_draft_version},
-                )
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            await lock_admin_authorization(
+                connection, authorization, operation="provider_enable_disable", target=code,
+                parameters={"enabled": True, "draft_version": expected_draft_version},
+            )
+            result = await connection.execute(
+                text(
+                    f"""
                         UPDATE auth_provider
                         SET active_config=draft_config,
                             active_version=draft_version,
@@ -234,25 +221,23 @@ class SqlAuthProviderRepository:
                           AND draft_version=:expected_draft_version
                         RETURNING {PROVIDER_COLUMNS}
                         """
-                    ),
-                    {"code": code, "expected_draft_version": expected_draft_version},
-                )
-                row = _one_or_none(result)
-                if row is None:
-                    raise UntestedProviderConfig("当前认证源草稿尚未通过测试")
-                saved = _provider(row)
-                await self._audit(
-                    connection,
-                    code=code,
-                    version=saved.active_version or saved.draft_version,
-                    action="activate",
-                    result_code="ACTIVATED",
-                    actor=actor,
-                    ip=ip,
-                )
-                return saved
-        finally:
-            await engine.dispose()
+                ),
+                {"code": code, "expected_draft_version": expected_draft_version},
+            )
+            row = _one_or_none(result)
+            if row is None:
+                raise UntestedProviderConfig("当前认证源草稿尚未通过测试")
+            saved = _provider(row)
+            await self._audit(
+                connection,
+                code=code,
+                version=saved.active_version or saved.draft_version,
+                action="activate",
+                result_code="ACTIVATED",
+                actor=actor,
+                ip=ip,
+            )
+            return saved
 
     async def disable(
         self,
@@ -264,89 +249,83 @@ class SqlAuthProviderRepository:
         expected_draft_version: int,
     ) -> ProviderRecord:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await lock_admin_authorization(
-                    connection, authorization, operation="provider_enable_disable", target=code,
-                    parameters={"enabled": False, "draft_version": expected_draft_version},
-                )
-                locked = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            await lock_admin_authorization(
+                connection, authorization, operation="provider_enable_disable", target=code,
+                parameters={"enabled": False, "draft_version": expected_draft_version},
+            )
+            locked = await connection.execute(
+                text(
+                    f"""
                         SELECT {PROVIDER_COLUMNS}
                         FROM auth_provider WHERE code=:code FOR UPDATE
                         """
-                    ),
-                    {"code": code},
-                )
-                previous = _one_or_none(locked)
-                if previous is None:
-                    raise ProviderNotFound("认证源不存在")
-                if int(previous["draft_version"]) != expected_draft_version:
-                    raise StaleProviderDraft("认证源草稿已变化，请重新验证后操作")
-                result = await connection.execute(
-                    text(
-                        f"""
+                ),
+                {"code": code},
+            )
+            previous = _one_or_none(locked)
+            if previous is None:
+                raise ProviderNotFound("认证源不存在")
+            if int(previous["draft_version"]) != expected_draft_version:
+                raise StaleProviderDraft("认证源草稿已变化，请重新验证后操作")
+            result = await connection.execute(
+                text(
+                    f"""
                         UPDATE auth_provider SET enabled=FALSE,updated_at=now()
                         WHERE code=:code
                         RETURNING {PROVIDER_COLUMNS}
                         """
-                    ),
-                    {"code": code},
-                )
-                row = _one_or_none(result)
-                if row is None:
-                    raise ProviderNotFound("认证源不存在")
-                saved = _provider(row)
-                await ensure_effective_admin(connection)
-                await self._audit(
-                    connection,
-                    code=code,
-                    version=saved.active_version or saved.draft_version,
-                    action="disable",
-                    result_code="DISABLED",
-                    actor=actor,
-                    ip=ip,
-                )
-                return saved
-        finally:
-            await engine.dispose()
+                ),
+                {"code": code},
+            )
+            row = _one_or_none(result)
+            if row is None:
+                raise ProviderNotFound("认证源不存在")
+            saved = _provider(row)
+            await ensure_effective_admin(connection)
+            await self._audit(
+                connection,
+                code=code,
+                version=saved.active_version or saved.draft_version,
+                action="disable",
+                result_code="DISABLED",
+                actor=actor,
+                ip=ip,
+            )
+            return saved
 
     async def list_role_mappings(
         self,
         code: str,
     ) -> tuple[ExternalRoleMapping, ...]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                provider = await connection.execute(
-                    text("SELECT id FROM auth_provider WHERE code=:code"),
-                    {"code": code},
-                )
-                provider_id = provider.scalar_one_or_none()
-                if provider_id is None:
-                    raise ProviderNotFound("认证源不存在")
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            provider = await connection.execute(
+                text("SELECT id FROM auth_provider WHERE code=:code"),
+                {"code": code},
+            )
+            provider_id = provider.scalar_one_or_none()
+            if provider_id is None:
+                raise ProviderNotFound("认证源不存在")
+            result = await connection.execute(
+                text(
+                    """
                         SELECT external_group,role,dept
                         FROM external_role_mapping
                         WHERE provider_id=:provider_id
                         ORDER BY external_group
                         """
-                    ),
-                    {"provider_id": int(provider_id)},
+                ),
+                {"provider_id": int(provider_id)},
+            )
+            return tuple(
+                ExternalRoleMapping(
+                    str(row["external_group"]),
+                    cast(Role, str(row["role"])),
+                    str(row["dept"]) if row["dept"] is not None else None,
                 )
-                return tuple(
-                    ExternalRoleMapping(
-                        str(row["external_group"]),
-                        cast(Role, str(row["role"])),
-                        str(row["dept"]) if row["dept"] is not None else None,
-                    )
-                    for row in result.mappings()
-                )
-        finally:
-            await engine.dispose()
+                for row in result.mappings()
+            )
 
     async def replace_role_mappings(
         self,
@@ -359,88 +338,85 @@ class SqlAuthProviderRepository:
         ip: str,
     ) -> tuple[ExternalRoleMapping, ...]:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await lock_admin_authorization(
-                    connection, authorization,
-                    operation="provider_role_mapping_change", target=code,
-                    parameters={
-                        "mappings": [
-                            {"external_group": item.external_group, "role": item.role,
-                             "dept": item.dept} for item in mappings
-                        ],
-                        "expected_revision": expected_revision,
-                    },
-                )
-                provider = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await lock_admin_authorization(
+                connection, authorization,
+                operation="provider_role_mapping_change", target=code,
+                parameters={
+                    "mappings": [
+                        {"external_group": item.external_group, "role": item.role,
+                         "dept": item.dept} for item in mappings
+                    ],
+                    "expected_revision": expected_revision,
+                },
+            )
+            provider = await connection.execute(
+                text(
+                    """
                         SELECT id FROM auth_provider
                         WHERE code=:code FOR UPDATE
                         """
-                    ),
-                    {"code": code},
+                ),
+                {"code": code},
+            )
+            provider_id = provider.scalar_one_or_none()
+            if provider_id is None:
+                raise ProviderNotFound("认证源不存在")
+            existing_result = await connection.execute(
+                text(
+                    "SELECT external_group,role,dept FROM external_role_mapping "
+                    "WHERE provider_id=:provider_id FOR UPDATE"
+                ),
+                {"provider_id": int(provider_id)},
+            )
+            existing = {
+                str(row["external_group"]): (cast(Role, row["role"]), row["dept"])
+                for row in existing_result.mappings()
+            }
+            actual_revision = role_mapping_revision(
+                tuple(
+                    ExternalRoleMapping(group, role, dept)
+                    for group, (role, dept) in existing.items()
                 )
-                provider_id = provider.scalar_one_or_none()
-                if provider_id is None:
-                    raise ProviderNotFound("认证源不存在")
-                existing_result = await connection.execute(
+            )
+            if actual_revision != expected_revision:
+                raise StaleProviderDraft("角色映射已被其他操作修改，请重新加载后合并变更")
+            desired = {item.external_group: (item.role, item.dept) for item in mappings}
+            for group in sorted(existing.keys() - desired.keys()):
+                await connection.execute(
                     text(
-                        "SELECT external_group,role,dept FROM external_role_mapping "
-                        "WHERE provider_id=:provider_id FOR UPDATE"
+                        "DELETE FROM external_role_mapping WHERE provider_id=:provider_id "
+                        "AND external_group=:external_group"
                     ),
-                    {"provider_id": int(provider_id)},
+                    {"provider_id": int(provider_id), "external_group": group},
                 )
-                existing = {
-                    str(row["external_group"]): (cast(Role, row["role"]), row["dept"])
-                    for row in existing_result.mappings()
-                }
-                actual_revision = role_mapping_revision(
-                    tuple(
-                        ExternalRoleMapping(group, role, dept)
-                        for group, (role, dept) in existing.items()
-                    )
+            for group, (role, dept) in desired.items():
+                if existing.get(group) == (role, dept):
+                    continue
+                await connection.execute(
+                    text(
+                        "INSERT INTO external_role_mapping"
+                        "(provider_id,external_group,role,dept) "
+                        "VALUES(:provider_id,:external_group,:role,:dept) "
+                        "ON CONFLICT(provider_id,external_group) DO UPDATE "
+                        "SET role=EXCLUDED.role,dept=EXCLUDED.dept"
+                    ),
+                    {
+                        "provider_id": int(provider_id),
+                        "external_group": group,
+                        "role": role,
+                        "dept": dept,
+                    },
                 )
-                if actual_revision != expected_revision:
-                    raise StaleProviderDraft("角色映射已被其他操作修改，请重新加载后合并变更")
-                desired = {item.external_group: (item.role, item.dept) for item in mappings}
-                for group in sorted(existing.keys() - desired.keys()):
-                    await connection.execute(
-                        text(
-                            "DELETE FROM external_role_mapping WHERE provider_id=:provider_id "
-                            "AND external_group=:external_group"
-                        ),
-                        {"provider_id": int(provider_id), "external_group": group},
-                    )
-                for group, (role, dept) in desired.items():
-                    if existing.get(group) == (role, dept):
-                        continue
-                    await connection.execute(
-                        text(
-                            "INSERT INTO external_role_mapping"
-                            "(provider_id,external_group,role,dept) "
-                            "VALUES(:provider_id,:external_group,:role,:dept) "
-                            "ON CONFLICT(provider_id,external_group) DO UPDATE "
-                            "SET role=EXCLUDED.role,dept=EXCLUDED.dept"
-                        ),
-                        {
-                            "provider_id": int(provider_id),
-                            "external_group": group,
-                            "role": role,
-                            "dept": dept,
-                        },
-                    )
-                await ensure_effective_admin(connection)
-                await self._audit_role_mappings(
-                    connection,
-                    code=code,
-                    mappings=mappings,
-                    actor=actor,
-                    ip=ip,
-                )
-                return mappings
-        finally:
-            await engine.dispose()
+            await ensure_effective_admin(connection)
+            await self._audit_role_mappings(
+                connection,
+                code=code,
+                mappings=mappings,
+                actor=actor,
+                ip=ip,
+            )
+            return mappings
 
     async def _audit_role_mappings(
         self,

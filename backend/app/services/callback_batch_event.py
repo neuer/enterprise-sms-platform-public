@@ -295,11 +295,8 @@ class FinishedRecoveryService:
         """先锁批次再锁原任务。已有补发则原样返回，不改旧快照。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                return await self._recover(connection, task_id, principal)
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            return await self._recover(connection, task_id, principal)
 
     async def _recover(
         self,

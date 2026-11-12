@@ -33,4 +33,5 @@ async def connection_types_are_preserved(engine: ManagedAsyncEngine) -> None:
     async with engine.begin() as connection:
         assert_type(connection, AsyncConnection)
     transaction_engine: SendTransactionEngine = engine
-    await transaction_engine.dispose()
+    async with transaction_engine.begin() as connection:
+        assert_type(connection, AsyncConnection)

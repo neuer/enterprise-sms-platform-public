@@ -166,25 +166,22 @@ class SqlExportRepository:
 
     async def count_rows(self, filters: ExportFilterSet) -> int:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                if filters.dataset == "unmatched":
-                    statement = (
-                        "SELECT count(*) FROM (SELECT 1 FROM unmatched_report u WHERE "
-                        + _unmatched_where()
-                        + f" LIMIT {MAX_EXPORT_ROWS + 1}) bounded"
-                    )
-                else:
-                    statement = (
-                        "SELECT count(*) FROM (SELECT 1 FROM sms_message m "
-                        "JOIN sms_batch b ON b.id=m.batch_id WHERE "
-                        + _message_where()
-                        + f" LIMIT {MAX_EXPORT_ROWS + 1}) bounded"
-                    )
-                result = await connection.execute(text(statement), _params(filters))
-                return int(result.scalar_one())
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            if filters.dataset == "unmatched":
+                statement = (
+                    "SELECT count(*) FROM (SELECT 1 FROM unmatched_report u WHERE "
+                    + _unmatched_where()
+                    + f" LIMIT {MAX_EXPORT_ROWS + 1}) bounded"
+                )
+            else:
+                statement = (
+                    "SELECT count(*) FROM (SELECT 1 FROM sms_message m "
+                    "JOIN sms_batch b ON b.id=m.batch_id WHERE "
+                    + _message_where()
+                    + f" LIMIT {MAX_EXPORT_ROWS + 1}) bounded"
+                )
+            result = await connection.execute(text(statement), _params(filters))
+            return int(result.scalar_one())
 
     async def create(
         self,
@@ -194,11 +191,10 @@ class SqlExportRepository:
         decrypted: bool,
     ) -> ExportTaskInfo:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         INSERT INTO export_task(
                           creator,creator_account_id,creator_identity_id,
                           scope_dept,scope_resolved,
@@ -212,20 +208,20 @@ class SqlExportRepository:
                         RETURNING id,public_id,status,decrypted,row_count,file_path,
                           NULL::timestamptz expires_at,created_at
                         """
-                    ),
-                    {
-                        "creator": principal.login_name,
-                        "creator_account_id": principal.account_id,
-                        "creator_identity_id": principal.identity_id,
-                        "scope_dept": filters.scope_dept,
-                        "filters": json.dumps(filters.safe_json(), ensure_ascii=False),
-                        "decrypted": decrypted,
-                    },
-                )
-                task = _task(result.mappings().one())
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "creator": principal.login_name,
+                    "creator_account_id": principal.account_id,
+                    "creator_identity_id": principal.identity_id,
+                    "scope_dept": filters.scope_dept,
+                    "filters": json.dumps(filters.safe_json(), ensure_ascii=False),
+                    "decrypted": decrypted,
+                },
+            )
+            task = _task(result.mappings().one())
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,actor_account_id,actor_identity_id,
                           role,action,object_type,object_id,after_val
@@ -244,22 +240,20 @@ class SqlExportRepository:
                               'batch_no',CAST(:batch_no AS text)) END
                         )
                         """
-                    ),
-                    {
-                        "actor": principal.login_name,
-                        "actor_account_id": principal.account_id,
-                        "actor_identity_id": principal.identity_id,
-                        "actor_role": principal.role,
-                        "public_id": str(task.public_id),
-                        "decrypted": decrypted,
-                        "batch_no": filters.batch_no,
-                        "dataset": filters.dataset,
-                        "scope_dept": filters.scope_dept,
-                    },
-                )
-                return task
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "actor": principal.login_name,
+                    "actor_account_id": principal.account_id,
+                    "actor_identity_id": principal.identity_id,
+                    "actor_role": principal.role,
+                    "public_id": str(task.public_id),
+                    "decrypted": decrypted,
+                    "batch_no": filters.batch_no,
+                    "dataset": filters.dataset,
+                    "scope_dept": filters.scope_dept,
+                },
+            )
+            return task
 
     async def get_accessible(
         self,
@@ -269,11 +263,10 @@ class SqlExportRepository:
         retention_days: int,
     ) -> ExportTaskInfo | None:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id,public_id,status,decrypted,row_count,file_path,created_at,
                           CASE WHEN finished_at IS NULL THEN NULL
                             ELSE finished_at+make_interval(days=>:retention_days)
@@ -284,20 +277,18 @@ class SqlExportRepository:
                           AND creator_identity_id IS NOT NULL
                           AND scope_resolved
                         """
-                        + EXPORT_ACCESS_PREDICATE
-                    ),
-                    {
-                        "public_id": str(public_id),
-                        "actor_account_id": principal.account_id,
-                        "actor_role": principal.role,
-                        "actor_dept": principal.dept,
-                        "retention_days": retention_days,
-                    },
-                )
-                row = result.mappings().one_or_none()
-                return _task(row) if row is not None else None
-        finally:
-            await engine.dispose()
+                    + EXPORT_ACCESS_PREDICATE
+                ),
+                {
+                    "public_id": str(public_id),
+                    "actor_account_id": principal.account_id,
+                    "actor_role": principal.role,
+                    "actor_dept": principal.dept,
+                    "retention_days": retention_days,
+                },
+            )
+            row = result.mappings().one_or_none()
+            return _task(row) if row is not None else None
 
     async def _downloadable_row(
         self,
@@ -339,18 +330,15 @@ class SqlExportRepository:
         """与最终授权复用同一条件，只读且不留下下载审计。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                row = await self._downloadable_row(
-                    connection,
-                    public_id,
-                    principal=principal,
-                    retention_days=retention_days,
-                    locked=False,
-                )
-                return _task(row) if row is not None else None
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            row = await self._downloadable_row(
+                connection,
+                public_id,
+                principal=principal,
+                retention_days=retention_days,
+                locked=False,
+            )
+            return _task(row) if row is not None else None
 
     async def get_downloadable_and_audit(
         self,
@@ -367,27 +355,26 @@ class SqlExportRepository:
 
         principal = authorization.principal
         engine = self._engine()
-        try:
-            async with (
-                engine.begin() as connection,
-                lock_export_authorization(
-                    self.settings, authorization, connection
-                ) as auth_connection,
-            ):
-                row = await self._downloadable_row(
-                    connection,
-                    public_id,
-                    principal=principal,
-                    retention_days=retention_days,
-                    locked=True,
-                )
-                if row is None or _task(row) != expected:
-                    return None
-                await recheck_session(auth_connection)
-                check_file()
-                await connection.execute(
-                    text(
-                        """
+        async with (
+            engine.begin() as connection,
+            lock_export_authorization(
+                self.settings, authorization, connection
+            ) as auth_connection,
+        ):
+            row = await self._downloadable_row(
+                connection,
+                public_id,
+                principal=principal,
+                retention_days=retention_days,
+                locked=True,
+            )
+            if row is None or _task(row) != expected:
+                return None
+            await recheck_session(auth_connection)
+            check_file()
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(
                           actor,actor_subject_kind,actor_account_id,actor_identity_id,
                           role,ip,action,object_type,object_id,after_val
@@ -404,42 +391,37 @@ class SqlExportRepository:
                           )
                         )
                         """
-                    ),
-                    {
-                        "actor": principal.login_name,
-                        "actor_account_id": principal.account_id,
-                        "actor_identity_id": principal.identity_id,
-                        "actor_role": principal.role,
-                        "ip": ip,
-                        "public_id": str(public_id),
-                        "scope_dept": row["scope_dept"],
-                        "decrypted": bool(row["decrypted"]),
-                        "row_count": row["row_count"],
-                    },
-                )
-                return _task(row)
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "actor": principal.login_name,
+                    "actor_account_id": principal.account_id,
+                    "actor_identity_id": principal.identity_id,
+                    "actor_role": principal.role,
+                    "ip": ip,
+                    "public_id": str(public_id),
+                    "scope_dept": row["scope_dept"],
+                    "decrypted": bool(row["decrypted"]),
+                    "row_count": row["row_count"],
+                },
+            )
+            return _task(row)
 
     async def pending_ids(self, limit: int = 100) -> list[int]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id FROM export_task
                         WHERE status='pending' OR (
                           status='running' AND lease_expires_at<=now()
                         ) ORDER BY COALESCE(lease_expires_at,created_at),id
                         LIMIT :limit
                         """
-                    ),
-                    {"limit": limit},
-                )
-                return [int(value) for value in result.scalars()]
-        finally:
-            await engine.dispose()
+                ),
+                {"limit": limit},
+            )
+            return [int(value) for value in result.scalars()]
 
     async def claim(
         self,
@@ -451,11 +433,10 @@ class SqlExportRepository:
             raise ValueError("export lease must be at least 3 seconds")
         lease_id = uuid4()
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         WITH candidate AS (
                           SELECT id,(lease_id IS NOT NULL) takeover
                           FROM export_task
@@ -480,43 +461,41 @@ class SqlExportRepository:
                         )
                         SELECT * FROM claimed
                         """
-                    ),
-                    {
-                        "task_id": task_id,
-                        "lease_id": lease_id,
-                        "lease_seconds": lease_seconds,
-                    },
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return None
-                raw_filters = row["filters"]
-                if not isinstance(raw_filters, dict):
-                    raise ValueError("invalid persisted export filters")
-                event_type = "takeover" if bool(row["takeover"]) else "acquired"
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "task_id": task_id,
+                    "lease_id": lease_id,
+                    "lease_seconds": lease_seconds,
+                },
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            raw_filters = row["filters"]
+            if not isinstance(raw_filters, dict):
+                raise ValueError("invalid persisted export filters")
+            event_type = "takeover" if bool(row["takeover"]) else "acquired"
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO worker_lease_event(
                           task_kind,task_id,event_type,lease_id
                         ) VALUES ('export',:task_id,:event_type,:lease_id)
                         """
-                    ),
-                    {
-                        "task_id": task_id,
-                        "event_type": event_type,
-                        "lease_id": lease_id,
-                    },
-                )
-                return ExportClaim(
-                    int(row["id"]),
-                    ExportFilterSet.from_safe_json(raw_filters),
-                    bool(row["decrypted"]),
-                    UUID(str(row["lease_id"])),
-                    row["lease_expires_at"],
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "task_id": task_id,
+                    "event_type": event_type,
+                    "lease_id": lease_id,
+                },
+            )
+            return ExportClaim(
+                int(row["id"]),
+                ExportFilterSet.from_safe_json(raw_filters),
+                bool(row["decrypted"]),
+                UUID(str(row["lease_id"])),
+                row["lease_expires_at"],
+            )
 
     async def heartbeat(
         self,
@@ -527,11 +506,10 @@ class SqlExportRepository:
     ) -> bool:
         engine = self._engine()
         renewed = False
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE export_task SET
                           lease_expires_at=now()+make_interval(
                             secs=>:lease_seconds
@@ -540,16 +518,14 @@ class SqlExportRepository:
                           AND lease_id=:lease_id AND lease_expires_at>now()
                         RETURNING id
                         """
-                    ),
-                    {
-                        "task_id": task_id,
-                        "lease_id": lease_id,
-                        "lease_seconds": lease_seconds,
-                    },
-                )
-                renewed = result.scalar_one_or_none() is not None
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "task_id": task_id,
+                    "lease_id": lease_id,
+                    "lease_seconds": lease_seconds,
+                },
+            )
+            renewed = result.scalar_one_or_none() is not None
         if not renewed:
             await self._record_lease_event(task_id, "heartbeat_lost", lease_id)
         return renewed
@@ -598,12 +574,9 @@ class SqlExportRepository:
     ) -> None:
         engine = self._engine()
         updated = False
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(text(statement), params)
-                updated = result.scalar_one_or_none() is not None
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            result = await connection.execute(text(statement), params)
+            updated = result.scalar_one_or_none() is not None
         if not updated:
             task_id = params["task_id"]
             assert isinstance(task_id, int) and not isinstance(task_id, bool)
@@ -619,64 +592,52 @@ class SqlExportRepository:
         lease_id: UUID,
     ) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO worker_lease_event(
                           task_kind,task_id,event_type,lease_id
                         ) VALUES ('export',:task_id,:event_type,:lease_id)
                         """
-                    ),
-                    {
-                        "task_id": task_id,
-                        "event_type": event_type,
-                        "lease_id": lease_id,
-                    },
-                )
-        finally:
-            await engine.dispose()
+                ),
+                {
+                    "task_id": task_id,
+                    "event_type": event_type,
+                    "lease_id": lease_id,
+                },
+            )
 
     async def _update(self, statement: str, params: dict[str, object]) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                await connection.execute(text(statement), params)
-        finally:
-            await engine.dispose()
+        async with engine.begin() as connection:
+            await connection.execute(text(statement), params)
 
     async def retention_days(self) -> int:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text("SELECT value FROM sys_config WHERE key='export_retention_days'")
-                )
-                return int(result.scalar_one())
-        finally:
-            await engine.dispose()
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT value FROM sys_config WHERE key='export_retention_days'")
+            )
+            return int(result.scalar_one())
 
     async def expired(self, retention_days: int) -> list[ExpiredExport]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id,file_path FROM export_task
                         WHERE file_path IS NOT NULL AND finished_at IS NOT NULL
                           AND finished_at+make_interval(days=>:days)<=now()
                         """
-                    ),
-                    {"days": retention_days},
-                )
-                return [
-                    ExpiredExport(int(row["id"]), str(row["file_path"]))
-                    for row in result.mappings()
-                ]
-        finally:
-            await engine.dispose()
+                ),
+                {"days": retention_days},
+            )
+            return [
+                ExpiredExport(int(row["id"]), str(row["file_path"]))
+                for row in result.mappings()
+            ]
 
     async def clear_file(self, task_id: int, file_path: str) -> None:
         await self._update(
@@ -686,45 +647,39 @@ class SqlExportRepository:
 
     async def ready_files(self, retention_days: int) -> list[ExpiredExport]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id,file_path FROM export_task
                         WHERE status='done' AND file_path IS NOT NULL
                           AND finished_at IS NOT NULL
                           AND finished_at+make_interval(days=>:days)>now()
                         """
-                    ),
-                    {"days": retention_days},
-                )
-                return [
-                    ExpiredExport(int(row["id"]), str(row["file_path"]))
-                    for row in result.mappings()
-                ]
-        finally:
-            await engine.dispose()
+                ),
+                {"days": retention_days},
+            )
+            return [
+                ExpiredExport(int(row["id"]), str(row["file_path"]))
+                for row in result.mappings()
+            ]
 
     async def active_leases(self) -> list[ExportLeaseRef]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id,lease_id FROM export_task
                         WHERE status='running' AND lease_id IS NOT NULL
                           AND lease_expires_at>now()
                         """
-                    )
                 )
-                return [
-                    ExportLeaseRef(int(row["id"]), UUID(str(row["lease_id"])))
-                    for row in result.mappings()
-                ]
-        finally:
-            await engine.dispose()
+            )
+            return [
+                ExportLeaseRef(int(row["id"]), UUID(str(row["lease_id"])))
+                for row in result.mappings()
+            ]
 
     async def mark_unreadable(self, task_id: int, file_path: str) -> None:
         """ready 任务引用缺失或不可认证文件时转入明确 failed，禁止继续伪装可下载。"""
@@ -778,12 +733,9 @@ class SqlExportRepository:
                 """
             )
         engine = self._engine()
-        try:
-            async with (
-                engine.connect() as connection,
-                connection.stream(statement, _params(claim.filters)) as result,
-            ):
-                async for row in result.mappings():
-                    yield dict(row)
-        finally:
-            await engine.dispose()
+        async with (
+            engine.connect() as connection,
+            connection.stream(statement, _params(claim.filters)) as result,
+        ):
+            async for row in result.mappings():
+                yield dict(row)

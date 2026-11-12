@@ -72,22 +72,19 @@ class SqlDashboardRepository:
         """只读取最近一次余额事实；无快照保持未知，不加载仪表盘聚合。"""
 
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        "SELECT balance,fetched_at FROM balance_snapshot "
-                        "ORDER BY fetched_at DESC,id DESC LIMIT 1"
-                    )
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT balance,fetched_at FROM balance_snapshot "
+                    "ORDER BY fetched_at DESC,id DESC LIMIT 1"
                 )
-                row = result.mappings().first()
-                return (
-                    BalanceSnapshot(int(row["balance"]), row["fetched_at"])
-                    if row is not None
-                    else BalanceSnapshot(None, None)
-                )
-        finally:
-            await engine.dispose()
+            )
+            row = result.mappings().first()
+            return (
+                BalanceSnapshot(int(row["balance"]), row["fetched_at"])
+                if row is not None
+                else BalanceSnapshot(None, None)
+            )
 
     async def load(
         self,
@@ -104,11 +101,10 @@ class SqlDashboardRepository:
         dim_type = "all" if scope_dept is None else "dept"
         dim_value = "" if scope_dept is None else scope_dept
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                stats_result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            stats_result = await connection.execute(
+                text(
+                    """
                         SELECT category,total,total_segments,delivered,failed,unknown_cnt
                         FROM stat_daily
                         WHERE stat_date=:today AND dim_type=:dim_type
@@ -117,23 +113,23 @@ class SqlDashboardRepository:
                           AND category IN ('verify','notice','market')
                         ORDER BY category
                         """
-                    ),
-                    {"today": today, "dim_type": dim_type, "dim_value": dim_value},
+                ),
+                {"today": today, "dim_type": dim_type, "dim_value": dim_value},
+            )
+            categories = tuple(
+                CategoryTotals(
+                    cast(Category, str(row["category"])),
+                    int(row["total"]),
+                    int(row["total_segments"]),
+                    int(row["delivered"]),
+                    int(row["failed"]),
+                    int(row["unknown_cnt"]),
                 )
-                categories = tuple(
-                    CategoryTotals(
-                        cast(Category, str(row["category"])),
-                        int(row["total"]),
-                        int(row["total_segments"]),
-                        int(row["delivered"]),
-                        int(row["failed"]),
-                        int(row["unknown_cnt"]),
-                    )
-                    for row in stats_result.mappings()
-                )
-                trend_result = await connection.execute(
-                    text(
-                        """
+                for row in stats_result.mappings()
+            )
+            trend_result = await connection.execute(
+                text(
+                    """
                         SELECT stat_date,category,total
                         FROM stat_daily
                         WHERE stat_date BETWEEN :start_date AND :today
@@ -143,26 +139,26 @@ class SqlDashboardRepository:
                           AND category IN ('verify','notice','market')
                         ORDER BY stat_date,category
                         """
-                    ),
-                    {
-                        "start_date": today - timedelta(days=6),
-                        "today": today,
-                        "dim_type": dim_type,
-                        "dim_value": dim_value,
-                    },
+                ),
+                {
+                    "start_date": today - timedelta(days=6),
+                    "today": today,
+                    "dim_type": dim_type,
+                    "dim_value": dim_value,
+                },
+            )
+            trend = tuple(
+                TrendDayTotals(
+                    row["stat_date"],
+                    cast(Category, str(row["category"])),
+                    int(row["total"]),
                 )
-                trend = tuple(
-                    TrendDayTotals(
-                        row["stat_date"],
-                        cast(Category, str(row["category"])),
-                        int(row["total"]),
-                    )
-                    for row in trend_result.mappings()
-                )
-                if not include_operations:
-                    pending_result = await connection.execute(
-                        text(
-                            """
+                for row in trend_result.mappings()
+            )
+            if not include_operations:
+                pending_result = await connection.execute(
+                    text(
+                        """
                             SELECT count(*) FROM approval ap
                             JOIN sms_batch b ON b.id=ap.batch_id
                             WHERE ap.status='pending'
@@ -171,28 +167,28 @@ class SqlDashboardRepository:
                                 OR b.dept=CAST(:scope_dept AS text)
                               )
                             """
-                        ),
-                        {"scope_dept": scope_dept},
-                    )
-                    return DashboardFacts(
-                        categories=categories,
-                        pending_approvals=int(pending_result.scalar_one()),
-                        trend=trend,
-                    )
-                if current_facts is None:
-                    current_result = await connection.execute(
-                        text(
-                            "SELECT balance FROM balance_snapshot "
-                            "ORDER BY fetched_at DESC,id DESC LIMIT 1"
-                        )
-                    )
-                    current_raw = current_result.scalar_one_or_none()
-                    current_balance = int(current_raw) if current_raw is not None else None
-                else:
-                    current_balance = current_facts.balance
-                balance_result = await connection.execute(
+                    ),
+                    {"scope_dept": scope_dept},
+                )
+                return DashboardFacts(
+                    categories=categories,
+                    pending_approvals=int(pending_result.scalar_one()),
+                    trend=trend,
+                )
+            if current_facts is None:
+                current_result = await connection.execute(
                     text(
-                        """
+                        "SELECT balance FROM balance_snapshot "
+                        "ORDER BY fetched_at DESC,id DESC LIMIT 1"
+                    )
+                )
+                current_raw = current_result.scalar_one_or_none()
+                current_balance = int(current_raw) if current_raw is not None else None
+            else:
+                current_balance = current_facts.balance
+            balance_result = await connection.execute(
+                text(
+                    """
                         SELECT stat_date,balance FROM (
                           SELECT DISTINCT ON (
                             (fetched_at AT TIME ZONE 'Asia/Shanghai')::date
@@ -205,57 +201,57 @@ class SqlDashboardRepository:
                             fetched_at DESC,id DESC
                         ) daily ORDER BY stat_date
                         """
-                    ),
-                    {
-                        "start_at": datetime.combine(
-                            today - timedelta(days=13), time.min, tzinfo=SHANGHAI
-                        ).astimezone(UTC),
-                        "end_at": datetime.combine(
-                            today + timedelta(days=1), time.min, tzinfo=SHANGHAI
-                        ).astimezone(UTC),
-                    },
-                )
-                balances = tuple(
-                    BalancePoint(row["stat_date"], int(row["balance"]))
-                    for row in balance_result.mappings()
-                )
-                pending_result = await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "start_at": datetime.combine(
+                        today - timedelta(days=13), time.min, tzinfo=SHANGHAI
+                    ).astimezone(UTC),
+                    "end_at": datetime.combine(
+                        today + timedelta(days=1), time.min, tzinfo=SHANGHAI
+                    ).astimezone(UTC),
+                },
+            )
+            balances = tuple(
+                BalancePoint(row["stat_date"], int(row["balance"]))
+                for row in balance_result.mappings()
+            )
+            pending_result = await connection.execute(
+                text(
+                    """
                         SELECT count(*) FROM approval ap
                         JOIN sms_batch b ON b.id=ap.batch_id
                         WHERE ap.status='pending'
                           AND (CAST(:scope_dept AS varchar(128)) IS NULL
                                OR b.dept=:scope_dept)
                         """
-                    ),
-                    {"scope_dept": scope_dept},
-                )
-                pending = int(pending_result.scalar_one())
-                alerts: tuple[AlertSummary, ...] = ()
-                if include_legacy_alerts:
-                    alerts_result = await connection.execute(
-                        text(
-                            """
+                ),
+                {"scope_dept": scope_dept},
+            )
+            pending = int(pending_result.scalar_one())
+            alerts: tuple[AlertSummary, ...] = ()
+            if include_legacy_alerts:
+                alerts_result = await connection.execute(
+                    text(
+                        """
                             SELECT level,title,created_at FROM alert_log
                             WHERE (created_at AT TIME ZONE 'Asia/Shanghai')::date=:today
                             ORDER BY created_at DESC,id DESC LIMIT 5
                             """
-                        ),
-                        {"today": today},
+                    ),
+                    {"today": today},
+                )
+                alerts = tuple(
+                    AlertSummary(
+                        str(row["level"]),
+                        str(row["title"]),
+                        row["created_at"],
                     )
-                    alerts = tuple(
-                        AlertSummary(
-                            str(row["level"]),
-                            str(row["title"]),
-                            row["created_at"],
-                        )
-                        for row in alerts_result.mappings()
-                    )
-                if current_facts is None:
-                    counts_result = await connection.execute(
-                        text(
-                            """
+                    for row in alerts_result.mappings()
+                )
+            if current_facts is None:
+                counts_result = await connection.execute(
+                    text(
+                        """
                             SELECT
                               (SELECT count(*) FROM sms_chunk c
                                JOIN sms_batch b ON b.id=c.batch_id
@@ -269,18 +265,18 @@ class SqlDashboardRepository:
                                  AND (CAST(:scope_dept AS varchar(128)) IS NULL
                                       OR app.dept=:scope_dept)) callback_dead
                             """
-                        ),
-                        {"scope_dept": scope_dept},
-                    )
-                    count_row = counts_result.mappings().one()
-                    counts = {
-                        "uncertain": int(count_row["uncertain"]),
-                        "unmatched": int(count_row["unmatched"]),
-                        "callback_dead": int(count_row["callback_dead"]),
-                    }
-                    queue_result = await connection.execute(
-                        text(
-                            """
+                    ),
+                    {"scope_dept": scope_dept},
+                )
+                count_row = counts_result.mappings().one()
+                counts = {
+                    "uncertain": int(count_row["uncertain"]),
+                    "unmatched": int(count_row["unmatched"]),
+                    "callback_dead": int(count_row["callback_dead"]),
+                }
+                queue_result = await connection.execute(
+                    text(
+                        """
                             SELECT lanes.queue,count(event.id) count
                             FROM (VALUES ('realtime'),('bulk')) AS lanes(queue)
                             LEFT JOIN outbox_event event
@@ -289,15 +285,15 @@ class SqlDashboardRepository:
                             GROUP BY lanes.queue
                             ORDER BY lanes.queue
                             """
-                        )
                     )
-                    queue_depths = {
-                        str(row["queue"]): max(0, int(row["count"]))
-                        for row in queue_result.mappings()
-                    }
-                    jobs_result = await connection.execute(
-                        text(
-                            """
+                )
+                queue_depths = {
+                    str(row["queue"]): max(0, int(row["count"]))
+                    for row in queue_result.mappings()
+                }
+                jobs_result = await connection.execute(
+                    text(
+                        """
                             SELECT s.job_name,r.started_at last_run_at,r.status last_status
                             FROM unnest(CAST(:job_names AS text[])) AS s(job_name)
                             JOIN LATERAL (
@@ -306,94 +302,92 @@ class SqlDashboardRepository:
                               ORDER BY started_at DESC,id DESC LIMIT 1
                             ) r ON true
                             """
-                        ),
-                        {"job_names": [spec.job_name for spec in job_specs]},
+                    ),
+                    {"job_names": [spec.job_name for spec in job_specs]},
+                )
+                jobs = tuple(
+                    JobLatest(
+                        str(row["job_name"]),
+                        row["last_run_at"],
+                        str(row["last_status"]),
                     )
-                    jobs = tuple(
-                        JobLatest(
-                            str(row["job_name"]),
-                            row["last_run_at"],
-                            str(row["last_status"]),
-                        )
-                        for row in jobs_result.mappings()
-                    )
-                    config_result = await connection.execute(
-                        text(
-                            """
+                    for row in jobs_result.mappings()
+                )
+                config_result = await connection.execute(
+                    text(
+                        """
                             SELECT key,value FROM sys_config
                             WHERE key IN (
                               'vendor_qps','reserved_realtime_qps',
                               'balance_alert_threshold','test_send_max'
                             )
                             """
-                        )
                     )
-                    policy = RuntimePolicy.from_mapping(
-                        {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
-                    )
-                else:
-                    unmatched_result = await connection.execute(
-                        text("SELECT count(*) FROM unmatched_report")
-                    )
-                    counts = {
-                        "uncertain": current_facts.uncertain,
-                        "unmatched": int(unmatched_result.scalar_one()),
-                        "callback_dead": current_facts.callback_dead,
-                    }
-                    queue_depths = {
-                        "realtime": current_facts.realtime_queue,
-                        "bulk": current_facts.bulk_queue,
-                    }
-                    jobs = tuple(
-                        JobLatest(fact.job_name, fact.latest.started_at, fact.latest.status)
-                        for fact in current_facts.jobs
-                        if fact.latest is not None
-                    )
-                    policy = current_facts.policy
-                qps_used: int | None = None
-                channel_stale = True
-                degraded_reason: ChannelMonitorDegradedReason | None = "redis_unavailable"
-                try:
-                    async with asyncio.timeout(self.channel_timeout_s):
-                        if self.redis is None:
-                            self.redis = redis_client(self.settings.redis_control_url)
-                        tokens_raw = await self.redis.hget("ratelimit:vendor", "tokens")
-                    remaining = _remaining_tokens(tokens_raw, policy.vendor_qps)
-                    qps_used = max(0, min(policy.vendor_qps, policy.vendor_qps - remaining))
-                    channel_stale = False
-                    degraded_reason = None
-                except ValueError:
-                    degraded_reason = "snapshot_incomplete"
-                except Exception as error:
-                    LOGGER.warning(
-                        "dashboard channel monitor unavailable",
-                        extra={
-                            "error_type": type(error).__name__,
-                            "reason": degraded_reason,
-                        },
-                    )
-                return DashboardFacts(
-                    categories=categories,
-                    pending_approvals=pending,
-                    test_send_max=policy.test_send_max,
-                    trend=trend,
-                    operations=DashboardOperationsFacts(
-                        current_balance,
-                        balances,
-                        alerts,
-                        counts["uncertain"],
-                        counts["unmatched"],
-                        counts["callback_dead"],
-                        jobs,
-                        queue_depths.get("realtime", 0),
-                        queue_depths.get("bulk", 0),
-                        qps_used,
-                        policy.vendor_qps,
-                        policy.reserved_realtime_qps,
-                        channel_stale,
-                        degraded_reason,
-                        policy.balance_alert_threshold,
-                    ),
                 )
-        finally:
-            await engine.dispose()
+                policy = RuntimePolicy.from_mapping(
+                    {str(row["key"]): str(row["value"]) for row in config_result.mappings()}
+                )
+            else:
+                unmatched_result = await connection.execute(
+                    text("SELECT count(*) FROM unmatched_report")
+                )
+                counts = {
+                    "uncertain": current_facts.uncertain,
+                    "unmatched": int(unmatched_result.scalar_one()),
+                    "callback_dead": current_facts.callback_dead,
+                }
+                queue_depths = {
+                    "realtime": current_facts.realtime_queue,
+                    "bulk": current_facts.bulk_queue,
+                }
+                jobs = tuple(
+                    JobLatest(fact.job_name, fact.latest.started_at, fact.latest.status)
+                    for fact in current_facts.jobs
+                    if fact.latest is not None
+                )
+                policy = current_facts.policy
+            qps_used: int | None = None
+            channel_stale = True
+            degraded_reason: ChannelMonitorDegradedReason | None = "redis_unavailable"
+            try:
+                async with asyncio.timeout(self.channel_timeout_s):
+                    if self.redis is None:
+                        self.redis = redis_client(self.settings.redis_control_url)
+                    tokens_raw = await self.redis.hget("ratelimit:vendor", "tokens")
+                remaining = _remaining_tokens(tokens_raw, policy.vendor_qps)
+                qps_used = max(0, min(policy.vendor_qps, policy.vendor_qps - remaining))
+                channel_stale = False
+                degraded_reason = None
+            except ValueError:
+                degraded_reason = "snapshot_incomplete"
+            except Exception as error:
+                LOGGER.warning(
+                    "dashboard channel monitor unavailable",
+                    extra={
+                        "error_type": type(error).__name__,
+                        "reason": degraded_reason,
+                    },
+                )
+            return DashboardFacts(
+                categories=categories,
+                pending_approvals=pending,
+                test_send_max=policy.test_send_max,
+                trend=trend,
+                operations=DashboardOperationsFacts(
+                    current_balance,
+                    balances,
+                    alerts,
+                    counts["uncertain"],
+                    counts["unmatched"],
+                    counts["callback_dead"],
+                    jobs,
+                    queue_depths.get("realtime", 0),
+                    queue_depths.get("bulk", 0),
+                    qps_used,
+                    policy.vendor_qps,
+                    policy.reserved_realtime_qps,
+                    channel_stale,
+                    degraded_reason,
+                    policy.balance_alert_threshold,
+                ),
+            )

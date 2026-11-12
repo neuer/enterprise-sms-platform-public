@@ -21,11 +21,10 @@ class SqlUncertainRepository:
 
     async def list_uncertain(self) -> list[UncertainChunk]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT c.id,c.custom_id,
                           COALESCE(c.uncertain_since,b.created_at) uncertain_since
                         FROM sms_chunk c
@@ -33,73 +32,65 @@ class SqlUncertainRepository:
                         WHERE c.status='uncertain'
                         ORDER BY COALESCE(c.uncertain_since,b.created_at)
                         """
-                    )
                 )
-                return [
-                    UncertainChunk(
-                        int(row["id"]),
-                        str(row["custom_id"]).strip(),
-                        row["uncertain_since"],
-                    )
-                    for row in result.mappings()
-                ]
-        finally:
-            await engine.dispose()
+            )
+            return [
+                UncertainChunk(
+                    int(row["id"]),
+                    str(row["custom_id"]).strip(),
+                    row["uncertain_since"],
+                )
+                for row in result.mappings()
+            ]
 
     async def raw_candidates(self, custom_id: str) -> list[RawCandidate]:
         engine = self._engine()
-        try:
-            async with engine.connect() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id,source,payload_enc,payload_sha256,key_version
                         FROM raw_vendor_log
                         WHERE custom_ids @> ARRAY[CAST(:custom_id AS text)]
                         ORDER BY fetched_at DESC
                         """
-                    ),
-                    {"custom_id": custom_id},
+                ),
+                {"custom_id": custom_id},
+            )
+            return [
+                RawCandidate(
+                    int(row["id"]),
+                    str(row["source"]),
+                    bytes(row["payload_enc"]),
+                    str(row["payload_sha256"]),
+                    int(row["key_version"]),
                 )
-                return [
-                    RawCandidate(
-                        int(row["id"]),
-                        str(row["source"]),
-                        bytes(row["payload_enc"]),
-                        str(row["payload_sha256"]),
-                        int(row["key_version"]),
-                    )
-                    for row in result.mappings()
-                ]
-        finally:
-            await engine.dispose()
+                for row in result.mappings()
+            ]
 
     async def resolve_submitted(self, chunk_id: int, task_id: str) -> None:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk SET status='submitted',vendor_task_id=:task_id,
                           submitted_at=COALESCE(submitted_at,now())
                         WHERE id=:id AND status='uncertain'
                         """
-                    ),
-                    {"id": chunk_id, "task_id": task_id},
-                )
-                if result.rowcount == 1:
-                    await connection.execute(
-                        text(
-                            """
+                ),
+                {"id": chunk_id, "task_id": task_id},
+            )
+            if result.rowcount == 1:
+                await connection.execute(
+                    text(
+                        """
                             UPDATE sms_message SET status='sent' WHERE chunk_id=:id
                               AND status='pending'
                             """
-                        ),
-                        {"id": chunk_id},
-                    )
-        finally:
-            await engine.dispose()
+                    ),
+                    {"id": chunk_id},
+                )
 
     async def alert_overdue(self, chunk: UncertainChunk) -> None:
         _reference, reference_detail = alert_reference("custom_id", chunk.custom_id)
@@ -115,55 +106,54 @@ class SqlUncertainRepository:
         """无证据到期后一次进入保守终态；不重发、不退还可能已发生的成本。"""
 
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                locked = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            locked = await connection.execute(
+                text(
+                    """
                         SELECT c.id chunk_id,c.batch_id
                         FROM sms_chunk c
                         JOIN sms_batch b ON b.id=c.batch_id
                         WHERE c.id=:chunk_id AND c.status='uncertain'
                         FOR UPDATE OF c
                         """
-                    ),
-                    {"chunk_id": chunk.chunk_id},
-                )
-                row = locked.mappings().one_or_none()
-                if row is None:
-                    return
-                batch_id = int(row["batch_id"])
-                await connection.execute(
-                    text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
-                    {"id": batch_id},
-                )
-                moved = await connection.execute(
-                    text(
-                        """
+                ),
+                {"chunk_id": chunk.chunk_id},
+            )
+            row = locked.mappings().one_or_none()
+            if row is None:
+                return
+            batch_id = int(row["batch_id"])
+            await connection.execute(
+                text("SELECT id FROM sms_batch WHERE id=:id FOR UPDATE"),
+                {"id": batch_id},
+            )
+            moved = await connection.execute(
+                text(
+                    """
                         UPDATE sms_chunk
                         SET status='unknown_terminal',
                             unknown_terminal_at=now(),
                             submitting_since=NULL
                         WHERE id=:chunk_id AND status='uncertain'
                         """
-                    ),
-                    {"chunk_id": chunk.chunk_id},
-                )
-                if moved.rowcount != 1:
-                    return
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {"chunk_id": chunk.chunk_id},
+            )
+            if moved.rowcount != 1:
+                return
+            await connection.execute(
+                text(
+                    """
                         UPDATE sms_message SET status='unknown'
                         WHERE chunk_id=:chunk_id
                           AND status IN ('pending','sent')
                         """
-                    ),
-                    {"chunk_id": chunk.chunk_id},
-                )
-                aggregate = await connection.execute(
-                    text(
-                        """
+                ),
+                {"chunk_id": chunk.chunk_id},
+            )
+            aggregate = await connection.execute(
+                text(
+                    """
                         UPDATE sms_batch b SET
                           delivered=s.delivered,failed=s.failed,
                           unknown_cnt=s.unknown_cnt,
@@ -187,34 +177,32 @@ class SqlUncertainRepository:
                         WHERE b.id=s.batch_id
                         RETURNING b.id,b.status,b.unknown_cnt
                         """
-                    ),
-                    {"batch_id": batch_id},
-                )
-                batch = aggregate.mappings().one()
-                if str(batch["status"]) in {"completed", "completed_unknown"}:
-                    await enqueue_batch_finished(connection, int(batch["id"]))
-                    from app.services.send_inflight import request_inflight_release_for_batch
-
-                    await request_inflight_release_for_batch(
-                        connection,
-                        batch_id=int(batch["id"]),
-                        reason=(
-                            "batch-completed-unknown"
-                            if str(batch["status"]) == "completed_unknown"
-                            else "batch-completed"
-                        ),
-                    )
-                unknown_count = int(batch["unknown_cnt"])
-            await SqlAlertService(self.settings).emit(
-                alert_type="uncertain_terminal",
-                level="info",
-                title="uncertain 已进入保守终态",
-                detail={
-                    "chunk_id": chunk.chunk_id,
-                    "batch_id": batch_id,
-                    "unknown_count": unknown_count,
-                },
-                dedup_key=f"uncertain_terminal:{chunk.chunk_id}",
+                ),
+                {"batch_id": batch_id},
             )
-        finally:
-            await engine.dispose()
+            batch = aggregate.mappings().one()
+            if str(batch["status"]) in {"completed", "completed_unknown"}:
+                await enqueue_batch_finished(connection, int(batch["id"]))
+                from app.services.send_inflight import request_inflight_release_for_batch
+
+                await request_inflight_release_for_batch(
+                    connection,
+                    batch_id=int(batch["id"]),
+                    reason=(
+                        "batch-completed-unknown"
+                        if str(batch["status"]) == "completed_unknown"
+                        else "batch-completed"
+                    ),
+                )
+            unknown_count = int(batch["unknown_cnt"])
+        await SqlAlertService(self.settings).emit(
+            alert_type="uncertain_terminal",
+            level="info",
+            title="uncertain 已进入保守终态",
+            detail={
+                "chunk_id": chunk.chunk_id,
+                "batch_id": batch_id,
+                "unknown_count": unknown_count,
+            },
+            dedup_key=f"uncertain_terminal:{chunk.chunk_id}",
+        )

@@ -33,96 +33,83 @@ def _shanghai_iso(value: datetime) -> str:
 
 
 class SqlSchedulingRepository:
-    def __init__(
-        self,
-        settings: Settings | None = None,
-        *,
-        pooled: bool = False,
-    ) -> None:
+    def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
-        self.pooled = pooled
 
     def _engine(self) -> ManagedAsyncEngine:
         return database_engine(self.settings.database_url)
 
-    async def _dispose_task_engine(self, engine: ManagedAsyncEngine) -> None:
-        if not self.pooled:
-            await engine.dispose()
-
     async def claim_due(self) -> list[ScheduledBatch]:
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                window_result = await connection.execute(
-                    text("SELECT value FROM sys_config WHERE key='market_send_window'")
-                )
-                window = str(window_result.scalar() or DEFAULT_MARKET_WINDOW).strip()
-                now = datetime.now(UTC)
-                result = await connection.execute(
-                    text(
-                        """
+        async with engine.begin() as connection:
+            window_result = await connection.execute(
+                text("SELECT value FROM sys_config WHERE key='market_send_window'")
+            )
+            window = str(window_result.scalar() or DEFAULT_MARKET_WINDOW).strip()
+            now = datetime.now(UTC)
+            result = await connection.execute(
+                text(
+                    """
                         SELECT id, trim(batch_no) batch_no, category
                         FROM sms_batch
                         WHERE status='scheduled' AND scheduled_at<=now()
                         ORDER BY scheduled_at
                         FOR UPDATE SKIP LOCKED LIMIT 100
                         """
-                    )
                 )
-                claimed: list[ScheduledBatch] = []
-                for row in result.mappings():
-                    batch_id = int(row["id"])
-                    batch_no = str(row["batch_no"])
-                    category = str(row["category"])
-                    if category == "market":
-                        status, deferred, scheduled_at = coerce_market_dispatch(
-                            now,
-                            window,
-                            None,
-                        )
-                        if status == "scheduled":
-                            await connection.execute(
-                                text(
-                                    """
+            )
+            claimed: list[ScheduledBatch] = []
+            for row in result.mappings():
+                batch_id = int(row["id"])
+                batch_no = str(row["batch_no"])
+                category = str(row["category"])
+                if category == "market":
+                    status, deferred, scheduled_at = coerce_market_dispatch(
+                        now,
+                        window,
+                        None,
+                    )
+                    if status == "scheduled":
+                        await connection.execute(
+                            text(
+                                """
                                     UPDATE sms_batch
                                     SET scheduled_at=:scheduled_at,
                                         deferred_reason=:deferred_reason,
                                         updated_at=now()
                                     WHERE id=:id AND status='scheduled'
                                     """
-                                ),
-                                {
-                                    "id": batch_id,
-                                    "scheduled_at": scheduled_at,
-                                    "deferred_reason": deferred,
-                                },
-                            )
-                            continue
-                    await connection.execute(
-                        text(
-                            """
+                            ),
+                            {
+                                "id": batch_id,
+                                "scheduled_at": scheduled_at,
+                                "deferred_reason": deferred,
+                            },
+                        )
+                        continue
+                await connection.execute(
+                    text(
+                        """
                             UPDATE sms_batch SET status='queued',updated_at=now()
                             WHERE id=:id AND status='scheduled'
                             """
-                        ),
-                        {"id": batch_id},
-                    )
-                    await enqueue_outbox(
-                        connection,
-                        OutboxEventSpec(
-                            event_type="batch.ready",
-                            aggregate_type="sms_batch",
-                            aggregate_id=batch_no,
-                            task_name="app.tasks.send.process_batch",
-                            queue=queue_for_category(category),
-                            args=(batch_no,),
-                            dedup_key=f"scheduled:{batch_no}:ready",
-                        ),
-                    )
-                    claimed.append(ScheduledBatch(batch_no, category, outbox_persisted=True))
-                return claimed
-        finally:
-            await self._dispose_task_engine(engine)
+                    ),
+                    {"id": batch_id},
+                )
+                await enqueue_outbox(
+                    connection,
+                    OutboxEventSpec(
+                        event_type="batch.ready",
+                        aggregate_type="sms_batch",
+                        aggregate_id=batch_no,
+                        task_name="app.tasks.send.process_batch",
+                        queue=queue_for_category(category),
+                        args=(batch_no,),
+                        dedup_key=f"scheduled:{batch_no}:ready",
+                    ),
+                )
+                claimed.append(ScheduledBatch(batch_no, category, outbox_persisted=True))
+            return claimed
 
     async def cancel(
         self,
@@ -131,81 +118,78 @@ class SqlSchedulingRepository:
     ) -> ScheduledBatch | None:
         predicate, scope_params = scope.sql()
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                result = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            result = await connection.execute(
+                text(
+                    f"""
                         UPDATE sms_batch b SET status='cancelled',updated_at=now()
                         WHERE b.batch_no=:batch_no AND b.status='scheduled' AND {predicate}
                         RETURNING b.id,trim(b.batch_no) batch_no,b.category,b.app_id,b.dept,
                           to_char(b.created_at AT TIME ZONE 'Asia/Shanghai','YYYYMMDD') quota_date,
                           b.quota_cost
                         """
-                    ),
-                    {"batch_no": batch_no, **scope_params},
-                )
-                row = result.mappings().one_or_none()
-                if row is None:
-                    return None
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {"batch_no": batch_no, **scope_params},
+            )
+            row = result.mappings().one_or_none()
+            if row is None:
+                return None
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(actor,action,object_type,object_id,after_val)
                         VALUES(:actor,'batch_cancel','batch',:batch_no,
                           jsonb_build_object('status','cancelled'))
                         """
-                    ),
-                    {
-                        "actor": self._actor(scope),
-                        "batch_no": str(row["batch_no"]),
-                    },
-                )
-                await enqueue_batch_finished(connection, int(row["id"]))
-                from app.services.send_inflight import request_inflight_release_for_batch
+                ),
+                {
+                    "actor": self._actor(scope),
+                    "batch_no": str(row["batch_no"]),
+                },
+            )
+            await enqueue_batch_finished(connection, int(row["id"]))
+            from app.services.send_inflight import request_inflight_release_for_batch
 
-                await request_inflight_release_for_batch(
+            await request_inflight_release_for_batch(
+                connection,
+                batch_id=int(row["id"]),
+                reason="batch-cancelled",
+            )
+            batch = ScheduledBatch(
+                str(row["batch_no"]),
+                str(row["category"]),
+                int(row["app_id"] or 0),
+                str(row["dept"]),
+                str(row["quota_date"]),
+                int(row["quota_cost"]),
+                True,
+            )
+            release_event = f"batch:{batch.batch_no}:cancelled"
+            if not await request_usage_release_for_batch(
+                connection,
+                batch_id=int(row["id"]),
+                event_id=release_event,
+            ):
+                await enqueue_outbox(
                     connection,
-                    batch_id=int(row["id"]),
-                    reason="batch-cancelled",
-                )
-                batch = ScheduledBatch(
-                    str(row["batch_no"]),
-                    str(row["category"]),
-                    int(row["app_id"] or 0),
-                    str(row["dept"]),
-                    str(row["quota_date"]),
-                    int(row["quota_cost"]),
-                    True,
-                )
-                release_event = f"batch:{batch.batch_no}:cancelled"
-                if not await request_usage_release_for_batch(
-                    connection,
-                    batch_id=int(row["id"]),
-                    event_id=release_event,
-                ):
-                    await enqueue_outbox(
-                        connection,
-                        OutboxEventSpec(
-                            event_type="quota.compensation",
-                            aggregate_type="sms_batch",
-                            aggregate_id=batch.batch_no,
-                            task_name="app.tasks.outbox.compensate_quota",
-                            queue="realtime",
-                            args=(
-                                batch.app_id,
-                                batch.dept,
-                                batch.category,
-                                batch.quota_date,
-                                batch.quota_cost,
-                                release_event,
-                            ),
-                            dedup_key=release_event,
+                    OutboxEventSpec(
+                        event_type="quota.compensation",
+                        aggregate_type="sms_batch",
+                        aggregate_id=batch.batch_no,
+                        task_name="app.tasks.outbox.compensate_quota",
+                        queue="realtime",
+                        args=(
+                            batch.app_id,
+                            batch.dept,
+                            batch.category,
+                            batch.quota_date,
+                            batch.quota_cost,
+                            release_event,
                         ),
-                    )
-                return batch
-        finally:
-            await self._dispose_task_engine(engine)
+                        dedup_key=release_event,
+                    ),
+                )
+            return batch
 
     async def reschedule(
         self,
@@ -220,59 +204,58 @@ class SqlSchedulingRepository:
 
         predicate, scope_params = scope.sql()
         engine = self._engine()
-        try:
-            async with engine.begin() as connection:
-                selected = await connection.execute(
-                    text(
-                        f"""
+        async with engine.begin() as connection:
+            selected = await connection.execute(
+                text(
+                    f"""
                         SELECT b.id,b.channel,b.category,EXISTS(
                           SELECT 1 FROM approval p WHERE p.batch_id=b.id
                         ) had_approval FROM sms_batch b
                         WHERE b.batch_no=:batch_no AND b.status='scheduled' AND {predicate}
                         FOR UPDATE
                         """
-                    ),
-                    {"batch_no": batch_no, **scope_params},
+                ),
+                {"batch_no": batch_no, **scope_params},
+            )
+            row = selected.mappings().one_or_none()
+            if row is None:
+                return False
+            effective = scheduled_at
+            deferred: str | None = None
+            if str(row["category"]) == "market":
+                window_result = await connection.execute(
+                    text("SELECT value FROM sys_config WHERE key='market_send_window'")
                 )
-                row = selected.mappings().one_or_none()
-                if row is None:
-                    return False
-                effective = scheduled_at
-                deferred: str | None = None
-                if str(row["category"]) == "market":
-                    window_result = await connection.execute(
-                        text("SELECT value FROM sys_config WHERE key='market_send_window'")
-                    )
-                    window = str(window_result.scalar() or DEFAULT_MARKET_WINDOW).strip()
-                    _dispatch, deferred, coerced = coerce_market_dispatch(
-                        datetime.now(UTC),
-                        window,
-                        scheduled_at,
-                    )
-                    if coerced is not None:
-                        effective = coerced
-                if effective > datetime.now(UTC) + timedelta(days=max_schedule_ahead_days):
-                    raise ValueError(f"scheduled_at 不能超过 {max_schedule_ahead_days} 天")
-                audit_scheduled_at = _shanghai_iso(effective)
-                needs_reapproval = row["channel"] == "web" and bool(row["had_approval"])
-                status = "pending_approval" if needs_reapproval else "scheduled"
-                await connection.execute(
-                    text(
-                        """
+                window = str(window_result.scalar() or DEFAULT_MARKET_WINDOW).strip()
+                _dispatch, deferred, coerced = coerce_market_dispatch(
+                    datetime.now(UTC),
+                    window,
+                    scheduled_at,
+                )
+                if coerced is not None:
+                    effective = coerced
+            if effective > datetime.now(UTC) + timedelta(days=max_schedule_ahead_days):
+                raise ValueError(f"scheduled_at 不能超过 {max_schedule_ahead_days} 天")
+            audit_scheduled_at = _shanghai_iso(effective)
+            needs_reapproval = row["channel"] == "web" and bool(row["had_approval"])
+            status = "pending_approval" if needs_reapproval else "scheduled"
+            await connection.execute(
+                text(
+                    """
                         UPDATE sms_batch SET scheduled_at=:scheduled_at,status=:status,
                           deferred_reason=:deferred_reason,updated_at=now() WHERE id=:id
                         """
-                    ),
-                    {
-                        "id": row["id"],
-                        "scheduled_at": effective,
-                        "status": status,
-                        "deferred_reason": deferred,
-                    },
-                )
-                await connection.execute(
-                    text(
-                        """
+                ),
+                {
+                    "id": row["id"],
+                    "scheduled_at": effective,
+                    "status": status,
+                    "deferred_reason": deferred,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
                         UPDATE idempotency_record
                         SET expires_at=GREATEST(
                           expires_at,
@@ -280,18 +263,18 @@ class SqlSchedulingRepository:
                         )
                         WHERE batch_id=:id
                         """
-                    ),
-                    {"id": row["id"], "scheduled_at": effective},
+                ),
+                {"id": row["id"], "scheduled_at": effective},
+            )
+            generation: int | None = None
+            if needs_reapproval:
+                await connection.execute(
+                    text("SELECT id FROM approval WHERE batch_id=:id FOR UPDATE"),
+                    {"id": row["id"]},
                 )
-                generation: int | None = None
-                if needs_reapproval:
-                    await connection.execute(
-                        text("SELECT id FROM approval WHERE batch_id=:id FOR UPDATE"),
-                        {"id": row["id"]},
-                    )
-                    incremented = await connection.execute(
-                        text(
-                            """
+                incremented = await connection.execute(
+                    text(
+                        """
                             UPDATE approval SET status='pending',approver=NULL,reason=NULL,
                               decided_at=NULL,approver_account_id=NULL,
                               approver_identity_id=NULL,
@@ -300,13 +283,13 @@ class SqlSchedulingRepository:
                             WHERE batch_id=:id
                             RETURNING generation
                             """
-                        ),
-                        {"id": row["id"], "expire_hours": approval_expire_hours},
-                    )
-                    generation = incremented.scalar_one()
-                await connection.execute(
-                    text(
-                        """
+                    ),
+                    {"id": row["id"], "expire_hours": approval_expire_hours},
+                )
+                generation = incremented.scalar_one()
+            await connection.execute(
+                text(
+                    """
                         INSERT INTO audit_log(actor,action,object_type,object_id,after_val)
                         VALUES(:actor,'batch_reschedule','batch',:batch_no,
                           jsonb_build_object(
@@ -314,17 +297,15 @@ class SqlSchedulingRepository:
                             'generation', CAST(:generation AS integer)
                           ))
                         """
-                    ),
-                    {
-                        "actor": self._actor(scope),
-                        "batch_no": batch_no,
-                        "scheduled_at": audit_scheduled_at,
-                        "generation": generation,
-                    },
-                )
-                return True
-        finally:
-            await self._dispose_task_engine(engine)
+                ),
+                {
+                    "actor": self._actor(scope),
+                    "batch_no": batch_no,
+                    "scheduled_at": audit_scheduled_at,
+                    "generation": generation,
+                },
+            )
+            return True
 
     @staticmethod
     def _actor(scope: BatchAccessScope) -> str:
