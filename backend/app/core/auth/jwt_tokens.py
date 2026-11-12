@@ -66,8 +66,8 @@ class JwtClaims:
 
     def __init__(
         self,
-        account_id: int | str,
-        identity_id: int | str,
+        account_id: int,
+        identity_id: int,
         provider_code: str,
         login_name: str,
         display_name: str = "",
@@ -81,24 +81,13 @@ class JwtClaims:
         auth_policy_version: int | None = None,
         session_mode: SessionMode = "refresh",
     ) -> None:
-        # 旧的四位置参数仅保留给尚未迁移的 API 权限单测；JwtService 拒绝签发。
-        if isinstance(account_id, str):
-            legacy_role = login_name
-            object.__setattr__(self, "account_id", 0)
-            object.__setattr__(self, "identity_id", 0)
-            object.__setattr__(self, "provider_code", "legacy")
-            object.__setattr__(self, "login_name", account_id)
-            object.__setattr__(self, "display_name", str(identity_id))
-            object.__setattr__(self, "dept", provider_code)
-            object.__setattr__(self, "role", cast(Role, legacy_role))
-        else:
-            object.__setattr__(self, "account_id", account_id)
-            object.__setattr__(self, "identity_id", int(identity_id))
-            object.__setattr__(self, "provider_code", provider_code)
-            object.__setattr__(self, "login_name", login_name)
-            object.__setattr__(self, "display_name", display_name)
-            object.__setattr__(self, "dept", dept)
-            object.__setattr__(self, "role", role)
+        object.__setattr__(self, "account_id", account_id)
+        object.__setattr__(self, "identity_id", int(identity_id))
+        object.__setattr__(self, "provider_code", provider_code)
+        object.__setattr__(self, "login_name", login_name)
+        object.__setattr__(self, "display_name", display_name)
+        object.__setattr__(self, "dept", dept)
+        object.__setattr__(self, "role", role)
         object.__setattr__(self, "security_version", security_version)
         object.__setattr__(self, "jti", jti)
         object.__setattr__(self, "session_id", session_id)

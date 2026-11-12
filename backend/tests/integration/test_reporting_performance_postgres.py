@@ -91,7 +91,10 @@ async def test_large_legal_report_api_and_body_reader_are_bounded(
 
     class Facade:
         async def verify(self, _: str) -> JwtClaims:
-            return JwtClaims("synthetic", "Synthetic", "A", "admin")
+            return JwtClaims(
+                account_id=1, identity_id=1, provider_code="local",
+                login_name="synthetic", display_name="Synthetic", dept="A", role="admin",
+            )
 
     app = FastAPI()
     app.include_router(reports.router)

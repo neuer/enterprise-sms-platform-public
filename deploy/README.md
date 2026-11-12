@@ -1,8 +1,7 @@
 # 生产部署索引
 
-2026-09-10 获批的单次 0084→0116 四镜像停机升级使用 `cold_cutover`；其快照责任、证据要求
-和失败停机行为见 [维护入口的一次性例外](../MAINTENANCE.md#生产发布)。只对这一精确路径例外，
-不将其归为可自动补偿的 expand。
+历史 `0080–0116` 离线迁移例外与 `cold_cutover` 入口已退役；历史状态仍可只读查询，
+不再执行旧升级包。现役发布范围以 [维护入口](../MAINTENANCE.md#生产发布) 为准。
 
 > **V1 正式路径替代说明（优先于本文后续旧路径与示例）：**
 > V1 目标正常发布路径收口为 GitHub Release Gate 经受控桥接机同步至 Ops VM 的
@@ -715,12 +714,7 @@ exact-field 契约自校验。最终目录清单必须与 manifest 声明完全�
   只有 release manager 可以在验签和整包验证后执行受控导入；禁止操作者人工 `docker load`、
   裸 `rsync/scp` 上传、现场构建、raw Compose 或把 development archive 改名冒充生产包。
   该临时通道只覆盖首次 bootstrap、同包恢复、Registry 建成前确有必要的无迁移四镜像
-  整包更新，以及经明确批准的
-  `0080_security_daily_delivery_generation`→`0081_sign_adoption_contract`、
-  `0081_sign_adoption_contract`→`0082_outbox_realtime_report_queue` 与
-  `0082_outbox_realtime_report_queue`→`0084_auth_security_and_ad_freshness`
-  （一次整包覆盖中间修订 `0083_password_change_token_lease`）全四镜像 expand 更新；
-  不实现选择性归档、其他版本间离线迁移、历史包拼装、离线镜像包缓存复用或自动自愈。
+  整包更新；版本间离线迁移一律拒绝。不实现选择性归档、历史包拼装、离线镜像包缓存复用或自动自愈。
   空生产库 bootstrap 到 manifest head 的首次 Alembic 初始化不属于版本间更新迁移。
 
 离线 manifest 使用 Ed25519 签名。生产信任根固定为
@@ -916,17 +910,10 @@ Trivy/attestation、实际提供的数据/备份恢复证据、changed subset、
 
 “临时离线无迁移整包快速更新”只适用于 schema v2、四镜像全部 changed、migration
 `from == target`，且提交差异不涉及 PostgreSQL/Redis 镜像定义或固定基础镜像、初始化脚本、
-Compose 存储/拓扑、`schema.sql` 或 Alembic。另有三个精确授权例外：全四镜像
-`0080_security_daily_delivery_generation`→`0081_sign_adoption_contract`、
-`0081_sign_adoption_contract`→`0082_outbox_realtime_report_queue` 以及
-`0082_outbox_realtime_report_queue`→`0084_auth_security_and_ad_freshness`
-（一次整包覆盖中间修订 `0083_password_change_token_lease`）可以执行向后兼容
-`expand`，但不得扩展到其他 from/target。无迁移全量更新维持原有显式风险例外，可省略
-`data_images`、`backup_restore_change` 和同包预生产；本次 expand 则仍必须执行数据镜像验证并
-绑定 `data_images`，显式风险参数只允许省略已获批准的 `backup_restore_change`。任何已提供证据的
-SHA-256、size 和内容绑定仍全部执行。该例外不关闭每日备份，不删除或重建数据卷，也不放宽签名、
-attestation、四 archive、镜像 ID/platform/OCI labels、迁移兼容性、健康检查和失败补偿。
-这些 expand 在失败补偿时允许恢复旧应用但保留已向前到目标版本的数据库
+Compose 存储/拓扑、`schema.sql` 或 Alembic。无迁移全量更新维持显式风险例外，可省略
+`data_images`、`backup_restore_change` 和同包预生产；任何已提供证据的 SHA-256、size 和内容绑定
+仍全部执行。该例外不关闭每日备份，不删除或重建数据卷，也不放宽签名、attestation、四 archive、
+镜像 ID/platform/OCI labels、迁移兼容性、健康检查和失败补偿。Registry expand 失败补偿保留已向前的
 schema，不尝试 destructive downgrade。
 生成不附条件证据的签名包时必须显式传入 `--allow-offline-no-conditional-evidence`；默认仍失败关闭。
 Phase 0 只有一名管理员时允许同一具名操作者执行并自复核，但必须如实记录为单人变更，禁止伪造

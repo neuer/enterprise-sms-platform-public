@@ -13,7 +13,6 @@ sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 
 from release_manifest import (  # noqa: E402
     OFFLINE_IMAGE_SOURCE,
-    ONE_TIME_COLD_CUTOVER,
     MigrationCompatibility,
     ReleaseManifestError,
     load_manifest,
@@ -24,38 +23,7 @@ from release_manifest import (  # noqa: E402
 OFFLINE_EXPAND_FROM = "0080_security_daily_delivery_generation"
 
 
-@pytest.mark.parametrize("wrong", [None, "from", "target", "compatibility", "data"])
-def test_one_time_cold_cutover_is_exact_and_keeps_data_evidence(
-    tmp_path: Path, wrong: str | None,
-) -> None:
-    payload = _offline_manifest()
-    for image in payload["images"].values():
-        image["changed"] = True
-    payload["migration"] = {
-        "from": ONE_TIME_COLD_CUTOVER[0],
-        "target": ONE_TIME_COLD_CUTOVER[1],
-        "compatibility": "cold_cutover",
-    }
-    payload["evidence"]["data_images"] = {
-        "file": "data-images.json", "sha256": "2" * 64, "size": 4096,
-    }
-    if wrong == "data":
-        payload["evidence"]["data_images"] = None
-    elif wrong is not None:
-        payload["migration"][wrong] = "expand" if wrong == "compatibility" else "0115_other"
-    if wrong is not None:
-        with pytest.raises(ReleaseManifestError):
-            load_manifest(_write_manifest(tmp_path, payload))
-    else:
-        manifest = load_manifest(_write_manifest(tmp_path, payload))
-        assert manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER
-        assert manifest.evidence["backup_restore_change"] is None
-
 OFFLINE_EXPAND_TARGET = "0081_sign_adoption_contract"
-OFFLINE_REPORT_EXPAND_FROM = "0081_sign_adoption_contract"
-OFFLINE_REPORT_EXPAND_TARGET = "0082_outbox_realtime_report_queue"
-OFFLINE_AUTH_EXPAND_FROM = "0082_outbox_realtime_report_queue"
-OFFLINE_AUTH_EXPAND_TARGET = "0084_auth_security_and_ad_freshness"
 
 
 def _manifest(
@@ -274,11 +242,6 @@ def test_offline_v2_conditionally_binds_data_evidence_bytes(tmp_path: Path) -> N
     payload = _offline_manifest()
     for image in payload["images"].values():
         image["changed"] = True
-    payload["migration"] = {
-        "from": OFFLINE_EXPAND_FROM,
-        "target": OFFLINE_EXPAND_TARGET,
-        "compatibility": "expand",
-    }
     payload["evidence"]["data_images"] = {
         "file": "data-images.json",
         "sha256": "2" * 64,
@@ -319,96 +282,6 @@ def test_offline_v2_rejects_selective_changed_sets(
         load_manifest(_write_manifest(tmp_path, payload))
 
 
-def test_offline_v2_accepts_approved_all_four_expand_without_backup_evidence(
-    tmp_path: Path,
-) -> None:
-    payload = _offline_manifest()
-    for image in payload["images"].values():
-        image["changed"] = True
-    payload["migration"] = {
-        "from": OFFLINE_EXPAND_FROM,
-        "target": OFFLINE_EXPAND_TARGET,
-        "compatibility": "expand",
-    }
-    payload["evidence"]["data_images"] = {
-        "file": "data-images.json",
-        "sha256": "2" * 64,
-        "size": 4096,
-    }
-
-    manifest = load_manifest(_write_manifest(tmp_path, payload))
-
-    assert manifest.migration_from == OFFLINE_EXPAND_FROM
-    assert manifest.migration_target == OFFLINE_EXPAND_TARGET
-    assert manifest.migration_compatibility is MigrationCompatibility.EXPAND
-    assert manifest.evidence["data_images"] is not None
-    assert manifest.evidence["backup_restore_change"] is None
-
-
-def test_offline_v2_accepts_realtime_report_queue_expand(
-    tmp_path: Path,
-) -> None:
-    payload = _offline_manifest()
-    for image in payload["images"].values():
-        image["changed"] = True
-    payload["migration"] = {
-        "from": OFFLINE_REPORT_EXPAND_FROM,
-        "target": OFFLINE_REPORT_EXPAND_TARGET,
-        "compatibility": "expand",
-    }
-    payload["evidence"]["data_images"] = {
-        "file": "data-images.json",
-        "sha256": "2" * 64,
-        "size": 4096,
-    }
-
-    manifest = load_manifest(_write_manifest(tmp_path, payload))
-
-    assert manifest.migration_from == OFFLINE_REPORT_EXPAND_FROM
-    assert manifest.migration_target == OFFLINE_REPORT_EXPAND_TARGET
-    assert manifest.migration_compatibility is MigrationCompatibility.EXPAND
-
-
-def test_offline_v2_accepts_auth_security_expand(
-    tmp_path: Path,
-) -> None:
-    payload = _offline_manifest()
-    for image in payload["images"].values():
-        image["changed"] = True
-    payload["migration"] = {
-        "from": OFFLINE_AUTH_EXPAND_FROM,
-        "target": OFFLINE_AUTH_EXPAND_TARGET,
-        "compatibility": "expand",
-    }
-    payload["evidence"]["data_images"] = {
-        "file": "data-images.json",
-        "sha256": "2" * 64,
-        "size": 4096,
-    }
-
-    manifest = load_manifest(_write_manifest(tmp_path, payload))
-
-    assert manifest.migration_from == OFFLINE_AUTH_EXPAND_FROM
-    assert manifest.migration_target == OFFLINE_AUTH_EXPAND_TARGET
-    assert manifest.migration_compatibility is MigrationCompatibility.EXPAND
-
-
-def test_offline_v2_approved_expand_requires_data_image_evidence(
-    tmp_path: Path,
-) -> None:
-    payload = _offline_manifest()
-    for image in payload["images"].values():
-        image["changed"] = True
-    payload["migration"] = {
-        "from": OFFLINE_EXPAND_FROM,
-        "target": OFFLINE_EXPAND_TARGET,
-        "compatibility": "expand",
-    }
-
-    with pytest.raises(ReleaseManifestError, match="data_images"):
-        load_manifest(_write_manifest(tmp_path, payload))
-
-
 @pytest.mark.parametrize(
     ("migration_from", "migration_target", "changed_names"),
     [
@@ -417,7 +290,7 @@ def test_offline_v2_approved_expand_requires_data_image_evidence(
         (OFFLINE_EXPAND_FROM, OFFLINE_EXPAND_TARGET, {"api"}),
     ],
 )
-def test_offline_v2_rejects_unapproved_or_non_full_expand(
+def test_offline_v2_rejects_migrations_and_selective_images(
     tmp_path: Path,
     migration_from: str,
     migration_target: str,
@@ -434,7 +307,7 @@ def test_offline_v2_rejects_unapproved_or_non_full_expand(
 
     with pytest.raises(
         ReleaseManifestError,
-        match="zero or all four|approved all-four expand",
+        match="zero or all four|migration updates are not supported",
     ):
         load_manifest(_write_manifest(tmp_path, payload))
 
@@ -766,3 +639,24 @@ def test_changed_flags_must_match_observed_current_refs(tmp_path: Path) -> None:
     current_refs["api"] = "sms-platform-api:amd64-previous"
     with pytest.raises(ReleaseManifestError, match="changed"):
         validate_changed_images(manifest, current_refs)
+
+
+@pytest.mark.parametrize(
+    ("start", "target", "compatibility"),
+    [
+        ("0080_security_daily_delivery_generation", "0081_sign_adoption_contract", "expand"),
+        ("0081_sign_adoption_contract", "0082_outbox_realtime_report_queue", "expand"),
+        ("0082_outbox_realtime_report_queue", "0084_auth_security_and_ad_freshness", "expand"),
+        ("0084_auth_security_and_ad_freshness", "0116_usage_release_generation", "cold_cutover"),
+    ],
+)
+def test_offline_v2_rejects_retired_historical_updates(
+    tmp_path: Path, start: str, target: str, compatibility: str,
+) -> None:
+    payload = _offline_manifest()
+    for image in payload["images"].values():
+        image["changed"] = True
+    payload["migration"] = {"from": start, "target": target, "compatibility": compatibility}
+
+    with pytest.raises(ReleaseManifestError, match="retired|migration updates are not supported"):
+        load_manifest(_write_manifest(tmp_path, payload))

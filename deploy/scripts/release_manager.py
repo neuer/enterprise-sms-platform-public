@@ -37,9 +37,7 @@ from offline_image_archive import (  # noqa: E402
     validate_offline_image_archive,
 )
 from release_manifest import (  # noqa: E402
-    OFFLINE_EXPAND_MIGRATIONS,
     OFFLINE_IMAGE_SOURCE,
-    ONE_TIME_COLD_CUTOVER,
     MigrationCompatibility,
     ReleaseManifest,
     ReleaseManifestError,
@@ -1368,36 +1366,22 @@ def _validate_staging_directory(path: Path, expected_uid: int) -> None:
 
 
 def _offline_full_update(manifest: ReleaseManifest) -> bool:
-    """离线普通更新只接受四镜像整包与明确的 NONE/EXPAND 迁移合同。"""
+    """离线普通更新只接受无迁移的四镜像整包。"""
 
-    migration_is_supported = (
-        (
-            manifest.migration_from == manifest.migration_target
-            and manifest.migration_compatibility is MigrationCompatibility.NONE
-        )
-        or (
-            (manifest.migration_from, manifest.migration_target) in OFFLINE_EXPAND_MIGRATIONS
-            and manifest.migration_compatibility is MigrationCompatibility.EXPAND
-        )
-        or (
-            (manifest.migration_from, manifest.migration_target) == ONE_TIME_COLD_CUTOVER
-            and manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER
-        )
-    )
     return (
         manifest.image_source == OFFLINE_IMAGE_SOURCE
         and all(image.changed for image in manifest.images.values())
-        and migration_is_supported
+        and manifest.migration_from == manifest.migration_target
+        and manifest.migration_compatibility is MigrationCompatibility.NONE
     )
 
 
 def _require_offline_full_update(manifest: ReleaseManifest) -> None:
-    """生产离线普通更新只接受四镜像全量与 NONE/EXPAND 迁移合同。"""
+    """生产离线普通更新只接受无迁移的四镜像整包。"""
 
     if manifest.image_source == OFFLINE_IMAGE_SOURCE and not _offline_full_update(manifest):
         raise ReleaseManagerError(
-            "offline production update requires all four changed images "
-            "and a none or expand migration"
+            "offline production update requires all four changed images and no migration"
         )
 
 
@@ -3434,8 +3418,6 @@ class ReleaseManager:
             container_ids, image_ids, service_container_ids = self._current_runtime(current_refs)
             self._validate_data_majors(data_evidence)
             migration_head = self._migration_head(manifest)
-            if manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER:
-                self._validate_cold_cutover_admission()
             self._write_snapshot(
                 store,
                 current_commit=current_commit,
@@ -5725,67 +5707,6 @@ class ReleaseManager:
                 continue
         return completed
 
-    def _validate_cold_cutover_admission(self) -> None:
-        """停机前拒绝会被新版白名单或配额策略阻断的旧应用，仅查询聚合计数。"""
-
-        sql = (
-            "BEGIN READ ONLY; SET LOCAL statement_timeout='15s'; "
-            "SET LOCAL lock_timeout='2s'; "
-            "SELECT count(*) FROM app WHERE status=1 "
-            "AND (cardinality(allowed_ips)=0 OR daily_quota=0); COMMIT;"
-        )
-        probe = (
-            "exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --quiet --tuples-only --no-align "
-            '--username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "$1"'
-        )
-        count = self._line(
-            self._run(
-                self._compose()
-                + ["exec", "-T", "postgres", "sh", "-ec", probe, "cold-cutover-admission", sql],
-                "cold cutover application admission preflight",
-            ),
-            "cold cutover application admission preflight",
-        )
-        if count != "0":
-            raise ReleaseManagerError(
-                "cold cutover requires explicit IP allowlists and finite quotas for active apps"
-            )
-
-    def _configure_cold_cutover_legacy_keys(self, store: ReleaseStore) -> None:
-        """仅为固定 0084 停机升级保留旧代码已支持的两种摘要校验。"""
-
-        operation = "cold_cutover_legacy_key_policy"
-        sql = """
-DO $upgrade$
-DECLARE existing_policy text;
-BEGIN
-  IF (SELECT version_num FROM alembic_version)
-      IS DISTINCT FROM '0116_usage_release_generation' THEN
-    RAISE EXCEPTION 'cold cutover schema mismatch';
-  END IF;
-  SELECT value INTO existing_policy FROM sys_config
-    WHERE key='api_key_unclassified_algorithms' FOR UPDATE;
-  IF existing_policy IS NULL OR existing_policy NOT IN
-      ('', 'legacy_data_hmac_pepper_v1,legacy_sha256') THEN
-    RAISE EXCEPTION 'cold cutover legacy policy conflict';
-  END IF;
-  UPDATE sys_config
-    SET value='legacy_data_hmac_pepper_v1,legacy_sha256'
-    WHERE key='api_key_unclassified_algorithms' AND value='';
-END
-$upgrade$;
-"""
-        probe = (
-            "exec psql --no-psqlrc --set=ON_ERROR_STOP=1 "
-            '--username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --command "$1"'
-        )
-        store.record_intent(operation, {"policy": "0084_legacy_verifiers"})
-        self._run(
-            self._compose() + ["exec", "-T", "postgres", "sh", "-ec", probe, "cold-cutover", sql],
-            "cold cutover legacy key policy",
-        )
-        store.record_observation(operation, {"completed": True})
-
     def _run_activation_step(
         self,
         store: ReleaseStore,
@@ -5818,11 +5739,6 @@ $upgrade$;
                     raise _ActivationStepError(step.kind, ambiguous=True) from exc
                 if migration_state != "target":
                     raise _ActivationStepError(step.kind, ambiguous=True)
-                if manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER:
-                    try:
-                        self._configure_cold_cutover_legacy_keys(store)
-                    except Exception as exc:
-                        raise _ActivationStepError(step.kind, ambiguous=True) from exc
             try:
                 store.record_observation(
                     step.kind.value,
@@ -6321,8 +6237,6 @@ $upgrade$;
         refs = self._current_refs(manifest)
         container_ids, image_ids, service_container_ids = self._current_runtime(refs)
         migration_head = self._migration_head(manifest)
-        if manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER:
-            self._validate_cold_cutover_admission()
         if (
             commit != snapshot["current_commit"]
             or refs != snapshot["current_refs"]
@@ -6601,29 +6515,6 @@ $upgrade$;
         *,
         already_rolling_back: bool = False,
     ) -> None:
-        if manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER:
-            current = ReleaseState.ROLLING_BACK if already_rolling_back else ReleaseState.ACTIVATING
-            services = ("web", *_QUIESCE_SERVICES)
-            containment_ok = False
-            try:
-                store.record_intent("cold_cutover_stop", {"services": list(services)})
-                result = self.runner.run(self._compose() + ["stop", *services], cwd=self.root)
-                containment_ok = result.returncode == 0
-                store.record_observation("cold_cutover_stop", {"completed": containment_ok})
-            finally:
-                store.transition(
-                    current,
-                    ReleaseState.RECOVERY_REQUIRED,
-                    failure_step=failure.kind.value,
-                    failure_type=(
-                        "cold_cutover_operator_recovery"
-                        if containment_ok
-                        else "cold_cutover_containment_failed"
-                    ),
-                )
-            raise ReleaseManagerError(
-                "cold cutover stopped in recovery_required; no automatic rollback"
-            )
         if manifest.image_source == OFFLINE_IMAGE_SOURCE and not _offline_full_update(manifest):
             current = ReleaseState.ROLLING_BACK if already_rolling_back else ReleaseState.ACTIVATING
             with suppress(Exception):
@@ -7004,17 +6895,6 @@ $upgrade$;
             raise ReleaseManagerError("failed release cannot be resumed")
         manifest = self._stored_manifest(store)
         self._validate_release_runtime_context(manifest)
-        if (
-            manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER
-            and state_value in {ReleaseState.ACTIVATING.value, ReleaseState.ROLLING_BACK.value}
-        ):
-            self._assert_production_topology(state)
-            self._compensate(
-                store,
-                manifest,
-                _ActivationStepError(ReleaseStepKind.VERIFY, ambiguous=True),
-                already_rolling_back=state_value == ReleaseState.ROLLING_BACK.value,
-            )
         if self.mode == "production":
             self._validate_git(manifest)
         if state_value == ReleaseState.STAGED.value:
@@ -7104,20 +6984,6 @@ $upgrade$;
             raise ReleaseManagerError("succeeded release requires a forward rollback candidate")
         manifest = self._stored_manifest(store)
         self._validate_release_runtime_context(manifest)
-        if manifest.migration_compatibility is MigrationCompatibility.COLD_CUTOVER:
-            if state_value == ReleaseState.PREPARED.value:
-                store.transition(ReleaseState.PREPARED, ReleaseState.ACTIVATING)
-            elif state_value not in {
-                ReleaseState.ACTIVATING.value,
-                ReleaseState.ROLLING_BACK.value,
-            }:
-                raise ReleaseManagerError("release state is unknown")
-            self._compensate(
-                store,
-                manifest,
-                _ActivationStepError(ReleaseStepKind.VERIFY, ambiguous=True),
-                already_rolling_back=state_value == ReleaseState.ROLLING_BACK.value,
-            )
         if self.mode == "production":
             self._validate_git(manifest)
         if manifest.image_source == OFFLINE_IMAGE_SOURCE and not _offline_full_update(manifest):
