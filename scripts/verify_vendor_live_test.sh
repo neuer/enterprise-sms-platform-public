@@ -59,9 +59,6 @@ python3 scripts/check_invariants.py
       tests/test_vendor_test_web_console_invariants.py \
       tests/test_vendor_test_web_console_schema.py \
       tests/test_install_test_secure_access.py \
-      tests/test_public_baseline_activate_driver.py \
-      tests/test_public_baseline_activation.py \
-      tests/test_public_baseline_manager.py \
       tests/test_test_secure_access_contract.py \
       tests/test_test_secure_access_manager.py \
       tests/test_test_update_apply.py \

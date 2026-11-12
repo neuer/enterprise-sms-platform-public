@@ -118,32 +118,6 @@ def test_apply_rechecks_operator_git_after_verify_before_recording_success() -> 
     assert promote < promote_record
 
 
-def test_rebaseline_is_documented_as_a_strict_one_time_exception() -> None:
-    maintenance = read("MAINTENANCE.md")
-    deployment = read("deploy/README.md")
-    runbook = read("docs/runbooks/test-fast-update.md")
-    decisions = read("docs/DECISIONS.md")
-    script = read("scripts/test_update.sh")
-    combined = "\n".join((maintenance, deployment, runbook, decisions))
-
-    for phrase in (
-        "scripts/test_update.sh rebaseline --ref origin/main",
-        "origin/main` 的祖先",
-        "真实迁移前移",
-        "backend`、`frontend`、`security`、`g2`",
-        "host-control",
-        "密文 checkpoint",
-        "operator Git",
-        "不放宽日常",
-        "精确 `ci-gate`",
-    ):
-        assert phrase in combined
-    assert "D063 同历史测试基线重对齐使用独立严格入口" in decisions
-    assert "classify-rebaseline-nul" in script
-    assert "--require-full" not in script
-    assert "rebaseline 只允许 origin/main" in script
-
-
 def test_rehearsal_report_records_five_consecutive_verified_updates() -> None:
     report_path = ROOT / "docs/reports/2026-07-18-test-fast-update-rehearsal.md"
     if not report_path.is_file():

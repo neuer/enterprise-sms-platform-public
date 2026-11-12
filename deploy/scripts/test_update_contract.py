@@ -43,16 +43,6 @@ class TestImage:
 
 
 @dataclass(frozen=True, slots=True)
-class PublicCutoverEvidence:
-    """无历史公开快照在远端复验所需的最小私有源树证据。"""
-
-    source_commit: str
-    private_merge_base: str
-    pack_file: str
-    pack_sha256: str
-
-
-@dataclass(frozen=True, slots=True)
 class TestUpdateRequest:
     """服务器端可接受的不可变快速更新请求。"""
 
@@ -63,11 +53,9 @@ class TestUpdateRequest:
     environment_mode: Literal["pre-live", "live"]
     components: frozenset[str]
     images: Mapping[str, TestImage]
-    public_cutover: PublicCutoverEvidence | None
     migration_from: str
     migration_target: str
     migration_compatibility: Literal["none", "expand"]
-    operation: Literal["apply", "rebaseline"] = "apply"
 
 
 _TOP_LEVEL_FIELDS = frozenset(
@@ -83,14 +71,15 @@ _TOP_LEVEL_FIELDS = frozenset(
         "migration",
     }
 )
-_OPTIONAL_TOP_LEVEL_FIELDS = frozenset({"operation", "public_cutover"})
+
+
 _IMAGE_FIELDS = frozenset({"ref", "id", "archive_file", "archive_sha256"})
-_PUBLIC_CUTOVER_FIELDS = frozenset(
-    {"source_commit", "private_merge_base", "pack_file", "pack_sha256"}
-)
+
+
 _MIGRATION_FIELDS = frozenset({"from", "target", "compatibility"})
 _COMPONENTS = frozenset({"api", "web", "redis"})
-_REBASELINE_COMPONENTS = frozenset({"api", "web"})
+
+
 _UPDATE_ID_RE = re.compile(r"test-[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}")
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -107,9 +96,6 @@ HOST_CONTROL_PATHS = frozenset(
         "deploy/scripts/render_trusted_proxy_conf.py",
         "deploy/scripts/vendor_test_files.py",
         "deploy/scripts/check_test_update_migration.py",
-        "deploy/scripts/public_baseline_activation.py",
-        "deploy/scripts/public_baseline_manager.py",
-        "deploy/scripts/public_cutover_bootstrap.py",
         "deploy/scripts/run_with_lifecycle_lock.py",
         "deploy/scripts/test_update_apply.py",
         "deploy/scripts/test_update_backup.py",
@@ -122,7 +108,6 @@ HOST_CONTROL_PATHS = frozenset(
         "deploy/scripts/protected_path_policy.py",
         "scripts/check_public_readiness.py",
         "scripts/export_public_snapshot.py",
-        "scripts/verify_public_snapshot_cutover.py",
         "scripts/verify_web_transport.py",
         "deploy/sms-compose",
         "deploy/trusted-proxies.conf",
@@ -322,6 +307,7 @@ _SAFE_OPERATIONAL_DOCS = frozenset(
         "docs/security-hardening/p0a-production-control/implementation/versioned-control-snapshot.md",
         "docs/security-hardening/p0a-production-control/proposals/production-control-and-artifact-binding.md",
         "docs/sms-ui-prototype.html",
+        "docs/state-lifecycles.md",
         "docs/threat-model.md",
         "docs/vendor-api.md",
         "docs/poll-report-queue-split.md",
@@ -381,7 +367,6 @@ _SAFE_NON_RUNTIME_GATES = frozenset(
         "deploy/security-report-config/.gitignore",
         # 空目录占位；真实认证策略仍由受控运行态路径管理。
         "deploy/auth-policy/.gitkeep",
-        "docs/runbooks/public-baseline-activation.md",
         "public-repository.json",
         "scripts/e2e_api.py",
         "scripts/check_pre_vcs_gates.py",
@@ -463,107 +448,6 @@ _INFRA_HIGH_RISK_EXACT = frozenset(
         "deploy/systemd/security-report-collector.service",
         "deploy/systemd/security-report-collector.timer",
         "deploy/writer-protocol.json",
-    }
-)
-_PUBLIC_CUTOVER_SAFE_NON_RUNTIME_EXACT = frozenset(
-    {
-        # TEST-BASELINE 跨历史迁移仍需识别这些已删除路径；它们不是活动入口。
-        "AUTOPILOT.md",
-        "BOOTSTRAP.md",
-        "RELEASE.md",
-        "TASKS.md",
-        "scripts/verify_milestone.sh",
-        ".github/workflows/ci.yml",
-        ".github/workflows/release-gate.yml",
-        "CONTRIBUTING.md",
-        "HANDOVER.md",
-        "LICENSE",
-        "PUBLIC-SNAPSHOT.json",
-        "PUBLICATION.md",
-        "PROGRESS.md",
-        "README.md",
-        "SECURITY.md",
-        "VERSION",
-        "deploy/backup-restore.md",
-        "deploy/database-roles.md",
-        "deploy/dba.md",
-        "deploy/failover.md",
-        "deploy/runtime-security.md",
-        "deploy/secrets.md",
-        "public-repository.json",
-        "scripts/check_coverage_gates.py",
-        "scripts/check_public_readiness.py",
-        "scripts/check_spec_consistency.py",
-        "scripts/deploy_release_remote.py",
-        "scripts/export_public_snapshot.py",
-        "scripts/local_test.sh",
-        "scripts/perf_smoke.py",
-        "scripts/release_metadata.py",
-        "scripts/runtime_credentials.py",
-        "scripts/security_acceptance.py",
-        "scripts/verify_all.sh",
-        "scripts/verify_ci_results.py",
-        "scripts/verify_data_images.sh",
-        "scripts/verify_database_roles.sh",
-        "scripts/verify_public_snapshot_cutover.py",
-        "scripts/verify_release_control.sh",
-        "scripts/verify_vendor_live_test.sh",
-        "scripts/verify_vendor_postgres_recovery.sh",
-    }
-)
-_PUBLIC_CUTOVER_HIGH_RISK_EXACT = frozenset(
-    {
-        "deploy/initdb/01-create-app-role.sh",
-        "deploy/lifecycle.server.example.json",
-        "deploy/postgres.Dockerfile",
-        "deploy/provision-db-roles.sh",
-        "deploy/redis.Dockerfile",
-        "deploy/scripts/collect_security_daily_evidence.py",
-        "deploy/scripts/lifecycle_manager.py",
-        "deploy/scripts/prepare_runtime_secrets.py",
-        "deploy/scripts/release_manifest.py",
-        "deploy/scripts/release_manager.py",
-        "deploy/scripts/restore_drill.py",
-        "deploy/scripts/sync_standby.py",
-        "deploy/scripts/vendor_runtime_reset.py",
-        "deploy/systemd/lifecycle.env.example",
-        "deploy/systemd/sms-backup.service",
-        "deploy/systemd/sms-backup.timer",
-        "deploy/systemd/sms-lifecycle-status.service",
-        "deploy/systemd/sms-lifecycle-status.timer",
-        "deploy/systemd/sms-partition-maintenance.service",
-        "deploy/systemd/sms-partition-maintenance.timer",
-        "deploy/systemd/sms-restore-drill.service",
-        "deploy/systemd/sms-restore-drill.timer",
-        "deploy/systemd/security-report-collector.service",
-        "deploy/systemd/security-report-collector.timer",
-    }
-)
-_REBASELINE_SAFE_NON_RUNTIME_EXACT = frozenset(
-    {
-        # 旧测试基线到当前公开 main 的已审核操作文档与门禁脚本差异。
-        "HANDOVER.md",
-        "README.md",
-        "SECURITY.md",
-        "deploy/postgres.Dockerfile",
-        "deploy/production-storage-initialization.md",
-        "deploy/production-storage-manifest.example.json",
-        "deploy/scripts/initialize_production_storage.py",
-        "deploy/scripts/offline_image_archive.py",
-        "deploy/failover.md",
-        "docs/LOCAL_TESTING.md",
-        "scripts/check_spec_consistency.py",
-        "scripts/create_offline_image_index.py",
-        "scripts/deploy_release_remote.py",
-        "scripts/verify_ci_commit.py",
-        "scripts/verify_vendor_postgres_recovery.sh",
-    }
-)
-_REBASELINE_HIGH_RISK_EXACT = frozenset(
-    {
-        # 只为同历史、带真实迁移前移的既有测试基线重对齐开放。
-        "deploy/scripts/prepare_runtime_secrets.py",
-        "deploy/scripts/vendor_runtime_reset.py",
     }
 )
 
@@ -677,45 +561,6 @@ def _parse_images(
     return MappingProxyType(images)
 
 
-def _parse_public_cutover(value: object) -> PublicCutoverEvidence | None:
-    if value is None:
-        return None
-    evidence = _require_object(value, "public_cutover")
-    _require_exact_fields(
-        evidence,
-        _PUBLIC_CUTOVER_FIELDS,
-        "public_cutover",
-    )
-    source_commit = _require_matching_string(
-        evidence["source_commit"],
-        _COMMIT_RE,
-        "public_cutover source_commit",
-    )
-    private_merge_base = _require_matching_string(
-        evidence["private_merge_base"],
-        _COMMIT_RE,
-        "public_cutover private_merge_base",
-    )
-    pack_file = _require_matching_string(
-        evidence["pack_file"],
-        re.compile(r"cutover-source[.]pack"),
-        "public_cutover pack_file",
-    )
-    if Path(pack_file).name != pack_file:
-        raise TestUpdateContractError("public_cutover pack_file has an invalid value")
-    pack_sha256 = _require_matching_string(
-        evidence["pack_sha256"],
-        _SHA256_RE,
-        "public_cutover pack_sha256",
-    )
-    return PublicCutoverEvidence(
-        source_commit=source_commit,
-        private_merge_base=private_merge_base,
-        pack_file=pack_file,
-        pack_sha256=pack_sha256,
-    )
-
-
 def parse_test_update_request(raw: str) -> TestUpdateRequest:
     """从 JSON 文本解析并完整校验快速更新请求。"""
 
@@ -728,7 +573,7 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
 
     payload = _require_object(decoded, "request")
     actual_fields = set(payload)
-    unknown_fields = actual_fields - (set(_TOP_LEVEL_FIELDS) | set(_OPTIONAL_TOP_LEVEL_FIELDS))
+    unknown_fields = actual_fields - set(_TOP_LEVEL_FIELDS)
     missing_fields = set(_TOP_LEVEL_FIELDS) - actual_fields
     if unknown_fields:
         raise TestUpdateContractError(f"request has unknown fields: {sorted(unknown_fields)}")
@@ -744,14 +589,8 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
     environment_mode = payload["environment_mode"]
     if type(environment_mode) is not str or environment_mode not in {"pre-live", "live"}:
         raise TestUpdateContractError("environment_mode has an invalid value")
-    operation = payload.get("operation", "apply")
-    if type(operation) is not str or operation not in {"apply", "rebaseline"}:
-        raise TestUpdateContractError("operation has an invalid value")
     components = _require_components(payload["components"])
     images = _parse_images(payload["images"], components=components, commit=commit)
-    public_cutover = _parse_public_cutover(payload.get("public_cutover"))
-    if public_cutover is not None and source_ref != "origin/main":
-        raise TestUpdateContractError("public_cutover requires source_ref origin/main")
 
     migration = _require_object(payload["migration"], "migration")
     _require_exact_fields(migration, _MIGRATION_FIELDS, "migration")
@@ -766,15 +605,6 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
         raise TestUpdateContractError("migration compatibility none requires equal heads")
     if compatibility == "expand" and migration_from == migration_target:
         raise TestUpdateContractError("migration compatibility expand requires different heads")
-    if operation == "rebaseline":
-        if source_ref != "origin/main":
-            raise TestUpdateContractError("rebaseline requires source_ref origin/main")
-        if public_cutover is not None:
-            raise TestUpdateContractError("rebaseline must not carry public_cutover")
-        if components != _REBASELINE_COMPONENTS:
-            raise TestUpdateContractError("rebaseline requires api and web components")
-        if compatibility != "expand":
-            raise TestUpdateContractError("rebaseline requires expand migration")
 
     return TestUpdateRequest(
         update_id=update_id,
@@ -784,11 +614,9 @@ def parse_test_update_request(raw: str) -> TestUpdateRequest:
         environment_mode=cast(Literal["pre-live", "live"], environment_mode),
         components=components,
         images=images,
-        public_cutover=public_cutover,
         migration_from=migration_from,
         migration_target=migration_target,
         migration_compatibility=cast(Literal["none", "expand"], compatibility),
-        operation=cast(Literal["apply", "rebaseline"], operation),
     )
 
 
@@ -820,9 +648,24 @@ def protected_change_category(
     return security_domain_category(path)
 
 
+# 已退役的一次性公开基线激活、跨历史切换与同历史重对齐入口。这些文件不再存在，
+# 仅为让仍停在旧提交的测试服务器能把“删除”差异按 high-risk 归类而保留，不是活动资产。
+_RETIRED_BASELINE_TOMBSTONES = frozenset(
+    {
+        "deploy/scripts/public_baseline_activation.py",
+        "deploy/scripts/public_baseline_manager.py",
+        "deploy/scripts/public_cutover_bootstrap.py",
+        "docs/runbooks/public-baseline-activation.md",
+        "scripts/public_baseline_activate.py",
+        "scripts/verify_public_snapshot_cutover.py",
+    }
+)
+
+
 def _is_high_risk(path: str) -> bool:
     return (
-        path in _WEB_HIGH_RISK_EXACT
+        path in _RETIRED_BASELINE_TOMBSTONES
+        or path in _WEB_HIGH_RISK_EXACT
         or path in _MAILER_HIGH_RISK_EXACT
         or path in _INFRA_HIGH_RISK_EXACT
         or path in _REDIS_RUNTIME_EXACT
@@ -911,85 +754,11 @@ def classify_changed_paths(paths: Iterable[str]) -> ChangedScope:
     )
 
 
-def classify_public_cutover_paths(paths: Iterable[str]) -> ChangedScope:
-    """仅为已验真无历史公开快照剥离非运行态发布差异。"""
-
-    regular_paths: list[str] = []
-    cutover_high_risk_paths: set[str] = set()
-    for raw_path in paths:
-        path = _require_safe_changed_path(raw_path)
-        if path in _PUBLIC_CUTOVER_SAFE_NON_RUNTIME_EXACT or path.startswith("docs/"):
-            continue
-        if path in _PUBLIC_CUTOVER_HIGH_RISK_EXACT:
-            cutover_high_risk_paths.add(path)
-            continue
-        regular_paths.append(path)
-
-    regular = classify_changed_paths(regular_paths)
-    components = set(regular.components)
-    if "redis" in components:
-        # 公开切转自建 Redis 镜像；日常快速更新才把 redis 当作独立组件。
-        components.discard("redis")
-        components.add("api")
-    if cutover_high_risk_paths:
-        components.add("api")
-    high_risk_paths = set(regular.high_risk_paths)
-    high_risk_paths.update(cutover_high_risk_paths)
-    return ChangedScope(
-        components=frozenset(components),
-        migration_changed=regular.migration_changed,
-        backend_tests=regular.backend_tests,
-        frontend_tests=regular.frontend_tests,
-        runtime_changed=bool(components),
-        risk="high-risk" if high_risk_paths else regular.risk,
-        high_risk_paths=tuple(sorted(high_risk_paths)),
-    )
-
-
-def classify_rebaseline_paths(paths: Iterable[str]) -> ChangedScope:
-    """严格分类同历史测试基线重对齐，不放宽日常快速更新。"""
-
-    regular_paths: list[str] = []
-    rebaseline_high_risk_paths: set[str] = set()
-    for raw_path in paths:
-        path = _require_safe_changed_path(raw_path)
-        if path in _REBASELINE_SAFE_NON_RUNTIME_EXACT:
-            continue
-        if path in _REBASELINE_HIGH_RISK_EXACT:
-            rebaseline_high_risk_paths.add(path)
-            continue
-        regular_paths.append(path)
-
-    if rebaseline_high_risk_paths not in (
-        set(),
-        set(_REBASELINE_HIGH_RISK_EXACT),
-    ):
-        raise TestUpdateContractError(
-            "rebaseline requires the complete approved runtime-control path set"
-        )
-
-    regular = classify_changed_paths(regular_paths)
-    if not regular.migration_changed:
-        raise TestUpdateContractError("rebaseline requires a migration change")
-
-    high_risk_paths = set(regular.high_risk_paths)
-    high_risk_paths.update(rebaseline_high_risk_paths)
-    return ChangedScope(
-        components=frozenset({"api", "web"}),
-        migration_changed=True,
-        backend_tests=regular.backend_tests,
-        frontend_tests=regular.frontend_tests,
-        runtime_changed=True,
-        risk="high-risk",
-        high_risk_paths=tuple(sorted(high_risk_paths)),
-    )
-
-
-def _classify_nul_stream(raw: bytes, *, rebaseline: bool = False) -> str:
+def _classify_nul_stream(raw: bytes) -> str:
     if len(raw) > 1_048_576:
         raise TestUpdateContractError("changed path input is too large")
     paths = [os.fsdecode(item) for item in raw.split(b"\0") if item]
-    scope = classify_rebaseline_paths(paths) if rebaseline else classify_changed_paths(paths)
+    scope = classify_changed_paths(paths)
     return json.dumps(
         {
             "components": sorted(scope.components),
@@ -1046,9 +815,6 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if arguments == ["classify-nul"]:
             print(_classify_nul_stream(sys.stdin.buffer.read()))
-            return 0
-        if arguments == ["classify-rebaseline-nul"]:
-            print(_classify_nul_stream(sys.stdin.buffer.read(), rebaseline=True))
             return 0
         if len(arguments) == 4 and arguments[0] == "verify-status":
             validate_verified_status(

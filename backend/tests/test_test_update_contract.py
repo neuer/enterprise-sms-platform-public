@@ -15,8 +15,6 @@ sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 from test_update_contract import (  # noqa: E402
     HOST_CONTROL_PATHS,
     classify_changed_paths,
-    classify_public_cutover_paths,
-    classify_rebaseline_paths,
     parse_test_update_request,
     protected_change_category,
     validate_verified_status,
@@ -81,137 +79,12 @@ def test_parses_exact_request_into_immutable_values() -> None:
     assert request.components == frozenset({"api", "web"})
     assert request.images["api"].archive_file == "api.tar"
     assert request.images["web"].image_id == f"sha256:{DIGEST}"
-    assert request.public_cutover is None
     assert request.migration_from == "0015_account_provider_model"
     assert request.migration_target == "0016_example"
     assert request.migration_compatibility == "expand"
-    assert request.operation == "apply"
 
     with pytest.raises(TypeError):
         request.images["api"] = request.images["web"]  # type: ignore[index]
-
-
-def test_parses_public_cutover_source_pack_binding() -> None:
-    payload = _request()
-    payload["source_ref"] = "origin/main"
-    payload["public_cutover"] = {
-        "source_commit": "c" * 40,
-        "private_merge_base": "d" * 40,
-        "pack_file": "cutover-source.pack",
-        "pack_sha256": "e" * 64,
-    }
-
-    request = _parse(payload)
-
-    assert request.public_cutover is not None
-    assert request.public_cutover.source_commit == "c" * 40
-    assert request.public_cutover.private_merge_base == "d" * 40
-    assert request.public_cutover.pack_file == "cutover-source.pack"
-    assert request.public_cutover.pack_sha256 == "e" * 64
-
-
-def test_parses_explicit_rebaseline_operation() -> None:
-    payload = _request()
-    payload["operation"] = "rebaseline"
-    payload["source_ref"] = "origin/main"
-
-    assert _parse(payload).operation == "rebaseline"
-
-
-@pytest.mark.parametrize(
-    ("mutation", "message"),
-    [
-        ({"operation": "publish"}, "operation"),
-        ({"operation": True}, "operation"),
-        (
-            {"operation": "rebaseline", "source_ref": "origin/feature/example"},
-            "origin/main",
-        ),
-        (
-            {
-                "operation": "rebaseline",
-                "source_ref": "origin/main",
-                "components": ["api"],
-            },
-            "api and web",
-        ),
-    ],
-)
-def test_rejects_invalid_rebaseline_request_scope(
-    mutation: dict[str, object],
-    message: str,
-) -> None:
-    payload = _request()
-    payload.update(mutation)
-    if payload["components"] == ["api"]:
-        del payload["images"]["web"]
-
-    with pytest.raises(ContractError, match=message):
-        _parse(payload)
-
-
-def test_rebaseline_rejects_cutover_and_requires_expand_migration() -> None:
-    payload = _request()
-    payload["operation"] = "rebaseline"
-    payload["source_ref"] = "origin/main"
-    payload["public_cutover"] = {
-        "source_commit": "c" * 40,
-        "private_merge_base": "d" * 40,
-        "pack_file": "cutover-source.pack",
-        "pack_sha256": "e" * 64,
-    }
-    with pytest.raises(ContractError, match="must not carry public_cutover"):
-        _parse(payload)
-
-    del payload["public_cutover"]
-    payload["migration"] = {
-        "from": "0015_account_provider_model",
-        "target": "0015_account_provider_model",
-        "compatibility": "none",
-    }
-    with pytest.raises(ContractError, match="requires expand migration"):
-        _parse(payload)
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("source_commit", "c" * 39),
-        ("private_merge_base", "D" * 40),
-        ("pack_file", "../cutover-source.pack"),
-        ("pack_file", "other.pack"),
-        ("pack_sha256", "e" * 63),
-    ],
-)
-def test_rejects_unsafe_public_cutover_binding(
-    field: str,
-    value: object,
-) -> None:
-    payload = _request()
-    payload["source_ref"] = "origin/main"
-    payload["public_cutover"] = {
-        "source_commit": "c" * 40,
-        "private_merge_base": "d" * 40,
-        "pack_file": "cutover-source.pack",
-        "pack_sha256": "e" * 64,
-    }
-    payload["public_cutover"][field] = value
-
-    with pytest.raises(ContractError, match="public_cutover"):
-        _parse(payload)
-
-
-def test_rejects_public_cutover_binding_on_non_main_ref() -> None:
-    payload = _request()
-    payload["public_cutover"] = {
-        "source_commit": "c" * 40,
-        "private_merge_base": "d" * 40,
-        "pack_file": "cutover-source.pack",
-        "pack_sha256": "e" * 64,
-    }
-
-    with pytest.raises(ContractError, match="origin/main"):
-        _parse(payload)
 
 
 @pytest.mark.parametrize(
@@ -618,14 +491,8 @@ def test_classifies_nginx_as_web_and_ignores_documentation_runtime() -> None:
     assert change.risk == "web-only"
 
 
-@pytest.mark.parametrize(
-    "classifier",
-    [classify_changed_paths, classify_public_cutover_paths],
-)
-def test_classifies_nginx_security_headers_as_high_risk_web(
-    classifier: Any,
-) -> None:
-    change = classifier(["deploy/nginx-security-headers.conf"])
+def test_classifies_nginx_security_headers_as_high_risk_web() -> None:
+    change = classify_changed_paths(["deploy/nginx-security-headers.conf"])
 
     assert change.components == frozenset({"web"})
     assert change.runtime_changed is True
@@ -648,20 +515,6 @@ def test_classifies_redis_runtime_as_high_risk_redis(path: str) -> None:
     assert change.runtime_changed is True
     assert change.risk == "high-risk"
     assert change.high_risk_paths == (path,)
-
-
-def test_public_cutover_keeps_redis_runtime_on_api_not_redis_component() -> None:
-    paths = [
-        "deploy/redis-domain-entrypoint.sh",
-        "deploy/redis-domain-healthcheck.sh",
-    ]
-
-    change = classify_public_cutover_paths(paths)
-
-    assert change.components == frozenset({"api"})
-    assert change.runtime_changed is True
-    assert change.risk == "high-risk"
-    assert change.high_risk_paths == tuple(sorted(paths))
 
 
 def test_documentation_and_tests_alone_are_not_runtime_changes() -> None:
@@ -710,7 +563,6 @@ def test_database_role_gate_inputs_are_safe_non_runtime_changes() -> None:
         [
             "deploy/database-roles.md",
             "deploy/secrets.md",
-            "docs/runbooks/public-baseline-activation.md",
             "scripts/verify_database_roles.sh",
         ]
     )
@@ -1423,54 +1275,6 @@ def test_rejects_unclassified_path_mixed_with_known_application_change() -> None
         )
 
 
-def test_rebaseline_accepts_only_the_reviewed_migration_baseline_scope() -> None:
-    paths = [
-        "README.md",
-        "docs/PERFORMANCE.md",
-        "scripts/perf_smoke.py",
-        "scripts/verify_ci_commit.py",
-        "deploy/scripts/prepare_runtime_secrets.py",
-        "deploy/scripts/vendor_runtime_reset.py",
-        "backend/migrations/versions/0061_vendor_binding_outbox.py",
-        "frontend/src/views/SignView.vue",
-    ]
-
-    change = classify_rebaseline_paths(paths)
-
-    assert change.components == frozenset({"api", "web"})
-    assert change.migration_changed is True
-    assert change.runtime_changed is True
-    assert change.risk == "high-risk"
-    assert change.high_risk_paths == (
-        "deploy/scripts/prepare_runtime_secrets.py",
-        "deploy/scripts/vendor_runtime_reset.py",
-        "frontend/src/views/SignView.vue",
-    )
-
-
-def test_rebaseline_accepts_reviewed_historical_non_runtime_paths() -> None:
-    paths = [
-        "deploy/postgres.Dockerfile",
-        "deploy/production-storage-initialization.md",
-        "deploy/production-storage-manifest.example.json",
-        "deploy/scripts/initialize_production_storage.py",
-        "deploy/scripts/offline_image_archive.py",
-        "scripts/check_spec_consistency.py",
-        "scripts/create_offline_image_index.py",
-        "scripts/deploy_release_remote.py",
-        "backend/migrations/versions/0081_sign_adoption_contract.py",
-        "frontend/src/views/SignView.vue",
-    ]
-
-    change = classify_rebaseline_paths(paths)
-
-    assert change.components == frozenset({"api", "web"})
-    assert change.migration_changed is True
-    assert change.runtime_changed is True
-    assert change.risk == "high-risk"
-    assert change.high_risk_paths == ("frontend/src/views/SignView.vue",)
-
-
 @pytest.mark.parametrize(
     "path",
     [
@@ -1491,11 +1295,6 @@ def test_reviewed_offline_paths_do_not_trigger_runtime_update(path: str) -> None
     assert not change.runtime_changed
     assert not change.components
     assert not change.migration_changed
-    migration = "backend/migrations/versions/0116_usage_release_generation.py"
-    rebaseline = classify_rebaseline_paths([path, migration])
-    assert rebaseline.migration_changed
-    assert rebaseline.risk == "high-risk"
-    assert rebaseline.components == frozenset({"api", "web"})
 
 
 @pytest.mark.parametrize(
@@ -1503,28 +1302,6 @@ def test_reviewed_offline_paths_do_not_trigger_runtime_update(path: str) -> None
     ["deploy/auth-policy/policy.json", "scripts/future_gate.py"],
 )
 def test_offline_path_exceptions_do_not_allow_adjacent_runtime_paths(path: str) -> None:
-    with pytest.raises(ContractError, match="fast update forbidden"):
-        classify_changed_paths([path])
-    with pytest.raises(ContractError, match="fast update forbidden"):
-        classify_rebaseline_paths(
-            [path, "backend/migrations/versions/0116_usage_release_generation.py"]
-        )
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        "deploy/postgres.Dockerfile",
-        "deploy/production-storage-initialization.md",
-        "deploy/production-storage-manifest.example.json",
-        "deploy/scripts/initialize_production_storage.py",
-        "deploy/scripts/offline_image_archive.py",
-        "scripts/create_offline_image_index.py",
-    ],
-)
-def test_historical_rebaseline_exceptions_remain_blocked_for_daily_apply(
-    path: str,
-) -> None:
     with pytest.raises(ContractError, match="fast update forbidden"):
         classify_changed_paths([path])
 
@@ -1542,39 +1319,6 @@ def test_performance_tooling_is_non_runtime_for_daily_apply() -> None:
     assert change.runtime_changed is False
     assert change.risk == "none"
     assert change.high_risk_paths == ()
-
-
-def test_rebaseline_requires_a_migration_change() -> None:
-    with pytest.raises(ContractError, match="migration change"):
-        classify_rebaseline_paths(
-            [
-                "deploy/scripts/prepare_runtime_secrets.py",
-                "deploy/scripts/vendor_runtime_reset.py",
-                "backend/app/main.py",
-            ]
-        )
-
-
-def test_rebaseline_requires_the_complete_runtime_control_path_set() -> None:
-    with pytest.raises(ContractError, match="complete approved runtime-control"):
-        classify_rebaseline_paths(
-            [
-                "deploy/scripts/prepare_runtime_secrets.py",
-                "backend/migrations/versions/0061_vendor_binding_outbox.py",
-            ]
-        )
-
-
-def test_rebaseline_still_rejects_unknown_runtime_paths() -> None:
-    with pytest.raises(ContractError, match="fast update forbidden"):
-        classify_rebaseline_paths(
-            [
-                "deploy/scripts/prepare_runtime_secrets.py",
-                "deploy/scripts/vendor_runtime_reset.py",
-                "backend/migrations/versions/0061_vendor_binding_outbox.py",
-                "deploy/scripts/future.py",
-            ]
-        )
 
 
 def test_nul_cli_is_the_single_driver_classification_source() -> None:
@@ -1599,36 +1343,6 @@ def test_nul_cli_is_the_single_driver_classification_source() -> None:
             "frontend/src/components/VendorCredentialDialog.vue",
         ],
         "migration_changed": False,
-        "risk": "high-risk",
-        "runtime_changed": True,
-    }
-
-
-def test_rebaseline_nul_cli_uses_the_strict_rebaseline_classifier() -> None:
-    classifier = ROOT / "deploy/scripts/test_update_contract.py"
-    result = subprocess.run(
-        [sys.executable, str(classifier), "classify-rebaseline-nul"],
-        input=(
-            b"scripts/perf_smoke.py\0"
-            b"scripts/verify_ci_commit.py\0"
-            b"deploy/scripts/prepare_runtime_secrets.py\0"
-            b"deploy/scripts/vendor_runtime_reset.py\0"
-            b"backend/migrations/versions/0061_vendor_binding_outbox.py\0"
-            b"frontend/src/views/SignView.vue\0"
-        ),
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr.decode()
-    assert json.loads(result.stdout) == {
-        "components": ["api", "web"],
-        "high_risk_paths": [
-            "deploy/scripts/prepare_runtime_secrets.py",
-            "deploy/scripts/vendor_runtime_reset.py",
-            "frontend/src/views/SignView.vue",
-        ],
-        "migration_changed": True,
         "risk": "high-risk",
         "runtime_changed": True,
     }
@@ -1727,127 +1441,37 @@ def test_writer_protocol_metadata_is_high_risk() -> None:
     assert change.high_risk_paths == ("deploy/writer-protocol.json",)
 
 
-def test_public_cutover_accepts_the_complete_host_control_asset_set() -> None:
-    change = classify_public_cutover_paths(
-        [
-            *HOST_CONTROL_PATHS,
-            "backend/migrations/versions/0028_usage_fact_ledger.py",
-        ]
-    )
-
-    assert change.risk == "high-risk"
-    assert change.components == frozenset({"api"})
-    assert change.migration_changed is True
-    assert "deploy/scripts/check_test_update_migration.py" in change.high_risk_paths
-    assert "deploy/scripts/run_with_lifecycle_lock.py" in change.high_risk_paths
-
-
-def test_public_cutover_classifies_only_verified_transition_exceptions() -> None:
-    change = classify_public_cutover_paths(
-        [
-            ".github/workflows/ci.yml",
-            ".github/workflows/release-gate.yml",
-            "HANDOVER.md",
-            "PROGRESS.md",
-            "README.md",
-            "VERSION",
-            "deploy/database-roles.md",
-            "deploy/runtime-security.md",
-            "docs/runbooks/usage-ledger-recovery.md",
-            "scripts/check_coverage_gates.py",
-            "scripts/release_metadata.py",
-            "scripts/verify_ci_results.py",
-            "scripts/verify_data_images.sh",
-            "scripts/verify_database_roles.sh",
-            "scripts/verify_public_snapshot_cutover.py",
-            "deploy/initdb/01-create-app-role.sh",
-            "deploy/lifecycle.server.example.json",
-            "deploy/postgres.Dockerfile",
-            "deploy/provision-db-roles.sh",
-            "deploy/redis.Dockerfile",
-            "deploy/scripts/collect_security_daily_evidence.py",
-            "deploy/scripts/lifecycle_manager.py",
-            "deploy/scripts/prepare_runtime_secrets.py",
-            "deploy/scripts/release_manifest.py",
-            "deploy/scripts/release_manager.py",
-            "deploy/scripts/restore_drill.py",
-            "deploy/scripts/sync_standby.py",
-            "deploy/scripts/vendor_runtime_reset.py",
-            "deploy/systemd/lifecycle.env.example",
-            "deploy/systemd/sms-backup.service",
-            "deploy/systemd/sms-backup.timer",
-            "deploy/systemd/sms-lifecycle-status.service",
-            "deploy/systemd/sms-lifecycle-status.timer",
-            "deploy/systemd/sms-partition-maintenance.service",
-            "deploy/systemd/sms-partition-maintenance.timer",
-            "deploy/systemd/sms-restore-drill.service",
-            "deploy/systemd/sms-restore-drill.timer",
-            "deploy/systemd/security-report-collector.service",
-            "deploy/systemd/security-report-collector.timer",
-            "backend/app/services/usage_ledger.py",
-            "frontend/src/views/ConfigView.vue",
-        ]
-    )
-
-    assert change.components == frozenset({"api", "web"})
-    assert change.risk == "high-risk"
-    assert change.high_risk_paths == (
-        "backend/app/services/usage_ledger.py",
-        "deploy/initdb/01-create-app-role.sh",
-        "deploy/lifecycle.server.example.json",
-        "deploy/postgres.Dockerfile",
-        "deploy/provision-db-roles.sh",
-        "deploy/redis.Dockerfile",
-        "deploy/scripts/collect_security_daily_evidence.py",
-        "deploy/scripts/lifecycle_manager.py",
-        "deploy/scripts/prepare_runtime_secrets.py",
-        "deploy/scripts/release_manager.py",
-        "deploy/scripts/release_manifest.py",
-        "deploy/scripts/restore_drill.py",
-        "deploy/scripts/sync_standby.py",
-        "deploy/scripts/vendor_runtime_reset.py",
-        "deploy/systemd/lifecycle.env.example",
-        "deploy/systemd/security-report-collector.service",
-        "deploy/systemd/security-report-collector.timer",
-        "deploy/systemd/sms-backup.service",
-        "deploy/systemd/sms-backup.timer",
-        "deploy/systemd/sms-lifecycle-status.service",
-        "deploy/systemd/sms-lifecycle-status.timer",
-        "deploy/systemd/sms-partition-maintenance.service",
-        "deploy/systemd/sms-partition-maintenance.timer",
-        "deploy/systemd/sms-restore-drill.service",
-        "deploy/systemd/sms-restore-drill.timer",
-        "frontend/src/views/ConfigView.vue",
-    )
-
-
-def test_public_cutover_keeps_retired_static_paths_as_deletion_tombstones() -> None:
-    paths = [
-        "AUTOPILOT.md",
-        "BOOTSTRAP.md",
-        "RELEASE.md",
-        "TASKS.md",
-        "scripts/verify_milestone.sh",
-    ]
-
-    change = classify_public_cutover_paths(paths)
-
-    assert change.components == frozenset()
-    assert change.runtime_changed is False
-    assert change.risk == "none"
-    for path in paths:
-        with pytest.raises(ContractError, match="fast update forbidden"):
-            classify_changed_paths([path])
-
-
-def test_public_cutover_does_not_weaken_normal_or_unknown_path_rejection() -> None:
-    with pytest.raises(ContractError, match="fast update forbidden"):
-        classify_changed_paths(["deploy/unknown-runtime.conf"])
-    with pytest.raises(ContractError, match="fast update forbidden"):
-        classify_public_cutover_paths(["scripts/future_runtime.py"])
-
-
 @pytest.mark.parametrize("path", ["/backend/app/main.py", "backend/../schema.sql", ""])
 def test_rejects_unsafe_changed_paths(path: str) -> None:
     with pytest.raises(ContractError, match="invalid changed path"):
         classify_changed_paths([path])
+
+
+def test_retired_baseline_paths_remain_classifiable_as_high_risk_deletions() -> None:
+    """已退役入口的删除差异必须可归类，且资产不得回到仓库或主机控制清单。"""
+    retired = [
+        "deploy/scripts/public_baseline_activation.py",
+        "deploy/scripts/public_baseline_manager.py",
+        "deploy/scripts/public_cutover_bootstrap.py",
+        "docs/runbooks/public-baseline-activation.md",
+        "scripts/public_baseline_activate.py",
+        "scripts/verify_public_snapshot_cutover.py",
+    ]
+
+    change = classify_changed_paths(retired)
+
+    assert change.risk == "high-risk"
+    assert change.high_risk_paths == tuple(sorted(retired))
+    assert not change.migration_changed
+    assert HOST_CONTROL_PATHS.isdisjoint(retired)
+    assert not any((ROOT / path).exists() for path in retired)
+
+
+@pytest.mark.parametrize("field", ["operation", "public_cutover"])
+def test_rejects_retired_request_fields(field: str) -> None:
+    """重对齐与公开割接字段退役后按未知字段失败关闭。"""
+    payload = _request()
+    payload[field] = "apply" if field == "operation" else None
+
+    with pytest.raises(ContractError, match="unknown fields"):
+        _parse(payload)

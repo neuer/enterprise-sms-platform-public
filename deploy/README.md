@@ -435,9 +435,6 @@ git -C "$SOURCE_GIT" archive "$TARGET_COMMIT" -- \
   deploy/scripts/vendor_test_files.py \
   deploy/scripts/check_test_update_migration.py \
   deploy/scripts/run_with_lifecycle_lock.py \
-  deploy/scripts/public_cutover_bootstrap.py \
-  deploy/scripts/public_baseline_activation.py \
-  deploy/scripts/public_baseline_manager.py \
   deploy/scripts/test_update_apply.py \
   deploy/scripts/test_update_backup.py \
   deploy/scripts/test_update_contract.py \
@@ -449,7 +446,6 @@ git -C "$SOURCE_GIT" archive "$TARGET_COMMIT" -- \
   deploy/scripts/protected_path_policy.py \
   scripts/check_public_readiness.py \
   scripts/export_public_snapshot.py \
-  scripts/verify_public_snapshot_cutover.py \
   scripts/verify_web_transport.py \
   deploy/sms-compose \
   deploy/systemd/sms-platform-test-secure-access.service \
@@ -464,9 +460,6 @@ sudo chmod 0644 \
   "$SOURCE_ROOT/deploy/scripts/vendor_test_files.py" \
   "$SOURCE_ROOT/deploy/scripts/check_test_update_migration.py" \
   "$SOURCE_ROOT/deploy/scripts/run_with_lifecycle_lock.py" \
-  "$SOURCE_ROOT/deploy/scripts/public_cutover_bootstrap.py" \
-  "$SOURCE_ROOT/deploy/scripts/public_baseline_activation.py" \
-  "$SOURCE_ROOT/deploy/scripts/public_baseline_manager.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_apply.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_backup.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_contract.py" \
@@ -478,7 +471,6 @@ sudo chmod 0644 \
   "$SOURCE_ROOT/deploy/scripts/protected_path_policy.py" \
   "$SOURCE_ROOT/scripts/check_public_readiness.py" \
   "$SOURCE_ROOT/scripts/export_public_snapshot.py" \
-  "$SOURCE_ROOT/scripts/verify_public_snapshot_cutover.py" \
   "$SOURCE_ROOT/scripts/verify_web_transport.py" \
   "$SOURCE_ROOT/deploy/systemd/sms-platform-test-secure-access.service" \
   "$SOURCE_ROOT/deploy/systemd/sms-platform-cloudflare-tunnel.service"
@@ -545,8 +537,8 @@ host-control 资产变化时必须重新评审并按目标 commit 重装。
 同一安装器还负责快速更新密文 checkpoint 的一次性前置条件，并在任何 checkpoint 权威状态修改前非阻塞取得固定 lifecycle lock；锁冲突时不修改 config、key 或 checkpoint 输出目录。配置与密钥均不存在且输出目录不存在或为空时，才在服务器本机用 `os.urandom(32)` 生成 root `0600` 密钥，并把固定配置的原子出现作为最后的 commit marker；后续重装只验证并保留原密钥。唯一崩溃恢复例外是“安全的 key 已落盘、config 尚未提交、输出目录仍为空”，此时只补 config，提交前后都重新绑定同一 key inode。config 提交后的目录 `fsync` 或身份复核若失败，本次仍 fail closed；下一次运行只有在重新验证全部 checkpoint、config/key 内容与 inode，并再次 `fsync` 两个权威文件父目录后才接受该已提交状态。config-only、密钥长度/权限/硬链接异常、中断 checkpoint，或已有 checkpoint 却缺少任一权威文件都立即 fail closed，绝不生成新密钥覆盖历史恢复能力。安装过程和输出不得显示密钥值、长度、摘要或派生信息。
 
 无历史公开快照与旧测试基线没有共同祖先时，不得继续使用日常快速更新，也不得把私有
-归档 remote、commit、ref 或 Git pack 导入当前公开工作区。旧的 public-cutover 服务端
-兼容资产仅用于保留既有运行态的可恢复性，不构成可执行入口；本地 driver 已明确拒绝
+归档 remote、commit、ref 或 Git pack 导入当前公开工作区。旧的 public-cutover 与公开基线
+激活服务端资产已随 D125 从仓库和主机控制清单移除；本地 driver 已明确拒绝
 `--public-snapshot-cutover`。
 
 一次性基线迁移必须另立变更单，在不属于公开工作区的隔离临时证据仓库中完成逐文件验真，
@@ -554,18 +546,8 @@ host-control 资产变化时必须重新评审并按目标 commit 重装。
 证据清理。迁移完成后的服务器 HEAD 和 origin 必须直接绑定公开仓库 commit，且不得把
 任何私有 URL、ref、commit 或对象带回公开工作区；随后才恢复
 按需的 `scripts/test_update.sh apply --ref origin/main` 流程；`plan` 与 `status` 分别
-只用于可选预览和后续诊断。唯一获准的一次性执行步骤见
-`docs/runbooks/public-baseline-activation.md`。
-
-该一次性流程的固定合同是：本地 driver 只执行
-`prepare → build → finalize`，由 build 从 verified bundle 的原始 blob 规范化构建并冻结
-API/Web 镜像，不接受手工 build plan 或 image ID；上传时
-`public-baseline.bundle`、`api.tar`、`web.tar`、`baseline-manifest.json` 就绪后，最后才
-发布 `request.json`。服务器 operator UID/GID 固定为 `1000:1000`，不动态推断；只使用
-host bootstrap 的
-`baseline-prepare/apply/verify/status/finalize/cleanup`。finalize 保留 recovery；
-只有标准状态 verified 且表面验收完成，cleanup 才删除旧 root 与 bundle/API/Web 三个
-大产物，并继续保留 manifest/request、test-update store 和 core journal。
+只用于可选预览和后续诊断。仓库不再提供一次性执行入口；如再次需要，必须重新设计、
+评审并单独批准。
 
 ### 手机操作者日常流程
 
@@ -695,44 +677,8 @@ commit 间的 host-control 字节未变可复用既有快照，发生变化则�
 不执行管理员初始化，也不初始化数据库。始终保留 PostgreSQL 数据库、Docker volume、
 凭据 generation、测试号码和运行态数据；任何初始化仍须操作者明确确认。
 
-同历史旧测试基线若仍是目标 `origin/main` 的祖先、包含真实迁移前移，且普通 `apply` 仅被
-合同枚举的旧运行凭据准备/撤销脚本与固定历史非运行态文件阻断，可在重装同一目标 commit 的
-host-control 快照、确认合并提交的精确 `ci-gate` 成功后执行：
-
-```bash
-scripts/test_update.sh rebaseline --ref origin/main
-```
-
-两个旧运行凭据脚本如出现在差异中必须成对出现；两者均未变更时不要求制造伪差异。这是
-一次性基线修复，不是日常更新别名：它强制 API/Web、高风险暂停、不安全分片检查、
-密文 checkpoint、expand-only 迁移、verify 与 operator Git 复核；不接受分支、无迁移、
-跨历史或任意未枚举路径。当前批准的 `0053_idempotency_scope →
-0061_vendor_binding_outbox` 路径还会在 checkpoint 后由服务器本机把精确旧 18 件权威密钥
-清单可恢复地扩展为 24 件，再用目标预处理器生成 runtime generation；只追加四个独立审计
-key 与一对匹配 X25519 key，不替换既有密钥或厂商凭据，也不输出值、长度、摘要或派生信息。
-这是历史固定迁移，不能代生成 Phase 0 新增的第 25 件 `redis_tls_server_key`；该私钥必须走
-独立运行密钥变更，并与内部 PKI 证书在预生产验真后才能更新目标版本。
-已经到达 `0079_security_daily_publish_outbox` 的测试环境在批准的 `0079 → 0081` 重对齐中
-复用现有完整运行密钥清单，不再执行上述旧密钥扩展或重复生成 runtime generation。若原请求
-已经精确阻断在 `blocked/secret_expansion`，按 `docs/runbooks/test-fast-update.md` 执行
-`scripts/test_update.sh recover-rebaseline-prepare`，复用原 checkpoint、镜像和上传包继续；
-该恢复入口不构建、不上传、不新增 checkpoint。
-若已切换目标 checkout 但 migration head 仍停在 0053 且状态精确为 `blocked/migrate`，只可
-按 `docs/runbooks/test-fast-update.md` 的固定 `recover-rebaseline` 入口恢复旧 checkout/镜像
-指针并保持 pause；该入口可在已回到请求 base 后幂等重放，并在最终 root Git 校验后恢复
-operator 读路径，然后重新执行完整 rebaseline。日常更新继续只使用 `apply`，不得用
-`rebaseline` 或该恢复入口绕过分类失败。
-若迁移和应用切换已完成，唯一失败点为 `blocked/get_balance`，只可按同一手册使用
-`recover-rebaseline-verify`：它要求从已审核提交新安装且自校验通过的不可变 host-control
-快照；该快照提供恢复入口，身份独立于被恢复的应用提交。原请求 target 与当前 HEAD 必须
-完全一致，migration head 必须为 `0061_vendor_binding_outbox`，且原 update 仍持有两条
-pause；随后完整重跑 verify，不会重跑迁移或绕过真实厂商探测。调用必须使用本地
-`scripts/test_update.sh recover-rebaseline-verify`，由它校验并传递受控厂商 origin；同一入口
-在 GetBalance 成功且两条原 update pause 仍被持有时，仅启动被 fail-closed 停止的固定 backend
-服务集合，再检查服务与 migration head；同时由 public-baseline manager 在活动根、manifest、
-镜像和 operator Git 身份全部匹配后，把已安装 unit 限定为旧/目标两种已知字节并原子恢复目标
-`vendor-control-agent.service`，重启后验真。不会手工改权限、强制重建或切换镜像。该入口产生且事件链可证明的
-固定 verify step 再阻断允许重放，其他 blocked step 或身份漂移继续失败关闭。
+服务器 commit 不是目标的祖先、或普通 `apply` 被分类器阻断时一律失败关闭；历史上的
+`rebaseline` 与 `recover-rebaseline-*` 一次性入口已退役（D125），不得以任何别名恢复。
 
 测试环境页面 `reset_configuration` 是从真实厂商切回纯 Mock 的唯一入口，只接受已配置凭据、无 pause 的 `controlled|inactive` 投影。root agent 先持久化 `reset_authorized`，再调用 development-only、零参数固定操作 `vendor-test reset-runtime`；这是 agent 内部操作名，不是给操作者手工执行的命令，实际由 agent 固定映射到 lifecycle lock 下的 `vendor_test_mock_reset.py reset-to-mock`。agent 不在 lifecycle lock 外另行删除 credential store。该操作与 release 共用同一个 lifecycle flock：停止旧 API/beat/workers/Outbox 并逐一确认它们不再运行后，直接恢复固定纯 Mock dotenv，切换到固定 revocation tombstone generation，启动并验证 `mock-vendor`，强制重建并逐一验证 API、四个 worker、Outbox dispatcher、beat 与 Web；Web 还必须通过自身 Nginx 代理访问新 API。已停止的消费者无法自行收敛 backlog，因此 reset 不再等待数据库状态清零；既有 queued/scheduled/pending/retrying 后续只会命中 Mock，遗留 submitting 按既有恢复规则转 uncertain，uncertain 仍禁止自动重发。全部验证通过后才在锁内删除 root credential store、清理 stale runtime generations，并把 live marker 作为最后的 commit marker 删除；成功输出仍严格为 `{"status":"runtime_revoked"}`。它保留加密测试号码、runtime root、PostgreSQL、Docker volume、非厂商 secret 和历史未决事实，也不触碰生产环境。失败路径只恢复不持有厂商凭据的 API 与 Web，页面轮询会对超过 60 秒仍未终结的同一 reset 自动安排后台对账；禁止手改 `.env`、raw Compose 或恢复旧 generation，固定错误不得携带 Key、generation 或子进程输出。
 

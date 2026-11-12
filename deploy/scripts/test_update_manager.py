@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import binascii
 import contextlib
 import hashlib
 import json
@@ -22,11 +20,9 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal, Protocol, cast
+from typing import Protocol
 
 from check_test_update_migration import check_expand_only
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
 from test_secure_access_contract import HOST_CONTROL_SOURCE_PATHS
 from test_secure_access_manager import require_test_host_marker
 from test_update_apply import BACKEND_SERVICES, TestUpdateApply
@@ -39,7 +35,6 @@ from test_update_contract import (
     ChangedScope,
     TestUpdateRequest,
     classify_changed_paths,
-    classify_rebaseline_paths,
     parse_test_update_request,
 )
 from test_update_store import TestUpdateState, TestUpdateStore
@@ -55,22 +50,8 @@ UNSAFE_CHUNK_STATUSES = ("submitting", "retrying", "uncertain")
 _DATABASE = "sms"
 _BACKUP_OUTPUT_ROOT = Path("/var/lib/sms-platform/test-backups")
 _BACKUP_KEY_FILE = Path("/etc/sms-platform/test-update-backup-key")
-_PUBLIC_CUTOVER_BOOTSTRAP_STATE = Path(
-    "/var/lib/sms-platform/public-cutover-bootstrap/state.json"
-)
-_PUBLIC_CUTOVER_STATE_FIELDS = frozenset(
-    {
-        "schema_version",
-        "status",
-        "base_commit",
-        "target_commit",
-        "redis_image_id",
-        "old_redis_image_id",
-        "backup_dir",
-        "old_secrets_dir",
-        "old_runtime_target",
-    }
-)
+
+
 _REDIS_IMAGE_ENV_KEY = "SMS_REDIS_IMAGE"
 _IMAGE_ENV_KEYS = {
     "api": "SMS_API_IMAGE",
@@ -89,222 +70,13 @@ _BACKEND_RUNTIME_GID = 10001
 _BACKUP_CONFIG_FIELDS = frozenset(
     {"schema_version", "database", "output_root", "key_file"}
 )
-_PUBLIC_CUTOVER_RESULT_FIELDS = frozenset(
-    {
-        "components",
-        "cutover",
-        "logical_changed",
-        "migration_changed",
-        "private_merge_base",
-        "publication_commit",
-        "risk",
-        "runtime_changed",
-        "source_commit",
-    }
-)
+
+
 _SOURCE_FETCH_BACKOFF_SECONDS = (1.0, 2.0)
-_REBASELINE_MIGRATION_FROM = "0053_idempotency_scope"
-_REBASELINE_MIGRATION_TARGET = "0061_vendor_binding_outbox"
-_REBASELINE_RESUME_MIGRATION_FROM = "0079_security_daily_publish_outbox"
-_REBASELINE_RESUME_MIGRATION_TARGET = "0081_sign_adoption_contract"
-_REBASELINE_TEST_MIGRATIONS = (
-    "0108_chunk_failover_pending", "0119_temporary_password_expiry",
-)
-_REBASELINE_TEST_BASE = "d715624d18e6897f6916fcef9fbdc8622d41eb15"
-_APPROVED_REBASELINE_MIGRATIONS = frozenset(
-    {
-        (_REBASELINE_MIGRATION_FROM, _REBASELINE_MIGRATION_TARGET),
-        (_REBASELINE_RESUME_MIGRATION_FROM, _REBASELINE_RESUME_MIGRATION_TARGET),
-        _REBASELINE_TEST_MIGRATIONS,
-    }
-)
-_REBASELINE_VERIFY_STEPS = frozenset(
-    {
-        "environment_mode",
-        "budget",
-        "pauses",
-        "get_balance",
-        "recover_services",
-        "services",
-        "restore_owned_pauses",
-    }
-)
-_REBASELINE_OLD_SECRET_NAMES = frozenset(
-    {
-        "vendor_secret_name",
-        "vendor_secret_key",
-        "data_aes_key",
-        "data_hmac_key",
-        "jwt_secret",
-        "ldap_bind_password",
-        "metrics_scrape_token",
-        "db_owner_password",
-        "db_auth_password",
-        "db_accept_password",
-        "db_send_password",
-        "db_callback_password",
-        "db_export_password",
-        "db_scheduler_password",
-        "db_metrics_password",
-        "redis_broker_password",
-        "redis_auth_password",
-        "redis_control_password",
-    }
-)
-_REBASELINE_AUDIT_SECRET_NAMES = (
-    "audit_context_key",
-    "audit_system_api_context_key",
-    "audit_system_realtime_context_key",
-    "audit_system_bulk_context_key",
-)
-_REBASELINE_ALERT_PUBLIC_KEY = "alert_credential_public_key"
-_REBASELINE_ALERT_PRIVATE_KEY = "alert_credential_private_key"
-_REBASELINE_NEW_SECRET_NAMES = frozenset(
-    {
-        *_REBASELINE_AUDIT_SECRET_NAMES,
-        _REBASELINE_ALERT_PUBLIC_KEY,
-        _REBASELINE_ALERT_PRIVATE_KEY,
-    }
-)
-_REBASELINE_DEV_SECRET = "dev-apikeys.txt"
-_MAX_SECRET_BYTES = 1024 * 1024
-
-
-def _needs_legacy_rebaseline_secret_expansion(
-    migration_from: str,
-    migration_target: str,
-) -> bool:
-    return (migration_from, migration_target) == (
-        _REBASELINE_MIGRATION_FROM,
-        _REBASELINE_MIGRATION_TARGET,
-    )
 
 
 class TestUpdateManagerError(RuntimeError):
     """快速更新准备阶段被安全门禁阻断。"""
-
-
-def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-
-
-def _validate_rebaseline_secret_file(
-    path: Path,
-    *,
-    expected_uid: int,
-) -> os.stat_result:
-    try:
-        metadata = path.lstat()
-    except OSError as exc:
-        raise TestUpdateManagerError(
-            "rebaseline authoritative secret inventory is unsafe"
-        ) from exc
-    if (
-        not stat.S_ISREG(metadata.st_mode)
-        or stat.S_ISLNK(metadata.st_mode)
-        or metadata.st_uid != expected_uid
-        or stat.S_IMODE(metadata.st_mode) != 0o600
-        or metadata.st_nlink != 1
-        or not 1 <= metadata.st_size <= _MAX_SECRET_BYTES
-    ):
-        raise TestUpdateManagerError(
-            "rebaseline authoritative secret inventory is unsafe"
-        )
-    return metadata
-
-
-def _read_rebaseline_key(path: Path, *, expected_uid: int) -> bytes:
-    before = _validate_rebaseline_secret_file(path, expected_uid=expected_uid)
-    descriptor = -1
-    try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        opened = os.fstat(descriptor)
-        if (
-            (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
-            or opened.st_uid != expected_uid
-            or stat.S_IMODE(opened.st_mode) != 0o600
-            or opened.st_nlink != 1
-        ):
-            raise OSError("secret identity changed")
-        raw = os.read(descriptor, 129)
-    except OSError as exc:
-        raise TestUpdateManagerError(
-            "rebaseline generated secret is unsafe"
-        ) from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    try:
-        decoded = base64.b64decode(raw.strip(), validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise TestUpdateManagerError(
-            "rebaseline generated secret is invalid"
-        ) from exc
-    if len(decoded) != 32 or raw != base64.b64encode(decoded) + b"\n":
-        raise TestUpdateManagerError("rebaseline generated secret is invalid")
-    return decoded
-
-
-def _write_rebaseline_key(
-    path: Path,
-    value: bytes,
-    *,
-    expected_uid: int,
-) -> None:
-    if len(value) != 32:
-        raise TestUpdateManagerError("rebaseline generated secret is invalid")
-    descriptor = -1
-    created = False
-    try:
-        descriptor = os.open(
-            path,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        created = True
-        os.fchmod(descriptor, 0o600)
-        metadata = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != expected_uid
-            or stat.S_IMODE(metadata.st_mode) != 0o600
-            or metadata.st_nlink != 1
-        ):
-            raise OSError("generated secret identity is unsafe")
-        payload = base64.b64encode(value) + b"\n"
-        if os.write(descriptor, payload) != len(payload):
-            raise OSError("generated secret write was incomplete")
-        os.fsync(descriptor)
-    except OSError as exc:
-        if created:
-            with contextlib.suppress(OSError):
-                path.unlink()
-        raise TestUpdateManagerError(
-            "rebaseline generated secret could not be committed"
-        ) from exc
-    finally:
-        if descriptor >= 0:
-            os.close(descriptor)
-    _fsync_directory(path.parent)
-
-
-def _x25519_public_key(private_value: bytes) -> bytes:
-    try:
-        return X25519PrivateKey.from_private_bytes(private_value).public_key().public_bytes(
-            serialization.Encoding.Raw,
-            serialization.PublicFormat.Raw,
-        )
-    except (TypeError, ValueError) as exc:
-        raise TestUpdateManagerError(
-            "rebaseline alert credential keypair is invalid"
-        ) from exc
 
 
 class FixedCommandRunner:
@@ -507,63 +279,6 @@ def _reject_control_state_duplicates(
     return result
 
 
-def _public_cutover_scope(
-    raw: str,
-    *,
-    expected_source_commit: str,
-    expected_private_merge_base: str,
-) -> ChangedScope:
-    """把不可变验真器的最小 JSON 结果收窄为快速更新范围。"""
-
-    try:
-        document = json.loads(raw, object_pairs_hook=_reject_control_state_duplicates)
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise TestUpdateManagerError("public cutover result is invalid") from exc
-    if type(document) is not dict or set(document) != set(
-        _PUBLIC_CUTOVER_RESULT_FIELDS
-    ):
-        raise TestUpdateManagerError("public cutover result is invalid")
-    components = document["components"]
-    risk = document["risk"]
-    commit_fields = (
-        document["private_merge_base"],
-        document["publication_commit"],
-        document["source_commit"],
-    )
-    if (
-        document["cutover"] is not True
-        or type(components) is not list
-        or not components
-        or any(type(component) is not str for component in components)
-        or len(components) != len(set(components))
-        or not set(components).issubset({"api", "web"})
-        or type(document["logical_changed"]) is not int
-        or document["logical_changed"] < 1
-        or type(document["migration_changed"]) is not bool
-        or type(document["runtime_changed"]) is not bool
-        or document["runtime_changed"] is not True
-        or type(risk) is not str
-        or risk not in {"web-only", "backend-safe", "high-risk"}
-        or any(
-            type(value) is not str
-            or re.fullmatch(r"[0-9a-f]{40}", value) is None
-            for value in commit_fields
-        )
-        or document["source_commit"] != expected_source_commit
-        or document["private_merge_base"] != expected_private_merge_base
-    ):
-        raise TestUpdateManagerError("public cutover result is invalid")
-    return ChangedScope(
-        components=frozenset(cast(list[str], components)),
-        migration_changed=document["migration_changed"],
-        backend_tests=(),
-        frontend_tests=(),
-        runtime_changed=True,
-        risk=cast(Literal["web-only", "backend-safe", "high-risk"], risk),
-        high_risk_paths=(),
-    )
-
-
 def _read_backup_config(path: Path, *, expected_uid: int) -> tuple[Path, Path]:
     try:
         metadata = path.lstat()
@@ -619,101 +334,6 @@ class HostUpdateOperations:
             "-f",
             str(root / "deploy/docker-compose.yml"),
         )
-        self.public_cutover_base: str | None = None
-        self.public_cutover_target: str | None = None
-
-    def bind_public_cutover(self, *, base: str, target: str) -> None:
-        if (
-            re.fullmatch(r"[0-9a-f]{40}", base) is None
-            or re.fullmatch(r"[0-9a-f]{40}", target) is None
-            or base == target
-        ):
-            raise TestUpdateManagerError("public cutover binding is invalid")
-        self.public_cutover_base = base
-        self.public_cutover_target = target
-
-    def _docker(self, *arguments: str, input_bytes: bytes | None = None) -> str:
-        return _decode_output(
-            self.runner.run(
-                ["docker", *arguments],
-                input_bytes=input_bytes,
-            )
-        )
-
-    def _public_cutover_state(self) -> dict[str, object]:
-        path = _PUBLIC_CUTOVER_BOOTSTRAP_STATE
-        try:
-            metadata = path.lstat()
-            if (
-                not stat.S_ISREG(metadata.st_mode)
-                or stat.S_ISLNK(metadata.st_mode)
-                or metadata.st_uid != self.expected_uid
-                or stat.S_IMODE(metadata.st_mode) != 0o600
-            ):
-                raise OSError("unsafe state")
-            value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise TestUpdateManagerError(
-                "public cutover bootstrap state is unavailable"
-            ) from exc
-        if (
-            type(value) is not dict
-            or set(value) != set(_PUBLIC_CUTOVER_STATE_FIELDS)
-            or value.get("schema_version") != 1
-            or value.get("status") not in {"ready", "activated"}
-            or value.get("base_commit") != self.public_cutover_base
-            or value.get("target_commit") != self.public_cutover_target
-            or type(value.get("redis_image_id")) is not str
-            or re.fullmatch(r"sha256:[0-9a-f]{64}", value["redis_image_id"]) is None
-        ):
-            raise TestUpdateManagerError(
-                "public cutover bootstrap state is invalid"
-            )
-        return value
-
-    def _transitional_control_container(self) -> str:
-        self._public_cutover_state()
-        observed = self._docker(
-            "ps",
-            "--filter",
-            "label=com.docker.compose.project=sms-platform",
-            "--filter",
-            "label=com.docker.compose.service=redis-control",
-            "--filter",
-            "status=running",
-            "--format",
-            "{{.ID}}",
-        ).splitlines()
-        if len(observed) != 1 or re.fullmatch(r"[0-9a-f]{12,64}", observed[0]) is None:
-            raise TestUpdateManagerError(
-                "public cutover control Redis identity is invalid"
-            )
-        identity = self._docker(
-            "inspect",
-            "--format",
-            (
-                '{{index .Config.Labels "com.docker.compose.project"}}|'
-                '{{index .Config.Labels "com.docker.compose.service"}}|'
-                "{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}"
-            ),
-            observed[0],
-        )
-        if identity != "sms-platform|redis-control|running|healthy":
-            raise TestUpdateManagerError(
-                "public cutover control Redis is not healthy"
-            )
-        state = self._public_cutover_state()
-        image_id = self._docker(
-            "inspect",
-            "--format",
-            "{{.Image}}",
-            observed[0],
-        )
-        if image_id != state["redis_image_id"]:
-            raise TestUpdateManagerError(
-                "public cutover control Redis image is invalid"
-            )
-        return observed[0]
 
     def _run(self, *arguments: str, input_bytes: bytes | None = None) -> str:
         return _decode_output(
@@ -728,34 +348,6 @@ class HostUpdateOperations:
             'exec redis-cli --user sms_control --askpass --raw "$@" '
             "< /run/secrets/redis_control_password"
         )
-        if self.public_cutover_base is not None:
-            current = _decode_output(
-                self.runner.run(
-                    [
-                        "git",
-                        "-C",
-                        str(self.root),
-                        "rev-parse",
-                        "HEAD",
-                    ]
-                )
-            )
-            if current == self.public_cutover_base:
-                container = self._transitional_control_container()
-                return self._docker(
-                    "exec",
-                    "-i",
-                    container,
-                    "sh",
-                    "-ec",
-                    script,
-                    "sh",
-                    *arguments,
-                )
-            if current != self.public_cutover_target:
-                raise TestUpdateManagerError(
-                    "public cutover repository identity is invalid"
-                )
         return self._run(
             "exec",
             "-T",
@@ -765,50 +357,6 @@ class HostUpdateOperations:
             script,
             "sh",
             *arguments,
-        )
-
-    def activate_public_cutover_redis(self) -> None:
-        state = self._public_cutover_state()
-        target = self.public_cutover_target
-        assert target is not None
-        if state["status"] == "activated":
-            return
-        image_id = state["redis_image_id"]
-        assert isinstance(image_id, str)
-        revision = self._docker(
-            "image",
-            "inspect",
-            "--format",
-            '{{index .Config.Labels "org.opencontainers.image.revision"}}',
-            image_id,
-        )
-        if revision != target:
-            raise TestUpdateManagerError(
-                "public cutover Redis image revision is invalid"
-            )
-        _atomic_update_image_env(
-            self.root / ".env",
-            _REDIS_IMAGE_ENV_KEY,
-            image_id,
-            expected_uid=self.expected_uid,
-        )
-        self._run(
-            "up",
-            "-d",
-            "--no-deps",
-            "--force-recreate",
-            "--wait",
-            "--wait-timeout",
-            "120",
-            "redis",
-            "redis-auth",
-            "redis-control",
-        )
-        state["status"] = "activated"
-        _atomic_write_json(
-            _PUBLIC_CUTOVER_BOOTSTRAP_STATE,
-            state,
-            expected_uid=self.expected_uid,
         )
 
     def _psql(self, sql: str) -> str:
@@ -953,8 +501,6 @@ class PrepareOperations(Protocol):
 
     def check_expand_migration(self, migration_from: str, target: str) -> None: ...
 
-    def expand_rebaseline_secrets(self) -> None: ...
-
     def hold_fail_closed(self, update_id: str) -> None: ...
 
 
@@ -999,10 +545,7 @@ class TestUpdateManager:
         commit: str,
         migration_from: str,
         migration_target: str,
-        operation: Literal["apply", "rebaseline"] = "apply",
     ) -> PreparedUpdate:
-        if operation not in {"apply", "rebaseline"}:
-            raise TestUpdateManagerError("update operation is invalid")
         if scope.risk not in {"web-only", "backend-safe", "high-risk"}:
             raise TestUpdateManagerError("update has no supported runtime scope")
         effective_risk = (
@@ -1041,12 +584,6 @@ class TestUpdateManager:
                 raise TestUpdateManagerError("encrypted checkpoint is invalid")
             step = "migration_check"
             self.operations.check_expand_migration(migration_from, migration_target)
-            if operation == "rebaseline" and _needs_legacy_rebaseline_secret_expansion(
-                migration_from,
-                migration_target,
-            ):
-                step = "secret_expansion"
-                self.operations.expand_rebaseline_secrets()
             step = "pause_owner"
             self.operations.finalize_pause_ownership(update_id)
             self.store.transition(
@@ -1097,7 +634,6 @@ def _prepare_from_source(
             commit=request.commit,
             migration_from=request.migration_from,
             migration_target=request.migration_target,
-            operation=request.operation,
         )
     except Exception as error:
         prepare_error = error
@@ -1216,59 +752,6 @@ def _atomic_update_image_env(
         temporary.unlink(missing_ok=True)
 
 
-def _atomic_write_json(
-    path: Path,
-    value: Mapping[str, object],
-    *,
-    expected_uid: int,
-) -> None:
-    try:
-        parent = path.parent.lstat()
-        current = path.lstat()
-        if (
-            not stat.S_ISDIR(parent.st_mode)
-            or stat.S_ISLNK(parent.st_mode)
-            or parent.st_uid != expected_uid
-            or stat.S_IMODE(parent.st_mode) != 0o700
-            or not stat.S_ISREG(current.st_mode)
-            or stat.S_ISLNK(current.st_mode)
-            or current.st_uid != expected_uid
-            or stat.S_IMODE(current.st_mode) != 0o600
-        ):
-            raise TestUpdateManagerError(
-                "public cutover bootstrap state update is unsafe"
-            )
-        payload = (
-            json.dumps(value, separators=(",", ":"), sort_keys=True) + "\n"
-        ).encode("utf-8")
-    except TestUpdateManagerError:
-        raise
-    except (OSError, TypeError, ValueError) as exc:
-        raise TestUpdateManagerError(
-            "public cutover bootstrap state update is unsafe"
-        ) from exc
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    descriptor = os.open(
-        temporary,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        path.chmod(0o600)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 class HostTestUpdateOperations:
     """固定绑定 live-test 快速更新；无迁移失败时仅回退应用镜像。"""
 
@@ -1308,11 +791,6 @@ class HostTestUpdateOperations:
             expected_uid=expected_uid,
             runner=runner,
         )
-        if request.public_cutover is not None:
-            self.host.bind_public_cutover(
-                base=request.base_commit,
-                target=request.commit,
-            )
 
     def _command(self, *argv: str) -> str:
         payload = self.host.runner.run(list(argv))
@@ -1598,151 +1076,6 @@ class HostTestUpdateOperations:
                 )
             shutil.rmtree(temporary_root, ignore_errors=True)
 
-    def _require_approved_rebaseline_migration(self) -> None:
-        if (
-            (self.request.migration_from, self.request.migration_target)
-            == _REBASELINE_TEST_MIGRATIONS
-            and (
-                self.request.environment_mode != "pre-live"
-                or self.request.base_commit != _REBASELINE_TEST_BASE
-            )
-        ):
-            raise TestUpdateManagerError("rebaseline test baseline scope is invalid")
-        if (
-            self.request.operation != "rebaseline"
-            or (
-                self.request.migration_from,
-                self.request.migration_target,
-            )
-            not in _APPROVED_REBASELINE_MIGRATIONS
-            or self.request.migration_compatibility != "expand"
-        ):
-            raise TestUpdateManagerError(
-                "rebaseline migration scope is invalid"
-            )
-
-    def _require_legacy_rebaseline_secret_migration(self) -> None:
-        self._require_approved_rebaseline_migration()
-        if not _needs_legacy_rebaseline_secret_expansion(
-            self.request.migration_from,
-            self.request.migration_target,
-        ):
-            raise TestUpdateManagerError(
-                "rebaseline secret expansion scope is invalid"
-            )
-
-    def expand_rebaseline_secrets(self) -> None:
-        """在精确 18 件旧清单上可恢复地追加本次所需的六件随机密钥。"""
-
-        self._require_legacy_rebaseline_secret_migration()
-        source = self.root / "deploy/secrets"
-        try:
-            metadata = source.lstat()
-            names = {entry.name for entry in source.iterdir()}
-        except OSError as exc:
-            raise TestUpdateManagerError(
-                "rebaseline authoritative secret inventory is unavailable"
-            ) from exc
-        allowed = (
-            _REBASELINE_OLD_SECRET_NAMES
-            | _REBASELINE_NEW_SECRET_NAMES
-            | {_REBASELINE_DEV_SECRET}
-        )
-        if (
-            not stat.S_ISDIR(metadata.st_mode)
-            or stat.S_ISLNK(metadata.st_mode)
-            or metadata.st_uid != self.expected_uid
-            or stat.S_IMODE(metadata.st_mode) != 0o700
-            or not _REBASELINE_OLD_SECRET_NAMES.issubset(names)
-            or not names.issubset(allowed)
-        ):
-            raise TestUpdateManagerError(
-                "rebaseline authoritative secret inventory is unsafe"
-            )
-        for name in sorted(_REBASELINE_OLD_SECRET_NAMES):
-            _validate_rebaseline_secret_file(
-                source / name,
-                expected_uid=self.expected_uid,
-            )
-        if _REBASELINE_DEV_SECRET in names:
-            _validate_rebaseline_secret_file(
-                source / _REBASELINE_DEV_SECRET,
-                expected_uid=self.expected_uid,
-            )
-
-        audit_values: dict[str, bytes] = {}
-        for name in _REBASELINE_AUDIT_SECRET_NAMES:
-            path = source / name
-            if name in names:
-                value = _read_rebaseline_key(path, expected_uid=self.expected_uid)
-            else:
-                value = os.urandom(32)
-                while value in audit_values.values():
-                    value = os.urandom(32)
-                _write_rebaseline_key(
-                    path,
-                    value,
-                    expected_uid=self.expected_uid,
-                )
-                names.add(name)
-            if value in audit_values.values():
-                raise TestUpdateManagerError(
-                    "rebaseline audit context keys are not independent"
-                )
-            audit_values[name] = value
-
-        private_path = source / _REBASELINE_ALERT_PRIVATE_KEY
-        public_path = source / _REBASELINE_ALERT_PUBLIC_KEY
-        if _REBASELINE_ALERT_PRIVATE_KEY in names:
-            private_value = _read_rebaseline_key(
-                private_path,
-                expected_uid=self.expected_uid,
-            )
-        elif _REBASELINE_ALERT_PUBLIC_KEY in names:
-            raise TestUpdateManagerError(
-                "rebaseline alert credential keypair is incomplete"
-            )
-        else:
-            private_key = X25519PrivateKey.generate()
-            private_value = private_key.private_bytes(
-                serialization.Encoding.Raw,
-                serialization.PrivateFormat.Raw,
-                serialization.NoEncryption(),
-            )
-            _write_rebaseline_key(
-                private_path,
-                private_value,
-                expected_uid=self.expected_uid,
-            )
-            names.add(_REBASELINE_ALERT_PRIVATE_KEY)
-
-        expected_public = _x25519_public_key(private_value)
-        if _REBASELINE_ALERT_PUBLIC_KEY in names:
-            public_value = _read_rebaseline_key(
-                public_path,
-                expected_uid=self.expected_uid,
-            )
-            if public_value != expected_public:
-                raise TestUpdateManagerError(
-                    "rebaseline alert credential keypair is invalid"
-                )
-        else:
-            _write_rebaseline_key(
-                public_path,
-                expected_public,
-                expected_uid=self.expected_uid,
-            )
-            names.add(_REBASELINE_ALERT_PUBLIC_KEY)
-
-        expected_names = _REBASELINE_OLD_SECRET_NAMES | _REBASELINE_NEW_SECRET_NAMES
-        if _REBASELINE_DEV_SECRET in names:
-            expected_names = expected_names | {_REBASELINE_DEV_SECRET}
-        if names != expected_names:
-            raise TestUpdateManagerError(
-                "rebaseline authoritative secret inventory is incomplete"
-            )
-        _fsync_directory(source)
-
     def hold_fail_closed(self, update_id: str) -> None:
         if update_id != self.request.update_id:
             return
@@ -1764,17 +1097,6 @@ class HostTestUpdateOperations:
         return head
 
     def verify_source_scope(self) -> ChangedScope:
-        operation = getattr(self.request, "operation", "apply")
-        if operation not in {"apply", "rebaseline"}:
-            raise TestUpdateManagerError("request operation is invalid")
-        if operation == "rebaseline" and (
-            self.request.source_ref != "origin/main"
-            or self.request.public_cutover is not None
-            or self.request.components != frozenset({"api", "web"})
-            or self.request.migration_compatibility != "expand"
-            or self.request.migration_from == self.request.migration_target
-        ):
-            raise TestUpdateManagerError("rebaseline request scope is invalid")
         if self._command(
             "git",
             "-c",
@@ -1849,106 +1171,24 @@ class HostTestUpdateOperations:
             ).splitlines()
         except TestUpdateManagerError:
             merge_bases = []
-        if merge_bases == [self.request.base_commit]:
-            if self.request.public_cutover is not None:
-                raise TestUpdateManagerError(
-                    "related source history must not carry cutover evidence"
-                )
-            changed_raw = self._command(
-                "git",
-                "-C",
-                str(self.root),
-                "diff",
-                "--name-only",
-                "--no-renames",
-                "-z",
-                self.request.base_commit,
-                self.request.commit,
+        if merge_bases != [self.request.base_commit]:
+            raise TestUpdateManagerError(
+                "target must descend from the server baseline"
             )
-            changed = [path for path in changed_raw.split("\0") if path]
-            scope = (
-                classify_rebaseline_paths(changed)
-                if operation == "rebaseline"
-                else classify_changed_paths(changed)
-            )
-        else:
-            if operation == "rebaseline":
-                raise TestUpdateManagerError(
-                    "rebaseline requires a descendant of the server baseline"
-                )
-            if self.request.source_ref != "origin/main":
-                raise TestUpdateManagerError(
-                    "unrelated source history requires public main cutover"
-                )
-            evidence = self.request.public_cutover
-            if evidence is None:
-                raise TestUpdateManagerError(
-                    "public main cutover requires source evidence"
-                )
-            incoming = self.state_root / "incoming"
-            source_pack = incoming / evidence.pack_file
-            verifier = Path(__file__).with_name(
-                "verify_public_snapshot_cutover.py"
-            )
-            if not verifier.is_file():
-                repository_verifier = (
-                    Path(__file__).resolve().parents[2]
-                    / "scripts"
-                    / verifier.name
-                )
-                if repository_verifier.is_file():
-                    verifier = repository_verifier
-            try:
-                try:
-                    metadata = source_pack.lstat()
-                except OSError as exc:
-                    raise TestUpdateManagerError(
-                        "public cutover source evidence is unavailable"
-                    ) from exc
-                if (
-                    not stat.S_ISREG(metadata.st_mode)
-                    or stat.S_ISLNK(metadata.st_mode)
-                    or metadata.st_uid != self.expected_uid
-                    or stat.S_IMODE(metadata.st_mode) != 0o600
-                    or metadata.st_size <= 0
-                    or metadata.st_size > 64 * 1024 * 1024
-                    or _sha256_file(source_pack) != evidence.pack_sha256
-                ):
-                    raise TestUpdateManagerError(
-                        "public cutover source evidence is unsafe"
-                    )
-                verified_raw = self._command(
-                    "/usr/bin/python3",
-                    str(verifier),
-                    "--repository",
-                    str(self.root),
-                    "--baseline",
-                    self.request.base_commit,
-                    "--target",
-                    self.request.commit,
-                    "--ref",
-                    self.request.source_ref,
-                    "--resolved-ref",
-                    fetched_ref,
-                    "--source-pack",
-                    str(source_pack),
-                    "--expected-source-commit",
-                    evidence.source_commit,
-                    "--expected-private-merge-base",
-                    evidence.private_merge_base,
-                )
-            finally:
-                try:
-                    source_pack.unlink(missing_ok=True)
-                except OSError as exc:
-                    raise TestUpdateManagerError(
-                        "public cutover source evidence cleanup failed"
-                    ) from exc
-            scope = _public_cutover_scope(
-                verified_raw,
-                expected_source_commit=evidence.source_commit,
-                expected_private_merge_base=evidence.private_merge_base,
-            )
+        changed_raw = self._command(
+            "git",
+            "-C",
+            str(self.root),
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            self.request.base_commit,
+            self.request.commit,
+        )
+        scope = classify_changed_paths(
+            [path for path in changed_raw.split("\0") if path]
+        )
         if scope.components != self.request.components:
             raise TestUpdateManagerError("request components do not match source diff")
         return scope
@@ -2089,30 +1329,6 @@ class HostTestUpdateOperations:
             "tracked_checkout_clean": tracked_checkout_clean,
         }
 
-    def require_loaded_request_images(self) -> None:
-        """复核 prepare 已加载的镜像仍与不可变请求完全一致。"""
-
-        for component, image in self.request.images.items():
-            if component not in _IMAGE_ENV_KEYS:
-                raise TestUpdateManagerError("image component is invalid")
-            observed = self._command(
-                "docker",
-                "image",
-                "inspect",
-                "--format",
-                (
-                    "{{.Id}}|{{.Architecture}}|"
-                    '{{index .Config.Labels "org.opencontainers.image.revision"}}|'
-                    '{{index .Config.Labels "com.sms-platform.schema-revision"}}'
-                ),
-                image.ref,
-            )
-            if observed != (
-                f"{image.image_id}|amd64|{self.request.commit}|"
-                f"{self.request.migration_target}"
-            ):
-                raise TestUpdateManagerError("loaded image identity is invalid")
-
     def _activate_source_and_image(self, component: str) -> None:
         image = self.request.images[component]
         self._command(
@@ -2130,51 +1346,6 @@ class HostTestUpdateOperations:
             image.image_id,
             expected_uid=self.expected_uid,
         )
-
-    def _prepare_rebaseline_runtime_secrets(self) -> None:
-        if self.request.operation != "rebaseline":
-            return
-        self._require_approved_rebaseline_migration()
-        if not _needs_legacy_rebaseline_secret_expansion(
-            self.request.migration_from,
-            self.request.migration_target,
-        ):
-            return
-        command = [
-            "/usr/bin/python3",
-            str(self.root / "deploy/scripts/prepare_runtime_secrets.py"),
-        ]
-        if self.request.environment_mode == "live":
-            command.extend(
-                [
-                    "prepare",
-                    "--source-dir",
-                    str(self.root / "deploy/secrets"),
-                    "--runtime-root",
-                    str(self.runtime_root),
-                    "--mode",
-                    "development",
-                    "--vendor-credential-root",
-                    "/var/lib/sms-platform/vendor-test/credentials",
-                ]
-            )
-        elif self.request.environment_mode == "pre-live":
-            command.extend(
-                [
-                    "revoke-vendor",
-                    "--source-dir",
-                    str(self.root / "deploy/secrets"),
-                    "--runtime-root",
-                    str(self.runtime_root),
-                    "--mode",
-                    "development",
-                ]
-            )
-        else:
-            raise TestUpdateManagerError(
-                "rebaseline runtime secret mode is invalid"
-            )
-        self._command(*command)
 
     def _rollback_ref(self, component: str) -> str:
         if component not in _IMAGE_ENV_KEYS:
@@ -2250,7 +1421,6 @@ class HostTestUpdateOperations:
 
     def run_expand_migration(self, source: str, target: str) -> str:
         self._activate_source_and_image("api")
-        self._prepare_rebaseline_runtime_secrets()
         check_expand_only(self.root / "backend/migrations/versions", source, target)
         if source != target:
             self.host._run("run", "--rm", "migrate")
@@ -2415,8 +1585,6 @@ class HostTestUpdateOperations:
         self._prepare_rollback_images(self.request.components)
         if has_api:
             self._activate_source_and_image("api")
-            if self.request.public_cutover is not None:
-                self.host.activate_public_cutover_redis()
             self.host._run(
                 "up",
                 "-d",
@@ -2523,19 +1691,6 @@ class HostTestUpdateOperations:
             cleanup_images=True,
         )
 
-    def rollback_no_migration_preserving_images(
-        self,
-        kind: str,
-        update_id: str,
-    ) -> tuple[str, str]:
-        """完成物理回退但保留旧镜像标签，供外层先耐久记录终态。"""
-
-        return self._rollback_no_migration(
-            kind,
-            update_id,
-            cleanup_images=False,
-        )
-
     def _rollback_no_migration(
         self,
         kind: str,
@@ -2640,326 +1795,6 @@ class HostTestUpdateOperations:
                     self._rollback_ref(component),
                 )
 
-    def cleanup_rollback_images_verified(self, update_id: str) -> None:
-        """严格删除并复核本次回退标签；用于已验收的基线清理。"""
-
-        if update_id != self.request.update_id:
-            raise TestUpdateManagerError("update ID mismatch")
-        for component in sorted(self.request.components):
-            rollback_ref = self._rollback_ref(component)
-            existing = self._command(
-                "docker",
-                "image",
-                "ls",
-                "--no-trunc",
-                "--quiet",
-                rollback_ref,
-            ).splitlines()
-            if not existing:
-                continue
-            if (
-                len(existing) != 1
-                or re.fullmatch(r"sha256:[0-9a-f]{64}", existing[0]) is None
-            ):
-                raise TestUpdateManagerError(
-                    "rollback image identity is invalid"
-                )
-            self._command("docker", "image", "rm", rollback_ref)
-            remaining = self._command(
-                "docker",
-                "image",
-                "ls",
-                "--no-trunc",
-                "--quiet",
-                rollback_ref,
-            )
-            if remaining:
-                raise TestUpdateManagerError(
-                    "rollback image cleanup did not verify"
-                )
-
-    def recover_blocked_rebaseline_prepare(
-        self,
-        store: TestUpdateStore,
-    ) -> None:
-        """越过已误用的旧密钥扩展门禁，复用同一 checkpoint 与镜像。"""
-
-        self._require_approved_rebaseline_migration()
-        if (
-            self.request.migration_from != _REBASELINE_RESUME_MIGRATION_FROM
-            or self.request.migration_target != _REBASELINE_RESUME_MIGRATION_TARGET
-        ):
-            raise TestUpdateManagerError(
-                "blocked rebaseline prepare recovery scope is invalid"
-            )
-        self.require_lifecycle_lock()
-        state = store.read_consistent_state()
-        if (
-            state.get("state") != TestUpdateState.BLOCKED.value
-            or state.get("step") != "secret_expansion"
-            or state.get("error_type") != "validation_failed"
-            or state.get("actual_commit") != self.request.commit
-            or state.get("actual_migration_head") != self.request.migration_from
-            or state.get("event_sequence") != 2
-        ):
-            raise TestUpdateManagerError(
-                "blocked rebaseline prepare recovery state is invalid"
-            )
-        if self.host_source_commit is None:
-            raise TestUpdateManagerError(
-                "blocked rebaseline prepare recovery snapshot is invalid"
-            )
-        secret_contract_diff = self._command(
-            "git",
-            "-C",
-            str(self.root),
-            "diff",
-            "--name-only",
-            "--no-renames",
-            self.request.base_commit,
-            self.request.commit,
-            "--",
-            "deploy/docker-compose.yml",
-            "deploy/scripts/prepare_runtime_secrets.py",
-            "deploy/scripts/vendor_runtime_reset.py",
-        )
-        if secret_contract_diff:
-            raise TestUpdateManagerError(
-                "blocked rebaseline prepare recovery secret contract changed"
-            )
-        head = self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
-        git_status = self._command(
-            "git", "-C", str(self.root), "status", "--porcelain"
-        )
-        if (
-            head != self.request.base_commit
-            or git_status
-            or self.current_migration_head() != self.request.migration_from
-        ):
-            raise TestUpdateManagerError(
-                "blocked rebaseline prepare recovery identity is invalid"
-            )
-        self.require_owned_update_pauses(self.request.update_id)
-        _require_no_unsafe_chunks(
-            self.unsafe_status_counts(),
-            include_uncertain=True,
-        )
-        self.require_loaded_request_images()
-        store.transition(
-            TestUpdateState.BLOCKED,
-            TestUpdateState.CHECKPOINTED,
-            step="recover_prepare",
-            actual_commit=self.request.commit,
-            actual_migration_head=self.request.migration_from,
-        )
-
-    def recover_blocked_rebaseline_before_migration(
-        self,
-        store: TestUpdateStore,
-    ) -> None:
-        """幂等恢复尚未迁移的 rebaseline checkout/image 指针，保持暂停与日志。"""
-
-        self._require_approved_rebaseline_migration()
-        self.require_lifecycle_lock()
-        state = store.read_consistent_state()
-        if (
-            state.get("state") != TestUpdateState.BLOCKED.value
-            or state.get("step") != "migrate"
-            or state.get("error_type") != "step_failed"
-            or state.get("actual_commit") != self.request.commit
-            or state.get("actual_migration_head") != self.request.migration_from
-        ):
-            raise TestUpdateManagerError(
-                "blocked rebaseline recovery state is invalid"
-            )
-        migration_head = self.current_migration_head()
-        head = self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
-        git_status = self._command(
-            "git", "-C", str(self.root), "status", "--porcelain"
-        )
-        _restore_operator_git_read_access(self.root)
-        if (
-            migration_head != self.request.migration_from
-            or head not in {self.request.commit, self.request.base_commit}
-            or git_status
-        ):
-            raise TestUpdateManagerError(
-                "blocked rebaseline recovery identity is invalid"
-            )
-        self.require_owned_update_pauses(self.request.update_id)
-
-        running_images: dict[str, str] = {}
-        for component in ("api", "web"):
-            container_id = self.host._run("ps", "-q", component)
-            if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
-                raise TestUpdateManagerError(
-                    "blocked rebaseline running service is unavailable"
-                )
-            observed = self._command(
-                "docker",
-                "inspect",
-                "--format",
-                (
-                    "{{.Image}}|"
-                    '{{index .Config.Labels "org.opencontainers.image.revision"}}|'
-                    '{{index .Config.Labels "com.sms-platform.schema-revision"}}'
-                ),
-                container_id,
-            ).split("|")
-            if (
-                len(observed) != 3
-                or re.fullmatch(r"sha256:[0-9a-f]{64}", observed[0]) is None
-                or observed[1] != self.request.base_commit
-                or observed[2] != self.request.migration_from
-            ):
-                raise TestUpdateManagerError(
-                    "blocked rebaseline running image identity is invalid"
-                )
-            running_images[component] = observed[0]
-
-        for component, image_id in running_images.items():
-            _atomic_update_image_env(
-                self.root / ".env",
-                _IMAGE_ENV_KEYS[component],
-                image_id,
-                expected_uid=self.expected_uid,
-            )
-        if head == self.request.commit:
-            try:
-                self._command(
-                    "git",
-                    "-C",
-                    str(self.root),
-                    "checkout",
-                    "--detach",
-                    self.request.base_commit,
-                )
-            finally:
-                _restore_operator_git_read_access(self.root)
-        final_head = self._command(
-            "git", "-C", str(self.root), "rev-parse", "HEAD"
-        )
-        final_status = self._command(
-            "git", "-C", str(self.root), "status", "--porcelain"
-        )
-        _restore_operator_git_read_access(self.root)
-        final_migration_head = self.current_migration_head()
-        if (
-            final_head != self.request.base_commit
-            or final_status
-            or final_migration_head != self.request.migration_from
-        ):
-            raise TestUpdateManagerError(
-                "blocked rebaseline recovery verification failed"
-            )
-
-    def recover_blocked_rebaseline_verify(
-        self,
-        store: TestUpdateStore,
-    ) -> str:
-        """仅为迁移后 GetBalance 阻断重开同一 update 的完整 verify。"""
-
-        self._require_approved_rebaseline_migration()
-        self.require_lifecycle_lock()
-        if self.host_source_commit is None:
-            raise TestUpdateManagerError(
-                "blocked rebaseline verify recovery snapshot is invalid"
-            )
-        state = store.read_consistent_state()
-        state_value = state.get("state")
-        blocked_identity = (
-            state_value == TestUpdateState.BLOCKED.value
-            and state.get("error_type") == "invariant_failed"
-            and state.get("actual_commit") == self.request.commit
-            and state.get("actual_migration_head") == self.request.migration_target
-        )
-        initial_blocked_state = blocked_identity and state.get("step") == "get_balance"
-        retry_blocked_state = False
-        if (
-            not initial_blocked_state
-            and blocked_identity
-            and state.get("step") in _REBASELINE_VERIFY_STEPS
-        ):
-            events = store.read_events()
-            if len(events) >= 2:
-                recovering_event, blocked_event = events[-2:]
-                retry_blocked_state = (
-                    recovering_event.get("from_state")
-                    == TestUpdateState.BLOCKED.value
-                    and recovering_event.get("to_state")
-                    == TestUpdateState.VERIFYING.value
-                    and recovering_event.get("step") == "recover_verify"
-                    and recovering_event.get("error_type") is None
-                    and recovering_event.get("actual_commit") == self.request.commit
-                    and recovering_event.get("actual_migration_head")
-                    == self.request.migration_target
-                    and blocked_event.get("from_state")
-                    == TestUpdateState.VERIFYING.value
-                    and blocked_event.get("to_state")
-                    == TestUpdateState.BLOCKED.value
-                    and blocked_event.get("step") == state.get("step")
-                    and blocked_event.get("error_type") == "invariant_failed"
-                    and blocked_event.get("actual_commit") == self.request.commit
-                    and blocked_event.get("actual_migration_head")
-                    == self.request.migration_target
-                )
-        blocked_state = initial_blocked_state or retry_blocked_state
-        recovering_state = (
-            state_value == TestUpdateState.VERIFYING.value
-            and state.get("step") == "recover_verify"
-            and state.get("error_type") is None
-            and state.get("actual_commit") == self.request.commit
-            and state.get("actual_migration_head") == self.request.migration_target
-        )
-        verified_state = (
-            state_value == TestUpdateState.VERIFIED.value
-            and state.get("step") == "verify"
-            and state.get("error_type") is None
-            and state.get("actual_commit") == self.request.commit
-            and state.get("actual_migration_head") == self.request.migration_target
-        )
-        if not (blocked_state or recovering_state or verified_state):
-            raise TestUpdateManagerError(
-                "blocked rebaseline verify recovery state is invalid"
-            )
-
-        try:
-            head = self._command("git", "-C", str(self.root), "rev-parse", "HEAD")
-            git_status = self._command(
-                "git", "-C", str(self.root), "status", "--porcelain"
-            )
-        finally:
-            _restore_operator_git_read_access(self.root)
-        if (
-            head != self.request.commit
-            or git_status
-            or self.current_migration_head() != self.request.migration_target
-        ):
-            raise TestUpdateManagerError(
-                "blocked rebaseline verify recovery identity is invalid"
-            )
-        if verified_state:
-            return "verified"
-
-        self.require_owned_update_pauses(self.request.update_id)
-        if blocked_state:
-            store.transition(
-                TestUpdateState.BLOCKED,
-                TestUpdateState.VERIFYING,
-                step="recover_verify",
-                actual_commit=self.request.commit,
-                actual_migration_head=self.request.migration_target,
-            )
-        TestUpdateVerify(store, self).verify(
-            "backend-safe",
-            update_id=self.request.update_id,
-            commit=self.request.commit,
-            migration_from=self.request.migration_from,
-            migration_target=self.request.migration_target,
-            expected_state=TestUpdateState.VERIFYING,
-        )
-        return "verified"
-
     def verify_web(self) -> None:
         running = set(self.host._run("ps", "--status", "running", "--services").splitlines())
         if "web" not in running:
@@ -2980,59 +1815,6 @@ class HostTestUpdateOperations:
     def probe_balance(self) -> None:
         self.host.probe_balance()
 
-    def recover_backend_services(self) -> None:
-        """GetBalance 成功后仅重启被 fail-closed 停止的既有后端服务。"""
-
-        self._require_approved_rebaseline_migration()
-        self.require_owned_update_pauses(self.request.update_id)
-        self.host._run(
-            "up",
-            "-d",
-            "--no-deps",
-            *BACKEND_SERVICES,
-        )
-
-    def restore_operator_git_read_access(self) -> None:
-        """在 root 恢复动作后安全恢复 operator 的 Git 只读路径。"""
-
-        self._require_approved_rebaseline_migration()
-        _restore_operator_git_read_access(self.root)
-
-    def recover_verified_rebaseline_services(self) -> None:
-        """幂等收尾 verified 恢复遗留的成对 update 暂停。"""
-
-        self._require_approved_rebaseline_migration()
-        script = (
-            "local a=redis.call('get',KEYS[1]); "
-            "local b=redis.call('get',KEYS[2]); "
-            "if a==ARGV[1] and b==ARGV[1] then return 'owned' end; "
-            "if not a and not b then return 'released' end; return 'blocked'"
-        )
-        observed = self.host._redis(
-            "EVAL",
-            script,
-            "2",
-            "queue:paused:realtime",
-            "queue:paused:bulk",
-            self.pause_value,
-        )
-        if observed == "owned":
-            self.host._run(
-                "up",
-                "-d",
-                "--no-deps",
-                *BACKEND_SERVICES,
-            )
-            self.verify_backend_services()
-            self.restore_owned_update_pauses(self.request.update_id)
-            return
-        if observed == "released":
-            self.verify_backend_services()
-            return
-        raise TestUpdateManagerError(
-            "verified rebaseline update pause state is invalid"
-        )
-
     def verify_backend_services(self) -> None:
         running = set(self.host._run("ps", "--status", "running", "--services").splitlines())
         if not set(BACKEND_SERVICES).issubset(running):
@@ -3045,37 +1827,6 @@ class HostTestUpdateOperations:
             raise TestUpdateManagerError("selected web service is not running")
         if self.current_migration_head() != self.request.migration_target:
             raise TestUpdateManagerError("migration head drifted")
-
-    def verify_running_image_identity(self) -> None:
-        """复核当前 API/Web 容器仍绑定本次 rebaseline 的精确镜像。"""
-
-        for component in sorted(self.request.components):
-            image = self.request.images[component]
-            names = _REDIS_SERVICES if component == "redis" else (component,)
-            for service in names:
-                container_id = self.host._run("ps", "-q", service)
-                if re.fullmatch(r"[0-9a-f]{12,64}", container_id) is None:
-                    raise TestUpdateManagerError(
-                        "rebaseline running service is unavailable"
-                    )
-                observed = self._command(
-                    "docker",
-                    "inspect",
-                    "--format",
-                    (
-                        "{{.Image}}|"
-                        '{{index .Config.Labels "org.opencontainers.image.revision"}}|'
-                        '{{index .Config.Labels "com.sms-platform.schema-revision"}}'
-                    ),
-                    container_id,
-                )
-                if observed != (
-                    f"{image.image_id}|{self.request.commit}|"
-                    f"{self.request.migration_target}"
-                ):
-                    raise TestUpdateManagerError(
-                        "rebaseline running image identity is invalid"
-                    )
 
     def restore_owned_update_pauses(self, update_id: str) -> None:
         if update_id != self.request.update_id:
@@ -3104,9 +1855,6 @@ def _build_cli_parser() -> argparse.ArgumentParser:
             "verify",
             "status",
             "capability",
-            "recover-rebaseline",
-            "recover-rebaseline-prepare",
-            "recover-rebaseline-verify",
         ),
     )
     parser.add_argument("--root", required=True, type=Path)
@@ -3207,47 +1955,6 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         operations.require_lifecycle_lock()
-        if args.command == "recover-rebaseline":
-            operations.recover_blocked_rebaseline_before_migration(store)
-            print(
-                json.dumps(
-                    {
-                        "status": "recovered",
-                        "update_id": request.update_id,
-                    },
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
-            )
-            return 0
-        if args.command == "recover-rebaseline-prepare":
-            operations.recover_blocked_rebaseline_prepare(store)
-            print(
-                json.dumps(
-                    {
-                        "commit": request.commit,
-                        "migration_target": request.migration_target,
-                        "status": "checkpointed",
-                        "update_id": request.update_id,
-                    },
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
-            )
-            return 0
-        if args.command == "recover-rebaseline-verify":
-            recovery_status = operations.recover_blocked_rebaseline_verify(store)
-            print(
-                json.dumps(
-                    {
-                        "status": recovery_status,
-                        "update_id": request.update_id,
-                    },
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
-            )
-            return 0
         kind = _kind(request)
         if kind not in _UPDATE_KINDS:
             raise TestUpdateManagerError("update kind is invalid")

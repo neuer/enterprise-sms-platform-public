@@ -154,39 +154,8 @@ gh auth status --hostname github.com
 如果测试服务器基线不在当前公开仓库对象库，日常入口会失败关闭；不得向公开工作区添加
 私有归档 remote、fetch 私有提交或生成私有对象包。此类跨历史迁移必须在隔离临时证据
 仓库中另行设计、评审和执行，先建立新的公开基线，再恢复本文件的日常流程。
-获批的一次性步骤只见
-[`docs/runbooks/public-baseline-activation.md`](docs/runbooks/public-baseline-activation.md)；
-它不是日常 `plan/apply/status` 的替代入口。本地只允许
-`prepare → build → finalize`，服务器只允许
-`baseline-prepare/apply/verify/status/finalize/cleanup`；`request.json` 必须最后上传。
-服务器 operator UID/GID 固定为 `1000:1000`。finalize 后仍保留旧 root，只有
-`state=verified` 且表面验收完成才运行 cleanup；cleanup 删除旧 root 与
-bundle/API/Web 三个大产物，但保留 manifest/request、test-update store 和 core journal。
-
-### 同历史测试基线重对齐
-
-已演练的测试基线 `d715624d18e6897f6916fcef9fbdc8622d41eb15` 可在
-`pre-live` 状态下使用精确 `0108_chunk_failover_pending → 0119_temporary_password_expiry`
-区间；不接受其它基线、真实联调模式或任意未来迁移。该兼容路径不执行旧版密钥扩展，
-不升级 PostgreSQL 镜像，不增加业务功能。合并后的精确 CI、同 commit 主机控制快照、
-暂停与不安全分片检查、密文 checkpoint、迁移检查及最终 verify 仍为必要条件。
-演练仅使用旧提交规范 schema 和合成数据，不代表共享测试库已有数据已完成验收。
-
-当服务器 commit 仍是目标 `origin/main` 的祖先，但跨越多个已审核迁移，且日常 `apply`
-只因固定的旧运行凭据准备/撤销脚本与操作文档差异失败关闭时，允许一次性执行：
-
-```bash
-scripts/test_update.sh rebaseline --ref origin/main
-```
-
-该入口不放宽日常分类器，只接受合同中枚举的固定历史非运行态文件和普通快速更新路径；
-两个旧运行控制脚本如出现在差异中必须成对出现，未发生差异时不要求制造伪变更。入口必须
-同时存在真实迁移前移，并强制构建 API/Web。执行前必须按
-[`deploy/README.md`](deploy/README.md) 的“一次性主机安装”把 root-owned host-control
-快照绑定到同一目标 commit，且目标 commit 的 `backend`、`frontend`、`security`、`g2`
-PR 证据必须已由合并提交的精确 `ci-gate` 绑定并验证成功。后续仍走 high-risk 的暂停、
-`uncertain` 拦截、密文数据库 checkpoint、expand-only 迁移、应用镜像回退、verify 和
-operator Git 复核；无共同历史、无迁移、任意新增禁止路径或非 `origin/main` 一律拒绝。
+仓库不再携带任何跨历史或基线重对齐入口：公开基线激活、`rebaseline` 与
+`recover-rebaseline-*` 已在完成后退役（D125），对应命令一律失败关闭。
 
 PR 按上述授权、CI 与 GitHub 合并条件完成合并后，只表示仓库集成完成，不代表测试服务器已验证；按需测试更新只针对合并后的精确 `origin/main`。
 服务器基线或保护状态异常时仍失败关闭。分支部署只作为明确的合并前验收例外；若分支已经

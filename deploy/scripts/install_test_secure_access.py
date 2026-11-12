@@ -673,11 +673,7 @@ class SecureAccessInstaller:
             "from cryptography.hazmat.primitives.ciphers.aead import AESGCM;"
             "import test_secure_access_manager;"
             "import cloudflare_tunnel_manager;"
-            "import public_baseline_activation;"
-            "import public_baseline_manager;"
-            "import public_cutover_bootstrap;"
             "import test_update_manager;"
-            "import verify_public_snapshot_cutover;"
             "import verify_web_transport"
         )
         import_root = Path(

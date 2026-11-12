@@ -135,9 +135,6 @@ def fixture(tmp_path: Path):
         "vendor_test_files.py",
         "check_test_update_migration.py",
         "run_with_lifecycle_lock.py",
-        "public_baseline_activation.py",
-        "public_baseline_manager.py",
-        "public_cutover_bootstrap.py",
         "test_update_apply.py",
         "test_update_backup.py",
         "test_update_contract.py",
@@ -155,7 +152,6 @@ def fixture(tmp_path: Path):
     for name in (
         "check_public_readiness.py",
         "export_public_snapshot.py",
-        "verify_public_snapshot_cutover.py",
         "verify_web_transport.py",
     ):
         source = root / "scripts" / name
@@ -303,8 +299,6 @@ def test_first_install_normalizes_git_archive_modes_before_installer() -> None:
         "deploy/scripts/vendor_test_files.py",
         "deploy/scripts/check_test_update_migration.py",
         "deploy/scripts/run_with_lifecycle_lock.py",
-        "deploy/scripts/public_baseline_activation.py",
-        "deploy/scripts/public_baseline_manager.py",
         "deploy/scripts/test_update_apply.py",
         "deploy/scripts/test_update_backup.py",
         "deploy/scripts/test_update_contract.py",
@@ -316,7 +310,6 @@ def test_first_install_normalizes_git_archive_modes_before_installer() -> None:
         "deploy/scripts/protected_path_policy.py",
         "scripts/check_public_readiness.py",
         "scripts/export_public_snapshot.py",
-        "scripts/verify_public_snapshot_cutover.py",
         "scripts/verify_web_transport.py",
         "deploy/systemd/sms-platform-test-secure-access.service",
         "deploy/systemd/sms-platform-cloudflare-tunnel.service",
@@ -396,11 +389,7 @@ def test_installer_atomically_installs_pinned_binary_and_static_unit(
     assert "sys.version_info < (3, 11)" in python_runtime_command[3]
     assert "import test_secure_access_manager" in python_runtime_command[3]
     assert "import cloudflare_tunnel_manager" in python_runtime_command[3]
-    assert "import public_baseline_activation" in python_runtime_command[3]
-    assert "import public_baseline_manager" in python_runtime_command[3]
-    assert "import public_cutover_bootstrap" in python_runtime_command[3]
     assert "import test_update_manager" in python_runtime_command[3]
-    assert "import verify_public_snapshot_cutover" in python_runtime_command[3]
     assert "import verify_web_transport" in python_runtime_command[3]
     version_command = next(argv for argv in commands if argv[-1:] == ("--version",))
     assert Path(version_command[0]).parent == binary.parent

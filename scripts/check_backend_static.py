@@ -29,7 +29,6 @@ MYPY_TARGETS = (
     "../scripts/e2e_api.py",
     "../scripts/perf_smoke.py",
     "../scripts/verify_web_transport.py",
-    "../scripts/verify_public_snapshot_cutover.py",
     "../scripts/gate_policy.py",
     "../scripts/gate_snapshot.py",
     "../scripts/check_gate_contracts.py",
