@@ -13,12 +13,7 @@ import {
 } from "../src/api/ops"
 
 function response(body: unknown) {
-  return {
-    ok: true,
-    status: 200,
-    headers: { get: () => null },
-    json: async () => body,
-  }
+  return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } })
 }
 
 describe("运维查询 API", () => {
@@ -28,7 +23,7 @@ describe("运维查询 API", () => {
   })
 
   it("把分页和后端支持的筛选条件完整传给各列表端点", async () => {
-    const fetch = vi.fn().mockResolvedValue(response({ items: [], total: 0, page: 1, page_size: 20 }))
+    const fetch = vi.fn().mockImplementation(async () => response({ items: [], total: 0, page: 1, page_size: 20 }))
     vi.stubGlobal("fetch", fetch)
 
     await getCurrentAlerts()
@@ -75,7 +70,9 @@ describe("运维查询 API", () => {
   })
 
   it("创建 unmatched 导出时沿用页面的号码与时间筛选", async () => {
-    const fetch = vi.fn().mockResolvedValue(response({ id: "c0a80101-0000-4000-8000-000000000134", status: "pending" }))
+    const fetch = vi
+      .fn()
+      .mockImplementation(async () => response({ id: "c0a80101-0000-4000-8000-000000000134", status: "pending" }))
     vi.stubGlobal("fetch", fetch)
 
     await createUnmatchedExport(
@@ -96,7 +93,7 @@ describe("运维查询 API", () => {
   })
 
   it("uncertain 双人处置只走管理员路径且重发不得回写旧分片", async () => {
-    const fetch = vi.fn().mockResolvedValue(
+    const fetch = vi.fn().mockImplementation(async () =>
       response({
         id: 8,
         chunk_id: 9,
@@ -120,7 +117,7 @@ describe("运维查询 API", () => {
   })
 
   it("raw 重评估走管理员路径并只读回解析面与重放资格", async () => {
-    const fetch = vi.fn().mockResolvedValue(
+    const fetch = vi.fn().mockImplementation(async () =>
       response({
         parse_state: "unattempted",
         replay_eligibility: "automatic",

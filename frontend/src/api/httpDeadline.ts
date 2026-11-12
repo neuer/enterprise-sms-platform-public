@@ -124,9 +124,7 @@ export async function readLimitedBytes(
     }
   }
 
-  if (!response.body) {
-    return readLegacyBytes(response, signal, maxBytes)
-  }
+  if (response.body === null) return null
 
   const reader = response.body.getReader()
   const onAbort = (): void => {
@@ -175,45 +173,7 @@ export async function readJsonBody<T>(response: Response, signal: AbortSignal, m
   }
 }
 
-type LegacyReadable = {
-  text?: () => Promise<string>
-  json?: () => Promise<unknown>
-  blob?: () => Promise<Blob>
-}
-
-async function readLegacyBytes(response: Response, signal: AbortSignal, maxBytes: number): Promise<Uint8Array | null> {
-  const legacy = response as Response & LegacyReadable
-  if (typeof legacy.text === "function") {
-    const text = await raceAbort(legacy.text.call(response), signal)
-    const bytes = new TextEncoder().encode(text)
-    if (bytes.byteLength > maxBytes) {
-      throw new HttpBodyError("RESPONSE_TOO_LARGE", "响应正文超过允许大小")
-    }
-    return bytes.byteLength === 0 ? null : bytes
-  }
-  if (typeof legacy.json === "function") {
-    const parsed = await raceAbort(legacy.json.call(response), signal)
-    if (parsed === undefined) return null
-    const bytes = new TextEncoder().encode(JSON.stringify(parsed))
-    if (bytes.byteLength > maxBytes) {
-      throw new HttpBodyError("RESPONSE_TOO_LARGE", "响应正文超过允许大小")
-    }
-    return bytes
-  }
-  throw new HttpBodyError("INVALID_JSON_RESPONSE", "响应不是有效 JSON")
-}
-
 export async function readLimitedBlob(response: Response, signal: AbortSignal, maxBytes: number): Promise<Blob> {
-  if (!response.body) {
-    const legacy = response as Response & LegacyReadable
-    if (typeof legacy.blob === "function") {
-      const blob = await raceAbort(legacy.blob.call(response), signal)
-      if (blob.size > maxBytes) {
-        throw new HttpBodyError("RESPONSE_TOO_LARGE", "响应正文超过允许大小")
-      }
-      return blob
-    }
-  }
   const bytes = await readLimitedBytes(response, signal, maxBytes)
   const type = response.headers.get("content-type") || ""
   if (bytes == null) return new Blob([], type ? { type } : {})

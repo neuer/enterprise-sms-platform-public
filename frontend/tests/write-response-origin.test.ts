@@ -9,7 +9,7 @@ import SensitiveWordView from "../src/views/SensitiveWordView.vue"
 import { useSessionStore } from "../src/stores/session"
 vi.mock("vue-router", () => ({ useRoute: () => ({ query: {} }) }))
 function response(body: unknown, status = 200) {
-  return { ok: status < 400, status, headers: { get: () => null }, json: async () => body }
+  return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } })
 }
 function deferred() {
   let resolve!: (value: ReturnType<typeof response>) => void

@@ -17,14 +17,10 @@ import {
 } from "../src/api/admin"
 
 function response(body: unknown, cacheControl = "no-store") {
-  return {
-    ok: true,
+  return new Response(JSON.stringify(body), {
     status: 200,
-    headers: {
-      get: (name: string) => (name.toLowerCase() === "cache-control" ? cacheControl : null),
-    },
-    json: async () => body,
-  }
+    headers: { "Content-Type": "application/json", "Cache-Control": cacheControl },
+  })
 }
 
 describe("真实联调前端 API", () => {
@@ -36,7 +32,7 @@ describe("真实联调前端 API", () => {
 
   it("使用固定页面路由和严格字段，正式 Key 不进入请求或存储", async () => {
     sessionStorage.setItem("sms_token", "admin.jwt")
-    const fetch = vi.fn().mockResolvedValue(response({ operation_id: "op-1" }))
+    const fetch = vi.fn().mockImplementation(async () => response({ operation_id: "op-1" }))
     vi.stubGlobal("fetch", fetch)
     const envelope = {
       session_id: "seal-1",
@@ -83,7 +79,10 @@ describe("真实联调前端 API", () => {
   })
 
   it("拒绝缺少 no-store 的控制响应", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({}, "public, max-age=60")))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response({}, "public, max-age=60")),
+    )
 
     await expect(getVendorTestStatus()).rejects.toThrow("缓存策略")
   })
@@ -91,7 +90,7 @@ describe("真实联调前端 API", () => {
   it("清空联调设置只提交单用途令牌且类型契约包含 reset_configuration", async () => {
     const stepUpOperation: VendorStepUpOperation = "reset_configuration"
     const operationType: VendorTestOperation["operation_type"] = "reset_configuration"
-    const fetch = vi.fn().mockResolvedValue(
+    const fetch = vi.fn().mockImplementation(async () =>
       response({
         operation_id: "00000000-0000-4000-8000-000000000066",
         operation_type: operationType,

@@ -73,20 +73,13 @@ function stubApprovalsFetch(responses: MockResponses) {
   const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
     const route = routeOf(url)
     if (route === "decision" && responses.decisionStatus && responses.decisionStatus !== 200) {
-      return {
-        ok: false,
+      return new Response(JSON.stringify(responses.decisionBody), {
         status: responses.decisionStatus,
-        headers: { get: () => null },
-        json: async () => responses.decisionBody,
-      }
+        headers: { "Content-Type": "application/json" },
+      })
     }
     const body = route === "list" ? responses.list : route === "detail" ? responses.detail : responses.decision
-    return {
-      ok: true,
-      status: 200,
-      headers: { get: () => null },
-      json: async () => body,
-    }
+    return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } })
   })
   vi.stubGlobal("fetch", fetchMock)
   return fetchMock

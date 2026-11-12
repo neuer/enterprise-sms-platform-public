@@ -38,7 +38,7 @@ const app = {
 }
 
 function response(body: unknown) {
-  return { ok: true, status: 200, headers: new Headers(), json: async () => body }
+  return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } })
 }
 
 afterEach(() => {

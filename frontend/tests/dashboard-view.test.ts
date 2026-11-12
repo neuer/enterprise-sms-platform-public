@@ -40,12 +40,7 @@ function mountDashboard(role: UserRole = "admin") {
 }
 
 function response(body: unknown, ok = true) {
-  return {
-    ok,
-    status: ok ? 200 : 500,
-    headers: { get: () => null },
-    json: async () => body,
-  }
+  return new Response(JSON.stringify(body), { status: ok ? 200 : 500, headers: { "Content-Type": "application/json" } })
 }
 
 const snapshot = {
@@ -110,7 +105,10 @@ const incompleteSnapshot = {
 
 describe("仪表盘", () => {
   it.each(["admin", "approver", "operator", "viewer"] as const)("%s 的审批入口与角色权限一致", async (role) => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(snapshot)))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response(snapshot)),
+    )
     sessionStorage.setItem("sms_token", "jwt")
     const wrapper = mountDashboard(role)
     await flushPromises()
@@ -159,7 +157,7 @@ describe("仪表盘", () => {
   })
 
   it("展示服务端统计、处置计数和任务健康", async () => {
-    const fetch = vi.fn().mockResolvedValue(response(snapshot))
+    const fetch = vi.fn().mockImplementation(async () => response(snapshot))
     vi.stubGlobal("fetch", fetch)
     sessionStorage.setItem("sms_token", "jwt")
 
@@ -212,7 +210,10 @@ describe("仪表盘", () => {
   })
 
   it("请求失败时提供可重试错误态", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ message: "仪表盘暂不可用" }, false)))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response({ message: "仪表盘暂不可用" }, false)),
+    )
     const wrapper = mountDashboard()
     await flushPromises()
     expect(wrapper.text()).toContain("仪表盘暂不可用")
@@ -277,7 +278,10 @@ describe("仪表盘", () => {
 
   it("连接升级前后端时把新增运行字段降级为未知而不是崩溃", async () => {
     const { operations: _operations, ...viewerSnapshot } = snapshot
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response(viewerSnapshot)))
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => response(viewerSnapshot)),
+    )
 
     const wrapper = mountDashboard()
     await flushPromises()
@@ -290,7 +294,7 @@ describe("仪表盘", () => {
 
   it("轮询内容未变时跳过快照替换与余额广播，内容变化后正常更新", async () => {
     vi.useFakeTimers()
-    const fetch = vi.fn().mockResolvedValue(response(snapshot))
+    const fetch = vi.fn().mockImplementation(async () => response(snapshot))
     vi.stubGlobal("fetch", fetch)
     const balanceEvents: CustomEvent[] = []
     const listener = (event: Event) => balanceEvents.push(event as CustomEvent)
@@ -311,7 +315,7 @@ describe("仪表盘", () => {
     const changed = JSON.parse(JSON.stringify(snapshot)) as typeof snapshot
     changed.refreshed_at = "2026-07-12T08:02:00+08:00"
     changed.operations.current_balance = 8000
-    fetch.mockResolvedValue(response(changed))
+    fetch.mockImplementation(async () => response(changed))
     await vi.advanceTimersByTimeAsync(10_000)
     await flushPromises()
     expect(balanceEvents).toHaveLength(2)

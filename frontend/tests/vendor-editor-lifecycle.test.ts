@@ -15,12 +15,12 @@ describe.each([
 ])("$kind 编辑会话", ({ kind, component }) => {
   it.each(["success", "error"])("新草稿可立即编辑，旧 %s 不能解除新提交的锁", async (ending) => {
     const pending: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = []
-    const ok = { ok: true, status: 200, headers: { get: () => null }, json: async () => [] }
+    const ok = new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } })
     vi.stubGlobal(
       "fetch",
       vi.fn((_url: string, init?: RequestInit) => {
         if (init?.method === "POST") return new Promise((resolve, reject) => pending.push({ resolve, reject }))
-        return Promise.resolve(ok)
+        return Promise.resolve(ok.clone())
       }),
     )
     const pinia = createPinia()
@@ -57,7 +57,7 @@ describe.each([
       await wrapper.get(`[data-testid='${kind}-submit']`).trigger("click")
       await flushPromises()
       expect(pending).toHaveLength(2)
-      if (ending === "success") pending[0].resolve(ok)
+      if (ending === "success") pending[0].resolve(ok.clone())
       else pending[0].reject(new Error("合成旧请求错误"))
       await flushPromises()
       const input = wrapper.get<HTMLInputElement>(`.${kind}-form input`)
@@ -65,11 +65,11 @@ describe.each([
       expect(input.element.disabled).toBe(true)
       const drawers = wrapper.findAllComponents({ name: "ElDrawer" })
       expect(drawers.at(-1)?.props("modelValue")).toBe(true)
-      pending[1].resolve(ok)
+      pending[1].resolve(ok.clone())
       await flushPromises()
       expect(drawers.at(-1)?.props("modelValue")).toBe(false)
     } finally {
-      for (const request of pending) request.resolve(ok)
+      for (const request of pending) request.resolve(ok.clone())
       await flushPromises()
       wrapper.unmount()
     }
