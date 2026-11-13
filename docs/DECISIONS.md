@@ -1817,3 +1817,27 @@
 - 不变：日常 `plan/apply/status/promote`、暂停与不安全分片检查、密文 checkpoint、
   expand-only 迁移、无迁移自动回退和 verify 均未改动。再次需要跨历史或重对齐时，必须重新
   设计、评审并单独批准，不从 Git 历史直接恢复旧入口。
+
+## D126 测试环境改为只跑 Mock 并铲掉重建，退役快速更新链
+
+- 背景：快速更新链（分类合同、状态存储、prepare/apply/verify/promote、迁移检查器与本地
+  driver，连同测试约 1.2 万行）存在的唯一理由，是在不触碰测试服务器上的正式厂商凭据、
+  未决分片和测试数据的前提下更新应用。仓库所有者 2026-11-13 确认：项目已正式上线并稳定，
+  共享测试环境今后只跑 Mock，不再安装正式厂商 Key，数据无需保留。
+- 决策：新增 `scripts/test_rebuild.sh`。它核验目标 commit 的精确 `ci-gate=success`，让
+  服务器检出该 commit 后执行 `scripts/local_test.sh reset`（销毁卷、重建、迁移、写者切换、
+  `seed-dev`），再写入 GitHub `test` Deployment 记录；成功判据为 `state=rebuilt`。
+- 决策：删除 `deploy/scripts/test_update_{manager,store,contract,apply,verify,promote}.py`、
+  `check_test_update_migration.py`、`scripts/test_update.sh`、快速更新手册及对应测试；
+  `sms-compose test-update` 只保留全新环境每次都需要的 `writer-cutover`。
+- 门禁：`protected_change_category` 与 vendor-live 精确/前缀保护清单原样搬到
+  `deploy/scripts/protected_path_policy.py`，`classify_ci_changes.py` 与
+  `check_invariants.py` 改从该模块读取。对全部受跟踪路径逐一比对，搬迁前后分类一致；
+  新增的 `scripts/test_rebuild.sh` 登记为 vendor-live 保护路径。
+- 安全边界：重建入口在服务器存在真实联调标记 `/etc/sms-platform/test-environment` 时失败
+  关闭，`local_test.sh` 另行拒绝非纯 Mock 的 `.env`；入口只接受已校验的 commit、路径与端口，
+  不传递任何凭据。生产发布、恢复与生命周期工具不受影响。
+- 暂留：`test_update_backup.py`、主机控制快照安装器、临时 HTTPS/Tunnel 与真实联调主机
+  控制面仍被 `vendor_test_*` 引用，留待后续单独评估；`sms-compose` 的主机引导包装器分支
+  随之保留。D122 中因分类合同冻结而推迟的 `openapi.yaml` 拆分等事项可重新评估。
+

@@ -140,37 +140,13 @@ def test_authoritative_contracts_lock_page_only_vendor_test_security_boundary() 
     assert "真实联调" in configs_row
 
 
-def test_fast_update_runbook_documents_safe_and_high_risk_matrix() -> None:
-    runbook = (ROOT / "docs/runbooks/test-fast-update.md").read_text(encoding="utf-8")
-
-    for phrase in (
-        "web-only",
-        "backend-safe",
-        "high-risk",
-        "ci-gate=success",
-        "prepare",
-        "apply",
-        "verify",
-        "自动恢复上一版",
-        "不自动回退 schema",
-        "不切回 Mock",
-        "保留数据库和 volume",
-        "/usr/bin/env",
-        "SMS_PLATFORM_ROOT=/opt/sms-platform",
-        "SMS_SECRETS_MODE=development",
-        "SMS_RUNTIME_ROOT=/run/sms-platform/secrets",
-        "SMS_VENDOR_CREDENTIAL_ROOT=/var/lib/sms-platform/vendor-test/credentials",
-    ):
-        assert phrase in runbook
-    assert "sudo /usr/local/sbin/sms-compose test-update" not in runbook
-
-
 def test_deployment_index_and_egress_docs_link_controlled_test_runbook() -> None:
     deploy_readme = (ROOT / "deploy/README.md").read_text(encoding="utf-8")
     egress = (ROOT / "deploy/vendor-egress.md").read_text(encoding="utf-8")
 
     assert "controlled-real-vendor-test.md" in deploy_readme
-    assert "test-fast-update.md" in deploy_readme
+    assert "test-fast-update.md" not in deploy_readme
+    assert "scripts/test_rebuild.sh" in deploy_readme
     assert "默认按已报备处理" in egress
     assert "收到 1010" in egress
     assert "日常操作只允许在系统配置页完成" in egress

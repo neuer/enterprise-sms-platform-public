@@ -133,15 +133,8 @@ def fixture(tmp_path: Path):
         "test_secure_access_manager.py",
         "cloudflare_tunnel_manager.py",
         "vendor_test_files.py",
-        "check_test_update_migration.py",
         "run_with_lifecycle_lock.py",
-        "test_update_apply.py",
         "test_update_backup.py",
-        "test_update_contract.py",
-        "test_update_manager.py",
-        "test_update_promote.py",
-        "test_update_store.py",
-        "test_update_verify.py",
         "writer_cutover.py",
         "protected_path_policy.py",
     ):
@@ -273,7 +266,7 @@ def test_first_install_status_uses_fixed_manager_before_checkout_update() -> Non
     ) in install_section
     assert "deploy/scripts deploy/sms-compose" not in install_section
     assert "deploy/scripts/install_test_secure_access.py" in install_section
-    assert "deploy/scripts/test_update_manager.py" in install_section
+    assert "deploy/scripts/test_update_manager.py" not in install_section
 
 
 def test_first_install_normalizes_git_archive_modes_before_installer() -> None:
@@ -297,15 +290,8 @@ def test_first_install_normalizes_git_archive_modes_before_installer() -> None:
         "deploy/scripts/test_secure_access_manager.py",
         "deploy/scripts/cloudflare_tunnel_manager.py",
         "deploy/scripts/vendor_test_files.py",
-        "deploy/scripts/check_test_update_migration.py",
         "deploy/scripts/run_with_lifecycle_lock.py",
-        "deploy/scripts/test_update_apply.py",
         "deploy/scripts/test_update_backup.py",
-        "deploy/scripts/test_update_contract.py",
-        "deploy/scripts/test_update_manager.py",
-        "deploy/scripts/test_update_promote.py",
-        "deploy/scripts/test_update_store.py",
-        "deploy/scripts/test_update_verify.py",
         "deploy/scripts/writer_cutover.py",
         "deploy/scripts/protected_path_policy.py",
         "scripts/check_public_readiness.py",
@@ -336,7 +322,7 @@ def test_host_control_source_assets_match_fixed_git_mode_contract() -> None:
         modes[path] = mode
 
     assert set(modes) == set(paths)
-    assert modes["deploy/scripts/test_update_promote.py"] == "100644"
+    assert modes["deploy/scripts/test_update_backup.py"] == "100644"
     for path in paths:
         expected = "100755" if path == "deploy/sms-compose" else "100644"
         assert modes[path] == expected
@@ -389,7 +375,7 @@ def test_installer_atomically_installs_pinned_binary_and_static_unit(
     assert "sys.version_info < (3, 11)" in python_runtime_command[3]
     assert "import test_secure_access_manager" in python_runtime_command[3]
     assert "import cloudflare_tunnel_manager" in python_runtime_command[3]
-    assert "import test_update_manager" in python_runtime_command[3]
+    assert "import test_update_manager" not in python_runtime_command[3]
     assert "import verify_web_transport" in python_runtime_command[3]
     version_command = next(argv for argv in commands if argv[-1:] == ("--version",))
     assert Path(version_command[0]).parent == binary.parent

@@ -1975,7 +1975,7 @@ def test_initializer_is_not_referenced_by_application_release_or_update_entrypoi
     for path in (
         ROOT / "deploy/sms-compose",
         ROOT / "deploy/scripts/install_production_host_assets.py",
-        ROOT / "scripts/test_update.sh",
+        ROOT / "scripts/test_rebuild.sh",
     ):
         assert SCRIPT.name not in path.read_text(encoding="utf-8")
 

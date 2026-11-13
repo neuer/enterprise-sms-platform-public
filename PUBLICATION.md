@@ -6,10 +6,9 @@
 历史私有归档只作为受限恢复副本，不得添加为本仓库 remote，也不得 fetch、merge、
 cherry-pick 或推送其中的任何 Git 对象。
 
-测试服务器若仍停留在与公开根无共同历史的旧基线，`scripts/test_update.sh` 必须失败关闭。
-日常入口不提供跨历史 cutover，也不得通过临时 ref、Git pack 或对象导入绕过。一次性基线
-迁移只能在不属于本公开工作区的隔离临时证据仓库中完成，并经单独变更评审确认不会把
-私有历史、ref、URL 或对象带回公开仓库；迁移完成后服务器应直接以公开 commit 作为新基线。
+测试服务器只从公开仓库检出精确 commit 后铲掉重建（`scripts/test_rebuild.sh`），不迁移
+旧数据，也不存在跨历史 cutover。不得通过临时 ref、Git pack 或对象导入把私有历史、ref、
+URL 或对象带回公开仓库。
 
 本地 `.env`、`deploy/secrets/`、运行数据、日志与导出文件保留在工作区供开发使用，
 但必须同时满足 Git ignore、本地提交/推送门禁和 CI 公开仓库门禁。任何门禁只报告
@@ -29,10 +28,8 @@ cherry-pick 或推送其中的任何 Git 对象。
    实际 merge SHA 的 GitHub Actions `ci-gate=success`，不能以 PR head 结果替代。
 6. 只有需要共享环境验收时才更新测试服务器：先确认
    `gh auth status --hostname github.com` 有效，再对合并后的精确 `origin/main` 执行
-   `scripts/test_update.sh apply --ref origin/main`；`plan` 与 `status` 分别只用于可选预览
-   和后续诊断。只使用系统钥匙串/官方设备登录，不粘贴或长期导出 GitHub token。若分支已
-   提前验证且 tree 相同，才可用 `scripts/test_update.sh promote --ref origin/main`
-   免重建提升。
+   `scripts/test_rebuild.sh --ref origin/main`；它会销毁测试数据后按该 commit 重建纯 Mock
+   全栈。只使用系统钥匙串/官方设备登录，不粘贴或长期导出 GitHub token。
 
 ## GitHub 设置
 

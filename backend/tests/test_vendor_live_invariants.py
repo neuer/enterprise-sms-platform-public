@@ -32,7 +32,7 @@ def test_static_gate_covers_all_live_test_safety_boundaries() -> None:
         "pause_queues=True",
         'alert_level="crit"',
         "mock-vendor",
-        "_HIGH_RISK_EXACT",
+        "VENDOR_LIVE_PROTECTED_EXACT",
         "reconcile_pure_mock_dotenv(",
         "verify_release.sh",
         "GetReport",

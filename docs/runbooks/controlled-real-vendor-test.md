@@ -351,18 +351,9 @@ print(response_body.decode("utf-8", errors="replace"))
 
 ## 联调期间更新与受控应急
 
-settings、厂商适配、发送 worker、计费、credential/recipient/额度、Compose、agent、
-activation 和 update manager 均为 high-risk。共享分类会让这些 commit 在 CI 执行完整
-G2；快速更新入口必须先验证目标 commit 的精确 `ci-gate=success`，但不重复测试。远端仍严格暂停并拒绝
-submitting/retrying/uncertain；只有实际迁移才创建密文 checkpoint 并校验 expand-only。
-控制面首次自更新前还必须先安装同 commit 的 root-owned host-control bootstrap。详见
-[测试环境快速更新手册](test-fast-update.md)。
-
-本次临时 HTTPS 应用变更仍先完成提交、推送与合并，再按需通过
-`scripts/test_update.sh apply --ref origin/main`；只有服务器返回 `state=verified` 并完成
-HTTP/HTTPS 表面验收才算成功。快速更新与一次性主机安装分开执行，且都不自动启动隧道、
-不安装或轮换正式 Key、不登记测试号码、不激活真实联调、不执行管理员初始化、不初始化
-数据库。全程保留 PostgreSQL 数据库、Docker volume、凭据 generation、号码和运行态数据。
+共享测试环境已改为只跑 Mock 并按 `scripts/test_rebuild.sh` 铲掉重建（D126），不再提供
+保留真实联调状态的快速更新入口。重建入口在服务器存在真实联调标记时失败关闭；必须先按
+本手册从页面切回 Mock 并清除正式凭据，重建会销毁测试环境的全部数据。
 
 high-risk development 统一发布必须使用同一 `release_id` 完整执行并保留 `release-rollback/<release_id>`。driver 只有在 release status 为 `succeeded` 且 rollback 基线到候选之间的 agent 运行文件发生变化时，才执行固定 `sudo -- /usr/bin/systemctl restart vendor-control-agent.service`，并立即用 `systemctl is-active --quiet vendor-control-agent.service` 验证。restart 或 active 校验失败都必须失败关闭，停止公网探针与后续验收；修复后以同一 release 重试，不能留下新 API/journal 对旧 agent 进程。该动作只更新宿主进程代码，不安装 Key、不改测试号码、不激活真实联调，也不属于 ordinary quick update。
 
