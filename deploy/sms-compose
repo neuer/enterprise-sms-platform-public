@@ -86,48 +86,15 @@ PRODUCTION_CONTROL_MANAGER="$CONTROL_ROOT/deploy/scripts/production_control_snap
 HOST_PYTHON_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/host_python_preflight.py"
 LIFECYCLE_MANAGER="$CONTROL_ROOT/deploy/scripts/lifecycle_manager.py"
 SECURITY_REPORT_COLLECTOR="$CONTROL_ROOT/deploy/scripts/collect_security_daily_evidence.py"
-VENDOR_TEST_MANAGER="$CONTROL_ROOT/deploy/scripts/vendor_test_manager.py"
-VENDOR_TEST_BOOTSTRAP="$CONTROL_ROOT/deploy/scripts/vendor_test_bootstrap.py"
-VENDOR_RUNTIME_RESET="$CONTROL_ROOT/deploy/scripts/vendor_runtime_reset.py"
-VENDOR_CONTROL_RELOAD="$CONTROL_ROOT/deploy/scripts/vendor_control_reload.py"
 WRITER_CUTOVER="$CONTROL_ROOT/deploy/scripts/writer_cutover.py"
 STORAGE_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/storage_preflight.py"
 VOLUME_CONTRACT_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/volume_contract_preflight.py"
 REDIS_TLS_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/redis_tls_preflight.py"
 REDIS_HA_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/redis_ha_preflight.py"
 REDIS_TLS_ROTATION_GUARD="$CONTROL_ROOT/deploy/scripts/redis_tls_rotation_guard.py"
-HOST_CONTROL_ROOT="/usr/local/libexec/sms-platform/test-secure-access"
-TEST_SECURE_ACCESS_MANAGER="$HOST_CONTROL_ROOT/test_secure_access_manager.py"
-CLOUDFLARE_TUNNEL_MANAGER="$HOST_CONTROL_ROOT/cloudflare_tunnel_manager.py"
-HOST_BOOTSTRAP=0
-if [[ "$WRAPPER_PATH" == "$HOST_CONTROL_ROOT/sms-compose-bootstrap" ]]; then
-  HOST_BOOTSTRAP=1
-  LOCK_RUNNER="$HOST_CONTROL_ROOT/run_with_lifecycle_lock.py"
-  WRITER_CUTOVER="$HOST_CONTROL_ROOT/writer_cutover.py"
-fi
 LOCK_PYTHON=(python3)
-if [[ "$HOST_BOOTSTRAP" == 1 ]]; then
-  LOCK_PYTHON=(
-    /usr/bin/env
-    PYTHONNOUSERSITE=1
-    "PYTHONPATH=$HOST_CONTROL_ROOT"
-    /usr/bin/python3
-  )
-fi
-if [[ "${SMS_SECURE_ACCESS_MANAGER_SMOKE:-0}" == 1 &&
-      "$SECRETS_MODE" == development && "$ROOT" != /opt/sms-platform ]]; then
-  TEST_SECURE_ACCESS_MANAGER="$CONTROL_ROOT/deploy/scripts/test_secure_access_manager.py"
-fi
-if [[ "${SMS_CLOUDFLARE_TUNNEL_MANAGER_SMOKE:-0}" == 1 &&
-      "$SECRETS_MODE" == development && "$ROOT" != /opt/sms-platform ]]; then
-  CLOUDFLARE_TUNNEL_MANAGER="$CONTROL_ROOT/deploy/scripts/cloudflare_tunnel_manager.py"
-fi
 DEFAULT_RELEASE_ROOT="/var/lib/sms-platform/releases"
 RELEASE_ROOT="$DEFAULT_RELEASE_ROOT"
-VENDOR_TEST_MARKER="/etc/sms-platform/test-environment"
-VENDOR_TEST_STATE_DIR="/var/lib/sms-platform/vendor-test"
-VENDOR_CREDENTIAL_ROOT="/var/lib/sms-platform/vendor-test/credentials"
-VENDOR_CONTROL_SOCKET_DIR="/run/sms-platform/vendor-control"
 BASE_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.yml"
 PRODUCTION_STORAGE_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.production-storage.yml"
 PRODUCTION_RESTART_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.production-restart.yml"
@@ -247,11 +214,7 @@ usage() {
   echo "production only: continuity engage|release --evidence FILE --evidence-sha256 SHA256; continuity status" >&2
   echo "production host control: host-control plan|prepare|activate --expected-commit COMMIT; host-control status" >&2
   echo "production root units only: host-lifecycle backup|drill|backup-status; security-report" >&2
-  echo "development root unit only: vendor-agent-preflight" >&2
-  echo "development only: vendor-test bootstrap|activate|pause|resume|rotate|recover-rotation|reset-runtime|reload-agent|status" >&2
   echo "development only: test-update writer-cutover; cp [args...]" >&2
-  echo "development only: secure-access start|status|stop (test-only HTTPS transport)" >&2
-  echo "development only: cloudflare-tunnel install|configure --hostname HOST|install-token|start|status|verify|stop" >&2
   echo "production up options: -d|--detach --remove-orphans --no-deps --force-recreate" >&2
   echo "production up services: postgres redis redis-auth redis-control migrate api worker-realtime worker-report worker-bulk worker-callback outbox-dispatcher beat web" >&2
   echo "lifecycle locking: portable Python fcntl runner" >&2
@@ -823,7 +786,8 @@ prepare_runtime_secrets() {
       return 1
     fi
   fi
-  if [[ "$SECRETS_MODE" == development && ! -f "$VENDOR_CREDENTIAL_ROOT/active" ]]; then
+  if [[ "$SECRETS_MODE" == development ]]; then
+    # 开发与测试环境只跑 Mock：运行态副本固定携带厂商撤销 tombstone，从不读取厂商凭据。
     command=(
       "${CONTROL_PYTHON[@]}" "$PREPROCESSOR" revoke-vendor
       --source-dir "$SOURCE_SECRETS_ROOT"
@@ -837,9 +801,6 @@ prepare_runtime_secrets() {
       --runtime-root "$RUNTIME_ROOT"
       --mode "$SECRETS_MODE"
     )
-    if [[ "$SECRETS_MODE" == development ]]; then
-      command+=(--vendor-credential-root "$VENDOR_CREDENTIAL_ROOT")
-    fi
   fi
   "${command[@]}" || return $?
   if [[ "$SECRETS_MODE" == production && -n "$baseline_target" ]]; then
@@ -924,7 +885,7 @@ rotate_backend() {
 
 writer_cutover_context() {
   WRITER_CUTOVER_CONTEXT=(--environment "$SECRETS_MODE")
-  if [[ "$SECRETS_MODE" == development && "$HOST_BOOTSTRAP" == 0 &&
+  if [[ "$SECRETS_MODE" == development &&
         "$ROOT" != /opt/sms-platform && "${SMS_DEV_API_PORT:-0}" == 1 ]]; then
     WRITER_CUTOVER_CONTEXT+=(--local-development)
   fi
@@ -1351,113 +1312,6 @@ reject_production_control_plane() {
   fi
 }
 
-run_vendor_test_manager() {
-  local command="$1"
-  shift
-  SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
-  SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
-  SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR" \
-  SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR" \
-    "${CONTROL_PYTHON[@]}" "$VENDOR_TEST_MANAGER" "$command" \
-      --root "$ROOT" \
-      --runtime-root "$RUNTIME_ROOT" \
-      --state-dir "$VENDOR_TEST_STATE_DIR" \
-      --marker-file "$VENDOR_TEST_MARKER" \
-      --dotenv-file "$PLATFORM_ENV_FILE" "$@"
-}
-
-run_vendor_test_bootstrap() {
-  SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
-  SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
-    "${CONTROL_PYTHON[@]}" "$VENDOR_TEST_BOOTSTRAP"
-}
-
-run_vendor_runtime_reset() {
-  SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
-  SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
-    "${CONTROL_PYTHON[@]}" "$VENDOR_RUNTIME_RESET" \
-      --root "$ROOT" \
-      --runtime-root "$RUNTIME_ROOT"
-}
-
-run_vendor_control_reload() {
-  SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
-  SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
-    "${CONTROL_PYTHON[@]}" "$VENDOR_CONTROL_RELOAD"
-}
-
-run_locked_vendor_test() {
-  local command="${1:-}"
-  shift || true
-  reject_production_control_plane vendor-test || return $?
-  export SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR"
-  export SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR"
-  case "$command" in
-    bootstrap)
-      [[ $# -eq 0 ]] || return 2
-      run_vendor_test_bootstrap
-      ;;
-    pause)
-      [[ $# -eq 0 ]] || return 2
-      run_vendor_test_manager "$command"
-      ;;
-    rotate)
-      [[ $# -eq 0 ]] || return 2
-      run_vendor_test_manager "$command"
-      ;;
-    recover-rotation)
-      [[ $# -eq 0 ]] || return 2
-      run_vendor_test_manager "$command"
-      ;;
-    reset-runtime)
-      [[ $# -eq 0 ]] || return 2
-      run_vendor_runtime_reset
-      ;;
-    reload-agent)
-      [[ $# -eq 0 ]] || return 2
-      run_vendor_control_reload
-      ;;
-    resume)
-      [[ $# -eq 0 || ( $# -eq 2 && "$1" == --expected-pause-kind && ( "$2" == manual || "$2" == critical ) ) ]] || return 2
-      prepare_runtime_secrets
-      run_vendor_test_manager "$command" "$@"
-      ;;
-    preflight | activate)
-      [[ $# -eq 0 ]] || return 2
-      prepare_runtime_secrets
-      run_vendor_test_manager "$command"
-      ;;
-    *)
-      return 2
-      ;;
-  esac
-}
-
-dispatch_vendor_test() {
-  local command="${1:-}"
-  if [[ $# -gt 0 ]]; then
-    shift
-  fi
-  reject_production_control_plane vendor-test || return $?
-  case "$command" in
-    status)
-      [[ $# -eq 0 ]] || return 2
-      run_vendor_test_manager status
-      ;;
-    resume)
-      [[ $# -eq 0 || ( $# -eq 2 && "$1" == --expected-pause-kind && ( "$2" == manual || "$2" == critical ) ) ]] || return 2
-      run_with_lifecycle_lock vendor-test "$command" "$@"
-      ;;
-    bootstrap | activate | pause | rotate | recover-rotation | reset-runtime | reload-agent)
-      [[ $# -eq 0 ]] || return 2
-      run_with_lifecycle_lock vendor-test "$command"
-      ;;
-    *)
-      return 2
-      ;;
-  esac
-}
-
 run_locked_test_update() {
   local command="${1:-}"
   shift || true
@@ -1478,49 +1332,6 @@ dispatch_test_update() {
   # 测试环境发布改为 scripts/test_rebuild.sh 铲掉重建；这里只保留全新环境必需的写者切换。
   [[ $# -eq 0 && "$command" == writer-cutover ]] || return 2
   run_with_lifecycle_lock test-update "$command"
-}
-
-dispatch_secure_access() {
-  local command="${1:-}"
-  if [[ $# -gt 0 ]]; then
-    shift
-  fi
-  reject_production_control_plane secure-access || return $?
-  [[ $# -eq 0 ]] || return 2
-  case "$command" in
-    start | status | stop)
-      /usr/bin/env \
-        PYTHONNOUSERSITE=1 \
-        "PYTHONPATH=$HOST_CONTROL_ROOT" \
-        /usr/bin/python3 "$TEST_SECURE_ACCESS_MANAGER" "$command"
-      ;;
-    *)
-      return 2
-      ;;
-  esac
-}
-
-dispatch_cloudflare_tunnel() {
-  local command="${1:-}"
-  if [[ $# -gt 0 ]]; then
-    shift
-  fi
-  reject_production_control_plane cloudflare-tunnel || return $?
-  case "$command" in
-    install | install-token | start | status | verify | stop)
-      [[ $# -eq 0 ]] || return 2
-      ;;
-    configure)
-      [[ $# -eq 2 && "$1" == --hostname ]] || return 2
-      ;;
-    *)
-      return 2
-      ;;
-  esac
-  /usr/bin/env \
-    PYTHONNOUSERSITE=1 \
-    "PYTHONPATH=$HOST_CONTROL_ROOT" \
-    /usr/bin/python3 "$CLOUDFLARE_TUNNEL_MANAGER" "$command" "$@"
 }
 
 validate_production_control_commit() {
@@ -1622,19 +1433,6 @@ dispatch_security_report() {
   run_with_lifecycle_lock release __security-report
 }
 
-dispatch_vendor_agent_preflight() {
-  [[ $# -eq 0 ]] || return 2
-  if [[ "$SECRETS_MODE" == production ]]; then
-    echo "sms-compose: vendor control agent is forbidden in production mode" >&2
-    return 1
-  fi
-  if [[ ! -f /etc/sms-platform/test-host &&
-        "$ROOT" == /opt/sms-platform && "$PRODUCTION_CONTROL_SMOKE" != 1 ]]; then
-    echo "sms-compose: vendor control agent requires the test-host marker" >&2
-    return 1
-  fi
-}
-
 run_locked_operation() {
   local operation="$1"
   local lock_fd="${SMS_LIFECYCLE_LOCK_FD:-}"
@@ -1715,10 +1513,6 @@ run_locked_operation() {
           ;;
       esac
       ;;
-    vendor-test)
-      SMS_LIFECYCLE_LOCKED=1 SMS_LIFECYCLE_LOCK_FD="$lock_fd" \
-        run_locked_vendor_test "$@"
-      ;;
     test-update)
       SMS_LIFECYCLE_LOCKED=1 SMS_LIFECYCLE_LOCK_FD="$lock_fd" \
         run_locked_test_update "$@"
@@ -1749,14 +1543,8 @@ shift
 # the public action directly; only development/test bootstrap recursion needs
 # __locked.
 if [[ "$ACTION" == __locked && "$SECRETS_MODE" == production &&
-      "$PRODUCTION_CONTROL_SMOKE" != 1 && "$HOST_BOOTSTRAP" != 1 ]]; then
+      "$PRODUCTION_CONTROL_SMOKE" != 1 ]]; then
   echo "sms-compose: direct private locked entry is forbidden in production" >&2
-  exit 2
-fi
-
-if [[ "$HOST_BOOTSTRAP" == 1 &&
-      "$ACTION" != test-update && "$ACTION" != __locked ]]; then
-  echo "sms-compose: bootstrap wrapper only permits test-update" >&2
   exit 2
 fi
 
@@ -1769,7 +1557,7 @@ case "$SECRETS_MODE" in
 esac
 
 case "$ACTION" in
-  vendor-test | test-update | secure-access | cloudflare-tunnel)
+  test-update)
     reject_production_control_plane "$ACTION" || exit $?
     ;;
 esac
@@ -1780,7 +1568,7 @@ configure_internal_compose_env
 configure_development_api_port
 
 case "$ACTION" in
-  up | down | rotate | run | partition-maintenance | init-admin | continuity | release | vendor-test | test-update | __locked)
+  up | down | rotate | run | partition-maintenance | init-admin | continuity | release | test-update | __locked)
     configure_release_root
     ;;
 esac
@@ -1867,35 +1655,8 @@ case "$ACTION" in
       exit "$release_status"
     fi
     ;;
-  vendor-test)
-    if dispatch_vendor_test "$@"; then
-      :
-    else
-      control_status=$?
-      usage
-      exit "$control_status"
-    fi
-    ;;
   test-update)
     if dispatch_test_update "$@"; then
-      :
-    else
-      control_status=$?
-      usage
-      exit "$control_status"
-    fi
-    ;;
-  secure-access)
-    if dispatch_secure_access "$@"; then
-      :
-    else
-      control_status=$?
-      usage
-      exit "$control_status"
-    fi
-    ;;
-  cloudflare-tunnel)
-    if dispatch_cloudflare_tunnel "$@"; then
       :
     else
       control_status=$?
@@ -1923,15 +1684,6 @@ case "$ACTION" in
     ;;
   security-report)
     if dispatch_security_report "$@"; then
-      :
-    else
-      control_status=$?
-      usage
-      exit "$control_status"
-    fi
-    ;;
-  vendor-agent-preflight)
-    if dispatch_vendor_agent_preflight "$@"; then
       :
     else
       control_status=$?

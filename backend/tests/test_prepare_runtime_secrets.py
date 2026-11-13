@@ -900,40 +900,6 @@ def test_cli_output_contains_no_secret_value_length_or_hash(
         assert hashlib.sha256(value).hexdigest() not in output
 
 
-def test_prepare_reads_both_vendor_values_from_one_active_credential_generation(
-    module: ModuleType,
-    tmp_path: Path,
-) -> None:
-    import sys
-
-    sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
-    from vendor_credential_store import VendorCredentials, VendorCredentialStore
-
-    source, values = make_source(tmp_path)
-    credential_root = tmp_path / "vendor-credentials"
-    store = VendorCredentialStore(credential_root)
-    store.install(VendorCredentials("page-name-v1", "page-key-v1"))
-    store.install(VendorCredentials("page-name-v2", "page-key-v2"))
-    runtime = tmp_path / "runtime"
-    uid, gid = os.getuid(), os.getgid()
-
-    module.prepare(
-        source_dir=source,
-        runtime_root=runtime,
-        mode="development",
-        backend_owner=(uid, gid),
-        postgres_owner=(uid, gid),
-        migrate_owner=(uid, gid),
-        require_root=False,
-        vendor_credential_root=credential_root,
-    )
-
-    backend = (runtime / "current").resolve(strict=True) / "backend"
-    assert (backend / "vendor_secret_name").read_text() == "page-name-v2"
-    assert (backend / "vendor_secret_key").read_text() == "page-key-v2"
-    assert (backend / "data_aes_key").read_bytes() == values["data_aes_key"]
-
-
 def test_revoke_vendor_never_reads_canonical_vendor_values(
     module: ModuleType,
     tmp_path: Path,

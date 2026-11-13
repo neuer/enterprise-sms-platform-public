@@ -1407,43 +1407,6 @@ def test_release_mutations_prepare_runtime_secrets_then_call_locked_manager(
     ]
 
 
-def test_vendor_runtime_reset_and_release_mutations_share_one_lifecycle_lock(
-    fake_environment: tuple[Path, Path, dict[str, str]],
-    tmp_path: Path,
-) -> None:
-    _, log, _ = fake_environment
-    entered = tmp_path / "reset-entered"
-    release_reset = tmp_path / "release-reset"
-    reset = start_lock_helper(
-        fake_environment,
-        "vendor-test",
-        "reset-runtime",
-        extra_environment={
-            "FAKE_RESET_ENTERED_FILE": str(entered),
-            "FAKE_RESET_RELEASE_FILE": str(release_reset),
-        },
-    )
-    deadline = time.monotonic() + 5
-    while not entered.exists() and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert entered.exists()
-
-    release = run_wrapper(
-        fake_environment,
-        "release",
-        "activate",
-        "--release-id",
-        "release-20260719",
-    )
-
-    assert release.returncode != 0
-    assert "lifecycle lock is already held" in release.stderr
-    assert not any("release_manager.py|" in line for line in command_lines(log))
-    release_reset.touch()
-    stdout, stderr = reset.communicate(timeout=10)
-    assert reset.returncode == 0, stderr or stdout
-
-
 def test_release_status_is_read_only_and_does_not_acquire_lifecycle_lock(
     fake_environment: tuple[Path, Path, dict[str, str]],
 ) -> None:

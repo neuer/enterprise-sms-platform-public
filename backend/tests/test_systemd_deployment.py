@@ -7,11 +7,11 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 UNIT = ROOT / "deploy" / "systemd" / "sms-platform.service"
-AGENT_UNIT = ROOT / "deploy" / "systemd" / "vendor-control-agent.service"
-SECURE_ACCESS_UNIT = ROOT / "deploy" / "systemd" / "sms-platform-test-secure-access.service"
-CLOUDFLARE_TUNNEL_UNIT = ROOT / "deploy" / "systemd" / "sms-platform-cloudflare-tunnel.service"
+
+
 HOST_ENV = ROOT / "deploy" / "systemd" / "compose.env.example"
-VENDOR_TEST_HOST_ENV = ROOT / "deploy" / "systemd" / "compose.vendor-test.env.example"
+
+
 LIFECYCLE_ENV = ROOT / "deploy" / "systemd" / "lifecycle.env.example"
 LIFECYCLE_CONFIG = ROOT / "deploy" / "lifecycle.server.example.json"
 PARTITION_SERVICE = ROOT / "deploy" / "systemd" / "sms-partition-maintenance.service"
@@ -56,9 +56,13 @@ def read_asset(path: Path) -> str:
 def test_systemd_deployment_assets_exist() -> None:
     assert UNIT.is_file(), "sms-platform systemd unit is not implemented"
     assert HOST_ENV.is_file(), "systemd host configuration example is not implemented"
-    assert AGENT_UNIT.is_file(), "vendor control agent systemd unit is not implemented"
-    assert SECURE_ACCESS_UNIT.is_file(), "test secure access unit is not implemented"
-    assert VENDOR_TEST_HOST_ENV.is_file(), "vendor test host config is not implemented"
+    for retired in (
+        "vendor-control-agent.service",
+        "sms-platform-test-secure-access.service",
+        "sms-platform-cloudflare-tunnel.service",
+        "compose.vendor-test.env.example",
+    ):
+        assert not (ROOT / "deploy" / "systemd" / retired).exists()
     for asset in (
         LIFECYCLE_ENV,
         LIFECYCLE_CONFIG,
@@ -316,206 +320,15 @@ def test_systemd_environment_contains_only_paths_and_mode() -> None:
     }
 
 
-def test_vendor_test_environment_is_explicitly_development_and_mount_complete() -> None:
-    settings = {
-        key: value
-        for line in read_asset(VENDOR_TEST_HOST_ENV).splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-        for key, value in [line.split("=", 1)]
-    }
-
-    assert settings == {
-        "SMS_PLATFORM_ROOT": "/opt/sms-platform",
-        "SMS_SECRETS_MODE": "development",
-        "SMS_RUNTIME_ROOT": "/run/sms-platform/secrets",
-        "SMS_VENDOR_CREDENTIAL_ROOT": "/var/lib/sms-platform/vendor-test/credentials",
-        "SMS_VENDOR_TEST_STATE_DIR": "/var/lib/sms-platform/vendor-test",
-        "SMS_VENDOR_CONTROL_SOCKET_DIR": "/run/sms-platform/vendor-control",
-    }
-
-
 def test_systemd_assets_never_embed_credentials() -> None:
     combined = (
-        f"{read_asset(UNIT)}\n{read_asset(AGENT_UNIT)}\n{read_asset(HOST_ENV)}\n"
-        f"{read_asset(VENDOR_TEST_HOST_ENV)}"
+        f"{read_asset(UNIT)}\n{read_asset(HOST_ENV)}\n"
     )
 
     for name in SECRET_NAMES:
         assert name not in combined
     for forbidden in ("DB_PASSWORD", "SecretKey", "JWT_SECRET", "LDAP_BIND_PASSWORD"):
         assert forbidden not in combined
-
-
-def test_vendor_control_agent_unit_is_root_only_uds_and_hardened() -> None:
-    unit = read_asset(AGENT_UNIT)
-
-    for token in (
-        "User=root",
-        "Group=root",
-        "EnvironmentFile=/etc/sms-platform/compose.env",
-        "Before=sms-platform.service",
-        "ConditionPathExists=/etc/sms-platform/test-host",
-        "ExecStartPre=/usr/local/sbin/sms-compose vendor-agent-preflight",
-        "ExecStart=/opt/sms-platform/backend/.venv/bin/python",
-        "deploy/scripts/vendor_control_agent.py",
-        "--api-runtime-uid 10001",
-        "--api-runtime-gid 10001",
-        "--worker-runtime-uid 10001",
-        "--worker-runtime-gid 10002",
-        "NoNewPrivileges=yes",
-        "PrivateTmp=yes",
-        "ProtectSystem=strict",
-        "ProtectHome=yes",
-        "ProtectKernelTunables=yes",
-        "ProtectControlGroups=yes",
-        "RestrictAddressFamilies=AF_UNIX",
-        "RuntimeDirectory=sms-platform/vendor-control",
-        "RuntimeDirectoryPreserve=yes",
-        "StateDirectory=sms-platform/vendor-test",
-        "StateDirectoryMode=0710",
-        "UMask=0007",
-    ):
-        assert token in unit
-    assert "ListenStream=" not in unit
-    assert "0.0.0.0" not in unit
-    assert "Environment=Secret" not in unit
-    assert "CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER" in unit
-    for forbidden in ("sudo", "CAP_SYS_ADMIN", "AF_INET", "ExecStartPre=/bin/sh"):
-        assert forbidden not in unit
-
-
-def test_vendor_control_agent_allows_atomic_control_files_but_protects_code() -> None:
-    unit = read_asset(AGENT_UNIT)
-
-    # Atomic replacement needs write access to each controlled file's parent.
-    assert "ReadWritePaths=/opt/sms-platform /etc/sms-platform" in unit
-    # Every application surface used by the agent remains a more-specific
-    # read-only mount; only the root .env is deliberately omitted.
-    for path in (
-        "/opt/sms-platform/.dockerignore",
-        "/opt/sms-platform/.git",
-        "/opt/sms-platform/.github",
-        "/opt/sms-platform/.gitignore",
-        "/opt/sms-platform/AGENTS.md",
-        "/opt/sms-platform/CLAUDE.md",
-        "/opt/sms-platform/HANDOVER.md",
-        "/opt/sms-platform/PRD.md",
-        "/opt/sms-platform/PROGRESS.md",
-        "/opt/sms-platform/backend",
-        "/opt/sms-platform/deploy",
-        "/opt/sms-platform/docs",
-        "/opt/sms-platform/frontend",
-        "/opt/sms-platform/mise.toml",
-        "/opt/sms-platform/openapi.yaml",
-        "/opt/sms-platform/pyproject.toml",
-        "/opt/sms-platform/schema.sql",
-        "/opt/sms-platform/scripts",
-        "/etc/sms-platform/compose.env",
-        "/etc/sms-platform/production.env",
-        "/etc/sms-platform/standby-sync.env",
-        "/etc/sms-platform/test-host",
-        "/etc/sms-platform/test-update-backup.json",
-        "/etc/sms-platform/test-update-backup-key",
-    ):
-        assert f"ReadOnlyPaths=-{path}" in unit
-    assert "ReadOnlyPaths=-/opt/sms-platform/.env" not in unit
-    assert "ReadOnlyPaths=-/etc/sms-platform/test-environment" not in unit
-    assert "StateDirectory=sms-platform/vendor-test" in unit
-    assert "StateDirectory=sms-platform/vendor-test sms-platform/test-backups" not in unit
-    writable = next(line for line in unit.splitlines() if line.startswith("ReadWritePaths="))
-    assert "/var/lib/sms-platform/test-backups" in writable
-    assert "/opt/sms-platform/deploy/secrets" not in writable
-
-
-def test_secure_access_unit_is_static_short_lived_and_non_privileged() -> None:
-    unit = read_asset(SECURE_ACCESS_UNIT)
-
-    for token in (
-        "Requires=sms-platform.service",
-        "After=network-online.target sms-platform.service",
-        "Type=simple",
-        "DynamicUser=yes",
-        "ExecStart=/usr/bin/python3 "
-        "/usr/local/libexec/sms-platform/test-secure-access/"
-        "test_secure_access_runtime.py",
-        "RuntimeDirectory=sms-platform-test-secure-access",
-        "RuntimeDirectoryMode=0750",
-        "RuntimeMaxSec=15min",
-        "TimeoutStopSec=10s",
-        "KillMode=control-group",
-        "Restart=no",
-        "SuccessExitStatus=SIGTERM 143",
-        "Environment=HOME=/nonexistent",
-        "Environment=XDG_CONFIG_HOME=/nonexistent",
-        "NoNewPrivileges=yes",
-        "PrivateTmp=yes",
-        "PrivateDevices=yes",
-        "ProtectSystem=strict",
-        "ProtectHome=yes",
-        "ProtectKernelTunables=yes",
-        "ProtectKernelModules=yes",
-        "ProtectControlGroups=yes",
-        "ProtectClock=yes",
-        "ProtectHostname=yes",
-        "RestrictSUIDSGID=yes",
-        "RestrictNamespaces=yes",
-        "LockPersonality=yes",
-        "MemoryDenyWriteExecute=yes",
-        "CapabilityBoundingSet=",
-        "AmbientCapabilities=",
-        "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
-        "SystemCallArchitectures=native",
-        "UMask=0027",
-        "StandardOutput=null",
-        "StandardError=journal",
-    ):
-        assert token in unit
-
-    assert "[Install]" not in unit
-    assert "WantedBy=" not in unit
-    assert "Alias=" not in unit
-    for forbidden in (
-        "docker.sock",
-        "/run/sms-platform/secrets",
-        "/var/lib/sms-platform/vendor-test",
-        "EnvironmentFile=",
-        "SecretKey",
-        "phone",
-        "postgres",
-        "redis",
-        "0.0.0.0",
-    ):
-        assert forbidden.casefold() not in unit.casefold()
-
-
-def test_cloudflare_tunnel_unit_is_persistent_token_file_only_and_hardened() -> None:
-    unit = read_asset(CLOUDFLARE_TUNNEL_UNIT)
-
-    for token in (
-        "Requires=sms-platform.service",
-        "After=network-online.target sms-platform.service",
-        "DynamicUser=yes",
-        "LoadCredential=tunnel-token:/etc/sms-platform/cloudflare-tunnel-token",
-        "run --token-file %d/tunnel-token",
-        "Restart=on-failure",
-        "RestartSec=5s",
-        "NoNewPrivileges=yes",
-        "ProtectSystem=strict",
-        "ProtectHome=yes",
-        "CapabilityBoundingSet=",
-        "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
-        "[Install]",
-        "WantedBy=multi-user.target",
-    ):
-        assert token in unit
-    for forbidden in (
-        "--token ey",
-        "EnvironmentFile=",
-        "TUNNEL_TOKEN=",
-        "0.0.0.0",
-        "docker.sock",
-    ):
-        assert forbidden.casefold() not in unit.casefold()
 
 
 def test_systemd_runbook_serializes_release_mutations_with_unit_lifecycle() -> None:
@@ -547,25 +360,3 @@ def test_vendor_test_runbook_has_deterministic_mock_only_bootstrap() -> None:
         assert token in runbook
 
 
-def test_vendor_reset_runbook_covers_runtime_revocation_and_replay_boundary() -> None:
-    runbook = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(encoding="utf-8")
-    deploy_readme = (ROOT / "deploy/README.md").read_text(encoding="utf-8")
-
-    for token in (
-        "root credential store",
-        "revocation tombstone generation",
-        "`VENDOR_MOCK=1`",
-        "runtime_revoked",
-        "同一 journal operation",
-        "同一个 lifecycle lock",
-        "不恢复旧真实凭据、旧 generation 或 live 消费者",
-        "PostgreSQL、Docker volume、运行态根目录和非厂商 secret",
-    ):
-        assert token in runbook
-    for token in (
-        "vendor-test reset-runtime",
-        "release 共用同一个 lifecycle flock",
-        "固定 revocation tombstone",
-        "不触碰生产环境",
-    ):
-        assert token in deploy_readme

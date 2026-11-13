@@ -131,10 +131,6 @@ jobs:
           npm audit --prefix frontend --audit-level=high
       - name: Prepare development-only CI files
         run: bash scripts/local_test.sh prepare
-      - name: Verify controlled vendor-live safety
-        # Complete Python/Vitest inventories already include the ordinary vendor tests.
-        # The isolated Linux SO_PEERCRED/UDS/RSA boundary remains a distinct check.
-        run: bash scripts/verify_vendor_control_uds.sh
       - name: Verify vendor console when full frontend is not selected
         if: ${{ needs.changes.outputs.frontend != 'true' }}
         run: >-
