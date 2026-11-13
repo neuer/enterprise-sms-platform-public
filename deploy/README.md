@@ -37,7 +37,6 @@ Celery beat 的 PersistentScheduler 状态只保存可重建的调度元数据�
 - [backup-restore.md](backup-restore.md)：无明文落盘的加密备份、校验与隔离恢复。
 - [vendor-egress.md](vendor-egress.md)：Phase 0 主出口报备、后续备出口启用条件、QPS 与错误码 1010 验证。
 - [controlled-real-vendor-test.md](../docs/runbooks/controlled-real-vendor-test.md)：开发测试环境使用正式 Key 的受控真实联调、100 计费条上限与停发规则。
-- [test-fast-update.md](../docs/runbooks/test-fast-update.md)：真实联调期间的安全快速更新范围、固定命令和失败关闭流程。
 - [usage-ledger-recovery.md](../docs/runbooks/usage-ledger-recovery.md)：配额/频控事实解释、Redis 投影漂移复核与安全重建。
 - [uncertain-web-resend.md](../docs/runbooks/uncertain-web-resend.md)：Web unknown 人工重发使用受控 system_effect 主体与源批次部门。
 - [redis-ha.md](redis-ha.md)：broker/auth/control 故障域、ACL、托管高可用、切换恢复和密码轮换。
@@ -329,15 +328,8 @@ git -C "$SOURCE_GIT" archive "$TARGET_COMMIT" -- \
   deploy/scripts/test_secure_access_manager.py \
   deploy/scripts/cloudflare_tunnel_manager.py \
   deploy/scripts/vendor_test_files.py \
-  deploy/scripts/check_test_update_migration.py \
   deploy/scripts/run_with_lifecycle_lock.py \
-  deploy/scripts/test_update_apply.py \
   deploy/scripts/test_update_backup.py \
-  deploy/scripts/test_update_contract.py \
-  deploy/scripts/test_update_manager.py \
-  deploy/scripts/test_update_promote.py \
-  deploy/scripts/test_update_store.py \
-  deploy/scripts/test_update_verify.py \
   deploy/scripts/writer_cutover.py \
   deploy/scripts/protected_path_policy.py \
   scripts/check_public_readiness.py \
@@ -354,15 +346,8 @@ sudo chmod 0644 \
   "$SOURCE_ROOT/deploy/scripts/test_secure_access_manager.py" \
   "$SOURCE_ROOT/deploy/scripts/cloudflare_tunnel_manager.py" \
   "$SOURCE_ROOT/deploy/scripts/vendor_test_files.py" \
-  "$SOURCE_ROOT/deploy/scripts/check_test_update_migration.py" \
   "$SOURCE_ROOT/deploy/scripts/run_with_lifecycle_lock.py" \
-  "$SOURCE_ROOT/deploy/scripts/test_update_apply.py" \
   "$SOURCE_ROOT/deploy/scripts/test_update_backup.py" \
-  "$SOURCE_ROOT/deploy/scripts/test_update_contract.py" \
-  "$SOURCE_ROOT/deploy/scripts/test_update_manager.py" \
-  "$SOURCE_ROOT/deploy/scripts/test_update_promote.py" \
-  "$SOURCE_ROOT/deploy/scripts/test_update_store.py" \
-  "$SOURCE_ROOT/deploy/scripts/test_update_verify.py" \
   "$SOURCE_ROOT/deploy/scripts/writer_cutover.py" \
   "$SOURCE_ROOT/deploy/scripts/protected_path_policy.py" \
   "$SOURCE_ROOT/scripts/check_public_readiness.py" \
@@ -425,25 +410,16 @@ host-control 资产变化时必须重新评审并按目标 commit 重装。
 二进制与完整主机快照；安装完成后依次执行 `cloudflare-tunnel install`、`start`、`verify`，
 并核对运行进程的版本与摘要。仅替换文件、执行 daemon-reload 或对 active 服务再次 start
 都不会让旧进程加载新二进制。主机资产更新与应用部署分开验收，不修改应用 checkout、
-数据库或现有凭据；应用版本有变更时另走日常测试更新流程。
+数据库或现有凭据；应用版本有变更时另走测试环境重建流程。
 首装验证故意直接调用已验真的固定 manager，因为此时服务器旧 checkout 可能还没有
-`secure-access` 命令；目标 commit 经快速更新生效后，日常才使用下节的
+`secure-access` 命令；目标 commit 经测试环境重建生效后，日常才使用下节的
 `/usr/local/sbin/sms-compose secure-access ...`。
 
 同一安装器还负责快速更新密文 checkpoint 的一次性前置条件，并在任何 checkpoint 权威状态修改前非阻塞取得固定 lifecycle lock；锁冲突时不修改 config、key 或 checkpoint 输出目录。配置与密钥均不存在且输出目录不存在或为空时，才在服务器本机用 `os.urandom(32)` 生成 root `0600` 密钥，并把固定配置的原子出现作为最后的 commit marker；后续重装只验证并保留原密钥。唯一崩溃恢复例外是“安全的 key 已落盘、config 尚未提交、输出目录仍为空”，此时只补 config，提交前后都重新绑定同一 key inode。config 提交后的目录 `fsync` 或身份复核若失败，本次仍 fail closed；下一次运行只有在重新验证全部 checkpoint、config/key 内容与 inode，并再次 `fsync` 两个权威文件父目录后才接受该已提交状态。config-only、密钥长度/权限/硬链接异常、中断 checkpoint，或已有 checkpoint 却缺少任一权威文件都立即 fail closed，绝不生成新密钥覆盖历史恢复能力。安装过程和输出不得显示密钥值、长度、摘要或派生信息。
 
-无历史公开快照与旧测试基线没有共同祖先时，不得继续使用日常快速更新，也不得把私有
-归档 remote、commit、ref 或 Git pack 导入当前公开工作区。旧的 public-cutover 与公开基线
-激活服务端资产已随 D125 从仓库和主机控制清单移除；本地 driver 已明确拒绝
-`--public-snapshot-cutover`。
-
-一次性基线迁移必须另立变更单，在不属于公开工作区的隔离临时证据仓库中完成逐文件验真，
-并单独评审 PostgreSQL/volume 保留、25 件 secrets、三域 Redis、七职责数据库角色、回退与
-证据清理。迁移完成后的服务器 HEAD 和 origin 必须直接绑定公开仓库 commit，且不得把
-任何私有 URL、ref、commit 或对象带回公开工作区；随后才恢复
-按需的 `scripts/test_update.sh apply --ref origin/main` 流程；`plan` 与 `status` 分别
-只用于可选预览和后续诊断。仓库不再提供一次性执行入口；如再次需要，必须重新设计、
-评审并单独批准。
+测试环境不迁移旧数据：`scripts/test_rebuild.sh` 只从公开仓库检出精确 commit 后铲掉重建，
+因此不存在跨历史基线迁移，也不得把私有归档 remote、commit、ref 或 Git pack 导入当前
+公开工作区。公开基线激活、重对齐（D125）与快速更新（D126）入口均已退役。
 
 ### 手机操作者日常流程
 
@@ -551,30 +527,19 @@ sudo /usr/bin/env \
 只能在 Cloudflare 激活稳定后单独启用并向注册商写入 Cloudflare 提供的 DS，切换 NS 前后
 都不得遗留旧 DS。
 
-### 与快速更新和数据的边界
+### 与测试环境重建和数据的边界
 
 需要共享测试环境验收的应用代码在合并后通过默认入口：
 
 ```bash
-scripts/test_update.sh apply --ref origin/main
+scripts/test_rebuild.sh --ref origin/main
 ```
 
-`apply` 内部已经完成分类、verify 与终态解析；`plan --ref origin/main` 和 `status` 分别只
-用于可选预览与后续只读诊断。只有远端 `state=verified` 和对应表面验收完成才算更新成功。driver 只构建受影响镜像且
-不重复运行测试；普通无迁移更新允许 CI 并行运行，high-risk、迁移或控制面更新必须先
-验证目标 commit 的精确 `ci-gate=success`。无迁移更新不创建数据库 checkpoint，切换或验收失败时自动回退上一版应用
-镜像；迁移不自动回退 schema。所有 high-risk 更新的
-prepare/apply/verify/status 全程使用同一 root-owned 不可变 bootstrap 快照；若快照到目标
-commit 间的 host-control 字节未变可复用既有快照，发生变化则必须先按上文重装目标 commit。
-无共同历史的服务器基线必须在本入口前按上文单独迁移；driver 不接收私有 Git 证据。
-不得 raw Git/Compose 绕过；driver 内部只用受控、摘要校验和可续传的 rsync 传输归档。快速
-更新与一次性主机安装相互独立：快速更新不自动启动隧道，
-不安装或轮换正式 Key，不登记测试号码，不激活真实联调，
-不执行管理员初始化，也不初始化数据库。始终保留 PostgreSQL 数据库、Docker volume、
-凭据 generation、测试号码和运行态数据；任何初始化仍须操作者明确确认。
-
-服务器 commit 不是目标的祖先、或普通 `apply` 被分类器阻断时一律失败关闭；历史上的
-`rebaseline` 与 `recover-rebaseline-*` 一次性入口已退役（D125），不得以任何别名恢复。
+入口先核验目标 commit 的精确 `ci-gate=success`，再让服务器检出该 commit 并执行
+`scripts/local_test.sh reset`：销毁 PostgreSQL、Redis 与 Mock 目录卷，重新构建、迁移、
+完成写者切换并 `seed-dev`。只有输出 `state=rebuilt` 且对应表面验收完成才算成功。
+测试环境只跑 Mock：服务器存在真实联调标记或 `.env` 不是纯 Mock 时入口失败关闭。重建与
+一次性主机安装相互独立，不启动隧道，不安装正式 Key，也不执行管理员初始化。
 
 测试环境页面 `reset_configuration` 是从真实厂商切回纯 Mock 的唯一入口，只接受已配置凭据、无 pause 的 `controlled|inactive` 投影。root agent 先持久化 `reset_authorized`，再调用 development-only、零参数固定操作 `vendor-test reset-runtime`；这是 agent 内部操作名，不是给操作者手工执行的命令，实际由 agent 固定映射到 lifecycle lock 下的 `vendor_test_mock_reset.py reset-to-mock`。agent 不在 lifecycle lock 外另行删除 credential store。该操作与 release 共用同一个 lifecycle flock：停止旧 API/beat/workers/Outbox 并逐一确认它们不再运行后，直接恢复固定纯 Mock dotenv，切换到固定 revocation tombstone generation，启动并验证 `mock-vendor`，强制重建并逐一验证 API、四个 worker、Outbox dispatcher、beat 与 Web；Web 还必须通过自身 Nginx 代理访问新 API。已停止的消费者无法自行收敛 backlog，因此 reset 不再等待数据库状态清零；既有 queued/scheduled/pending/retrying 后续只会命中 Mock，遗留 submitting 按既有恢复规则转 uncertain，uncertain 仍禁止自动重发。全部验证通过后才在锁内删除 root credential store、清理 stale runtime generations，并把 live marker 作为最后的 commit marker 删除；成功输出仍严格为 `{"status":"runtime_revoked"}`。它保留加密测试号码、runtime root、PostgreSQL、Docker volume、非厂商 secret 和历史未决事实，也不触碰生产环境。失败路径只恢复不持有厂商凭据的 API 与 Web，页面轮询会对超过 60 秒仍未终结的同一 reset 自动安排后台对账；禁止手改 `.env`、raw Compose 或恢复旧 generation，固定错误不得携带 Key、generation 或子进程输出。
 

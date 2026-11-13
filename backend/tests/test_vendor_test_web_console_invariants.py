@@ -11,7 +11,6 @@ sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
 
 from classify_ci_changes import classify_paths  # noqa: E402
-from test_update_contract import classify_changed_paths  # noqa: E402
 
 CONSOLE_HIGH_RISK_PATHS = (
     "backend/app/api/vendor_test.py",
@@ -64,14 +63,6 @@ def test_console_security_changes_force_backend_frontend_and_g2(path: str) -> No
 
     assert (result.backend, result.frontend, result.g2) == (True, True, True)
     assert "vendor-live" in result.categories
-
-
-@pytest.mark.parametrize("path", CONSOLE_HIGH_RISK_PATHS)
-def test_console_security_changes_are_excluded_from_quick_update(path: str) -> None:
-    scope = classify_changed_paths([path])
-
-    assert scope.risk == "high-risk"
-    assert scope.high_risk_paths == (path,)
 
 
 def test_secure_access_contract_is_short_lived_static_and_has_no_plaintext_fallback() -> None:

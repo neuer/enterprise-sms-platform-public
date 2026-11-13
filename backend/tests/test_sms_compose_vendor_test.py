@@ -38,7 +38,6 @@ with Path(os.environ["CONTROL_LOG"]).open("a", encoding="utf-8") as stream:
         "vendor_test_bootstrap.py",
         "vendor_test_manager.py",
         "vendor_runtime_reset.py",
-        "test_update_manager.py",
         "test_secure_access_manager.py",
         "cloudflare_tunnel_manager.py",
         "prepare_runtime_secrets.py",
@@ -86,12 +85,6 @@ def _bootstrap_wrapper(
     wrapper.chmod(0o755)
     (host_root / "run_with_lifecycle_lock.py").write_text(
         LOCK_RUNNER.read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    (host_root / "test_update_manager.py").write_text(
-        (
-            Path(environment["SMS_PLATFORM_ROOT"]) / "deploy/scripts/test_update_manager.py"
-        ).read_text(encoding="utf-8"),
         encoding="utf-8",
     )
     source_commit = "a" * 40
@@ -162,6 +155,13 @@ def test_production_rejects_control_planes_before_any_helper(
         ("test-update", "rollback"),
         ("test-update", "bootstrap-public-cutover"),
         ("test-update", "apply", "--compose-args", "down"),
+        ("test-update", "prepare"),
+        ("test-update", "apply"),
+        ("test-update", "verify"),
+        ("test-update", "status"),
+        ("test-update", "capability"),
+        ("test-update", "promote", "origin/main", "a" * 40),
+        ("test-update", "writer-cutover", "--force"),
         ("test-update", "baseline-prepare"),
         ("test-update", "baseline-status"),
         ("test-update", "recover-rebaseline"),
@@ -198,18 +198,11 @@ def test_vendor_mutations_and_test_update_mutations_inherit_the_verified_lock(
         _run(environment, "vendor-test", command)
         for command in ("activate", "pause", "resume", "rotate", "recover-rotation")
     ]
-    updates = [
-        _run(environment, "test-update", command) for command in ("prepare", "apply")
-    ]
-
     assert all(result.returncode == 0 for result in mutations)
-    assert all(result.returncode == 0 for result in updates)
     lines = log.read_text(encoding="utf-8").splitlines()
     managers = [line for line in lines if "manager.py|" in line]
     for command in ("activate", "pause", "resume", "rotate", "recover-rotation"):
         assert any(f"vendor_test_manager.py|{command}|" in line for line in managers)
-    assert any("test_update_manager.py|prepare|" in line for line in managers)
-    assert any("test_update_manager.py|apply|" in line for line in managers)
     assert all("|locked=1|fd=" in line for line in managers)
     assert all(line.rsplit("|fd=", 1)[1].isdigit() for line in managers)
 
@@ -301,19 +294,6 @@ def test_status_is_read_only_and_does_not_claim_a_lifecycle_lock(
     assert "|locked=|fd=" in line
 
 
-def test_update_capability_is_read_only_and_does_not_claim_lifecycle_lock(
-    control_environment: tuple[dict[str, str], Path],
-) -> None:
-    environment, log = control_environment
-
-    result = _run(environment, "test-update", "capability")
-
-    assert result.returncode == 0
-    line = log.read_text(encoding="utf-8").strip()
-    assert line.startswith("test_update_manager.py|capability|")
-    assert "|locked=|fd=" in line
-
-
 @pytest.mark.parametrize("command", ["start", "status", "stop"])
 def test_secure_access_is_a_fixed_transport_action_without_lifecycle_or_secrets(
     control_environment: tuple[dict[str, str], Path],
@@ -336,9 +316,8 @@ def test_secure_access_usage_is_development_only_and_not_a_credential_action() -
     assert "development only: secure-access start|status|stop" in source
     assert 'HOST_CONTROL_ROOT="/usr/local/libexec/sms-platform/test-secure-access"' in source
     assert 'TEST_SECURE_ACCESS_MANAGER="$HOST_CONTROL_ROOT/' in source
-    assert 'TEST_UPDATE_MANAGER="$HOST_CONTROL_ROOT/test_update_manager.py"' in source
+    assert "TEST_UPDATE_MANAGER" not in source
     assert 'LOCK_RUNNER="$HOST_CONTROL_ROOT/run_with_lifecycle_lock.py"' in source
-    assert 'python_path="$HOST_CONTROL_ROOT"' in source
     assert "PYTHONNOUSERSITE=1" in source
     assert "LOCK_PYTHON=(" in source
     assert "/usr/bin/python3" in source
@@ -349,11 +328,10 @@ def test_secure_access_usage_is_development_only_and_not_a_credential_action() -
     assert "/usr/bin/python3" in secure_dispatch
     assert "PYTHONNOUSERSITE=1" in secure_dispatch
     assert '"PYTHONPATH=$HOST_CONTROL_ROOT"' in secure_dispatch
-    assert "SMS_SECURE_ACCESS_INTERNAL=1" in source
     assert "bootstrap wrapper only permits test-update" in source
     assert "public_cutover" not in source
     assert "public_baseline" not in source
-    assert "    prepare | apply | verify)" in source
+    assert '"$command" == writer-cutover' in source
     for forbidden in (
         "prepare_runtime_secrets",
         "run_with_lifecycle_lock",
@@ -436,25 +414,13 @@ def test_forged_private_control_action_is_rejected() -> None:
     assert "private locked action" in result.stderr
 
 
-def test_host_bootstrap_apply_inherits_the_verified_lock(
-    control_environment: tuple[dict[str, str], Path],
-    tmp_path: Path,
-) -> None:
-    environment, log = control_environment
-    wrapper, _source_commit, asset_log = _bootstrap_wrapper(tmp_path, environment)
-
-    result = _run_wrapper(wrapper, environment, "test-update", "apply")
-
-    assert result.returncode == 0, result.stderr
-    assert asset_log.exists()
-    lines = log.read_text(encoding="utf-8").splitlines()
-    manager = next(line for line in lines if "test_update_manager.py|apply|" in line)
-    assert "|locked=1|fd=" in manager
-
-
 @pytest.mark.parametrize(
     "command",
     [
+        "prepare",
+        "apply",
+        "verify",
+        "capability",
         "baseline-prepare",
         "baseline-status",
         "bootstrap-public-cutover",
@@ -467,7 +433,7 @@ def test_host_bootstrap_rejects_retired_baseline_entries(
     tmp_path: Path,
     command: str,
 ) -> None:
-    """已退役的一次性基线/重对齐入口在主机引导包装器下同样失败关闭。"""
+    """已退役的快速更新与基线/重对齐入口在主机引导包装器下同样失败关闭。"""
     environment, log = control_environment
     wrapper, _source_commit, asset_log = _bootstrap_wrapper(tmp_path, environment)
 

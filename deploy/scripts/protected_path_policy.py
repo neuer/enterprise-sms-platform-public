@@ -182,6 +182,135 @@ def security_domain_category(path: str) -> SecurityDomainCategory | None:
     return None
 
 
+ProtectedChangeCategory = Literal["vendor-live", "backend-critical", "frontend-security"]
+
+# 真实厂商链路与测试主机控制面的精确保护路径：命中即走完整 CI（含 vendor-live 安全验收）。
+# 已删除文件的条目继续保留，使历史 diff 中的删除仍按 vendor-live 识别。
+VENDOR_LIVE_PROTECTED_EXACT: frozenset[str] = frozenset(
+    {
+        ".dockerignore",
+        "backend/app/api/messages.py",
+        "backend/app/api/vendor_test.py",
+        "backend/app/api/web_messages.py",
+        "backend/app/cli.py",
+        "backend/app/core/auth/runtime.py",
+        "backend/app/main.py",
+        "backend/app/settings.py",
+        "backend/app/services/pipeline.py",
+        "backend/app/services/pipeline_acceptance.py",
+        "backend/app/services/pipeline_admission.py",
+        "backend/app/services/pipeline_commit.py",
+        "backend/app/services/pipeline_contracts.py",
+        "backend/app/services/pipeline_idempotency.py",
+        "backend/app/services/pipeline_sensitive_audit.py",
+        "backend/app/services/reconcile_repository.py",
+        "backend/app/services/vendor_control_client.py",
+        "backend/app/services/vendor_control_state.py",
+        "backend/app/vendor/zhihui.py",
+        "backend/app/vendor/codes.py",
+        "backend/app/tasks/reconcile.py",
+        "backend/app/tasks/send.py",
+        "backend/app/services/billing.py",
+        "backend/app/services/vendor_test_guard.py",
+        "backend/app/services/vendor_test_budget.py",
+        "backend/app/services/vendor_test_operation.py",
+        "backend/app/services/vendor_test_operation_repository.py",
+        "backend/app/services/vendor_test_pause.py",
+        "backend/app/services/vendor_test_recipient.py",
+        "backend/app/services/vendor_test_security_audit.py",
+        "backend/app/services/vendor_test_recipient_repository.py",
+        "backend/app/services/vendor_test_step_up.py",
+        "backend/app/services/vendor_test_uat.py",
+        "backend/app/tasks/send_repository.py",
+        "backend/app/tasks/send_repository_contracts.py",
+        "backend/app/tasks/send_repository_attempt.py",
+        "backend/app/tasks/send_repository_failover.py",
+        "backend/app/tasks/send_repository_payload.py",
+        "backend/app/tasks/send_repository_split.py",
+        "backend/migrations/versions/0016_vendor_live_test_budget.py",
+        "backend/migrations/versions/0017_vendor_test_web_console.py",
+        "backend/migrations/versions/0018_vendor_test_operation_vendor_code.py",
+        "backend/migrations/versions/0019_vendor_test_recipient_hmac_alias.py",
+        "backend/migrations/versions/0022_vendor_test_reset_operation.py",
+        "backend/migrations/versions/0023_vendor_uat_acceptance_lease.py",
+        "backend/vendor_control_protocol.py",
+        "backend/vendor_control_protocol.pyi",
+        "backend/Dockerfile",
+        "deploy/docker-compose.yml",
+        "deploy/.env.example",
+        "deploy/scripts/install_vendor_credentials.py",
+        # 已删除的一次性安装器仍会出现在历史 diff 里，必须继续按 vendor-live 识别。
+        "deploy/scripts/install_resend_api_key.py",
+        "deploy/scripts/send_security_daily_report_resend.py",
+        "deploy/scripts/vendor_control_agent.py",
+        "deploy/scripts/vendor_control_journal.py",
+        "deploy/scripts/vendor_control_protocol.py",
+        "deploy/scripts/vendor_credential_store.py",
+        "deploy/scripts/vendor_control_reload.py",
+        "deploy/scripts/vendor_seal_sessions.py",
+        "deploy/scripts/vendor_runtime_reset.py",
+        "deploy/systemd/vendor-control-agent.service",
+        "deploy/scripts/install_test_secure_access.py",
+        "deploy/systemd/sms-platform-test-secure-access.service",
+        "deploy/sms-compose",
+        "scripts/check_invariants.py",
+        "scripts/classify_ci_changes.py",
+        "deploy/scripts/protected_path_policy.py",
+        "scripts/test_update.sh",
+        "scripts/test_rebuild.sh",
+        "scripts/verify_vendor_live_test.sh",
+        "frontend/src/api/admin.ts",
+        "frontend/src/components/VendorCredentialDialog.vue",
+        "frontend/src/components/VendorTestConsole.vue",
+        "frontend/src/components/VendorTestRecipientDialog.vue",
+        "frontend/src/components/VendorTestUatPanel.vue",
+        "frontend/src/lib/vendorSeal.ts",
+        "frontend/src/views/ConfigView.vue",
+        "openapi.yaml",
+        "schema.sql",
+        # 测试主机 root-owned 控制资产（原快速更新合同的主机控制清单）。
+        "deploy/scripts/test_secure_access_contract.py",
+        "deploy/scripts/test_secure_access_runtime.py",
+        "deploy/scripts/test_secure_access_manager.py",
+        "deploy/scripts/cloudflare_tunnel_manager.py",
+        "deploy/scripts/render_trusted_proxy_conf.py",
+        "deploy/scripts/vendor_test_files.py",
+        "deploy/scripts/check_test_update_migration.py",
+        "deploy/scripts/run_with_lifecycle_lock.py",
+        "deploy/scripts/test_update_apply.py",
+        "deploy/scripts/test_update_backup.py",
+        "deploy/scripts/test_update_contract.py",
+        "deploy/scripts/test_update_manager.py",
+        "deploy/scripts/test_update_promote.py",
+        "deploy/scripts/test_update_store.py",
+        "deploy/scripts/test_update_verify.py",
+        "deploy/scripts/writer_cutover.py",
+        "scripts/check_public_readiness.py",
+        "scripts/export_public_snapshot.py",
+        "scripts/verify_web_transport.py",
+        "deploy/trusted-proxies.conf",
+        "deploy/systemd/sms-platform-cloudflare-tunnel.service",
+    }
+)
+VENDOR_LIVE_PROTECTED_PREFIXES: tuple[str, ...] = (
+    "deploy/scripts/vendor_test_",
+    "deploy/scripts/test_update_",
+    "deploy/scripts/test_secure_access_",
+)
+
+
+def protected_change_category(path: str) -> ProtectedChangeCategory | None:
+    """返回 CI 门禁使用的受保护路径类别。"""
+
+    if (
+        path in VENDOR_LIVE_PROTECTED_EXACT
+        or path.startswith("deploy/security-report/")
+        or path.startswith(VENDOR_LIVE_PROTECTED_PREFIXES)
+    ):
+        return "vendor-live"
+    return security_domain_category(path)
+
+
 def is_required_tracked_source_file(path: str) -> bool:
     """是否属于必须分类的 tracked source 树（不依赖当前域清单）。"""
 

@@ -22,14 +22,11 @@ from protected_path_policy import (  # noqa: E402
     REVIEWED_ORDINARY_EXACT,
     REVIEWED_ORDINARY_REASONS,
     parse_codeowners_patterns,
+    protected_change_category,
     render_codeowners,
     required_codeowners_patterns,
     security_domain_category,
     unclassified_tracked_source_paths,
-)
-from test_update_contract import (  # noqa: E402
-    classify_changed_paths,
-    protected_change_category,
 )
 
 FRONTEND_SESSION_SECURITY_PATHS = (
@@ -181,9 +178,6 @@ def test_ops_repository_uses_existing_backend_critical_postgres_gate() -> None:
     assert protected_change_category("backend/app/services/ops_repository.py") == (
         "backend-critical"
     )
-    scope = classify_changed_paths(["backend/app/services/ops_repository.py"])
-    assert scope.risk == "high-risk"
-    assert scope.components == frozenset({"api"})
     ci_yml = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     postgres_gate = (ROOT / "scripts" / "verify_vendor_postgres_recovery.sh").read_text(
         encoding="utf-8"
@@ -201,9 +195,7 @@ def test_ops_repository_uses_existing_backend_critical_postgres_gate() -> None:
 
 
 def test_app_vue_uses_existing_frontend_security_gate() -> None:
-    scope = classify_changed_paths(["frontend/src/App.vue"])
-    assert scope.risk == "high-risk"
-    assert scope.components == frozenset({"web"})
+    assert protected_change_category("frontend/src/App.vue") == "frontend-security"
     frontend_job = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "npm run test:coverage" in frontend_job
     assert "check_frontend_coverage.py" in frontend_job
@@ -317,7 +309,6 @@ def test_each_explicit_downgrade_has_reason_and_ordinary_gates(path: str) -> Non
     if path.startswith("frontend/"):
         assert (result.backend, result.frontend) == (False, True)
         assert result.categories == frozenset({"frontend"})
-        assert classify_changed_paths([path]).risk == "web-only"
     else:
         assert (result.backend, result.frontend) == (True, False)
         assert result.categories == frozenset({"backend-check"})
@@ -372,7 +363,6 @@ def test_issue_427_sensitive_views_are_frontend_security(path: str) -> None:
         assert protected_change_category(path) == "frontend-security"
         assert (result.backend, result.g2) == (False, False)
         assert result.categories == frozenset({"frontend-security"})
-        assert classify_changed_paths([path]).risk == "high-risk"
 
 
 @pytest.mark.parametrize("path", ISSUE_427_CAPABILITY_SECURITY_VIEWS)
@@ -387,7 +377,6 @@ def test_sensitive_view_classification_is_not_below_capability(path: str) -> Non
     assert result.g2 is False
     assert result.full_fallback is False
     assert result.categories == frozenset({"frontend-security"})
-    assert classify_changed_paths([path]).risk == "high-risk"
 
 
 def test_ordinary_views_do_not_import_sensitive_apis() -> None:
@@ -427,7 +416,6 @@ def test_issue_427_sensitive_components_are_frontend_security(path: str) -> None
     assert result.security is True
     assert result.full_fallback is False
     assert result.categories == frozenset({"frontend-security"})
-    assert classify_changed_paths([path]).risk == "high-risk"
 
 
 def test_required_source_trees_stay_independent_of_domain_list() -> None:
@@ -455,7 +443,6 @@ def test_frontend_root_entry_is_frontend_security_not_ordinary_fallback() -> Non
         False,
     )
     assert result.categories == frozenset({"frontend-security"})
-    assert classify_changed_paths(["frontend/src/main.ts"]).risk == "high-risk"
     assert "frontend/src/*.ts" in required_codeowners_patterns()
     assert "frontend/src/*.vue" in required_codeowners_patterns()
 

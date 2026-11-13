@@ -5,7 +5,7 @@
 | 文档版本 | v1.1 |
 | 编制日期 | 2026-07-30 |
 | 系统版本 | 企业短信管理平台 v1.6 |
-| 测试环境 | 动态；执行前必须读取 `scripts/test_update.sh status` |
+| 测试环境 | 动态；以最近一次 `scripts/test_rebuild.sh` 输出的 commit 为准 |
 | Web 入口 | `${TEST_BASE_URL}/login`（由测试负责人经受控渠道提供） |
 | 测试时区 | Asia/Shanghai（UTC+08:00） |
 | 文档状态 | 可执行基线 |
@@ -42,10 +42,11 @@ Mock 以 [vendor-api.md](vendor-api.md) 为准。历史自动验收证据保留�
 
 ### 1.4 环境边界与非目标
 
-环境状态不是静态文档事实。每轮测试前必须在已批准的本地连接配置下执行：
+环境状态不是静态文档事实。每轮测试前按需在已批准的本地连接配置下重建到目标 commit
+（会销毁测试环境全部数据），并登记输出中的 commit：
 
 ```bash
-scripts/test_update.sh status
+scripts/test_rebuild.sh --ref origin/main
 ```
 
 本次文档对齐时，配置的测试服务器为 `development-vendor-live` / `controlled`：认证仍为
@@ -180,7 +181,7 @@ Web 地址：${TEST_BASE_URL}
 ### 3.3 前置检查
 
 - [ ] 登录页、`/livez` 和 `/readyz` 返回 HTTP 200；
-- [ ] 已执行 `scripts/test_update.sh status` 并登记 vendor mode/status；
+- [ ] 已登记最近一次 `scripts/test_rebuild.sh` 输出的 commit；
 - [ ] Mock 专项确认 `VENDOR_MOCK=1`；controlled UAT 确认普通发送返回 `VENDOR_TEST_CONSOLE_ONLY`；
 - [ ] 测试负责人已登记 commit、镜像和执行窗口；
 - [ ] 四账号均处于未锁定状态；
@@ -1217,20 +1218,18 @@ sudo /usr/bin/env SMS_PLATFORM_ROOT=/opt/sms-platform \
 另起一次入口不执行 stop，确认 15 分钟硬时限后同样自动关闭。两次验收后平台、控制 agent、
 PostgreSQL、Redis、workers 和 beat 保持健康，数据库与 Docker volume 未变化。
 
-### HTTPS-05：与快速更新隔离
+### HTTPS-05：与测试环境重建隔离
 
-代码默认只通过 `scripts/test_update.sh apply --ref origin/main` 按需更新；必须取得
-`state=verified`。high-risk、迁移或控制面更新必须先取得目标 commit 的精确
-`ci-gate=success`。
-快速更新和一次性主机安装均不自动启动隧道、不安装或轮换正式 Key、不登记测试号码、不激活
-真实联调、不执行管理员初始化、不初始化数据库。
+代码默认只通过 `scripts/test_rebuild.sh --ref origin/main` 按需重建；必须取得
+`state=rebuilt`，且目标 commit 的精确 `ci-gate=success`。
+重建和一次性主机安装均不自动启动隧道、不安装正式 Key、不执行管理员初始化。
 
 ## 附录 A：执行前后速查
 
 ### 执行前
 
-1. 执行 `scripts/test_update.sh status`，确认 commit、`development-vendor-live`/Mock 档位及
-   `controlled`/inactive 状态；不得在证据中记录真实连接值；
+1. 确认最近一次 `scripts/test_rebuild.sh` 输出的 commit 与 Mock 档位；不得在证据中记录
+   真实连接值；
 2. 执行环境冒烟；
 3. 分配四账号、测试号池和证据目录；
 4. 按档位保存配置、Mock 或受控真实联调状态、队列、任务和账号基线；

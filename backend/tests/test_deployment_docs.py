@@ -815,8 +815,7 @@ def test_deployment_index_documents_the_independent_release_gate() -> None:
 
 def test_remote_mac_docs_separate_public_docker_from_authenticated_registry() -> None:
     index = read_required("README.md")
-    fast_update = (ROOT / "docs/runbooks/test-fast-update.md").read_text(encoding="utf-8")
-    combined = "\n".join((index, fast_update))
+    combined = index
 
     for token in (
         "手机远程 Mac",
@@ -829,7 +828,6 @@ def test_remote_mac_docs_separate_public_docker_from_authenticated_registry() ->
         "不得解锁",
     ):
         assert token in combined
-    assert "scripts/docker_public.sh doctor" in fast_update
     assert "SMS_DOCKER_ACCESS=authenticated" in index
     for forbidden_destination in ("聊天", "命令参数", "日志", "发布证据", "仓库"):
         assert forbidden_destination in index

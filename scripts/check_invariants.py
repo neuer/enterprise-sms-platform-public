@@ -527,11 +527,6 @@ def check_vendor_live_invariants() -> None:
                 "真实联调 operation 审计载荷不得原样写入 operation UUID 或 checkpoint",
             )
 
-    require_fragments(
-        ROOT / "deploy/scripts/test_update_manager.py",
-        "FROM vendor_test_daily_usage",
-    )
-
     secure_contract_path = ROOT / "deploy/scripts/test_secure_access_contract.py"
     require_fragments(
         secure_contract_path,
@@ -664,8 +659,8 @@ def check_vendor_live_invariants() -> None:
     )
 
     update_contract = require_fragments(
-        ROOT / "deploy/scripts/test_update_contract.py",
-        "_HIGH_RISK_EXACT",
+        ROOT / "deploy/scripts/protected_path_policy.py",
+        "VENDOR_LIVE_PROTECTED_EXACT",
         "deploy/scripts/vendor_test_",
         "deploy/scripts/test_update_",
         "deploy/scripts/test_secure_access_",
@@ -737,8 +732,8 @@ def check_vendor_live_invariants() -> None:
         )
         if high_risk_path not in update_contract and not covered_by_secure_prefix:
             fail(
-                ROOT / "deploy/scripts/test_update_contract.py",
-                f"普通快速更新未阻断高风险路径 {high_risk_path}",
+                ROOT / "deploy/scripts/protected_path_policy.py",
+                f"vendor-live 保护清单缺少高风险路径 {high_risk_path}",
             )
 
     wrapper = require_fragments(
@@ -748,7 +743,6 @@ def check_vendor_live_invariants() -> None:
         '"$seen_auth_mock" != 1 || "$env_auth_mock" != 0',
         '"$seen_vendor_mock" != 1 || "$env_vendor_mock" != 0',
         "reject_production_control_plane test-update",
-        "prepare | apply | verify",
         "dispatch_secure_access()",
         "reject_production_control_plane secure-access",
         "start | status | stop",
@@ -796,13 +790,9 @@ def check_vendor_live_invariants() -> None:
         "--find-copies-harder",
     )
     require_fragments(
-        ROOT / "deploy/scripts/test_update_contract.py",
-        "_VENDOR_LIVE_PROTECTED_EXACT",
-        "security_domain_category",
-        "def protected_change_category(",
-    )
-    require_fragments(
         ROOT / "deploy/scripts/protected_path_policy.py",
+        "VENDOR_LIVE_PROTECTED_EXACT",
+        "def protected_change_category(",
         "BACKEND_CRITICAL_DOMAINS",
         "FRONTEND_SECURITY_DOMAINS",
         "REVIEWED_ORDINARY_EXACT",
@@ -887,8 +877,6 @@ def check_outbox_invariants() -> None:
     for relative in (
         "deploy/sms-compose",
         "deploy/scripts/release_manager.py",
-        "deploy/scripts/test_update_apply.py",
-        "deploy/scripts/test_update_manager.py",
         "deploy/scripts/vendor_test_manager.py",
     ):
         require_fragments(ROOT / relative, "outbox-dispatcher")
@@ -1180,7 +1168,7 @@ def check_split_module_registry() -> None:
     """拆分模块的登记表必须与磁盘一致，且拆出文件继承入口的 vendor-live 保护。"""
 
     sys.path.insert(0, str(ROOT / "deploy" / "scripts"))
-    from test_update_contract import protected_change_category  # noqa: E402
+    from protected_path_policy import protected_change_category  # noqa: E402
 
     registry = ROOT / "scripts" / "gate_policy.py"
     for entry, parts in SPLIT_MODULE_PARTS.items():
@@ -1204,7 +1192,7 @@ def check_split_module_registry() -> None:
             for part in parts:
                 if protected_change_category(f"backend/app/{part}") != "vendor-live":
                     fail(
-                        ROOT / "deploy/scripts/test_update_contract.py",
+                        ROOT / "deploy/scripts/protected_path_policy.py",
                         f"vendor-live 入口拆出的文件未进入 vendor-live 保护: {part}",
                     )
 
@@ -1279,12 +1267,12 @@ def check_protected_path_policy_invariants() -> None:
             ROOT / "deploy" / "scripts" / "protected_path_policy.py",
             "反向枚举树必须独立覆盖 backend/app/、frontend/src/views/ 与 frontend/src/components/",
         )
-    contract = (ROOT / "deploy" / "scripts" / "test_update_contract.py").read_text(
+    policy_source = (ROOT / "deploy" / "scripts" / "protected_path_policy.py").read_text(
         encoding="utf-8"
     )
-    if "_BACKEND_CRITICAL_PROTECTED_EXACT" in contract:
+    if "_BACKEND_CRITICAL_PROTECTED_EXACT" in policy_source:
         fail(
-            ROOT / "deploy" / "scripts" / "test_update_contract.py",
+            ROOT / "deploy" / "scripts" / "protected_path_policy.py",
             "禁止继续用 exact allowlist 作为 backend-critical 分类来源",
         )
     try:

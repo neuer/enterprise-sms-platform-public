@@ -100,34 +100,29 @@ Alembic 的在线执行和离线 SQL 都在迁移事务开始时设置 `lock_tim
 
 ## 按需测试部署
 
-本节是 AGENTS 规则 39“开发与测试部署解耦”的权威合同，核心要求：
+本节是 AGENTS 规则 39“开发与测试部署解耦”的权威合同。共享测试环境只跑 Mock，不保存
+正式厂商凭据，也不保留需要迁移的数据（D126），因此发布方式是按精确 commit 铲掉重建：
 
-- 默认对合并后的精确 `origin/main` 执行 `scripts/test_update.sh apply --ref origin/main`；`plan` 仅用于可选预览，`status` 仅用于后续只读诊断；入口只构建受影响镜像，不得重复执行 CI/G2 或组件测试。
-- high-risk、迁移或控制面更新必须在 `apply` 前验证目标 commit 精确且来源为 GitHub Actions 的 `ci-gate=success`。
-- 只有远端最终返回 `state=verified`、apply 后 operator 再次通过 origin/HEAD/status 读路径预检，同时完成 tracked 工作树与暂存区的 diff 读路径复核及对应表面验收才算成功。
-- 无迁移更新不得创建数据库 checkpoint，切换或验收失败时只允许自动回退到上一版应用镜像并记录 `rolled_back`；不得回退 schema。迁移、受保护状态异常或镜像回退失败时保持 fail closed。
-- 分支部署只作为明确的合并前验收例外；tree 与后续 `origin/main` 完全一致且 main 的 `ci-gate` 成功时，可用 `promote --ref origin/main` 免重建提升。
-- 始终保留 PostgreSQL 数据库、Docker volume 和运行态目录，任何初始化必须事先取得操作者明确确认。管理员初始化、正式厂商 Key 安装/轮换和测试号码管理是独立流程，不得夹带在快速更新中执行。
+- 只对 `ci-gate` 已成功的精确 commit 重建，默认是合并后的 `origin/main`；分支重建只作为
+  明确的合并前验收例外。
+- 每次重建都会销毁测试环境的 PostgreSQL、Redis 与 Mock 目录卷，再构建、迁移、完成写者
+  切换并执行 `seed-dev`。测试环境里不得存放任何需要保留的数据。
+- 服务器存在真实联调标记或 `.env` 不是纯 Mock 时入口失败关闭；先在页面切回 Mock 并清除
+  正式凭据，不得绕过。
+- 只有入口输出 `state=rebuilt` 且完成对应表面验收才算成功。生产发布不走本入口。
 
-测试部署与日常开发解耦。只有需要共享环境、浏览器或真实接口验收的功能才部署；纯文档、
-纯测试和不改变行为的重构无需部署。默认等待 PR 合并后，更新精确的 `origin/main`：
+测试部署与日常开发解耦。只有需要共享环境、浏览器或接口验收的功能才部署；纯文档、
+纯测试和不改变行为的重构无需部署。默认等待 PR 合并后执行：
 
 ```bash
-git fetch origin
-scripts/test_update.sh apply --ref origin/main
+scripts/test_rebuild.sh --ref origin/main
 ```
 
-`apply` 已完成差异分类、必要 CI 验证、构建、远端切换、verify、operator Git 读路径复核和终态解析；
-只有远端返回 `state=verified` 且切换后 operator 再次通过 origin、HEAD、工作树检查才算成功。
-任一读路径检查失败都会拒绝记录部署成功。读路径预检必须以日常 SSH 更新用户完成远端 Git
-`origin`、HEAD 和工作树检查；root 能读而 operator 不能读不算通过，必须 fail closed。切换后
-控制面只对 Git tracked 工作树恢复 operator 的 group 读权限，忽略 secrets/data；operator 还必须
-以 `git diff --quiet` 读出干净的 tracked 内容和暂存区。普通无迁移更新只拒绝
-submitting/retrying 分片；high-risk 或迁移更新还必须拒绝 uncertain。需要在变更前预览分类时可运行
-`scripts/test_update.sh plan --ref origin/main`，需要稍后查看非敏感状态时再运行
-`scripts/test_update.sh status`，二者都不是每次部署的强制重复步骤。
+入口依次完成：解析并核验目标 commit 的 `ci-gate`、在服务器检出该 commit、调用
+`scripts/local_test.sh reset` 重建全栈、写入 GitHub `test` Environment 的 Deployment 记录。
+`--dry-run` 只做本地解析与 CI 核验，不连接服务器。
 
-首次使用测试部署时才准备本地连接文件和 GitHub CLI：
+首次使用时才准备本地连接文件和 GitHub CLI：
 
 ```bash
 cp test-update.env.example .env.test-update
@@ -136,39 +131,11 @@ gh auth status --hostname github.com
 ```
 
 `.env.test-update` 只允许 `SMS_TEST_UPDATE_TARGET` 与 `SMS_TEST_UPDATE_PORT`，被 Git
-忽略且必须为当前用户拥有的 0400/0600 普通文件。不得在仓库、命令历史或文档中记录真实
-主机地址、账号、密钥或测试数据。鉴权失效时只用
-`gh auth login --hostname github.com --web`；不得粘贴或长期导出 GitHub token。
+忽略且必须为当前用户拥有的普通文件。不得在仓库、命令历史或文档中记录真实主机地址、
+账号、密钥或测试数据。鉴权失效时只用 `gh auth login --hostname github.com --web`；
+不得粘贴或长期导出 GitHub token。
 
-### 测试服务器门禁
-
-| 风险 | 测试部署 | 合并 |
-|---|---|---|
-| `web-only` / `backend-safe`、无迁移 | 合并后的 `origin/main` 按需 `apply` | 用户授权、精确 CI 与实际 GitHub 合并条件满足后 Ready + squash |
-| `high-risk` 或迁移/控制面 | `apply` 前必须有目标 commit 的精确 `ci-gate=success` | 用户授权、精确 CI 与实际 GitHub 合并条件满足后 Ready + squash |
-| 未知/破坏性迁移 | fail closed，拆分并单独评审 | 禁止 |
-
-测试更新只构建受影响镜像，不重复组件测试或 G2；有迁移才创建密文 checkpoint。无迁移
-切换/验收失败自动恢复旧 commit 与应用镜像并记录 `rolled_back`，绝不自动回退 schema。
-`status` 是统一的只读诊断入口，只输出仓库、commit、test-update 与 vendor-test 的非敏感状态。
-如果测试服务器基线不在当前公开仓库对象库，日常入口会失败关闭；不得向公开工作区添加
-私有归档 remote、fetch 私有提交或生成私有对象包。此类跨历史迁移必须在隔离临时证据
-仓库中另行设计、评审和执行，先建立新的公开基线，再恢复本文件的日常流程。
-仓库不再携带任何跨历史或基线重对齐入口：公开基线激活、`rebaseline` 与
-`recover-rebaseline-*` 已在完成后退役（D125），对应命令一律失败关闭。
-
-PR 按上述授权、CI 与 GitHub 合并条件完成合并后，只表示仓库集成完成，不代表测试服务器已验证；按需测试更新只针对合并后的精确 `origin/main`。
-服务器基线或保护状态异常时仍失败关闭。分支部署只作为明确的合并前验收例外；若分支已经
-通过人工验证，且 squash 生成的新 `main` commit 与已验证分支 commit 的 tree 完全一致，
-仍可运行：
-
-```bash
-scripts/test_update.sh promote --ref origin/main
-```
-
-该命令要求 `main` 的精确 `ci-gate=success`，只切换服务器 Git 身份，不重建镜像、不迁移
-数据库；若 tree 不一致则失败关闭，必须重新执行 `apply`，需要预览时可先运行 `plan`。
-每次成功的 `apply` 或 `promote` 都写入 GitHub `test` Environment 的 Deployment 记录。
+PR 合并只表示仓库集成完成，不代表测试服务器已更新。
 
 ## 生产发布
 

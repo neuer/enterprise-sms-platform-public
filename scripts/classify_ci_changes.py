@@ -16,7 +16,7 @@ DEPLOY_SCRIPTS = Path(__file__).resolve().parents[1] / "deploy" / "scripts"
 sys.path.insert(0, str(DEPLOY_SCRIPTS))
 
 from gate_policy import ORDINARY_ROOT_DOCS  # noqa: E402
-from test_update_contract import protected_change_category  # noqa: E402
+from protected_path_policy import protected_change_category  # noqa: E402
 
 
 @dataclass(frozen=True)

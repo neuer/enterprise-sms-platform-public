@@ -90,8 +90,6 @@ VENDOR_TEST_MANAGER="$CONTROL_ROOT/deploy/scripts/vendor_test_manager.py"
 VENDOR_TEST_BOOTSTRAP="$CONTROL_ROOT/deploy/scripts/vendor_test_bootstrap.py"
 VENDOR_RUNTIME_RESET="$CONTROL_ROOT/deploy/scripts/vendor_runtime_reset.py"
 VENDOR_CONTROL_RELOAD="$CONTROL_ROOT/deploy/scripts/vendor_control_reload.py"
-TEST_UPDATE_MANAGER="$CONTROL_ROOT/deploy/scripts/test_update_manager.py"
-TEST_UPDATE_PROMOTE="$CONTROL_ROOT/deploy/scripts/test_update_promote.py"
 WRITER_CUTOVER="$CONTROL_ROOT/deploy/scripts/writer_cutover.py"
 STORAGE_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/storage_preflight.py"
 VOLUME_CONTRACT_PREFLIGHT="$CONTROL_ROOT/deploy/scripts/volume_contract_preflight.py"
@@ -105,8 +103,6 @@ HOST_BOOTSTRAP=0
 if [[ "$WRAPPER_PATH" == "$HOST_CONTROL_ROOT/sms-compose-bootstrap" ]]; then
   HOST_BOOTSTRAP=1
   LOCK_RUNNER="$HOST_CONTROL_ROOT/run_with_lifecycle_lock.py"
-  TEST_UPDATE_MANAGER="$HOST_CONTROL_ROOT/test_update_manager.py"
-  TEST_UPDATE_PROMOTE="$HOST_CONTROL_ROOT/test_update_promote.py"
   WRITER_CUTOVER="$HOST_CONTROL_ROOT/writer_cutover.py"
 fi
 LOCK_PYTHON=(python3)
@@ -132,8 +128,6 @@ VENDOR_TEST_MARKER="/etc/sms-platform/test-environment"
 VENDOR_TEST_STATE_DIR="/var/lib/sms-platform/vendor-test"
 VENDOR_CREDENTIAL_ROOT="/var/lib/sms-platform/vendor-test/credentials"
 VENDOR_CONTROL_SOCKET_DIR="/run/sms-platform/vendor-control"
-TEST_UPDATE_STATE_ROOT="/var/lib/sms-platform/test-updates"
-TEST_UPDATE_REQUEST="$TEST_UPDATE_STATE_ROOT/incoming/request.json"
 BASE_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.yml"
 PRODUCTION_STORAGE_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.production-storage.yml"
 PRODUCTION_RESTART_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.production-restart.yml"
@@ -255,7 +249,7 @@ usage() {
   echo "production root units only: host-lifecycle backup|drill|backup-status; security-report" >&2
   echo "development root unit only: vendor-agent-preflight" >&2
   echo "development only: vendor-test bootstrap|activate|pause|resume|rotate|recover-rotation|reset-runtime|reload-agent|status" >&2
-  echo "development only: test-update prepare|apply|verify|writer-cutover|status|capability|promote origin/BRANCH COMMIT; cp [args...]" >&2
+  echo "development only: test-update writer-cutover; cp [args...]" >&2
   echo "development only: secure-access start|status|stop (test-only HTTPS transport)" >&2
   echo "development only: cloudflare-tunnel install|configure --hostname HOST|install-token|start|status|verify|stop" >&2
   echo "production up options: -d|--detach --remove-orphans --no-deps --force-recreate" >&2
@@ -1392,44 +1386,6 @@ run_vendor_control_reload() {
     "${CONTROL_PYTHON[@]}" "$VENDOR_CONTROL_RELOAD"
 }
 
-run_test_update_manager() {
-  local command="$1"
-  local python_path="$CONTROL_ROOT/deploy/scripts"
-  local host_source_commit=''
-  if [[ "$HOST_BOOTSTRAP" == 1 ]]; then
-    local asset_status
-    asset_status="$(
-      SMS_SECURE_ACCESS_INTERNAL=1 \
-      SMS_SECRETS_MODE=development \
-        /usr/bin/python3 "$TEST_SECURE_ACCESS_MANAGER" verify-assets
-    )" || return $?
-    host_source_commit="$(
-      /usr/bin/python3 -c 'import json,sys
-value=json.loads(sys.argv[1])
-assert set(value) == {"schema_version","source_commit"}
-assert value["schema_version"] == 1
-print(value["source_commit"])' "$asset_status"
-    )" || return $?
-    [[ "$host_source_commit" =~ ^[0-9a-f]{40}$ ]] || return 1
-    python_path="$HOST_CONTROL_ROOT"
-    export SMS_HOST_SOURCE_COMMIT="$host_source_commit"
-  else
-    unset SMS_HOST_SOURCE_COMMIT
-  fi
-  SMS_LIFECYCLE_LOCKED="${SMS_LIFECYCLE_LOCKED:-}" \
-  SMS_LIFECYCLE_LOCK_FD="${SMS_LIFECYCLE_LOCK_FD:-}" \
-  SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR" \
-  SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR" \
-  PYTHONPATH="$python_path" \
-  PYTHONNOUSERSITE=1 \
-    /usr/bin/python3 "$TEST_UPDATE_MANAGER" "$command" \
-      --root "$ROOT" \
-      --runtime-root "$RUNTIME_ROOT" \
-      --state-root "$TEST_UPDATE_STATE_ROOT" \
-      --request "$TEST_UPDATE_REQUEST" \
-      --marker-file "$VENDOR_TEST_MARKER"
-}
-
 run_locked_vendor_test() {
   local command="${1:-}"
   shift || true
@@ -1506,32 +1462,11 @@ run_locked_test_update() {
   local command="${1:-}"
   shift || true
   reject_production_control_plane test-update || return $?
-  if [[ "$command" == promote ]]; then
-    [[ $# -eq 2 ]] || return 2
-    /usr/bin/env \
-      PYTHONNOUSERSITE=1 \
-      "PYTHONPATH=$HOST_CONTROL_ROOT" \
-      /usr/bin/python3 "$TEST_UPDATE_PROMOTE" \
-      --root "$ROOT" \
-      --source-ref "$1" \
-      --target "$2"
-    return
-  fi
-  [[ $# -eq 0 ]] || return 2
-  if [[ "$command" == writer-cutover ]]; then
-    writer_cutover_context
-    "${CONTROL_PYTHON[@]}" "$WRITER_CUTOVER" advance --root "$ROOT" "${WRITER_CUTOVER_CONTEXT[@]}" \
-      --release-binding "writer-$(git -C "$ROOT" rev-parse HEAD)" \
-      --compose "${COMPOSE[@]}"
-    return
-  fi
-  [[ "$command" == prepare || "$command" == apply || "$command" == verify ]] || return 2
-  export SMS_VENDOR_TEST_STATE_DIR="$VENDOR_TEST_STATE_DIR"
-  export SMS_VENDOR_CONTROL_SOCKET_DIR="$VENDOR_CONTROL_SOCKET_DIR"
-  if [[ "$HOST_BOOTSTRAP" != 1 ]]; then
-    prepare_runtime_secrets
-  fi
-  run_test_update_manager "$command"
+  [[ $# -eq 0 && "$command" == writer-cutover ]] || return 2
+  writer_cutover_context
+  "${CONTROL_PYTHON[@]}" "$WRITER_CUTOVER" advance --root "$ROOT" "${WRITER_CUTOVER_CONTEXT[@]}" \
+    --release-binding "writer-$(git -C "$ROOT" rev-parse HEAD)" \
+    --compose "${COMPOSE[@]}"
 }
 
 dispatch_test_update() {
@@ -1540,27 +1475,9 @@ dispatch_test_update() {
     shift
   fi
   reject_production_control_plane test-update || return $?
-  case "$command" in
-    status | capability)
-      [[ $# -eq 0 ]] || return 2
-      run_test_update_manager "$command"
-      ;;
-    prepare | apply | verify)
-      [[ $# -eq 0 ]] || return 2
-      run_with_lifecycle_lock test-update "$command"
-      ;;
-    writer-cutover)
-      [[ $# -eq 0 ]] || return 2
-      run_with_lifecycle_lock test-update "$command"
-      ;;
-    promote)
-      [[ $# -eq 2 ]] || return 2
-      run_with_lifecycle_lock test-update "$command" "$@"
-      ;;
-    *)
-      return 2
-      ;;
-  esac
+  # 测试环境发布改为 scripts/test_rebuild.sh 铲掉重建；这里只保留全新环境必需的写者切换。
+  [[ $# -eq 0 && "$command" == writer-cutover ]] || return 2
+  run_with_lifecycle_lock test-update "$command"
 }
 
 dispatch_secure_access() {

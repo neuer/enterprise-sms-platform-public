@@ -147,7 +147,6 @@ def test_exporter_requires_full_commit_shape_without_accepting_abbreviations() -
 def test_private_only_document_tests_skip_when_public_artifacts_are_absent() -> None:
     for relative in (
         "backend/tests/test_deployment_docs.py",
-        "backend/tests/test_test_update_workflow_docs.py",
     ):
         source = (ROOT / relative).read_text(encoding="utf-8")
         assert "private-only" in source

@@ -13,7 +13,6 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "docker_public.sh"
 PUBLIC_DOCKER_ENTRYPOINTS = (
-    ROOT / "scripts" / "test_update.sh",
     ROOT / "scripts" / "verify_all.sh",
     ROOT / "scripts" / "build_g2_images.sh",
     ROOT / "scripts" / "verify_vendor_live_test.sh",
