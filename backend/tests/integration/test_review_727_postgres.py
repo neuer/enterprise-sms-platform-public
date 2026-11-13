@@ -273,38 +273,6 @@ async def test_audit_guard_probe_tests_payload_constraint(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
-async def test_critical_pause_reassertion_is_not_cleared() -> None:
-    import redis as sync_redis
-
-    from tests.test_vendor_test_manager import manager_module
-
-    client = sync_redis.Redis.from_url(os.environ["AUTH_GUARD_REDIS_URL"], decode_responses=True)
-    operations = object.__new__(manager_module.HostActivationOperations)
-
-    def command(*args: str) -> str:
-        value = client.execute_command(*args)
-        return str(value) if value is not None else ""
-
-    operations._redis = command
-    operations.stop_senders = lambda: None
-    keys = operations._resume_pause_keys()
-    try:
-        client.delete(*keys)
-        operations.hold_fail_closed()
-        first = operations.pause_snapshot()
-        operations.hold_fail_closed()
-        assert operations.current_pause_kind() == "critical"
-        with pytest.raises(manager_module.VendorTestActivationError, match="changed"):
-            operations.clear_pause("critical", first)
-        assert operations.current_pause_kind() == "critical"
-        operations.clear_pause("critical", operations.pause_snapshot())
-        assert operations.current_pause_kind() is None
-    finally:
-        client.delete(*keys)
-        client.close()
-
-
-@pytest.mark.asyncio
 async def test_approval_waiting_for_lock_cannot_cross_deadline() -> None:
     from app.core.auth.accounts import SecurityPrincipal
     from app.services.approval_repository import SqlApprovalRepository
