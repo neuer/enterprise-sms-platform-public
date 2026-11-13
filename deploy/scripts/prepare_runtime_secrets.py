@@ -850,7 +850,6 @@ def prepare(
     migrate_owner: tuple[int, int],
     redis_owner: tuple[int, int] | None = None,
     require_root: bool = True,
-    vendor_credential_root: Path | None = None,
     redis_tls_ca_path: Path = REDIS_TLS_CA_PATH,
     redis_tls_certificate_path: Path = REDIS_TLS_CERTIFICATE_PATH,
     redis_tls_public_owner: tuple[int, int] = (0, 0),
@@ -890,20 +889,6 @@ def prepare(
                 certificate_path=Path(redis_tls_certificate_path),
                 expected_owner=redis_tls_public_owner,
             )
-        if vendor_credential_root is not None:
-            from vendor_credential_store import (  # noqa: PLC0415
-                CredentialStoreError,
-                VendorCredentialStore,
-            )
-
-            try:
-                vendor = VendorCredentialStore(vendor_credential_root).read_active()
-            except CredentialStoreError:
-                raise RuntimeSecretsError(
-                    "active vendor credential generation is unavailable"
-                ) from None
-            values["vendor_secret_name"] = vendor.secret_name.encode("utf-8")
-            values["vendor_secret_key"] = vendor.secret_key.encode("utf-8")
         _materialize_generation(
             runtime_root=runtime_root,
             values=values,
@@ -1208,7 +1193,6 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare_parser = subparsers.add_parser("prepare")
     prepare_parser.add_argument("--source-dir", type=Path, required=True)
     prepare_parser.add_argument("--runtime-root", type=Path, required=True)
-    prepare_parser.add_argument("--vendor-credential-root", type=Path)
     prepare_parser.add_argument(
         "--mode", choices=("production", "development"), default="production"
     )
@@ -1261,7 +1245,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 migrate_owner=migrate_owner,
                 redis_owner=redis_owner,
                 require_root=require_root,
-                vendor_credential_root=args.vendor_credential_root,
             )
             print("runtime secrets prepared")
         elif args.command == "revoke-vendor":

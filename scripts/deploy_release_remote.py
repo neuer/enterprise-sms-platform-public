@@ -118,14 +118,7 @@ _FINAL_RELEASE_ROOT = PurePosixPath("/var/lib/sms-platform/releases")
 _PROMOTION_SOURCE_FIELDS = {"report_sha256", "candidate_commit", "source", "images"}
 _PROMOTION_IMAGE_FIELDS = {"ref", "image_id", "scan_report_sha256"}
 _RSYNC_UPLOAD_ATTEMPTS = 3
-_VENDOR_AGENT_RUNTIME_PATHS = (
-    "deploy/scripts/vendor_control_agent.py",
-    "deploy/scripts/vendor_control_journal.py",
-    "deploy/scripts/vendor_control_protocol.py",
-    "deploy/scripts/vendor_credential_store.py",
-    "deploy/scripts/vendor_control_reload.py",
-    "deploy/scripts/vendor_seal_sessions.py",
-)
+
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -742,24 +735,6 @@ def build_release_plan(arguments: argparse.Namespace) -> list[list[str]]:
                 rollback_ref,
                 "HEAD",
             ],
-            *(
-                [
-                    ssh
-                    + [
-                        "git",
-                        "-C",
-                        target.platform_root,
-                        "diff",
-                        "--name-only",
-                        rollback_full_ref,
-                        manifest.commit,
-                        "--",
-                        *_VENDOR_AGENT_RUNTIME_PATHS,
-                    ]
-                ]
-                if target.secrets_mode == "development"
-                else []
-            ),
             ssh + ["git", "-C", target.platform_root, "merge", "--ff-only", manifest.commit],
             *(
                 [
@@ -809,27 +784,6 @@ def build_release_plan(arguments: argparse.Namespace) -> list[list[str]]:
                     manifest.release_id,
                 ),
             ],
-            *(
-                [
-                    ssh
-                    + [
-                        "sudo",
-                        "--",
-                        "/usr/bin/systemctl",
-                        "restart",
-                        "vendor-control-agent.service",
-                    ],
-                    ssh
-                    + [
-                        "systemctl",
-                        "is-active",
-                        "--quiet",
-                        "vendor-control-agent.service",
-                    ],
-                ]
-                if target.secrets_mode == "development"
-                else []
-            ),
             ssh + ["systemctl", "is-active", "--quiet", "sms-platform.service"],
             ssh
             + [
@@ -1049,7 +1003,7 @@ def _prepare_remote_git(
     target: RemoteTarget,
     manifest: ReleaseManifest,
     remote_ref: str,
-) -> bool:
+) -> None:
     ssh = _ssh_base(target)
     status = _run(
         runner,
@@ -1174,26 +1128,6 @@ def _prepare_remote_git(
         )
     else:
         raise RemoteReleaseError("remote rollback-ref check failed")
-    vendor_agent_changed = False
-    if target.secrets_mode == "development":
-        changed = runner.run(
-            [
-                *ssh,
-                "git",
-                "-C",
-                target.platform_root,
-                "diff",
-                "--quiet",
-                rollback_commit,
-                manifest.commit,
-                "--",
-                *_VENDOR_AGENT_RUNTIME_PATHS,
-            ],
-            capture_output=True,
-        )
-        if changed.returncode not in {0, 1}:
-            raise RemoteReleaseError("remote vendor control agent change check failed")
-        vendor_agent_changed = changed.returncode == 1
     _run(
         runner,
         [*ssh, "git", "-C", target.platform_root, "merge", "--ff-only", manifest.commit],
@@ -1202,7 +1136,6 @@ def _prepare_remote_git(
     if _requires_registry_host_control(manifest):
         _run_host_control_operation(runner, target, manifest, "activate")
         _run_host_control_operation(runner, target, manifest, "status")
-    return vendor_agent_changed
 
 
 def _sms_compose_remote_argv(target: RemoteTarget, *arguments: str) -> list[str]:
@@ -1321,27 +1254,6 @@ def _run_host_control_operation(
     _validate_host_control_result(result, manifest, operation)
 
 
-def _reload_vendor_control_agent(runner: CommandRunner, target: RemoteTarget) -> None:
-    ssh = _ssh_base(target)
-    _run(
-        runner,
-        [
-            *ssh,
-            "sudo",
-            "--",
-            "/usr/bin/systemctl",
-            "restart",
-            "vendor-control-agent.service",
-        ],
-        "remote vendor control agent restart",
-    )
-    _run(
-        runner,
-        [*ssh, "systemctl", "is-active", "--quiet", "vendor-control-agent.service"],
-        "remote vendor control agent active check",
-    )
-
-
 def deploy_release(arguments: argparse.Namespace, runner: CommandRunner) -> None:
     """受控上传发布包，并按所选模式继续发布或停在 bootstrap 前。"""
 
@@ -1350,7 +1262,7 @@ def deploy_release(arguments: argparse.Namespace, runner: CommandRunner) -> None
     _upload_bundle(runner, target, manifest, files, local_hashes)
     if _stage_only(arguments):
         return
-    vendor_agent_changed = _prepare_remote_git(runner, target, manifest, arguments.remote_ref)
+    _prepare_remote_git(runner, target, manifest, arguments.remote_ref)
     bundle = _remote_bundle(target, manifest.release_id)
     _run(
         runner,
@@ -1382,8 +1294,6 @@ def deploy_release(arguments: argparse.Namespace, runner: CommandRunner) -> None
         raise RemoteReleaseError("remote release status is not strict JSON") from exc
     if type(status_value) is not dict or status_value.get("state") != "succeeded":
         raise RemoteReleaseError("remote release did not reach succeeded")
-    if vendor_agent_changed:
-        _reload_vendor_control_agent(runner, target)
     ssh = _ssh_base(target)
     _run(
         runner,

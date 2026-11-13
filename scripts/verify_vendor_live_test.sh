@@ -34,21 +34,11 @@ python3 scripts/check_invariants.py
       tests/test_vendor_codes.py \
       tests/test_vendor_live_invariants.py \
       tests/test_vendor_test_budget_schema.py \
-      tests/test_vendor_test_files.py \
-      tests/test_vendor_test_manager.py \
-      tests/test_install_vendor_credentials.py \
       tests/test_prepare_runtime_secrets.py \
       tests/test_systemd_deployment.py \
-      tests/test_vendor_control_agent.py \
-      tests/test_vendor_control_resources.py \
-      tests/test_vendor_control_reload.py \
       tests/test_vendor_control_client.py \
-      tests/test_vendor_control_journal.py \
       tests/test_vendor_control_protocol.py \
-      tests/test_vendor_credential_store.py \
-      tests/test_vendor_seal_sessions.py \
       tests/test_vendor_test_api.py \
-      tests/test_vendor_test_bootstrap.py \
       tests/test_vendor_test_control_api.py \
       tests/test_vendor_test_operation.py \
       tests/test_vendor_test_operation_repository.py \
@@ -57,14 +47,8 @@ python3 scripts/check_invariants.py
       tests/test_vendor_test_step_up.py \
       tests/test_vendor_test_uat_api.py \
       tests/test_vendor_test_web_console_invariants.py \
-      tests/test_vendor_test_web_console_schema.py \
-      tests/test_install_test_secure_access.py \
-      tests/test_test_secure_access_contract.py \
-      tests/test_test_secure_access_manager.py \
-      tests/test_sms_compose_vendor_test.py
+      tests/test_vendor_test_web_console_schema.py
 )
-
-bash scripts/verify_vendor_control_uds.sh
 
 if [[ "${SMS_SKIP_VENDOR_POSTGRES_RECOVERY:-0}" != "1" ]]; then
   bash scripts/verify_vendor_postgres_recovery.sh

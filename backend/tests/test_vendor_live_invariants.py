@@ -28,24 +28,15 @@ def test_static_gate_covers_all_live_test_safety_boundaries() -> None:
         "_guard_chunk(chunk, persist_rejection=not authorized)",
         "chunk, lane, vendor_id, authorized=True",
         "LIVE_TEST_DAILY_SEGMENT_LIMIT",
-        "DAILY_SEGMENT_LIMIT",
         "pause_queues=True",
         'alert_level="crit"',
         "mock-vendor",
         "VENDOR_LIVE_PROTECTED_EXACT",
-        "reconcile_pure_mock_dotenv(",
         "verify_release.sh",
-        "GetReport",
-            "GetReply",
-            "class VendorTestRotationManager:",
-            "self.credentials.rollback_to_previous(transaction)",
-            "self.credentials.complete_rollback(rolling_back)",
-            "queue:paused:vendor-test-rotation-failed:",
         "protected_mobiles=(",
         "await self.config_store.load_config(app.dept)",
         "previewVendorTestUat",
         "backend/app/tasks/reconcile.py",
-        '"expires_at": expires_at.astimezone(UTC).isoformat()',
     ):
         assert token in source
 
@@ -54,10 +45,10 @@ def test_static_gate_forbids_api_phone_decrypt_and_checks_wrapper_timeouts() -> 
     source = (ROOT / "scripts/check_invariants.py").read_text(encoding="utf-8")
 
     assert 'if "decrypt_text(" in uat_service' in source
-    assert (
-        "if 'timeout=300 if operation == \"reset-runtime\" else 180' "
-        "not in fixed_runner"
-    ) in source
+    for retired in ("vendor_control_agent.py", "vendor_test_manager.py", "fixed_runner"):
+        assert retired not in source.split("def check_vendor_live_invariants", 1)[1].split(
+            "    update_contract = require_fragments(", 1
+        )[0]
 
 
 def test_static_gate_uses_database_recipients_and_control_state_not_host_allowlist() -> None:
@@ -86,19 +77,12 @@ def test_control_plane_schemas_have_no_plain_recipient_content_or_secret_fields(
     attempts = schema.split("CREATE TABLE vendor_test_send_attempt", maxsplit=1)[1].split(
         ");", maxsplit=1
     )[0]
-    evidence_source = (ROOT / "deploy/scripts/vendor_test_files.py").read_text(
-        encoding="utf-8"
-    )
 
     for forbidden in ("phone_enc", "phone_mask", "content", "secret"):
         assert forbidden not in ledger.lower()
         assert forbidden not in attempts.lower()
     assert "phone_hmac" not in ledger.lower()
     assert "phone_hmac" not in attempts.lower()
-    assert "_FORBIDDEN_EVIDENCE_KEY" in evidence_source
-    assert "phone|mobile|hmac|secret|password|credential|content|digest|hash|token" in (
-        evidence_source
-    )
 
 
 def test_page_only_vendor_test_contract_keeps_plaintext_outside_volatile_browser_memory() -> None:

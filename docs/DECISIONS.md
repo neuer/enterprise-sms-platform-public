@@ -1841,3 +1841,32 @@
   控制面仍被 `vendor_test_*` 引用，留待后续单独评估；`sms-compose` 的主机引导包装器分支
   随之保留。D122 中因分类合同冻结而推迟的 `openapi.yaml` 拆分等事项可重新评估。
 
+## D127 退役真实联调主机控制面与仓库管理的测试环境隧道
+
+- 背景：D126 之后共享测试环境只跑 Mock，不再安装正式厂商 Key。root `vendor-control-agent`、
+  版本化凭据库、密封会话、`vendor-test` 生命周期管理器、切回 Mock 与运行态撤销脚本，以及
+  为录入正式凭据而设的临时 Quick Tunnel 和持久 Cloudflare Named Tunnel 都只服务这一场景；
+  生产主机本就禁止安装这些资产。仓库所有者 2026-11-13 确认两套隧道一并删除，测试环境的
+  访问入口不再由本仓库管理。
+- 决策：删除 `deploy/scripts/` 下的 `vendor_control_{agent,journal,reload}.py`、
+  `vendor_credential_store.py`、`vendor_seal_sessions.py`、`vendor_test_{manager,mock_reset,files,bootstrap}.py`、
+  `vendor_runtime_reset.py`、`install_vendor_credentials.py`、`install_test_secure_access.py`、
+  `test_secure_access_{contract,manager,runtime}.py`、`cloudflare_tunnel_manager.py`、
+  `test_update_backup.py`，三个 systemd unit、示例配置、`scripts/verify_vendor_control_uds.sh`
+  及对应测试。`sms-compose` 移除 `vendor-test`、`secure-access`、`cloudflare-tunnel`、
+  `vendor-agent-preflight` 与主机引导包装器分支。
+- 运行密钥：development 模式固定执行 `revoke-vendor`，运行态副本只携带厂商撤销 tombstone；
+  `prepare` 不再接受 `--vendor-credential-root`。production 路径未改。
+- 发布：`scripts/deploy_release_remote.py` 不再比较或重启 development 目标上的 agent。
+  `install_production_host_assets.py` 继续要求生产宿主不存在 `vendor-control-agent.service`
+  与 test-host 标记。
+- CI：经所有者同意，从 `ci.yml` 的 security 任务删除只测试 agent UDS/SO_PEERCRED/RSA 边界的
+  “Verify controlled vendor-live safety”一步；其余任务、required check 与分支保护不变。
+- 保留：`deploy/scripts/vendor_control_protocol.py` 仍被后端镜像复制并由应用内
+  `vendor_control_client` 导入；信任代理渲染器与 `trusted-proxies.conf` 属于生产 Nginx 合同。
+  vendor-live 保护清单中已删除文件的条目继续保留，使历史 diff 仍按 vendor-live 归类。
+- 后果：`/configs`「真实联调」页与 `uat-send`（FR-19a、AGENTS 规则 38）在任何环境都无法再
+  连接控制代理，按既有 fail-closed 语义返回不可用。该产品功能、相关库表、PRD 与规则条文的
+  下线属于独立的产品决定，不在本项范围。已部署在测试主机上的 agent、unit、凭据目录和
+  cloudflared 需由操作者手工停用并清除。
+

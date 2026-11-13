@@ -231,13 +231,10 @@ def check_vendor_live_invariants() -> None:
     backend_limit = literal_integer(
         APP / "services/vendor_test_budget.py", "LIVE_TEST_DAILY_SEGMENT_LIMIT"
     )
-    deploy_limit = literal_integer(
-        ROOT / "deploy/scripts/vendor_test_files.py", "DAILY_SEGMENT_LIMIT"
-    )
-    if backend_limit != 100 or deploy_limit != backend_limit:
+    if backend_limit != 100:
         fail(
             APP / "services/vendor_test_budget.py",
-            "live-test 每日上限必须由一致的 100 计费条合同约束",
+            "live-test 每日上限必须为 100 计费条",
         )
     require_fragments(
         APP / "tasks/send_repository.py",
@@ -253,18 +250,6 @@ def check_vendor_live_invariants() -> None:
         "pause_queues=True",
         'alert_level="crit"',
     )
-
-    files_source = require_fragments(
-        ROOT / "deploy/scripts/vendor_test_files.py",
-        '_ALLOWLIST_FIELDS = frozenset({"schema_version", "entries"})',
-        '_ALLOWLIST_ENTRY_FIELDS = frozenset({"key_version", "phone_hmac"})',
-        '"SMS_VENDOR_TEST_STATE_DIR": "/var/lib/sms-platform/vendor-test"',
-        '"SMS_VENDOR_CONTROL_SOCKET_DIR": "/run/sms-platform/vendor-control"',
-        "_FORBIDDEN_EVIDENCE_KEY",
-        "phone|mobile|hmac|secret|password|credential|content|digest|hash|token",
-    )
-    if "phone_enc" in files_source or "phone_mask" in files_source:
-        fail(ROOT / "deploy/scripts/vendor_test_files.py", "allowlist 不得保存可解密手机号")
 
     schema_source = require_fragments(
         ROOT / "schema.sql",
@@ -314,39 +299,8 @@ def check_vendor_live_invariants() -> None:
         "mock-vendor:",
         "profiles: [dev]",
     )
-    manager = require_fragments(
-        ROOT / "deploy/scripts/vendor_test_manager.py",
-        'self._run("rm", "-s", "-f", "mock-vendor")',
-        "client.get_balance()",
-        "except VendorApiError as error:",
-        'print(json.dumps({"code": error.code}))',
-        "except VendorTestProbeRejected as error:",
-        "FROM vendor_test_daily_usage",
-        "_BACKEND_RUNTIME_GID = 10001",
-        "expected_mode=0o710",
-        "class VendorTestRotationManager:",
-        "class VendorTestRotationRecoveryManager:",
-        "self.operations.create_encrypted_checkpoint()",
-        "self.credentials.begin_rotation()",
-        "self.credentials.commit_rotation(transaction)",
-        "self.credentials.rollback_to_previous(transaction)",
-        "self.credentials.complete_rollback(rolling_back)",
-        "self.operations.prepare_runtime_secrets()",
-        "self.operations.rebuild_backend()",
-        "reconcile_pure_mock_dotenv(",
-        "queue:paused:vendor-test-rotation-failed:",
-        "current_pause_kind()",
-        "active_status_counts()",
-        "_require_zero_active_counts",
-    )
-    for consuming_probe in ("client.get_report(", "client.get_reply("):
-        if consuming_probe in manager:
-            fail(
-                ROOT / "deploy/scripts/vendor_test_manager.py",
-                "预检只允许 GetBalance，禁止 GetReport/GetReply",
-            )
-    if compose.count("profiles: [dev]") < 1 or manager.count("client.get_balance()") < 1:
-        fail(ROOT / "deploy/docker-compose.yml", "live-test 必须排除 mock-vendor")
+    if compose.count("profiles: [dev]") < 1:
+        fail(ROOT / "deploy/docker-compose.yml", "mock-vendor 只允许出现在 dev profile")
     if "docker.sock" in compose:
         fail(ROOT / "deploy/docker-compose.yml", "API/worker 禁止挂载宿主 Docker Socket")
     require_fragments(
@@ -384,65 +338,9 @@ def check_vendor_live_invariants() -> None:
         "if fields != _CREDENTIAL_FIELDS",
         'if fields != {"pause_kind"}',
     )
-    agent = require_fragments(
-        ROOT / "deploy/scripts/vendor_control_agent.py",
-        '[WRAPPER, "vendor-test", operation]',
-        'MOCK_RESET_WRAPPER = "/opt/sms-platform/deploy/scripts/vendor_test_mock_reset.py"',
-        '"reset-to-mock"',
-        "shell=False",
-        "_synchronize_state",
-        "self.write_heartbeat()",
-        "self.credential_store.stage(candidate)",
-        "self.credential_store.discard_pending()",
-        'self.runner.run("rotate")',
-        'self.runner.run("recover-rotation")',
-        "只执行代码内固定的 wrapper argv，不接受请求提供的 path/env",
-    )
-    require_fragments(
-        ROOT / "deploy/scripts/vendor_test_mock_reset.py",
-        "self.operations.restore_recovery_surface()",
-        '"http://127.0.0.1:8080/livez"',
-        'arguments != ["__locked", "vendor-test", "reset-to-mock"]',
-    )
     for forbidden_field in ('"path"', '"argv"', '"env"'):
         if forbidden_field in protocol:
             fail(ROOT / "deploy/scripts/vendor_control_protocol.py", "agent 协议禁止自由进程字段")
-    if "shell=True" in agent:
-        fail(ROOT / "deploy/scripts/vendor_control_agent.py", "控制代理禁止 shell 执行")
-    fixed_runner = agent.split("class FixedWrapperRunner:", maxsplit=1)[-1].split(
-        "def secure_socket(", maxsplit=1
-    )[0]
-    if 'timeout=300 if operation == "reset-runtime" else 180' not in fixed_runner:
-        fail(
-            ROOT / "deploy/scripts/vendor_control_agent.py",
-            "控制代理普通 wrapper 必须 timeout=180，reset-runtime 必须 timeout=300",
-        )
-
-    credential_store = require_fragments(
-        ROOT / "deploy/scripts/vendor_credential_store.py",
-        "def stage(",
-        "def begin_rotation(",
-        "def commit_rotation(",
-        "def rollback_to_previous(",
-        "def complete_rollback(",
-        "def read_rotation_transaction(",
-        "def activate_pending(",
-        "def discard_pending(",
-        "def recover_pending(",
-        '"rotation-state.json"',
-    )
-    if "secret" not in credential_store:
-        fail(ROOT / "deploy/scripts/vendor_credential_store.py", "凭据 generation 合同缺失")
-
-    require_fragments(
-        ROOT / "deploy/scripts/vendor_seal_sessions.py",
-        "def seal_aad(",
-        '"operation": operation',
-        '"actor": _context(actor)',
-        '"expires_at": expires_at.astimezone(UTC).isoformat()',
-        "if (operation, actor) != (session.operation, session.actor)",
-    )
-
     uat_service = require_fragments(
         APP / "services/vendor_test_uat.py",
         "protected_mobiles=(",
@@ -467,11 +365,6 @@ def check_vendor_live_invariants() -> None:
         "frequency_hmac_by_active",
         "aliases[min(aliases)]",
     )
-    require_fragments(
-        ROOT / "deploy/scripts/vendor_control_journal.py",
-        '_CHECKPOINT_OPERATIONS = frozenset({"activate", "rotate_credentials"})',
-    )
-
     uat_panel = require_fragments(
         ROOT / "frontend/src/components/VendorTestUatPanel.vue",
         "previewVendorTestUat",
@@ -527,111 +420,6 @@ def check_vendor_live_invariants() -> None:
                 "真实联调 operation 审计载荷不得原样写入 operation UUID 或 checkpoint",
             )
 
-    secure_contract_path = ROOT / "deploy/scripts/test_secure_access_contract.py"
-    require_fragments(
-        secure_contract_path,
-        'CLOUDFLARED_VERSION = "2026.10.3"',
-        "053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0",
-        'ORIGIN = "http://127.0.0.1:18080"',
-        "MAX_LIFETIME_SECONDS = 900",
-        "trycloudflare",
-    )
-    if literal_integer(secure_contract_path, "MAX_LIFETIME_SECONDS") != 900:
-        fail(secure_contract_path, "临时 HTTPS 入口硬时限必须为 900 秒")
-    secure_runtime = require_fragments(
-        ROOT / "deploy/scripts/test_secure_access_runtime.py",
-        '"--no-autoupdate"',
-        '"--protocol"',
-        '"http2"',
-        "write_ready_state",
-        "subprocess.DEVNULL",
-    )
-    if "shell=True" in secure_runtime:
-        fail(
-            ROOT / "deploy/scripts/test_secure_access_runtime.py",
-            "临时 HTTPS 运行器禁止 shell 执行",
-        )
-    secure_manager = require_fragments(
-        ROOT / "deploy/scripts/test_secure_access_manager.py",
-        '{"start", "status", "stop", "verify-assets"}',
-        'else {"start", "status", "stop"}',
-        "SMS_SECURE_ACCESS_INTERNAL",
-        'action == "verify-assets"',
-        '"systemctl"',
-        "CLOUDFLARED_SHA256",
-        "sms-platform.service",
-    )
-    if "shell=True" in secure_manager:
-        fail(
-            ROOT / "deploy/scripts/test_secure_access_manager.py",
-            "临时 HTTPS 管理器禁止 shell 执行",
-        )
-    secure_installer = require_fragments(
-        ROOT / "deploy/scripts/install_test_secure_access.py",
-        "CLOUDFLARED_SHA256",
-        "CLOUDFLARED_VERSION",
-        '"disable"',
-        '"--now"',
-        '"systemd-analyze"',
-        '"verify"',
-    )
-    for forbidden_installer_action in ('"start"', '"enable"'):
-        if forbidden_installer_action in secure_installer:
-            fail(
-                ROOT / "deploy/scripts/install_test_secure_access.py",
-                "一次性临时 HTTPS 安装器禁止启动或启用 unit",
-            )
-    secure_unit = require_fragments(
-        ROOT / "deploy/systemd/sms-platform-test-secure-access.service",
-        "DynamicUser=yes",
-        "RuntimeMaxSec=15min",
-        "Restart=no",
-        "NoNewPrivileges=yes",
-        "CapabilityBoundingSet=",
-        "RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX",
-    )
-    for forbidden_unit_fragment in ("[Install]", "WantedBy=", "EnvironmentFile="):
-        if forbidden_unit_fragment in secure_unit:
-            fail(
-                ROOT / "deploy/systemd/sms-platform-test-secure-access.service",
-                "临时 HTTPS unit 必须保持 static 且无密钥环境",
-            )
-    cloudflare_manager = require_fragments(
-        ROOT / "deploy/scripts/cloudflare_tunnel_manager.py",
-        "install-token",
-        "getpass.getpass",
-        '"enable"',
-        '"--now"',
-        "run_probe",
-        "127.0.0.1",
-        "CLOUDFLARED_SHA256",
-    )
-    for forbidden_manager_fragment in (
-        "shell=True",
-        "TUNNEL_TOKEN",
-        '--token"',
-    ):
-        if forbidden_manager_fragment in cloudflare_manager:
-            fail(
-                ROOT / "deploy/scripts/cloudflare_tunnel_manager.py",
-                "持久 Tunnel 管理器禁止通过命令行或环境传递 token",
-            )
-    cloudflare_unit = require_fragments(
-        ROOT / "deploy/systemd/sms-platform-cloudflare-tunnel.service",
-        "DynamicUser=yes",
-        "LoadCredential=tunnel-token:/etc/sms-platform/cloudflare-tunnel-token",
-        "run --token-file %d/tunnel-token",
-        "Restart=on-failure",
-        "NoNewPrivileges=yes",
-        "CapabilityBoundingSet=",
-        "WantedBy=multi-user.target",
-    )
-    for forbidden_tunnel_unit_fragment in ("EnvironmentFile=", "TUNNEL_TOKEN="):
-        if forbidden_tunnel_unit_fragment in cloudflare_unit:
-            fail(
-                ROOT / "deploy/systemd/sms-platform-cloudflare-tunnel.service",
-                "持久 Tunnel unit 禁止把 token 放入环境",
-            )
     vendor_seal = require_fragments(
         ROOT / "frontend/src/lib/vendorSeal.ts",
         "globalThis.isSecureContext === true",
@@ -743,43 +531,16 @@ def check_vendor_live_invariants() -> None:
         '"$seen_auth_mock" != 1 || "$env_auth_mock" != 0',
         '"$seen_vendor_mock" != 1 || "$env_vendor_mock" != 0',
         "reject_production_control_plane test-update",
-        "dispatch_secure_access()",
-        "reject_production_control_plane secure-access",
-        "start | status | stop",
-        "dispatch_cloudflare_tunnel()",
-        "reject_production_control_plane cloudflare-tunnel",
-        "install-token | start | status | verify | stop",
     )
+    for retired in ("vendor-test", "secure-access", "cloudflare-tunnel", "vendor-agent-preflight"):
+        if retired in wrapper:
+            fail(ROOT / "deploy/sms-compose", f"已退役的测试主机控制入口不得恢复: {retired}")
     update_dispatch = wrapper.split("dispatch_test_update()", maxsplit=1)[-1].split(
         "run_locked_operation()", maxsplit=1
     )[0]
     for forbidden in ("restore", "rollback", "mock-vendor", "reset --hard", "down -v"):
         if forbidden in update_dispatch:
             fail(ROOT / "deploy/sms-compose", f"快速更新包装器禁止 {forbidden}")
-    secure_dispatch = wrapper.split("dispatch_secure_access()", maxsplit=1)[-1].split(
-        "dispatch_cloudflare_tunnel()", maxsplit=1
-    )[0]
-    for forbidden in (
-        "prepare_runtime_secrets",
-        "run_with_lifecycle_lock",
-        "credentials",
-        "recipient",
-        "activate",
-    ):
-        if forbidden in secure_dispatch:
-            fail(ROOT / "deploy/sms-compose", f"临时 HTTPS 包装器禁止 {forbidden}")
-    cloudflare_dispatch = wrapper.split("dispatch_cloudflare_tunnel()", maxsplit=1)[-1].split(
-        "validate_production_control_commit()", maxsplit=1
-    )[0]
-    for forbidden in (
-        "prepare_runtime_secrets",
-        "run_with_lifecycle_lock",
-        "--token ",
-        "TUNNEL_TOKEN",
-    ):
-        if forbidden in cloudflare_dispatch:
-            fail(ROOT / "deploy/sms-compose", f"持久 Tunnel 包装器禁止 {forbidden}")
-
     require_fragments(
         ROOT / "scripts/classify_ci_changes.py",
         "protected_change_category",
@@ -877,7 +638,6 @@ def check_outbox_invariants() -> None:
     for relative in (
         "deploy/sms-compose",
         "deploy/scripts/release_manager.py",
-        "deploy/scripts/vendor_test_manager.py",
     ):
         require_fragments(ROOT / relative, "outbox-dispatcher")
 

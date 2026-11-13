@@ -148,12 +148,11 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     assert "scripts/check_gate_contracts.py" in changes_commands
     assert "LOCAL_SKIP_RUFF_FILES" not in yaml.safe_dump(workflow)
     backend_commands = "\n".join((vendor_lint_commands, coverage_commands))
-    vendor_live_step = next(
-        step
+    assert all(
+        step.get("name") != "Verify controlled vendor-live safety"
         for step in jobs["backend-vendor-lint"]["steps"]
-        if step.get("name") == "Verify controlled vendor-live safety"
     )
-    assert vendor_live_step["run"] == "bash scripts/verify_vendor_control_uds.sh"
+    assert "verify_vendor_control_uds.sh" not in vendor_lint_commands
     assert "verify_vendor_postgres_recovery.sh" not in vendor_lint_commands
     assert "verify_vendor_live_test.sh" not in vendor_lint_commands
     assert "tests/vendor-test-console.test.ts" in vendor_lint_commands

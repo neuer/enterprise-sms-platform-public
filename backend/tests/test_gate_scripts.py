@@ -155,22 +155,15 @@ def test_vendor_live_special_gate_is_mock_only_and_never_uses_network_tools() ->
     assert "test_send_worker.py" in gate
     assert "test_send_repository.py" in gate
     assert "test_sql_service_repositories.py" in gate
-    assert "test_vendor_test_manager.py" in gate
     for test_name in (
         "test_audit_coverage.py",
         "test_auth_runtime.py",
         "test_compose_contract.py",
         "test_prepare_runtime_secrets.py",
         "test_systemd_deployment.py",
-        "test_vendor_control_agent.py",
-        "test_vendor_control_reload.py",
         "test_vendor_control_client.py",
-        "test_vendor_control_journal.py",
         "test_vendor_control_protocol.py",
-        "test_vendor_credential_store.py",
-        "test_vendor_seal_sessions.py",
         "test_vendor_test_api.py",
-        "test_vendor_test_bootstrap.py",
         "test_vendor_test_control_api.py",
         "test_vendor_test_operation.py",
         "test_vendor_test_operation_repository.py",

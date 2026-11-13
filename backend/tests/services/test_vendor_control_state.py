@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import stat
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -152,51 +150,3 @@ def test_reader_rejects_missing_unknown_fields_and_unsafe_mode(tmp_path: Path) -
         ).require_fresh()
 
 
-def test_agent_writer_uses_0640_exact_safe_fields(tmp_path: Path) -> None:
-    import vendor_control_agent as agent_module
-
-    path = tmp_path / "control-state.json"
-    agent_module.write_control_state(
-        path,
-        mode="controlled",
-        heartbeat_at=NOW,
-        credential_configured=True,
-        active_recipient_count=1,
-        pause_kind=None,
-        backend_gid=os.getgid(),
-        expected_uid=os.getuid(),
-    )
-
-    document = json.loads(path.read_text(encoding="utf-8"))
-    assert set(document) == {
-        "schema_version",
-        "mode",
-        "heartbeat_at",
-        "credential_configured",
-        "active_recipient_count",
-        "pause_kind",
-        "daily_limit",
-    }
-    assert document["daily_limit"] == 100
-    assert SENTINEL not in path.read_text(encoding="utf-8")
-    assert stat.S_IMODE(path.stat().st_mode) == 0o640
-
-
-@pytest.mark.asyncio
-async def test_agent_heartbeat_loop_writes_then_waits_exactly_ten_seconds() -> None:
-    import vendor_control_agent as agent_module
-
-    events: list[object] = []
-
-    class Agent:
-        def write_heartbeat(self) -> None:
-            events.append("write")
-
-    async def stop_after_first_interval(seconds: float) -> None:
-        events.append(seconds)
-        raise asyncio.CancelledError
-
-    with pytest.raises(asyncio.CancelledError):
-        await agent_module.heartbeat_loop(Agent(), sleeper=stop_after_first_interval)
-
-    assert events == ["write", 10]

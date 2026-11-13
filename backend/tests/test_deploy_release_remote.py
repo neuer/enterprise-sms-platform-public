@@ -896,44 +896,6 @@ def test_offline_image_index_archive_metadata_is_bound_to_manifest(
         build_release_plan(_offline_arguments(manifest_path))
 
 
-def test_development_dry_run_exposes_fixed_vendor_agent_reload_stage(
-    tmp_path: Path,
-) -> None:
-    manifest_path, _ = _bundle(tmp_path)
-
-    plan = build_release_plan(_arguments(manifest_path))
-
-    remote_actions = [command[8:] for command in plan if command[0] == "ssh"]
-    diff = next(
-        action
-        for action in remote_actions
-        if action[:4] == ["git", "-C", "/opt/sms-platform", "diff"]
-    )
-    assert diff[4:6] == ["--name-only", "refs/heads/release-rollback/release-20260714"]
-    assert diff[-6:] == [
-        "deploy/scripts/vendor_control_agent.py",
-        "deploy/scripts/vendor_control_journal.py",
-        "deploy/scripts/vendor_control_protocol.py",
-        "deploy/scripts/vendor_credential_store.py",
-        "deploy/scripts/vendor_control_reload.py",
-        "deploy/scripts/vendor_seal_sessions.py",
-    ]
-    status_index = next(i for i, action in enumerate(remote_actions) if "status" in action)
-    restart_index = remote_actions.index(
-        [
-            "sudo",
-            "--",
-            "/usr/bin/systemctl",
-            "restart",
-            "vendor-control-agent.service",
-        ]
-    )
-    active_index = remote_actions.index(
-        ["systemctl", "is-active", "--quiet", "vendor-control-agent.service"]
-    )
-    assert status_index < restart_index < active_index
-
-
 def test_rsync_upload_uses_macos_openrsync_compatible_argv(tmp_path: Path) -> None:
     manifest_path, _ = _bundle(tmp_path)
 
@@ -1073,30 +1035,6 @@ def test_public_probe_rejects_spa_html_even_when_http_status_is_successful(
     assert any(command[0] == "curl" for command in runner.calls)
 
 
-def test_development_release_restarts_changed_vendor_agent_after_succeeded_status(
-    tmp_path: Path,
-) -> None:
-    manifest_path, manifest = _bundle(tmp_path)
-    runner = FakeRunner(manifest)
-
-    deploy_release(_arguments(manifest_path), runner)
-
-    remote_actions = [command[8:] for command in runner.calls if command[0] == "ssh"]
-    status_index = next(i for i, action in enumerate(remote_actions) if "status" in action)
-    restart = [
-        "sudo",
-        "--",
-        "/usr/bin/systemctl",
-        "restart",
-        "vendor-control-agent.service",
-    ]
-    restart_index = remote_actions.index(restart)
-    active_index = remote_actions.index(
-        ["systemctl", "is-active", "--quiet", "vendor-control-agent.service"]
-    )
-    assert status_index < restart_index < active_index
-
-
 def test_development_release_skips_vendor_agent_restart_when_runtime_is_unchanged(
     tmp_path: Path,
 ) -> None:
@@ -1113,57 +1051,6 @@ def test_development_release_skips_vendor_agent_restart_when_runtime_is_unchange
     assert ["systemctl", "is-active", "--quiet", "vendor-control-agent.service"] not in (
         remote_actions
     )
-
-
-@pytest.mark.parametrize("failure", ["restart", "active"])
-def test_vendor_agent_reload_failure_stops_before_public_probe(
-    tmp_path: Path,
-    failure: str,
-) -> None:
-    manifest_path, manifest = _bundle(tmp_path)
-    runner = FakeRunner(manifest)
-    runner.fail_vendor_agent_restart = failure == "restart"
-    runner.fail_vendor_agent_active_check = failure == "active"
-
-    with pytest.raises(RemoteReleaseError, match="vendor control agent"):
-        deploy_release(_arguments(manifest_path), runner)
-
-    assert not any(command[0] == "curl" for command in runner.calls)
-    assert (
-        sum(
-            command[8:12] == ["git", "-C", "/opt/sms-platform", "status"]
-            and command[8:][-1] == "--untracked-files=normal"
-            for command in runner.calls
-            if command[0] == "ssh"
-        )
-        == 1
-    )
-
-
-def test_retry_uses_persistent_rollback_ref_to_reload_agent_after_git_already_switched(
-    tmp_path: Path,
-) -> None:
-    manifest_path, manifest = _bundle(tmp_path)
-    runner = FakeRunner(manifest)
-    runner.remote_head = COMMIT
-    runner.rollback_ref = "b" * 40
-
-    deploy_release(_arguments(manifest_path), runner)
-
-    remote_actions = [command[8:] for command in runner.calls if command[0] == "ssh"]
-    diff = next(
-        action
-        for action in remote_actions
-        if action[:4] == ["git", "-C", "/opt/sms-platform", "diff"]
-    )
-    assert "b" * 40 in diff
-    assert [
-        "sudo",
-        "--",
-        "/usr/bin/systemctl",
-        "restart",
-        "vendor-control-agent.service",
-    ] in remote_actions
 
 
 def test_remote_fetches_exact_approved_ref_for_single_branch_clone(

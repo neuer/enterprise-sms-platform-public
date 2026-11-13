@@ -65,75 +65,6 @@ def test_console_security_changes_force_backend_frontend_and_g2(path: str) -> No
     assert "vendor-live" in result.categories
 
 
-def test_secure_access_contract_is_short_lived_static_and_has_no_plaintext_fallback() -> None:
-    contract = (
-        ROOT / "deploy/scripts/test_secure_access_contract.py"
-    ).read_text(encoding="utf-8")
-    runtime = (ROOT / "deploy/scripts/test_secure_access_runtime.py").read_text(
-        encoding="utf-8"
-    )
-    manager = (ROOT / "deploy/scripts/test_secure_access_manager.py").read_text(
-        encoding="utf-8"
-    )
-    unit = (
-        ROOT / "deploy/systemd/sms-platform-test-secure-access.service"
-    ).read_text(encoding="utf-8")
-    wrapper = (ROOT / "deploy/sms-compose").read_text(encoding="utf-8")
-    dialog = (
-        ROOT / "frontend/src/components/VendorCredentialDialog.vue"
-    ).read_text(encoding="utf-8")
-    seal = (ROOT / "frontend/src/lib/vendorSeal.ts").read_text(encoding="utf-8")
-
-    for token in (
-        'CLOUDFLARED_VERSION = "2026.10.3"',
-        "053b80b0a23031a038fdbf3c073f59f82b8f1f152aa67971d7383ffafc0dbab0",
-        'ORIGIN = "http://127.0.0.1:18080"',
-        "MAX_LIFETIME_SECONDS = 900",
-    ):
-        assert token in contract
-    assert '"--protocol",' in runtime and '"http2",' in runtime
-    assert '"--no-autoupdate",' in runtime
-    assert '{"start", "status", "stop", "verify-assets"}' in manager
-    assert 'action == "verify-assets"' in manager
-    assert "SMS_SECURE_ACCESS_INTERNAL" in manager
-    assert "RuntimeMaxSec=15min" in unit
-    assert "[Install]" not in unit and "WantedBy=" not in unit
-    assert "dispatch_secure_access()" in wrapper
-    assert "prepare_runtime_secrets" not in wrapper.split(
-        "dispatch_secure_access()", maxsplit=1
-    )[1].split("run_locked_operation()", maxsplit=1)[0]
-    assert "isVendorCredentialSecureContext" in dialog
-    assert "globalThis.isSecureContext === true" in seal
-    assert "globalThis.crypto.subtle" in seal
-    for forbidden in (
-        "明文提交",
-        "localStorage.setItem",
-        "sessionStorage.setItem",
-    ):
-        assert forbidden not in dialog
-        assert forbidden not in seal
-
-
-def test_repository_invariant_gate_covers_every_secure_access_boundary() -> None:
-    invariants = (ROOT / "scripts/check_invariants.py").read_text(encoding="utf-8")
-
-    for token in (
-        "deploy/scripts/test_secure_access_contract.py",
-        "deploy/scripts/test_secure_access_runtime.py",
-        "deploy/scripts/test_secure_access_manager.py",
-        "deploy/scripts/install_test_secure_access.py",
-        "deploy/systemd/sms-platform-test-secure-access.service",
-        "frontend/src/components/VendorCredentialDialog.vue",
-        "frontend/src/lib/vendorSeal.ts",
-        "RuntimeMaxSec=15min",
-        "MAX_LIFETIME_SECONDS = 900",
-        "globalThis.isSecureContext === true",
-        "globalThis.crypto.subtle",
-        "dispatch_secure_access()",
-    ):
-        assert token in invariants
-
-
 def test_ci_vendor_gate_is_mock_only_and_installs_locked_frontend_runtime() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     backend_job = workflow.split("  backend-vendor-lint:\n", maxsplit=1)[1].split(
@@ -146,7 +77,7 @@ def test_ci_vendor_gate_is_mock_only_and_installs_locked_frontend_runtime() -> N
         "npm test --prefix frontend"
     )
     assert "needs.changes.outputs.frontend != 'true'" in backend_job
-    assert "bash scripts/verify_vendor_control_uds.sh" in backend_job
+    assert "verify_vendor_control_uds.sh" not in backend_job
     assert "scripts/run_backend_tests.sh unit" in workflow
     assert "tests/vendor-seal.test.ts" in backend_job
     assert "tests/vendor-test-api.test.ts" in backend_job
@@ -227,8 +158,6 @@ def test_live_mode_blocks_normal_send_paths_and_vendor_http_stays_in_adapter() -
         "backend/app/api/vendor_test.py",
         "backend/app/services/vendor_control_client.py",
         "backend/app/services/vendor_test_uat.py",
-        "deploy/scripts/vendor_control_agent.py",
-        "deploy/scripts/vendor_control_reload.py",
     ):
         source = (ROOT / relative).read_text(encoding="utf-8")
         for forbidden in ("import httpx", "from httpx", "import requests", "aiohttp"):
@@ -239,17 +168,12 @@ def test_agent_protocol_has_only_fixed_operations_and_no_process_control_fields(
     protocol = (ROOT / "deploy/scripts/vendor_control_protocol.py").read_text(
         encoding="utf-8"
     )
-    agent = (ROOT / "deploy/scripts/vendor_control_agent.py").read_text(
-        encoding="utf-8"
-    )
 
     assert 'REQUEST_FIELDS = {"schema_version", "operation_id", "operation", "body"}' in protocol
     assert "if fields != _CREDENTIAL_FIELDS" in protocol
     assert 'if fields != {"pause_kind"}' in protocol
-    assert '[WRAPPER, "vendor-test", operation]' in agent
     for forbidden in ('"path"', '"argv"', '"env"', "shell=True"):
         assert forbidden not in protocol
-        assert forbidden not in agent
 
 
 def test_control_operation_and_audit_schemas_store_only_safe_metadata() -> None:
