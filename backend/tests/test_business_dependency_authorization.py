@@ -18,7 +18,6 @@ CASES = [
     ("templates", "/api/v1/web/templates", "get_settings", "operator"),
     ("security_daily", "/api/v1/web/admin/security-daily/config", "get_settings", "admin"),
     ("web_messages", "/api/v1/web/batches", "get_settings", "viewer"),
-    ("vendor_test", "/api/v1/web/admin/vendor-test/recipients", "get_settings", "admin"),
     ("apps", "/api/v1/web/admin/apps", "get_settings", "admin"),
     ("auth_providers", "/api/v1/web/admin/auth-providers/ad", "get_settings", "admin"),
     ("admin", "/api/v1/web/admin/configs", "get_settings", "admin"),

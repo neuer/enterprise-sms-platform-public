@@ -45,7 +45,6 @@ from app.services.pipeline_contracts import (
     PipelineStore,
     QueuePublisher,
     QuotaExemptionExpired,
-    RecipientGuard,
     SendAdmissionPort,
     SendRequest,
     SensitiveWord,
@@ -53,7 +52,6 @@ from app.services.pipeline_contracts import (
     StoredBatch,
     TemplatePort,
     UsageLedgerPort,
-    VendorTestConsoleOnly,
 )
 from app.services.send_inflight import InFlightInvariantViolation as InFlightInvariantViolation
 
@@ -83,7 +81,6 @@ __all__ = [
     "SendRequest",
     "SensitiveWord",
     "StoredBatch",
-    "VendorTestConsoleOnly",
 ]
 
 
@@ -104,8 +101,6 @@ class SendPipeline(AcceptanceCommitMixin):
         config: PipelineConfig,
         templates: TemplatePort | None = None,
         signs: SignPort | None = None,
-        recipient_guard: RecipientGuard | None = None,
-        vendor_test_console_only: bool = False,
         acceptance_limiter: ApplicationRateLimiter | None = None,
         usage_ledger: UsageLedgerPort,
         admission_guard: SendAdmissionPort | None = None,
@@ -120,8 +115,6 @@ class SendPipeline(AcceptanceCommitMixin):
         self.config = config
         self.templates = templates
         self.signs = signs
-        self.recipient_guard = recipient_guard
-        self.vendor_test_console_only = vendor_test_console_only
         self.acceptance_limiter = acceptance_limiter
         self.usage_ledger = usage_ledger
         self.admission_guard = admission_guard
@@ -139,7 +132,6 @@ class SendPipeline(AcceptanceCommitMixin):
     ) -> BatchResponse | None:
         """只读取已存在幂等结果，不消费新发送准入或普通请求额度。"""
 
-        request = self._with_uat_replay_identity(request)
         biz_id = request.biz_id
         reject_phone_business_id(biz_id, field_name="biz_id")
         if not biz_id:
@@ -207,8 +199,6 @@ class SendPipeline(AcceptanceCommitMixin):
         preauthorization: AcceptancePreauthorization | None = None,
         fingerprint_key_version: int | None = None,
     ) -> BatchResponse:
-        if self.vendor_test_console_only and not request.vendor_test_uat:
-            raise VendorTestConsoleOnly
         self._validate_usage_subject(request)
         biz_id = request.biz_id
         reject_phone_business_id(biz_id, field_name="biz_id")

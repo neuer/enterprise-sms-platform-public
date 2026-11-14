@@ -175,7 +175,7 @@ metrics_gate(){
 stage_0(){
 python3 scripts/check_spec_consistency.py
 python3 scripts/check_public_readiness.py
-SMS_SKIP_VENDOR_POSTGRES_RECOVERY=1 bash scripts/verify_vendor_live_test.sh
+python3 scripts/check_invariants.py
 }
 
 stage_1(){

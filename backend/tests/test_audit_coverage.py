@@ -22,7 +22,6 @@ from app.api import (
     signs,
     templates,
     users,
-    vendor_test,
     web_messages,
 )
 from app.main import create_app
@@ -105,7 +104,6 @@ def test_required_writes_declare_stable_audit_actions() -> None:
             "auth_provider_role_mappings_replace",
         ),
         (messages.send_message, "message_send"),
-        (messages.send_vendor_test_api_uat, "message_send"),
         (web_messages.import_messages, "message_import"),
         (web_messages.send_web_message, "message_send"),
         (approvals.decide_approval, "approval_decision"),
@@ -138,19 +136,6 @@ def test_required_writes_declare_stable_audit_actions() -> None:
         (ops.confirm_uncertain_resolution, "uncertain_resolve_confirm"),
         (ops.create_unmatched_export, "export_create"),
         (admin.update_configs, "config_update"),
-        (vendor_test.step_up, "vendor_test_step_up"),
-        (vendor_test.create_seal_session, "vendor_test_seal_session"),
-        (vendor_test.install_credentials, "vendor_test_credentials"),
-        (vendor_test.add_recipient, "vendor_test_recipient_add"),
-        (vendor_test.disable_recipient, "vendor_test_recipient_disable"),
-        (
-            vendor_test.refresh_recipient_hmac_index,
-            "vendor_test_recipient_refresh_index",
-        ),
-        (vendor_test.activate, "vendor_test_activate"),
-        (vendor_test.pause, "vendor_test_pause"),
-        (vendor_test.resume, "vendor_test_resume"),
-        (vendor_test.send_uat_message, "vendor_test_uat_send"),
     )
 
     missing = [

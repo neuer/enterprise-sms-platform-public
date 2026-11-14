@@ -7,8 +7,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from app.services.vendor_test_budget import SubmissionClaim, SubmissionClaimStatus
-from app.tasks.send import FinalizeKind, FinalizeReport, classify_finalize_conflict
+from app.tasks.send import (
+    FinalizeKind,
+    FinalizeReport,
+    SubmissionClaim,
+    SubmissionClaimStatus,
+    classify_finalize_conflict,
+)
 from app.vendor.failover import (
     InvokeAuthorization,
     InvokeClaim,
@@ -235,9 +240,6 @@ class FaithfulFailoverStore:
         self,
         chunk_id: int,
         expected_retry_count: int,
-        segments: int,
-        *,
-        enforce_live_test_budget: bool,
     ) -> SubmissionClaim:
         chunk = self.chunks[chunk_id]
         batch = self.batches[chunk.batch_id]
@@ -431,8 +433,6 @@ class FaithfulFailoverStore:
         previous_attempt_id: int,
         expected_next_vendor: str,
         expected_route_policy_version: int,
-        segments: int = 1,
-        enforce_live_test_budget: bool = False,
     ) -> InvokeClaim:
         if self.claim_gate is not None:
             await self.claim_gate.wait()
@@ -578,18 +578,6 @@ class FaithfulFailoverStore:
 
     async def split_once(self, chunk: Any) -> list[Any]:
         return []
-
-    async def reject_disallowed_recipient(self, chunk_id: int, denied_count: int) -> None:
-        return None
-
-    async def defer_daily_limit(self, chunk_id: int, lane: str, reset_at: datetime) -> None:
-        return None
-
-    async def pause_daily_limit(self, lane: str, reset_at: datetime) -> None:
-        return None
-
-    async def pause_control_agent_stale(self) -> None:
-        return None
 
     async def release_control_claim(self, chunk_id: int) -> None:
         return None

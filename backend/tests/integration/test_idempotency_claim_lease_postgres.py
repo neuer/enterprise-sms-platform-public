@@ -1227,10 +1227,9 @@ async def test_r8_actual_pipeline_cleanup_replay_and_new_acceptance(
     assert (await _claim_row(engine, scope, biz))["generation"] == (1 if protected else 2)
 
 
-@pytest.mark.parametrize("route", ["send", "uat-send"])
 @pytest.mark.parametrize("failure", ["orphan", "database", "redis"])
 async def test_r8_actual_asgi_preflight_has_stable_conflict_or_unavailable(
-    claim_env: Any, monkeypatch: pytest.MonkeyPatch, route: str, failure: str,
+    claim_env: Any, monkeypatch: pytest.MonkeyPatch, failure: str,
 ) -> None:
     from httpx import ASGITransport, AsyncClient
 
@@ -1263,7 +1262,7 @@ async def test_r8_actual_asgi_preflight_has_stable_conflict_or_unavailable(
         return pipeline
 
     async def forbidden(*_args: Any, **_kwargs: Any) -> Any:
-        pytest.fail("preflight must not enter new-send policy, provider, quota or UAT control")
+        pytest.fail("preflight must not enter new-send policy, provider or quota")
 
     class Auth:
         async def authenticate(self, _key: str) -> Any:
@@ -1271,12 +1270,11 @@ async def test_r8_actual_asgi_preflight_has_stable_conflict_or_unavailable(
 
     pipeline._authorize_new_send = forbidden
     monkeypatch.setattr(messages_module, "_pipeline", factory)
-    monkeypatch.setattr(messages_module, "_require_vendor_test_api_ready", forbidden)
     api = make_app()
     api.dependency_overrides[get_api_key_authenticator] = Auth
     async with AsyncClient(transport=ASGITransport(api), base_url="http://test") as client:
         response = await client.post(
-            f"/api/v1/messages/{route}", headers={"X-Api-Key": "synthetic"},
+            "/api/v1/messages/send", headers={"X-Api-Key": "synthetic"},
                                      json={"category": "notice", "mobiles": ["13800138000"],
                                            "content": "合成通知", "biz_id": biz})
     assert response.status_code == (409 if failure == "orphan" else 503), response.text

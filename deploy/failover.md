@@ -240,15 +240,15 @@ sudo /usr/bin/env \
 执行一次。schema v2 报告必须包含
 `crypto_probe_receipts.pre_migration`/`post_migration` 两份固定格式 receipt；四个审计
 key 与 recovery bundle 精确比对，全部 public `*_key_version` 引用必须存在于 data
-AES/HMAC keyring。两阶段均校验 [backup-restore.md](backup-restore.md) 列出的 17 个
+AES/HMAC keyring。两阶段均校验 [backup-restore.md](backup-restore.md) 列出的 16 个
 持久密文字段精确闭集，并对每个非空字段的每个实际密钥版本抽一条、按真实认证
 上下文解密；phone 另验 HMAC，raw payload 另验明文 SHA-256。该证据不得外推为
 闭集中所有历史行、历史告警密文/alert pair 或 `audit_log` MAC 已验证。
 
 `checks.historical_ciphertext_validation` 绑定 pre-migration receipt，pre/post 是两份
 独立证据且可能不同。首份 pre-T0 空库报告除 `table_counts.sms_message=0` 外，两份
-receipt 还必须各自满足 `counts.encrypted_columns=17`、`counts.encrypted_rows=0`、
-17 项 `coverage.rows=0` 和 `status=not_applicable_empty`；绑定 pre 的汇总检查也必须为
+receipt 还必须各自满足 `counts.encrypted_columns=16`、`counts.encrypted_rows=0`、
+16 项 `coverage.rows=0` 和 `status=not_applicable_empty`；绑定 pre 的汇总检查也必须为
 `not_applicable_empty`，仅作初始化前门禁。首批最小 notice 后、3 天观察期内必须以
 新生产快照在新的一次性恢复机复验；报告必须为 `table_counts.sms_message>0`，两份
 receipt 与绑定检查均为 `performed`，否则不得扩大到更多应用、verify 或 market。

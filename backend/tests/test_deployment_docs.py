@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -378,26 +377,6 @@ def test_remote_release_runbook_requires_mode_git_systemd_and_browser_acceptance
         assert token in index
 
 
-def test_development_high_risk_release_reload_boundary_is_documented() -> None:
-    index = read_required("README.md")
-    controlled = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(encoding="utf-8")
-    reset_plan_path = ROOT / "docs/plans/2026-07-19-vendor-test-reset-and-step-up.md"
-    if not reset_plan_path.is_file():
-        pytest.skip("private-only reset plan is intentionally absent from public snapshot")
-    reset_plan = reset_plan_path.read_text(encoding="utf-8")
-
-    for document in (index, controlled, reset_plan):
-        for token in (
-            "vendor-control-agent.service",
-            "release-rollback/",
-            "/usr/bin/systemctl restart",
-            "systemctl is-active --quiet",
-            "succeeded",
-        ):
-            assert token in document
-        assert "失败关闭" in document or "fail-closed" in document
-
-
 def test_dba_runbook_rotates_database_passwords_without_plaintext_arguments() -> None:
     runbook = read_required("dba.md")
     rotation = runbook.split("## 数据库密码轮换", 1)[1].split("\n## ", 1)[0]
@@ -457,10 +436,9 @@ def test_backup_runbook_streams_encryption_and_verifies_isolated_restore() -> No
         "historical_ciphertext_validation",
         "crypto_probe_receipts.pre_migration",
         "post_migration",
-        "counts.encrypted_columns=17",
+        "counts.encrypted_columns=16",
         "counts.encrypted_rows=0",
         "app.callback_secret_enc",
-        "vendor_test_recipient.phone_enc",
         "not_applicable_empty",
         "performed",
     )

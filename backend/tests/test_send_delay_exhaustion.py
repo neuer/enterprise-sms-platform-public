@@ -90,17 +90,11 @@ async def test_exhaustion_finalizes_messages_batch_and_callback(
             FakeResult(),
         ]
     )
-    settled: list[tuple[int, str]] = []
     callbacks: list[int] = []
-
-    async def settle(_connection: object, chunk_id: int, state: str) -> int:
-        settled.append((chunk_id, state))
-        return 1
 
     async def callback(_connection: object, batch_id: int) -> None:
         callbacks.append(batch_id)
 
-    monkeypatch.setattr(module, "settle_live_test_attempt", settle)
     monkeypatch.setattr(module, "enqueue_batch_finished", callback)
     await store_for(connection).delay(7, 1011, 1800)
 
@@ -111,7 +105,6 @@ async def test_exhaustion_finalizes_messages_batch_and_callback(
     assert "retry_not_before=NULL" in sql
     assert "UPDATE sms_message SET status='failed'" in sql
     assert "UPDATE sms_batch" in sql
-    assert settled == [(7, "released")]
     assert callbacks == [11]
 
 
@@ -124,7 +117,6 @@ async def test_race_loser_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
         effects.append((args, kwargs))
         return 0
 
-    monkeypatch.setattr(module, "settle_live_test_attempt", unexpected)
     monkeypatch.setattr(module, "enqueue_batch_finished", unexpected)
     await store_for(connection).delay(7, 1011, 1800)
 
@@ -137,22 +129,15 @@ async def test_non_exhausted_retry_semantics_are_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     connection = FakeConnection([FakeResult(scalar="market")])
-    settled: list[tuple[int, str]] = []
     enqueued: list[tuple[int, str, int]] = []
-
-    async def settle(_connection: object, chunk_id: int, state: str) -> int:
-        settled.append((chunk_id, state))
-        return 1
 
     async def enqueue(chunk_id: int, lane: str, countdown: int) -> None:
         enqueued.append((chunk_id, lane, countdown))
 
     store = store_for(connection)
-    monkeypatch.setattr(module, "settle_live_test_attempt", settle)
     monkeypatch.setattr(store, "_enqueue_retry", enqueue)
     await store.delay(7, 1011, 1800)
 
-    assert settled == [(7, "released")]
     assert enqueued == [(7, "bulk", 1800)]
 
 
@@ -174,7 +159,6 @@ async def test_race_after_batch_lock_does_not_duplicate_terminal_effects(
         effects.append((args, kwargs))
         return 0
 
-    monkeypatch.setattr(module, "settle_live_test_attempt", unexpected)
     monkeypatch.setattr(module, "enqueue_batch_finished", unexpected)
     await store_for(connection).delay(7, 1011, 1800)
 
@@ -198,13 +182,9 @@ async def test_exhaustion_keeps_batch_sending_when_other_messages_are_active(
     )
     callbacks: list[int] = []
 
-    async def settle(_connection: object, _chunk_id: int, _state: str) -> int:
-        return 1
-
     async def callback(_connection: object, batch_id: int) -> None:
         callbacks.append(batch_id)
 
-    monkeypatch.setattr(module, "settle_live_test_attempt", settle)
     monkeypatch.setattr(module, "enqueue_batch_finished", callback)
     await store_for(connection).delay(7, 1011, 1800)
 

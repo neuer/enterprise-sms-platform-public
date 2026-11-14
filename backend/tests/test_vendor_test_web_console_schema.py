@@ -60,10 +60,6 @@ def _load_checker() -> ModuleType:
     return module
 
 
-def _table(schema: str, name: str) -> str:
-    return schema.split(f"CREATE TABLE {name}", maxsplit=1)[1].split(");", maxsplit=1)[0]
-
-
 def test_vendor_test_console_migration_is_linear_expand_only_and_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -132,96 +128,6 @@ def test_hmac_alias_migration_backfills_and_is_expand_only(
     assert "DROP TABLE" not in sql.upper()
     with pytest.raises(RuntimeError, match="hmac alias"):
         module.downgrade()
-
-
-def test_vendor_test_recipient_schema_uses_only_encrypted_phone_quartet() -> None:
-    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-    recipient = _table(schema, "vendor_test_recipient")
-
-    for required in (
-        "phone_enc",
-        "phone_hmac",
-        "phone_mask",
-        "key_version",
-        "UNIQUE (key_version, phone_hmac)",
-        "status IN ('active','disabled')",
-        "disabled_by",
-        "disabled_at",
-    ):
-        assert required in recipient
-
-    declared = {
-        match.group(1).casefold()
-        for line in recipient.splitlines()
-        if (match := re.match(r"\s*([a-z_][a-z0-9_]*)\s+", line, re.IGNORECASE))
-    }
-    assert not (
-        {"phone", "mobile", "content", "payload", "secret", "credential", "ciphertext"}
-        & declared
-    )
-
-
-def test_vendor_test_recipient_hmac_alias_schema_contains_only_index_projection() -> None:
-    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-    alias = _table(schema, "vendor_test_recipient_hmac_alias")
-
-    for required in (
-        "recipient_id",
-        "hmac_key_version",
-        "hmac_digest",
-        "ON DELETE CASCADE",
-        "PRIMARY KEY (recipient_id, hmac_key_version)",
-        "UNIQUE (hmac_key_version, hmac_digest)",
-    ):
-        assert required in alias
-    assert "phone_enc" not in alias and "phone_mask" not in alias
-    assert "phone_hmac" not in alias
-    assert re.search(r"\bkey_version\s", alias) is None
-
-
-def test_vendor_test_operation_schema_contains_only_safe_metadata() -> None:
-    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-    operation = _table(schema, "vendor_test_operation")
-
-    for required in (
-        "operation_type",
-        "actor",
-        "status",
-        "safe_code",
-        "batch_no",
-        "checkpoint_id",
-        "requested_at",
-        "completed_at",
-    ):
-        assert required in operation
-    declared = {
-        match.group(1).casefold()
-        for line in operation.splitlines()
-        if (match := re.match(r"\s*([a-z_][a-z0-9_]*)\s+", line, re.IGNORECASE))
-    }
-    assert not (
-        {
-            "phone",
-            "mobile",
-            "content",
-            "payload",
-            "secret",
-            "credential",
-            "ciphertext",
-            "hmac",
-        }
-        & declared
-    )
-
-
-def test_vendor_test_console_schema_has_least_privilege_grants() -> None:
-    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-
-    assert "vendor_test_recipient,\n    vendor_test_recipient_hmac_alias" in schema
-    assert "vendor_test_send_attempt,\n    vendor_test_operation\nTO sms_accept" in schema
-    assert "vendor_test_recipient_id_seq," in schema
-    assert "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sms_app" in schema
-    assert "ALTER ROLE sms_app NOLOGIN" in schema
 
 
 def test_migration_checker_rejects_unsafe_console_privileges(

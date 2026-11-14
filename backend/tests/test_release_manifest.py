@@ -127,6 +127,10 @@ def test_manifest_accepts_exact_four_image_schema(tmp_path: Path) -> None:
         ("0127", "0128"),
         ("unknown_revision", "0128_runtime_event_retention"),
         ("0128_runtime_event_retention", "unknown_revision"),
+        ("0138_unmatched_report_time", "0139_retire_vendor_test_tables"),
+        ("0137_export_dispatch_exclusion", "0140_future"),
+        ("0139_retire_vendor_test_tables", "0138_unmatched_report_time"),
+        ("0140_future", "0137_export_dispatch_exclusion"),
         ("unknown_revision", "other_unknown_revision"),
     ],
 )
@@ -140,7 +144,7 @@ def test_manifest_rejects_crossing_or_unknown_runtime_event_reader_boundary(
     payload["migration"] = {
         "from": migration_from, "target": migration_target, "compatibility": "expand",
     }
-    with pytest.raises(ReleaseManifestError, match="runtime event reader"):
+    with pytest.raises(ReleaseManifestError, match="reader"):
         load_manifest(_write_manifest(tmp_path, payload))
 
 
@@ -151,6 +155,8 @@ def test_manifest_rejects_crossing_or_unknown_runtime_event_reader_boundary(
         ("0128_runtime_event_retention", "0129_future"),
         ("0129_future", "0130_future"),
         ("0128_runtime_event_retention", "0128_runtime_event_retention"),
+        ("0139_retire_vendor_test_tables", "0139_retire_vendor_test_tables"),
+        ("0139_retire_vendor_test_tables", "0140_future"),
     ],
 )
 def test_registry_manifest_preserves_releases_within_reader_generation(

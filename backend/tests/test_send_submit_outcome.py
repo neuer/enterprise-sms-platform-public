@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import sys
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,14 +11,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from test_send_worker import (  # noqa: E402
-    AllowGuard,
     FakeBucket,
     FakeGateway,
     FakeStore,
     chunk,
 )
 
-from app.services.vendor_test_budget import SubmissionClaim, SubmissionClaimStatus
 from app.tasks.send import (
     ChunkTaskResult,
     SendWorker,
@@ -40,7 +37,6 @@ from tests.vendor_failover_r5_support import two_vendor_registry
     [
         ("submitted", SubmitOutcome.SUBMITTED),
         ("paused", SubmitOutcome.PAUSED),
-        ("rejected", SubmitOutcome.REJECTED),
         ("stale", SubmitOutcome.STALE),
         ("delayed", SubmitOutcome.DELAYED),
         ("retry", SubmitOutcome.RETRY_SCHEDULED),
@@ -62,21 +58,11 @@ async def test_submit_outcome_covers_every_branch(
     elif setup == "paused":
         store.paused = True
         gateway = FakeGateway(["must-not-send"])
-    elif setup == "rejected":
-        gateway = FakeGateway(["must-not-send"])
-        worker_kwargs["recipient_guard"] = AllowGuard(1)
-        worker_kwargs["enforce_live_test_budget"] = True
     elif setup == "stale":
         store.claimed = False
         gateway = FakeGateway(["must-not-send"])
     elif setup == "delayed":
-        store.claim_result = SubmissionClaim(
-            SubmissionClaimStatus.DAILY_LIMIT,
-            datetime(2026, 9, 5, tzinfo=UTC),
-        )
-        gateway = FakeGateway(["must-not-send"])
-        worker_kwargs["recipient_guard"] = AllowGuard()
-        worker_kwargs["enforce_live_test_budget"] = True
+        gateway = FakeGateway([VendorApiError(1011, "delay")])
     elif setup == "retry":
         gateway = FakeGateway([VendorApiError(5002, "fast")])
     elif setup == "failed":

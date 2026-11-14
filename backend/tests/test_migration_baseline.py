@@ -367,25 +367,20 @@ def test_account_provider_model_replaces_username_centric_schema() -> None:
     assert "('ad', 'AD 账号', 'ldap', FALSE)" in schema
 
 
-def test_vendor_live_test_budget_is_in_schema_and_followup_migration() -> None:
+def test_vendor_attempt_counter_survives_budget_table_retirement() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
     revision = BACKEND / "migrations/versions/0016_vendor_live_test_budget.py"
 
     assert "-- v1.6.15：" in schema
     assert "vendor_attempt_count" in schema
-    assert "CREATE TABLE vendor_test_daily_usage" in schema
-    assert "CREATE TABLE vendor_test_send_attempt" in schema
+    assert "CREATE TABLE vendor_test_daily_usage" not in schema
+    assert "CREATE TABLE vendor_test_send_attempt" not in schema
     assert revision.is_file()
 
 
 def test_vendor_test_reset_operation_constraint_is_linear_and_data_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-    operation_table = schema.split(
-        "CREATE TABLE vendor_test_operation",
-        maxsplit=1,
-    )[1].split(");", maxsplit=1)[0]
     revision = (
         BACKEND / "migrations/versions/0022_vendor_test_reset_operation.py"
     )
@@ -433,8 +428,6 @@ def test_vendor_test_reset_operation_constraint_is_linear_and_data_safe(
     )
     upgrade_condition = str(created[0][0][2])
     downgrade_condition = str(created[1][0][2])
-    assert all(f"'{operation_type}'" in operation_table for operation_type in old_types)
-    assert "'reset_configuration'" in operation_table
     assert all(f"'{operation_type}'" in upgrade_condition for operation_type in old_types)
     assert "'reset_configuration'" in upgrade_condition
     assert all(f"'{operation_type}'" in downgrade_condition for operation_type in old_types)
@@ -445,18 +438,12 @@ def test_vendor_test_reset_operation_constraint_is_linear_and_data_safe(
         assert forbidden not in source
 
 
-def test_vendor_uat_acceptance_lease_is_in_schema_and_followup_migration() -> None:
-    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
+def test_historical_vendor_uat_acceptance_lease_migration_is_preserved() -> None:
     revision = BACKEND / "migrations/versions/0023_vendor_uat_acceptance_lease.py"
-
-    assert "-- v1.6.22：" in schema
-    operation_table = schema.split(
-        "CREATE TABLE vendor_test_operation",
-        maxsplit=1,
-    )[1].split(");", maxsplit=1)[0]
-    assert "lease_expires_at TIMESTAMPTZ" in operation_table
-    assert "chk_vendor_test_operation_uat_lease" in operation_table
-    assert "idx_vendor_test_operation_uat_lease" in schema
+    source = revision.read_text(encoding="utf-8")
+    assert "lease_expires_at TIMESTAMPTZ" in source
+    assert "chk_vendor_test_operation_uat_lease" in source
+    assert "idx_vendor_test_operation_uat_lease" in source
     assert revision.is_file()
 
     spec = importlib.util.spec_from_file_location(

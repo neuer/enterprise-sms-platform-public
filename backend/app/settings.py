@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     auth_mock: bool = False
     vendor_mock: bool = False
     vendor_base_url: str = "http://vendor-mock:9028"
+    # 真实联调已下线，该项不再读取；保留字段只为让既有 .env 中的
+    # VENDOR_LIVE_TEST_ORIGIN 不触发未知配置拒绝，待各环境清理后删除。
     vendor_live_test_origin: str = "https://vendor.example.invalid"
 
     db_host: str = "postgres"
@@ -229,17 +231,6 @@ class Settings(BaseSettings):
     ldap_allowed_hosts: str = ""
 
     @property
-    def vendor_live_test(self) -> bool:
-        """开发认证 mock 与真实厂商组合只用于受控联调环境。"""
-
-        return (
-            self.environment == "development"
-            and self.debug
-            and self.auth_mock
-            and not self.vendor_mock
-        )
-
-    @property
     def is_production(self) -> bool:
         """生产边界只能由显式环境模式决定，禁止再从 DEBUG 反推。"""
 
@@ -298,8 +289,8 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "development/test requires DEBUG=1 and AUTH_MOCK=1"
                 )
-            if self.environment == "test" and not self.vendor_mock:
-                raise ValueError("test requires VENDOR_MOCK=1")
+            if not self.vendor_mock:
+                raise ValueError("development/test requires VENDOR_MOCK=1")
 
     def _validate_mounted_files(self) -> None:
         """生产 CA 必须可读；callback mTLS 成对配置；出站上限可解析。"""
@@ -325,28 +316,8 @@ class Settings(BaseSettings):
         _ = self.callback_egress_port_set
 
     def _validate_vendor_origins(self) -> None:
-        """厂商地址只能是无凭据 origin；受控联调必须命中精确 HTTPS origin。"""
+        """厂商地址只能是无凭据 origin。"""
 
-        live_vendor_url = urlsplit(self.vendor_live_test_origin)
-        if (
-            live_vendor_url.scheme != "https"
-            or not live_vendor_url.hostname
-            or live_vendor_url.username is not None
-            or live_vendor_url.password is not None
-            or live_vendor_url.path not in {"", "/"}
-            or bool(live_vendor_url.query)
-            or bool(live_vendor_url.fragment)
-        ):
-            raise ValueError(
-                "VENDOR_LIVE_TEST_ORIGIN must be an HTTPS origin without credentials"
-            )
-        if (
-            self.vendor_live_test
-            and self.vendor_base_url != self.vendor_live_test_origin
-        ):
-            raise ValueError(
-                "vendor live test requires the configured exact HTTPS origin"
-            )
         vendor_url = urlsplit(self.vendor_base_url)
         if (
             vendor_url.scheme not in {"http", "https"}
@@ -881,7 +852,6 @@ def reject_unknown_runtime_environment(environ: Mapping[str, str]) -> None:
     if environ.get("ENVIRONMENT", "").casefold() == "test":
         allowed.update(
             {
-                "VENDOR_UAT_POSTGRES_DSN",
                 "EXPORT_AUTH_POSTGRES_DSN",
                 "SECURITY_SESSION_POSTGRES_DSN",
                 "OUTBOX_POSTGRES_DSN",

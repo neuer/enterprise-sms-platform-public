@@ -196,7 +196,7 @@ def test_authenticated_shell_has_no_frontend_version_switch() -> None:
     assert "DailyPasswordChangeDialog" in shell
 
 
-def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
+def test_single_spa_covers_account_and_ops_security_workflows() -> None:
     auth_api = read("frontend/src/api/auth.ts")
     admin_api = read("frontend/src/api/admin.ts")
     callback_api = read("frontend/src/api/callbacks.ts")
@@ -207,8 +207,6 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
     export_dialog = read("frontend/src/components/ExportPasswordDialog.vue")
     report_view = read("frontend/src/views/ReportView.vue")
     ops_unmatched = read("frontend/src/views/ops/OpsUnmatchedTab.vue")
-    credential_dialog = read("frontend/src/components/VendorCredentialDialog.vue")
-    vendor_seal = read("frontend/src/lib/vendorSeal.ts")
 
     assert '"/api/v1/web/auth/password/change"' in auth_api
     for field in ("page_size", "alert_type", "processed", "phone"):
@@ -225,11 +223,12 @@ def test_single_spa_covers_account_ops_and_vendor_security_workflows() -> None:
     assert "ExportPasswordDialog" in report_view
     assert "ExportPasswordDialog" in ops_unmatched
     # 操作类型枚举与审计字段经 types.gen.ts 生成类型承载（批次 K 迁移后字面量不再出现在手写 API 层）
-    assert "reset_configuration" in admin_api or "reset_configuration" in types_gen
     assert "correlation_id" in admin_api or "correlation_id" in types_gen
     assert "correlation_id" in callback_api or "correlation_id" in types_gen
-    assert "isVendorCredentialSecureContext" in credential_dialog
-    assert "isVendorCredentialSecureContext" in vendor_seal
+    # 真实联调已下线：控制台组件与凭据封装不得恢复。
+    assert not (ROOT / "frontend/src/components/VendorTestConsole.vue").exists()
+    assert not (ROOT / "frontend/src/lib/vendorSeal.ts").exists()
+    assert "vendor-test" not in admin_api
 
 
 def test_single_spa_consumes_required_runtime_and_approval_facts() -> None:

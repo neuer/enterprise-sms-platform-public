@@ -165,7 +165,7 @@ function lastAuditQuery(fetch: ReturnType<typeof auditFetch>): string {
 }
 
 describe("审计与系统参数", () => {
-  it("仅管理员看到运行参数、认证源、真实联调三个配置页签", async () => {
+  it("配置页只有运行参数与认证源两个页签", async () => {
     vi.stubGlobal("fetch", configFetch())
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -174,7 +174,7 @@ describe("审计与系统参数", () => {
     const wrapper = mount(ConfigView, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
-    expect(wrapper.findAll("[role='tab']").map((tab) => tab.text())).toEqual(["运行参数", "认证源", "真实联调"])
+    expect(wrapper.findAll("[role='tab']").map((tab) => tab.text())).toEqual(["运行参数", "认证源"])
     wrapper.unmount()
 
     session.role = "viewer"

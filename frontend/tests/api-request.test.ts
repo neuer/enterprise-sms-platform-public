@@ -401,7 +401,7 @@ describe("统一 API 请求", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ code }, 401)))
     const unauthorized = watchUnauthorized()
 
-    await expect(apiRequest("/admin/vendor-test/step-up", { method: "POST" })).rejects.toThrow(code)
+    await expect(apiRequest("/admin/step-up", { method: "POST" })).rejects.toThrow(code)
 
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_user")).toBeNull()
@@ -452,7 +452,7 @@ describe("统一 API 请求", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ code: "ACCOUNT_LOCKED" }, 423)))
     const unauthorized = watchUnauthorized()
 
-    await expect(apiRequest("/admin/vendor-test/step-up", { method: "POST" })).rejects.toThrow("ACCOUNT_LOCKED")
+    await expect(apiRequest("/admin/step-up", { method: "POST" })).rejects.toThrow("ACCOUNT_LOCKED")
 
     expect(sessionStorage.getItem("sms_token")).toBeNull()
     expect(sessionStorage.getItem("sms_user")).toBeNull()

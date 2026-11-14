@@ -156,26 +156,25 @@ snapshot manifest SHA-256 与 database SHA-256 匹配，并显示：Alembic 从�
 bundle 精确比对，扫描 public schema 的全部 `*_key_version` 引用并要求每个引用代次
 存在于 data AES/HMAC keyring。
 
-`coverage` 必须精确等于 schema 中 17 个持久密文字段的闭集，不能多也不能少：
+`coverage` 必须精确等于 schema 中 16 个持久密文字段的闭集，不能多也不能少：
 `app.callback_secret_enc`、`blacklist.phone_enc`、`callback_task.callback_secret_enc`、
 `import_phone.phone_enc`、`raw_vendor_log.payload_enc`、`reply_event.content_enc`、
 `reply_event.phone_enc`、`report_event.phone_enc`、
 `sensitive_metadata_archive.value_enc`、`sms_batch.display_content_enc`、
 `sms_batch.send_content_enc`、`sms_message.phone_enc`、`sms_reply.phone_enc`、
-`sms_template.content_enc`、`sms_template.name_enc`、`unmatched_report.phone_enc`、
-`vendor_test_recipient.phone_enc`。探针对每个非空字段的每个实际密钥版本抽取一条，
+`sms_template.content_enc`、`sms_template.name_enc`、`unmatched_report.phone_enc`。探针对每个非空字段的每个实际密钥版本抽取一条，
 按该字段的真实认证上下文解密；phone 字段另复核 HMAC，raw payload 另复核明文
-SHA-256。`counts.encrypted_rows` 是这 17 个字段的总行数，`coverage` 的每项固定为
+SHA-256。`counts.encrypted_rows` 是这 16 个字段的总行数，`coverage` 的每项固定为
 `rows`/`key_versions_verified`。
 
-该结果只证明闭集、全部被引用代次和逐字段逐版本样本，不得外推为 17 个字段的
+该结果只证明闭集、全部被引用代次和逐字段逐版本样本，不得外推为 16 个字段的
 所有历史行、历史告警密文/alert keypair 或 `audit_log` MAC 已验证。
 `checks.historical_ciphertext_validation` 绑定 pre-migration receipt；pre/post 是两份
 独立 receipt，迁移造成数据变化时状态可以不同。
 
 首份 pre-T0 空库恢复除 `table_counts.sms_message=0` 外，还必须在两份 receipt 中看到
-`counts.encrypted_columns=17`、`counts.encrypted_rows=0`、17 项 `coverage.rows` 全为 0，
-且 pre/post 与绑定 pre 的汇总状态均为 `not_applicable_empty`；这表示全部 17 个密文字段
+`counts.encrypted_columns=16`、`counts.encrypted_rows=0`、16 项 `coverage.rows` 全为 0，
+且 pre/post 与绑定 pre 的汇总状态均为 `not_applicable_empty`；这表示全部 16 个密文字段
 为空，只能作为初始化前门禁。首批最小 notice 后、3 天观察期内必须对新生产快照使用
 新的一次性恢复机复验；报告必须为 `table_counts.sms_message>0`，两份 receipt 的
 `status=performed` 且绑定检查均为 `performed`，否则不得扩大到更多应用、verify 或 market。

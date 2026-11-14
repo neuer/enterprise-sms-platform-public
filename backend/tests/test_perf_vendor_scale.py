@@ -75,8 +75,7 @@ class FakeProbe:
 
 
 class FakeApi:
-    def __init__(self, *, vendor_mode: str = "setup_required") -> None:
-        self.vendor_mode = vendor_mode
+    def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
         self.cancelled: list[str] = []
         self.config_updates: list[dict[str, str]] = []
@@ -118,8 +117,6 @@ class FakeApi:
         if path == "/api/v1/web/admin/apps/9" and method == "DELETE":
             assert headers is not None and headers.get("X-App-Revision")
             return HttpResponse(204, None)
-        if path == "/api/v1/web/admin/vendor-test/status":
-            return HttpResponse(200, {"mode": self.vendor_mode})
         if path == "/api/v1/web/admin/configs" and method == "GET":
             return HttpResponse(
                 200,
@@ -357,17 +354,6 @@ def test_suite_runs_notice_only_cancels_and_restores_on_success() -> None:
     assert api.cancelled
     assert api.config_updates[-1]["vendor_qps"] == "5"
     assert mock.reset_count >= 1
-
-
-def test_suite_refuses_controlled_vendor_and_still_restores() -> None:
-    api = FakeApi(vendor_mode="controlled")
-    with pytest.raises(PerformanceFailure, match="controlled"):
-        _suite(api).run()
-    assert api.config_updates[-1] == {
-        "vendor_qps": "5",
-        "reserved_realtime_qps": "2",
-        "vendor_batch_size": "500",
-    }
 
 
 def test_phase_row_budget_fail_closed() -> None:

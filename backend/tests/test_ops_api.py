@@ -342,28 +342,7 @@ def test_ops_lists_return_safe_complete_models() -> None:
         "bulk_code": "999",
         "balance": 20000,
         "threshold": 10000,
-        "vendor_test_realtime_code": None,
-        "vendor_test_bulk_code": None,
     }
-
-
-def test_queue_status_exposes_vendor_test_pause_codes() -> None:
-    """真实联调独立暂停键必须随队列状态透出，不得只在发送链路可见。"""
-    snapshot = QueueSnapshot(
-        None,
-        None,
-        20000,
-        10000,
-        vendor_test_realtime_code="vendor-test-agent-stale",
-        vendor_test_bulk_code="daily_limit",
-    )
-    browser, _ = client(queue_snapshot=snapshot)
-    headers = {"Authorization": "Bearer admin.jwt"}
-
-    queue = browser.get("/api/v1/web/admin/queue/status", headers=headers).json()
-    assert queue["realtime_code"] is None
-    assert queue["vendor_test_realtime_code"] == "vendor-test-agent-stale"
-    assert queue["vendor_test_bulk_code"] == "daily_limit"
 
 
 def test_ops_writes_are_audited_and_return_contract_statuses() -> None:

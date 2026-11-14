@@ -103,7 +103,6 @@ CI_CONTRACT_MAP: tuple[tuple[str, tuple[str, ...]], ...] = (
         ("tests/test_gate_scripts.py", "tests/test_ci_workflows.py"),
     ),
     ("scripts/test_rebuild.sh", ("tests/test_test_rebuild_script.py",)),
-    ("scripts/verify_vendor_live_test.sh", ("tests/test_gate_scripts.py",)),
     ("scripts/dev_check.sh", ("tests/test_gate_scripts.py",)),
     ("scripts/classify_ci_changes.py", ("tests/test_ci_change_classifier.py",)),
     ("scripts/verify_ci_results.py", ("tests/test_ci_workflows.py",)),

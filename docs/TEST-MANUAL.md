@@ -49,12 +49,8 @@ Mock 以 [vendor-api.md](vendor-api.md) 为准。历史自动验收证据保留�
 scripts/test_rebuild.sh --ref origin/main
 ```
 
-本次文档对齐时，配置的测试服务器为 `development-vendor-live` / `controlled`：认证仍为
-开发 `AUTH_MOCK`，厂商侧是受控真实联调，不是 Mock。live-test 下普通 Web/API 发送入口
-必须返回 `VENDOR_TEST_CONSOLE_ONLY`；只有 `/configs`「真实联调」页和
-`POST /api/v1/messages/uat-send` 能在严格授权下向一个 active 已登记测试号码发送，
-共同受每日最多 100 个计费条、uncertain 占额、应用限流和 critical pause 约束。该路径会
-产生真实短信和实际计费，必须由授权人员在独立窗口执行。
+测试服务器只跑 Mock：认证为开发 `AUTH_MOCK`，厂商侧固定为 `VENDOR_MOCK=1`，不会产生
+真实短信或实际计费。真实联调功能已下线（D128）。
 
 CI、G2、故障注入、魔法号、Mock Send 计数和本文其余 Mock 用例仍只允许在隔离的
 `AUTH_MOCK=1` / `VENDOR_MOCK=1` 环境执行，禁止直接套用到 controlled 服务器。以下项目
@@ -182,7 +178,7 @@ Web 地址：${TEST_BASE_URL}
 
 - [ ] 登录页、`/livez` 和 `/readyz` 返回 HTTP 200；
 - [ ] 已登记最近一次 `scripts/test_rebuild.sh` 输出的 commit；
-- [ ] Mock 专项确认 `VENDOR_MOCK=1`；controlled UAT 确认普通发送返回 `VENDOR_TEST_CONSOLE_ONLY`；
+- [ ] 确认 `VENDOR_MOCK=1`；
 - [ ] 测试负责人已登记 commit、镜像和执行窗口；
 - [ ] 四账号均处于未锁定状态；
 - [ ] `app-iam`、`app-oa`、`app-mkt` 可见且状态正常；
@@ -1144,7 +1140,7 @@ G2 包含规格/硬规则、Ruff、Mypy、后端 pytest 与覆盖率、迁移双
    真实连接值；
 2. 执行环境冒烟；
 3. 分配四账号、测试号池和证据目录；
-4. 按档位保存配置、Mock 或受控真实联调状态、队列、任务和账号基线；
+4. 按档位保存配置、Mock 状态、队列、任务和账号基线；
 5. 高风险用例取得运维窗口批准。
 
 ### 执行后

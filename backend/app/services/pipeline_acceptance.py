@@ -33,7 +33,6 @@ from app.services.pipeline_contracts import (
     ConsentRequired,
     InvalidContent,
     QueuePublisher,
-    RecipientGuard,
     SendRequest,
     SensitiveWord,
     SignPort,
@@ -110,8 +109,6 @@ class _Acceptance:
     request_hash: str | None
     request_hash_key_version: int | None
     recipient_count: int = 0
-    has_plain: bool = False
-    has_protected: bool = False
     inflight: Any = None
     inflight_bound: bool = False
     allow_unbound_release: bool = True
@@ -155,7 +152,6 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
     clock: Callable[[], datetime]
     templates: TemplatePort | None
     signs: SignPort | None
-    recipient_guard: RecipientGuard | None
     publisher: QueuePublisher
     usage_ledger: UsageLedgerPort
 
@@ -233,26 +229,16 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
         if request.biz_id and acceptance.request_hash_key_version is None:
             raise RuntimeError("idempotency fingerprint key version unavailable")
         self._validate_schedule(request)
-        has_plain = bool(request.mobiles)
-        has_protected = bool(request.protected_mobiles)
-        if has_plain == has_protected:
-            raise ValueError("号码来源必须且只能提供一种")
         recipient_limit = 50_000 if request.channel == "web" else 10_000
-        recipient_count = len(request.protected_mobiles) if has_protected else len(request.mobiles)
+        recipient_count = len(request.mobiles)
         if not 1 <= recipient_count <= recipient_limit:
             raise ValueError(f"mobiles count must be 1..{recipient_limit}")
-        if has_plain and any(PHONE_NUMBER.fullmatch(phone) is None for phone in request.mobiles):
+        if any(PHONE_NUMBER.fullmatch(phone) is None for phone in request.mobiles):
             raise ValueError("手机号格式无效")
-        if request.vendor_test_uat and recipient_count != 1:
-            raise ValueError("真实联调 UAT 仅允许一个已登记号码")
         if not request.biz_id and preauthorization is None:
             await self._authorize_new_send(request, app=app)
-        if has_protected and not request.vendor_test_uat:
-            raise ValueError("加密号码只能由真实联调 UAT 使用")
         if request.is_test and recipient_count > self.config.test_send_max:
             raise ValueError(f"测试发送最多{self.config.test_send_max}个号码")
-        if self.recipient_guard is not None and has_plain:
-            self.recipient_guard.require_allowed(request.mobiles)
         self._enforce_market_api_bulk(app, request, recipient_count)
         if (
             (request.channel != "web" or self._is_system_resend(request))
@@ -264,8 +250,6 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
                 app_id=app.app_id,
                 limit_per_minute=app.rate_limit_per_min,
             )
-        acceptance.has_plain = has_plain
-        acceptance.has_protected = has_protected
         acceptance.recipient_count = recipient_count
 
     async def _prepare_acceptance(
@@ -374,53 +358,16 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
             await self.store.audit_sensitive_hit(principal, len(hits))
         unique_phones = list(dict.fromkeys(request.mobiles))
         removed_duplicate = len(request.mobiles) - len(unique_phones)
-        protected: list[ProtectedPhone] = []
-        candidates_by_active: dict[str, frozenset[str]] = {}
-        frequency_hmac_by_active: dict[str, str] = {}
-        frequency_aliases_by_active: dict[str, dict[int, str]] = {}
-        if acceptance.has_protected:
-            protected_source = list(request.protected_mobiles)
-            if any(
-                not item.phone_enc
-                or re.fullmatch(r"[0-9a-f]{64}", item.phone_hmac) is None
-                or not item.phone_mask
-                or item.key_version < 1
-                for item in protected_source
-            ):
-                raise ValueError("加密测试号码合同无效")
-            aliases = dict(request.protected_hmac_candidates)
-            if (
-                len(aliases) != len(request.protected_hmac_candidates)
-                or set(aliases) != self.crypto.hmac_versions
-                or any(re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in aliases.values())
-                or aliases.get(protected_source[0].key_version) != protected_source[0].phone_hmac
-            ):
-                raise ValueError("加密测试号码索引合同无效")
-            # 受控测试号码来自 vendor_test_recipient；落入 sms_message 前在内存中
-            # 重新封装，避免跨表复制同一份合法密文。
-            source_phone = self.crypto.decrypt_phone(
-                protected_source[0].phone_enc,
-                protected_source[0].key_version,
-                protected_source[0].phone_hmac,
-                table="vendor_test_recipient",
-            )
-            protected = [self.crypto.protect_phone(source_phone)]
-            stable_hmac = aliases[min(aliases)]
-            frequency_hmac_by_active[protected[0].phone_hmac] = stable_hmac
-            frequency_aliases_by_active[protected[0].phone_hmac] = aliases
-            if policy.blacklist_required:
-                candidates_by_active = {protected[0].phone_hmac: frozenset(aliases.values())}
-        else:
-            (
-                protected,
-                candidates_by_active,
-                frequency_hmac_by_active,
-                frequency_aliases_by_active,
-            ) = await self._protect_plain_phones_batched(
-                unique_phones,
-                blacklist_required=policy.blacklist_required,
-                ownership_check=acceptance.ownership_check,
-            )
+        (
+            protected,
+            candidates_by_active,
+            frequency_hmac_by_active,
+            frequency_aliases_by_active,
+        ) = await self._protect_plain_phones_batched(
+            unique_phones,
+            blacklist_required=policy.blacklist_required,
+            ownership_check=acceptance.ownership_check,
+        )
         blocked_candidates = (
             await self.store.blacklisted(
                 set().union(*candidates_by_active.values()) if candidates_by_active else set()

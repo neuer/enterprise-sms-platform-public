@@ -36,7 +36,6 @@ Celery beat 的 PersistentScheduler 状态只保存可重建的调度元数据�
 - [production-resource-responsibility-freeze.md](../docs/runbooks/production-resource-responsibility-freeze.md)：Ubuntu 24.04.4、VMware/磁盘/网络/制品/PKI/监控资源冻结，RACI、宿主只读预检与安全初始化顺序。
 - [backup-restore.md](backup-restore.md)：无明文落盘的加密备份、校验与隔离恢复。
 - [vendor-egress.md](vendor-egress.md)：Phase 0 主出口报备、后续备出口启用条件、QPS 与错误码 1010 验证。
-- [controlled-real-vendor-test.md](../docs/runbooks/controlled-real-vendor-test.md)：开发测试环境使用正式 Key 的受控真实联调、100 计费条上限与停发规则。
 - [usage-ledger-recovery.md](../docs/runbooks/usage-ledger-recovery.md)：配额/频控事实解释、Redis 投影漂移复核与安全重建。
 - [uncertain-web-resend.md](../docs/runbooks/uncertain-web-resend.md)：Web unknown 人工重发使用受控 system_effect 主体与源批次部门。
 - [redis-ha.md](redis-ha.md)：broker/auth/control 故障域、ACL、托管高可用、切换恢复和密码轮换。
@@ -255,8 +254,8 @@ escrow provenance、未抽样历史行或未来仍可取得材料。
 
 ## 共享测试环境
 
-共享测试环境只跑 Mock，不安装正式厂商凭据；真实联调主机控制面（`vendor-control-agent`、
-凭据库、`vendor-test` 管理器）与仓库管理的临时/持久 Cloudflare 隧道均已退役（D127）。
+共享测试环境只跑 Mock，不安装正式厂商凭据；真实联调功能及其主机控制面、仓库管理的
+临时/持久 Cloudflare 隧道均已下线（D127、D128）。
 测试环境的访问入口不再由本仓库管理。
 
 ### 测试环境重建
@@ -270,7 +269,7 @@ scripts/test_rebuild.sh --ref origin/main
 入口先核验目标 commit 的精确 `ci-gate=success`，再让服务器检出该 commit 并执行
 `scripts/local_test.sh reset`：销毁 PostgreSQL、Redis 与 Mock 目录卷，重新构建、迁移、
 完成写者切换并 `seed-dev`。只有输出 `state=rebuilt` 且对应表面验收完成才算成功。
-测试环境只跑 Mock：服务器存在真实联调标记或 `.env` 不是纯 Mock 时入口失败关闭。重建不安装正式 Key，也不执行管理员初始化。
+测试环境只跑 Mock：服务器残留旧联调标记或 `.env` 不是纯 Mock 时入口失败关闭。重建不安装正式 Key，也不执行管理员初始化。
 
 production `up` 白名单只接受 `-d`/`--detach`、`--remove-orphans`、`--no-deps`、`--force-recreate`，以及显式服务 `postgres`、`redis`、`migrate`、`api`、`worker-realtime`、`worker-report`、`worker-bulk`、`worker-callback`、`outbox-dispatcher`、`beat`、`web`。`mock-vendor`、未知服务、所有 `--scale`、`--profile`、`--env-file`、`--build`、`--pull` 和其他未列出的参数均在 Python/Docker 调用前退出 2；development 仍可使用 Mock 调试参数。所有 `up/down/run --rm migrate/rotate backend` 由 `run_with_lifecycle_lock.py` 使用 Python `fcntl.flock` 共用非阻塞 lifecycle lock。helper 以 `Popen(..., pass_fds=...)` 让受控子 wrapper 继承锁 FD；私有 `__locked` 在 dispatch 前调用 `verify-held` 核对 FD 类型、mode、euid 与 dev/ino，独立 probe 只确认该 inode 已有锁，再对传入 FD 本身执行幂等 `LOCK_EX|LOCK_NB`：只有继承的同一 open-file-description 成功，指向同 inode 但未加锁的 FD 会在另一个 holder 存在时失败。单独伪造 marker 或 FD 均无效。helper 对 TERM/INT/HUP 转发给子进程并继续等待；即使 helper 遭 SIGKILL，继承锁 FD 仍由子进程及其后代持有，到最后一个持有者退出才由内核释放。`SMS_RUNTIME_ROOT` 必须是无 `..` 的绝对路径，词法规范化会去除尾斜杠，因此等价写法使用同一 `${SMS_RUNTIME_ROOT}.lifecycle.lock`。首次启动/reboot 时 helper 安全创建最终锁父目录，要求 mode `0700`、当前 euid、非符号链接；锁文件以 `O_NOFOLLOW` 创建为 `0600` 普通常规文件。诊断命令不取得该锁，runtime cleanup 也不删除锁 inode。
 
@@ -667,7 +666,7 @@ bash scripts/verify_data_images.sh
    证据归档后按批准的 VMware 流程整体退役恢复机。该证据通过前不得初始化管理员、创建
    API Key 或开放 T0 流量。
    此时生产 `sms_message` 应为 0；schema v2 恢复报告的
-   `crypto_probe_receipts.pre_migration`/`post_migration` 必须各自显示 17 个固定密文字段、
+   `crypto_probe_receipts.pre_migration`/`post_migration` 必须各自显示 16 个固定密文字段、
    `counts.encrypted_rows=0`、全部 `coverage.rows=0` 与 `status=not_applicable_empty`，绑定
    pre 的汇总检查也只能为 `not_applicable_empty`。这只作为**初始化前**空库结果，不能证明
    data AES/HMAC 能读取未来生产历史密文。首批最小 notice 形成事实后，必须在 3 天观察期内

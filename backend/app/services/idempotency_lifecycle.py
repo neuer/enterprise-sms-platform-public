@@ -26,20 +26,6 @@ RESULT_WORK_PROTECTED_SQL = """
     WHERE e.batch_id=b.id
       AND snapshot_task.status NOT IN ('done','dead')
   )
-  OR EXISTS (
-    SELECT 1 FROM vendor_test_operation operation
-    WHERE operation.operation_type='uat_send'
-      AND operation.status IN ('requested','running')
-      AND operation.batch_no IS NULL
-      AND operation.acceptance_app_id=b.app_id
-      AND operation.actor_account_id=b.creator_account_id
-      AND operation.actor_identity_id=b.creator_identity_id
-      AND operation.acceptance_biz_id=b.biz_id
-      AND b.channel='web' AND b.is_test=true
-      AND (operation.acceptance_request_hash IS NULL OR
-           (operation.acceptance_request_hash=i.request_hash
-            AND operation.acceptance_key_version=i.request_hash_key_version))
-  )
   OR (b.status='completed' AND b.total>0
       AND NOT EXISTS (SELECT 1 FROM sms_chunk c WHERE c.batch_id=b.id))
 )

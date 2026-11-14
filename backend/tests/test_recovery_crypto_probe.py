@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
+import re
+from pathlib import Path
 
 import pytest
 
@@ -78,6 +81,21 @@ def test_encrypted_column_inventory_is_an_exact_closed_set() -> None:
         _verify_encrypted_column_inventory(rows[:-1])
     with pytest.raises(RecoveryCryptoProbeError, match="inventory"):
         _verify_encrypted_column_inventory([*rows, ("new_table", "secret_enc")])
+
+
+def test_probe_inventory_matches_the_current_schema_after_table_retirement() -> None:
+    """从真实 schema 列表核验闭集，避免所有 mock 同步漏掉同一个字段。"""
+    baseline = importlib.import_module("migrations.versions.0001_schema_v16")
+    schema = (Path(__file__).resolve().parents[2] / "schema.sql").read_text(encoding="utf-8")
+    rows: list[tuple[str, str]] = []
+    for statement in baseline.split_sql_statements(schema):
+        table = re.search(r"^CREATE TABLE\s+(\w+)\s*\(", statement, re.MULTILINE)
+        if table is not None:
+            rows.extend(
+                (table[1], column)
+                for column in re.findall(r"^\s*(\w+_enc)\s+", statement, re.MULTILINE)
+            )
+    assert _verify_encrypted_column_inventory(rows) == 16
 
 
 def test_bound_text_and_raw_payload_samples_are_really_authenticated() -> None:

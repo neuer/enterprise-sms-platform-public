@@ -17,16 +17,13 @@ def test_playground_is_a_single_self_contained_html_file() -> None:
     assert source.lower().startswith("<!doctype html>")
     assert "X-Api-Key" in source
     assert "/api/v1/messages/send" in source
-    assert "/api/v1/messages/uat-send" in source
+    assert "uat-send" not in source
     assert "/api/v1/messages/batches/" in source
     assert "IP_NOT_ALLOWED" in source
     assert "biz_id" in source
     assert 'id="errorBanner"' in source
     assert 'id="sendFeedback"' in source
     assert 'id="selfCheck"' in source
-    assert 'id="uatSendBtn"' in source
-    assert 'id="uatModeTemplate"' in source
-    assert 'id="uatTemplateId"' in source
     assert "平台模板 ID（非厂商编号）" in source
     assert "模板是全局资源" in source
     assert re.search(r'(?:src|href)=["\']https?://', source) is None

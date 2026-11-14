@@ -148,20 +148,6 @@
   letter-spacing: 0.08em;
 }
 
-/* 真实联调独立暂停的辅行：琥珀色与主暂停码区分，不冒充断路器状态。 */
-.queue-status-grid .vendor-test-pause {
-  color: var(--amber);
-  font-size: var(--fs-xs);
-  letter-spacing: 0;
-  text-transform: none;
-}
-
-.vendor-test-pause-note {
-  margin: 10px 0 0;
-  color: var(--amber);
-  font-size: var(--fs-md);
-  line-height: 1.6;
-}
 .queue-status-grid strong {
   font-size: var(--fs-3xl);
 }

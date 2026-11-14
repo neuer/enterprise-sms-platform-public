@@ -33,7 +33,6 @@ from app.api.sensitive_words import router as sensitive_words_router
 from app.api.signs import router as signs_router
 from app.api.templates import router as templates_router
 from app.api.users import router as users_router
-from app.api.vendor_test import router as vendor_test_router
 from app.api.web_messages import router as web_messages_router
 from app.build_info import APP_VERSION
 from app.core.auth.admission import drain_login_admissions
@@ -201,7 +200,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(signs_router)
     application.include_router(templates_router)
     application.include_router(users_router)
-    application.include_router(vendor_test_router)
     application.include_router(web_messages_router)
 
     @application.get("/livez", tags=["system"])

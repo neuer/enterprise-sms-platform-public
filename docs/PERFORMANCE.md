@@ -135,7 +135,7 @@ PERF_KEYS_FILE=../deploy/secrets/dev-apikeys.txt \
 3. 大分片：`vendor_batch_size=1000`、`vendor_qps=20`，60 个 1000 号即时批次。Mock 单次 Send 号码数不得超过 1000。
 4. 排空 480s 后恢复 `vendor_qps=5`、`reserved_realtime_qps=2`、`vendor_batch_size=500`，并 `POST /_mock/state` reset。取消后的行仍计入 200000 顶，默认留存 12 个月。
 
-开跑前：`vendor-test` 不得为 `controlled` 或 `blocked`；`--mock-base` 只能是 `http://127.0.0.1` / `localhost` / `mock-vendor`；无未排空 queued/sending；独占窗口。主体只用 notice，不用 verify，夜间不用 market。不激活真实联调，不改 `VENDOR_BASE_URL`，不跑 `verify_all.sh` / `compose down -v`。
+开跑前：目标环境必须 `VENDOR_MOCK=1`；`--mock-base` 只能是 `http://127.0.0.1` / `localhost` / `mock-vendor`；无未排空 queued/sending；独占窗口。主体只用 notice，不用 verify，夜间不用 market。不激活真实联调，不改 `VENDOR_BASE_URL`，不跑 `verify_all.sh` / `compose down -v`。
 
 本机 Compose 排空：
 

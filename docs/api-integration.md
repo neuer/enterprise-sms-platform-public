@@ -18,7 +18,7 @@
 
 | 环境 | 请求根地址 | 说明 |
 |---|---|---|
-| 测试环境 | `http://<测试服务器>:18080/api/v1` | 受控真实联调模式下普通发送被保护性拦截（见 9.4），仅 Mock 环境可完整测试 |
+| 测试环境 | `http://<测试服务器>:18080/api/v1` | 只连 Mock 厂商，不产生真实短信 |
 | 生产环境 | `https://<生产域名>/api/v1` | 由平台方提供，仅 HTTPS |
 
 所有请求与响应均为 `application/json; charset=utf-8`。
@@ -388,7 +388,6 @@ const data = await response.json();
 | `FORBIDDEN` | 403 | 数据权限不足 |
 | `CATEGORY_NOT_ALLOWED` | 403 | 应用未开通该消息类别 |
 | `IP_NOT_ALLOWED` | 403 | 来源 IP 不在应用白名单（检查出口 IP 是否变化） |
-| `VENDOR_TEST_CONSOLE_ONLY` | 403 | 受控真实联调环境下的普通发送保护，仅测试环境出现 |
 | `NOT_FOUND` | 404 | 批次不存在或不属于本应用 |
 | `STATE_CONFLICT` | 409 | 状态机非法流转，或受理预留已绑定不一致批次 |
 | `IDEMPOTENCY_CONFLICT` | 409 | 同一幂等键已用于不同请求，更换 biz_id 或复用原请求 |

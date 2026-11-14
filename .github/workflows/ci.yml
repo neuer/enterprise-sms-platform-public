@@ -131,11 +131,6 @@ jobs:
           npm audit --prefix frontend --audit-level=high
       - name: Prepare development-only CI files
         run: bash scripts/local_test.sh prepare
-      - name: Verify vendor console when full frontend is not selected
-        if: ${{ needs.changes.outputs.frontend != 'true' }}
-        run: >-
-          npm test --prefix frontend -- tests/vendor-seal.test.ts
-          tests/vendor-test-api.test.ts tests/vendor-test-console.test.ts
       - name: Lint and type-check backend
         run: python3 scripts/check_backend_static.py
       - name: Check migrations and OpenAPI contract

@@ -44,10 +44,6 @@ class IdempotencyClaimLost(RuntimeError):
     """幂等临时租约丢失；当前请求必须在进入后续副作用前终止。"""
 
 
-class VendorTestConsoleOnly(PermissionError):
-    """受控真实模式只允许系统配置页的单号码 UAT 入口。"""
-
-
 class MarketApiBulkForbidden(PermissionError):
     """API 营销大批量未预授权，对应 FORBIDDEN/403。"""
 
@@ -116,9 +112,6 @@ class SendRequest:
     resend_dept: str | None = None
     failed_sources: tuple[FailedSourceReference, ...] = ()
     resend_supplement_id: UUID | None = None
-    protected_mobiles: Sequence[ProtectedPhone] = ()
-    protected_hmac_candidates: Sequence[tuple[int, str]] = ()
-    vendor_test_uat: bool = False
     import_reservation_id: UUID | None = None
     usage_subject: UsageSubject | None = None
     uncertain_source_proof: UncertainSourceProof | None = field(default=None, repr=False)
@@ -386,9 +379,3 @@ class TemplatePort(Protocol):
 
 class SignPort(Protocol):
     async def resolve(self, name: str) -> str: ...
-
-
-class RecipientGuard(Protocol):
-    """发送受理边界的号码准入检查，不暴露 HMAC 实现。"""
-
-    def require_allowed(self, phones: Sequence[str]) -> None: ...

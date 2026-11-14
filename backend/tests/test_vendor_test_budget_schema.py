@@ -53,51 +53,6 @@ def test_vendor_test_budget_migration_is_linear_expand_only_and_fail_closed(
         module.downgrade()
 
 
-def test_vendor_test_budget_schema_has_database_limit_and_no_pii_fields() -> None:
-    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-    usage = schema.split("CREATE TABLE vendor_test_daily_usage", maxsplit=1)[1].split(
-        ");", maxsplit=1
-    )[0]
-    attempts = schema.split("CREATE TABLE vendor_test_send_attempt", maxsplit=1)[1].split(
-        ");", maxsplit=1
-    )[0]
-
-    assert "in_flight_segments" in usage
-    assert "confirmed_segments" in usage
-    assert "uncertain_segments" in usage
-    assert "<= 100" in usage
-    assert "usage_date" in attempts
-    assert "chunk_id" in attempts
-    assert "attempt_no" in attempts
-    assert "segments" in attempts
-    assert "reserved" in attempts
-    assert "confirmed" in attempts
-    assert "uncertain" in attempts
-    assert "released" in attempts
-    forbidden = ("phone", "mobile", "content", "secret", "payload", "credential")
-    assert all(token not in usage.casefold() for token in forbidden)
-    assert all(token not in attempts.casefold() for token in forbidden)
-
-
-def test_vendor_test_budget_schema_preserves_evidence_permissions() -> None:
-    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-
-    assert "vendor_test_daily_usage, vendor_test_send_attempt" in schema
-    assert "vendor_test_send_attempt, vendor_test_operation," in schema
-    assert "sms_vendor_attempt\nTO sms_send" in schema
-    assert "vendor_test_send_attempt_id_seq," in schema
-    assert "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM sms_app" in schema
-
-
-def test_vendor_test_attempt_constraints_bind_one_reserved_attempt_per_chunk() -> None:
-    schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-
-    assert "UNIQUE (chunk_id, attempt_no)" in schema
-    assert "uk_vendor_test_reserved_chunk" in schema
-    assert "WHERE status = 'reserved'" in schema
-    assert "chk_vendor_test_attempt_settlement" in schema
-
-
 def test_migration_checker_rejects_unsafe_budget_ledger_privileges(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

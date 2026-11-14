@@ -1,5 +1,8 @@
 -- ============================================================
 -- 企业短信管理平台 schema.sql  (PostgreSQL 16)
+-- v1.6.116  2026-11-14
+-- v1.6.116：0139 删除已下线真实联调的五张专用表及其专属授权、序列。
+--          历史审计与普通短信事实保留；恢复探针覆盖剩余 16 个密文字段。
 -- v1.6.115  2026-10-23
 -- v1.6.115：stat_daily.test_scope 区分 all/test/normal。历史混合行只标 all，
 --          不得默认成 normal。stat_scope_day 与当日分层快照同事务写入，
@@ -1332,157 +1335,6 @@ CREATE UNIQUE INDEX uk_sms_vendor_attempt_irreversible
     WHERE outcome IN ('submitted','uncertain','invoking');
 CREATE INDEX idx_sms_vendor_attempt_chunk
     ON sms_vendor_attempt (chunk_id, created_at DESC);
-
--- ─────────────── 真实厂商受控联调每日额度（无PII证据账本） ───────────────
-CREATE TABLE vendor_test_daily_usage (
-    usage_date          DATE        PRIMARY KEY,
-    in_flight_segments  INTEGER     NOT NULL DEFAULT 0
-                        CHECK (in_flight_segments >= 0),
-    confirmed_segments  INTEGER     NOT NULL DEFAULT 0
-                        CHECK (confirmed_segments >= 0),
-    uncertain_segments  INTEGER     NOT NULL DEFAULT 0
-                        CHECK (uncertain_segments >= 0),
-    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT chk_vendor_test_daily_total CHECK (
-      in_flight_segments + confirmed_segments + uncertain_segments <= 100
-    )
-);
-
-CREATE TABLE vendor_test_send_attempt (
-    id          BIGSERIAL PRIMARY KEY,
-    usage_date  DATE        NOT NULL
-                REFERENCES vendor_test_daily_usage(usage_date) ON DELETE RESTRICT,
-    chunk_id    BIGINT      NOT NULL REFERENCES sms_chunk(id) ON DELETE RESTRICT,
-    attempt_no  SMALLINT    NOT NULL CHECK (attempt_no > 0),
-    segments    INTEGER     NOT NULL CHECK (segments > 0),
-    status      VARCHAR(16) NOT NULL
-                CHECK (status IN ('reserved','confirmed','uncertain','released')),
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    settled_at  TIMESTAMPTZ,
-    UNIQUE (chunk_id, attempt_no),
-    CONSTRAINT chk_vendor_test_attempt_settlement CHECK (
-      (status = 'reserved' AND settled_at IS NULL)
-      OR (status <> 'reserved' AND settled_at IS NOT NULL)
-    )
-);
-CREATE UNIQUE INDEX uk_vendor_test_reserved_chunk
-    ON vendor_test_send_attempt(chunk_id) WHERE status = 'reserved';
-CREATE INDEX idx_vendor_test_attempt_usage_status
-    ON vendor_test_send_attempt(usage_date, status);
-
--- ─────────────── 真实联调页面控制面 ───────────────
-CREATE TABLE vendor_test_recipient (
-    id             BIGSERIAL PRIMARY KEY,
-    label          VARCHAR(64) NOT NULL,
-    phone_enc      BYTEA       NOT NULL,
-    phone_hmac     CHAR(64)    NOT NULL,
-    phone_mask     VARCHAR(32) NOT NULL,
-    key_version    SMALLINT    NOT NULL CHECK (key_version > 0),
-    status         VARCHAR(16) NOT NULL DEFAULT 'active'
-                   CHECK (status IN ('active','disabled')),
-    created_by     VARCHAR(64) NOT NULL,
-    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    disabled_by    VARCHAR(64),
-    disabled_at    TIMESTAMPTZ,
-    UNIQUE (key_version, phone_hmac),
-    CONSTRAINT chk_vendor_test_recipient_disabled CHECK (
-      (status = 'active' AND disabled_by IS NULL AND disabled_at IS NULL)
-      OR (status = 'disabled' AND disabled_by IS NOT NULL AND disabled_at IS NOT NULL)
-    )
-);
-CREATE INDEX idx_vendor_test_recipient_active
-    ON vendor_test_recipient(id) WHERE status = 'active';
-
-CREATE TABLE vendor_test_recipient_hmac_alias (
-    recipient_id BIGINT   NOT NULL
-                 REFERENCES vendor_test_recipient(id) ON DELETE CASCADE,
-    hmac_key_version SMALLINT NOT NULL CHECK (hmac_key_version > 0),
-    hmac_digest      CHAR(64) NOT NULL CHECK (hmac_digest ~ '^[0-9a-f]{64}$'),
-    PRIMARY KEY (recipient_id, hmac_key_version),
-    UNIQUE (hmac_key_version, hmac_digest)
-);
-CREATE INDEX idx_vendor_test_recipient_hmac_alias_lookup
-    ON vendor_test_recipient_hmac_alias(hmac_key_version, hmac_digest);
-
-CREATE TABLE vendor_test_operation (
-    id             UUID        PRIMARY KEY,
-    operation_type VARCHAR(32) NOT NULL
-                   CHECK (operation_type IN (
-                     'install_credentials','rotate_credentials','activate','pause','resume','uat_send',
-                     'reset_configuration'
-                   )),
-    actor          VARCHAR(64) NOT NULL,                 -- 事件时登录名快照
-    actor_account_id BIGINT REFERENCES user_account(id) ON DELETE RESTRICT,
-    actor_identity_id BIGINT,
-    status         VARCHAR(16) NOT NULL
-                   CHECK (status IN ('requested','running','succeeded','failed')),
-    safe_code      VARCHAR(64),
-    vendor_code    INTEGER CHECK (vendor_code BETWEEN 1 AND 99999),
-    batch_no       VARCHAR(64),
-    acceptance_reference_required BOOLEAN NOT NULL DEFAULT true,
-    acceptance_biz_id VARCHAR(32),
-    acceptance_request_hash VARCHAR(64),
-    acceptance_key_version SMALLINT,
-    CONSTRAINT ck_vendor_test_acceptance_fingerprint CHECK (
-      (acceptance_request_hash IS NULL AND acceptance_key_version IS NULL)
-      OR (acceptance_request_hash IS NOT NULL AND acceptance_key_version IS NOT NULL
-          AND acceptance_request_hash ~ '^[0-9a-f]{64}$'
-          AND acceptance_key_version BETWEEN 1 AND 32767)
-    ),
-
-    acceptance_app_id BIGINT REFERENCES app(id) ON DELETE RESTRICT,
-    CONSTRAINT ck_vendor_test_acceptance_reference CHECK (
-      (acceptance_biz_id IS NULL AND acceptance_app_id IS NULL)
-      OR (operation_type='uat_send' AND acceptance_biz_id IS NOT NULL
-          AND length(acceptance_biz_id)>0 AND acceptance_app_id IS NOT NULL)
-    ),
-    checkpoint_id  VARCHAR(128),
-    lease_expires_at TIMESTAMPTZ,
-    requested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at   TIMESTAMPTZ,
-    CONSTRAINT fk_vendor_test_operation_actor_identity
-      FOREIGN KEY (actor_identity_id,actor_account_id)
-      REFERENCES auth_identity(id,account_id) ON DELETE RESTRICT,
-    CONSTRAINT ck_vendor_test_operation_actor_principal_pair CHECK (
-      (actor_account_id IS NULL AND actor_identity_id IS NULL)
-      OR (actor_account_id IS NOT NULL AND actor_identity_id IS NOT NULL)
-    ),
-    CONSTRAINT chk_vendor_test_operation_completion CHECK (
-      (status IN ('requested','running') AND completed_at IS NULL)
-      OR (status IN ('succeeded','failed') AND completed_at IS NOT NULL)
-    ),
-    CONSTRAINT chk_vendor_test_operation_vendor_code CHECK (
-      vendor_code IS NULL OR (status = 'failed' AND safe_code = 'VENDOR_ERROR')
-    ),
-    CONSTRAINT chk_vendor_test_operation_uat_lease CHECK (
-      (operation_type <> 'uat_send' AND lease_expires_at IS NULL)
-      OR (
-        operation_type = 'uat_send'
-        AND (
-          (
-            status IN ('requested','running')
-            AND (
-              (batch_no IS NULL AND lease_expires_at IS NOT NULL)
-              OR (batch_no IS NOT NULL AND lease_expires_at IS NULL)
-            )
-          )
-          OR (
-            status IN ('succeeded','failed')
-            AND lease_expires_at IS NULL
-          )
-        )
-      )
-    )
-);
-CREATE INDEX idx_vendor_test_operation_status_time
-    ON vendor_test_operation(status, requested_at);
-CREATE INDEX idx_vendor_test_operation_actor_account
-    ON vendor_test_operation(actor_account_id, requested_at DESC);
-CREATE INDEX idx_vendor_test_operation_uat_lease
-    ON vendor_test_operation(lease_expires_at, id)
-    WHERE operation_type = 'uat_send'
-      AND status IN ('requested','running')
-      AND batch_no IS NULL;
 
 -- 消息明细（按月分区，保留12个月）
 CREATE TABLE sms_message (
@@ -3649,8 +3501,7 @@ GRANT SELECT ON
     usage_projection_drift, stat_daily, sys_config, audit_log, export_task,
     security_daily_report, security_daily_delivery_request,
     security_daily_recipient,
-    vendor_test_daily_usage, vendor_test_send_attempt, vendor_test_recipient,
-    vendor_test_recipient_hmac_alias, vendor_test_operation, alembic_version,
+    alembic_version,
     sms_uncertain_resolution, sms_uncertain_child,
     usage_chunk_allocation, usage_chunk_release,
     send_inflight_balance, send_inflight_reservation,
@@ -3664,7 +3515,7 @@ GRANT INSERT, UPDATE, DELETE ON
     blacklist_hmac_alias,
     sensitive_word, usage_reservation, usage_frequency_subject,
     usage_frequency_alias, usage_quota_entry, usage_frequency_entry,
-    usage_projection, usage_projection_drift, sys_config, vendor_test_recipient
+    usage_projection, usage_projection_drift, sys_config
 TO sms_accept;
 GRANT INSERT, UPDATE ON
     sms_uncertain_resolution, sms_uncertain_child,
@@ -3688,10 +3539,8 @@ GRANT SELECT, INSERT, DELETE, UPDATE ON security_daily_recipient TO sms_accept;
 GRANT INSERT ON callback_task, alert_log TO sms_accept;
 GRANT INSERT ON callback_batch_event TO sms_accept;
 GRANT DELETE ON callback_authority_lease TO sms_accept;
-GRANT INSERT, DELETE ON vendor_test_recipient_hmac_alias TO sms_accept;
 GRANT INSERT, UPDATE ON
-    outbox_event, vendor_test_daily_usage, vendor_test_send_attempt,
-    vendor_test_operation
+    outbox_event
 TO sms_accept;
 GRANT SELECT, INSERT ON audit_log TO sms_accept;
 GRANT UPDATE (
@@ -3745,7 +3594,6 @@ GRANT USAGE, SELECT ON SEQUENCE
     sms_message_id_seq, import_task_id_seq,
     import_phone_id_seq, approval_id_seq, sms_template_id_seq, sms_sign_id_seq,
     sensitive_word_id_seq, audit_log_id_seq,
-    vendor_test_send_attempt_id_seq, vendor_test_recipient_id_seq,
     callback_task_id_seq, callback_batch_event_id_seq, alert_log_id_seq,
     usage_projection_version_seq, security_daily_report_id_seq,
     sms_uncertain_resolution_id_seq, send_inflight_reservation_id_seq,
@@ -3778,9 +3626,7 @@ GRANT SELECT ON
     usage_frequency_subject, usage_frequency_alias, usage_quota_entry,
     usage_frequency_entry, usage_projection, usage_projection_drift, stat_daily,
     sys_config, security_daily_report, security_daily_delivery_request,
-    vendor_test_daily_usage, vendor_test_send_attempt,
     security_daily_recipient,
-    vendor_test_recipient, vendor_test_recipient_hmac_alias, vendor_test_operation,
     sms_uncertain_resolution, sms_uncertain_child, sms_vendor_attempt,
     usage_chunk_allocation, usage_chunk_release,
     send_inflight_balance, send_inflight_reservation,
@@ -3825,16 +3671,13 @@ GRANT SELECT, INSERT ON sms_dispatch_exclusion TO sms_send;
 GRANT SELECT ON blacklist_policy_generation TO sms_send;
 GRANT EXECUTE ON FUNCTION bump_blacklist_policy_generation() TO sms_send;
 GRANT INSERT, UPDATE ON
-    report_event_projection, vendor_test_daily_usage,
-    vendor_test_send_attempt, vendor_test_operation,
-    sms_vendor_attempt
+    report_event_projection, sms_vendor_attempt
 TO sms_send;
 GRANT USAGE, SELECT ON SEQUENCE
     sms_batch_id_seq, sms_chunk_id_seq, sms_message_id_seq, sms_reply_id_seq,
     raw_vendor_log_id_seq, unmatched_report_id_seq, job_run_id_seq,
     approval_id_seq, balance_snapshot_id_seq, alert_log_id_seq,
-    worker_lease_event_id_seq, vendor_test_send_attempt_id_seq,
-    audit_log_id_seq, callback_task_id_seq, callback_batch_event_id_seq,
+    worker_lease_event_id_seq, audit_log_id_seq, callback_task_id_seq, callback_batch_event_id_seq,
     import_phone_id_seq,
     usage_projection_version_seq, security_daily_report_id_seq,
     sms_uncertain_resolution_id_seq, sms_vendor_attempt_id_seq,

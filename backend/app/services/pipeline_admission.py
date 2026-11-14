@@ -113,9 +113,7 @@ class SendAdmissionMixin:
     ) -> None:
         if self.admission_guard is None:
             return
-        recipient_count = (
-            len(request.protected_mobiles) if request.protected_mobiles else len(request.mobiles)
-        )
+        recipient_count = len(request.mobiles)
         await self.admission_guard.authorize(
             app_id=self._usage_app_id(app, request),
             category=request.category,

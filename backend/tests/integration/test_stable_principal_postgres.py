@@ -21,10 +21,6 @@ from app.services.export import ExportFilterSet
 from app.services.export_repository import SqlExportRepository
 from app.services.import_repository import ImportStateConflict, SqlImportRepository
 from app.services.imports import ImportPhone, ImportResult
-from app.services.vendor_test_operation import VendorTestOperationConflict
-from app.services.vendor_test_operation_repository import (
-    SqlVendorTestOperationRepository,
-)
 
 pytestmark = pytest.mark.skipif(
     "SECURITY_SESSION_POSTGRES_DSN" not in os.environ,
@@ -35,7 +31,6 @@ OLD_LOGIN = "stable-principal-old"
 NEW_LOGIN = "stable-principal-new"
 AD_LOGIN = "stable-principal-ad"
 REUSER_LOGIN = OLD_LOGIN
-OPERATION_ID = "c0a80101-0000-4000-8000-000000000191"
 BATCH_NO = "c" * 32
 
 
@@ -64,7 +59,6 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
     engine = create_async_engine(database_url)
     export_repository = SqlExportRepository(settings)
     import_repository = SqlImportRepository(settings)
-    operation_repository = SqlVendorTestOperationRepository(settings)
     approval_repository = SqlApprovalRepository(settings)
     admin_repository = SqlAdminRepository(settings)
     account_ids: list[int] = []
@@ -121,10 +115,6 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
             await connection.execute(
                 text("DELETE FROM export_task WHERE public_id=CAST(:public_id AS uuid)"),
                 {"public_id": export_public_id},
-            )
-            await connection.execute(
-                text("DELETE FROM vendor_test_operation WHERE id=CAST(:id AS uuid)"),
-                {"id": OPERATION_ID},
             )
             if ids:
                 await connection.execute(
@@ -237,12 +227,6 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
                 expire_hours=6,
             )
             import_id = stored_import.import_id
-            await operation_repository.reserve_start(
-                OPERATION_ID,
-                "pause",
-                principal=old_principal,
-                conflicting_types=frozenset({"pause", "reset_configuration"}),
-            )
         async with engine.begin() as connection:
             batch_id = int(
                 (
@@ -373,22 +357,6 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
             principal=renamed_principal,
         )
 
-        with audit_principal_scope(renamed_principal), correlation_scope(uuid4()):
-            replay = await operation_repository.reserve_start(
-                OPERATION_ID,
-                "pause",
-                principal=renamed_principal,
-                conflicting_types=frozenset({"pause", "reset_configuration"}),
-            )
-        assert replay.actor_account_id == owner_account_id
-        with pytest.raises(VendorTestOperationConflict):
-            await operation_repository.reserve_start(
-                OPERATION_ID,
-                "pause",
-                principal=reused_principal,
-                conflicting_types=frozenset({"pause", "reset_configuration"}),
-            )
-
         with (
             audit_principal_scope(ad_principal),
             correlation_scope(uuid4()),
@@ -441,7 +409,8 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
                 actor_account_id=owner_account_id,
             )
         )
-        assert total >= 4
+        # 联调 operation 的两条审计随功能下线移除，余下导入、导出与改名事件仍须串联同一账号。
+        assert total >= 3
         assert {item.actor for item in audits} >= {OLD_LOGIN, NEW_LOGIN}
         assert all(item.actor_account_id == owner_account_id for item in audits)
 

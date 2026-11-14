@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
@@ -77,7 +76,6 @@ class InvokeClaim:
     kind: InvokeClaimKind
     authorization: InvokeAuthorization | None = None
     reason: str = ""
-    reset_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

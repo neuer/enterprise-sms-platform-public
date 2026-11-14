@@ -164,7 +164,7 @@ VMware/宿主外监控补充。生命周期和存储脚本只产出 journal 事�
    代码/报告的 ID 相等与 probe 成功只能证明当次已安装材料能读取其覆盖样本，不能证明 escrow
    provenance、所有历史行或未来仍可取得材料；该外部证据缺失即 T0 No-Go。
    该时点 `sms_message` 应为 0。schema v2 报告的
-   `crypto_probe_receipts.pre_migration`/`post_migration` 必须各自严格覆盖 17 个固定密文字段，
+   `crypto_probe_receipts.pre_migration`/`post_migration` 必须各自严格覆盖 16 个固定密文字段，
    `counts.encrypted_rows=0`、全部 `coverage.rows=0`、`status=not_applicable_empty`；绑定 pre
    的 `checks.historical_ciphertext_validation` 也必须为 `not_applicable_empty`。这只构成
    初始化前空库门禁，不能证明未来生产历史密文可恢复。

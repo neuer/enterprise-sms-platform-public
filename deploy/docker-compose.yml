@@ -248,10 +248,6 @@ services:
       # API 写入脱敏日报控制请求，并同步管理员在 UI 配置的 mailer 配置。
       - ${SMS_SECURITY_REPORT_CONTROL_DIR:-./security-report-control}:/run/security-report:rw
       - ${SMS_SECURITY_REPORT_CONFIG_DIR:-./security-report-config}:/run/security-report-config:rw
-      # root agent 的 allowlist 与 10 秒心跳投影只读进入后端。
-      - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
-      # 只挂载独立 UDS 目录，绝不挂载宿主 runtime secrets 或 Docker Socket。
-      - ${SMS_VENDOR_CONTROL_SOCKET_DIR:-./vendor-control-empty}:/run/vendor-control:ro
     healthcheck:
       test: ["CMD", "python", "-m", "app.healthcheck", "ready"]
       interval: 10s
@@ -291,10 +287,6 @@ services:
     command: celery -A app.tasks worker -Q realtime -c 2 -l info --without-gossip --without-mingle --without-heartbeat
     volumes:
       - rawspill:/var/lib/sms/raw-spill
-      # 调用厂商前必须重读 control-state.json，不允许容器回写。
-      - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
-      # reconcile 需要连接固定 agent UDS；其余 worker 不获得该能力。
-      - ${SMS_VENDOR_CONTROL_SOCKET_DIR:-./vendor-control-empty}:/run/vendor-control:ro
 
   worker-report:
     <<: *backend
@@ -322,8 +314,6 @@ services:
     cpus: 1.0
     volumes:
       - rawspill:/var/lib/sms/raw-spill
-      # GetReport 调用前仍需读取统一控制状态；该 worker 不获得控制 UDS。
-      - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
 
   worker-bulk:
     <<: *backend
@@ -352,8 +342,6 @@ services:
     volumes:
       - exportdata:/var/lib/sms/exports
       - importdata:/var/lib/sms/imports
-      # 调用厂商前必须重读 control-state.json，不允许容器回写。
-      - ${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:/run/vendor-test:ro
       # 消费脱敏日报快照，并在自动生成成功后写入投递请求；仍不挂载 Resend 配置目录。
       - ${SMS_SECURITY_REPORT_CONTROL_DIR:-./security-report-control}:/run/security-report:rw
 

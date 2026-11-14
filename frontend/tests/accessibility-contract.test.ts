@@ -75,7 +75,6 @@ describe("无障碍样式契约", () => {
     expect(css).toContain("min-height: 44px")
     expect(css).toContain(".nav-link")
     expect(css).toContain(".el-pagination button")
-    expect(css).toMatch(/\.vendor-test-actions \.el-button[^}]*min-height:\s*44px/s)
   })
 
   it("触屏命中区单点 touch.css 进最高的 touch 层，页面规则无论特异性都压不回紧凑尺寸", () => {
@@ -95,11 +94,6 @@ describe("无障碍样式契约", () => {
     expect(css).not.toMatch(
       /@media \(max-width: 760px\)[^@]*\.security-daily-fld \.filter-seg button[^}]*min-height:\s*30px/s,
     )
-  })
-
-  it("真实联调控制台在窄屏退化为单列且保留全部安全操作", () => {
-    expect(css).toMatch(/@media \(max-width: 760px\)[\s\S]*\.vendor-test-layout[^}]*grid-template-columns:\s*1fr/s)
-    expect(css).toMatch(/@media \(max-width: 760px\)[\s\S]*\.vendor-test-actions[^}]*grid-template-columns:\s*1fr/s)
   })
 
   it("尊重用户的 reduced-motion 偏好", () => {

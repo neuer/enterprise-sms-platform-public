@@ -345,18 +345,3 @@ def test_systemd_runbook_serializes_release_mutations_with_unit_lifecycle() -> N
         assert token in runbook
 
 
-def test_vendor_test_runbook_has_deterministic_mock_only_bootstrap() -> None:
-    runbook = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(encoding="utf-8")
-
-    for token in (
-        "compose.vendor-test.env.example",
-        "SMS_SECRETS_MODE=development",
-        "VENDOR_MOCK=1",
-        "vendor-test bootstrap",
-        "systemctl restart sms-platform.service",
-        "setup_required",
-        "不得在 bootstrap 中输入正式 Key 或测试手机号",
-    ):
-        assert token in runbook
-
-

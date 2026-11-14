@@ -8,7 +8,6 @@ from typing import Protocol
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.services.crypto import CryptoService
-from app.services.vendor_test_budget import SubmissionClaim
 from app.settings import Settings
 from app.tasks.send import ChunkPayload
 from app.vendor.routing import VendorRecord
@@ -49,10 +48,6 @@ class SendAttemptDependencies(SendPayloadDependencies, Protocol):
     async def _enqueue_retry(chunk_id: int, lane: str, countdown: int) -> None: ...
 
     async def _payload(self, connection: AsyncConnection, chunk_id: int) -> ChunkPayload: ...
-
-    async def _reserve_submission_budget(
-        self, connection: AsyncConnection, chunk_id: int, segments: int, attempt_no: int,
-    ) -> SubmissionClaim: ...
 
     async def _finalize_failed_messages(
         self, connection: AsyncConnection, chunk_id: int, batch_id: int,

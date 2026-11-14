@@ -9,7 +9,6 @@ import sys
 from pathlib import Path
 
 from any_budget import ANY_ROOT, any_budget_violations, collect_any_counts
-from call_order import first_reach_precedes
 from gate_policy import (
     EXPLICIT_ANY_BUDGET,
     SIZE_BUDGET_EXCEPTIONS,
@@ -66,49 +65,12 @@ def require_fragments(path: Path, *fragments: str) -> str:
     try:
         source = read_logical_module(path)
     except OSError:
-        fail(path, "真实厂商受控联调关键文件缺失")
+        fail(path, "关键边界文件缺失")
         return ""
     for fragment in fragments:
         if fragment not in source:
-            fail(path, f"真实厂商受控联调不变量缺失: {fragment}")
+            fail(path, f"关键边界不变量缺失: {fragment}")
     return source
-
-
-def recipient_guard_precedes_phone_protection(entry: str) -> bool:
-    """受理编排中白名单校验必须先于任何会进入 run_bounded 号码保护的调用。"""
-
-    return first_reach_precedes(
-        ((APP / part).read_text(encoding="utf-8") for part in logical_module_files(entry)),
-        entry="_accept_claimed",
-        first=lambda call: (
-            dotted_name(call.func).endswith(".require_allowed")
-            and len(call.args) == 1
-            and dotted_name(call.args[0]) == "request.mobiles"
-        ),
-        then=lambda call: dotted_name(call.func) == "run_bounded",
-    )
-
-
-def literal_integer(path: Path, name: str) -> int | None:
-    """读取模块级整数常量；禁止动态或布尔值伪装。"""
-
-    try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (OSError, SyntaxError) as exc:
-        fail(path, f"无法读取联调上限定义: {type(exc).__name__}")
-        return None
-    for node in tree.body:
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-            continue
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        value = node.value
-        if any(isinstance(target, ast.Name) and target.id == name for target in targets):
-            if isinstance(value, ast.Constant) and type(value.value) is int:
-                return value.value
-            fail(path, f"{name} 必须是模块级整数常量")
-            return None
-    fail(path, f"缺少联调上限常量 {name}")
-    return None
 
 
 def literal_string(path: Path, name: str) -> str | None:
@@ -146,71 +108,50 @@ def literal_string(path: Path, name: str) -> str | None:
 
 
 def check_vendor_live_invariants() -> None:
-    """静态锁定真实厂商受控联调的不可绕过边界。"""
+    """真实联调已下线：锁定厂商调用边界，并防止联调入口、挂载与契约被恢复。"""
 
     settings = require_fragments(
         APP / "settings.py",
-        'vendor_live_test_origin: str = "https://vendor.example.invalid"',
-        'self.environment == "development"',
-        "and self.auth_mock",
-        "and not self.vendor_mock",
-        "vendor live test requires the configured exact HTTPS origin",
+        "development/test requires VENDOR_MOCK=1",
+        "production requires DEBUG=0, AUTH_MOCK=0 and VENDOR_MOCK=0",
     )
     if "vendor_secret_name:" in settings or "vendor_secret_key:" in settings:
         fail(APP / "settings.py", "厂商凭据不得成为环境变量值字段")
-
-    for relative in ("api/messages.py", "api/web_messages.py"):
-        normal_send = require_fragments(
-            APP / relative,
-            "settings.vendor_live_test",
-            "vendor_test_console_only=settings.vendor_live_test",
-        )
-        if relative == "api/messages.py" and "VENDOR_TEST_CONSOLE_ONLY" not in normal_send:
-            fail(APP / relative, "live-test 必须阻断普通发送入口")
-    require_fragments(
-        APP / "cli.py",
-        "BACKEND_RUNTIME_GID = 10001",
-        "destination_mode=0o640",
-        "destination_group_id=BACKEND_RUNTIME_GID",
-    )
-    require_fragments(
-        APP / "services/vendor_control_state.py",
-        "state.active_recipient_count < 1",
-        'state.mode != "controlled"',
-        "not state.credential_configured",
-    )
-    require_fragments(
-        APP / "tasks/send_repository.py",
-        "self.crypto.hmac_candidates(phone)",
-        "vendor_test_recipient",
-        "denied_recipient_count=denied_recipient_count",
-    )
-
-    pipeline = require_fragments(
-        APP / "services/pipeline.py",
-        "require_allowed(request.mobiles)",
-        "await run_bounded(",
-    )
-    if pipeline and not recipient_guard_precedes_phone_protection("services/pipeline.py"):
-        fail(APP / "services/pipeline.py", "白名单必须在手机号持久化准备前检查")
+    if "def vendor_live_test(" in settings:
+        fail(APP / "settings.py", "真实联调模式已下线，不得恢复非生产环境直连真实厂商的开关")
+    for retired in (
+        "api/vendor_test.py",
+        "api/vendor_control_ready.py",
+        "services/vendor_control_client.py",
+        "services/vendor_control_state.py",
+        "services/vendor_test_budget.py",
+        "services/vendor_test_guard.py",
+        "services/vendor_test_operation.py",
+        "services/vendor_test_operation_repository.py",
+        "services/vendor_test_recipient.py",
+        "services/vendor_test_recipient_repository.py",
+        "services/vendor_test_uat.py",
+    ):
+        if (APP / retired).exists():
+            fail(APP / retired, "真实联调功能已下线，不得恢复该模块")
+    for relative in ("main.py", "api/messages.py"):
+        source = require_fragments(APP / relative)
+        for forbidden in ("vendor_test", "uat-send"):
+            if forbidden in source:
+                fail(APP / relative, f"真实联调入口已下线，不得恢复 {forbidden}")
 
     worker = require_fragments(
         APP / "tasks/send.py",
-        "_guard_chunk(chunk, persist_rejection=not authorized)",
-        "chunk, lane, vendor_id, authorized=True",
+        "_preflight_before_invoke(chunk, lane, vendor_id)",
         "_token(lane, vendor_id)",
         "claim_submission(",
         "_gateway_for(vendor_id)",
         "gateway.send(",
-        "enforce_live_test_budget=settings.vendor_live_test",
-        "enforce_live_test_recipients=settings.vendor_live_test",
     )
     if worker and not (
-        worker.index("_guard_chunk(chunk, persist_rejection=not authorized)")
-        < worker.index("_token(lane, vendor_id)")
-        < worker.index("gateway.send(")
+        worker.index("_token(lane, vendor_id)") < worker.index("gateway.send(")
     ):
-        fail(APP / "tasks/send.py", "worker 必须先复验白名单和额度再调用厂商")
+        fail(APP / "tasks/send.py", "worker 必须先取令牌并完成预检再调用厂商")
 
     billing_path = APP / "services/billing.py"
     for path in APP.rglob("*.py"):
@@ -226,23 +167,6 @@ def check_vendor_live_invariants() -> None:
             ):
                 fail(path, "计费条计算只能在 services/billing.py 定义", node.lineno)
     require_fragments(APP / "services/pipeline.py", "from app.services.billing import")
-    require_fragments(APP / "tasks/send.py", "from app.services.billing import")
-
-    backend_limit = literal_integer(
-        APP / "services/vendor_test_budget.py", "LIVE_TEST_DAILY_SEGMENT_LIMIT"
-    )
-    if backend_limit != 100:
-        fail(
-            APP / "services/vendor_test_budget.py",
-            "live-test 每日上限必须为 100 计费条",
-        )
-    require_fragments(
-        APP / "tasks/send_repository.py",
-        "LIVE_TEST_DAILY_SEGMENT_LIMIT",
-        "in_flight_segments",
-        "confirmed_segments",
-        "uncertain_segments",
-    )
 
     require_fragments(
         APP / "vendor/codes.py",
@@ -251,48 +175,9 @@ def check_vendor_live_invariants() -> None:
         'alert_level="crit"',
     )
 
-    schema_source = require_fragments(
-        ROOT / "schema.sql",
-        "CREATE TABLE vendor_test_daily_usage",
-        "CREATE TABLE vendor_test_send_attempt",
-        "CREATE TABLE vendor_test_recipient_hmac_alias",
-        "PRIMARY KEY (recipient_id, hmac_key_version)",
-        "UNIQUE (hmac_key_version, hmac_digest)",
-    )
-    for table in ("vendor_test_daily_usage", "vendor_test_send_attempt"):
-        table_body = schema_source.split(f"CREATE TABLE {table}", maxsplit=1)[-1].split(
-            ";", maxsplit=1
-        )[0]
-        for forbidden_field in (
-            "phone_enc",
-            "phone_hmac",
-            "phone_mask",
-            "mobile",
-            "content",
-            "secret",
-        ):
-            if forbidden_field in table_body.lower():
-                fail(
-                    ROOT / "schema.sql",
-                    f"{table} 禁止控制面 PII/凭据字段 {forbidden_field}",
-                )
-
-    operation_table = schema_source.split("CREATE TABLE vendor_test_operation", maxsplit=1)[
-        -1
-    ].split(");", maxsplit=1)[0]
-    for forbidden_field in (
-        "phone",
-        "mobile",
-        "content",
-        "secret",
-        "payload",
-        "request_body",
-    ):
-        if forbidden_field in operation_table.lower():
-            fail(
-                ROOT / "schema.sql",
-                f"vendor_test_operation 禁止敏感载荷字段 {forbidden_field}",
-            )
+    schema_source = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    if re.search(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?vendor_test_", schema_source, re.I):
+        fail(ROOT / "schema.sql", "真实联调专用表已退役，禁止恢复 vendor_test_* 库表")
 
     compose = require_fragments(
         ROOT / "deploy/docker-compose.yml",
@@ -303,10 +188,9 @@ def check_vendor_live_invariants() -> None:
         fail(ROOT / "deploy/docker-compose.yml", "mock-vendor 只允许出现在 dev profile")
     if "docker.sock" in compose:
         fail(ROOT / "deploy/docker-compose.yml", "API/worker 禁止挂载宿主 Docker Socket")
-    require_fragments(
-        ROOT / "deploy/docker-compose.yml",
-        "${SMS_VENDOR_CONTROL_SOCKET_DIR:-./vendor-control-empty}:/run/vendor-control:ro",
-    )
+    for retired_mount in ("/run/vendor-test", "/run/vendor-control"):
+        if retired_mount in compose:
+            fail(ROOT / "deploy/docker-compose.yml", f"已下线的联调挂载不得恢复: {retired_mount}")
     if re.search(
         r"^\s*-\s+.*?/run/sms-platform/secrets",
         compose,
@@ -314,137 +198,10 @@ def check_vendor_live_invariants() -> None:
     ):
         fail(ROOT / "deploy/docker-compose.yml", "API/worker 禁止挂载宿主运行密钥目录")
 
-    require_fragments(
-        APP / "api/vendor_test.py",
-        'prefix="/api/v1/web/admin/vendor-test"',
-        "CredentialEnvelopeModel",
-        "recipient_id: int",
-        '"/messages/preview"',
-        'response.headers["Cache-Control"] = "no-store"',
-    )
-    for relative in (
-        "api/vendor_test.py",
-        "services/vendor_control_client.py",
-        "services/vendor_test_uat.py",
-    ):
-        source = require_fragments(APP / relative)
-        for forbidden_import in ("import httpx", "from httpx", "import requests", "aiohttp"):
-            if forbidden_import in source:
-                fail(APP / relative, "真实联调控制面不得绕过 vendor/zhihui.py 直连 HTTP")
-
-    protocol = require_fragments(
-        ROOT / "deploy/scripts/vendor_control_protocol.py",
-        'REQUEST_FIELDS = {"schema_version", "operation_id", "operation", "body"}',
-        "if fields != _CREDENTIAL_FIELDS",
-        'if fields != {"pause_kind"}',
-    )
-    for forbidden_field in ('"path"', '"argv"', '"env"'):
-        if forbidden_field in protocol:
-            fail(ROOT / "deploy/scripts/vendor_control_protocol.py", "agent 协议禁止自由进程字段")
-    uat_service = require_fragments(
-        APP / "services/vendor_test_uat.py",
-        "protected_mobiles=(",
-        "ProtectedPhone(",
-        "protected_hmac_candidates=recipient.hmac_candidates",
-        "await self.config_store.load_config(app.dept)",
-    )
-    if "decrypt_text(" in uat_service:
-        fail(APP / "services/vendor_test_uat.py", "UAT API 服务禁止解密测试手机号")
-
-    recipient_service = require_fragments(
-        APP / "services/vendor_test_recipient.py",
-        "class RecipientHmacIndexStale",
-        "set(candidates) != self.crypto.hmac_versions",
-        "async def refresh_hmac_index(",
-    )
-    if "decrypt_text(" in recipient_service:
-        fail(APP / "services/vendor_test_recipient.py", "HMAC 索引刷新禁止解密历史号码")
-    require_fragments(
-        APP / "services/pipeline.py",
-        "protected_hmac_candidates",
-        "frequency_hmac_by_active",
-        "aliases[min(aliases)]",
-    )
-    uat_panel = require_fragments(
-        ROOT / "frontend/src/components/VendorTestUatPanel.vue",
-        "previewVendorTestUat",
-        "app_id: appId.value!",
-    )
-    if "previewBilling" in uat_panel:
-        fail(
-            ROOT / "frontend/src/components/VendorTestUatPanel.vue",
-            "真实 UAT 预览不得绕过所选应用配置",
-        )
-
-    openapi = require_fragments(
-        ROOT / "openapi.yaml",
-        "CredentialEnvelopeModel:",
-        "UatMessageRequestModel:",
-        "VendorTestOperationModel:",
-    )
-    credential_schema = openapi.split("    CredentialEnvelopeModel:\n", maxsplit=1)[-1].split(
-        "\n    VendorTestOperationModel:\n", maxsplit=1
-    )[0]
-    for forbidden_field in ("secret_name", "secret_key", "secretName", "secretKey"):
-        if forbidden_field in credential_schema:
-            fail(ROOT / "openapi.yaml", "凭据接口禁止接收明文 SecretName/SecretKey")
-
-    audit_repository = require_fragments(
-        APP / "services/vendor_test_operation_repository.py",
-        '"object_id": record.operation_id',
-        'payload["vendor_code"] = record.vendor_code',
-    )
-    audit_section = audit_repository.split("    async def _audit(", maxsplit=1)[-1]
-    for forbidden_audit_key in (
-        'payload["phone',
-        'payload["mobile',
-        'payload["content',
-        'payload["secret',
-        'payload["request',
-    ):
-        if forbidden_audit_key in audit_section.lower():
-            fail(
-                APP / "services/vendor_test_operation_repository.py",
-                "真实联调 operation 审计禁止敏感载荷",
-            )
-    # operation UUID 只落 object_id，checkpoint 原值留在 operation 行：二者含随机 hex，
-    # 写入载荷会偶发撞上 ck_audit_payload_no_pii 的手机号模式而使终态审计永久失败。
-    for forbidden_reference in (
-        'payload["operation_id',
-        'payload["checkpoint_id',
-        '"operation_id": record.operation_id',
-    ):
-        if forbidden_reference in audit_section.lower():
-            fail(
-                APP / "services/vendor_test_operation_repository.py",
-                "真实联调 operation 审计载荷不得原样写入 operation UUID 或 checkpoint",
-            )
-
-    vendor_seal = require_fragments(
-        ROOT / "frontend/src/lib/vendorSeal.ts",
-        "globalThis.isSecureContext === true",
-        "globalThis.crypto.subtle",
-        "VENDOR_CREDENTIAL_SECURE_CONTEXT_ERROR",
-    )
-    seal_function = vendor_seal.split("export async function sealVendorCredentials", maxsplit=1)[-1]
-    secure_context_position = seal_function.find("isVendorCredentialSecureContext()")
-    credential_position = seal_function.find("credentials.secretName")
-    if (
-        secure_context_position < 0
-        or credential_position < 0
-        or secure_context_position > credential_position
-    ):
-        fail(
-            ROOT / "frontend/src/lib/vendorSeal.ts",
-            "WebCrypto 安全上下文检查必须先于凭据读取",
-        )
-    require_fragments(
-        ROOT / "frontend/src/components/VendorCredentialDialog.vue",
-        "isVendorCredentialSecureContext",
-        "当前入口不支持正式凭据安全加密。",
-        "无法对凭据加密封装",
-        ':disabled="submitting || !secureContextAvailable"',
-    )
+    openapi = require_fragments(ROOT / "openapi.yaml")
+    for forbidden in ("/vendor-test/", "/messages/uat-send", "CredentialEnvelopeModel"):
+        if forbidden in openapi:
+            fail(ROOT / "openapi.yaml", f"真实联调接口已下线，契约不得恢复 {forbidden}")
 
     update_contract = require_fragments(
         ROOT / "deploy/scripts/protected_path_policy.py",
@@ -1237,4 +994,4 @@ if errors:
     raise SystemExit(1)
 
 scope = "backend/frontend尚未创建，仅校验schema" if not APP.exists() else "backend/frontend/schema"
-print(f"硬规则静态检查通过: {scope}；真实厂商受控联调边界已锁定")
+print(f"硬规则静态检查通过: {scope}；厂商调用边界已锁定")

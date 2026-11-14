@@ -80,14 +80,14 @@ _REGISTRY_COMPONENT_RE = re.compile(r"[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[1-9][0-9]{
 _TAG_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 _SAFE_NAME_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?")
 _NUMBERED_REVISION_RE = re.compile(r"([0-9]{4})(?:_[a-z0-9_]+)?")
-_RUNTIME_EVENT_READER_BOUNDARY = 128
+_SCHEMA_READER_BOUNDARIES = ((128, "runtime event reader"), (139, "vendor test schema reader"))
 _MIN_ARCHIVE_BYTES = 1
 _MAX_ARCHIVE_BYTES = 8 * 1024 * 1024 * 1024
 _MAX_EVIDENCE_BYTES = 16 * 1024 * 1024
 
 
-def require_compatible_runtime_event_reader(migration_from: str, migration_target: str) -> None:
-    """拒绝自动跨越 0128 的读者边界，避免压缩明细后恢复只读旧明细的镜像。"""
+def require_compatible_schema_reader(migration_from: str, migration_target: str) -> None:
+    """拒绝自动跨越压缩观测明细或删除联调表造成的读者不兼容边界。"""
 
     if migration_from == migration_target:
         return
@@ -95,15 +95,14 @@ def require_compatible_runtime_event_reader(migration_from: str, migration_targe
     target = _NUMBERED_REVISION_RE.fullmatch(migration_target)
     if start is None or target is None:
         raise ReleaseManifestError(
-            "runtime event reader compatibility requires numbered migration endpoints"
+            "schema reader compatibility requires numbered migration endpoints"
         )
-    if (int(start[1]) < _RUNTIME_EVENT_READER_BOUNDARY) != (
-        int(target[1]) < _RUNTIME_EVENT_READER_BOUNDARY
-    ):
-        raise ReleaseManifestError(
-            "migration crosses the 0128 runtime event reader boundary; "
-            "automatic release is unsupported"
-        )
+    for boundary, description in _SCHEMA_READER_BOUNDARIES:
+        if (int(start[1]) < boundary) != (int(target[1]) < boundary):
+            raise ReleaseManifestError(
+                f"migration crosses the {boundary:04d} {description} boundary; "
+                "automatic release is unsupported"
+            )
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -359,7 +358,7 @@ def load_manifest_bytes(payload: bytes) -> ReleaseManifest:
     _require_exact_fields(migration, _MIGRATION_FIELDS, "migration")
     migration_from = _validate_safe_name(migration["from"], "migration.from")
     migration_target = _validate_safe_name(migration["target"], "migration.target")
-    require_compatible_runtime_event_reader(migration_from, migration_target)
+    require_compatible_schema_reader(migration_from, migration_target)
     if migration["compatibility"] == "cold_cutover":
         raise ReleaseManifestError("historical cold_cutover releases are retired")
     try:
