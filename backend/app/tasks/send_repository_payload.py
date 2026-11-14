@@ -8,9 +8,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.services.crypto import CryptoService, EncryptionContext
-from app.services.vendor_test_recipient_repository import (
-    lock_vendor_test_recipient_maintenance,
-)
 from app.settings import Settings
 from app.tasks.send import (
     ChunkPayload,
@@ -43,9 +40,6 @@ class ChunkPayloadMixin:
         connection: AsyncConnection,
         chunk_id: int,
     ) -> ChunkPayload:
-        enforce_recipient_guard = bool(getattr(self.settings, "vendor_live_test", False))
-        if enforce_recipient_guard:
-            await lock_vendor_test_recipient_maintenance(connection)
         result = await connection.execute(
             text(
                 """
@@ -78,7 +72,7 @@ class ChunkPayloadMixin:
             {"chunk_id": chunk_id},
         )
         phone_rows = list(phones_result.mappings())
-        decrypted_phones = tuple(
+        phones = tuple(
             self.crypto.decrypt_phone(
                 bytes(item["phone_enc"]),
                 int(item["key_version"]),
@@ -86,28 +80,6 @@ class ChunkPayloadMixin:
             )
             for item in phone_rows
         )
-        denied_recipient_count = 0
-        if enforce_recipient_guard:
-            for phone in decrypted_phones:
-                candidates = self.crypto.hmac_candidates(phone)
-                conditions: list[str] = []
-                parameters: dict[str, object] = {}
-                for index, (version, digest) in enumerate(candidates.items()):
-                    conditions.append(
-                        f"(key_version=:version_{index} AND phone_hmac=:hmac_{index})"
-                    )
-                    parameters[f"version_{index}"] = version
-                    parameters[f"hmac_{index}"] = digest
-                allowed = await connection.execute(
-                    text(
-                        "SELECT EXISTS (SELECT 1 FROM vendor_test_recipient "
-                        "WHERE status='active' AND (" + " OR ".join(conditions) + "))"
-                    ),
-                    parameters,
-                )
-                if not bool(allowed.scalar_one()):
-                    denied_recipient_count += 1
-        phones = () if denied_recipient_count else decrypted_phones
         return ChunkPayload(
             chunk_id=int(row["chunk_id"]),
             batch_id=int(row["batch_id"]),
@@ -127,7 +99,6 @@ class ChunkPayloadMixin:
             ),
             sign_name=str(row["sign_name"] or ""),
             retry_count=int(row["retry_count"]),
-            denied_recipient_count=denied_recipient_count,
             selected_vendor=str(row.get("selected_vendor") or "zhihui"),
             route_generation=max(1, int(row.get("route_generation") or 1)),
             category=str(row.get("category") or "notice"),
@@ -144,13 +115,6 @@ class ChunkPayloadMixin:
                 else None
             ),
         )
-
-    async def refresh_invoke_payload(self, chunk_id: int) -> ChunkPayload:
-        """令牌等待后重读真实联调收件人资格，不能复用旧 denied_count。"""
-
-        engine = self._engine()
-        async with engine.begin() as connection:
-            return await self._payload(connection, chunk_id)
 
     async def load_chunk(self, chunk_id: int) -> tuple[ChunkPayload, str] | None:
         engine = self._engine()

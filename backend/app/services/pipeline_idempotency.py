@@ -6,7 +6,6 @@ import asyncio
 import hmac
 import json
 import logging
-from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -116,18 +115,6 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
                 "kind": "resend-supplement",
                 "intent_id": str(request.resend_supplement_id),
             }
-        fingerprint_key_version = self.crypto.active_version if key_version is None else key_version
-        protected_aliases = dict(request.protected_hmac_candidates)
-        protected_identity: dict[str, object] | None = None
-        if request.protected_mobiles:
-            try:
-                protected_digest = protected_aliases[fingerprint_key_version]
-            except KeyError:
-                raise ValueError("加密测试号码缺少幂等指纹版本") from None
-            protected_identity = {
-                "key_version": fingerprint_key_version,
-                "digest": protected_digest,
-            }
         document = {
             "app_id": app.app_id,
             "dept": app.dept,
@@ -151,8 +138,10 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
             "mobiles": (
                 sorted(set(request.mobiles or ())) if normalize else list(request.mobiles or ())
             ),
-            "protected_phone_identity": protected_identity,
-            "vendor_test_uat": request.vendor_test_uat,
+            # 已下线的真实联调 UAT 字段。键与取值保留为常量，
+            # 否则会改变全部在途幂等键的指纹。
+            "protected_phone_identity": None,
+            "vendor_test_uat": False,
             "resend_of": request.resend_of,
             "resend_dept": request.resend_dept,
             "usage_subject": (
@@ -378,24 +367,6 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
                     batch_no=existing,
                 )
         return AcceptCommitResolution("UNBOUND")
-
-    def _with_uat_replay_identity(self, request: SendRequest) -> SendRequest:
-        """用内存 HMAC 复算 UAT 指纹，不依赖登记号码仍为 active。"""
-
-        if not request.vendor_test_uat or request.protected_mobiles or not request.mobiles:
-            return request
-        phone = request.mobiles[0]
-        protected = self.crypto.protect_phone(
-            phone,
-            table="vendor_test_recipient",
-            column="phone_enc",
-        )
-        return replace(
-            request,
-            mobiles=(),
-            protected_mobiles=(protected,),
-            protected_hmac_candidates=tuple(self.crypto.hmac_candidates(phone).items()),
-        )
 
     async def _cleanup_claim(
         self,

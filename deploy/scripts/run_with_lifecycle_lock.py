@@ -152,7 +152,6 @@ def _parse_run_args() -> argparse.Namespace:
             "init-admin",
             "continuity",
             "release",
-            "vendor-test",
             "test-update",
         ),
         required=True,

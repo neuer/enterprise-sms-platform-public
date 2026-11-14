@@ -19,8 +19,7 @@ from app.core.auth.runtime import get_auth_facade
 from app.core.errors import ApiError, api_error_handler, validation_error_handler
 from app.services.import_repository import ImportReservation, StoredImport
 from app.services.imports import ImportLimits, ImportPhone, ImportResult
-from app.services.pipeline import BatchResponse, SendRequest, VendorTestConsoleOnly
-from app.services.vendor_test_guard import VendorTestRecipientDenied
+from app.services.pipeline import BatchResponse, SendRequest
 
 
 class FakeFacade:
@@ -477,63 +476,6 @@ def test_consumed_import_retry_returns_same_batch_without_decryption(
     assert response.json()["batch_no"] == "batch-original"
     assert response.json()["idempotent"] is True
     assert repository.released == []
-
-
-def test_web_send_maps_live_test_recipient_denial_without_sensitive_detail(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    class DeniedPipeline:
-        async def accept(self, app: object, request: object) -> BatchResponse:
-            raise VendorTestRecipientDenied(1)
-
-    @asynccontextmanager
-    async def fake_pipeline(_: object) -> AsyncIterator[DeniedPipeline]:
-        yield DeniedPipeline()
-
-    monkeypatch.setattr(api, "_pipeline_for", fake_pipeline)
-    response = make_client().post(
-        "/api/v1/web/messages/send",
-        headers={"Authorization": "Bearer jwt"},
-            json={
-                "category": "notice",
-                "mobiles": ["13800138000"],
-                "content": "维护通知",
-                "biz_id": "biz-1",
-            },
-    )
-
-    assert response.status_code == 403
-    assert response.json() == {
-        "code": "FORBIDDEN",
-        "message": "真实联调仅允许已登记测试号码",
-        "detail": {"denied_count": 1},
-    }
-    assert "13800138000" not in response.text
-
-
-def test_live_test_ordinary_web_send_is_console_only(monkeypatch: MonkeyPatch) -> None:
-    class ConsoleOnlyPipeline:
-        async def accept(self, app: object, request: object) -> BatchResponse:
-            raise VendorTestConsoleOnly
-
-    @asynccontextmanager
-    async def fake_pipeline(_: object) -> AsyncIterator[ConsoleOnlyPipeline]:
-        yield ConsoleOnlyPipeline()
-
-    monkeypatch.setattr(api, "_pipeline_for", fake_pipeline)
-    response = make_client().post(
-        "/api/v1/web/messages/send",
-        headers={"Authorization": "Bearer jwt"},
-            json={
-                "category": "notice",
-                "mobiles": ["13800138000"],
-                "content": "维护通知",
-                "biz_id": "biz-1",
-            },
-    )
-
-    assert response.status_code == 403
-    assert response.json()["code"] == "VENDOR_TEST_CONSOLE_ONLY"
 
 
 def test_viewer_cannot_write() -> None:

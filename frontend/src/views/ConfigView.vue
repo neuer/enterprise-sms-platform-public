@@ -24,7 +24,6 @@ import {
 } from "../api/admin"
 import EmptyState from "../components/EmptyState.vue"
 import LoadErrorAlert from "../components/LoadErrorAlert.vue"
-import VendorTestConsole from "../components/VendorTestConsole.vue"
 import { useConfirmActions } from "../lib/confirm"
 const { confirmAction, confirmAuditedAction, captureCurrent } = useConfirmActions()
 import { errorText } from "../lib/error"
@@ -33,16 +32,13 @@ import { formatDateTime } from "../lib/time"
 import { useLatestRead } from "../composables/useLatestRead"
 import { useMobileLayout } from "../composables/useMobileLayout"
 import { SESSION_CLEARING_EVENT } from "../api/sessionEvents"
-import { useSessionStore } from "../stores/session"
 
-type ConfigTab = "runtime" | "providers" | "vendor-test"
+type ConfigTab = "runtime" | "providers"
 
-const session = useSessionStore()
 const activeTab = ref<ConfigTab>("runtime")
 const configTabs = computed(() => [
   { name: "runtime" as const, label: "运行参数" },
   { name: "providers" as const, label: "认证源" },
-  ...(session.role === "admin" ? [{ name: "vendor-test" as const, label: "真实联调" }] : []),
 ])
 
 const configs = ref<ConfigItem[]>([])
@@ -517,7 +513,7 @@ onMounted(() => {
       <p class="eyebrow">POLICY REGISTRY / 策略注册表</p>
       <h1>系统参数</h1>
       <p
-        >运行参数、认证源与真实联调统一在此受控；参数改动逐键写入审计，标有 BEAT RESTART
+        >运行参数与认证源统一在此受控；参数改动逐键写入审计，标有 BEAT RESTART
         的项需重启容器生效，敏感值不回显。安全日报邮件配置请进入独立的“安全日报”页面。</p
       >
     </div>
@@ -908,11 +904,4 @@ onMounted(() => {
       ><el-button type="primary" :loading="saving" @click="save">保存变更</el-button></footer
     >
   </section>
-
-  <VendorTestConsole
-    v-if="session.role === 'admin' && activeTab === 'vendor-test'"
-    id="config-panel-vendor-test"
-    role="tabpanel"
-    aria-labelledby="config-tab-vendor-test"
-  />
 </template>

@@ -4,17 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
 import app.tasks.send as send
-from app.services.vendor_control_state import (
-    VendorControlState,
-    VendorControlStateGuard,
-    VendorControlStateUnavailable,
-)
 from app.tasks.send import SendWorker, SubmitOutcome
 from app.vendor.failover import InvokeClaim, InvokeClaimKind
 from app.vendor.routing import VendorHealth, VendorRouter
@@ -28,16 +22,8 @@ class Store(FakeStore):
         super().__init__()
         self.chunk_status = status
         self.attempt_seq = 1
-        self.denied = False
         self.payload = replace(
             chunk(), status=status, next_vendor="secondary", failover_from_attempt_id=1
-        )
-
-    async def refresh_invoke_payload(self, _id: int) -> Any:
-        return replace(
-            self.payload,
-            denied_recipient_count=int(self.denied),
-            phones=() if self.denied else self.payload.phones,
         )
 
     async def load_chunk(self, _id: int) -> Any:
@@ -96,67 +82,36 @@ async def test_legal_modes_still_invoke_expected_gateway(status: str) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["pending", "retrying", "failover_pending"])
-@pytest.mark.parametrize("change", ["pause", "recipients", "control"])
 async def test_claim_completion_rechecks_before_http(
-    status: str, change: str, monkeypatch: pytest.MonkeyPatch
+    status: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, bucket = Store(status), Bucket()
-    heartbeat = datetime(2040, 1, 1, tzinfo=UTC)
-    now = heartbeat
-    guard = VendorControlStateGuard(clock=lambda: now)
-    state = VendorControlState("controlled", heartbeat, True, 1, None, 100)
-    monkeypatch.setattr(guard, "_read", lambda: state)
     name = "claim_next_vendor_invoke" if status == "failover_pending" else "claim_submission"
     claim = getattr(store, name)
 
     async def changed_claim(*args: Any, **kwargs: Any) -> Any:
-        nonlocal now
         result = await claim(*args, **kwargs)
-        if change == "pause":
-            store.paused = True
-        elif change == "recipients":
-            store.denied = True
-        else:
-            now += timedelta(seconds=31)
+        store.paused = True
         return result
 
     monkeypatch.setattr(store, name, changed_claim)
-    service, primary, backup = worker(
-        store, bucket, enforce_live_test_recipients=True, control_guard=guard
-    )
+    service, primary, backup = worker(store, bucket)
     result = await service.submit(store.payload, lane="realtime")
-    expected = "rejected" if change == "recipients" else "paused"
+    expected = "paused"
     assert result.value == expected and primary.calls == backup.calls == 0
     assert ("attempt", (2, expected)) in store.events
     assert bucket.refunded_vendors == ["secondary" if status == "failover_pending" else "zhihui"]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["pause", "recipients", "control"])
-async def test_task_recovery_rechecks_after_token(
-    change: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_task_recovery_rechecks_after_token(monkeypatch: pytest.MonkeyPatch) -> None:
     store = Store()
-    stale = False
 
     def change_state() -> None:
-        nonlocal stale
-        if change == "pause":
-            store.paused = True
-        elif change == "recipients":
-            store.denied = True
-        else:
-            stale = True
-
-    class Control:
-        def require_fresh(self) -> None:
-            if stale:
-                raise VendorControlStateUnavailable("stale", requires_critical_pause=True)
+        store.paused = True
 
     bucket = Bucket(change_state)
-    service, primary, backup = worker(
-        store, bucket, enforce_live_test_recipients=True, control_guard=Control()
-    )
+    service, primary, backup = worker(store, bucket)
 
     async def components() -> Any:
         return service, store, primary, 500
@@ -167,9 +122,7 @@ async def test_task_recovery_rechecks_after_token(
     monkeypatch.setattr(send, "_components", components)
     monkeypatch.setattr("app.services.runtime_heartbeat.touch_runtime_heartbeat", heartbeat)
     result = await send._run_chunk(3)
-    assert result.outcome is (
-        SubmitOutcome.REJECTED if change == "recipients" else SubmitOutcome.PAUSED
-    )
+    assert result.outcome is SubmitOutcome.PAUSED
     assert primary.calls == backup.calls == 0
     assert store.attempt_seq == 1
     assert bucket.refunded_vendors == ["secondary"]

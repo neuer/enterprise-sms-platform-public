@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import getpass
 import json
 import os
 import secrets
@@ -12,7 +11,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol, TextIO
+from typing import Any, Protocol, TextIO
 from uuid import UUID
 
 from redis.asyncio import Redis
@@ -31,23 +30,13 @@ from app.core.auth.temporary_password import TEMPORARY_PASSWORD_EXPIRY_SQL
 from app.core.bounded_executor import run_bounded
 from app.core.runtime_resources import bind_connection_audit_subject
 from app.services.crypto import (
-    PHONE_PATTERN,
     CryptoService,
     EncryptionContext,
     get_crypto_service,
 )
 from app.services.usage_ledger import UsageLedgerService
 from app.services.vendor_event_audit import SqlVendorEventAuditRepository
-from app.services.vendor_test_guard import (
-    VendorTestAllowlistError,
-    VendorTestRecipient,
-    read_vendor_test_recipients,
-    write_vendor_test_recipients,
-)
 from app.settings import Settings, get_settings
-
-VENDOR_TEST_ALLOWLIST_WRITE_PATH = Path("/run/vendor-test-rw/allowlist.json")
-BACKEND_RUNTIME_GID = 10001
 
 
 class AuthMockSettings(Protocol):
@@ -144,15 +133,6 @@ class TemporaryPasswordOutput(Protocol):
     def write_line(self, value: str) -> None: ...
 
 
-class HiddenTtyInput(Protocol):
-    """只能从控制 TTY 隐藏读取敏感输入的最小接口。"""
-
-    @property
-    def is_tty(self) -> bool: ...
-
-    def read_hidden(self, prompt: str) -> str: ...
-
-
 class StreamTtyOutput:
     """向当前控制 TTY 写一行，不复用 stdout 或日志。"""
 
@@ -166,60 +146,6 @@ class StreamTtyOutput:
     def write_line(self, value: str) -> None:
         self.stream.write(f"{value}\n")
         self.stream.flush()
-
-
-class GetpassTtyInput:
-    """使用 getpass 从控制 TTY 读取且不回显输入。"""
-
-    def __init__(self, stream: TextIO) -> None:
-        self.stream = stream
-
-    @property
-    def is_tty(self) -> bool:
-        return self.stream.isatty()
-
-    def read_hidden(self, prompt: str) -> str:
-        return getpass.getpass(prompt, stream=self.stream)
-
-
-def run_vendor_test_recipient(
-    *,
-    action: Literal["add", "remove"],
-    hidden_input: HiddenTtyInput,
-    crypto: CryptoService,
-    destination: Path,
-    destination_mode: int = 0o600,
-    destination_group_id: int | None = None,
-) -> int:
-    """从 TTY 读取号码并只把版本化 HMAC 原子写入白名单。"""
-
-    if not hidden_input.is_tty:
-        raise ControllingTtyRequired("测试手机号只能从控制 TTY 输入")
-    phone = hidden_input.read_hidden("测试手机号：")
-    if PHONE_PATTERN.fullmatch(phone) is None:
-        raise ValueError("测试手机号格式无效")
-    entries = (
-        set(read_vendor_test_recipients(destination)) if destination.exists() else set()
-    )
-    if action == "add":
-        entries.add(
-            VendorTestRecipient(
-                key_version=crypto.active_version,
-                phone_hmac=crypto.phone_hmac(phone),
-            )
-        )
-    else:
-        entries.difference_update(
-            VendorTestRecipient(key_version=version, phone_hmac=digest)
-            for version, digest in crypto.hmac_candidates(phone).items()
-        )
-    write_vendor_test_recipients(
-        destination,
-        sorted(entries),
-        file_mode=destination_mode,
-        group_id=destination_group_id,
-    )
-    return len(entries)
 
 
 class SqlInitAdminRepository:
@@ -782,11 +708,6 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--username", default="admin")
     init_parser.add_argument("--display-name", default="系统管理员")
     init_parser.add_argument("--show-temporary-password", action="store_true")
-    recipient_parser = subcommands.add_parser(
-        "vendor-test-recipient",
-        help="通过控制 TTY 维护真实联调测试号码",
-    )
-    recipient_parser.add_argument("action", choices=("add", "remove"))
     subcommands.add_parser(
         "usage-projection-rebuild",
         help="从 PostgreSQL 事实账本重建配额与频控 Redis 投影",
@@ -836,25 +757,6 @@ def main() -> int:
         except (InitAdminError, PasswordScreeningUnavailable, ValueError) as error:
             print(f"init-admin 失败：{error}", file=sys.stderr)
             return 1
-        return 0
-    if args.command == "vendor-test-recipient":
-        try:
-            with Path("/dev/tty").open("r+", encoding="utf-8") as stream:
-                count = run_vendor_test_recipient(
-                    action=args.action,
-                    hidden_input=GetpassTtyInput(stream),
-                    crypto=get_crypto_service(),
-                    destination=VENDOR_TEST_ALLOWLIST_WRITE_PATH,
-                    destination_mode=0o640,
-                    destination_group_id=BACKEND_RUNTIME_GID,
-                )
-        except OSError:
-            print("vendor-test-recipient 失败：测试手机号只能从控制 TTY 输入", file=sys.stderr)
-            return 1
-        except (ControllingTtyRequired, VendorTestAllowlistError, ValueError) as error:
-            print(f"vendor-test-recipient 失败：{error}", file=sys.stderr)
-            return 1
-        print(f"vendor-test-recipient 完成: entries={count}")
         return 0
     if args.command == "usage-projection-rebuild":
         count = asyncio.run(run_usage_projection_rebuild(get_settings()))

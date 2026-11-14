@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 
-import app.tasks.send as send_module
-from app.services.vendor_control_state import VendorControlStateUnavailable
-from app.services.vendor_test_budget import SubmissionClaim, SubmissionClaimStatus
-from app.services.vendor_test_guard import VendorTestRecipientDenied
 from app.tasks.send import (
     ChunkPayload,
     FinalizeKind,
     FinalizeReport,
     SendWorker,
+    SubmissionClaim,
+    SubmissionClaimStatus,
     SubmitOutcome,
 )
 from app.vendor.failover import InvokeAuthorization, InvokeClaim, InvokeClaimKind, NextAction
@@ -61,7 +58,6 @@ class FakeStore:
         self.split_chunks: list[ChunkPayload] = []
         self.claimed = True
         self.claim_counts: list[int] = []
-        self.claim_segments: list[int] = []
         self.claim_result = SubmissionClaim(SubmissionClaimStatus.CLAIMED)
         self.paused = False
         self.attempt_seq = 0
@@ -74,12 +70,8 @@ class FakeStore:
         self,
         chunk_id: int,
         expected_retry_count: int,
-        segments: int,
-        *,
-        enforce_live_test_budget: bool,
     ) -> SubmissionClaim:
         self.claim_counts.append(expected_retry_count)
-        self.claim_segments.append(segments)
         self.events.append(("submitting", chunk_id))
         if not self.claimed:
             return SubmissionClaim(SubmissionClaimStatus.STALE)
@@ -211,8 +203,6 @@ class FakeStore:
         previous_attempt_id: int,
         expected_next_vendor: str,
         expected_route_policy_version: int,
-        segments: int = 1,
-        enforce_live_test_budget: bool = False,
     ) -> InvokeClaim:
         if self.claim_gate is not None:
             await self.claim_gate.wait()
@@ -272,23 +262,6 @@ class FakeStore:
     async def split_once(self, chunk: ChunkPayload) -> list[ChunkPayload]:
         self.events.append(("split", chunk.chunk_id))
         return self.split_chunks
-
-    async def reject_disallowed_recipient(self, chunk_id: int, denied_count: int) -> None:
-        self.events.append(("guard_denied", (chunk_id, denied_count)))
-
-    async def defer_daily_limit(
-        self,
-        chunk_id: int,
-        lane: str,
-        reset_at: datetime,
-    ) -> None:
-        self.events.append(("daily_defer", (chunk_id, lane, reset_at)))
-
-    async def pause_daily_limit(self, lane: str, reset_at: datetime) -> None:
-        self.events.append(("daily_pause", (lane, reset_at)))
-
-    async def pause_control_agent_stale(self) -> None:
-        self.events.append(("control_pause", None))
 
     async def release_control_claim(self, chunk_id: int) -> None:
         self.events.append(("control_release", chunk_id))
@@ -358,202 +331,6 @@ def chunk() -> ChunkPayload:
     )
 
 
-class AllowGuard:
-    def __init__(self, denied_count: int = 0) -> None:
-        self.denied_count = denied_count
-        self.calls: list[tuple[str, ...]] = []
-
-    def require_allowed(self, phones: tuple[str, ...]) -> None:
-        self.calls.append(phones)
-        if self.denied_count:
-            raise VendorTestRecipientDenied(self.denied_count)
-
-
-class ControlGuard:
-    def __init__(self, outcomes: list[bool] | None = None) -> None:
-        self.outcomes = iter(outcomes or [True])
-        self.calls = 0
-
-    def require_fresh(self) -> object:
-        self.calls += 1
-        if not next(self.outcomes):
-            raise VendorControlStateUnavailable(
-                "真实联调控制状态不可用",
-                requires_critical_pause=True,
-            )
-        return object()
-
-
-@pytest.mark.asyncio
-async def test_stale_control_state_blocks_before_claim_vendor_and_uncertain() -> None:
-    gateway = FakeGateway(["must-not-send"])
-    store = FakeStore()
-    bucket = FakeBucket()
-
-    await SendWorker(
-        gateway,
-        store,
-        bucket,
-        control_guard=ControlGuard([False]),
-    ).submit(chunk(), lane="realtime")
-
-    assert store.events == [("control_pause", None)]
-    assert store.claim_segments == []
-    assert bucket.acquires == 0
-    assert gateway.calls == 0
-    assert not any(event[0] == "uncertain" for event in store.events)
-
-
-@pytest.mark.asyncio
-async def test_state_that_stales_after_token_is_paused_before_claim() -> None:
-    gateway = FakeGateway(["must-not-send"])
-    store = FakeStore()
-    bucket = FakeBucket()
-
-    await SendWorker(
-        gateway,
-        store,
-        bucket,
-        control_guard=ControlGuard([True, False]),
-    ).submit(chunk(), lane="realtime")
-
-    assert store.events == [("control_pause", None)]
-    assert store.claim_counts == []
-    assert bucket.refund_epochs == [1000]
-    assert gateway.calls == 0
-    assert not any(event[0] == "uncertain" for event in store.events)
-
-
-@pytest.mark.asyncio
-async def test_pause_persistence_failure_still_refunds_unused_token() -> None:
-    class FailingPauseStore(FakeStore):
-        async def pause_control_agent_stale(self) -> None:
-            self.events.append(("control_pause", None))
-            raise ConnectionError("redis unavailable")
-
-    gateway = FakeGateway(["must-not-send"])
-    store = FailingPauseStore()
-    bucket = FakeBucket()
-
-    with pytest.raises(ConnectionError, match="redis unavailable"):
-        await SendWorker(
-            gateway,
-            store,
-            bucket,
-            control_guard=ControlGuard([True, False]),
-        ).submit(chunk(), lane="realtime")
-
-    assert store.events == [("control_pause", None)]
-    assert store.claim_counts == []
-    assert bucket.refund_epochs == [1000]
-    assert gateway.calls == 0
-    assert not any(event[0] == "uncertain" for event in store.events)
-
-
-@pytest.mark.asyncio
-async def test_live_guard_denies_legacy_chunk_before_token_claim_or_vendor() -> None:
-    gateway = FakeGateway(["must-not-send"])
-    store = FakeStore()
-    bucket = FakeBucket()
-    guard = AllowGuard(1)
-
-    await SendWorker(
-        gateway,
-        store,
-        bucket,
-        recipient_guard=guard,
-        enforce_live_test_budget=True,
-    ).submit(chunk(), lane="realtime")
-
-    assert guard.calls == [("13800138000",)]
-    assert store.events == [("guard_denied", (3, 1))]
-    assert store.claim_segments == []
-    assert bucket.acquires == 0
-    assert gateway.calls == 0
-
-
-@pytest.mark.asyncio
-async def test_live_worker_rejects_recipient_disabled_in_postgres_before_vendor() -> None:
-    denied = ChunkPayload(
-        chunk_id=3,
-        batch_id=2,
-        custom_id="a" * 32,
-        phones=(),
-        content="验证码123456",
-        template_id="",
-        sign_name="【青鸾】",
-        denied_recipient_count=1,
-    )
-    gateway = FakeGateway(["must-not-send"])
-    store = FakeStore()
-    bucket = FakeBucket()
-
-    async def reload(_chunk_id: int) -> ChunkPayload:
-        return denied
-
-    store.refresh_invoke_payload = reload
-    await SendWorker(
-        gateway,
-        store,
-        bucket,
-        enforce_live_test_budget=True,
-        enforce_live_test_recipients=True,
-    ).submit(denied, lane="realtime")
-
-    assert store.events == [("guard_denied", (3, 1))]
-    assert bucket.acquires == 0
-    assert gateway.calls == 0
-
-
-@pytest.mark.asyncio
-async def test_worker_uses_unique_billing_implementation_for_atomic_claim(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    billing_calls: list[tuple[str, int]] = []
-
-    def calculate(final_content: str, *, recipient_count: int) -> int:
-        billing_calls.append((final_content, recipient_count))
-        return 7
-
-    monkeypatch.setattr(send_module, "calculate_quota_cost", calculate)
-    store = FakeStore()
-    guard = AllowGuard()
-
-    await SendWorker(
-        FakeGateway(["task-ok"]),
-        store,
-        FakeBucket(),
-        recipient_guard=guard,
-        enforce_live_test_budget=True,
-    ).submit(chunk(), lane="realtime")
-
-    assert billing_calls == [("【青鸾】验证码123456", 1)]
-    assert store.claim_segments == [7]
-    assert ("submitted", (3, "task-ok")) in store.events
-
-
-@pytest.mark.asyncio
-async def test_daily_limit_refunds_token_defers_chunk_and_never_calls_vendor() -> None:
-    reset_at = datetime(2026, 7, 17, tzinfo=UTC)
-    store = FakeStore()
-    store.claim_result = SubmissionClaim(SubmissionClaimStatus.DAILY_LIMIT, reset_at)
-    gateway = FakeGateway(["must-not-send"])
-    bucket = FakeBucket()
-
-    await SendWorker(
-        gateway,
-        store,
-        bucket,
-        recipient_guard=AllowGuard(),
-        enforce_live_test_budget=True,
-    ).submit(chunk(), lane="bulk")
-
-    assert bucket.refund_epochs == [1000]
-    assert ("daily_defer", (3, "bulk", reset_at)) in store.events
-    assert ("daily_pause", ("bulk", reset_at)) in store.events
-    assert gateway.calls == 0
-
-
 @pytest.mark.asyncio
 async def test_duplicate_delivery_that_cannot_claim_chunk_never_calls_vendor() -> None:
     trace: list[str] = []
@@ -571,16 +348,11 @@ async def test_duplicate_delivery_that_cannot_claim_chunk_never_calls_vendor() -
             self,
             chunk_id: int,
             expected_retry_count: int,
-            segments: int,
-            *,
-            enforce_live_test_budget: bool,
         ) -> SubmissionClaim:
             trace.append("claim")
             return await super().claim_submission(
                 chunk_id,
                 expected_retry_count,
-                segments,
-                enforce_live_test_budget=enforce_live_test_budget,
             )
 
     gateway = FakeGateway(["must-not-send"])
@@ -652,15 +424,10 @@ async def test_stale_payload_retry_count_cannot_claim_and_refunds_same_epoch() -
             self,
             chunk_id: int,
             expected_retry_count: int,
-            segments: int,
-            *,
-            enforce_live_test_budget: bool,
         ) -> SubmissionClaim:
             await super().claim_submission(
                 chunk_id,
                 expected_retry_count,
-                segments,
-                enforce_live_test_budget=enforce_live_test_budget,
             )
             return SubmissionClaim(
                 SubmissionClaimStatus.CLAIMED
@@ -740,51 +507,6 @@ async def test_backoff_error_schedules_one_durable_retry_and_returns() -> None:
     assert public_events(store) == [
         ("submitting", 3),
         ("retrying", (3, 5002)),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_backoff_retry_rechecks_dynamic_allowlist_before_next_vendor_call() -> None:
-    class DenySecondGuard(AllowGuard):
-        def require_allowed(self, phones: tuple[str, ...]) -> None:
-            self.calls.append(phones)
-            if len(self.calls) >= 4:
-                raise VendorTestRecipientDenied(1)
-
-    async def no_wait(_seconds: float) -> None:
-        return None
-
-    gateway = FakeGateway([VendorApiError(5002, "fast"), "must-not-send"])
-    store = FakeStore()
-    guard = DenySecondGuard()
-
-    worker = SendWorker(
-        gateway,
-        store,
-        FakeBucket(),
-        recipient_guard=guard,
-        enforce_live_test_budget=True,
-        sleeper=no_wait,
-    )
-    await worker.submit(chunk(), lane="realtime")
-    retried = ChunkPayload(
-        chunk_id=3,
-        batch_id=2,
-        custom_id="a" * 32,
-        phones=("13800138000",),
-        content="通知",
-        template_id="",
-        sign_name="【青鸾】",
-        retry_count=1,
-    )
-    await worker.submit(retried, lane="realtime")
-
-    assert len(guard.calls) == 4
-    assert gateway.calls == 1
-    assert public_events(store) == [
-        ("submitting", 3),
-        ("retrying", (3, 5002)),
-        ("guard_denied", (3, 1)),
     ]
 
 
@@ -1148,8 +870,6 @@ async def test_token_wait_aborts_when_lane_pauses_mid_wait() -> None:
         gateway,
         store,
         StarvingBucket(),
-        recipient_guard=AllowGuard(),
-        enforce_live_test_budget=True,
     ).submit(chunk(), lane="realtime")
 
     assert gateway.calls == 0

@@ -15,7 +15,6 @@
 @import "./workspace/user.css" layer(pages);
 @import "./workspace/ops.css" layer(pages);
 @import "./workspace/config.css" layer(pages);
-@import "./workspace/vendor.css" layer(pages);
 @import "./workspace/audit.css" layer(pages);
 @import "./workspace/apps.css" layer(pages);
 @import "./workspace/security-daily.css" layer(pages);

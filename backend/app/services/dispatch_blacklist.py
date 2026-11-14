@@ -21,7 +21,6 @@ from app.services.usage_ledger_projection import (
     _lock_projection_keys,
     _ProjectionChange,
 )
-from app.services.vendor_test_guard import VendorTestRecipientDenied
 
 REASON = "BLACKLISTED_BEFORE_SEND"
 _AUDIT_ACTOR = "dispatch-blacklist"
@@ -63,30 +62,6 @@ def blacklist_required(category: str, app_id: object, blacklist_check: object) -
         notice_blacklist=notice_blacklist_flag(app_id, blacklist_check),
     )
     return policy.blacklist_required
-
-
-async def guard_chunk(worker: Any, chunk: Any, *, persist_rejection: bool = True) -> bool:
-    """测试收件人守卫。与黑名单复核分开，避免发送文件继续变长。"""
-
-    if worker.enforce_live_test_recipients and chunk.denied_recipient_count:
-        if persist_rejection:
-            await worker.store.reject_disallowed_recipient(
-                chunk.chunk_id,
-                chunk.denied_recipient_count,
-            )
-        return False
-    if worker.recipient_guard is None:
-        return True
-    try:
-        worker.recipient_guard.require_allowed(chunk.phones)
-    except VendorTestRecipientDenied as error:
-        if persist_rejection:
-            await worker.store.reject_disallowed_recipient(
-                chunk.chunk_id,
-                error.denied_count,
-            )
-        return False
-    return True
 
 
 async def phones_for_invoke(store: object, chunk: Any) -> DispatchDecision:

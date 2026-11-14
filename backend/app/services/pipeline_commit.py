@@ -112,9 +112,7 @@ class AcceptanceCommitMixin(AcceptanceStagesMixin):
                 batch_no=batch_no,
                 app_id=(
                     self._usage_app_id(app, request)
-                    if request.channel != "web"
-                    or request.vendor_test_uat
-                    or self._is_system_resend(request)
+                    if request.channel != "web" or self._is_system_resend(request)
                     else None
                 ),
                 dept=self._usage_dept(app, request),

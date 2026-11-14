@@ -372,7 +372,6 @@ async def _pipeline_for(claims: JwtClaims) -> AsyncIterator[SendPipeline]:
         publisher=CeleryQueuePublisher(),
         templates=SqlTemplateRenderer(settings),
         signs=SignResolver(SqlSignRepository(settings)),
-        vendor_test_console_only=settings.vendor_live_test,
         usage_ledger=UsageLedgerService(redis, settings),
         admission_guard=get_send_admission_guard(),
         config=_config(values),

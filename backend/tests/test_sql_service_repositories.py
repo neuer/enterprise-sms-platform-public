@@ -16,7 +16,6 @@ import app.services.pipeline_repository as pipeline_repository_module
 import app.services.reconcile_repository as reconcile_repository_module
 import app.services.report_repository as report_repository_module
 import app.services.uncertain_repository as uncertain_repository_module
-import app.services.vendor_test_uat as vendor_test_uat_module
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.correlation import correlation_scope
 from app.services.approval_repository import SqlApprovalRepository, record_pending_approval_alert
@@ -220,14 +219,10 @@ async def test_template_renderer_uses_global_template_id(
     assert params == {"template_id": 17}
 
 
-def test_api_and_uat_factories_assemble_global_template_renderer() -> None:
-    sources = (
-        inspect.getsource(messages_api_module._pipeline),
-        inspect.getsource(vendor_test_uat_module.build_vendor_test_uat_service),
-        inspect.getsource(vendor_test_uat_module.build_vendor_test_uat_preview_service),
-    )
+def test_api_factory_assembles_global_template_renderer() -> None:
+    source = inspect.getsource(messages_api_module._pipeline)
 
-    assert all("SqlTemplateRenderer(settings)" in source for source in sources)
+    assert "SqlTemplateRenderer(settings)" in source
 
 
 @pytest.mark.asyncio
@@ -839,11 +834,7 @@ async def test_recovery_repository_selects_only_recoverable_work(
     ]
     recovery_sql = next(sql for sql, _ in connection.calls if "WITH repaired AS" in sql)
     assert "UPDATE sms_chunk" in recovery_sql
-    assert "vendor_test_send_attempt" in recovery_sql
-    assert "status='reserved'" in recovery_sql
-    assert "status='uncertain'" in recovery_sql
-    assert "in_flight_segments" in recovery_sql
-    assert "uncertain_segments" in recovery_sql
+    assert "vendor_test_send_attempt" not in recovery_sql
     assert "status='submitting'" in recovery_sql
     assert "status='uncertain'" in recovery_sql
     assert "uncertain_since=COALESCE(c.submitting_since,now())" in recovery_sql

@@ -97,7 +97,6 @@ const OVERLAYS = [
   ["templates", "templates#create", '[data-testid="new-template"]'],
   ["blacklist", "blacklist#add", '[data-testid="blacklist-add-open"]'],
   ["configs", "configs#providers", "#config-tab-providers"],
-  ["configs", "configs#vendor-test", "#config-tab-vendor-test"],
 ]
 const STATE_TARGETS = {
   send: [

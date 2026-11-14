@@ -14,8 +14,6 @@ from app.services.runtime_policy import InvalidRuntimePolicy, RuntimePolicy
 RECONCILE_DOMAINS = (
     "uncertain",
     "delivery-recovery",
-    "vendor-control",
-    "vendor-uat",
     "raw-replay",
 )
 PREFLIGHT_LEAK = "preflight-secret-value-must-not-leak"
@@ -54,7 +52,7 @@ def _install_reconcile_probe(
     error_factory: Callable[[], BaseException] | None = None,
     policy_loader: type[Any] | None = None,
 ) -> _ReconcileProbe:
-    """安装五域探测桩；raw-replay 走真实函数以便注入其仓储/Redis/密钥前置。"""
+    """安装三域探测桩；raw-replay 走真实函数以便注入其仓储/Redis/密钥前置。"""
 
     probe = _ReconcileProbe()
     crypto_calls = {"n": 0}
@@ -114,48 +112,6 @@ def _install_reconcile_probe(
             _raise_preflight(
                 "delivery-recovery",
                 "publisher_init",
-                failed_domain,
-                failed_site,
-                error_factory,
-            )
-
-    class Operations:
-        def __init__(
-            self,
-            repository: object,
-            client: object,
-            *,
-            finalizers: dict[str, object] | None = None,
-        ) -> None:
-            _raise_preflight(
-                "vendor-control", "repo_init", failed_domain, failed_site, error_factory
-            )
-
-        async def reconcile_once(self) -> int:
-            probe.mark("vendor-control")
-            return 3
-
-    class ControlClient:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            _raise_preflight(
-                "vendor-control", "client_init", failed_domain, failed_site, error_factory
-            )
-
-    class UatRecovery:
-        def __init__(self, repository: object) -> None:
-            _raise_preflight(
-                "vendor-uat", "repo_init", failed_domain, failed_site, error_factory
-            )
-
-        async def reconcile_once(self) -> int:
-            probe.mark("vendor-uat")
-            return 4
-
-    class SharedVendorRepo:
-        def __init__(self, loaded_settings: object) -> None:
-            _raise_preflight(
-                "vendor-control",
-                "shared_repo_init",
                 failed_domain,
                 failed_site,
                 error_factory,
@@ -238,10 +194,6 @@ def _install_reconcile_probe(
     monkeypatch.setattr(task_module, "RecoveryReconciler", Recovery)
     monkeypatch.setattr(task_module, "SqlRecoveryRepository", RecoveryRepo)
     monkeypatch.setattr(task_module, "CeleryQueuePublisher", Publisher)
-    monkeypatch.setattr(task_module, "VendorTestOperationService", Operations)
-    monkeypatch.setattr(task_module, "VendorControlClient", ControlClient)
-    monkeypatch.setattr(task_module, "VendorTestUatReconciler", UatRecovery, raising=False)
-    monkeypatch.setattr(task_module, "SqlVendorTestOperationRepository", SharedVendorRepo)
     monkeypatch.setattr(task_module, "SqlAlertService", Alerts)
     monkeypatch.setattr(task_module, "redis_client", redis_client)
     monkeypatch.setattr(task_module, "SqlOpsRepository", Ops)
@@ -255,13 +207,10 @@ def _install_reconcile_probe(
 
 
 @pytest.mark.asyncio
-async def test_reconcile_task_avoids_destructive_reset_finalizer_and_sums_contributions(
+async def test_reconcile_task_sums_domain_contributions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app.tasks import reconcile as task_module
-
-    captured: dict[str, object] = {}
-    operation_repository = object()
 
     class PolicyLoader:
         def __init__(self, settings: object) -> None:
@@ -291,26 +240,6 @@ async def test_reconcile_task_avoids_destructive_reset_finalizer_and_sums_contri
         async def run_once(self) -> int:
             return 2
 
-    class Operations:
-        def __init__(
-            self,
-            repository: object,
-            client: object,
-            *,
-            finalizers: dict[str, object] | None = None,
-        ) -> None:
-            captured["finalizers"] = finalizers
-
-        async def reconcile_once(self) -> int:
-            return 3
-
-    class UatRecovery:
-        def __init__(self, repository: object) -> None:
-            assert repository is operation_repository
-
-        async def reconcile_once(self) -> int:
-            return 4
-
     monkeypatch.setattr(task_module, "get_settings", lambda: "settings")
     monkeypatch.setattr(
         task_module.CryptoService,
@@ -320,123 +249,12 @@ async def test_reconcile_task_avoids_destructive_reset_finalizer_and_sums_contri
     monkeypatch.setattr(task_module, "SqlRuntimePolicyLoader", PolicyLoader)
     monkeypatch.setattr(task_module, "UncertainReconciler", Uncertain)
     monkeypatch.setattr(task_module, "RecoveryReconciler", Recovery)
-    monkeypatch.setattr(task_module, "VendorTestOperationService", Operations)
-    monkeypatch.setattr(task_module, "VendorTestUatReconciler", UatRecovery, raising=False)
-    monkeypatch.setattr(
-        task_module,
-        "SqlVendorTestOperationRepository",
-        lambda settings: operation_repository,
-    )
     async def replay_none(_settings: object) -> int:
         return 0
 
     monkeypatch.setattr(task_module, "_replay_stale_raw", replay_none)
 
-    assert await task_module._reconcile() == 10
-    assert captured == {"finalizers": None}
-
-
-@pytest.mark.asyncio
-async def test_reconcile_task_propagates_unexpected_operation_finalizer_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from app.tasks import reconcile as task_module
-
-    class PolicyLoader:
-        def __init__(self, settings: object) -> None:
-            pass
-
-        async def load(self) -> object:
-            return object()
-
-    class Uncertain:
-        @classmethod
-        def from_policy(
-            cls,
-            repository: object,
-            crypto: object,
-            policy: object,
-        ) -> Uncertain:
-            return cls()
-
-        async def run_once(self) -> int:
-            return 0
-
-    class Recovery:
-        def __init__(self, repository: object, publisher: object) -> None:
-            pass
-
-        async def run_once(self) -> int:
-            return 0
-
-    class Operations:
-        def __init__(
-            self,
-            repository: object,
-            client: object,
-            *,
-            finalizers: dict[str, object] | None = None,
-        ) -> None:
-            pass
-
-        async def reconcile_once(self) -> int:
-            raise RuntimeError("private-finalizer-detail")
-
-    uat_ran = {"value": False}
-
-    class ContinuingUatRecovery:
-        def __init__(self, repository: object) -> None:
-            pass
-
-        async def reconcile_once(self) -> int:
-            uat_ran["value"] = True
-            return 4
-
-    monkeypatch.setattr(task_module, "get_settings", lambda: "settings")
-    monkeypatch.setattr(
-        task_module.CryptoService,
-        "from_settings",
-        lambda settings: "crypto",
-    )
-    monkeypatch.setattr(task_module, "SqlRuntimePolicyLoader", PolicyLoader)
-    monkeypatch.setattr(task_module, "UncertainReconciler", Uncertain)
-    monkeypatch.setattr(task_module, "RecoveryReconciler", Recovery)
-    monkeypatch.setattr(task_module, "VendorTestOperationService", Operations)
-    monkeypatch.setattr(
-        task_module, "VendorTestUatReconciler", ContinuingUatRecovery, raising=False
-    )
-
-    alerts: list[dict[str, object]] = []
-
-    class Alerts:
-        def __init__(self, settings: object) -> None:
-            assert settings == "settings"
-
-        async def emit(self, **kwargs: object) -> None:
-            alerts.append(kwargs)
-
-    monkeypatch.setattr(task_module, "SqlAlertService", Alerts)
-
-    async def replay_none(_settings: object) -> int:
-        return 0
-
-    monkeypatch.setattr(task_module, "_replay_stale_raw", replay_none)
-
-    with pytest.raises(
-        task_module.ReconcilePartialFailure,
-        match="reconcile domains failed: 1",
-    ) as captured:
-        await task_module._reconcile()
-
-    assert uat_ran["value"] is True
-    assert captured.value.__cause__ is None
-    assert "private-finalizer-detail" not in str(captured.value)
-    assert alerts[0]["alert_type"] == "reconcile_domain_failed"
-    assert alerts[0]["detail"] == {
-        "domain": "vendor-control",
-        "error_type": "RuntimeError",
-    }
-    assert alerts[0]["dedup_key"] == "reconcile_domain_failed:vendor-control"
+    assert await task_module._reconcile() == 3
 
 
 @pytest.mark.asyncio
@@ -445,8 +263,6 @@ async def test_reconcile_task_propagates_unexpected_operation_finalizer_failure(
     (
         "uncertain",
         "delivery-recovery",
-        "vendor-control",
-        "vendor-uat",
         "raw-replay",
     ),
 )
@@ -492,32 +308,6 @@ async def test_reconcile_task_isolates_each_domain_failure(
                 raise RuntimeError("recovery-domain-fault")
             return 2
 
-    class Operations:
-        def __init__(
-            self,
-            repository: object,
-            client: object,
-            *,
-            finalizers: dict[str, object] | None = None,
-        ) -> None:
-            pass
-
-        async def reconcile_once(self) -> int:
-            ran.append("vendor-control")
-            if failed_domain == "vendor-control":
-                raise RuntimeError("control-domain-fault")
-            return 3
-
-    class UatRecovery:
-        def __init__(self, repository: object) -> None:
-            pass
-
-        async def reconcile_once(self) -> int:
-            ran.append("vendor-uat")
-            if failed_domain == "vendor-uat":
-                raise RuntimeError("uat-domain-fault")
-            return 4
-
     class Alerts:
         def __init__(self, settings: object) -> None:
             pass
@@ -540,8 +330,6 @@ async def test_reconcile_task_isolates_each_domain_failure(
     monkeypatch.setattr(task_module, "SqlRuntimePolicyLoader", PolicyLoader)
     monkeypatch.setattr(task_module, "UncertainReconciler", Uncertain)
     monkeypatch.setattr(task_module, "RecoveryReconciler", Recovery)
-    monkeypatch.setattr(task_module, "VendorTestOperationService", Operations)
-    monkeypatch.setattr(task_module, "VendorTestUatReconciler", UatRecovery, raising=False)
     monkeypatch.setattr(task_module, "SqlAlertService", Alerts)
     monkeypatch.setattr(task_module, "_replay_stale_raw", replay)
 
@@ -551,8 +339,6 @@ async def test_reconcile_task_isolates_each_domain_failure(
     assert ran == [
         "uncertain",
         "delivery-recovery",
-        "vendor-control",
-        "vendor-uat",
         "raw-replay",
     ]
     assert [alert["detail"] for alert in alerts] == [
@@ -783,10 +569,6 @@ def test_reconcile_loads_policy_only_inside_uncertain_domain() -> None:
     assert source.index("get_settings()") < source.index("async def uncertain")
     assert source.index("async def uncertain") < source.index("SqlRuntimePolicyLoader")
     assert source.index("SqlRuntimePolicyLoader") < source.index("for name, operation")
-    assert source.index("SqlVendorTestOperationRepository") > source.index(
-        "async def vendor_control"
-    )
-    assert source.index("VendorControlClient") > source.index("async def vendor_control")
     assert source.index("CryptoService.from_settings") > source.index("async def uncertain")
 
 
@@ -836,27 +618,6 @@ def test_reconcile_loads_policy_only_inside_uncertain_domain() -> None:
             "RuntimeError",
             lambda: RuntimeError(f"queue publisher init failed {PREFLIGHT_LEAK}"),
             id="delivery-publisher-init",
-        ),
-        pytest.param(
-            "vendor-control",
-            "repo_init",
-            "RuntimeError",
-            lambda: RuntimeError(f"control repository init failed {PREFLIGHT_LEAK}"),
-            id="control-repo-init",
-        ),
-        pytest.param(
-            "vendor-control",
-            "client_init",
-            "RuntimeError",
-            lambda: RuntimeError(f"vendor control client init failed {PREFLIGHT_LEAK}"),
-            id="control-client-init",
-        ),
-        pytest.param(
-            "vendor-uat",
-            "repo_init",
-            "RuntimeError",
-            lambda: RuntimeError(f"uat repository init failed {PREFLIGHT_LEAK}"),
-            id="uat-repo-init",
         ),
         pytest.param(
             "raw-replay",
@@ -946,8 +707,6 @@ async def test_corrupt_runtime_policy_does_not_block_delivery_raw_uat(
 
     assert probe.succeeded == [
         "delivery-recovery",
-        "vendor-control",
-        "vendor-uat",
         "raw-replay",
     ]
     assert captured.value.__cause__ is None
@@ -1049,4 +808,4 @@ async def test_reconcile_real_policy_failure_does_not_leak_through_task_failure(
     rendered = "".join(traceback.format_exception(error))
     serialized = Backend(app=celery_app).prepare_exception(error, serializer="json")
     assert marker not in rendered + caplog.text + json.dumps(serialized)
-    assert len(probe.succeeded) == 4
+    assert len(probe.succeeded) == 2

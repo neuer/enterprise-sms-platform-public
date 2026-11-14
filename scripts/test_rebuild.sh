@@ -52,7 +52,7 @@ if [[ -e "$CONFIG_FILE" ]]; then
       "" | \#*) ;;
       SMS_TEST_UPDATE_TARGET=*) CONFIG_TARGET="${line#*=}" ;;
       SMS_TEST_UPDATE_PORT=*) CONFIG_PORT="${line#*=}" ;;
-      # 历史键：测试环境已不再做真实联调，保留只为兼容既有本地文件。
+      # 历史键：真实联调已下线，保留只为兼容既有本地文件。
       SMS_VENDOR_LIVE_TEST_ORIGIN=*) ;;
       *) fail ".env.test-update 只允许 SMS_TEST_UPDATE_TARGET 与 SMS_TEST_UPDATE_PORT" ;;
     esac
@@ -90,7 +90,7 @@ ssh -p "$PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes "$TARGET" \
 set -euo pipefail
 root="$1"; commit="$2"; web_port="$3"; live_marker="$4"
 if [[ -e "$live_marker" ]]; then
-  echo "test-rebuild: 服务器仍处于真实联调状态；先在页面切回 Mock 并清除正式凭据" >&2
+  echo "test-rebuild: 服务器残留旧联调标记；先手工清除该标记与正式凭据" >&2
   exit 1
 fi
 cd "$root"

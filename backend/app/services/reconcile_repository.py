@@ -137,22 +137,8 @@ class SqlRecoveryRepository:
                               )
                             )
                           RETURNING c.id
-                        ), settled AS (
-                          UPDATE vendor_test_send_attempt attempt SET
-                            status='uncertain',settled_at=now()
-                          FROM stale_chunks stale
-                          WHERE attempt.chunk_id=stale.id
-                            AND attempt.status='reserved'
-                          RETURNING attempt.usage_date,attempt.segments
-                        ), totals AS (
-                          SELECT usage_date,sum(segments)::integer AS segments
-                          FROM settled GROUP BY usage_date
                         )
-                        UPDATE vendor_test_daily_usage usage SET
-                          in_flight_segments=usage.in_flight_segments-totals.segments,
-                          uncertain_segments=usage.uncertain_segments+totals.segments,
-                          updated_at=now()
-                        FROM totals WHERE usage.usage_date=totals.usage_date
+                        SELECT count(*) FROM stale_chunks
                         """
                 ),
                 {"chunk_ids": chunk_ids},

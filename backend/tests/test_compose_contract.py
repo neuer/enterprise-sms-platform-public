@@ -15,26 +15,14 @@ def _compose() -> dict[str, Any]:
     return cast(dict[str, Any], loaded)
 
 
-def test_vendor_test_state_is_read_only_and_only_visible_to_vendor_callers() -> None:
-    services = _compose()["services"]
-    mount = (
-        "${SMS_VENDOR_TEST_STATE_DIR:-./vendor-test-empty}:"
-        "/run/vendor-test:ro"
-    )
-
-    for service in ("api", "worker-realtime", "worker-report", "worker-bulk"):
-        assert mount in services[service].get("volumes", [])
-    for service in (
-        "postgres",
-        "redis",
-        "migrate",
-        "worker-callback",
-        "outbox-dispatcher",
-        "beat",
-        "mock-vendor",
-        "web",
-    ):
-        assert mount not in services[service].get("volumes", [])
+def test_retired_vendor_test_mounts_are_not_restored() -> None:
+    """真实联调已下线：任何服务都不得再挂载联调状态目录或控制 UDS 目录。"""
+    for service in _compose()["services"].values():
+        for volume in service.get("volumes", []):
+            assert "/run/vendor-test" not in volume
+            assert "/run/vendor-control" not in volume
+    assert not (ROOT / "deploy/vendor-test-empty").exists()
+    assert not (ROOT / "deploy/vendor-control-empty").exists()
 
 
 def test_auth_policy_mount_is_read_only_and_only_visible_to_api() -> None:
@@ -44,28 +32,8 @@ def test_auth_policy_mount_is_read_only_and_only_visible_to_api() -> None:
     assert (ROOT / "deploy/auth-policy/.gitkeep").is_file()
 
 
-def test_vendor_control_socket_directory_is_read_only_and_least_privilege() -> None:
+def test_backend_services_never_mount_host_secrets_or_docker_socket() -> None:
     services = _compose()["services"]
-    mount = (
-        "${SMS_VENDOR_CONTROL_SOCKET_DIR:-./vendor-control-empty}:"
-        "/run/vendor-control:ro"
-    )
-
-    for service in ("api", "worker-realtime"):
-        assert mount in services[service].get("volumes", [])
-    for service in (
-        "postgres",
-        "redis",
-        "migrate",
-        "worker-report",
-        "worker-bulk",
-        "worker-callback",
-        "outbox-dispatcher",
-        "beat",
-        "mock-vendor",
-        "web",
-    ):
-        assert mount not in services[service].get("volumes", [])
 
     for service in services.values():
         for volume in service.get("volumes", []):
@@ -80,13 +48,8 @@ def test_vendor_control_socket_directory_is_read_only_and_least_privilege() -> N
     ]
 
 
-def test_live_profile_does_not_auto_start_mock_and_default_state_dir_has_no_allowlist() -> None:
-    compose = _compose()
-
-    assert compose["services"]["mock-vendor"]["profiles"] == ["dev"]
-    default_allowlist = ROOT / "deploy/vendor-test-empty/allowlist.json"
-    assert not default_allowlist.exists()
-    assert (ROOT / "deploy/vendor-test-empty/.gitkeep").is_file()
+def test_mock_vendor_only_starts_in_dev_profile() -> None:
+    assert _compose()["services"]["mock-vendor"]["profiles"] == ["dev"]
 
 
 def test_outbox_dispatcher_retries_broker_without_startup_coupling() -> None:

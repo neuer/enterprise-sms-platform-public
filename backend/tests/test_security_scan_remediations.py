@@ -17,7 +17,7 @@ from app.core.apikey import ApiAppContext
 from app.core.auth.accounts import ApplicationPrincipal
 from app.services.batch_query import BatchAccessScope
 from app.services.category import policy_for_category
-from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
+from app.services.crypto import CryptoService, EncryptionContext
 from app.services.export_file import ExportFileCodec
 from app.services.housekeeping_repository import SqlHousekeepingRepository
 from app.services.idempotency import IdempotencyScope
@@ -87,22 +87,9 @@ def test_idempotency_fingerprint_survives_rotation_and_distinguishes_equal_masks
     pipeline = _fingerprint_pipeline(crypto)
     app = ApiAppContext(7, "app", "平台部", frozenset({"notice"}))
     policy = policy_for_category("notice", app.allowed_categories)
-    first_request = SendRequest(
-        "notice",
-        (),
-        content="通知",
-        protected_mobiles=(ProtectedPhone(b"a", "a" * 64, "138****8000", 1),),
-        protected_hmac_candidates=((1, "a" * 64), (2, "b" * 64)),
-        vendor_test_uat=True,
-    )
-    second_request = SendRequest(
-        "notice",
-        (),
-        content="通知",
-        protected_mobiles=(ProtectedPhone(b"b", "c" * 64, "138****8000", 1),),
-        protected_hmac_candidates=((1, "c" * 64), (2, "d" * 64)),
-        vendor_test_uat=True,
-    )
+    # 两个号码脱敏后同为 138****8000，指纹仍须区分。
+    first_request = SendRequest("notice", ("13800008000",), content="通知")
+    second_request = SendRequest("notice", ("13811118000",), content="通知")
 
     first_digest = pipeline._request_hash(
         first_request, app, policy, key_version=1

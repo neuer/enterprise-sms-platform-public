@@ -124,19 +124,7 @@ def _nodes(value: object) -> set[str]:
 
 
 def allowed_skip(node: str, reason: str) -> bool:
-    """仅允许公开快照的两项文档例外与本地缺少 Lua 的已知替代测试。"""
-    docs = {
-        ("tests/test_deployment_docs.py::"
-         "test_development_high_risk_release_reload_boundary_is_documented"): (
-             "private-only reset plan is intentionally absent from public snapshot"
-         ),
-        ("tests/test_test_update_workflow_docs.py::"
-         "test_rehearsal_report_records_five_consecutive_verified_updates"): (
-             "private-only rehearsal report is intentionally absent from public snapshot"
-         ),
-    }
-    if node in docs:
-        return docs[node] in reason
+    """仅允许本地缺少 Lua 的已知替代测试被跳过。"""
     return node.startswith("tests/test_vendor_bucket_clock.py::") and (
         "requires Lua; real Redis also covered by integration" in reason
     )

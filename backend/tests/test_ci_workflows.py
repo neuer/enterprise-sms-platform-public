@@ -155,7 +155,7 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     assert "verify_vendor_control_uds.sh" not in vendor_lint_commands
     assert "verify_vendor_postgres_recovery.sh" not in vendor_lint_commands
     assert "verify_vendor_live_test.sh" not in vendor_lint_commands
-    assert "tests/vendor-test-console.test.ts" in vendor_lint_commands
+    assert "tests/vendor-test-console.test.ts" not in vendor_lint_commands
     assert "pytest-xdist" not in backend_commands
     assert "-n auto" not in backend_commands
     assert jobs["backend-vendor-lint"]["needs"] == "changes"
@@ -293,9 +293,9 @@ def test_ci_workflow_runs_selected_checks_and_g2_in_parallel_before_gate() -> No
     assert "needs.changes.outputs.release_control" in jobs["g2-release-control"]["if"]
     assert jobs["g2-release-control"]["needs"] == ["changes"]
     assert "scripts/verify_release_control.sh" in job_commands(jobs["g2-release-control"])
-    assert "verify_vendor_live_test.sh" in (ROOT / "scripts/verify_all.sh").read_text(
-        encoding="utf-8"
-    )
+    verify_all = (ROOT / "scripts/verify_all.sh").read_text(encoding="utf-8")
+    assert "verify_vendor_live_test.sh" not in verify_all
+    assert "python3 scripts/check_invariants.py" in verify_all
     assert "check_public_readiness.py" in (ROOT / "scripts/verify_all.sh").read_text(
         encoding="utf-8"
     )

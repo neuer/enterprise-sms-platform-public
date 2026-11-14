@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_vendor_live_static_invariants_pass_for_repository() -> None:
+def test_vendor_boundary_static_invariants_pass_for_repository() -> None:
     result = subprocess.run(
         ["python3", "scripts/check_invariants.py"],
         cwd=ROOT,
@@ -16,57 +16,29 @@ def test_vendor_live_static_invariants_pass_for_repository() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "真实厂商受控联调" in result.stdout
+    assert "厂商调用边界已锁定" in result.stdout
 
 
-def test_static_gate_covers_all_live_test_safety_boundaries() -> None:
+def test_static_gate_keeps_vendor_boundaries_and_forbids_restoring_live_test() -> None:
+    """真实联调已下线：门禁继续锁定厂商调用边界，并阻止入口、挂载与契约被恢复。"""
     source = (ROOT / "scripts/check_invariants.py").read_text(encoding="utf-8")
 
     for token in (
-        "vendor_test_console_only=settings.vendor_live_test",
-        "require_allowed(request.mobiles)",
-        "_guard_chunk(chunk, persist_rejection=not authorized)",
-        "chunk, lane, vendor_id, authorized=True",
-        "LIVE_TEST_DAILY_SEGMENT_LIMIT",
+        "development/test requires VENDOR_MOCK=1",
+        "def vendor_live_test(",
+        "api/vendor_test.py",
+        "uat-send",
+        "/run/vendor-test",
+        "/run/vendor-control",
+        "CredentialEnvelopeModel",
         "pause_queues=True",
         'alert_level="crit"',
         "mock-vendor",
+        "docker.sock",
         "VENDOR_LIVE_PROTECTED_EXACT",
-        "verify_release.sh",
-        "protected_mobiles=(",
-        "await self.config_store.load_config(app.dept)",
-        "previewVendorTestUat",
         "backend/app/tasks/reconcile.py",
     ):
         assert token in source
-
-
-def test_static_gate_forbids_api_phone_decrypt_and_checks_wrapper_timeouts() -> None:
-    source = (ROOT / "scripts/check_invariants.py").read_text(encoding="utf-8")
-
-    assert 'if "decrypt_text(" in uat_service' in source
-    for retired in ("vendor_control_agent.py", "vendor_test_manager.py", "fixed_runner"):
-        assert retired not in source.split("def check_vendor_live_invariants", 1)[1].split(
-            "    update_contract = require_fragments(", 1
-        )[0]
-
-
-def test_static_gate_uses_database_recipients_and_control_state_not_host_allowlist() -> None:
-    source = (ROOT / "scripts/check_invariants.py").read_text(encoding="utf-8")
-
-    for forbidden in (
-        "VENDOR_TEST_ALLOWLIST_UID",
-        "VENDOR_TEST_ALLOWLIST_GID",
-        "allowlist_info",
-        "vendor live test allowlist must be readable",
-    ):
-        assert forbidden not in source
-    for required in (
-        "active_recipient_count < 1",
-        "enforce_live_test_recipients=settings.vendor_live_test",
-        "vendor_test_recipient",
-    ):
-        assert required in source
 
 
 def test_control_plane_schemas_have_no_plain_recipient_content_or_secret_fields() -> None:
@@ -83,16 +55,3 @@ def test_control_plane_schemas_have_no_plain_recipient_content_or_secret_fields(
         assert forbidden not in attempts.lower()
     assert "phone_hmac" not in ledger.lower()
     assert "phone_hmac" not in attempts.lower()
-
-
-def test_page_only_vendor_test_contract_keeps_plaintext_outside_volatile_browser_memory() -> None:
-    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    runbook = (ROOT / "docs/runbooks/controlled-real-vendor-test.md").read_text(encoding="utf-8")
-    contract = runbook.split("## 页面安装凭据", 1)[1].split("\n## ", 1)[0]
-
-    assert "controlled-real-vendor-test.md#页面安装凭据" in agents
-    assert "浏览器易失内存" in contract
-    assert "WebCrypto" in contract
-    assert "禁止写入 Pinia、localStorage、sessionStorage、IndexedDB" in contract
-    assert "禁止进入普通 API 明文" in contract
-    assert "vendor-control-agent" in contract

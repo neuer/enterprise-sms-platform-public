@@ -591,6 +591,7 @@ def load_test_update_ssh(path: Path) -> tuple[str, int]:
         if separator == "" or key not in {
             "SMS_TEST_UPDATE_TARGET",
             "SMS_TEST_UPDATE_PORT",
+            # 历史键：真实联调已下线，仅为兼容既有本地文件而容忍。
             "SMS_VENDOR_LIVE_TEST_ORIGIN",
         }:
             raise PerformanceFailure("SCALE-03 test-update env has unexpected keys")
@@ -701,7 +702,6 @@ class VendorScaleSuite:
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
         run_id: str | None = None,
-        require_vendor_status: bool = True,
     ) -> None:
         selected = config or VendorScaleConfig()
         selected.validate()
@@ -727,7 +727,6 @@ class VendorScaleSuite:
         self._phase_c_rows = 0
         self._phase_d_rows = 0
         self._d_phone_cursor = 0
-        self.require_vendor_status = require_vendor_status
         self.phase_b_ramps_recorded: tuple[RampResult, ...] = ()
         self.phase_d_stages_recorded: tuple[ThroughputResult, ...] = ()
 
@@ -793,24 +792,6 @@ class VendorScaleSuite:
         if response.status != 200:
             raise PerformanceFailure("SCALE-02 mock state unavailable")
         return _object(response.data, "SCALE-02")
-
-    def _preflight_vendor_status(self) -> None:
-        if not isinstance(self.config_client, RuntimeConfigClient):
-            raise PerformanceFailure("SCALE-00 vendor-test status requires admin HTTP")
-        response = self.api.request(
-            "GET",
-            "/api/v1/web/admin/vendor-test/status",
-            headers=self.config_client._auth(),
-        )
-        if response.status != 200:
-            raise PerformanceFailure(f"SCALE-00 vendor-test status returned HTTP {response.status}")
-        mode = _object(response.data, "SCALE-00").get("mode")
-        if mode == "controlled":
-            raise PerformanceFailure("SCALE-00 refuses a controlled live vendor")
-        if mode == "blocked":
-            raise PerformanceFailure("SCALE-00 vendor-test is blocked")
-        if mode not in {"setup_required", "inactive"}:
-            raise PerformanceFailure("SCALE-00 vendor-test mode is not Mock-safe")
 
     def _send_notice(
         self,
@@ -1242,8 +1223,6 @@ class VendorScaleSuite:
         cancelled = 0
         cleanup_error: PerformanceFailure | None = None
         try:
-            if self.require_vendor_status:
-                self._preflight_vendor_status()
             self.config_client.snapshot()
             self._require_empty(
                 timeout_s=min(self.config.drain_timeout_s, 120),
@@ -1505,7 +1484,6 @@ def main() -> int:
                 config_client = SqlRuntimeConfigClient(LocalSmsComposeRunner())
             else:
                 raise ValueError("sql config mode requires --drain-via ssh or sms-compose")
-            require_vendor_status = False
         else:
             admin_password = read_secret_file(args.admin_password_file, label="admin password")
             token = _login_admin(
@@ -1524,7 +1502,6 @@ def main() -> int:
             else:
                 raise ValueError("vendor-scale requires --keys or --provision-notice-app")
             config_client = RuntimeConfigClient(api_client, token, admin_password)
-            require_vendor_status = True
         try:
             suite = VendorScaleSuite(
                 api_client,
@@ -1541,7 +1518,6 @@ def main() -> int:
                     throughput_fail_closed=args.throughput_fail_closed,
                     phase_d_include_d3=not args.skip_d3,
                 ),
-                require_vendor_status=require_vendor_status,
             )
             result = suite.run()
         finally:

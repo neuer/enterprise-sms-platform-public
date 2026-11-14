@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import inspect
 import re
 from collections.abc import Iterator
@@ -11,12 +10,10 @@ from typing import Any, cast
 import pytest
 
 import app.tasks.send_repository as send_repository_module
-import app.tasks.send_repository_payload as send_repository_payload_module
 from app.services.pipeline import InFlightLimitExceeded
 from app.services.send_inflight import InFlightInvariantViolation
-from app.services.vendor_test_budget import SubmissionClaimStatus
 from app.tasks import celery_app
-from app.tasks.send import ChunkPayload
+from app.tasks.send import ChunkPayload, SubmissionClaimStatus
 from app.tasks.send_repository import SqlChunkStore
 
 
@@ -210,7 +207,7 @@ async def test_payload_carries_persisted_retry_count(parent_chunk_id: int | None
 
 
 @pytest.mark.asyncio
-async def test_payload_does_not_apply_live_test_recipient_guard_in_mock_mode() -> None:
+async def test_payload_decrypts_pending_phones_without_recipient_filter() -> None:
     class FakeCrypto:
         def decrypt_phone(
             self,
@@ -230,7 +227,6 @@ async def test_payload_does_not_apply_live_test_recipient_guard_in_mock_mode() -
             SimpleNamespace(
                 database_url="postgresql+asyncpg://unused",
                 redis_control_url="redis://unused",
-                vendor_live_test=False,
             ),
         ),
         redis=object(),
@@ -266,166 +262,6 @@ async def test_payload_does_not_apply_live_test_recipient_guard_in_mock_mode() -
     payload = await store._payload(connection, 7)  # type: ignore[arg-type]
 
     assert payload.phones == ("13800138000",)
-    assert payload.denied_recipient_count == 0
-
-
-@pytest.mark.asyncio
-async def test_live_payload_accepts_active_recipient_across_hmac_key_versions() -> None:
-    class FakeCrypto:
-        def decrypt_phone(
-            self,
-            _ciphertext: bytes,
-            _key_version: int,
-            _phone_hmac: str,
-        ) -> str:
-            return "13900000001"
-
-        def decrypt_bound_packed_text(self, _ciphertext: bytes, _context: object) -> str:
-            return "通知"
-
-        def hmac_candidates(self, phone: str) -> dict[int, str]:
-            assert phone == "13900000001"
-            return {1: "a" * 64, 2: "b" * 64}
-
-    store = SqlChunkStore(
-        FakeCrypto(),  # type: ignore[arg-type]
-        settings=cast(
-            Any,
-            SimpleNamespace(
-                database_url="postgresql+asyncpg://unused",
-                redis_control_url="redis://unused",
-                vendor_live_test=True,
-            ),
-        ),
-        redis=object(),
-    )
-    connection = SequenceConnection(
-        [
-            FakeResult(),
-            FakeResult(
-                {
-                    "chunk_id": 7,
-                    "is_test": False,
-                    "batch_id": 3,
-                    "batch_no": "batch-1",
-                    "custom_id": "custom-1",
-                    "retry_count": 0,
-                    "send_content_enc": b"content",
-                    "sign_name": "青鸾",
-                    "vendor_template_id": None,
-                }
-            ),
-            FakeResult(
-                rows=[
-                    {
-                        "phone_enc": b"phone",
-                        "phone_hmac": "b" * 64,
-                        "key_version": 2,
-                    }
-                ]
-            ),
-            FakeResult(scalar=True),
-        ]
-    )
-
-    payload = await store._payload(connection, 7)  # type: ignore[arg-type]
-
-    assert payload.phones == ("13900000001",)
-    assert payload.denied_recipient_count == 0
-    lock_sql, lock_params = connection.calls[0]
-    assert "pg_advisory_xact_lock" in lock_sql
-    assert lock_params == {"lock_name": "vendor-test-recipient"}
-    guard_sql, guard_params = connection.calls[3]
-    assert "vendor_test_recipient" in guard_sql
-    assert "status='active'" in guard_sql
-    assert set(cast(dict[str, object], guard_params).values()) == {
-        1,
-        2,
-        "a" * 64,
-        "b" * 64,
-    }
-
-
-@pytest.mark.asyncio
-async def test_live_payload_waits_for_recipient_maintenance_lock_before_any_read(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeCrypto:
-        def decrypt_phone(
-            self,
-            _ciphertext: bytes,
-            _key_version: int,
-            _phone_hmac: str,
-        ) -> str:
-            return "13900000001"
-
-        def decrypt_bound_packed_text(self, _ciphertext: bytes, _context: object) -> str:
-            return "通知"
-
-        def hmac_candidates(self, _phone: str) -> dict[int, str]:
-            return {1: "a" * 64}
-
-    store = SqlChunkStore(
-        FakeCrypto(),  # type: ignore[arg-type]
-        settings=cast(
-            Any,
-            SimpleNamespace(
-                database_url="postgresql+asyncpg://unused",
-                redis_control_url="redis://unused",
-                vendor_live_test=True,
-            ),
-        ),
-        redis=object(),
-    )
-    connection = SequenceConnection(
-        [
-            FakeResult(
-                {
-                    "chunk_id": 7,
-                    "is_test": False,
-                    "batch_id": 3,
-                    "batch_no": "batch-1",
-                    "custom_id": "custom-1",
-                    "retry_count": 0,
-                    "send_content_enc": b"content",
-                    "sign_name": "青鸾",
-                    "vendor_template_id": None,
-                }
-            ),
-            FakeResult(
-                rows=[
-                    {
-                        "phone_enc": b"phone",
-                        "phone_hmac": "a" * 64,
-                        "key_version": 1,
-                    }
-                ]
-            ),
-            FakeResult(scalar=True),
-        ]
-    )
-    lock_started = asyncio.Event()
-    release_lock = asyncio.Event()
-
-    async def held_lock(observed_connection: object) -> None:
-        assert observed_connection is connection
-        lock_started.set()
-        await release_lock.wait()
-
-    monkeypatch.setattr(
-        send_repository_payload_module,
-        "lock_vendor_test_recipient_maintenance",
-        held_lock,
-    )
-
-    task = asyncio.create_task(store._payload(connection, 7))  # type: ignore[arg-type]
-    await lock_started.wait()
-    assert connection.calls == []
-    release_lock.set()
-    payload = await task
-
-    assert payload.phones == ("13900000001",)
-    assert "SELECT c.id chunk_id" in connection.calls[0][0]
 
 
 @pytest.mark.asyncio
@@ -668,180 +504,7 @@ async def test_mark_submitting_allows_sendable_batch_states(
 
 
 @pytest.mark.asyncio
-async def test_claim_reserves_segments_and_marks_submitting_in_one_transaction(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store = chunk_store()
-    connection = SequenceConnection(
-        [
-            FakeResult({"id": 7, "batch_id": 11, "vendor_attempt_count": 2}),
-            FakeResult(scalar="sending"),
-            FakeResult(),
-            FakeResult(
-                {
-                    "in_flight_segments": 20,
-                    "confirmed_segments": 30,
-                    "uncertain_segments": 10,
-                }
-            ),
-            FakeResult(),
-            FakeResult(),
-            FakeResult(scalar=7),
-            FakeResult(),
-        ]
-    )
-    monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
-    monkeypatch.setattr(
-        send_repository_module,
-        "current_live_test_time",
-        lambda: datetime(2026, 7, 16, 8, tzinfo=UTC),
-    )
-
-    claim = await store.claim_submission(
-        7,
-        2,
-        5,
-        enforce_live_test_budget=True,
-    )
-
-    assert claim.status is SubmissionClaimStatus.CLAIMED
-    assert "FOR UPDATE" in connection.calls[0][0]
-    assert "vendor_test_daily_usage" in connection.calls[2][0]
-    assert "FOR UPDATE" in connection.calls[3][0]
-    assert "status='submitting'" in connection.calls[6][0]
-    assert "vendor_attempt_count=vendor_attempt_count+1" in connection.calls[6][0]
-    assert connection.calls[4][1] == {
-        "usage_date": datetime(2026, 7, 16, 8, tzinfo=UTC).date(),
-        "chunk_id": 7,
-        "attempt_no": 3,
-        "segments": 5,
-    }
-    assert "in_flight_segments=in_flight_segments+:segments" in connection.calls[5][0]
-    assert "UPDATE sms_batch" in connection.calls[7][0]
-
-
-@pytest.mark.asyncio
-async def test_claim_at_daily_limit_leaves_chunk_sendable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store = chunk_store()
-    connection = SequenceConnection(
-        [
-            FakeResult({"id": 7, "batch_id": 11, "vendor_attempt_count": 2}),
-            FakeResult(scalar="sending"),
-            FakeResult(),
-            FakeResult(
-                {
-                    "in_flight_segments": 5,
-                    "confirmed_segments": 94,
-                    "uncertain_segments": 1,
-                }
-            ),
-        ]
-    )
-    monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
-    monkeypatch.setattr(
-        send_repository_module,
-        "current_live_test_time",
-        lambda: datetime(2026, 7, 16, 15, 59, tzinfo=UTC),
-    )
-
-    claim = await store.claim_submission(
-        7,
-        2,
-        1,
-        enforce_live_test_budget=True,
-    )
-
-    assert claim.status is SubmissionClaimStatus.DAILY_LIMIT
-    assert claim.reset_at is not None
-    assert claim.reset_at.isoformat() == "2026-07-17T00:00:00+08:00"
-    assert len(connection.calls) == 4
-
-
-class ConcurrentBudgetState:
-    def __init__(self) -> None:
-        self.lock = asyncio.Lock()
-        self.in_flight = 0
-
-
-class ConcurrentBudgetConnection:
-    def __init__(self, state: ConcurrentBudgetState) -> None:
-        self.state = state
-
-    async def execute(self, statement: object, params: object = None) -> FakeResult:
-        sql = str(statement)
-        values = cast(dict[str, object], params or {})
-        if "SELECT c.id,c.batch_id" in sql:
-            return FakeResult({"id": values["id"], "batch_id": 11, "vendor_attempt_count": 0})
-        if "SELECT status FROM sms_batch" in sql:
-            return FakeResult(scalar="sending")
-        if "SELECT in_flight_segments" in sql:
-            return FakeResult(
-                {
-                    "in_flight_segments": self.state.in_flight,
-                    "confirmed_segments": 0,
-                    "uncertain_segments": 0,
-                }
-            )
-        if "UPDATE sms_chunk SET status='submitting'" in sql:
-            return FakeResult(scalar=1)
-        if "in_flight_segments=in_flight_segments+:segments" in sql:
-            self.state.in_flight += int(values["segments"])
-        return FakeResult()
-
-
-class LockedContext:
-    def __init__(self, state: ConcurrentBudgetState) -> None:
-        self.state = state
-        self.connection = ConcurrentBudgetConnection(state)
-
-    async def __aenter__(self) -> ConcurrentBudgetConnection:
-        await self.state.lock.acquire()
-        return self.connection
-
-    async def __aexit__(self, *_: object) -> None:
-        self.state.lock.release()
-
-
-class ConcurrentBudgetEngine:
-    def __init__(self, state: ConcurrentBudgetState) -> None:
-        self.state = state
-
-    def begin(self) -> LockedContext:
-        return LockedContext(self.state)
-
-    async def dispose(self) -> None:
-        return None
-
-
-@pytest.mark.asyncio
-async def test_concurrent_claims_never_make_total_exceed_100(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    state = ConcurrentBudgetState()
-    store = chunk_store()
-    monkeypatch.setattr(store, "_engine", lambda: ConcurrentBudgetEngine(state))
-    monkeypatch.setattr(
-        send_repository_module,
-        "current_live_test_time",
-        lambda: datetime(2026, 7, 16, 8, tzinfo=UTC),
-    )
-
-    first, second = await asyncio.gather(
-        store.claim_submission(1, 0, 60, enforce_live_test_budget=True),
-        store.claim_submission(2, 0, 50, enforce_live_test_budget=True),
-    )
-
-    assert {first.status, second.status} == {
-        SubmissionClaimStatus.CLAIMED,
-        SubmissionClaimStatus.DAILY_LIMIT,
-    }
-    assert state.in_flight == 60
-
-
-@pytest.mark.asyncio
-async def test_claim_without_live_budget_uses_existing_cas(
+async def test_claim_uses_existing_cas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = chunk_store()
@@ -855,8 +518,6 @@ async def test_claim_without_live_budget_uses_existing_cas(
     claim = await store.claim_submission(
         7,
         2,
-        999,
-        enforce_live_test_budget=False,
     )
 
     assert claim.status is SubmissionClaimStatus.CLAIMED
@@ -956,82 +617,12 @@ async def test_historical_partial_vendor_pause_stops_both_lanes(
 
 
 @pytest.mark.asyncio
-async def test_daily_pause_remains_lane_specific() -> None:
-    redis = FakeRedis({"queue:paused:vendor-test-daily:realtime": "daily_limit"})
-    store = redis_chunk_store(redis)
-
-    assert await store.is_paused("realtime") is True
-    assert await store.is_paused("bulk") is False
-
-
-@pytest.mark.asyncio
-async def test_daily_pause_expiry_never_clears_critical_pause() -> None:
-    redis = FakeRedis({"queue:paused:realtime": "1010"})
-    store = redis_chunk_store(redis)
-
-    await store.pause_daily_limit(
-        "realtime",
-        datetime(2026, 7, 17, tzinfo=UTC),
-        now=datetime(2026, 7, 16, 23, 59, tzinfo=UTC),
-    )
-    redis.values.pop("queue:paused:vendor-test-daily:realtime")
-
-    assert await store.is_paused("realtime") is True
-    assert redis.values["queue:paused:realtime"] == "1010"
-    assert redis.set_calls[0][0] == "queue:paused:vendor-test-daily:realtime"
-    assert redis.set_calls[0][2] == 60
-
-
-@pytest.mark.asyncio
-async def test_any_historical_partial_agent_stale_key_pauses_both_lanes() -> None:
-    redis = FakeRedis(
-        {"queue:paused:vendor-test-agent-stale:realtime": "vendor-test-agent-stale"}
-    )
-    store = redis_chunk_store(redis)
-
-    assert await store.is_paused("realtime") is True
-    assert await store.is_paused("bulk") is True
-
-
-@pytest.mark.asyncio
-async def test_agent_stale_pause_uses_independent_named_keys() -> None:
-    redis = FakeRedis(
-        {
-            "queue:paused:realtime": "1010",
-            "queue:paused:vendor-test-daily:bulk": "daily_limit",
-        }
-    )
-    store = redis_chunk_store(redis)
-
-    await store.pause_control_agent_stale()
-
-    assert redis.values["queue:paused:realtime"] == "1010"
-    assert redis.values["queue:paused:vendor-test-daily:bulk"] == "daily_limit"
-    assert redis.values["queue:paused:vendor-test-agent-stale:realtime"] == (
-        "vendor-test-agent-stale"
-    )
-    assert redis.values["queue:paused:vendor-test-agent-stale:bulk"] == (
-        "vendor-test-agent-stale"
-    )
-    assert redis.set_calls == []
-    assert len(redis.eval_calls) == 1
-    script, numkeys, values = redis.eval_calls[0]
-    assert numkeys == 2
-    assert "redis.call('set',KEYS[1],ARGV[1])" in script
-    assert values == (
-        "queue:paused:vendor-test-agent-stale:realtime",
-        "queue:paused:vendor-test-agent-stale:bulk",
-        "vendor-test-agent-stale",
-    )
-
-
-@pytest.mark.asyncio
 async def test_stale_state_after_claim_releases_attempt_and_keeps_retryable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = chunk_store()
     connection = SequenceConnection(
-        [FakeResult(scalar=7), FakeResult(rowcount=1)]
+        [FakeResult(scalar=7)]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
 
@@ -1042,7 +633,6 @@ async def test_stale_state_after_claim_releases_attempt_and_keeps_retryable(
     assert "status='submitting'" in sql
     assert "uncertain" not in sql
     assert params == {"id": 7}
-    assert connection.calls[1][1] == {"chunk_id": 7, "status": "released"}
 
 
 @pytest.mark.asyncio
@@ -1051,7 +641,7 @@ async def test_submitted_and_uncertain_transitions_clear_submitting_timestamp(
 ) -> None:
     store = chunk_store()
     connection = SequenceConnection(
-        [FakeResult(scalar=7), FakeResult(rowcount=1), FakeResult()]
+        [FakeResult(scalar=7), FakeResult()]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
 
@@ -1061,17 +651,15 @@ async def test_submitted_and_uncertain_transitions_clear_submitting_timestamp(
     task_pseudonym = str(connection.calls[0][1]["task_id"])
     assert len(task_pseudonym) == 64
     assert "task-1" not in task_pseudonym
-    assert connection.calls[1][1] == {"chunk_id": 7, "status": "confirmed"}
 
     uncertain_connection = SequenceConnection(
-        [FakeResult(scalar=7), FakeResult(rowcount=1)]
+        [FakeResult(scalar=7)]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(uncertain_connection))
     await store.mark_uncertain(7)
 
     assert "uncertain_since=COALESCE(submitting_since,now())" in uncertain_connection.calls[0][0]
     assert "submitting_since=NULL" in uncertain_connection.calls[0][0]
-    assert uncertain_connection.calls[1][1] == {"chunk_id": 7, "status": "uncertain"}
 
 
 @pytest.mark.asyncio
@@ -1080,7 +668,7 @@ async def test_schedule_retry_cas_persists_due_time_and_caps_budget(
 ) -> None:
     store = chunk_store()
     connection = SequenceConnection(
-        [FakeResult(scalar=7), FakeResult(rowcount=1)]
+        [FakeResult(scalar=7)]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
     enqueued: list[tuple[str, list[int], str, int]] = []
@@ -1110,7 +698,6 @@ async def test_schedule_retry_cas_persists_due_time_and_caps_budget(
         "expected_retry_count": 4,
         "delay_s": 16,
     }
-    assert connection.calls[1][1] == {"chunk_id": 7, "status": "released"}
     assert enqueued == [("app.tasks.send.process_chunk", [7], "realtime", 16)]
 
 
@@ -1120,7 +707,7 @@ async def test_long_delay_persists_due_time_before_enqueue(
 ) -> None:
     store = chunk_store()
     connection = SequenceConnection(
-        [FakeResult(scalar="market"), FakeResult(rowcount=1)]
+        [FakeResult(scalar="market")]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
     enqueued: list[tuple[str, list[int], str, int]] = []
@@ -1146,7 +733,6 @@ async def test_long_delay_persists_due_time_before_enqueue(
     assert "retry_count=retry_count+1" in sql
     assert "retry_count<:retry_limit" in sql
     assert params == {"id": 7, "code": 1011, "delay_s": 1800, "retry_limit": 8}
-    assert connection.calls[1][1] == {"chunk_id": 7, "status": "released"}
     assert enqueued == [("app.tasks.send.process_chunk", [7], "bulk", 1800)]
 
 
@@ -1156,7 +742,7 @@ async def test_balance_blocked_retry_is_immediately_due_for_admin_resume(
 ) -> None:
     store = chunk_store()
     connection = SequenceConnection(
-        [FakeResult(scalar=7), FakeResult(rowcount=1), FakeResult()]
+        [FakeResult(scalar=7), FakeResult(rowcount=1)]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
 
@@ -1167,7 +753,6 @@ async def test_balance_blocked_retry_is_immediately_due_for_admin_resume(
     assert "vendor_code=999" in chunk_sql
     assert "retry_not_before=now()" in chunk_sql
     assert chunk_params == {"id": 7, "batch_id": 3}
-    assert connection.calls[2][1] == {"chunk_id": 7, "status": "released"}
     assert "status='balance_blocked'" in connection.calls[1][0]
 
     due_connection = StatusConnection("queued")
@@ -1212,7 +797,6 @@ async def test_mark_failed_aggregates_batch_and_only_enqueues_terminal_callback(
             FakeResult(),
             FakeResult(scalar=11),
             FakeResult(rowcount=1),
-            FakeResult(rowcount=1),
             FakeResult({"id": 11, "status": aggregate_status}),
             FakeResult(),
         ]
@@ -1234,9 +818,8 @@ async def test_mark_failed_aggregates_batch_and_only_enqueues_terminal_callback(
     assert "status='failed'" in connection.calls[2][0]
     assert "status='submitting'" in connection.calls[2][0]
     assert "submitting_since=NULL" in connection.calls[2][0]
-    assert connection.calls[3][1] == {"chunk_id": 7, "status": "released"}
-    assert connection.calls[4][1] == {"id": 7}
-    aggregate_sql = connection.calls[5][0]
+    assert connection.calls[3][1] == {"id": 7}
+    aggregate_sql = connection.calls[4][0]
     assert "count(*) FILTER (WHERE status='delivered')" in aggregate_sql
     assert "count(*) FILTER (WHERE status='failed')" in aggregate_sql
     assert "count(*) FILTER (WHERE status='unknown')" in aggregate_sql
@@ -1279,7 +862,6 @@ async def test_split_releases_parent_and_preserves_attempt_evidence(
             FakeResult(),  # shared batch serialization lock
             FakeResult(scalar=200),
             FakeResult(scalar=7),
-            FakeResult(rowcount=1),
             FakeResult(),
             FakeResult(
                 rows=[
@@ -1448,85 +1030,12 @@ async def test_split_incomplete_children_fail_closed_without_expanding(
 
 
 @pytest.mark.asyncio
-async def test_guard_denial_fails_unclaimed_chunk_without_budget_attempt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store = chunk_store()
-    connection = SequenceConnection(
-        [
-            FakeResult(scalar=11),
-            FakeResult(scalar="sending"),
-            FakeResult(scalar=11),
-            FakeResult(rowcount=1),
-            FakeResult({"id": 11, "status": "completed"}),
-            FakeResult(),
-        ]
-    )
-    monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
-    callbacks: list[int] = []
-
-    async def enqueue(_connection: object, batch_id: int) -> None:
-        callbacks.append(batch_id)
-
-    monkeypatch.setattr(send_repository_module, "enqueue_batch_finished", enqueue)
-
-    await store.reject_disallowed_recipient(7, 1)
-
-    statements = [sql for sql, _params in connection.calls]
-    assert "status IN ('pending','retrying','failover_pending')" in statements[0]
-    assert "status='failed'" in statements[2]
-    assert "vendor_test_send_attempt" not in " ".join(statements)
-    assert connection.calls[2][1] == {
-        "id": 7,
-        "message": "live-test recipient denied: count=1",
-    }
-    assert callbacks == [11]
-
-
-@pytest.mark.asyncio
-async def test_daily_limit_defers_unclaimed_chunk_until_reset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    store = chunk_store()
-    connection = SequenceConnection([FakeResult(scalar="market")])
-    monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
-    enqueued: list[tuple[str, list[int], str, int]] = []
-
-    def send_task(
-        name: str,
-        *,
-        args: list[int],
-        queue: str,
-        countdown: int,
-        ignore_result: bool,
-    ) -> None:
-        assert ignore_result is True
-        enqueued.append((name, args, queue, countdown))
-
-    monkeypatch.setattr(celery_app, "send_task", send_task)
-    reset_at = datetime(2026, 7, 17, tzinfo=UTC)
-    monkeypatch.setattr(
-        send_repository_module,
-        "current_live_test_time",
-        lambda: datetime(2026, 7, 16, 23, 59, tzinfo=UTC),
-    )
-
-    await store.defer_daily_limit(7, "bulk", reset_at)
-
-    sql, params = connection.calls[0]
-    assert "status IN ('pending','retrying','failover_pending')" in sql
-    assert "retry_not_before=:reset_at" in sql
-    assert params == {"id": 7, "reset_at": reset_at}
-    assert enqueued == [("app.tasks.send.process_chunk", [7], "bulk", 60)]
-
-
-@pytest.mark.asyncio
 async def test_release_unsent_returns_submitting_chunk_to_retrying(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store = chunk_store()
     connection = SequenceConnection(
-        [FakeResult(scalar=7), FakeResult(rowcount=1)]
+        [FakeResult(scalar=7)]
     )
     monkeypatch.setattr(store, "_engine", lambda: FakeEngine(connection))
 
@@ -1537,7 +1046,6 @@ async def test_release_unsent_returns_submitting_chunk_to_retrying(
     assert "submit aborted before vendor call" in sql
     assert "status='submitting'" in sql
     assert params == {"id": 7}
-    assert connection.calls[1][1] == {"chunk_id": 7, "status": "released"}
 
 
 @pytest.mark.asyncio
@@ -1551,7 +1059,6 @@ async def test_delay_exhaustion_fails_submitting_chunk(
             FakeResult(scalar=11),
             FakeResult(),
             FakeResult(scalar=11),
-            FakeResult(rowcount=1),
             FakeResult(rowcount=1),
             FakeResult({"id": 11, "status": "sending"}),
         ]
@@ -1574,8 +1081,7 @@ async def test_delay_exhaustion_fails_submitting_chunk(
     assert fail_params == {
         "id": 7, "code": 1011, "reason": "delayed_retry_exhausted",
     }
-    assert connection.calls[4][1] == {"chunk_id": 7, "status": "released"}
-    assert connection.calls[5][1] == {"id": 7}
-    aggregate_sql = connection.calls[6][0]
+    assert connection.calls[4][1] == {"id": 7}
+    aggregate_sql = connection.calls[5][0]
     assert "count(*) FILTER (WHERE status='failed')" in aggregate_sql
     assert "s.active=0" in aggregate_sql

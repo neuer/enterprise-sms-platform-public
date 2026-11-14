@@ -22,7 +22,6 @@
 ## 按任务读取
 
 - 认证、浏览器会话与账号管理：[PRD 用户与角色](PRD.md#auth-contract)。
-- 真实联调与 API UAT：[PRD FR-19a](PRD.md#vendor-uat-contract) 和 [受控联调手册](docs/runbooks/controlled-real-vendor-test.md)。
 - 前端页面、组件与样式：[UI 设计规范](docs/ui-design.md)，共享实现入口见该文档第 8 节。
 - 本机 Mock 启动：[本地测试](docs/LOCAL_TESTING.md)；共享测试更新与生产交付分别按 [维护入口](MAINTENANCE.md) 对应流程。
 - 数据库权限或 Redis 部署：[数据库角色](deploy/database-roles.md) 与 [Redis 故障域](deploy/redis-ha.md)；仅加载涉及的文档。
@@ -31,10 +30,9 @@
 
 标注“静态门禁”的规则由 `scripts/check_invariants.py` 自动检查，新增同类规则优先落成测试或约束（D122）。
 
-1. **运行凭据默认只通过 Docker secrets 文件读取**，清单与挂载边界见 [deploy/secrets.md](deploy/secrets.md)；禁止入环境变量明文、日志或普通 API 响应（callback_secret 仅允许 AES-GCM 密文入库）。settings 读取后去除行尾换行，DB DSN 必须用 SQLAlchemy `URL.create` 组装。仅有两项例外：
+1. **运行凭据默认只通过 Docker secrets 文件读取**，清单与挂载边界见 [deploy/secrets.md](deploy/secrets.md)；禁止入环境变量明文、日志或普通 API 响应（callback_secret 仅允许 AES-GCM 密文入库）。settings 读取后去除行尾换行，DB DSN 必须用 SQLAlchemy `URL.create` 组装。仅有一项例外：
    - 安全日报：管理员可在 `/security-daily` 配置 Resend Key 与最多 3 个收件人，Key 明文存专用 `sys_config` 并同步到独立 mailer；不得用于其他凭据，审计只记 configured 状态和数量（[PRD](PRD.md)）。
-   - 真实联调凭据：只在页面组件易失内存中短暂存在并立即加密给 vendor-control-agent，不得以任何形式持久化或明文外泄；权威边界见[受控联调手册「页面安装凭据」](docs/runbooks/controlled-real-vendor-test.md#页面安装凭据)。
-2. **手机号永不明文持久化**：逐号码记录必须经 `services/crypto.py` 生成 `phone_enc`/`phone_hmac`/`phone_mask`/`key_version`；精确查询走 phone_hmac；文件、JSONB、缓存与日志同样不得留明文。对外解密只允许“详情按角色查看”与“授权导出”；内部受控解密白名单为 raw 解析/重放、callback 投递、发送下发、UAT 定位，以及退订入黑名单（内存解密后经 `protect_phone` 重加密）。严禁把明文再次写入任何持久层（静态门禁：schema 四列）
+2. **手机号永不明文持久化**：逐号码记录必须经 `services/crypto.py` 生成 `phone_enc`/`phone_hmac`/`phone_mask`/`key_version`；精确查询走 phone_hmac；文件、JSONB、缓存与日志同样不得留明文。对外解密只允许“详情按角色查看”与“授权导出”；内部受控解密白名单为 raw 解析/重放、callback 投递、发送下发，以及退订入黑名单（内存解密后经 `protect_phone` 重加密）。严禁把明文再次写入任何持久层（静态门禁：schema 四列）
 3. 所有厂商 HTTP 必须经选定 adapter（当前 `vendor/zhihui.py`），业务代码不得直接 httpx 调厂商（静态门禁）；统一超时 10s、连接池、结构化日志。仅当调用前确定性不可用，或协议明确拒绝且 `safe_to_failover=true` 时允许切换供应商；`uncertain`/`submitted` 后禁止自动切换
 4. **Send 超时/网络异常 = 结果未知**：chunk 置 `uncertain`，**严禁自动重发或自动换供应商**；由 reconcile 通过 raw_vendor_log.custom_ids 定位并受控解密确认后修复。这是防重复下发的生命线
 5. **GetReport/GetReply 拉走即消费**：先把完整响应 AES-GCM 加密落 `raw_vendor_log.payload_enc`，只另存不含手机号的 custom_ids 索引；提交后再受控解密解析，失败保留 processed=false 可重放；raw 表禁止 JSONB 明文（静态门禁）
@@ -73,7 +71,7 @@
 35. **迁移基准**：首个迁移以 `schema.sql` 为唯一输入；此后**手写** Alembic 迁移并同步回写 `schema.sql`，`models/` 不承载声明式 SQLAlchemy metadata，禁止以 autogenerate 为权威；`scripts_support/check_migration.py` 与迁移基线测试比对两种建法，差异即失败；运行角色不得具备 DDL 权限，未来表不得默认授权
 36. **前端资源自包含**：字体经 npm 包或系统栈回退，构建产物不得引用运行时外部 CDN（静态门禁）
 37. **敏感中间产物**：callback_task 只存消息引用与无 PII 元数据；import 号码逐条落 import_phone 四列；剔除清单只含 phone_mask+原因；decrypted 导出文件仍须 AES-GCM 密文落盘、下载时流式解密
-38. **真实联调与受控 API UAT**：正式 Key、测试号码与生命周期操作仅由 admin 在 `/configs`「真实联调」页按 [FR-19a](PRD.md#vendor-uat-contract) 和 [受控手册](docs/runbooks/controlled-real-vendor-test.md) 执行；普通 API 不得获得 root、sudo 或 Docker Socket；live-test 普通发送返回 `VENDOR_TEST_CONSOLE_ONLY`；唯一应用侧真实发送例外 `POST /api/v1/messages/uat-send` 的完整合同不得绕过
+38. **真实联调已下线（D128）**：`/configs`「真实联调」页、`POST /api/v1/messages/uat-send`、测试号码与每日预算等全部移除；development/test 必须 `VENDOR_MOCK=1`，真实厂商只在 production 配置下可达。不得恢复非生产直连真实厂商的开关、入口、挂载或契约（静态门禁）
 39. **开发与测试部署解耦**：完成功能与定向测试后推送短生命周期分支；测试服务器只跑 Mock、不保存正式厂商凭据；只在需要共享验收时，按 [MAINTENANCE 按需测试部署](MAINTENANCE.md#按需测试部署) 对合并后的精确 `origin/main` 铲掉重建，以 `state=rebuilt` 与表面验收为成功判据；生产发布不走该入口
 40. **显式运行时与认证边界**：必须设置 `ENVIRONMENT=development|test|production`，与 DEBUG/Mock 组合不一致时启动失败；生产关闭 Swagger、ReDoc 与 OpenAPI。API client 与 Web user 路由分别显式声明 API Key/Bearer dependency，禁止按路径或 Header 猜测；遗漏 dependency 由契约测试阻断。QPS、导入大小/行数、超时与锁定时间必须有上界及跨字段约束
 41. **Redis 故障域与 ACL**（完整合同见 [deploy/redis-ha.md](deploy/redis-ha.md)）：broker、auth、control 使用不同 endpoint、独立 ACL 密码、进程/容器、AOF 与数据目录；部署模式（managed / 经批准的单 VM 隔离形态）按链接文档选择，单 VM 不能声称高可用。API 不得获得 broker secret，worker-callback 不得获得 auth secret；auth 故障 fail closed，broker 失败由 PostgreSQL Outbox 保留事实，control 只从 PostgreSQL 重建

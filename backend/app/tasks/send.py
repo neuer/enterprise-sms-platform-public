@@ -15,18 +15,12 @@ from app.core.ratelimit import TokenBucket
 from app.core.runtime_resources import redis_client
 from app.core.worker_runtime import run_worker_async
 from app.services.alert_repository import SqlAlertService
-from app.services.billing import calculate_quota_cost
 from app.services.category import DEFAULT_MARKET_WINDOW, coerce_market_dispatch
 from app.services.crypto import CryptoService
 from app.services.dispatch_blacklist import DispatchAction, phones_for_invoke
 from app.services.outbox import OutboxClaim, OutboxDeferred, OutboxExecutor
 from app.services.outbox_repository import SqlOutboxRepository
 from app.services.vendor_alert import RedisVendorAlertMonitor
-from app.services.vendor_control_state import (
-    VendorControlStateGuard,
-    VendorControlStateUnavailable,
-)
-from app.services.vendor_test_budget import SubmissionClaim, SubmissionClaimStatus
 from app.settings import get_settings
 from app.tasks import celery_app
 from app.vendor.failover import (
@@ -212,7 +206,6 @@ class ChunkPayload:
     template_id: str
     sign_name: str
     retry_count: int = 0
-    denied_recipient_count: int = 0
     selected_vendor: str = PRIMARY_VENDOR_ID
     route_generation: int = 1
     category: str = "notice"
@@ -255,16 +248,23 @@ class Bucket(Protocol):
     ) -> None: ...
 
 
-class ChunkStore(Protocol):
-    async def refresh_invoke_payload(self, chunk_id: int) -> ChunkPayload: ...
+class SubmissionClaimStatus(StrEnum):
+    """发送前原子认领结果。"""
 
+    CLAIMED = "claimed"
+    STALE = "stale"
+
+
+@dataclass(frozen=True)
+class SubmissionClaim:
+    status: SubmissionClaimStatus
+
+
+class ChunkStore(Protocol):
     async def claim_submission(
         self,
         chunk_id: int,
         expected_retry_count: int,
-        segments: int,
-        *,
-        enforce_live_test_budget: bool,
     ) -> SubmissionClaim: ...
 
     async def mark_submitted(self, chunk_id: int, task_id: str) -> None: ...
@@ -293,8 +293,6 @@ class ChunkStore(Protocol):
         previous_attempt_id: int,
         expected_next_vendor: str,
         expected_route_policy_version: int,
-        segments: int = 1,
-        enforce_live_test_budget: bool = False,
     ) -> InvokeClaim: ...
 
     async def load_authoritative_next_action(
@@ -327,36 +325,11 @@ class ChunkStore(Protocol):
 
     async def split_once(self, chunk: ChunkPayload) -> list[ChunkPayload]: ...
 
-    async def reject_disallowed_recipient(
-        self,
-        chunk_id: int,
-        denied_count: int,
-    ) -> None: ...
-
-    async def defer_daily_limit(
-        self,
-        chunk_id: int,
-        lane: str,
-        reset_at: datetime,
-    ) -> None: ...
-
-    async def pause_daily_limit(self, lane: str, reset_at: datetime) -> None: ...
-
-    async def pause_control_agent_stale(self) -> None: ...
-
     async def release_control_claim(self, chunk_id: int) -> None: ...
 
     async def release_unsent(self, chunk_id: int) -> None: ...
 
     async def is_paused(self, lane: str) -> bool: ...
-
-
-class RecipientGuard(Protocol):
-    def require_allowed(self, phones: tuple[str, ...]) -> None: ...
-
-
-class ControlGuard(Protocol):
-    def require_fresh(self) -> object: ...
 
 
 class VendorAlertMonitor(Protocol):
@@ -383,10 +356,6 @@ class SendWorker:
         bucket: Bucket,
         *,
         monitor: VendorAlertMonitor | None = None,
-        recipient_guard: RecipientGuard | None = None,
-        control_guard: ControlGuard | None = None,
-        enforce_live_test_budget: bool = False,
-        enforce_live_test_recipients: bool = False,
         vendor_qps: int = 5,
         reserved_realtime_qps: int = 2,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -405,16 +374,6 @@ class SendWorker:
         self.health = health
         self.registry = registry or default_vendor_registry()
         self.monitor = monitor or NoopVendorAlertMonitor()
-        if (
-            enforce_live_test_budget
-            and recipient_guard is None
-            and not enforce_live_test_recipients
-        ):
-            raise ValueError("live-test budget requires recipient enforcement")
-        self.recipient_guard = recipient_guard
-        self.control_guard = control_guard
-        self.enforce_live_test_budget = enforce_live_test_budget
-        self.enforce_live_test_recipients = enforce_live_test_recipients
         self.vendor_qps = vendor_qps
         self.reserved_realtime_qps = reserved_realtime_qps
         self.sleeper = sleeper
@@ -485,8 +444,6 @@ class SendWorker:
         chunk: ChunkPayload,
         lane: Literal["realtime", "bulk"],
         vendor_id: str,
-        *,
-        authorized: bool = False,
     ) -> SubmitOutcome | None:
         """初次、重试和备用外呼共用检查；令牌等待后必须重新执行。"""
 
@@ -505,34 +462,12 @@ class SendWorker:
         health = await self._health_snapshot(platform_paused=False)
         if not any(item.vendor_id == vendor_id and item.available for item in health):
             return SubmitOutcome.PAUSED
-        if self.enforce_live_test_recipients:
-            chunk = await self.store.refresh_invoke_payload(chunk.chunk_id)
-        if not await self._guard_chunk(chunk, persist_rejection=not authorized):
-            return SubmitOutcome.REJECTED
-        if not await self._control_ready():
-            return SubmitOutcome.PAUSED
         if chunk.category == "market" and not chunk.is_test:
             window = await self.market_window() if self.market_window else DEFAULT_MARKET_WINDOW
             state, _, self.market_defer_until = coerce_market_dispatch(self.clock(), window, None)
             if state != "queued":
                 return SubmitOutcome.PAUSED
         return None
-
-    async def _guard_chunk(self, chunk: ChunkPayload, *, persist_rejection: bool = True) -> bool:
-        from app.services.dispatch_blacklist import guard_chunk
-
-        return await guard_chunk(self, chunk, persist_rejection=persist_rejection)
-
-    async def _control_ready(self) -> bool:
-        if self.control_guard is None:
-            return True
-        try:
-            self.control_guard.require_fresh()
-        except VendorControlStateUnavailable as error:
-            if error.requires_critical_pause:
-                await self.store.pause_control_agent_stale()
-            return False
-        return True
 
     async def _claim_after_token(
         self,
@@ -545,23 +480,7 @@ class SendWorker:
         decision = await phones_for_invoke(self.store, chunk)
         if decision.action is not DispatchAction.SEND or not decision.eligible_phones:
             return SubmissionClaimStatus.STALE
-        segments = calculate_quota_cost(
-            f"{chunk.sign_name}{chunk.content}",
-            recipient_count=len(decision.eligible_phones),
-        )
-        claim = await self.store.claim_submission(
-            chunk.chunk_id,
-            retry_index,
-            segments,
-            enforce_live_test_budget=self.enforce_live_test_budget,
-        )
-        if claim.status is SubmissionClaimStatus.CLAIMED:
-            return claim.status
-        if claim.status is SubmissionClaimStatus.DAILY_LIMIT:
-            if claim.reset_at is None:
-                raise RuntimeError("daily-limit claim missing reset_at")
-            await self.store.defer_daily_limit(chunk.chunk_id, lane, claim.reset_at)
-            await self.store.pause_daily_limit(lane, claim.reset_at)
+        claim = await self.store.claim_submission(chunk.chunk_id, retry_index)
         return claim.status
 
     def _gateway_for(self, vendor_id: str) -> Gateway:
@@ -865,8 +784,6 @@ class SendWorker:
             if claim.kind is InvokeClaimKind.DENIED and claim.reason in {
                 "token_unavailable",
                 "preflight_paused",
-                "recipient_denied",
-                "daily_limit",
             }:
                 return SubmitOutcome.PAUSED
             if claim.kind is InvokeClaimKind.DENIED and claim.reason == "preflight_rejected":
@@ -921,8 +838,6 @@ class SendWorker:
             if claim.kind is InvokeClaimKind.DENIED and claim.reason in {
                 "token_unavailable",
                 "preflight_paused",
-                "recipient_denied",
-                "daily_limit",
             }:
                 return SubmitOutcome.PAUSED
             if claim.kind is InvokeClaimKind.DENIED and claim.reason == "preflight_rejected":
@@ -991,8 +906,6 @@ class SendWorker:
                     if not submission_claimed:
                         await self._refund_token(lease_epoch, vendor_id)
                 if claim_status is not SubmissionClaimStatus.CLAIMED:
-                    if claim_status is SubmissionClaimStatus.DAILY_LIMIT:
-                        return SubmitOutcome.DELAYED
                     return SubmitOutcome.STALE
                 claimed = True
             begin = getattr(self.store, "begin_vendor_invoke", None)
@@ -1066,22 +979,11 @@ class SendWorker:
                     expected_route_policy_version=int(
                         report.route_policy_version or chunk.route_policy_version
                     ),
-                    segments=calculate_quota_cost(
-                        f"{chunk.sign_name}{chunk.content}", recipient_count=len(chunk.phones)
-                    ),
-                    enforce_live_test_budget=self.enforce_live_test_budget,
                 )
             authorized = claim.kind is InvokeClaimKind.AUTHORIZED
         finally:
             if not authorized:
                 await self._refund_token(lease_epoch, vendor_id)
-        if (
-            claim.kind is not InvokeClaimKind.AUTHORIZED
-            and claim.reason == "daily_limit"
-            and claim.reset_at is not None
-        ):
-            await self.store.defer_daily_limit(chunk.chunk_id, lane, claim.reset_at)
-            await self.store.pause_daily_limit(lane, claim.reset_at)
         return claim, vendor_id, lease_epoch
 
     async def _invoke_authorized(
@@ -1097,7 +999,7 @@ class SendWorker:
         lease_epoch: int | None = None,
     ) -> SubmitOutcome:
         try:
-            preflight = await self._preflight_before_invoke(chunk, lane, vendor_id, authorized=True)
+            preflight = await self._preflight_before_invoke(chunk, lane, vendor_id)
         except (Exception, asyncio.CancelledError):
             try:
                 await self._abort_before_http(
@@ -1283,23 +1185,12 @@ async def _components() -> tuple[SendWorker, Any, ZhihuiClient, int]:
     """按任务重读凭据及控制配置，仅复用本进程常驻 loop 的 HTTP 连接池。"""
 
     settings, redis, store, batch_size, vendor_qps, reserved = await _store_components()
-    control_guard = VendorControlStateGuard() if settings.vendor_live_test else None
-    if control_guard is not None:
-        try:
-            control_guard.require_fresh()
-        except VendorControlStateUnavailable as error:
-            if error.requires_critical_pause:
-                await store.pause_control_agent_stale()
-            raise RuntimeError("真实联调控制状态不可用") from None
     gateway = ZhihuiClient.from_settings(settings, shared_http=True)
     worker = SendWorker(
         gateway,
         store,
         TokenBucket(redis),
         monitor=RedisVendorAlertMonitor(redis, SqlAlertService(settings)),
-        control_guard=control_guard,
-        enforce_live_test_budget=settings.vendor_live_test,
-        enforce_live_test_recipients=settings.vendor_live_test,
         vendor_qps=vendor_qps,
         reserved_realtime_qps=reserved,
         gateways={PRIMARY_VENDOR_ID: gateway},

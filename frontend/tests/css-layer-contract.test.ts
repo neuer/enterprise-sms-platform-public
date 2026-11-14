@@ -165,7 +165,6 @@ const PAGE_VIEWS: Record<string, string[]> = {
   "src/styles/workspace/user.css": ["UserView"],
   "src/styles/workspace/ops.css": ["OpsView"],
   "src/styles/workspace/config.css": ["ConfigView"],
-  "src/styles/workspace/vendor.css": ["ConfigView"],
   "src/styles/workspace/audit.css": ["AuditView"],
   "src/styles/workspace/apps.css": ["AppManagementView"],
   "src/styles/workspace/security-daily.css": ["SecurityDailyView"],

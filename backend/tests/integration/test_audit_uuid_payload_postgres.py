@@ -33,8 +33,6 @@ from app.services.security_daily import (
 )
 from app.services.security_daily.contract import security_daily_write_parameters
 from app.services.security_daily_repository import SqlSecurityDailyRepository
-from app.services.vendor_test_operation_repository import SqlVendorTestOperationRepository
-from app.services.vendor_test_security_audit import SqlVendorTestSecurityAuditRepository
 from tests.integration.test_ops_audit_postgres import _create_admin
 from tests.test_security_daily import payload as report_payload
 
@@ -345,96 +343,3 @@ async def test_security_daily_delivery_audits_keep_phone_shaped_requests_correla
         _assert_no_raw_uuid(after, PHONE_SHAPED_A, PHONE_SHAPED_B)
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["vendor_test_step_up", "vendor_test_seal_session"])
-async def test_vendor_security_audit_persists_phone_shaped_correlation_in_object_id(
-    owner: tuple[AsyncEngine, URL],
-    principal: SecurityPrincipal,
-    action: str,
-) -> None:
-    """correlation UUID 只落 object_id，碰撞手机号模式也不得让安全事件写入失败。"""
-
-    engine, url = owner
-    audit = SqlVendorTestSecurityAuditRepository(cast(Any, SimpleNamespace(database_url=url)))
-    with audit_principal_scope(principal), correlation_scope():
-        await audit.record(
-            correlation_id=str(PHONE_SHAPED_A),
-            principal=principal,
-            action=cast(Any, action),
-            outcome="succeeded",
-        )
-    async with engine.connect() as connection:
-        rows = (
-            await connection.execute(
-                text(
-                    """
-                    SELECT object_type,object_id,after_val FROM audit_log
-                    WHERE action=:action AND actor_account_id=:account_id
-                    """
-                ),
-                {"action": action, "account_id": principal.account_id},
-            )
-        ).all()
-    assert [tuple(row) for row in rows] == [
-        ("vendor_test_security", str(PHONE_SHAPED_A), {"count": 1, "outcome": "succeeded"})
-    ]
-
-
-@pytest.mark.asyncio
-async def test_vendor_operation_audits_persist_phone_shaped_operation_and_checkpoint(
-    owner: tuple[AsyncEngine, URL],
-    principal: SecurityPrincipal,
-) -> None:
-    """operation UUID 只落 object_id，checkpoint 原值保留在 operation 行，终态不会卡在 running。"""
-
-    engine, url = owner
-    repository = SqlVendorTestOperationRepository(cast(Any, SimpleNamespace(database_url=url)))
-    operation_id = str(PHONE_SHAPED_B)
-    with audit_principal_scope(principal), correlation_scope():
-        requested = await repository.reserve_start(
-            operation_id,
-            "activate",
-            principal=principal,
-            conflicting_types=frozenset({"activate"}),
-        )
-    assert requested.status == "requested"
-    with correlation_scope():
-        completed = await repository.complete(
-            operation_id,
-            status="succeeded",
-            safe_code=None,
-            checkpoint_id=PHONE_SHAPED_CHECKPOINT,
-        )
-    assert completed.status == "succeeded"
-    async with engine.connect() as connection:
-        rows = (
-            await connection.execute(
-                text(
-                    """
-                    SELECT audit.action,audit.actor_subject_kind,audit.after_val,
-                           operation.checkpoint_id
-                    FROM audit_log audit
-                    JOIN vendor_test_operation operation
-                      ON operation.id::text=audit.object_id
-                    WHERE audit.object_type='vendor_test_operation'
-                      AND audit.object_id=:operation_id
-                    ORDER BY audit.id
-                    """
-                ),
-                {"operation_id": operation_id},
-            )
-        ).all()
-        await connection.execute(
-            text("DELETE FROM audit_log WHERE object_id=:operation_id"),
-            {"operation_id": operation_id},
-        )
-        await connection.commit()
-    assert [tuple(row) for row in rows] == [
-        ("vendor_test_operation_requested", "human", {"count": 1}, PHONE_SHAPED_CHECKPOINT),
-        (
-            "vendor_test_operation_completed",
-            "system",
-            {"checkpoint_recorded": True, "count": 1},
-            PHONE_SHAPED_CHECKPOINT,
-        ),
-    ]

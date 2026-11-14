@@ -15,7 +15,6 @@ SCRIPT = ROOT / "scripts" / "docker_public.sh"
 PUBLIC_DOCKER_ENTRYPOINTS = (
     ROOT / "scripts" / "verify_all.sh",
     ROOT / "scripts" / "build_g2_images.sh",
-    ROOT / "scripts" / "verify_vendor_live_test.sh",
     ROOT / "scripts" / "verify_release_control.sh",
     ROOT / "scripts" / "verify_data_images.sh",
 )

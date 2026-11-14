@@ -94,7 +94,6 @@ def test_unknown_security_related_environment_variable_is_rejected() -> None:
         {
             "ENVIRONMENT": "test",
             "VENDOR_MOCK": "1",
-            "VENDOR_UAT_POSTGRES_DSN": "postgresql://test",
             "EXPORT_AUTH_POSTGRES_DSN": "postgresql://test",
             "SECURITY_SESSION_POSTGRES_DSN": "postgresql://test",
             "OUTBOX_POSTGRES_DSN": "postgresql://test",
@@ -269,81 +268,43 @@ def test_vendor_endpoint_rejects_non_origin_components(
         )
 
 
-def test_live_test_mode_requires_exact_https_vendor_origin_without_host_allowlist(
-    tmp_path: Path,
-) -> None:
+@pytest.mark.parametrize("environment", ["development", "test"])
+def test_non_production_requires_vendor_mock(environment: str) -> None:
+    """真实联调已下线：非生产环境只能使用 Mock 厂商，真实厂商只在生产配置下可用。"""
     module = load_settings_module()
+
+    with pytest.raises(ValueError, match="requires VENDOR_MOCK=1"):
+        module.Settings(
+            _env_file=None,
+            environment=environment,
+            debug=True,
+            auth_mock=True,
+            vendor_mock=False,
+            vendor_base_url="https://vendor.example.invalid",
+        )
 
     settings = module.Settings(
         _env_file=None,
-        environment="development",
-        debug=True,
-        auth_mock=True,
-        vendor_mock=False,
-        vendor_base_url="https://vendor.example.invalid",
-    )
-
-    assert settings.vendor_live_test is True
-    for invalid_origin in (
-        "http://vendor.example.invalid",
-        "https://user@vendor.example.invalid",
-        "https://vendor.example.invalid/path",
-        "https://vendor.example.invalid?probe=1",
-        "https://other.example.test",
-    ):
-        with pytest.raises(ValueError, match="live test"):
-            module.Settings(
-                _env_file=None,
-                environment="development",
-                debug=True,
-                auth_mock=True,
-                vendor_mock=False,
-                vendor_base_url=invalid_origin,
-            )
-
-    source = (Path(module.__file__)).read_text(encoding="utf-8")
-    assert "VENDOR_TEST_ALLOWLIST_FILE" not in source
-
-
-def test_live_test_origin_can_be_supplied_by_local_private_configuration() -> None:
-    module = load_settings_module()
-
-    settings = module.Settings(
-        _env_file=None,
-        environment="development",
-        debug=True,
-        auth_mock=True,
-        vendor_mock=False,
-        vendor_base_url="https://gateway.example.test",
-        vendor_live_test_origin="https://gateway.example.test",
-    )
-
-    assert settings.vendor_live_test is True
-    assert settings.vendor_live_test_origin == "https://gateway.example.test"
-
-
-def test_mock_mode_does_not_require_allowlist(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = load_settings_module()
-    monkeypatch.setattr(
-        module,
-        "VENDOR_TEST_ALLOWLIST_FILE",
-        tmp_path / "missing.json",
-        raising=False,
-    )
-
-    settings = module.Settings(
-        _env_file=None,
-        environment="test",
+        environment=environment,
         debug=True,
         auth_mock=True,
         vendor_mock=True,
         vendor_base_url="http://vendor-mock:9028",
     )
+    assert settings.vendor_mock is True
+    assert not hasattr(settings, "vendor_live_test")
 
-    assert settings.vendor_live_test is False
+
+def test_retired_live_test_origin_is_still_accepted_from_existing_env_files() -> None:
+    """既有 .env 中残留的 VENDOR_LIVE_TEST_ORIGIN 不得让进程启动失败。"""
+    module = load_settings_module()
+
+    module.reject_unknown_runtime_environment(
+        {
+            "ENVIRONMENT": "production",
+            "VENDOR_LIVE_TEST_ORIGIN": "https://vendor.example.invalid",
+        }
+    )
 
 
 def test_smtp_allowed_hosts_are_deployment_owned_and_exact() -> None:

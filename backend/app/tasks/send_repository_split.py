@@ -6,9 +6,6 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from app.services.send_locks import lock_send_chunks
-from app.services.vendor_test_budget import (
-    settle_live_test_attempt,
-)
 from app.tasks.send import (
     ChunkPayload,
 )
@@ -208,7 +205,6 @@ async def _mark_split_capacity_blocked(
         {"id": chunk_id},
     )
     if blocked.scalar_one_or_none() is not None:
-        await settle_live_test_attempt(connection, chunk_id, "released")
         await _settle_split_vendor_attempt(connection, chunk_id)
 
 
@@ -232,7 +228,6 @@ async def _create_split_children(
     )
     if parent.scalar_one_or_none() is None:
         raise InFlightInvariantViolation("split", "parent cas missed")
-    await settle_live_test_attempt(connection, chunk.chunk_id, "released")
     await _settle_split_vendor_attempt(connection, chunk.chunk_id)
     messages = list(
         (

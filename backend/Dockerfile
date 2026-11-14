@@ -56,7 +56,6 @@ COPY backend/app ./app
 COPY backend/alembic.ini ./alembic.ini
 COPY backend/migrations ./migrations
 COPY backend/scripts_support ./scripts_support
-COPY deploy/scripts/vendor_control_protocol.py ./vendor_control_protocol.py
 COPY schema.sql ./schema.sql
 COPY VERSION ./VERSION
 

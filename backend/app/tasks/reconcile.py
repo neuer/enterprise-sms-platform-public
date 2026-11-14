@@ -27,12 +27,6 @@ from app.services.report_repository import SqlReportRepository
 from app.services.runtime_policy import SqlRuntimePolicyLoader
 from app.services.uncertain import UncertainReconciler
 from app.services.uncertain_repository import SqlUncertainRepository
-from app.services.vendor_control_client import VendorControlClient
-from app.services.vendor_test_operation import VendorTestOperationService
-from app.services.vendor_test_operation_repository import (
-    SqlVendorTestOperationRepository,
-)
-from app.services.vendor_test_uat import VendorTestUatReconciler
 from app.settings import Settings, get_settings
 from app.tasks import celery_app
 
@@ -95,17 +89,6 @@ async def _reconcile() -> int:
             CeleryQueuePublisher(),
         ).run_once()
 
-    async def vendor_control() -> int:
-        return await VendorTestOperationService(
-            SqlVendorTestOperationRepository(settings),
-            VendorControlClient(),
-        ).reconcile_once()
-
-    async def vendor_uat() -> int:
-        return await VendorTestUatReconciler(
-            SqlVendorTestOperationRepository(settings)
-        ).reconcile_once()
-
     async def raw_replay() -> int:
         return await _replay_stale_raw(settings)
 
@@ -113,8 +96,6 @@ async def _reconcile() -> int:
     for name, operation in (
         ("uncertain", uncertain),
         ("delivery-recovery", recovery),
-        ("vendor-control", vendor_control),
-        ("vendor-uat", vendor_uat),
         ("raw-replay", raw_replay),
     ):
         total += await _run_domain(name, operation, settings, failures)

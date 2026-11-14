@@ -5,12 +5,10 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from app.api.messages import SendRequestModel, VendorTestApiUatRequestModel
-from app.api.vendor_test import UatMessageRequestModel
+from app.api.messages import SendRequestModel
 from app.api.web_messages import WebSendRequest
 from app.core.sensitive_text import reject_phone_business_id
 from app.services.idempotency import IdempotencyCoordinator, IdempotencyScope
-from app.services.vendor_test_operation_repository import SqlVendorTestOperationRepository
 from tests import business_ids
 from tests.test_send_pipeline import FakeUsageLedger
 
@@ -60,9 +58,7 @@ def test_non_phone_identifiers_remain_accepted(value: str | None) -> None:
     "model,fields",
     [
         (SendRequestModel, {"mobiles": [PHONE]}),
-        (VendorTestApiUatRequestModel, {"mobiles": [PHONE]}),
         (WebSendRequest, {"mobiles": [PHONE]}),
-        (UatMessageRequestModel, {"recipient_id": 1, "app_id": 1}),
     ],
 )
 @pytest.mark.parametrize("unsafe_id", UNSAFE_IDS)
@@ -74,7 +70,7 @@ def test_all_send_models_reject_phone_hex_and_preserve_safe_id(model, fields, un
 
 
 @pytest.mark.asyncio
-async def test_unsafe_id_cannot_reach_redis_or_uat_database() -> None:
+async def test_unsafe_id_cannot_reach_redis() -> None:
     class Redis:
         async def set(self, *args, **kwargs):
             pytest.fail("unsafe identifier reached Redis")
@@ -88,16 +84,6 @@ async def test_unsafe_id_cannot_reach_redis_or_uat_database() -> None:
             helper(scope, UNSAFE_HEX)
     with pytest.raises(ValueError, match="手机号"):
         coordinator.quota_result_key(scope, UNSAFE_HEX, "20260919")
-    repository = SqlVendorTestOperationRepository()
-    repository._engine = lambda: pytest.fail("unsafe identifier reached database")
-    with pytest.raises(ValueError, match="手机号"):
-        await repository.prepare_uat_acceptance(
-            "abcdefab-1234-4abc-8def-abcdefabcdef",
-            biz_id=UNSAFE_HEX,
-            app_id=1,
-            request_hash="a" * 64,
-            key_version=1,
-        )
 
 
 @pytest.mark.asyncio

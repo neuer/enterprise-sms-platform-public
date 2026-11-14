@@ -291,7 +291,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 #### FR-18 应用与密钥
 - CRUD：allowed_categories、默认签名、日配额（计费条）、限流、blacklist_check、freq_override、回调配置
 - API Key：一次性明文；**双 Key 轮换**（宽限期默认72h，可提前作废）；callback_secret 轮换
-- 来源 IP 白名单（v1.6.43）：应用级 `allowed_ips` 配置规范化 CIDR（单 IP 自动归一化为 /32 或 /128，上限 50 条，空=不限）；仅作用于 X-Api-Key 认证路径（发送、批次查询、uat-send），修改立即生效；来源不在白名单返回 `403 IP_NOT_ALLOWED`，Web 用户 JWT 路径不受影响
+- 来源 IP 白名单（v1.6.43）：应用级 `allowed_ips` 配置规范化 CIDR（单 IP 自动归一化为 /32 或 /128，上限 50 条，空=不限）；仅作用于 X-Api-Key 认证路径（发送、批次查询），修改立即生效；来源不在白名单返回 `403 IP_NOT_ALLOWED`，Web 用户 JWT 路径不受影响
 #### FR-18a 用户管理（v1.2 补）
 - 统一账号台账显示认证源、账号/身份状态、本地凭据状态、AD 同步状态、当前角色与来源组；全部写操作以稳定 `account_id` 定位
 - 本地账号仅由管理员创建，设置临时密码；支持启停、重置临时密码、角色调整和强制下线，不提供注册、重命名、硬删除
@@ -306,14 +306,10 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - 页面只显示 LDAP bind secret 与 CA 文件是否就绪，不接收、不回显凭据或文件内容
 <a id="vendor-uat-contract"></a>
 
-#### FR-19a 真实联调控制台与受控 API UAT（v1.6.3）
-- 单机开发测试环境的正式运营商生命周期控制全部在 admin 的系统配置页完成：状态、正式 Key 安装/轮换、加密测试号码、激活/暂停/恢复、页面单号码 UAT 与结果查看
-- 正式 Key 明文只可在页面组件的浏览器易失内存中短暂存在，由 WebCrypto 封装后普通 API 只转发密文；root `vendor-control-agent` 经固定 Unix Socket 解密并原子安装版本化凭据，API/worker 不得获得 root、sudo 或 Docker Socket
-- 安装/轮换 Key、激活和 critical resume 必须按当前 local/AD Provider 二次认证；5 分钟单用途令牌只允许消费一次，不允许 Provider 回退
-- 测试号码按 `phone_enc/phone_hmac/phone_mask/key_version` 存 PostgreSQL；页面只展示备注与掩码。live-test 模式下普通发送入口返回 `VENDOR_TEST_CONSOLE_ONLY`，控制台 UAT 每次只选择一个 active recipient
-- 应用侧唯一真实联调例外为 `POST /api/v1/messages/uat-send`：有效 `X-Api-Key`、仅通知、单个 active 已登记号码、直接内容或已审核模板与必填 1–32 位 `biz_id`；禁止定时、验证码、营销及额外字段。API 必须先消费应用限流并校验通知权限，再以全版本 HMAC 定位号码且要求所有保留版本 digest 与当次输入完全匹配，只把既有加密四元组交给同一 pipeline；worker 加载分片时与号码维护共享同一 advisory xact lock 并再次验证 active，queued/sending 测试批次作为维护租约，终态前禁止停用或删除。控制状态损坏或过期必须以 Redis 原子命令同时写入两个独立 agent-stale critical pause 键，写入未确认则保持 503 且不继续；复用 24h 幂等、每日 100 个计费条和 uncertain 占额
-- 继续执行上海自然日 100 个计费条硬上限、uncertain 持续占额、1010/鉴权/余额等 critical pause 和 GetBalance-only 激活预检；CI/G2 始终使用 Mock/FakeCarrier
-- 已配置且无暂停的测试环境允许管理员二次认证后从 `controlled|inactive` 切回内置 Mock：先停止并确认测试侧真实发送与报告/回复消费者均不再运行，再删除测试环境正式厂商凭据并重建纯 Mock 服务；不等待已停止消费者无法自行收敛的测试 backlog，既有 queued/scheduled/pending/retrying 后续只允许命中 Mock，遗留 submitting 按既有恢复规则转 uncertain，uncertain 仍禁止自动重发；保留加密测试号码、短信业务数据、审计、当日 UAT/uncertain 事实、数据库与 volume；不得修改生产环境，也不得自动修复切换前历史未决状态
+#### FR-19a 真实联调控制台与受控 API UAT（已下线，D128）
+- 2026-11 起整体移除：`/configs`「真实联调」页签及其管理接口、`POST /api/v1/messages/uat-send`、加密测试号码登记、上海自然日 100 计费条预算、控制状态守卫与对应对账任务均不再存在
+- development/test 环境必须 `VENDOR_MOCK=1`，启动时强制校验；真实厂商只在 production 配置下可达，测试环境不保存正式厂商凭据
+- 历史库表 `vendor_test_*` 由独立迁移删除；在此之前应用代码不再读写这些表
 #### FR-19b 安全日报配置与投递（v1.6.40）
 - admin 的 `/security-daily` 页面提供启停、Resend Key 和最多 3 个收件人配置；Key 留空表示保持原值，页面只显示“已配置/未配置”，不回显 Key
 - Resend Key 允许明文写入专用 `sys_config.security_daily_resend_api_key`，收件人写入 `security_daily_recipient`；该例外不得用于其他平台凭据。配置变更写审计但审计只包含 configured 状态、启停状态和收件人数；配置保存后由 API 原子同步 `resend.json` 给独立 mailer
@@ -323,7 +319,7 @@ Web(Vue3) ──JWT────▶  │  认证/RBAC │ 发送流水线 │ 管
 - 覆盖全部写操作与敏感读（解密查看/导出/报文重放/回调重推/队列恢复/角色覆盖）
 - **防 PII（v1.2）**：审计记录只存号码数量与批次引用，**禁止存手机号列表明文**
 - **稳定主体（v1.6.2）**：人类事件写 `actor_account_id` 与当次 `actor_identity_id`，API 应用事件写 `actor_app_id`；`actor`/角色/部门均为事件时展示快照。审计查询支持按 `account_id` 串联改名前后事件；无法证明的历史事件显式为 `legacy_unknown`，禁止按当前用户名猜绑定。
-- 审批、导出、导入、真实联调 operation 与 Web 批次的所有权和职责分离只使用不可变主体 ID；新账号复用旧登录名不得继承旧资源。
+- 审批、导出、导入与 Web 批次的所有权和职责分离只使用不可变主体 ID；新账号复用旧登录名不得继承旧资源。
 - 只增不改（DB 权限回收）；仅 admin 可查
 
 ### 5.9 数据安全与生命周期
@@ -463,7 +459,7 @@ callback.ready不再贡献全局软降级数量，callback dead不再触发全�
 | 12 | /sensitive-words | 敏感词 | 列表、批量导入、策略切换 | admin |
 | 13 | /apps | 应用管理 | CRUD、Key 轮换/作废、回调配置与密钥轮换、频控覆盖 | admin |
 | 14 | /users | 用户与角色 | 本地账号创建/重置/启停、Provider/凭据/同步状态、AD 角色跟随或覆盖、强制下线 | admin |
-| 15 | /configs | 系统配置 | 页签：运行参数、认证源、真实联调；含 AD 草稿/测试/启停、sys_config 分组编辑及受控正式 Key、测试号码、激活和单号码 UAT | admin |
+| 15 | /configs | 系统配置 | 页签：运行参数、认证源；含 AD 草稿/测试/启停与 sys_config 分组编辑 | admin |
 | 15a | /security-daily | 安全日报 | 查看生成/投递状态、配置 Resend Key 与收件人、预览、手动投递与失败重试 | admin |
 | 16 | /audit | 审计日志 | 多条件检索（只读） | admin |
 | 17 | /reports | 统计报表 | 日/周/月 × 应用/部门 × 类别，消息数+计费条，导出 | viewer+ |
@@ -487,8 +483,6 @@ callback.ready不再贡献全局软降级数量，callback dead不再触发全�
 | CATEGORY_NOT_ALLOWED | 403 | 应用无该消息类别权限 |
 | SELF_APPROVAL_DENIED | 403 | 审批回避：不能审批本人提交 |
 | IP_NOT_ALLOWED | 403 | 来源 IP 不在应用白名单 |
-| VENDOR_TEST_CONSOLE_ONLY | 403 | live-test 下普通发送入口关闭，仅真实联调控制台/UAT |
-| VENDOR_TEST_MODE_REQUIRED | 403 | 该操作仅允许在受控真实联调模式执行 |
 | NOT_FOUND | 404 | 资源不存在 |
 | STATE_CONFLICT | 409 | 状态机非法流转/重复审批/导入包已使用或过期 |
 | IDEMPOTENCY_CONFLICT | 409 | 同一幂等键已用于不同请求 |

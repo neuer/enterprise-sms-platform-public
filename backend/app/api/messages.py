@@ -10,7 +10,6 @@ from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.api.auth import ERROR_RESPONSE, bearer_scheme
-from app.api.vendor_control_ready import raise_vendor_control_unavailable
 from app.core.apikey import ApiAppContext, optional_api_app, require_api_app
 from app.core.audit import audited
 from app.core.auth.accounts import ActorPrincipal, ApplicationPrincipal
@@ -30,7 +29,7 @@ from app.services.app_ratelimit import (
 from app.services.batch_query import BatchAccessScope, BatchNotFound, BatchQueryService
 from app.services.blacklist import BlacklistCacheUnavailable
 from app.services.category import CategoryNotAllowed
-from app.services.crypto import CryptoService, ProtectedPhone
+from app.services.crypto import CryptoService
 from app.services.idempotency import IdempotencyCoordinationTimeout, IdempotencyCoordinator
 from app.services.pipeline import (
     AcceptCommitConflict,
@@ -50,7 +49,6 @@ from app.services.pipeline import (
     SendPipeline,
     SendRequest,
     SensitiveWord,
-    VendorTestConsoleOnly,
 )
 from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRenderer
 from app.services.queue import CeleryQueuePublisher
@@ -76,22 +74,6 @@ from app.services.usage_ledger import (
     UsageLedgerService,
     UsageProjectionUnavailable,
     UsageReservationConflict,
-)
-from app.services.vendor_control_state import (
-    VendorControlStateGuard,
-    VendorControlStateUnavailable,
-)
-from app.services.vendor_test_guard import (
-    VendorTestRecipientDenied,
-)
-from app.services.vendor_test_recipient import (
-    RecipientHmacIndexStale,
-    RecipientNotFound,
-    VendorTestRecipientForSend,
-    VendorTestRecipientService,
-)
-from app.services.vendor_test_recipient_repository import (
-    SqlVendorTestRecipientRepository,
 )
 from app.settings import get_settings
 
@@ -180,44 +162,6 @@ class SendResponseModel(BaseModel):
     deferred_reason: Literal["market_window"] | None
     scheduled_at: datetime | None
     idempotency_expires_at: datetime | None = None
-
-
-class VendorTestApiUatRequestModel(BaseModel):
-    """应用侧真实联调只接受单号码、通知、直接内容或已审核模板和显式幂等键。"""
-
-    model_config = ConfigDict(
-        extra="forbid",
-        json_schema_extra={
-            "oneOf": [
-                {"required": ["content"], "not": {"required": ["template_id"]}},
-                {
-                    "required": ["template_id", "template_params"],
-                    "not": {"required": ["content"]},
-                },
-            ]
-        },
-    )
-
-    category: Literal["notice"]
-    mobiles: list[Annotated[str, Field(pattern=r"^1\d{10}$")]] = Field(
-        min_length=1,
-        max_length=1,
-    )
-    content: str | None = Field(default=None, max_length=500)
-    template_id: int | None = None
-    template_params: list[Annotated[str, Field(max_length=200)]] | None = Field(
-        default=None,
-        max_length=20,
-    )
-    sign_name: str | None = Field(default=None, max_length=32)
-    biz_id: str = Field(min_length=1, max_length=32)
-
-    @model_validator(mode="after")
-    def content_or_template(self) -> VendorTestApiUatRequestModel:
-        reject_phone_business_id(self.biz_id, field_name="biz_id")
-        if (self.content is None) == (self.template_id is None):
-            raise ValueError("content 与 template_id 必须且只能提供一个")
-        return self
 
 
 class BatchModel(BaseModel):
@@ -338,7 +282,6 @@ async def _pipeline(app: ApiAppContext) -> SendPipeline:
         publisher=CeleryQueuePublisher(),
         templates=SqlTemplateRenderer(settings),
         signs=SignResolver(SqlSignRepository(settings)),
-        vendor_test_console_only=settings.vendor_live_test,
         acceptance_limiter=ApplicationRateLimiter(redis),
         usage_ledger=UsageLedgerService(redis, settings),
         admission_guard=get_send_admission_guard(),
@@ -488,20 +431,6 @@ def _error(error: Exception) -> ApiError:
         return ApiError(409, "STATE_CONFLICT", str(error), None)
     if isinstance(error, AcceptCommitUnknown):
         return ApiError(503, "DEPENDENCY_UNAVAILABLE", str(error), None)
-    if isinstance(error, VendorTestConsoleOnly):
-        return ApiError(
-            403,
-            "VENDOR_TEST_CONSOLE_ONLY",
-            "受控真实联调只能从系统配置页发送",
-            None,
-        )
-    if isinstance(error, VendorTestRecipientDenied):
-        return ApiError(
-            403,
-            "FORBIDDEN",
-            "真实联调仅允许已登记测试号码",
-            {"denied_count": error.denied_count},
-        )
     if isinstance(error, CategoryNotAllowed):
         return ApiError(403, "CATEGORY_NOT_ALLOWED", str(error), None)
     if isinstance(error, MarketApiBulkForbidden):
@@ -626,8 +555,6 @@ async def send_message(
         SendAdmissionRejected,
         TemplateParamMismatch,
         ValueError,
-        VendorTestConsoleOnly,
-        VendorTestRecipientDenied,
         UsageProjectionUnavailable,
         UsageReservationConflict,
         IdempotencyCoordinationTimeout,
@@ -639,164 +566,6 @@ async def send_message(
     if result.idempotency_expires_at is not None:
         response.headers["Idempotency-Expires-At"] = result.idempotency_expires_at.isoformat()
     return result
-
-
-async def _require_vendor_test_api_ready() -> None:
-    settings = get_settings()
-    if not settings.vendor_live_test:
-        raise ApiError(
-            403,
-            "VENDOR_TEST_MODE_REQUIRED",
-            "受控 API UAT 仅在真实联调模式开放",
-            None,
-        )
-    try:
-        VendorControlStateGuard().require_fresh()
-    except VendorControlStateUnavailable as error:
-        await raise_vendor_control_unavailable(error)
-
-
-async def _resolve_vendor_test_api_recipient(
-    phone: str,
-) -> VendorTestRecipientForSend:
-    return await _vendor_test_api_recipient_service().resolve_phone_for_send(phone)
-
-
-def _vendor_test_api_recipient_service() -> VendorTestRecipientService:
-    settings = get_settings()
-    return VendorTestRecipientService(
-        SqlVendorTestRecipientRepository(settings),
-        CryptoService.from_settings(settings),
-    )
-
-
-@router.post(
-    "/uat-send",
-    response_model=SendResponseModel,
-    responses={
-        400: ERROR_RESPONSE,
-        401: ERROR_RESPONSE,
-        403: ERROR_RESPONSE,
-        409: ERROR_RESPONSE,
-        422: ERROR_RESPONSE,
-        429: RATE_LIMITED_RESPONSE,
-        503: UNAVAILABLE_RESPONSE,
-    },
-)
-@audited("message_send")
-async def send_vendor_test_api_uat(
-    payload: VendorTestApiUatRequestModel,
-    app: Annotated[ApiAppContext, Depends(require_api_app)],
-) -> BatchResponse:
-    pipeline = await _pipeline(app)
-    replay_request = SendRequest(
-        category=payload.category,
-        mobiles=payload.mobiles,
-        content=payload.content,
-        template_id=payload.template_id,
-        template_params=payload.template_params,
-        sign_name=payload.sign_name,
-        biz_id=payload.biz_id,
-        channel="api",
-        actor=ApplicationPrincipal(app.app_id, app.name, app.dept),
-        is_test=True,
-        vendor_test_uat=True,
-    )
-    try:
-        replayed = await pipeline.replay_if_present(app, replay_request)
-    except (
-        ControlPlaneUnavailable,
-        IdempotencyCoordinationTimeout,
-        CategoryNotAllowed,
-        ApplicationRateLimitExceeded,
-        IdempotencyConflict,
-        ValueError,
-    ) as error:
-        raise _error(error) from None
-    if replayed is not None:
-        return replayed
-    await _require_vendor_test_api_ready()
-    try:
-        preauthorization = await pipeline.preauthorize(app, payload.category)
-    except (
-        ApplicationRateLimitExceeded,
-        CategoryNotAllowed,
-        ControlPlaneUnavailable,
-        SendAdmissionRejected,
-    ) as error:
-        raise _error(error) from None
-    try:
-        recipient = await _resolve_vendor_test_api_recipient(payload.mobiles[0])
-    except RecipientNotFound:
-        raise ApiError(
-            403,
-            "FORBIDDEN",
-            "真实联调仅允许已登记测试号码",
-            None,
-        ) from None
-    except RecipientHmacIndexStale:
-        raise ApiError(
-            409,
-            "STATE_CONFLICT",
-            "测试号码索引待刷新",
-            None,
-        ) from None
-    try:
-        return await pipeline.accept(
-            app,
-            SendRequest(
-                category=payload.category,
-                mobiles=(),
-                content=payload.content,
-                template_id=payload.template_id,
-                template_params=payload.template_params,
-                sign_name=payload.sign_name,
-                biz_id=payload.biz_id,
-                channel="api",
-                actor=ApplicationPrincipal(app.app_id, app.name, app.dept),
-                is_test=True,
-                protected_mobiles=(
-                    ProtectedPhone(
-                        phone_enc=recipient.phone_enc,
-                        phone_hmac=recipient.phone_hmac,
-                        phone_mask=recipient.phone_mask,
-                        key_version=recipient.key_version,
-                    ),
-                ),
-                protected_hmac_candidates=recipient.hmac_candidates,
-                vendor_test_uat=True,
-            ),
-            preauthorization=preauthorization,
-        )
-    except (
-        AllFiltered,
-        BlacklistCacheUnavailable,
-        CategoryNotAllowed,
-        ConsentRequired,
-        IdempotencyConflict,
-        InvalidContent,
-        ApplicationRateLimitExceeded,
-        ControlPlaneUnavailable,
-        InFlightInvariantViolation,
-        InFlightLimitExceeded,
-        InFlightQueryUnavailable,
-        MarketApiBulkForbidden,
-        QuotaExceeded,
-        QuotaExemptionExpired,
-        SensitiveWord,
-        SendAdmissionRejected,
-        TemplateParamMismatch,
-        ValueError,
-        VendorTestConsoleOnly,
-        VendorTestRecipientDenied,
-        UsageProjectionUnavailable,
-        UsageReservationConflict,
-        IdempotencyCoordinationTimeout,
-        IdempotencyClaimLost,
-        AcceptCommitConflict,
-        AcceptCommitUnknown,
-    ) as error:
-        raise _error(error) from None
 
 
 @router.get(

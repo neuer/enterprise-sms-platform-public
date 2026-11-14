@@ -8,10 +8,6 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from app.services.send_db_errors import SendCasLost, send_db_reason
 from app.services.send_db_events import observe_send_db_failure
 from app.services.send_locks import lock_send_chunks, lock_send_context
-from app.services.vendor_test_budget import (
-    SubmissionClaimStatus,
-    settle_live_test_attempt,
-)
 from app.tasks.send import (
     FinalizeReport,
 )
@@ -43,8 +39,6 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
         previous_attempt_id: int,
         expected_next_vendor: str,
         expected_route_policy_version: int,
-        segments: int = 1,
-        enforce_live_test_budget: bool = False,
     ) -> InvokeClaim:
         """领取下一跳 HTTP 授权；只有 COMMIT 为 invoking 后才允许外呼。"""
 
@@ -59,10 +53,6 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                 previous = next(
                     (row for row in history if int(row["id"]) == previous_attempt_id), None
                 )
-                if bool(getattr(self.settings, "vendor_live_test", False)):
-                    payload = await self._payload(connection, chunk_id)
-                    if payload.denied_recipient_count:
-                        return InvokeClaim(InvokeClaimKind.DENIED, reason="recipient_denied")
                 previous_attempt = None
                 if previous is not None:
                     previous_attempt = VendorAttempt(
@@ -136,17 +126,6 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                 ).scalar_one()
                 if not bool(retry_due):
                     return InvokeClaim(InvokeClaimKind.DENIED, reason="retry_not_due")
-                if enforce_live_test_budget:
-                    budget = await self._reserve_submission_budget(
-                        connection,
-                        chunk_id,
-                        segments,
-                        int(chunk["vendor_attempt_count"]) + 1,
-                    )
-                    if budget.status is not SubmissionClaimStatus.CLAIMED:
-                        return InvokeClaim(
-                            InvokeClaimKind.DENIED, reason="daily_limit", reset_at=budget.reset_at
-                        )
                 next_generation = expected_route_generation + 1
                 inserted = (
                     (
@@ -179,7 +158,6 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                         """
                         UPDATE sms_chunk SET
                           status='submitting',
-                          vendor_attempt_count=vendor_attempt_count+:budget_attempt,
                           selected_vendor=:vendor_id,
                           route_generation=:generation,
                           submitting_since=now(),
@@ -195,7 +173,6 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                         "vendor_id": expected_next,
                         "generation": next_generation,
                         "expected_generation": expected_route_generation,
-                        "budget_attempt": int(enforce_live_test_budget),
                     },
                 )
                 if claimed.scalar_one_or_none() is None:
@@ -387,7 +364,6 @@ class VendorFailoverMixin(VendorAttemptStoreMixin):
                 batch_id = failed.scalar_one_or_none()
                 if batch_id is None:
                     continue
-                await settle_live_test_attempt(connection, chunk_id, "released")
                 await self._finalize_failed_messages(connection, chunk_id, int(batch_id))
             repaired += 1
         return repaired

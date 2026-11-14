@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import math
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from redis.asyncio import Redis
@@ -19,19 +17,12 @@ from app.services.crypto import CryptoService
 from app.services.outbox import OutboxEventSpec
 from app.services.outbox_repository import enqueue_outbox
 from app.services.report_projection import NO_REPORT_EVIDENCE
-from app.services.vendor_test_budget import (
-    LIVE_TEST_DAILY_SEGMENT_LIMIT,
-    SubmissionClaim,
-    SubmissionClaimStatus,
-    current_live_test_time,
-    live_test_usage_window,
-    settle_live_test_attempt,
-)
-from app.services.vendor_test_pause import pause_vendor_test_agent_stale
 from app.settings import Settings, get_settings
 from app.tasks import celery_app
 from app.tasks.send import (
     ChunkPayload,
+    SubmissionClaim,
+    SubmissionClaimStatus,
 )
 from app.tasks.send_repository_contracts import (
     SendAttemptDependencies,
@@ -155,45 +146,14 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
 
     async def is_paused(self, lane: str) -> bool:
         critical = await self.redis.mget(["queue:paused:realtime", "queue:paused:bulk"])
-        if any(value is not None for value in critical):
-            return True
-        agent_stale = (
-            await self.redis.get("queue:paused:vendor-test-agent-stale:realtime"),
-            await self.redis.get("queue:paused:vendor-test-agent-stale:bulk"),
-        )
-        if any(value is not None for value in agent_stale):
-            return True
-        daily = await self.redis.get(f"queue:paused:vendor-test-daily:{lane}")
-        return daily is not None
-
-    async def pause_daily_limit(
-        self,
-        lane: str,
-        reset_at: datetime,
-        *,
-        now: datetime | None = None,
-    ) -> None:
-        """设置独立的日上限暂停键，不触碰 critical/manual 暂停。"""
-
-        current = now or datetime.now(UTC)
-        ttl = max(1, math.ceil((reset_at - current).total_seconds()))
-        await self.redis.set(
-            f"queue:paused:vendor-test-daily:{lane}",
-            "daily_limit",
-            ex=ttl,
-        )
-
-    async def pause_control_agent_stale(self) -> None:
-        """设置独立 critical pause，绝不覆盖厂商、人工或每日暂停键。"""
-
-        await pause_vendor_test_agent_stale(self.redis)
+        return any(value is not None for value in critical)
 
     async def release_unsent(self, chunk_id: int) -> None:
         """确认尚未调用厂商时把 submitting 放回 retrying，允许自动重试。"""
 
         engine = self._engine()
         async with engine.begin() as connection:
-            released = await connection.execute(
+            await connection.execute(
                 text(
                     """
                         UPDATE sms_chunk SET status='retrying',
@@ -205,15 +165,13 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                 ),
                 {"id": chunk_id},
             )
-            if released.scalar_one_or_none() is not None:
-                await settle_live_test_attempt(connection, chunk_id, "released")
 
     async def release_control_claim(self, chunk_id: int) -> None:
         """厂商调用前状态失效时释放占额，分片保持可重试。"""
 
         engine = self._engine()
         async with engine.begin() as connection:
-            released = await connection.execute(
+            await connection.execute(
                 text(
                     """
                         UPDATE sms_chunk SET status='retrying',vendor_code=NULL,
@@ -225,8 +183,6 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                 ),
                 {"id": chunk_id},
             )
-            if released.scalar_one_or_none() is not None:
-                await settle_live_test_attempt(connection, chunk_id, "released")
 
     @staticmethod
     async def _enqueue_chunk_ready(
@@ -297,147 +253,13 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
         self,
         chunk_id: int,
         expected_retry_count: int,
-        segments: int,
-        *,
-        enforce_live_test_budget: bool,
     ) -> SubmissionClaim:
-        """原子锁定分片，并在真实联调时同时预留当日计费条。"""
+        """原子锁定分片；CAS 未命中表示已被其他执行者处理。"""
 
-        if segments < 1:
-            raise ValueError("segments must be positive")
-        if not enforce_live_test_budget:
-            claimed = await self.mark_submitting(chunk_id, expected_retry_count)
-            return SubmissionClaim(
-                SubmissionClaimStatus.CLAIMED if claimed else SubmissionClaimStatus.STALE
-            )
-
-        engine = self._engine()
-        async with engine.begin() as connection:
-            if bool(getattr(self.settings, "vendor_live_test", False)):
-                payload = await self._payload(connection, chunk_id)
-                if payload.denied_recipient_count:
-                    return SubmissionClaim(SubmissionClaimStatus.STALE)
-            chunk_result = await connection.execute(
-                text(
-                    """
-                        SELECT c.id,c.batch_id,c.vendor_attempt_count
-                        FROM sms_chunk c JOIN sms_batch b ON b.id=c.batch_id
-                        WHERE c.id=:id
-                          AND c.status IN ('pending','retrying')
-                          AND c.retry_count=:expected_retry_count
-                          AND b.status IN ('queued','sending')
-                          AND (c.retry_not_before IS NULL OR c.retry_not_before<=now())
-                        FOR UPDATE OF c
-                        """
-                ),
-                {"id": chunk_id, "expected_retry_count": expected_retry_count},
-            )
-            chunk = chunk_result.mappings().one_or_none()
-            if chunk is None:
-                return SubmissionClaim(SubmissionClaimStatus.STALE)
-
-            batch_status = await connection.execute(
-                text("SELECT status FROM sms_batch WHERE id=:id FOR UPDATE"),
-                {"id": int(chunk["batch_id"])},
-            )
-            if batch_status.scalar_one_or_none() not in {"queued", "sending"}:
-                return SubmissionClaim(SubmissionClaimStatus.STALE)
-
-            attempt_no = int(chunk["vendor_attempt_count"]) + 1
-            budget = await self._reserve_submission_budget(
-                connection, chunk_id, segments, attempt_no
-            )
-            if budget.status is not SubmissionClaimStatus.CLAIMED:
-                return budget
-            transition = await connection.execute(
-                text("""
-                    UPDATE sms_chunk SET status='submitting',submitting_since=now(),
-                      retry_not_before=NULL,vendor_attempt_count=vendor_attempt_count+1
-                    WHERE id=:id AND status IN ('pending','retrying')
-                      AND retry_count=:expected_retry_count RETURNING id
-                """),
-                {"id": chunk_id, "expected_retry_count": expected_retry_count},
-            )
-            if transition.scalar_one_or_none() is None:
-                raise RuntimeError("submission claim lost cas")
-            await connection.execute(
-                text("UPDATE sms_batch SET updated_at=now() WHERE id=:batch_id"),
-                {"batch_id": int(chunk["batch_id"])},
-            )
-            return SubmissionClaim(SubmissionClaimStatus.CLAIMED)
-
-    async def _reserve_submission_budget(
-        self,
-        connection: AsyncConnection,
-        chunk_id: int,
-        segments: int,
-        attempt_no: int,
-    ) -> SubmissionClaim:
-        """在已锁定分片的同一事务，为每个真实联调 attempt 独立预留预算。"""
-
-        if segments < 1 or attempt_no < 1:
-            raise ValueError("submission budget identity invalid")
-        usage_date, reset_at = live_test_usage_window(current_live_test_time())
-        await connection.execute(
-            text(
-                """
-                INSERT INTO vendor_test_daily_usage(usage_date)
-                VALUES (:usage_date) ON CONFLICT (usage_date) DO NOTHING
-                """
-            ),
-            {"usage_date": usage_date},
+        claimed = await self.mark_submitting(chunk_id, expected_retry_count)
+        return SubmissionClaim(
+            SubmissionClaimStatus.CLAIMED if claimed else SubmissionClaimStatus.STALE
         )
-        usage_result = await connection.execute(
-            text(
-                """
-                SELECT in_flight_segments,confirmed_segments,uncertain_segments
-                FROM vendor_test_daily_usage
-                WHERE usage_date=:usage_date FOR UPDATE
-                """
-            ),
-            {"usage_date": usage_date},
-        )
-        usage = usage_result.mappings().one()
-        total = sum(
-            int(usage[key])
-            for key in (
-                "in_flight_segments",
-                "confirmed_segments",
-                "uncertain_segments",
-            )
-        )
-        if total + segments > LIVE_TEST_DAILY_SEGMENT_LIMIT:
-            return SubmissionClaim(SubmissionClaimStatus.DAILY_LIMIT, reset_at)
-
-        await connection.execute(
-            text(
-                """
-                INSERT INTO vendor_test_send_attempt(
-                  usage_date,chunk_id,attempt_no,segments,status
-                ) VALUES (
-                  :usage_date,:chunk_id,:attempt_no,:segments,'reserved'
-                )
-                """
-            ),
-            {
-                "usage_date": usage_date,
-                "chunk_id": chunk_id,
-                "attempt_no": int(attempt_no),
-                "segments": segments,
-            },
-        )
-        await connection.execute(
-            text(
-                """
-                UPDATE vendor_test_daily_usage SET
-                  in_flight_segments=in_flight_segments+:segments,
-                  updated_at=now()
-                WHERE usage_date=:usage_date
-                """
-            ),
-            {"usage_date": usage_date, "segments": segments},
-        )
-        return SubmissionClaim(SubmissionClaimStatus.CLAIMED)
 
     async def mark_submitted(self, chunk_id: int, task_id: str) -> None:
         task_pseudonym = vendor_identifier_pseudonym(
@@ -460,7 +282,6 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
             )
             if submitted.scalar_one_or_none() is None:
                 return
-            await settle_live_test_attempt(connection, chunk_id, "confirmed")
             await connection.execute(
                 text(
                     "UPDATE sms_message SET status='sent' WHERE chunk_id=:id "
@@ -560,108 +381,16 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
             transitioned_batch_id = failed.scalar_one_or_none()
             if transitioned_batch_id is None:
                 return
-            await settle_live_test_attempt(connection, chunk_id, "released")
             await self._finalize_failed_messages(
                 connection,
                 chunk_id,
                 int(transitioned_batch_id),
             )
-
-    async def reject_disallowed_recipient(
-        self,
-        chunk_id: int,
-        denied_count: int,
-    ) -> None:
-        """在未创建厂商 attempt 前终结不符合真实联调白名单的分片。"""
-
-        if denied_count < 1:
-            raise ValueError("denied_count must be positive")
-        engine = self._engine()
-        async with engine.begin() as connection:
-            candidate = await connection.execute(
-                text(
-                    """
-                        SELECT c.batch_id FROM sms_chunk c
-                        JOIN sms_batch b ON b.id=c.batch_id
-                        WHERE c.id=:id
-                          AND c.status IN ('pending','retrying','failover_pending')
-                          AND b.status IN ('queued','sending')
-                        FOR UPDATE OF c
-                        """
-                ),
-                {"id": chunk_id},
-            )
-            batch_id = candidate.scalar_one_or_none()
-            if batch_id is None:
-                return
-            batch_status = await connection.execute(
-                text("SELECT status FROM sms_batch WHERE id=:id FOR UPDATE"),
-                {"id": int(batch_id)},
-            )
-            if batch_status.scalar_one_or_none() not in {"queued", "sending"}:
-                return
-            transitioned = await connection.execute(
-                text(
-                    """
-                        UPDATE sms_chunk SET status='failed',vendor_code=NULL,
-                          vendor_msg=:message,submitting_since=NULL,retry_not_before=NULL
-                        WHERE id=:id AND status IN ('pending','retrying','failover_pending')
-                        RETURNING batch_id
-                        """
-                ),
-                {
-                    "id": chunk_id,
-                    "message": (f"live-test recipient denied: count={denied_count}"),
-                },
-            )
-            transitioned_batch_id = transitioned.scalar_one_or_none()
-            if transitioned_batch_id is None:
-                return
-            await self._finalize_failed_messages(
-                connection,
-                chunk_id,
-                int(transitioned_batch_id),
-            )
-
-    async def defer_daily_limit(
-        self,
-        chunk_id: int,
-        lane: str,
-        reset_at: datetime,
-    ) -> None:
-        """日预算满时保持未下发语义，并仅调度到下一上海自然日。"""
-
-        engine = self._engine()
-        async with engine.begin() as connection:
-            result = await connection.execute(
-                text(
-                    """
-                        UPDATE sms_chunk c SET status=CASE WHEN c.status='failover_pending'
-                          THEN 'failover_pending' ELSE 'retrying' END,vendor_code=NULL,
-                          retry_not_before=:reset_at
-                        FROM sms_batch b
-                        WHERE c.id=:id AND c.status IN ('pending','retrying','failover_pending')
-                          AND b.id=c.batch_id AND b.status IN ('queued','sending')
-                        RETURNING b.category
-                        """
-                ),
-                {"id": chunk_id, "reset_at": reset_at},
-            )
-            category = result.scalar_one_or_none()
-        if category is not None:
-            actual_lane = self.lane_for(str(category))
-            if actual_lane != lane:
-                raise RuntimeError("chunk lane changed before daily-limit deferral")
-            countdown = max(
-                1,
-                math.ceil((reset_at - current_live_test_time()).total_seconds()),
-            )
-            await self._enqueue_retry(chunk_id, actual_lane, countdown)
 
     async def mark_uncertain(self, chunk_id: int) -> None:
         engine = self._engine()
         async with engine.begin() as connection:
-            transitioned = await connection.execute(
+            await connection.execute(
                 text(
                     "UPDATE sms_chunk SET status='uncertain',"
                     "uncertain_since=COALESCE(submitting_since,now()),"
@@ -670,8 +399,6 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                 ),
                 {"id": chunk_id},
             )
-            if transitioned.scalar_one_or_none() is not None:
-                await settle_live_test_attempt(connection, chunk_id, "uncertain")
 
     async def schedule_retry(
         self,
@@ -703,7 +430,6 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
             category = changed.scalar_one_or_none()
             if category is None:
                 return False
-            await settle_live_test_attempt(connection, chunk_id, "released")
         lane = self.lane_for(str(category))
         await self._enqueue_retry(chunk_id, lane, delay_s)
         return True
@@ -733,9 +459,7 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                 },
             )
             category = result.scalar_one_or_none()
-            if category is not None:
-                await settle_live_test_attempt(connection, chunk_id, "released")
-            else:
+            if category is None:
                 candidate = await connection.execute(
                     text(
                         "SELECT batch_id FROM sms_chunk "
@@ -761,11 +485,6 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                     )
                     transitioned_batch_id = failed.scalar_one_or_none()
                     if transitioned_batch_id is not None:
-                        await settle_live_test_attempt(
-                            connection,
-                            chunk_id,
-                            "released",
-                        )
                         await self._finalize_failed_messages(
                             connection,
                             chunk_id,
@@ -792,7 +511,6 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
                 text("UPDATE sms_batch SET status='balance_blocked' WHERE id=:id"),
                 {"id": batch_id},
             )
-            await settle_live_test_attempt(connection, chunk_id, "released")
 
     async def pause_blocked(self, chunk_id: int, code: int) -> None:
         """熔断码把在途 chunk 回退 retrying，恢复队列后由 reconcile 重投。"""
@@ -809,7 +527,6 @@ class SqlChunkStore(ChunkPayloadMixin, VendorFailoverMixin):
             )
             if transitioned.scalar_one_or_none() is None:
                 return
-            await settle_live_test_attempt(connection, chunk_id, "released")
 
     async def pause_queues(self, code: int) -> None:
         result = await self.redis.eval(

@@ -15,7 +15,7 @@ secret 值、内部地址或拓扑详情。
 
 ## 环境模式
 
-- `development`：仅单机开发/真实联调控制台，必须 `DEBUG=1 AUTH_MOCK=1`。
+- `development`：仅单机开发，必须 `DEBUG=1 AUTH_MOCK=1 VENDOR_MOCK=1`。
 - `test`：仅自动化门禁，必须 `DEBUG=1 AUTH_MOCK=1 VENDOR_MOCK=1`。
 - `production`：必须 `DEBUG=0 AUTH_MOCK=0 VENDOR_MOCK=0`，厂商地址必须
   HTTPS，LDAP CA 必须可读；Swagger、ReDoc、OpenAPI 全部关闭。

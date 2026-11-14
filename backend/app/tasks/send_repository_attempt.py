@@ -16,10 +16,6 @@ from app.services.report_projection import NO_REPORT_EVIDENCE
 from app.services.send_db_errors import RolledBackSendDeadlock, send_db_reason, send_sqlstate
 from app.services.send_db_events import observe_send_db_failure
 from app.services.send_locks import lock_send_context
-from app.services.vendor_test_budget import (
-    SubmissionClaim,
-    settle_live_test_attempt,
-)
 from app.settings import Settings
 from app.tasks.send import (
     ChunkPayload,
@@ -87,14 +83,6 @@ class VendorAttemptStoreMixin:
         ) -> None: ...
 
         async def _payload(self, connection: AsyncConnection, chunk_id: int) -> ChunkPayload: ...
-
-        async def _reserve_submission_budget(
-            self,
-            connection: AsyncConnection,
-            chunk_id: int,
-            segments: int,
-            attempt_no: int,
-        ) -> SubmissionClaim: ...
 
         async def _finalize_failed_messages(
             self,
@@ -421,7 +409,6 @@ class VendorAttemptStoreMixin:
                     )
                     if submitted.scalar_one_or_none() is None:
                         raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
-                    await settle_live_test_attempt(connection, chunk_id, "confirmed")
                     await connection.execute(
                         text(
                             "UPDATE sms_message SET status='sent' WHERE chunk_id=:id "
@@ -441,7 +428,6 @@ class VendorAttemptStoreMixin:
                     )
                     if transitioned.scalar_one_or_none() is None:
                         raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
-                    await settle_live_test_attempt(connection, chunk_id, "uncertain")
                 elif result in {"retry_scheduled", "delayed"}:
                     delay_s = int(retry_delay_s or 1)
                     if result == "retry_scheduled":
@@ -488,7 +474,6 @@ class VendorAttemptStoreMixin:
                     category = changed.scalar_one_or_none()
                     if category is None:
                         raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
-                    await settle_live_test_attempt(connection, chunk_id, "released")
                     enqueue = (chunk_id, str(category), delay_s)
                 elif result == "paused":
                     if balance_blocked:
@@ -502,7 +487,6 @@ class VendorAttemptStoreMixin:
                         )
                         if transitioned.scalar_one_or_none() is None:
                             raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
-                        await settle_live_test_attempt(connection, chunk_id, "released")
                         await connection.execute(
                             text("UPDATE sms_batch SET status='balance_blocked' WHERE id=:id"),
                             {"id": int(batch_id or chunk["batch_id"])},
@@ -518,7 +502,6 @@ class VendorAttemptStoreMixin:
                         )
                         if transitioned.scalar_one_or_none() is None:
                             raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
-                        await settle_live_test_attempt(connection, chunk_id, "released")
                 elif result in {"rejected", "failed"}:
                     persisted = await self._apply_reject_or_fail(
                         connection,
@@ -716,7 +699,6 @@ class VendorAttemptStoreMixin:
             )
             if updated.scalar_one_or_none() is None:
                 raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
-            await settle_live_test_attempt(connection, chunk_id, "released")
             await self._enqueue_chunk_ready(
                 connection,
                 [chunk_id],
@@ -743,7 +725,6 @@ class VendorAttemptStoreMixin:
         transitioned_batch_id = failed.scalar_one_or_none()
         if transitioned_batch_id is None:
             raise _FinalizeRollback(FinalizeReport(FinalizeKind.LOST_CAS, result))
-        await settle_live_test_attempt(connection, chunk_id, "released")
         await self._finalize_failed_messages(
             connection,
             chunk_id,

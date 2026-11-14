@@ -35,7 +35,6 @@ from app.services.pipeline import (
     AcceptCommitUnknown,
     AllFiltered,
     BatchResponse,
-    ConsentRequired,
     IdempotencyConflict,
     InFlightLimitExceeded,
     InFlightQueryUnavailable,
@@ -45,7 +44,6 @@ from app.services.pipeline import (
     SendRequest,
     SensitiveWord,
     StoredBatch,
-    VendorTestConsoleOnly,
 )
 from app.services.pipeline_repository import IDEMPOTENCY_LIVE_SQL
 from app.services.send_admission import SendAdmissionRejected
@@ -65,7 +63,6 @@ from app.services.send_inflight import (
 )
 from app.services.usage_ledger_common import UsageProjectionUnavailable, UsageReservation
 from app.services.usage_subject import UsageSubject
-from app.services.vendor_test_guard import VendorTestRecipientDenied
 
 ADMIN = SecurityPrincipal(1, 10, "admin", "平台部", "admin")
 OPERATOR = SecurityPrincipal(2, 20, "operator01", "平台部", "operator")
@@ -563,7 +560,6 @@ async def test_controlled_api_preauthorization_limits_once_and_is_reused_by_acce
         publisher=FakePublisher(),
         config=PipelineConfig(),
         acceptance_limiter=limiter,  # type: ignore[arg-type]
-        vendor_test_console_only=True,
         admission_guard=admission,  # type: ignore[arg-type]
     )
     app = ApiAppContext(
@@ -576,22 +572,14 @@ async def test_controlled_api_preauthorization_limits_once_and_is_reused_by_acce
 
     authorization = await pipeline.preauthorize(app, "notice")
     assert isinstance(authorization, AcceptancePreauthorization)
-    service_crypto = crypto()
-    protected = service_crypto.protect_phone(
-        "13800138000",
-        table="vendor_test_recipient",
-    )
     await pipeline.accept(
         app,
         SendRequest(
             category="notice",
-            mobiles=(),
+            mobiles=("13800138000",),
             content="维护通知",
             biz_id="api-uat-preauth",
             is_test=True,
-            protected_mobiles=(protected,),
-            protected_hmac_candidates=tuple(service_crypto.hmac_candidates("13800138000").items()),
-            vendor_test_uat=True,
         ),
         preauthorization=authorization,
     )
@@ -632,156 +620,6 @@ async def test_controlled_api_preauthorization_limits_before_category_denial() -
         await pipeline.preauthorize(app, "notice")
 
     assert limiter.calls == [(7, 9)]
-
-
-@pytest.mark.asyncio
-async def test_console_uat_reprotects_with_current_key_and_all_blacklist_candidates() -> None:
-    current_crypto = rotated_crypto()
-    historical_hmac = current_crypto.phone_hmac("13900000001", 1)
-    store = HistoricalBlacklistStore(historical_hmac)
-    pipeline = SendPipeline(
-        usage_ledger=FakeUsageLedger(),
-        store=store,
-        idempotency=FakeIdempotency(),
-        crypto=current_crypto,
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-        vendor_test_console_only=True,
-    )
-    with pytest.raises(AllFiltered):
-        await pipeline.accept(
-            ApiAppContext(7, "uat-app", "平台部", frozenset({"notice"})),
-            SendRequest(
-                "notice",
-                ("13900000001",),
-                content="维护通知",
-                channel="web",
-                actor=ADMIN,
-                is_test=True,
-                vendor_test_uat=True,
-            ),
-        )
-
-    assert store.seen == set(current_crypto.hmac_candidates("13900000001").values())
-
-
-@pytest.mark.asyncio
-async def test_live_mode_blocks_plain_send_and_uat_market_still_requires_consent() -> None:
-    pipeline = SendPipeline(
-        usage_ledger=FakeUsageLedger(),
-        store=FakeStore(),
-        idempotency=FakeIdempotency(),
-        crypto=crypto(),
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-        vendor_test_console_only=True,
-    )
-    app = ApiAppContext(7, "uat-app", "平台部", frozenset({"notice", "market"}))
-
-    with pytest.raises(VendorTestConsoleOnly):
-        await pipeline.accept(
-            app,
-            SendRequest("notice", ("13800138000",), content="维护通知"),
-        )
-    with pytest.raises(ConsentRequired):
-        await pipeline.accept(
-            app,
-            SendRequest(
-                "market",
-                (),
-                content="活动",
-                channel="web",
-                is_test=True,
-                protected_mobiles=(ProtectedPhone(b"cipher", "a" * 64, "mask", 1),),
-                protected_hmac_candidates=((1, "a" * 64),),
-                vendor_test_uat=True,
-            ),
-        )
-
-
-@pytest.mark.asyncio
-async def test_live_test_guard_rejects_before_crypto_quota_storage_or_publish() -> None:
-    class RejectingGuard:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, ...]] = []
-
-        def require_allowed(self, phones: list[str]) -> None:
-            self.calls.append(tuple(phones))
-            raise VendorTestRecipientDenied(1)
-
-    class UnexpectedCrypto:
-        def protect_phone(self, _phone: str) -> None:
-            raise AssertionError("白名单拒绝后不得保护并持久化手机号")
-
-    class UnexpectedLimiter:
-        async def check(self, **_values: object) -> None:
-            raise AssertionError("白名单拒绝后不得写入应用限流状态")
-
-    guard = RejectingGuard()
-    store = FakeStore()
-    publisher = FakePublisher()
-    ledger = FakeUsageLedger()
-    pipeline = SendPipeline(
-        usage_ledger=ledger,
-        store=store,
-        idempotency=FakeIdempotency(),
-        crypto=UnexpectedCrypto(),  # type: ignore[arg-type]
-        publisher=publisher,
-        config=PipelineConfig(),
-        recipient_guard=guard,
-        acceptance_limiter=UnexpectedLimiter(),  # type: ignore[arg-type]
-    )
-
-    with pytest.raises(VendorTestRecipientDenied) as captured:
-        await pipeline.accept(
-            ApiAppContext(7, "app", "平台部", frozenset({"notice"})),
-            SendRequest(
-                "notice",
-                ["13800138000", "13900139000"],
-                content="维护通知",
-            ),
-        )
-
-    assert captured.value.denied_count == 1
-    assert guard.calls == [("13800138000", "13900139000")]
-    assert store.commands == []
-    assert ledger.quota == []
-    assert publisher.events == []
-
-
-@pytest.mark.asyncio
-async def test_idempotency_hit_does_not_recheck_or_resend_live_test_recipient() -> None:
-    class UnexpectedGuard:
-        def require_allowed(self, _phones: list[str]) -> None:
-            raise AssertionError("幂等命中只读取原批次，不重走真实发送链")
-
-    store = FakeStore()
-    app = ApiAppContext(7, "app", "平台部", frozenset({"notice"}))
-    request = SendRequest(
-        "notice",
-        ["13800138000"],
-        content="维护通知",
-        biz_id="existing-request",
-    )
-    policy = policy_for_category(request.category, app.allowed_categories)
-    pipeline = SendPipeline(
-        usage_ledger=FakeUsageLedger(),
-        store=store,
-        idempotency=FakeIdempotency("existing"),
-        crypto=crypto(),
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-        recipient_guard=UnexpectedGuard(),
-    )
-    pipeline.idempotency = FakeIdempotency(
-        "existing",
-        stored_request_hash=pipeline._request_hash(request, app, policy, key_version=1),
-    )
-
-    result = await pipeline.accept(app, request)
-
-    assert result.idempotent is True
-    assert store.commands == []
 
 
 @pytest.mark.asyncio
@@ -1404,42 +1242,6 @@ async def test_web_idempotency_uses_web_scope_and_same_hash_returns_original() -
     assert result.idempotent is True
     assert idempotency.lookup_calls == [(IdempotencyScope("account", "1:10"), "web-biz-1")]
     assert store.commands == []
-
-
-@pytest.mark.asyncio
-async def test_console_uat_idempotency_is_bound_to_stable_web_principal() -> None:
-    app = ApiAppContext(7, "uat-app", "平台部", frozenset({"notice"}))
-    request = SendRequest(
-        "notice",
-        (),
-        content="维护通知",
-        biz_id="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
-        channel="web",
-        actor=ADMIN,
-        is_test=True,
-        protected_mobiles=(ProtectedPhone(b"cipher", "a" * 64, "138****8000", 1),),
-        protected_hmac_candidates=((1, "a" * 64),),
-        vendor_test_uat=True,
-    )
-    policy = policy_for_category(
-        request.category,
-        app.allowed_categories,
-        notice_blacklist=app.blacklist_check,
-    )
-    pipeline = SendPipeline(
-        usage_ledger=FakeUsageLedger(),
-        store=FakeStore(),
-        idempotency=FakeIdempotency(),
-        crypto=crypto(),
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-    )
-    request_hash = pipeline._request_hash(request, app, policy, key_version=1)
-    idempotency = FakeIdempotency("existing", stored_request_hash=request_hash)
-    pipeline.idempotency = idempotency
-
-    assert (await pipeline.accept(app, request)).idempotent is True
-    assert idempotency.lookup_calls == [(IdempotencyScope("account", "1:10"), request.biz_id)]
 
 
 @pytest.mark.asyncio
@@ -2244,65 +2046,6 @@ async def test_pipeline_historical_blacklist_filters_active_protected_phone() ->
 
 
 @pytest.mark.asyncio
-async def test_protected_uat_checks_all_hmac_aliases_and_uses_stable_frequency_key() -> None:
-    service_crypto = rotated_crypto()
-    candidates = service_crypto.hmac_candidates("13800138000")
-    protected = service_crypto.protect_phone(
-        "13800138000",
-        table="vendor_test_recipient",
-    )
-    store = HistoricalBlacklistStore(candidates[1])
-    ledger = FakeUsageLedger()
-    pipeline = SendPipeline(
-        usage_ledger=ledger,
-        store=store,
-        idempotency=FakeIdempotency(),
-        crypto=service_crypto,
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-    )
-
-    with pytest.raises(AllFiltered):
-        await pipeline.accept(
-            ApiAppContext(7, "app", "平台部", frozenset({"notice"})),
-            SendRequest(
-                "notice",
-                (),
-                content="维护通知",
-                protected_mobiles=(protected,),
-                protected_hmac_candidates=tuple(sorted(candidates.items())),
-                vendor_test_uat=True,
-            ),
-        )
-
-    assert store.seen == set(candidates.values())
-    assert ledger.started == []
-
-    clean_store = FakeStore()
-    clean_ledger = FakeUsageLedger()
-    clean_pipeline = SendPipeline(
-        usage_ledger=clean_ledger,
-        store=clean_store,
-        idempotency=FakeIdempotency(),
-        crypto=service_crypto,
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-    )
-    await clean_pipeline.accept(
-        ApiAppContext(7, "app", "平台部", frozenset({"verify"})),
-        SendRequest(
-            "verify",
-            (),
-            content="维护通知",
-            protected_mobiles=(protected,),
-            protected_hmac_candidates=tuple(sorted(candidates.items())),
-            vendor_test_uat=True,
-        ),
-    )
-    assert clean_ledger.frequency[0]["phone_hmac"] == candidates[1]
-
-
-@pytest.mark.asyncio
 async def test_plain_send_uses_same_oldest_retained_hmac_for_frequency() -> None:
     service_crypto = rotated_crypto()
     ledger = FakeUsageLedger()
@@ -3083,35 +2826,7 @@ async def test_replay_if_present_consumes_replay_limit_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_replay_if_present_rewrites_uat_plaintext_identity() -> None:
-    app = ApiAppContext(7, "app", "研发部", frozenset({"notice"}))
-    request = SendRequest(
-        "notice",
-        ["13800138000"],
-        content="通知",
-        biz_id="replay-uat",
-        vendor_test_uat=True,
-    )
-    idempotency = FakeIdempotency(existing="existing")
-    pipeline = SendPipeline(
-        usage_ledger=FakeUsageLedger(),
-        store=FakeStore(),
-        idempotency=idempotency,
-        crypto=crypto(),
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-    )
-    rewritten = pipeline._with_uat_replay_identity(request)
-    policy = policy_for_category("notice", app.allowed_categories)
-    idempotency.stored_request_hash = pipeline._request_hash(rewritten, app, policy, key_version=1)
-    replayed = await pipeline.replay_if_present(app, request)
-    assert replayed is not None
-    assert rewritten.protected_mobiles
-    assert rewritten.mobiles == ()
-
-
-@pytest.mark.asyncio
-async def test_uat_recovery_fingerprint_preserves_key_version_across_acceptance() -> None:
+async def test_recovery_fingerprint_preserves_key_version_across_acceptance() -> None:
     service_crypto = rotated_crypto()
     store = FakeStore()
     idem = FakeIdempotency()
@@ -3126,15 +2841,10 @@ async def test_uat_recovery_fingerprint_preserves_key_version_across_acceptance(
     app = ApiAppContext(7, "uat", "平台部", frozenset({"notice"}))
     request = SendRequest(
         "notice",
-        (),
+        ("13800138000",),
         content="通知",
         biz_id="uat-key-rotation",
         is_test=True,
-        protected_mobiles=(
-            service_crypto.protect_phone("13800138000", table="vendor_test_recipient"),
-        ),
-        protected_hmac_candidates=tuple(service_crypto.hmac_candidates("13800138000").items()),
-        vendor_test_uat=True,
     )
     policy = policy_for_category("notice", app.allowed_categories)
     old_hash = pipeline._request_hash(request, app, policy, key_version=1)
