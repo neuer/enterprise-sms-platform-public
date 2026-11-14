@@ -175,48 +175,9 @@ def check_vendor_live_invariants() -> None:
         'alert_level="crit"',
     )
 
-    schema_source = require_fragments(
-        ROOT / "schema.sql",
-        "CREATE TABLE vendor_test_daily_usage",
-        "CREATE TABLE vendor_test_send_attempt",
-        "CREATE TABLE vendor_test_recipient_hmac_alias",
-        "PRIMARY KEY (recipient_id, hmac_key_version)",
-        "UNIQUE (hmac_key_version, hmac_digest)",
-    )
-    for table in ("vendor_test_daily_usage", "vendor_test_send_attempt"):
-        table_body = schema_source.split(f"CREATE TABLE {table}", maxsplit=1)[-1].split(
-            ";", maxsplit=1
-        )[0]
-        for forbidden_field in (
-            "phone_enc",
-            "phone_hmac",
-            "phone_mask",
-            "mobile",
-            "content",
-            "secret",
-        ):
-            if forbidden_field in table_body.lower():
-                fail(
-                    ROOT / "schema.sql",
-                    f"{table} 禁止控制面 PII/凭据字段 {forbidden_field}",
-                )
-
-    operation_table = schema_source.split("CREATE TABLE vendor_test_operation", maxsplit=1)[
-        -1
-    ].split(");", maxsplit=1)[0]
-    for forbidden_field in (
-        "phone",
-        "mobile",
-        "content",
-        "secret",
-        "payload",
-        "request_body",
-    ):
-        if forbidden_field in operation_table.lower():
-            fail(
-                ROOT / "schema.sql",
-                f"vendor_test_operation 禁止敏感载荷字段 {forbidden_field}",
-            )
+    schema_source = (ROOT / "schema.sql").read_text(encoding="utf-8")
+    if re.search(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?vendor_test_", schema_source, re.I):
+        fail(ROOT / "schema.sql", "真实联调专用表已退役，禁止恢复 vendor_test_* 库表")
 
     compose = require_fragments(
         ROOT / "deploy/docker-compose.yml",

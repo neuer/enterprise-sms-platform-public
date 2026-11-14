@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import patch
 from uuid import uuid4
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -279,6 +280,45 @@ exec /usr/local/bin/docker-entrypoint.sh postgres
 def catalog(container: str, database: str) -> tuple[str, ...]:
     output = docker_psql(container, database, CATALOG_QUERY)
     return tuple(line for line in output.splitlines() if line)
+
+
+def verify_vendor_test_tables_retired(container: str, database: str) -> None:
+    """退役后不得残留联调专用表、索引或序列。"""
+    remaining = docker_psql(
+        container,
+        database,
+        "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
+        "WHERE n.nspname='public' AND c.relname ~ '^vendor_test_'",
+    ).strip()
+    if remaining != "0":
+        raise RuntimeError("retired vendor test relations remain")
+
+
+def seed_vendor_test_retirement(container: str, database: str) -> None:
+    """为五张旧表植入合成记录，验证删表顺序且保留普通短信事实。"""
+    docker_psql(
+        container,
+        database,
+        """
+        INSERT INTO sms_batch(id,batch_no,channel,dept,display_content_enc,send_content_enc,status)
+          VALUES(139,repeat('e',32),'web','migration',decode('0001','hex'),
+                 decode('0001','hex'),'completed');
+        INSERT INTO sms_chunk(id,batch_id,chunk_no,custom_id,phone_count,status)
+          VALUES(139,139,1,repeat('f',32),1,'submitted');
+        INSERT INTO vendor_test_daily_usage(usage_date,confirmed_segments)
+          VALUES('2026-11-14',1);
+        INSERT INTO vendor_test_send_attempt(
+          usage_date,chunk_id,attempt_no,segments,status,settled_at)
+          VALUES('2026-11-14',139,1,1,'confirmed',now());
+        INSERT INTO vendor_test_recipient(
+          id,label,phone_enc,phone_hmac,phone_mask,key_version,created_by)
+          VALUES(139,'migration',decode('0001','hex'),repeat('a',64),'synthetic',1,'migration');
+        INSERT INTO vendor_test_recipient_hmac_alias(recipient_id,hmac_key_version,hmac_digest)
+          VALUES(139,1,repeat('a',64));
+        INSERT INTO vendor_test_operation(id,operation_type,actor,status,completed_at)
+          VALUES(gen_random_uuid(),'pause','migration','succeeded',now());
+        """,
+    )
 
 
 def verify_vendor_test_budget_privileges(container: str, database: str) -> None:
@@ -1362,16 +1402,78 @@ def run_check() -> None:
                 "DATA_HMAC_KEY_FILE": str(DATA_HMAC_SECRET),
             }
         )
+        retirement_parent = "0138_unmatched_report_time"
+        run(
+            [alembic, "-c", str(BACKEND / "alembic.ini"), "upgrade", retirement_parent],
+            cwd=BACKEND,
+            env=migration_env,
+        )
+        verify_vendor_test_budget_privileges(container, "alembic_build")
+        verify_vendor_test_console_privileges(container, "alembic_build")
+        # 历史 Outbox 降级合同在删表之前的独立库验证，不能越过不可逆迁移。
+        docker_psql(
+            container, "postgres", "CREATE DATABASE legacy_outbox_build TEMPLATE alembic_build"
+        )
+        outbox_env = dict(migration_env, DB_NAME="legacy_outbox_build")
+        seed_vendor_test_retirement(container, "alembic_build")
+        docker_psql(
+            container, "alembic_build",
+            "CREATE TABLE retirement_dependency (recipient_id bigint "
+            "REFERENCES vendor_test_recipient(id));"
+            "INSERT INTO retirement_dependency VALUES(139)",
+        )
+        blocked_dependency = run(
+            [alembic, "-c", str(BACKEND / "alembic.ini"), "upgrade", "head"],
+            cwd=BACKEND, env=migration_env, check=False,
+        )
+        if blocked_dependency.returncode == 0 or "depend" not in (
+            blocked_dependency.stdout + blocked_dependency.stderr
+        ).lower():
+            raise RuntimeError("vendor test retirement did not reject an unknown dependency")
+        preserved = docker_psql(
+            container, "alembic_build",
+            "SELECT (SELECT count(*) FROM vendor_test_recipient_hmac_alias),"
+            "(SELECT count(*) FROM vendor_test_recipient),"
+            "(SELECT version_num FROM alembic_version)",
+        ).strip()
+        if preserved != f"1|1|{retirement_parent}":
+            raise RuntimeError("failed vendor test retirement did not roll back its changes")
+        docker_psql(container, "alembic_build", "DROP TABLE retirement_dependency")
         run(
             [alembic, "-c", str(BACKEND / "alembic.ini"), "upgrade", "head"],
             cwd=BACKEND,
             env=migration_env,
         )
+        # 直接重放同一 revision 的 DDL，验证已经退役时仍可安全重试。
+        retirement = importlib.import_module("migrations.versions.0139_retire_vendor_test_tables")
+        with patch.object(
+            retirement, "op",
+            SimpleNamespace(execute=lambda sql: docker_psql(container, "alembic_build", sql)),
+        ):
+            retirement.upgrade()
+        retained = docker_psql(
+            container, "alembic_build",
+            "SELECT (SELECT count(*) FROM sms_batch WHERE id=139),"
+            "(SELECT count(*) FROM sms_chunk WHERE id=139 AND status='submitted')",
+        ).strip()
+        if retained != "1|1":
+            raise RuntimeError("vendor test retirement damaged ordinary message facts")
+        blocked_retirement = run(
+            [alembic, "-c", str(BACKEND / "alembic.ini"), "downgrade", retirement_parent],
+            cwd=BACKEND, env=migration_env, check=False,
+        )
+        if blocked_retirement.returncode == 0 or (
+            "retired vendor test data cannot be downgraded"
+            not in blocked_retirement.stdout + blocked_retirement.stderr
+        ):
+            raise RuntimeError("vendor test retirement downgrade was not rejected")
         head_revision = docker_psql(
             container,
             "alembic_build",
             "SELECT version_num FROM alembic_version",
         ).strip()
+        if head_revision != retirement.revision:
+            raise RuntimeError("failed retirement downgrade changed the schema revision")
         compare_catalogs(catalog(container, "schema_build"), catalog(container, "alembic_build"))
         verify_lifecycle_write_boundaries(container, "schema_build")
         verify_lifecycle_write_boundaries(container, "alembic_build")
@@ -1384,8 +1486,7 @@ def run_check() -> None:
         verify_runtime_role_matrix(container, "schema_build")
         verify_runtime_role_matrix(container, "alembic_build")
         for database in ("schema_build", "alembic_build"):
-            verify_vendor_test_budget_privileges(container, database)
-            verify_vendor_test_console_privileges(container, database)
+            verify_vendor_test_tables_retired(container, database)
             verify_outbox_privileges(container, database)
             verify_auth_session_policy_privileges(container, database)
             verify_worker_lease_privileges(container, database)
@@ -1394,7 +1495,7 @@ def run_check() -> None:
             verify_callback_revocation_boundary(container, database)
         docker_psql(
             container,
-            "alembic_build",
+            "legacy_outbox_build",
             """
             INSERT INTO outbox_event(
               id,dedup_key,event_type,aggregate_type,aggregate_id,
@@ -1415,7 +1516,7 @@ def run_check() -> None:
                 "0026_stable_principal_ids",
             ],
             cwd=BACKEND,
-            env=migration_env,
+            env=outbox_env,
             check=False,
         )
         blocked_output = blocked_outbox_downgrade.stdout + blocked_outbox_downgrade.stderr
@@ -1426,7 +1527,7 @@ def run_check() -> None:
             raise RuntimeError("unfinished outbox downgrade was not rejected")
         preserved_outbox = docker_psql(
             container,
-            "alembic_build",
+            "legacy_outbox_build",
             """
             SELECT
               (to_regclass('public.outbox_event') IS NOT NULL)::int,
@@ -1434,13 +1535,13 @@ def run_check() -> None:
               (SELECT version_num FROM alembic_version)
             """,
         ).strip()
-        if preserved_outbox != f"1|1|{head_revision}":
+        if preserved_outbox != f"1|1|{retirement_parent}":
             raise RuntimeError(
                 f"failed outbox downgrade damaged current schema: {preserved_outbox}"
             )
         docker_psql(
             container,
-            "alembic_build",
+            "legacy_outbox_build",
             "DELETE FROM outbox_event WHERE dedup_key='migration-check:unfinished'",
         )
         run(
@@ -1452,11 +1553,11 @@ def run_check() -> None:
                 "0026_stable_principal_ids",
             ],
             cwd=BACKEND,
-            env=migration_env,
+            env=outbox_env,
         )
         missing_outbox = docker_psql(
             container,
-            "alembic_build",
+            "legacy_outbox_build",
             "SELECT (to_regclass('public.outbox_event') IS NULL)::int",
         ).strip()
         if missing_outbox != "1":
@@ -1464,11 +1565,11 @@ def run_check() -> None:
         run(
             [alembic, "-c", str(BACKEND / "alembic.ini"), "upgrade", "head"],
             cwd=BACKEND,
-            env=migration_env,
+            env=outbox_env,
         )
         compare_catalogs(
             catalog(container, "schema_build"),
-            catalog(container, "alembic_build"),
+            catalog(container, "legacy_outbox_build"),
         )
 
         approval_env = dict(migration_env)

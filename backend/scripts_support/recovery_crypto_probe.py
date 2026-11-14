@@ -87,7 +87,6 @@ def _packed_version(expression: str) -> str:
 
 
 PHONE_SPECS = (
-    ("vendor_test_recipient", "vendor_test_recipient", "id"),
     ("sms_message", "sms_message", "created_at,id"),
     # sms_reply 是 reply_event 的兼容投影，复制同一份绑定 reply_event 的密文。
     ("sms_reply", "reply_event", "created_at,id"),

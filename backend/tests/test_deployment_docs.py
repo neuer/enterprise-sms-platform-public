@@ -436,10 +436,9 @@ def test_backup_runbook_streams_encryption_and_verifies_isolated_restore() -> No
         "historical_ciphertext_validation",
         "crypto_probe_receipts.pre_migration",
         "post_migration",
-        "counts.encrypted_columns=17",
+        "counts.encrypted_columns=16",
         "counts.encrypted_rows=0",
         "app.callback_secret_enc",
-        "vendor_test_recipient.phone_enc",
         "not_applicable_empty",
         "performed",
     )

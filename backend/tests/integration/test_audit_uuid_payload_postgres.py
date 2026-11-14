@@ -76,10 +76,6 @@ async def principal(
                 {"id": created.account_id},
             )
             await connection.execute(
-                text("DELETE FROM vendor_test_operation WHERE actor_account_id=:id"),
-                {"id": created.account_id},
-            )
-            await connection.execute(
                 text("DELETE FROM auth_identity WHERE id=:id"), {"id": created.identity_id}
             )
             await connection.execute(

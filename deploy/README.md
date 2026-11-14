@@ -666,7 +666,7 @@ bash scripts/verify_data_images.sh
    证据归档后按批准的 VMware 流程整体退役恢复机。该证据通过前不得初始化管理员、创建
    API Key 或开放 T0 流量。
    此时生产 `sms_message` 应为 0；schema v2 恢复报告的
-   `crypto_probe_receipts.pre_migration`/`post_migration` 必须各自显示 17 个固定密文字段、
+   `crypto_probe_receipts.pre_migration`/`post_migration` 必须各自显示 16 个固定密文字段、
    `counts.encrypted_rows=0`、全部 `coverage.rows=0` 与 `status=not_applicable_empty`，绑定
    pre 的汇总检查也只能为 `not_applicable_empty`。这只作为**初始化前**空库结果，不能证明
    data AES/HMAC 能读取未来生产历史密文。首批最小 notice 形成事实后，必须在 3 天观察期内

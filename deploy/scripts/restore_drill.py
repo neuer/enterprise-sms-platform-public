@@ -66,7 +66,6 @@ CRYPTO_PROBE_COVERAGE_FIELDS = frozenset(
         "sms_template.content_enc",
         "sms_template.name_enc",
         "unmatched_report.phone_enc",
-        "vendor_test_recipient.phone_enc",
     }
 )
 CRYPTO_PROBE_COVERAGE_VALUE_FIELDS = frozenset(

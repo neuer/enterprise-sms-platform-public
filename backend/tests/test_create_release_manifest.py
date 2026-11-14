@@ -348,6 +348,10 @@ def test_creates_self_validated_production_manifest(tmp_path: Path) -> None:
         ("0130_future", "0126_admission_recovery_mode"),
         ("unknown_revision", "0128_runtime_event_retention"),
         ("0128_runtime_event_retention", "unknown_revision"),
+        ("0138_unmatched_report_time", "0139_retire_vendor_test_tables"),
+        ("0137_export_dispatch_exclusion", "0140_future"),
+        ("0139_retire_vendor_test_tables", "0138_unmatched_report_time"),
+        ("0140_future", "0137_export_dispatch_exclusion"),
     ],
 )
 def test_incompatible_reader_generation_fails_before_evidence_or_output(
@@ -373,7 +377,7 @@ def test_incompatible_reader_generation_fails_before_evidence_or_output(
             "signing_private_key": tmp_path / "signing-key",
             "signing_key_id": "synthetic-key",
         }
-    with pytest.raises(ManifestCreationError, match="runtime event reader"):
+    with pytest.raises(ManifestCreationError, match="reader"):
         create_manifest(
             release_report=tmp_path / "release-gate.json",
             output=output,
@@ -393,6 +397,8 @@ def test_incompatible_reader_generation_fails_before_evidence_or_output(
         ("0126_admission_recovery_mode", "0127_callback_app_admission"),
         ("0128_runtime_event_retention", "0129_future"),
         ("0128_runtime_event_retention", "0128_runtime_event_retention"),
+        ("0139_retire_vendor_test_tables", "0139_retire_vendor_test_tables"),
+        ("0139_retire_vendor_test_tables", "0140_future"),
     ],
 )
 def test_creates_registry_manifest_within_reader_generation(

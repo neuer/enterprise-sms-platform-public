@@ -715,7 +715,13 @@ async def test_migration_0117_downgrade_preserves_acceptance_evidence(
         async with engine.connect() as connection:
             transaction = await connection.begin()
             try:
-                await connection.execute(text("DELETE FROM vendor_test_operation"))
+                # 0139 已删除现行表；历史降级合同使用事务内的旧表最小结构。
+                await connection.execute(text(
+                    "CREATE TEMP TABLE vendor_test_operation ("
+                    "id uuid PRIMARY KEY,operation_type text,actor text,status text,"
+                    "lease_expires_at timestamptz,acceptance_reference_required boolean,"
+                    "acceptance_biz_id varchar(32),acceptance_app_id bigint) ON COMMIT DROP"
+                ))
                 await connection.execute(
                     text(
                         "INSERT INTO vendor_test_operation("

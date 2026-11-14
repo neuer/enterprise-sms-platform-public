@@ -1892,3 +1892,16 @@
   宿主 `compose.env` 与启动器中的 `SMS_VENDOR_*` 路径变量已无消费者，变更生产宿主契约前不动。
 - 后果：AGENTS 规则 38、PRD FR-19a 改为记录下线；受控联调手册删除。测试主机上的残留标记、
   凭据与目录仍需操作者手工清除。
+
+## D129 删除已下线真实联调的遗留库表
+
+- 背景：D128 已移除真实联调产品功能；本次按仓库所有者要求完成剩余删表修改。
+- 决策：新增 `0139_retire_vendor_test_tables` 前向迁移，删除 `vendor_test_daily_usage`、
+  `vendor_test_send_attempt`、`vendor_test_recipient`、`vendor_test_recipient_hmac_alias` 与
+  `vendor_test_operation`。先删依赖表，不使用 CASCADE；表拥有的索引和序列随表删除。
+- 保留：全部历史迁移、历史审计动作与普通短信事实。`sms_chunk.vendor_attempt_count`
+  仍用于普通发送。迁移遇到未知依赖时事务回滚；重复执行允许目标表已不存在。
+- 验证：迁移检查覆盖 0138 存量结构含合成记录前滚、未知依赖回滚、重复执行及两种建库
+  结构对照。旧 Outbox 降级合同在独立的 0138 副本验证，不跨越不可逆删表迁移。
+- 恢复：密文字段闭集同步为 16 项，探针、恢复演练、发布证据和文档保持一致。自动发布
+  清单拒绝跨越 0139；downgrade 拒绝恢复空表。既有环境数据删除不包含在本次代码修改中。

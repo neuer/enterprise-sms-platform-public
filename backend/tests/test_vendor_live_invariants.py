@@ -41,17 +41,9 @@ def test_static_gate_keeps_vendor_boundaries_and_forbids_restoring_live_test() -
         assert token in source
 
 
-def test_control_plane_schemas_have_no_plain_recipient_content_or_secret_fields() -> None:
+def test_retired_control_plane_tables_are_absent_from_current_schema() -> None:
     schema = (ROOT / "schema.sql").read_text(encoding="utf-8")
-    ledger = schema.split("CREATE TABLE vendor_test_daily_usage", maxsplit=1)[1].split(
-        ");", maxsplit=1
-    )[0]
-    attempts = schema.split("CREATE TABLE vendor_test_send_attempt", maxsplit=1)[1].split(
-        ");", maxsplit=1
-    )[0]
-
-    for forbidden in ("phone_enc", "phone_mask", "content", "secret"):
-        assert forbidden not in ledger.lower()
-        assert forbidden not in attempts.lower()
-    assert "phone_hmac" not in ledger.lower()
-    assert "phone_hmac" not in attempts.lower()
+    assert "CREATE TABLE vendor_test_" not in schema
+    assert "禁止恢复 vendor_test_* 库表" in (
+        ROOT / "scripts/check_invariants.py"
+    ).read_text(encoding="utf-8")
