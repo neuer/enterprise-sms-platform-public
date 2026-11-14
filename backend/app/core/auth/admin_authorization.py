@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -18,6 +19,29 @@ from app.settings import Settings
 if TYPE_CHECKING:
     from app.core.auth.jwt import JwtClaims
     from app.services.admin_step_up import AdminIntent
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _log_database_failure(error: SQLAlchemyError, *, phase: str, operation: str) -> None:
+    """响应不暴露数据库细节，日志只留异常类型与 SQLSTATE，不含 SQL、参数或错误正文。"""
+    driver_error = getattr(error, "orig", None)
+    sqlstate: str | None = None
+    for candidate in (driver_error, error):
+        for name in ("sqlstate", "pgcode"):
+            value = getattr(candidate, name, None)
+            if isinstance(value, str) and len(value) == 5 and value.isalnum():
+                sqlstate = sqlstate or value
+    # 字段写进消息本身：默认日志格式与 pytest 的失败输出都不展示 extra。
+    LOGGER.error(
+        "admin authorization database failure: phase=%s operation=%s "
+        "error=%s driver_error=%s sqlstate=%s",
+        phase,
+        operation,
+        type(error).__name__,
+        type(driver_error).__name__ if driver_error is not None else "-",
+        sqlstate or "-",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,12 +178,14 @@ async def hold_admin_authorization(
                         "provider": authorization.provider_code,
                     },
                 )
-            except SQLAlchemyError:
+            except SQLAlchemyError as error:
+                _log_database_failure(error, phase="lock", operation=operation)
                 raise ApiError(
                     503, "AUTH_SESSION_UNAVAILABLE", "管理操作授权暂不可用", None
                 ) from None
             if not valid:
                 raise ApiError(401, "STEP_UP_REQUIRED", "管理员权限已变化，请重新登录并验证", None)
             yield connection
-    except SQLAlchemyError:
+    except SQLAlchemyError as error:
+        _log_database_failure(error, phase="transaction", operation=operation)
         raise ApiError(503, "AUTH_SESSION_UNAVAILABLE", "管理操作授权暂不可用", None) from None
