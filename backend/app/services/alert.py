@@ -124,7 +124,7 @@ class AlertEvent:
 
 
 class AlertRepository(Protocol):
-    async def load_routing(self) -> AlertRouting: ...
+    """claim 必须在同一事务内持久化告警和各渠道的 Outbox 事件。"""
 
     async def load_channel_availability(self) -> tuple[bool, bool]: ...
 
@@ -139,14 +139,6 @@ class AlertRepository(Protocol):
         dedup_key: str,
         dedup_hours: int,
     ) -> int | None: ...
-
-
-class WeComSender(Protocol):
-    async def send(self, webhook: str, event: AlertEvent) -> None: ...
-
-
-class SmtpSender(Protocol):
-    async def send(self, routing: SmtpRouting, event: AlertEvent) -> None: ...
 
 
 def is_allowed_wecom_webhook(webhook: str) -> bool:
@@ -350,24 +342,10 @@ class SmtpChannel:
 
 
 class AlertService:
-    """先落库去重，再尽力投递已配置渠道；渠道失败不破坏业务主链路。"""
+    """校验并原子记录告警及投递事件；外部渠道只由 Outbox 消费者投递。"""
 
-    def __init__(
-        self,
-        repository: AlertRepository,
-        *,
-        wecom: WeComSender | None = None,
-        smtp: SmtpSender | None = None,
-        allowed_smtp_hosts: Iterable[str] | None = None,
-    ) -> None:
-        if allowed_smtp_hosts is None:
-            from app.settings import get_settings
-
-            allowed_smtp_hosts = get_settings().alert_smtp_allowed_host_set
-        self.allowed_smtp_hosts = frozenset(host.casefold() for host in allowed_smtp_hosts)
+    def __init__(self, repository: AlertRepository) -> None:
         self.repository = repository
-        self.wecom = wecom or WeComChannel()
-        self.smtp = smtp or SmtpChannel(self.allowed_smtp_hosts)
 
     async def emit(
         self,
@@ -388,16 +366,7 @@ class AlertService:
             detail=detail,
             dedup_key=dedup_key,
         )
-        routing: AlertRouting | None = None
-        if getattr(self.repository, "uses_outbox", False):
-            wecom_configured, smtp_configured = await self.repository.load_channel_availability()
-        else:
-            routing = safe_alert_routing(
-                await self.repository.load_routing(),
-                self.allowed_smtp_hosts,
-            )
-            wecom_configured = bool(routing.wecom_webhook)
-            smtp_configured = routing.smtp is not None
+        wecom_configured, smtp_configured = await self.repository.load_channel_availability()
         channel_names = ["log-sink"]
         if wecom_configured:
             channel_names.append("wecom")
@@ -427,25 +396,6 @@ class AlertService:
                 "dedup_key": event.dedup_key,
             },
         )
-        if getattr(self.repository, "uses_outbox", False):
-            return
-        assert routing is not None
-        if routing.wecom_webhook:
-            try:
-                await self.wecom.send(routing.wecom_webhook, event)
-            except Exception as exc:
-                LOGGER.error(
-                    "wecom alert delivery failed",
-                    extra={"alert_id": alert_id, "error_type": type(exc).__name__},
-                )
-        if routing.smtp is not None:
-            try:
-                await self.smtp.send(routing.smtp, event)
-            except Exception as exc:
-                LOGGER.error(
-                    "smtp alert delivery failed",
-                    extra={"alert_id": alert_id, "error_type": type(exc).__name__},
-                )
 
 
 class AlertSink(Protocol):

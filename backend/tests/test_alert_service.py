@@ -12,178 +12,25 @@ import app.core.jobtrack as jobtrack_module
 import app.services.alert as alert_module
 import app.services.uncertain_repository as uncertain_repository_module
 import app.tasks.poll_balance as poll_balance_module
-from app.services.alert import AlertRouting, AlertService, SmtpRouting
+from app.services.alert import AlertService
 from app.services.alert_repository import SqlAlertService
 
 
 class FakeRepository:
-    def __init__(self, routing: AlertRouting, *, claimed_id: int | None = 7) -> None:
-        self.routing = routing
+    def __init__(self, availability: tuple[bool, bool], *, claimed_id: int | None = 7) -> None:
+        self.availability = availability
         self.claimed_id = claimed_id
         self.claims: list[dict[str, Any]] = []
 
-    async def load_routing(self) -> AlertRouting:
-        return self.routing
+    async def load_channel_availability(self) -> tuple[bool, bool]:
+        return self.availability
 
     async def claim(self, **values: Any) -> int | None:
         self.claims.append(values)
         return self.claimed_id
 
 
-class FakeWeCom:
-    def __init__(self, *, fail: bool = False) -> None:
-        self.fail = fail
-        self.calls: list[tuple[str, Any]] = []
-
-    async def send(self, webhook: str, event: Any) -> None:
-        self.calls.append((webhook, event))
-        if self.fail:
-            raise RuntimeError("wecom unavailable")
-
-
-class FakeSmtp:
-    def __init__(self, *, fail: bool = False) -> None:
-        self.fail = fail
-        self.calls: list[tuple[SmtpRouting, Any]] = []
-
-    async def send(self, routing: SmtpRouting, event: Any) -> None:
-        self.calls.append((routing, event))
-        if self.fail:
-            raise RuntimeError("smtp unavailable")
-
-
-EMPTY = AlertRouting(wecom_webhook="", smtp=None)
-
-
-@pytest.mark.asyncio
-async def test_empty_channel_config_persists_log_sink_without_external_calls() -> None:
-    repository = FakeRepository(EMPTY)
-    wecom = FakeWeCom()
-    smtp = FakeSmtp()
-    service = AlertService(repository, wecom=wecom, smtp=smtp)
-
-    await service.emit(
-        alert_type="balance_low",
-        level="warn",
-        title="短信余额低",
-        detail={"balance": 5000, "threshold": 10000},
-        dedup_key="balance_low",
-    )
-
-    assert repository.claims[0]["channels"] == "log-sink"
-    assert repository.claims[0]["dedup_hours"] == 4
-    assert wecom.calls == []
-    assert smtp.calls == []
-
-
-@pytest.mark.asyncio
-async def test_invalid_historical_egress_config_degrades_to_log_sink() -> None:
-    repository = FakeRepository(
-        AlertRouting(
-            wecom_webhook="https://attacker.example/hook",
-            smtp=SmtpRouting("attacker.internal", 25, "sms@internal", ("ops@internal",)),
-        )
-    )
-    wecom = FakeWeCom()
-    smtp = FakeSmtp()
-
-    await AlertService(
-        repository,
-        wecom=wecom,
-        smtp=smtp,
-        allowed_smtp_hosts={"mail.internal"},
-    ).emit(
-        alert_type="unsafe_route",
-        level="crit",
-        title="非法告警路由",
-        detail={"count": 1},
-        dedup_key="unsafe_route",
-    )
-
-    assert repository.claims[0]["channels"] == "log-sink"
-    assert wecom.calls == []
-    assert smtp.calls == []
-
-
-@pytest.mark.asyncio
-async def test_duplicate_claim_never_dispatches_external_channels() -> None:
-    routing = AlertRouting(
-        wecom_webhook="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=token",
-        smtp=SmtpRouting("mail.internal", 25, "sms@internal", ("ops@internal",)),
-    )
-    repository = FakeRepository(routing, claimed_id=None)
-    wecom = FakeWeCom()
-    smtp = FakeSmtp()
-
-    await AlertService(
-        repository,
-        wecom=wecom,
-        smtp=smtp,
-        allowed_smtp_hosts={"mail.internal"},
-    ).emit(
-        alert_type="job_stalled",
-        level="crit",
-        title="后台任务心跳缺失",
-        detail={"job_name": "poll_report"},
-        dedup_key="job_stalled:poll_report",
-    )
-
-    assert repository.claims[0]["channels"] == "log-sink,wecom,smtp"
-    assert wecom.calls == []
-    assert smtp.calls == []
-
-
-@pytest.mark.asyncio
-async def test_first_claim_dispatches_both_configured_channels() -> None:
-    smtp_routing = SmtpRouting("mail.internal", 2525, "sms@internal", ("ops@internal",))
-    routing = AlertRouting(
-        "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=token",
-        smtp_routing,
-    )
-    repository = FakeRepository(routing)
-    wecom = FakeWeCom()
-    smtp = FakeSmtp()
-
-    await AlertService(
-        repository,
-        wecom=wecom,
-        smtp=smtp,
-        allowed_smtp_hosts={"mail.internal"},
-    ).emit(
-        alert_type="vendor_auth_error",
-        level="crit",
-        title="厂商鉴权失败",
-        detail={"vendor_code": 1000, "chunk_id": 3},
-        dedup_key="vendor_auth_error:1000",
-    )
-
-    assert wecom.calls[0][0] == routing.wecom_webhook
-    assert smtp.calls[0][0] == smtp_routing
-    assert wecom.calls[0][1].detail == {"vendor_code": 1000, "chunk_id": 3}
-
-
-@pytest.mark.asyncio
-async def test_channel_failure_is_isolated_from_primary_workflow() -> None:
-    routing = AlertRouting(
-        "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=token",
-        SmtpRouting("mail.internal", 25, "sms@internal", ("ops@internal",)),
-    )
-    smtp = FakeSmtp()
-
-    await AlertService(
-        FakeRepository(routing),
-        wecom=FakeWeCom(fail=True),
-        smtp=smtp,
-        allowed_smtp_hosts={"mail.internal"},
-    ).emit(
-        alert_type="vendor_ip_error",
-        level="crit",
-        title="厂商 IP 校验失败",
-        detail={"vendor_code": 1010},
-        dedup_key="vendor_ip_error:1010",
-    )
-
-    assert len(smtp.calls) == 1
+EMPTY = (False, False)
 
 
 @pytest.mark.asyncio
@@ -199,7 +46,7 @@ async def test_alert_detail_rejects_phone_fields_and_plain_numbers(detail: dict[
     repository = FakeRepository(EMPTY)
 
     with pytest.raises(ValueError, match="PII"):
-        await AlertService(repository, wecom=FakeWeCom(), smtp=FakeSmtp()).emit(
+        await AlertService(repository).emit(
             alert_type="unsafe",
             level="warn",
             title="不安全告警",
@@ -222,7 +69,7 @@ async def test_alert_metadata_rejects_plain_phone_numbers(title: str, dedup_key:
     repository = FakeRepository(EMPTY)
 
     with pytest.raises(ValueError, match="PII"):
-        await AlertService(repository, wecom=FakeWeCom(), smtp=FakeSmtp()).emit(
+        await AlertService(repository).emit(
             alert_type="unsafe",
             level="warn",
             title=title,
@@ -339,7 +186,7 @@ class RememberingRepository:
     def __init__(self) -> None:
         self.claims: list[dict[str, Any]] = []
 
-    async def load_routing(self) -> AlertRouting:
+    async def load_channel_availability(self) -> tuple[bool, bool]:
         return EMPTY
 
     async def claim(self, **values: Any) -> int | None:
@@ -353,9 +200,7 @@ class RememberingRepository:
 @pytest.mark.asyncio
 async def test_same_window_key_dedups_and_new_shanghai_day_key_claims_again() -> None:
     repository = RememberingRepository()
-    wecom = FakeWeCom()
-    smtp = FakeSmtp()
-    service = AlertService(repository, wecom=wecom, smtp=smtp)
+    service = AlertService(repository)
 
     await service.emit(
         alert_type="anomaly",
@@ -388,5 +233,45 @@ async def test_same_window_key_dedups_and_new_shanghai_day_key_claims_again() ->
         "anomaly:7:notice:2026-10-23",
     ]
     assert {item["dedup_hours"] for item in repository.claims} == {24}
-    assert wecom.calls == []
-    assert smtp.calls == []
+
+
+@pytest.fixture(autouse=True)
+def forbid_direct_channel_delivery(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def unexpected(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("alert producers must only persist Outbox events")
+
+    monkeypatch.setattr(alert_module.WeComChannel, "send", unexpected)
+    monkeypatch.setattr(alert_module.SmtpChannel, "send", unexpected)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claimed_id", [None, 7])
+@pytest.mark.parametrize(
+    ("availability", "channels"),
+    [
+        ((False, False), "log-sink"),
+        ((True, False), "log-sink,wecom"),
+        ((False, True), "log-sink,smtp"),
+        ((True, True), "log-sink,wecom,smtp"),
+    ],
+)
+async def test_emit_records_configured_channels_without_credentials_or_direct_delivery(
+    availability: tuple[bool, bool], channels: str, claimed_id: int | None
+) -> None:
+    repository = FakeRepository(availability, claimed_id=claimed_id)
+    await AlertService(repository).emit(
+        alert_type="balance_low",
+        level="warn",
+        title="短信余额低",
+        detail={"balance": 5000, "threshold": 10000},
+        dedup_key="balance_low",
+    )
+    assert repository.claims == [{
+        "alert_type": "balance_low",
+        "level": "warn",
+        "title": "短信余额低",
+        "detail": {"balance": 5000, "threshold": 10000},
+        "channels": channels,
+        "dedup_key": "balance_low",
+        "dedup_hours": 4,
+    }]
