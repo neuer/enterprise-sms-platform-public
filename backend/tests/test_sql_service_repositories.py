@@ -826,7 +826,6 @@ async def test_recovery_repository_selects_only_recoverable_work(
     monkeypatch.setattr(reconcile_repository_module, "enqueue_outbox", capture)
     monkeypatch.setattr(send_repository, "enqueue_outbox", capture)
     work = await SqlRecoveryRepository(settings).stalled()
-    assert all(item.outbox_persisted for item in work)
     assert [spec.queue for spec in persisted] == ["realtime", "bulk"]
     assert [(item.kind, item.batch_no, item.chunk_id) for item in work] == [
         ("batch", "batch-1", None),

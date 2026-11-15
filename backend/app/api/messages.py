@@ -52,7 +52,7 @@ from app.services.pipeline import (
 )
 from app.services.pipeline_repository import SqlPipelineStore, SqlTemplateRenderer
 from app.services.queue import CeleryQueuePublisher
-from app.services.quota import QuotaExceeded, QuotaService
+from app.services.quota import QuotaExceeded
 from app.services.resend import NoFailedRecipients, ResendService, SqlResendRepository
 from app.services.resend_eligibility import ResendBlocked
 from app.services.runtime_policy import RuntimePolicy, SqlRuntimePolicyLoader
@@ -364,11 +364,8 @@ def _scheduling_service(
     *,
     approval_expire_hours: int = 24,
 ) -> SchedulingService:
-    redis: Any = redis_client(settings.redis_control_url)
     return SchedulingService(
         SqlSchedulingRepository(settings),
-        QuotaService(redis),
-        CeleryQueuePublisher(),
         approval_expire_hours=approval_expire_hours,
     )
 

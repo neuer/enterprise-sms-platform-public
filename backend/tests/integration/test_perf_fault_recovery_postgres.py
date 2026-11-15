@@ -216,16 +216,9 @@ async def test_cross_lane_recovery_is_persisted_without_worker_broker_publicatio
     monkeypatch.setattr(reconcile_repository, "database_engine", lambda *_a, **_kw: engine)
     repository = SqlRecoveryRepository(cast(Any, SimpleNamespace(database_url=engine.url)))
 
-    class DeniedPublisher:
-        async def enqueue(self, *args: Any) -> None:
-            raise AssertionError("recovery must use Outbox, not a cross-role broker credential")
-
-        async def enqueue_chunk(self, *args: Any) -> None:
-            raise AssertionError("recovery must use Outbox, not a cross-role broker credential")
-
     for _ in range(2):
         with correlation_scope(uuid4()):
-            assert await RecoveryReconciler(repository, DeniedPublisher()).run_once() >= 1
+            assert await RecoveryReconciler(repository).run_once() >= 1
     async with engine.connect() as connection:
         rows = (await connection.execute(
             text("SELECT task_name,queue,args,state FROM outbox_event WHERE dedup_key=:key"),

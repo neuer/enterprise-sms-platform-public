@@ -11,7 +11,6 @@ from app.core.worker_runtime import run_worker_async
 from app.services.alert_repository import SqlAlertService
 from app.services.crypto import CryptoService
 from app.services.ops_repository import SqlOpsRepository
-from app.services.queue import CeleryQueuePublisher
 from app.services.raw_replay import (
     RawReplayConflict,
     RawReplayNotFound,
@@ -86,7 +85,6 @@ async def _reconcile() -> int:
     async def recovery() -> int:
         return await RecoveryReconciler(
             SqlRecoveryRepository(settings),
-            CeleryQueuePublisher(),
         ).run_once()
 
     async def raw_replay() -> int:

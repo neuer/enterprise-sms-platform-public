@@ -125,7 +125,7 @@ async def record_pending_approval_alert(
     )
 
 
-def _case(row: RowMapping, *, outbox_persisted: bool = False) -> ApprovalCase:
+def _case(row: RowMapping) -> ApprovalCase:
     deferred = row.get("deferred_reason")
     return ApprovalCase(
         int(row["approval_id"]),
@@ -140,7 +140,6 @@ def _case(row: RowMapping, *, outbox_persisted: bool = False) -> ApprovalCase:
         str(row["batch_status"]),
         (int(row["applicant_account_id"]) if row["applicant_account_id"] is not None else None),
         (int(row["applicant_identity_id"]) if row["applicant_identity_id"] is not None else None),
-        outbox_persisted,
         deferred_reason=str(deferred) if deferred is not None else None,
         generation=int(row["generation"]) if row.get("generation") is not None else 1,
     )
@@ -365,7 +364,7 @@ class SqlApprovalRepository:
                 text(f"{CASE_SELECT} WHERE p.id=:id"), {"id": approval_id}
             )
             row = current.mappings().one()
-            case = _case(row, outbox_persisted=True)
+            case = _case(row)
             if action == "approve" and case.batch_status == "queued":
                 enqueue_ready = True
                 if case.category == "market":
@@ -507,7 +506,7 @@ class SqlApprovalRepository:
                     row = result.mappings().one_or_none()
                     if row is None:
                         continue
-                    case = _case(row, outbox_persisted=True)
+                    case = _case(row)
                     await connection.execute(
                         text(
                             """

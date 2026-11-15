@@ -140,13 +140,13 @@ def test_ordinary_route_verifies_once_before_business_construction(
 
         monkeypatch.setattr(module, "SqlApprovalRepository", repository)
         monkeypatch.setattr(module, "ApprovalService", lambda repo, *_: repo)
-        monkeypatch.setattr(module, "CeleryQueuePublisher", lambda: object())
         monkeypatch.setattr(module, "SqlAlertService", lambda *_: object())
         monkeypatch.setattr(sensitive_read_audit, "get_settings", lambda: settings)
         monkeypatch.setattr(sensitive_read_audit, "SensitiveReadAuditor", auditor)
     if hasattr(module, "get_settings"):
         monkeypatch.setattr(module, "get_settings", lambda: settings)
-        monkeypatch.setattr(module, "Redis", Redis)
+        if module_name == "blacklist":
+            monkeypatch.setattr(module, "Redis", Redis)
         monkeypatch.setattr(
             module, "CryptoService", SimpleNamespace(from_settings=lambda _: object()),
         )
