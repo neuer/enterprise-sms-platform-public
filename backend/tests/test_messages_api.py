@@ -48,7 +48,7 @@ class RoleFacade:
 
 
 @pytest.mark.asyncio
-async def test_scheduling_dependencies_reuse_api_pools_and_cancel_skips_policy(
+async def test_scheduling_dependencies_need_no_redis_and_cancel_skips_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = type(
@@ -59,7 +59,6 @@ async def test_scheduling_dependencies_reuse_api_pools_and_cancel_skips_policy(
             "redis_control_url": "redis://test",
         },
     )()
-    redis = object()
     repositories: list[object] = []
     policy_loads = 0
 
@@ -83,7 +82,7 @@ async def test_scheduling_dependencies_reuse_api_pools_and_cancel_skips_policy(
     monkeypatch.setattr(
         messages_module,
         "redis_client",
-        lambda redis_url: redis if redis_url == "redis://test" else None,
+        lambda _url: pytest.fail("scheduling must use transactional Outbox"),
     )
 
     cancel_service = await messages_module.get_scheduling_cancel_service(
@@ -92,7 +91,6 @@ async def test_scheduling_dependencies_reuse_api_pools_and_cancel_skips_policy(
 
     assert policy_loads == 0
     assert cancel_service.repository is repositories[0]
-    assert cancel_service.quota.redis is redis
 
     reschedule_service = await messages_module.get_scheduling_service(
         messages_module.BatchAccessScope(app_id=1)
@@ -100,7 +98,6 @@ async def test_scheduling_dependencies_reuse_api_pools_and_cancel_skips_policy(
 
     assert policy_loads == 1
     assert reschedule_service.repository is repositories[1]
-    assert reschedule_service.quota.redis is redis
     assert reschedule_service.approval_expire_hours == 7
 
 

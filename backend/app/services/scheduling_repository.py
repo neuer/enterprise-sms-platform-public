@@ -108,7 +108,7 @@ class SqlSchedulingRepository:
                         dedup_key=f"scheduled:{batch_no}:ready",
                     ),
                 )
-                claimed.append(ScheduledBatch(batch_no, category, outbox_persisted=True))
+                claimed.append(ScheduledBatch(batch_no, category))
             return claimed
 
     async def cancel(
@@ -162,7 +162,6 @@ class SqlSchedulingRepository:
                 str(row["dept"]),
                 str(row["quota_date"]),
                 int(row["quota_cost"]),
-                True,
             )
             release_event = f"batch:{batch.batch_no}:cancelled"
             if not await request_usage_release_for_batch(

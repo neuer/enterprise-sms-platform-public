@@ -117,11 +117,10 @@ async def test_business_uuid_alert_is_persisted_and_deduplicated(
                     "market",
                     "expired",
                     "expired",
-                    outbox_persisted=True,
                 )
             ]
         )
-        approval = ApprovalService(repository, cast(Any, None), cast(Any, None), alerts)
+        approval = ApprovalService(repository, alerts)
 
         async def emit() -> None:
             assert await approval.expire_due() == 1

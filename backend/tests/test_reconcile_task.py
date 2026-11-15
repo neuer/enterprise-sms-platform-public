@@ -94,7 +94,7 @@ def _install_reconcile_probe(
             )
 
     class Recovery:
-        def __init__(self, repository: object, publisher: object) -> None:
+        def __init__(self, repository: object) -> None:
             pass
 
         async def run_once(self) -> int:
@@ -105,16 +105,6 @@ def _install_reconcile_probe(
         def __init__(self, loaded_settings: object) -> None:
             _raise_preflight(
                 "delivery-recovery", "repo_init", failed_domain, failed_site, error_factory
-            )
-
-    class Publisher:
-        def __init__(self) -> None:
-            _raise_preflight(
-                "delivery-recovery",
-                "publisher_init",
-                failed_domain,
-                failed_site,
-                error_factory,
             )
 
     class Alerts:
@@ -193,7 +183,6 @@ def _install_reconcile_probe(
     monkeypatch.setattr(task_module, "SqlUncertainRepository", UncertainRepo)
     monkeypatch.setattr(task_module, "RecoveryReconciler", Recovery)
     monkeypatch.setattr(task_module, "SqlRecoveryRepository", RecoveryRepo)
-    monkeypatch.setattr(task_module, "CeleryQueuePublisher", Publisher)
     monkeypatch.setattr(task_module, "SqlAlertService", Alerts)
     monkeypatch.setattr(task_module, "redis_client", redis_client)
     monkeypatch.setattr(task_module, "SqlOpsRepository", Ops)
@@ -234,7 +223,7 @@ async def test_reconcile_task_sums_domain_contributions(
             return 1
 
     class Recovery:
-        def __init__(self, repository: object, publisher: object) -> None:
+        def __init__(self, repository: object) -> None:
             pass
 
         async def run_once(self) -> int:
@@ -299,7 +288,7 @@ async def test_reconcile_task_isolates_each_domain_failure(
             return 1
 
     class Recovery:
-        def __init__(self, repository: object, publisher: object) -> None:
+        def __init__(self, repository: object) -> None:
             pass
 
         async def run_once(self) -> int:
@@ -611,13 +600,6 @@ def test_reconcile_loads_policy_only_inside_uncertain_domain() -> None:
             "RuntimeError",
             lambda: RuntimeError(f"recovery repository init failed {PREFLIGHT_LEAK}"),
             id="delivery-repo-init",
-        ),
-        pytest.param(
-            "delivery-recovery",
-            "publisher_init",
-            "RuntimeError",
-            lambda: RuntimeError(f"queue publisher init failed {PREFLIGHT_LEAK}"),
-            id="delivery-publisher-init",
         ),
         pytest.param(
             "raw-replay",

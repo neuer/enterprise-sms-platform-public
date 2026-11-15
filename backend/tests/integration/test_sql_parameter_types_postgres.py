@@ -154,16 +154,6 @@ def _content(crypto: CryptoService, batch_no: str, plain: str) -> tuple[bytes, b
     return display, send
 
 
-class _Quota:
-    async def refund_once(self, **_values: object) -> object:
-        return object()
-
-
-class _Publisher:
-    async def enqueue(self, _batch_no: str, _queue: str) -> None:
-        return None
-
-
 async def _scheduled_batch(
     owner: AsyncEngine,
     crypto: CryptoService,
@@ -235,7 +225,7 @@ async def test_reschedule_writes_shanghai_audit_and_reopens_approval(
     )
     scheduled_at = datetime.now(UTC).replace(microsecond=0) + timedelta(days=10)
     repository = SqlSchedulingRepository(_settings(accept_url))
-    service = SchedulingService(repository, _Quota(), _Publisher(), approval_expire_hours=6)
+    service = SchedulingService(repository, approval_expire_hours=6)
     try:
         with correlation_scope(), audit_principal_scope(principal):
             await service.reschedule(
@@ -324,9 +314,7 @@ async def test_api_reschedule_keeps_scheduled_without_reapproval(
         owner, crypto, channel="api", with_approval=False
     )
     scheduled_at = (datetime.now(UTC) + timedelta(days=3)).replace(microsecond=0)
-    service = SchedulingService(
-        SqlSchedulingRepository(_settings(accept_url)), _Quota(), _Publisher()
-    )
+    service = SchedulingService(SqlSchedulingRepository(_settings(accept_url)))
     try:
         with correlation_scope(), audit_principal_scope(principal):
             await service.reschedule(
@@ -398,9 +386,7 @@ async def test_concurrent_expiry_conflicts_without_partial_reschedule(
         owner, crypto, channel="api", with_approval=False
     )
     scheduled_at = (datetime.now(UTC) + timedelta(days=4)).replace(microsecond=0)
-    service = SchedulingService(
-        SqlSchedulingRepository(_settings(accept_url)), _Quota(), _Publisher()
-    )
+    service = SchedulingService(SqlSchedulingRepository(_settings(accept_url)))
 
     async def reschedule() -> None:
         with correlation_scope(), audit_principal_scope(principal):
@@ -477,9 +463,7 @@ async def test_reschedule_audit_failure_rolls_back_the_batch(
     batch_no, batch_id, original = await _scheduled_batch(
         owner, crypto, channel="web", with_approval=True
     )
-    service = SchedulingService(
-        SqlSchedulingRepository(_settings(accept_url)), _Quota(), _Publisher()
-    )
+    service = SchedulingService(SqlSchedulingRepository(_settings(accept_url)))
     async with owner.begin() as connection:
         await connection.execute(text("REVOKE INSERT ON audit_log FROM sms_accept"))
     try:

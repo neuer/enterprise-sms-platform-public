@@ -116,7 +116,7 @@ EXPLICIT_ANY_BUDGET: Mapping[str, int] = MappingProxyType(
         "backend/app/api/admin.py": 2,
         "backend/app/api/admin_step_up.py": 1,
         "backend/app/api/apps.py": 1,
-        "backend/app/api/messages.py": 4,
+        "backend/app/api/messages.py": 3,
         "backend/app/api/ops.py": 3,
         "backend/app/api/web_messages.py": 3,
         "backend/app/cli.py": 3,

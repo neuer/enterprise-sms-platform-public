@@ -8,7 +8,6 @@ from typing import Protocol
 from app.core.auth.accounts import SecurityPrincipal
 from app.core.sensitive_text import reject_phone_in_text
 from app.services.alert import alert_reference
-from app.services.category import queue_for_category
 
 
 class SelfApprovalDenied(PermissionError):
@@ -33,12 +32,13 @@ class ApprovalCase:
     batch_status: str
     applicant_account_id: int | None = None
     applicant_identity_id: int | None = None
-    outbox_persisted: bool = False
     deferred_reason: str | None = None
     generation: int = 1
 
 
 class ApprovalRepository(Protocol):
+    """状态迁移与发送或释放 Outbox 事件必须在同一事务内提交。"""
+
     async def get(self, approval_id: int) -> ApprovalCase | None: ...
 
     async def transition(
@@ -52,24 +52,6 @@ class ApprovalRepository(Protocol):
     ) -> ApprovalCase | None: ...
 
     async def expire_due(self) -> list[ApprovalCase]: ...
-
-
-class QuotaRefundPort(Protocol):
-    async def refund_once(
-        self,
-        *,
-        app_id: int,
-        dept: str,
-        category: str,
-        date_key: str,
-        cost: int,
-        event_id: str,
-        marker_ttl_s: int,
-    ) -> object: ...
-
-
-class ApprovalPublisher(Protocol):
-    async def enqueue(self, batch_no: str, queue: str) -> None: ...
 
 
 class ApprovalAlertPort(Protocol):
@@ -106,13 +88,9 @@ class ApprovalService:
     def __init__(
         self,
         repository: ApprovalRepository,
-        quota: QuotaRefundPort,
-        publisher: ApprovalPublisher,
         alerts: ApprovalAlertPort,
     ) -> None:
         self.repository = repository
-        self.quota = quota
-        self.publisher = publisher
         self.alerts = alerts
 
     async def decide(
@@ -150,38 +128,11 @@ class ApprovalService:
         )
         if decided is None:
             raise StateConflict("审批单状态冲突")
-        if action == "approve":
-            if decided.batch_status == "queued" and not decided.outbox_persisted:
-                await self.publisher.enqueue(
-                    decided.batch_no,
-                    queue_for_category(decided.category),
-                )
-        else:
-            if not decided.outbox_persisted:
-                await self.quota.refund_once(
-                    app_id=decided.app_id,
-                    dept=decided.dept,
-                    category=decided.category,
-                    date_key=decided.quota_date,
-                    cost=decided.quota_cost,
-                    event_id=f"approval:{approval_id}:rejected",
-                    marker_ttl_s=172800,
-                )
         return decided
 
     async def expire_due(self) -> int:
         expired = await self.repository.expire_due()
         for case in expired:
-            if not case.outbox_persisted:
-                await self.quota.refund_once(
-                    app_id=case.app_id,
-                    dept=case.dept,
-                    category=case.category,
-                    date_key=case.quota_date,
-                    cost=case.quota_cost,
-                    event_id=f"approval:{case.approval_id}:expired",
-                    marker_ttl_s=172800,
-                )
             reference, reference_detail = alert_reference("batch_no", case.batch_no)
             await self.alerts.emit(
                 alert_type="approval_expired",

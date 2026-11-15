@@ -323,14 +323,12 @@ class RecordingRepository:
                 self.case,
                 status="approved",
                 batch_status="scheduled",
-                outbox_persisted=True,
                 deferred_reason="营销发送窗口外，改派定时发送",
             )
         return replace(
             self.case,
             status="rejected",
             batch_status="rejected",
-            outbox_persisted=True,
         )
 
     async def expire_due(self) -> list[ApprovalCase]:
@@ -338,18 +336,12 @@ class RecordingRepository:
 
 
 class NoopPort:
-    async def refund_once(self, **values: object) -> object:
-        return object()
-
-    async def enqueue(self, batch_no: str, queue: str) -> None:
-        return None
-
     async def emit(self, **values: object) -> None:
         return None
 
 
 def make_real_service(repository: RecordingRepository) -> ApprovalService:
-    return ApprovalService(repository, NoopPort(), NoopPort(), NoopPort())
+    return ApprovalService(repository, NoopPort())
 
 
 def test_decision_returns_outcome_body() -> None:
