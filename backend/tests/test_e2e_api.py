@@ -765,3 +765,28 @@ def test_cleanup_reports_only_http_status_and_never_error_payload() -> None:
     rollback.defer(unknown_failure)
     assert rollback.restore() == ("RuntimeError", "UatFailure:HTTP_429")
     assert rollback.restore() == ()
+
+
+@pytest.mark.parametrize("nonce", [
+    "13800138000140008000000000000000",
+    "13800138000240008000000000000000",
+])
+def test_web_send_fixture_biz_id_cannot_collide_with_phone_detection(
+    nonce: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from uuid import UUID
+
+    from app.core.sensitive_text import reject_phone_business_id
+
+    http = FakeHttp([HttpResponse(200, {})])
+    suite = UatSuite(http, None, {}, run_id="fixed-run")  # type: ignore[arg-type]
+    suite._tokens["operator01"] = "synthetic-token"
+    monkeypatch.setattr(e2e_api, "uuid4", lambda: UUID(hex=nonce))
+    suite.web_send(
+        category="market", mobiles=[suite.phone(9, 0)], content="合成内容",
+        consent_confirmed=True, is_test=True,
+    )
+    payload = http.calls[0][1]["payload"]
+    assert isinstance(payload, dict)
+    assert len(payload["biz_id"]) <= 32
+    reject_phone_business_id(payload["biz_id"], field_name="biz_id")

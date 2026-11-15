@@ -570,6 +570,8 @@ class UatSuite:
         consent_confirmed: bool,
         is_test: bool,
     ) -> HttpResponse:
+        # 合成业务键也受手机号保护约束，逐字映射保留 UUID 随机性并避开数字碰撞。
+        nonce = uuid4().hex.translate(str.maketrans("0123456789", "ghijklmnop"))
         return self._request(
             self.api,
             "POST",
@@ -581,7 +583,7 @@ class UatSuite:
                 "consent_confirmed": consent_confirmed,
                 "is_test": is_test,
                 "remark": f"uat-{self.run_id}",
-                "biz_id": f"uweb-{self.run_id}-{uuid4().hex}"[:32],
+                "biz_id": f"uweb-{self.run_id}-{nonce}"[:32],
             },
             headers=self._bearer("operator01"),
         )
