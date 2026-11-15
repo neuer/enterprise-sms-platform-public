@@ -29,8 +29,6 @@ class AlertEventRow(TypedDict):
 class SqlAlertRepository:
     """以 alert_log 为事实源，四小时内同 dedup_key 仅声明一次。"""
 
-    uses_outbox = True
-
     def __init__(
         self,
         settings: Settings | None = None,
@@ -223,7 +221,4 @@ class SqlAlertService(AlertService):
 
     def __init__(self, settings: Settings | None = None) -> None:
         selected = settings or get_settings()
-        super().__init__(
-            SqlAlertRepository(selected),
-            allowed_smtp_hosts=selected.alert_smtp_allowed_host_set,
-        )
+        super().__init__(SqlAlertRepository(selected))
