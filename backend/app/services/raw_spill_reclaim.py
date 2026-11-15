@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 
 from app.services.raw_spill_cipherq import (
@@ -24,7 +23,6 @@ from app.services.raw_spill_format import (
     REASON_TRANSIENT_IO,
     RECLAIM_CURSOR_NAME,
     REWRITE_HDR_NAME,
-    SHANGHAI_TIMEZONE,
     SOURCE_PATTERN,
     SPILL_FILE_NAME,
     SPILL_HEADER_BUDGET_BYTES,
@@ -597,41 +595,6 @@ class SpillReclaimer:
             kind=kind,
             reason=reason,
         )
-
-    def _write_nonactive_evidence(
-        self,
-        source: str,
-        token: str,
-        state: str,
-        *,
-        kind: str,
-        size_bytes: int,
-    ) -> Path:
-        """非活动隔离证据：无手机号、正文、密文、Key 或完整路径。"""
-
-        self._enforce_quarantine_quota_locked()
-        self._layout.directory.mkdir(parents=True, exist_ok=True)
-        target = self._layout.directory / f"{source}-{token}{HEADER_QUARANTINE_SUFFIX}"
-        payload = json.dumps(
-            {
-                "isolated_at": datetime.now(SHANGHAI_TIMEZONE).isoformat(),
-                "kind": kind,
-                "size_bytes": int(size_bytes),
-                "source": source,
-                "state": state,
-                "stream_id": token,
-            },
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
-        tmp = target.with_name(target.name + ".tmp")
-        with tmp.open("wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, target)
-        self._layout.fsync_directory()
-        return target
 
     def _reclaim_classified_locked(
         self,

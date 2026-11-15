@@ -24,7 +24,6 @@ from app.services.usage_ledger_frequency_merge import (
     _frequency_projection_keys,
 )
 from app.services.usage_ledger_frequency_subjects import (
-    _ensure_frequency_subject,
     _ensure_frequency_subjects_many,
 )
 from app.services.usage_ledger_projection import (
@@ -465,48 +464,3 @@ class UsageFrequencyMixin(UsageProjectionMixin):
             for (_index, item, _specs), (_idx, allowed) in zip(item_specs, decisions, strict=True)
         }
         return [(index, allowed_by_subject[item.subject_id]) for index, item in items], rows
-
-    async def _decide_frequency_on_connection(
-        self,
-        connection: AsyncConnection,
-        reservation_id: UUID,
-        category: str,
-        *,
-        app_id: int,
-        item: FrequencyDecisionItem,
-        limits: FrequencyLimits,
-        minute_window: str,
-        minute_expires: datetime,
-        day_window: str,
-        usage_date: date,
-        day_expires: datetime,
-        lock_keys: bool = True,
-    ) -> tuple[bool, tuple[ProjectionRow, ...]]:
-        subject_id, projection_hmac, _merged = await _ensure_frequency_subject(connection, item)
-        if lock_keys:
-            await _lock_projection_keys(
-                connection,
-                _frequency_projection_keys(category, app_id, projection_hmac),
-                namespace=43,
-            )
-        allowed, rows = await self._decide_frequency_many_on_connection(
-            connection,
-            reservation_id,
-            category,
-            app_id=app_id,
-            items=(
-                ResolvedFrequencySubject(
-                    item.phone_hmac,
-                    item.hmac_aliases,
-                    subject_id,
-                    projection_hmac,
-                ),
-            ),
-            limits=limits,
-            minute_window=minute_window,
-            minute_expires=minute_expires,
-            day_window=day_window,
-            usage_date=usage_date,
-            day_expires=day_expires,
-        )
-        return allowed[0], rows

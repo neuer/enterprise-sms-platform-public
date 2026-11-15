@@ -13,7 +13,7 @@
 | `PasswordAuthProvider` | 生产注册通过 `ProviderKindHandler` 与 local/AD handler 完成，调用参数包含记录及 purpose。旧 Protocol 没有承担这些注册合同；运维/CLI 没有按该名称动态注册 | 删除重复 Protocol；保留实际 Provider 选择、注册与失败禁止回退逻辑 | 认证后端、Provider 注册、密码认证与账号测试 |
 | `SqlUserRepository.create_local_account` | Web 路由经 `UserService.create_local` 到 `SqlUserAdminRepository.create_local`；后者承接同事务授权、凭据、账号和审计。旧方法仅由其独立测试调用；空系统 `init-admin` 是不同的 CLI 合同 | 删除旧重复实现，断言迁移到实际创建仓储测试；不改动空系统引导、密码策略和初始化 TTY 边界 | `test_user_repository`、`test_user_service`、`test_auth_user_repository`，以及高风险管理员写入的真实 PostgreSQL/授权回归 |
 | pipeline 的可选 `usage_ledger` 与 Redis-only 分支 | 三个生产构造点为 `api/messages.py`、`api/web_messages.py`（原第三个 `services/vendor_test_uat.py` 已随真实联调下线），均注入 `UsageLedgerService`；测试和运维路径中直接构造也逐一迁移 | 账本参数必填，显式 None 立即抛出 TypeError。删除流水线 FrequencyPort/QuotaPort 及直接频控、配额、退款回退；预留、批量频控、额度和释放请求只经账本。保留其他业务的兼容频控/配额服务，不由本项批量删除 | 流水线单元测试；真实 claim lease、ambiguous commit、uncertain resend、usage subject PostgreSQL 回归。存储提交不确定时只请求“未绑定预留释放”，不能直接回补已绑定事实 |
-| 仓储 `await engine.dispose()` | 请求、worker、metrics 仓储的工厂经 `database_engine` 返回共享 `ManagedAsyncEngine`；应用私有 engine 工厂只在 CLI 和统一资源管理模块。脚本与测试还有独占 engine | 保留所有未改变所有权的 dispose 调用与兼容空操作，不将其替换为 close。共享池由 API lifespan、worker runtime、scheduler/dispatcher 的统一 shutdown 关闭；独占 CLI engine 的真实 dispose 保留 | 工厂边界测试、dispose/close 区分、异常 shutdown、prefork 丢弃；真实 PG 断连恢复与独立双子进程池验证 |
+| 仓储 `await engine.dispose()` | 请求、worker、metrics 仓储的工厂经 `database_engine` 返回共享 `ManagedAsyncEngine`；应用私有 engine 工厂只在 CLI 和统一资源管理模块。脚本与测试还有独占 engine | 原保留决定已由 #959 更新：共享仓储的无效 dispose 调用及兼容空操作已删除。共享池仍由 API lifespan、worker runtime、scheduler/dispatcher 的统一 shutdown 关闭；独占 CLI engine 的真实 dispose 保留 | 工厂边界测试、dispose/close 区分、异常 shutdown、prefork 丢弃；真实 PG 断连恢复与独立双子进程池验证 |
 | 发送仓储 Mixin 的跨层依赖 | `SqlChunkStore` 组合现有 payload/attempt 等 Mixin，调用真实事务、载荷、预算与持久队列方法 | 新增事务、载荷、attempt 能力 Protocol；连接上下文返回 AsyncConnection。实际 SqlChunkStore 做结构兼容检查；无运行时空桩、无 MRO 改写。ManagedAsyncEngine 不再以 cast 伪装 AsyncEngine，也不以任意属性 Any 兜底 | `test_send_repository_type_contracts` 的正向实际组合与负向缺依赖/错误返回类型 fixture；发送事务、锁序、Outbox 和恢复回归 |
 
 ## 引用核查范围与保留决定
@@ -33,7 +33,7 @@ notice 不执行号码频控；验证历史 HMAC 频控的测试改用实际执�
 
 ## 连接池所有权与测试边界
 
-`ManagedAsyncEngine.dispose()` 是兼容空操作；`close()` 才关闭底层池。
+原先的 `ManagedAsyncEngine.dispose()` 兼容空操作已随 #959 删除；`close()` 仍由资源所有者调用以关闭底层池。
 `database_engine` 现在返回这个真实类型，`connect`/`begin` 暴露准确的异步连接上下文，
 因此错误属性访问和错误连接返回类型可在静态检查中拒绝。
 
