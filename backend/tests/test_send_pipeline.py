@@ -20,7 +20,7 @@ from app.core.auth.accounts import (
     UncertainEffectPrincipal,
 )
 from app.services.app_ratelimit import ApplicationRateLimitExceeded
-from app.services.category import CategoryNotAllowed, policy_for_category
+from app.services.category import policy_for_category
 from app.services.crypto import CryptoService, EncryptionContext, ProtectedPhone
 from app.services.idempotency import (
     CLAIM_RELEASE_LUA,
@@ -30,7 +30,6 @@ from app.services.idempotency import (
     IdempotencyScope,
 )
 from app.services.pipeline import (
-    AcceptancePreauthorization,
     AcceptCommitConflict,
     AcceptCommitUnknown,
     AllFiltered,
@@ -535,7 +534,7 @@ async def test_frequency_filtered_request_releases_all_partial_usage_facts() -> 
 
 
 @pytest.mark.asyncio
-async def test_controlled_api_preauthorization_limits_once_and_is_reused_by_accept() -> None:
+async def test_api_accept_limits_once_and_checks_admission_before_and_after_rendering() -> None:
     class RecordingLimiter:
         def __init__(self) -> None:
             self.calls: list[tuple[int, int]] = []
@@ -564,62 +563,26 @@ async def test_controlled_api_preauthorization_limits_once_and_is_reused_by_acce
     )
     app = ApiAppContext(
         7,
-        "uat-app",
+        "app",
         "平台部",
         frozenset({"notice"}),
         rate_limit_per_min=9,
     )
 
-    authorization = await pipeline.preauthorize(app, "notice")
-    assert isinstance(authorization, AcceptancePreauthorization)
     await pipeline.accept(
         app,
         SendRequest(
             category="notice",
             mobiles=("13800138000",),
             content="维护通知",
-            biz_id="api-uat-preauth",
+            biz_id="api-admission",
             is_test=True,
         ),
-        preauthorization=authorization,
     )
 
     assert limiter.calls == [(7, 9)]
-    # 号码解析前预检一次，渲染计费后成本准入一次；应用限流仍只扣一次。
+    # 初次准入与渲染后的成本准入各一次；应用限流只扣一次。
     assert admission.calls == 2
-
-
-@pytest.mark.asyncio
-async def test_controlled_api_preauthorization_limits_before_category_denial() -> None:
-    class RecordingLimiter:
-        def __init__(self) -> None:
-            self.calls: list[tuple[int, int]] = []
-
-        async def check(self, *, app_id: int, limit_per_minute: int) -> None:
-            self.calls.append((app_id, limit_per_minute))
-
-    limiter = RecordingLimiter()
-    pipeline = SendPipeline(
-        usage_ledger=FakeUsageLedger(),
-        store=FakeStore(),
-        idempotency=FakeIdempotency(),
-        crypto=crypto(),
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-        acceptance_limiter=limiter,  # type: ignore[arg-type]
-    )
-    app = ApiAppContext(
-        7,
-        "uat-app",
-        "平台部",
-        frozenset({"verify"}),
-        rate_limit_per_min=9,
-    )
-
-    with pytest.raises(CategoryNotAllowed):
-        await pipeline.preauthorize(app, "notice")
-
-    assert limiter.calls == [(7, 9)]
 
 
 @pytest.mark.asyncio
@@ -2636,7 +2599,7 @@ async def test_uncertain_effect_principal_creates_child_after_verify() -> None:
 
 
 @pytest.mark.asyncio
-async def test_replay_if_present_returns_existing_without_admission() -> None:
+async def test_accept_replay_returns_existing_without_admission() -> None:
     class BoomAdmission:
         async def authorize(self, **_values: object) -> None:
             raise AssertionError("replay must not authorize new send")
@@ -2660,19 +2623,14 @@ async def test_replay_if_present_returns_existing_without_admission() -> None:
     )
     policy = policy_for_category("notice", app.allowed_categories)
     idempotency.stored_request_hash = pipeline._request_hash(request, app, policy, key_version=1)
-    empty = await pipeline.replay_if_present(
-        app,
-        SendRequest("notice", ["13800138000"], content="通知"),
-    )
-    assert empty is None
-    replayed = await pipeline.replay_if_present(app, request)
+    replayed = await pipeline.accept(app, request)
     assert replayed is not None
     assert replayed.batch_no == "existing"
     assert replayed.idempotent is True
 
 
 @pytest.mark.asyncio
-async def test_replay_if_present_rejects_fingerprint_mismatch() -> None:
+async def test_accept_replay_rejects_fingerprint_mismatch() -> None:
     idempotency = FakeIdempotency()
     idempotency.inspect_view = SimpleNamespace(fingerprint="other-hash")
     pipeline = SendPipeline(
@@ -2684,7 +2642,7 @@ async def test_replay_if_present_rejects_fingerprint_mismatch() -> None:
         config=PipelineConfig(),
     )
     with pytest.raises(IdempotencyConflict):
-        await pipeline.replay_if_present(
+        await pipeline.accept(
             ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
             SendRequest(
                 "notice",
@@ -2696,7 +2654,7 @@ async def test_replay_if_present_rejects_fingerprint_mismatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_replay_if_present_waits_for_in_flight_claim() -> None:
+async def test_accept_replay_waits_for_in_flight_claim() -> None:
     class WaitIdempotency(FakeIdempotency):
         def __init__(self) -> None:
             super().__init__()
@@ -2726,68 +2684,13 @@ async def test_replay_if_present_waits_for_in_flight_claim() -> None:
     )
     policy = policy_for_category("notice", app.allowed_categories)
     idempotency.stored_request_hash = pipeline._request_hash(request, app, policy, key_version=1)
-    replayed = await pipeline.replay_if_present(app, request)
+    replayed = await pipeline.accept(app, request)
     assert replayed is not None
     assert replayed.batch_no == "existing"
 
 
 @pytest.mark.asyncio
-async def test_replay_if_present_returns_none_when_inspect_empty() -> None:
-    pipeline = SendPipeline(
-        usage_ledger=FakeUsageLedger(),
-        store=FakeStore(),
-        idempotency=FakeIdempotency(),
-        crypto=crypto(),
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-    )
-    missing = await pipeline.replay_if_present(
-        ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
-        SendRequest(
-            "notice",
-            ["13800138000"],
-            content="通知",
-            biz_id="replay-miss",
-        ),
-    )
-    assert missing is None
-
-
-@pytest.mark.asyncio
-async def test_replay_if_present_returns_none_when_wait_times_out() -> None:
-    class TimeoutIdempotency(FakeIdempotency):
-        def __init__(self) -> None:
-            super().__init__()
-            self.inspect_view = SimpleNamespace(fingerprint="")
-
-        async def lookup(self, scope: IdempotencyScope, biz_id: str) -> str | None:
-            return None
-
-        async def wait(self, scope: IdempotencyScope, biz_id: str) -> str | None:
-            return None
-
-    pipeline = SendPipeline(
-        usage_ledger=FakeUsageLedger(),
-        store=FakeStore(),
-        idempotency=TimeoutIdempotency(),
-        crypto=crypto(),
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-    )
-    missing = await pipeline.replay_if_present(
-        ApiAppContext(7, "app", "研发部", frozenset({"notice"})),
-        SendRequest(
-            "notice",
-            ["13800138000"],
-            content="通知",
-            biz_id="replay-timeout",
-        ),
-    )
-    assert missing is None
-
-
-@pytest.mark.asyncio
-async def test_replay_if_present_consumes_replay_limit_only() -> None:
+async def test_accept_replay_consumes_replay_limit_only() -> None:
     class ReplayLimiter:
         def __init__(self) -> None:
             self.checked = 0
@@ -2819,43 +2722,10 @@ async def test_replay_if_present_consumes_replay_limit_only() -> None:
     )
     policy = policy_for_category("notice", app.allowed_categories)
     idempotency.stored_request_hash = pipeline._request_hash(request, app, policy, key_version=1)
-    replayed = await pipeline.replay_if_present(app, request)
+    replayed = await pipeline.accept(app, request)
     assert replayed is not None
     assert limiter.replayed == 1
     assert limiter.checked == 0
-
-
-@pytest.mark.asyncio
-async def test_recovery_fingerprint_preserves_key_version_across_acceptance() -> None:
-    service_crypto = rotated_crypto()
-    store = FakeStore()
-    idem = FakeIdempotency()
-    pipeline = SendPipeline(
-        usage_ledger=FakeUsageLedger(),
-        store=store,
-        idempotency=idem,
-        crypto=service_crypto,
-        publisher=FakePublisher(),
-        config=PipelineConfig(),
-    )
-    app = ApiAppContext(7, "uat", "平台部", frozenset({"notice"}))
-    request = SendRequest(
-        "notice",
-        ("13800138000",),
-        content="通知",
-        biz_id="uat-key-rotation",
-        is_test=True,
-    )
-    policy = policy_for_category("notice", app.allowed_categories)
-    old_hash = pipeline._request_hash(request, app, policy, key_version=1)
-    idem.stored_request_hash = old_hash
-    digest, version = await pipeline.acceptance_fingerprint(app, request)
-    assert (digest, version) == (old_hash, 1)
-    # 旧结果恰好在指纹读取后退役，新的提交仍与恢复引用使用相同版本。
-    idem.stored_request_hash = None
-    await pipeline.accept(app, request, fingerprint_key_version=version)
-    assert store.commands[0].request_hash == digest
-    assert store.commands[0].request_hash_key_version == version
 
 
 class _UnboundAfterSaveStore(_ReservedFailingStore):
@@ -3028,3 +2898,39 @@ async def test_missing_inflight_reservation_port_fails_closed() -> None:
             SendRequest("notice", ["13800138000"], content="通知", biz_id="missing-port"),
             recipient_count=1,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [False, True])
+async def test_accept_preserves_historical_fingerprint_and_uses_active_key_for_new_send(
+    existing: bool,
+) -> None:
+    # 固定值来自清理前的请求指纹，包含已退役 UAT 字段的常量键值。
+    legacy_hash = "b7b0e7846e018877497087d7c43e78d98f926c4042e50603afa9c071bd499288"
+    active_hash = "e3a29d3949615ab628bf4b1cd3d122a5756d0c5f8b8c69a61b110a972eefd1f3"
+    store = FakeStore()
+    pipeline = SendPipeline(
+        store=store,
+        idempotency=FakeIdempotency(
+            existing="existing" if existing else None,
+            stored_request_hash=legacy_hash if existing else None,
+            stored_key_version=1,
+        ),
+        crypto=rotated_crypto(),
+        publisher=FakePublisher(),
+        usage_ledger=FakeUsageLedger(),
+        config=PipelineConfig(),
+    )
+    result = await pipeline.accept(
+        ApiAppContext(7, "app", "平台部", frozenset({"notice"})),
+        SendRequest(
+            "notice", ("13800138000",), content="通知", biz_id="fingerprint-compat"
+        ),
+    )
+    assert result.idempotent is existing
+    if existing:
+        assert result.batch_no == "existing"
+        assert store.commands == []
+    else:
+        assert store.commands[0].request_hash == active_hash
+        assert store.commands[0].request_hash_key_version == 2

@@ -17,7 +17,6 @@ from app.services.idempotency import (
     uncertain_resend_biz_id,
 )
 from app.services.pipeline_contracts import (
-    AcceptancePreauthorization,
     InFlightLimitExceeded,
     InFlightQueryUnavailable,
     MarketApiBulkForbidden,
@@ -45,22 +44,12 @@ class SendAdmissionMixin:
     def _resolve_policy(
         app: ApiAppContext,
         request: SendRequest,
-        preauthorization: AcceptancePreauthorization | None,
     ) -> CategoryPolicy:
-        expected = policy_for_category(
+        return policy_for_category(
             request.category,
             app.allowed_categories,
             notice_blacklist=app.blacklist_check,
         )
-        if preauthorization is None:
-            return expected
-        if (
-            preauthorization.app_id != app.app_id
-            or preauthorization.category != request.category
-            or preauthorization.policy != expected
-        ):
-            raise ValueError("应用预授权合同无效")
-        return preauthorization.policy
 
     @staticmethod
     def _is_system_resend(request: SendRequest) -> bool:
@@ -127,11 +116,9 @@ class SendAdmissionMixin:
         self,
         app: ApiAppContext,
         request: SendRequest,
-        preauthorization: AcceptancePreauthorization | None,
     ) -> None:
         if (
             (request.channel != "web" or self._is_system_resend(request))
-            and preauthorization is None
             and self.acceptance_limiter is not None
         ):
             await self.acceptance_limiter.check(

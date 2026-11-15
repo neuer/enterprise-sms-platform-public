@@ -186,7 +186,7 @@ async def test_normalized_replay_reuses_computed_fingerprint_and_skips_legacy(
     app = ApiAppContext(1, "app", "研发部", frozenset({"notice"}))
     request = SendRequest("notice", ["13900139000", "13800138000"], content="通知", biz_id="fp")
     pipeline = pipeline_for(FakeIdempotency())
-    policy = pipeline._resolve_policy(app, request, None)
+    policy = pipeline._resolve_policy(app, request)
     digest = pipeline._request_hash(request, app, policy, key_version=1)
     pipeline.idempotency = FakeIdempotency("existing", stored_request_hash=digest)
     original = pipeline._request_hash
@@ -221,7 +221,7 @@ async def test_cached_fingerprint_does_not_cross_key_versions(
         "fp",
         request,
         app,
-        pipeline._resolve_policy(app, request, None),
+        pipeline._resolve_policy(app, request),
         computed=IdempotencyFingerprint("different", 2),
     )
     assert versions == [1]

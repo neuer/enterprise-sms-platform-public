@@ -87,10 +87,9 @@ async def test_unsafe_id_cannot_reach_redis() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["accept", "replay_if_present"])
 @pytest.mark.parametrize("unsafe_id", UNSAFE_IDS)
 async def test_direct_pipeline_rejects_before_idempotency_or_storage(
-    operation: str, unsafe_id: str
+    unsafe_id: str
 ) -> None:
     from app.core.apikey import ApiAppContext
     from app.services.pipeline import PipelineConfig, SendPipeline, SendRequest
@@ -117,7 +116,7 @@ async def test_direct_pipeline_rejects_before_idempotency_or_storage(
     app = ApiAppContext(7, "synthetic", "synthetic", frozenset({"notice"}), "【通知】", 100)
     request = SendRequest("notice", [PHONE], content="合成通知", biz_id=unsafe_id)
     with pytest.raises(ValueError, match="手机号"):
-        await getattr(pipeline, operation)(app, request)
+        await pipeline.accept(app, request)
     assert store.commands == []
 
 
