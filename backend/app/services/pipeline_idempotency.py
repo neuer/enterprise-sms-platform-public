@@ -26,7 +26,6 @@ from app.services.idempotency import (
 )
 from app.services.pipeline_admission import SendAdmissionMixin
 from app.services.pipeline_contracts import (
-    AcceptancePreauthorization,
     BatchCommand,
     IdempotencyPort,
     SendRequest,
@@ -163,34 +162,6 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
             key_version=key_version,
         )
 
-    async def acceptance_fingerprint(
-        self, app: ApiAppContext, request: SendRequest
-    ) -> tuple[str, int]:
-        """提供与受理幂等记录一致的版本化指纹，供受控恢复绑定。"""
-
-        version = self.crypto.active_version
-        format_version = 2
-        frozen_sign = None
-        if request.biz_id:
-            scope = self._idempotency_scope(request, app)
-            stored = await self.idempotency.request_fingerprint(scope, request.biz_id)
-            if stored is not None:
-                version = stored.key_version
-                format_version = stored.format_version
-                frozen_sign = stored.frozen_sign
-        policy = self._resolve_policy(app, request, None)
-        return (
-            self._request_hash(
-                request,
-                app,
-                policy,
-                key_version=version,
-                format_version=format_version,
-                frozen_sign=frozen_sign,
-            ),
-            version,
-        )
-
     @staticmethod
     def _idempotency_scope(
         request: SendRequest,
@@ -317,7 +288,6 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
         command: BatchCommand,
         idem_scope: IdempotencyScope | None,
         inflight: Any,
-        preauthorization: AcceptancePreauthorization | None,
     ) -> Any:
         """用数据库 reservation 事实解析 COMMIT 边界；无解析器时回退查找。"""
 
@@ -352,7 +322,7 @@ class AcceptanceIdempotencyMixin(SendAdmissionMixin):
                 return AcceptCommitResolution("UNKNOWN")
             if existing is not None:
                 try:
-                    policy = self._resolve_policy(app, request, preauthorization)
+                    policy = self._resolve_policy(app, request)
                     await self._ensure_same_request(
                         idem_scope,
                         request.biz_id,

@@ -110,16 +110,6 @@ class FakePipeline:
         self.status = "queued"
         self.idempotent = False
 
-    async def replay_if_present(
-        self,
-        _app: ApiAppContext,
-        _request: SendRequest,
-    ) -> BatchResponse | None:
-        return None
-
-    async def preauthorize(self, app: ApiAppContext, category: str) -> object:
-        return object()
-
     async def accept(
         self,
         app: ApiAppContext,
@@ -211,9 +201,6 @@ def test_send_serializes_completed_unknown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class UnknownPipeline:
-        async def preauthorize(self, _app: ApiAppContext, _category: str) -> object:
-            return object()
-
         async def accept(
             self,
             _app: ApiAppContext,
@@ -257,9 +244,6 @@ def test_send_maps_idempotency_conflict_to_409(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class ConflictPipeline:
-        async def preauthorize(self, _app: ApiAppContext, _category: str) -> object:
-            return object()
-
         async def accept(
             self,
             _app: ApiAppContext,
