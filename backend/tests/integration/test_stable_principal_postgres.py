@@ -362,12 +362,7 @@ async def test_stable_principal_survives_rename_and_blocks_login_reuse(
             correlation_scope(uuid4()),
             pytest.raises(SelfApprovalDenied),
         ):
-            await ApprovalService(
-                approval_repository,
-                cast(Any, _UnusedPort()),
-                cast(Any, _UnusedPort()),
-                cast(Any, _UnusedPort()),
-            ).decide(
+            await ApprovalService(approval_repository, cast(Any, _UnusedPort())).decide(
                 approval_id,
                 action="approve",
                 principal=ad_principal,

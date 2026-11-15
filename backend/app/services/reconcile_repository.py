@@ -225,5 +225,4 @@ class SqlRecoveryRepository:
                             """),
                         {"dedup_key": dedup_key},
                     )
-            return [RecoveryWork(item.kind, item.batch_no, item.chunk_id,
-                                 item.category, outbox_persisted=True) for item in work]
+            return work

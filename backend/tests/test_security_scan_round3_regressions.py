@@ -112,23 +112,12 @@ async def test_blacklist_and_approval_reject_phone_embedded_in_metadata() -> Non
             return await self.get(3)
 
     class Noop:
-        async def refund_once(self, **_: object) -> object:
-            return object()
-
-        async def enqueue(self, *_: object, **__: object) -> None:
-            return None
-
         async def emit(self, **_: object) -> None:
             return None
 
     approval_repository = ApprovalRepository()
     with pytest.raises(ValueError, match="不得包含手机号"):
-        await ApprovalService(
-            approval_repository,  # type: ignore[arg-type]
-            Noop(),
-            Noop(),
-            Noop(),
-        ).decide(
+        await ApprovalService(approval_repository, Noop()).decide(
             3,
             action="reject",
             principal=approver,

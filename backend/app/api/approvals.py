@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
-from redis.asyncio import Redis
 
 from app.api.auth import ERROR_RESPONSE
 from app.api.authorization import ApproverActor
@@ -20,8 +18,6 @@ from app.services.alert_repository import SqlAlertService
 from app.services.approval import ApprovalService, SelfApprovalDenied, StateConflict
 from app.services.approval_repository import SqlApprovalRepository
 from app.services.crypto import CryptoService
-from app.services.queue import CeleryQueuePublisher
-from app.services.quota import QuotaRedis, QuotaService
 from app.services.sensitive_read_audit import (
     SensitiveReadAuditor,
     get_sensitive_read_auditor,
@@ -87,18 +83,12 @@ class DecisionRequest(BaseModel):
     expected_generation: int = Field(ge=1)
 
 
-async def get_approval_service(_actor: ApproverActor) -> AsyncIterator[ApprovalService]:
+async def get_approval_service(_actor: ApproverActor) -> ApprovalService:
     settings = get_settings()
-    redis = Redis.from_url(settings.redis_control_url, decode_responses=True)
-    try:
-        yield ApprovalService(
-            SqlApprovalRepository(settings, CryptoService.from_settings(settings)),
-            QuotaService(cast(QuotaRedis, redis)),
-            CeleryQueuePublisher(),
-            SqlAlertService(settings),
-        )
-    finally:
-        await redis.aclose()
+    return ApprovalService(
+        SqlApprovalRepository(settings, CryptoService.from_settings(settings)),
+        SqlAlertService(settings),
+    )
 
 
 def get_approval_repository(_actor: ApproverActor) -> SqlApprovalRepository:
