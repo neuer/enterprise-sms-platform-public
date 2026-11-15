@@ -283,7 +283,7 @@ class UncertainResolutionService:
                         str(candidate["biz_id"]),
                         legacy_request,
                         app_ctx,
-                        pipeline._resolve_policy(app_ctx, legacy_request, None),
+                        pipeline._resolve_policy(app_ctx, legacy_request),
                     )
                 except Exception as exc:
                     raise UncertainResolutionConflict("重发子批次指纹无法证明") from exc

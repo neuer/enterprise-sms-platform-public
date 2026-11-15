@@ -12,7 +12,7 @@ from uuid import UUID
 from app.core.auth.accounts import (
     ActorPrincipal,
 )
-from app.services.category import SHANGHAI, CategoryPolicy
+from app.services.category import SHANGHAI
 from app.services.crypto import ProtectedPhone
 from app.services.freq import FrequencyLimits
 from app.services.idempotency import (
@@ -115,15 +115,6 @@ class SendRequest:
     import_reservation_id: UUID | None = None
     usage_subject: UsageSubject | None = None
     uncertain_source_proof: UncertainSourceProof | None = field(default=None, repr=False)
-
-
-@dataclass(frozen=True, slots=True)
-class AcceptancePreauthorization:
-    """号码解析前已消费的应用限流与类别授权结果。"""
-
-    app_id: int
-    category: str
-    policy: CategoryPolicy
 
 
 @dataclass(frozen=True, slots=True)

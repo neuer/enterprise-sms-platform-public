@@ -28,7 +28,6 @@ from app.services.freq import FrequencyLimits
 from app.services.idempotency import IdempotencyScope, usage_request_key
 from app.services.masking import mask_phone_text, mask_verify_otp
 from app.services.pipeline_contracts import (
-    AcceptancePreauthorization,
     AllFiltered,
     ConsentRequired,
     InvalidContent,
@@ -100,7 +99,6 @@ class _Acceptance:
 
     app: ApiAppContext
     request: SendRequest
-    preauthorization: AcceptancePreauthorization | None
     ownership_check: Callable[[], Awaitable[None]] | None
     claim_key: str | None
     claim_token: str | None
@@ -209,7 +207,6 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
 
         app = acceptance.app
         request = acceptance.request
-        preauthorization = acceptance.preauthorization
         reject_phone_in_text(request.remark, field_name="remark")
         self._validate_usage_subject(request)
         await acceptance.check_ownership()
@@ -218,7 +215,7 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
         if request.biz_id and acceptance.idem_scope is None:
             raise RuntimeError("idempotency scope unavailable")
         if request.biz_id and acceptance.request_hash is None:
-            policy = self._resolve_policy(app, request, preauthorization)
+            policy = self._resolve_policy(app, request)
             acceptance.request_hash_key_version = self.crypto.active_version
             acceptance.request_hash = self._request_hash(
                 request,
@@ -235,14 +232,13 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
             raise ValueError(f"mobiles count must be 1..{recipient_limit}")
         if any(PHONE_NUMBER.fullmatch(phone) is None for phone in request.mobiles):
             raise ValueError("手机号格式无效")
-        if not request.biz_id and preauthorization is None:
+        if not request.biz_id:
             await self._authorize_new_send(request, app=app)
         if request.is_test and recipient_count > self.config.test_send_max:
             raise ValueError(f"测试发送最多{self.config.test_send_max}个号码")
         self._enforce_market_api_bulk(app, request, recipient_count)
         if (
             (request.channel != "web" or self._is_system_resend(request))
-            and preauthorization is None
             and self.acceptance_limiter is not None
             and not request.biz_id
         ):
@@ -260,7 +256,7 @@ class AcceptanceStagesMixin(AcceptanceIdempotencyMixin):
         app = acceptance.app
         request = acceptance.request
         recipient_count = acceptance.recipient_count
-        policy = self._resolve_policy(app, request, acceptance.preauthorization)
+        policy = self._resolve_policy(app, request)
         rendered = await self._render(request, self._usage_dept(app, request))
         sign_name = request.sign_name or app.default_sign
         if sign_name is not None and self.signs is not None:

@@ -180,7 +180,6 @@ class AcceptanceCommitMixin(AcceptanceStagesMixin):
                     command=command,
                     idem_scope=idem_scope,
                     inflight=acceptance.inflight,
-                    preauthorization=acceptance.preauthorization,
                 )
                 if resolution.kind == "BOUND_TO_EXPECTED_BATCH":
                     acceptance.inflight_bound = True
@@ -210,11 +209,7 @@ class AcceptanceCommitMixin(AcceptanceStagesMixin):
                         raise original from None
                     if existing is not None:
                         try:
-                            policy = self._resolve_policy(
-                                app,
-                                request,
-                                acceptance.preauthorization,
-                            )
+                            policy = self._resolve_policy(app, request)
                             await self._ensure_same_request(
                                 idem_scope,
                                 request.biz_id,
@@ -257,7 +252,7 @@ class AcceptanceCommitMixin(AcceptanceStagesMixin):
             try:
                 if request.biz_id:
                     assert idem_scope is not None
-                    policy = self._resolve_policy(app, request, acceptance.preauthorization)
+                    policy = self._resolve_policy(app, request)
                     await self._ensure_same_request(
                         idem_scope,
                         request.biz_id,

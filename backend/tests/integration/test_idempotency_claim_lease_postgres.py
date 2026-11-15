@@ -1199,7 +1199,7 @@ async def test_r8_actual_pipeline_cleanup_replay_and_new_acceptance(
     principal = ApplicationPrincipal(app_id, "app", "平台部")
     request = SendRequest("notice", ["13800138000"], content="合成通知", biz_id=biz,
                           actor=principal)
-    fingerprint = pipeline._request_hash(request, app, pipeline._resolve_policy(app, request, None))
+    fingerprint = pipeline._request_hash(request, app, pipeline._resolve_policy(app, request))
     async with engine.begin() as connection:
         await connection.execute(text(
             "UPDATE idempotency_record SET request_hash=:fp WHERE batch_id=:id"

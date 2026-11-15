@@ -10,7 +10,6 @@ from datetime import UTC, datetime
 from app.core.apikey import ApiAppContext
 from app.core.sensitive_text import reject_phone_business_id
 from app.services.app_ratelimit import ApplicationRateLimiter
-from app.services.category import policy_for_category
 from app.services.crypto import CryptoService
 from app.services.idempotency import (
     IdempotencyConflict as IdempotencyConflict,
@@ -27,7 +26,6 @@ from app.services.pipeline_acceptance import (
 )
 from app.services.pipeline_commit import AcceptanceCommitMixin
 from app.services.pipeline_contracts import (
-    AcceptancePreauthorization,
     AcceptCommitConflict,
     AcceptCommitUnknown,
     AllFiltered,
@@ -57,7 +55,6 @@ from app.services.send_inflight import InFlightInvariantViolation as InFlightInv
 
 # 契约与准入/幂等步骤已拆到 pipeline_* 模块；调用方继续从这里导入。
 __all__ = [
-    "AcceptancePreauthorization",
     "AcceptCommitConflict",
     "AcceptCommitUnknown",
     "AllFiltered",
@@ -125,96 +122,19 @@ class SendPipeline(AcceptanceCommitMixin):
 
         return await self.store.response_for(batch_no)
 
-    async def replay_if_present(
-        self,
-        app: ApiAppContext,
-        request: SendRequest,
-    ) -> BatchResponse | None:
-        """只读取已存在幂等结果，不消费新发送准入或普通请求额度。"""
-
-        biz_id = request.biz_id
-        reject_phone_business_id(biz_id, field_name="biz_id")
-        if not biz_id:
-            return None
-        idem_scope = self._idempotency_scope(request, app)
-        policy = self._resolve_policy(app, request, None)
-        existing = await self.idempotency.lookup(idem_scope, biz_id)
-        if existing is not None:
-            await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
-            await self._consume_replay_limit(app)
-            return await self.store.response_for(existing)
-        inspect = getattr(self.idempotency, "inspect", None)
-        viewed = await inspect(idem_scope, biz_id) if inspect is not None else None
-        if viewed is None:
-            return None
-        request_hash = self._request_hash(
-            request,
-            app,
-            policy,
-            key_version=self.crypto.active_version,
-        )
-        if getattr(viewed, "fingerprint", "") not in {"", request_hash}:
-            raise IdempotencyConflict("同一幂等键已用于不同请求，请更换 biz_id 或复用原请求")
-        await self._consume_replay_limit(app)
-        waited = await self.idempotency.wait(idem_scope, biz_id)
-        if waited is None:
-            return None
-        await self._ensure_same_request(idem_scope, biz_id, request, app, policy)
-        return await self.store.response_for(waited)
-
-    async def preauthorize(
-        self,
-        app: ApiAppContext,
-        category: str,
-    ) -> AcceptancePreauthorization:
-        """在受控号码解析前消费应用限流并验证类别权限。"""
-
-        if self.admission_guard is not None:
-            await self.admission_guard.authorize(
-                app_id=app.app_id,
-                category=category,
-                channel="api",
-                recipient_count=1,
-            )
-        if self.acceptance_limiter is not None:
-            await self.acceptance_limiter.check(
-                app_id=app.app_id,
-                limit_per_minute=app.rate_limit_per_min,
-            )
-        return AcceptancePreauthorization(
-            app_id=app.app_id,
-            category=category,
-            policy=policy_for_category(
-                category,
-                app.allowed_categories,
-                notice_blacklist=app.blacklist_check,
-            ),
-        )
-
     async def accept(
         self,
         app: ApiAppContext,
         request: SendRequest,
-        *,
-        preauthorization: AcceptancePreauthorization | None = None,
-        fingerprint_key_version: int | None = None,
     ) -> BatchResponse:
         self._validate_usage_subject(request)
         biz_id = request.biz_id
         reject_phone_business_id(biz_id, field_name="biz_id")
         if not biz_id:
-            return await self._accept_claimed(
-                app,
-                request,
-                preauthorization=preauthorization,
-            )
+            return await self._accept_claimed(app, request)
         idem_scope = self._idempotency_scope(request, app)
-        policy = self._resolve_policy(app, request, preauthorization)
-        request_hash_key_version = (
-            self.crypto.active_version
-            if fingerprint_key_version is None
-            else fingerprint_key_version
-        )
+        policy = self._resolve_policy(app, request)
+        request_hash_key_version = self.crypto.active_version
         request_hash = self._request_hash(
             request,
             app,
@@ -290,9 +210,8 @@ class SendPipeline(AcceptanceCommitMixin):
                 raise IdempotencyClaimLost("idempotency claim lost")
 
         try:
-            if preauthorization is None:
-                await self._authorize_new_send(request, app=app)
-            await self._consume_request_limit(app, request, preauthorization)
+            await self._authorize_new_send(request, app=app)
+            await self._consume_request_limit(app, request)
             renewal = self.idempotency.heartbeat(idem_scope, biz_id, token, lost)
             try:
                 heartbeat = asyncio.create_task(renewal)
@@ -320,7 +239,6 @@ class SendPipeline(AcceptanceCommitMixin):
             return await self._accept_claimed(
                 app,
                 request,
-                preauthorization=preauthorization,
                 ownership_check=check_ownership,
                 claim_key=self.idempotency.claim_key(idem_scope, biz_id),
                 claim_token=fence_token,
@@ -350,7 +268,6 @@ class SendPipeline(AcceptanceCommitMixin):
         self,
         app: ApiAppContext,
         request: SendRequest,
-        preauthorization: AcceptancePreauthorization | None = None,
         ownership_check: Callable[[], Awaitable[None]] | None = None,
         claim_key: str | None = None,
         claim_token: str | None = None,
@@ -367,7 +284,6 @@ class SendPipeline(AcceptanceCommitMixin):
         acceptance = _Acceptance(
             app=app,
             request=request,
-            preauthorization=preauthorization,
             ownership_check=ownership_check,
             claim_key=claim_key,
             claim_token=claim_token,
