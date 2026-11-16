@@ -1,0 +1,6 @@
+# 仅由 sms-compose init-admin 的一次性容器使用；常驻 API 保留原日志策略。
+# 控制 TTY 的密码展示不得交给容器日志驱动持久化。
+services:
+  api:
+    logging:
+      driver: none

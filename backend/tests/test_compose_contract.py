@@ -15,6 +15,15 @@ def _compose() -> dict[str, Any]:
     return cast(dict[str, Any], loaded)
 
 
+def test_init_admin_override_only_disables_one_off_api_logging() -> None:
+    override = yaml.safe_load(
+        (ROOT / "deploy/docker-compose.init-admin.yml").read_text(encoding="utf-8")
+    )
+
+    assert override == {"services": {"api": {"logging": {"driver": "none"}}}}
+    assert _compose()["services"]["api"].get("logging", {}).get("driver") != "none"
+
+
 def test_retired_vendor_test_mounts_are_not_restored() -> None:
     """真实联调已下线：任何服务都不得再挂载联调状态目录或控制 UDS 目录。"""
     for service in _compose()["services"].values():

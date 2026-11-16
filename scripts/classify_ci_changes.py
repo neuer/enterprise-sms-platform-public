@@ -73,6 +73,7 @@ RELEASE_CONTROL_EXACT = {
     ".github/workflows/release-gate.yml",
     "backend/Dockerfile",
     "deploy/docker-compose.yml",
+    "deploy/docker-compose.init-admin.yml",
     "deploy/docker-compose.production-restart.yml",
     "deploy/postgres.Dockerfile",
     "deploy/redis.Dockerfile",
