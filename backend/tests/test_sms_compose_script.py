@@ -30,6 +30,10 @@ def fake_environment(tmp_path: Path) -> tuple[Path, Path, dict[str, str]]:
     (platform_root / "deploy" / "scripts").mkdir(parents=True)
     (platform_root / "deploy" / "secrets").mkdir()
     (platform_root / "deploy" / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    shutil.copyfile(
+        ROOT / "deploy/docker-compose.init-admin.yml",
+        platform_root / "deploy/docker-compose.init-admin.yml",
+    )
     (platform_root / "deploy" / "docker-compose.production-storage.yml").write_text(
         "volumes: {}\n", encoding="utf-8"
     )
@@ -1136,6 +1140,8 @@ def test_init_admin_tty_prepares_secrets_and_runs_exact_api_cli(
         expected_line(
             [
                 *compose_prefix(platform_root),
+                "-f",
+                str(platform_root / "deploy/docker-compose.init-admin.yml"),
                 "run",
                 "--rm",
                 "api",
@@ -1152,6 +1158,34 @@ def test_init_admin_tty_prepares_secrets_and_runs_exact_api_cli(
             runtime=runtime,
         ),
     ]
+
+
+def test_init_admin_one_off_override_comes_from_control_snapshot(
+    fake_environment: tuple[Path, Path, dict[str, str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    platform_root, log, environment = fake_environment
+    control_root = create_smoke_control_snapshot(platform_root, tmp_path)
+    monkeypatch.setattr(sys.modules[__name__], "WRAPPER", control_root / "deploy/sms-compose")
+
+    returncode = run_wrapper_with_tty(
+        fake_environment,
+        "init-admin",
+        "--show-temporary-password",
+    )
+
+    assert returncode == 0
+    assert command_lines(log)[-1] == expected_line(
+        [
+            "docker", "compose", "--env-file", str(platform_root / ".env"),
+            "-f", str(control_root / "deploy/docker-compose.yml"),
+            "-f", str(control_root / "deploy/docker-compose.init-admin.yml"),
+            "run", "--rm", "api", "python", "-m", "app.cli", "init-admin",
+            "--show-temporary-password",
+        ],
+        runtime=Path(environment["SMS_RUNTIME_ROOT"]),
+    )
 
 
 def test_init_admin_tty_executes_cli_in_running_api_container(

@@ -267,6 +267,7 @@ def test_dependency_image_and_release_changes_select_security_gate(path: str) ->
 @pytest.mark.parametrize(
     "path",
     [
+        "deploy/docker-compose.init-admin.yml",
         "deploy/docker-compose.production-restart.yml",
         "deploy/scripts/offline_image_archive.py",
         "scripts/create_offline_image_index.py",

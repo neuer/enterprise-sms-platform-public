@@ -96,6 +96,7 @@ LOCK_PYTHON=(python3)
 DEFAULT_RELEASE_ROOT="/var/lib/sms-platform/releases"
 RELEASE_ROOT="$DEFAULT_RELEASE_ROOT"
 BASE_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.yml"
+INIT_ADMIN_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.init-admin.yml"
 PRODUCTION_STORAGE_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.production-storage.yml"
 PRODUCTION_RESTART_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.production-restart.yml"
 REDIS_TLS_COMPOSE_FILE="$CONTROL_ROOT/deploy/docker-compose.redis-tls.yml"
@@ -1007,7 +1008,8 @@ run_init_admin() {
   if [[ -n "$running_api" ]]; then
     "${COMPOSE[@]}" exec api python -m app.cli init-admin "${INIT_ADMIN_ARGS[@]}"
   else
-    "${COMPOSE[@]}" run --rm api python -m app.cli init-admin "${INIT_ADMIN_ARGS[@]}"
+    "${COMPOSE[@]}" -f "$INIT_ADMIN_COMPOSE_FILE" \
+      run --rm api python -m app.cli init-admin "${INIT_ADMIN_ARGS[@]}"
   fi
 }
 
