@@ -48,7 +48,7 @@ def test_container_build_files_use_locked_runtime_bases() -> None:
     assert "USER 101:101" in frontend
     assert (
         "FROM nginx:stable-alpine@sha256:"
-        "47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951" in frontend
+        "3bc3836dc0be3b811f238210360bf8e7ca8a2d0effdae46160bf1f3578710051" in frontend
     )
     assert "RUN apk add" not in backend
     for dockerfile in (backend, frontend, postgres):

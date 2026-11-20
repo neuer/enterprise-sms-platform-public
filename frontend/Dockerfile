@@ -13,7 +13,7 @@ ENV VITE_GIT_SHA="${GIT_SHA}" \
     VITE_SCHEMA_REVISION="${SCHEMA_REVISION}"
 RUN VITE_APP_VERSION="$(tr -d '\n' < /VERSION)" npm run build
 
-FROM nginx:stable-alpine@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951
+FROM nginx:stable-alpine@sha256:3bc3836dc0be3b811f238210360bf8e7ca8a2d0effdae46160bf1f3578710051
 
 # Retained signed packages; installation never consults a mutable mirror.
 RUN --network=none --mount=type=bind,source=deploy/vendor-apk/web,target=/apks,ro \
