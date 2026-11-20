@@ -1301,6 +1301,7 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
             self.expires_at: dict[str, float] = {}
             self.now = 0.0
             self.renewals = 0
+            self.renewed = asyncio.Event()
 
         def _expire(self, key: str) -> None:
             if self.expires_at.get(key, float("inf")) <= self.now:
@@ -1329,6 +1330,7 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
                     return 0
                 self.renewals += 1
                 self.expires_at[key] = self.now + float(args[0])
+                self.renewed.set()
                 return 1
             assert script == CLAIM_RELEASE_LUA
             if not _claim_owned(self.values.get(key), token):
@@ -1380,10 +1382,18 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
     store = ConcurrentStore()
     ledger = BlockingLedger()
     publisher = FakePublisher()
+    heartbeat_ticks: asyncio.Queue[None] = asyncio.Queue()
+    contender_waiting = asyncio.Event()
+    contender_resume = asyncio.Event()
 
-    async def advance(seconds: float) -> None:
-        redis.now += seconds
-        await asyncio.sleep(0)
+    async def controlled_sleep(seconds: float) -> None:
+        # 由测试显式推进租约时间，避免心跳空转抢占真实加密线程的调度。
+        if seconds == 2:
+            await heartbeat_ticks.get()
+        else:
+            assert seconds == 1
+            contender_waiting.set()
+            await contender_resume.wait()
 
     coordinator = IdempotencyCoordinator(
         redis,
@@ -1392,7 +1402,7 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
         heartbeat_interval_s=2,
         wait_attempts=30,
         wait_interval_s=1,
-        sleeper=advance,
+        sleeper=controlled_sleep,
         clock=lambda: redis.now,
     )
     pipeline = SendPipeline(
@@ -1410,21 +1420,31 @@ async def test_concurrent_idempotent_requests_execute_side_effects_once() -> Non
         biz_id="same-biz",
     )
 
-    owner = asyncio.create_task(
-        pipeline.accept(ApiAppContext(7, "app", "研发部", frozenset({"verify"})), request)
-    )
-    await asyncio.wait_for(ledger.entered.wait(), timeout=5)
-    contender = asyncio.create_task(
-        pipeline.accept(ApiAppContext(7, "app", "研发部", frozenset({"verify"})), request)
-    )
-    for _attempt in range(30):
-        if redis.renewals >= 3 and redis.now > 6:
-            break
-        await asyncio.sleep(0)
-    assert redis.renewals >= 3
-    assert redis.now > 6
-    ledger.resume.set()
-    first, second = await asyncio.gather(owner, contender)
+    app = ApiAppContext(7, "app", "研发部", frozenset({"verify"}))
+    # 任一任务失败立即传播，并取消另一任务；所有事件等待共用原有 5 秒上限。
+    async with asyncio.timeout(5), asyncio.TaskGroup() as tasks:
+        owner = tasks.create_task(pipeline.accept(app, request))
+        await ledger.entered.wait()
+        assert redis.now == 0
+        contender = tasks.create_task(pipeline.accept(app, request))
+        await contender_waiting.wait()
+        initial_renewals = redis.renewals
+        for _tick in range(4):
+            redis.renewed.clear()
+            redis.now += 2
+            heartbeat_ticks.put_nowait(None)
+            await redis.renewed.wait()
+        assert redis.renewals == initial_renewals + 4
+        assert redis.now > coordinator.claim_ttl_s
+        claim_key = coordinator.claim_key(IdempotencyScope("app", "7"), "same-biz")
+        assert redis.expires_at[claim_key] > redis.now
+        assert not owner.done() and not contender.done()
+        assert not ledger.frequency and not ledger.quota and not store.commands
+        assert not publisher.events
+        ledger.resume.set()
+        first = await owner
+        contender_resume.set()
+        second = await contender
 
     assert first.batch_no == second.batch_no == "shared-batch"
     assert sorted([first.idempotent, second.idempotent]) == [False, True]
